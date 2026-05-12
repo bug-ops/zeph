@@ -211,12 +211,45 @@ is a thin `reqwest`-based raw HTTP client that covers these gap methods.
 - All API calls share a single `#[tracing::instrument]` on the `post()` helper
 - `TelegramApiClient` is injected into `TelegramChannel` at construction; callers do not
   instantiate it directly
+- The `reqwest::Client` is constructed with a 30-second request timeout (`REQUEST_TIMEOUT`) in both
+  `TelegramApiClient::new()` and `with_base_url()` (#3780); a client without a timeout violates the
+  project's Await Discipline rule
 
 ### Key Invariants
 
 - NEVER expose the bot token in `Debug`, `Display`, or log output
 - All methods must go through the shared `post()` helper — no ad-hoc `reqwest::Client` calls
 - New Bot API 10.0 methods that require raw HTTP must be added here, not as teloxide patches
+- `TelegramApiClient` MUST set a `REQUEST_TIMEOUT` (30 s) on the `reqwest::Client` at construction — never create an unbounded client
+
+---
+
+## Telegram Reaction Moderation Tools (#3770)
+
+Issue #3731. `crates/zeph-channels/src/telegram_moderation.rs`, `crates/zeph-tools/src/moderation.rs`.
+
+Two new tools allow group admins to remove reactions via the Telegram Bot API 10.0:
+
+| Tool | Description |
+|---|---|
+| `telegram_delete_reaction` | Delete the bot's own reaction on a specific message |
+| `telegram_delete_all_reactions` | Delete all reactions on a specific message |
+
+### Design
+
+- `ReactionModerationBackend` trait lives in `zeph-tools` to avoid circular dependencies
+- `TelegramModerationBackend` in `zeph-channels` implements the trait and enforces an admin check
+- Admin status is verified via `bot_is_admin()` (calls `get_chat_member` + `get_me`) before every mutation
+- If `getMe` fails at startup, the executor is not wired and a `WARN` is logged (graceful degradation)
+- Reaction field is validated: non-empty, at most 10 characters
+- `ClaimSource::Moderation` variant; `requires_confirmation = true`
+
+### Key Invariants
+
+- Mutation tools (`telegram_delete_reaction`, `telegram_delete_all_reactions`) MUST verify bot is chat admin before executing
+- `requires_confirmation = true` — the agent must ask before removing reactions
+- If bot admin check fails at startup, tools MUST be absent from the executor (not wired) — never silently no-op at call time
+- Reaction strings MUST be validated (non-empty, ≤ 10 chars) before forwarding to the API
 
 ---
 

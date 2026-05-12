@@ -175,13 +175,15 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | FR-005 | WHEN `SubAgentManager::spawn()` is called at the concurrency limit THEN the system SHALL return `Err(ConcurrencyLimitExceeded)` | must |
 | FR-006 | WHEN a subagent is spawned with `parent_cancel` THEN cancelling the parent token SHALL cancel the child's `CancellationToken` | must |
 | FR-007 | WHEN a `Grant` TTL expires THEN `PermissionGrants::check()` SHALL return an error for that grant | must |
-| FR-008 | WHEN `FilteredToolExecutor` receives a tool call THEN it SHALL check the `ToolPolicy` and denylist before forwarding to the real executor | must |
+| FR-008 | WHEN `FilteredToolExecutor` receives a tool call THEN it SHALL check the `ToolPolicy` and denylist before forwarding to the real executor, matching tool IDs case-insensitively after stripping argument suffixes (`"Bash(cargo *)"` → `"bash"`) via `normalize_tool_id` (#3765) | must |
 | FR-009 | WHEN a subagent session ends (normally or via cancellation) THEN a JSONL transcript SHALL be written with complete turn history | must |
 | FR-010 | WHEN `sweep_old_transcripts()` is called THEN transcripts beyond the retention window SHALL be deleted | must |
 | FR-011 | WHEN lifecycle hooks are defined THEN `fire_hooks()` SHALL execute matching hooks for each `HookType` event | must |
 | FR-012 | WHEN hook execution fails THEN the failure SHALL be logged at `WARN` and the subagent session SHALL continue | must |
 | FR-013 | WHEN `load_memory_content()` is called THEN it SHALL read `MEMORY.md` from the resolved memory directory and return its content | should |
 | FR-014 | WHEN `AgentCommand` or `AgentsCommand` is parsed from user input THEN it SHALL map to a typed command variant (`spawn`, `list`, `cancel`, `resume`, `show`) | must |
+| FR-015 | WHEN a subagent is spawned with `memory: user` in its definition THEN the system SHALL wrap the tool executor with `MemoryAwareExecutor`, which retries `SandboxViolation` file-tool calls against a `FileExecutor` scoped to `~/.zeph/agent-memory/<agent-name>/` (#3771) | must |
+| FR-016 | WHEN `MemoryAwareExecutor` resolves the memory directory THEN it SHALL canonicalize the path and reject any resolved path that escapes `~/.zeph/agent-memory/<agent-name>/` to prevent traversal attacks (#3771) | must |
 
 ---
 
@@ -212,7 +214,8 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | `PermissionGrants` | TTL-bounded permission registry | Map of `GrantKind` → expiry timestamp |
 | `Grant` | Single permission grant | `kind: GrantKind`, `ttl_secs`, expiry instant |
 | `GrantKind` | Type of permission | Variants: `VaultSecret`, `Tool` |
-| `FilteredToolExecutor` | Tool executor with policy gate | Wraps real executor; enforces `ToolPolicy` and denylist |
+| `FilteredToolExecutor` | Tool executor with policy gate | Wraps real executor; enforces `ToolPolicy` and denylist; tool ID comparison is case-insensitive and strips argument suffixes via `normalize_tool_id` |
+| `MemoryAwareExecutor` | Sandbox-bypass executor for `memory: user` subagents | Wraps inner executor; retries `SandboxViolation` file-tool calls against a `FileExecutor` scoped to `~/.zeph/agent-memory/<name>/`; path canonicalization delegated to `FileExecutor` to prevent traversal (#3771) |
 | `PlanModeExecutor` | Executor for plan mode | Wraps real executor; disables write operations |
 | `HookDef` | Lifecycle hook definition | `hook_type: HookType`, shell command template |
 | `HookType` | Lifecycle event | `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop` |
@@ -236,6 +239,8 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | Grant checked after TTL expiry | Returns `Err`; no panic |
 | Subagent cancelled mid-turn | Tool in progress receives cancellation signal; transcript records `Cancelled` exit reason |
 | `load_all()` encounters symlink outside allowed boundary | File is skipped with a security warning in logs |
+| Subagent with `memory: user` writes to a file outside `~/.zeph/agent-memory/<name>/` | `MemoryAwareExecutor` rejects the call; the canonicalized path does not start with the allowed prefix |
+| Subagent name contains path traversal components in memory path construction | `MemoryAwareExecutor` validates the agent name via `is_valid_agent_name()` before constructing the memory path |
 
 ---
 

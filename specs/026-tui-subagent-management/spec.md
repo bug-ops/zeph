@@ -251,6 +251,23 @@ The following details reflect the shipped implementation and may differ from the
 - Transcript is truncated to the **last 200 entries** (not configurable at runtime)
 - `[truncated]` marker shown at top when truncation occurs
 
+### Automatic View Switch for Foreground Subagents (#3764)
+
+When the parent agent spawns a **foreground** subagent (i.e. `background: false`), the TUI
+automatically switches to that subagent's transcript view so the user can follow its progress
+in real time. On subagent completion the TUI returns to the Main view automatically.
+
+Two new `AgentEvent` variants drive the lifecycle transitions:
+
+| Variant | Fired | Effect |
+|---|---|---|
+| `ForegroundSubagentStarted { name }` | After spawn, before first poll | TUI switches to the subagent's transcript view |
+| `ForegroundSubagentCompleted { name }` | After `poll_subagent_until_done` exits (including early drop) | TUI returns to Main view |
+
+The completion event is guaranteed to fire even when the subagent manager is dropped before
+the poll loop finishes. This prevents the TUI from being stuck in a subagent view after the
+parent turn ends.
+
 ### Tab Cycling
 
 Tab cycling now includes `SubAgents` as a panel in the cycle order. `Shift+Tab` is not implemented; use `Esc` to return to main view.

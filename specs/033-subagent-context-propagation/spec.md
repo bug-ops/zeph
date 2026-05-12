@@ -365,7 +365,7 @@ See `TranscriptWriter` and `TranscriptReader` in `zeph-subagent`.
 
 | Gap | Priority | Resolved? | Status | Notes |
 |---|---|---|---|---|
-| GAP-01: Conversation history | P1 | ✅ | Shipped #2575 | `parent_messages` in `SpawnContext` |
+| GAP-01: Conversation history | P1 | ✅ | Shipped #2575, #3760, #3761 | `parent_messages` in `SpawnContext`; orphaned tool pairs pruned by `trim_parent_messages`; budget estimated by `estimate_parts_size` |
 | GAP-02: Parent context injection | P2 | ✅ | Shipped #2576 | `context_injection_mode` with `last_assistant_turn` |
 | GAP-03: Model inheritance | P2 | ✅ | Shipped #2577 | `model: "inherit"` in frontmatter |
 | GAP-04: MCP context propagation | P2 | ⚠️ Partial | Shipped #2578 | Tool executor shared; MCP server lifecycle not accessible |
@@ -389,6 +389,8 @@ See `TranscriptWriter` and `TranscriptReader` in `zeph-subagent`.
 - Cancellation is propagated from parent to foreground children
 - Background spawns are tracked and can be collected or cancelled independently
 - All spawns include `spawn_depth` and are gated by `max_spawn_depth`
+- Parent message history is pruned by `trim_parent_messages()` before passing to the subagent: any `ToolResult` without a paired `ToolUse` is removed first (pass 1), then any `ToolUse` without a paired `ToolResult` is removed (pass 2), except the trailing assistant message which is exempt from pass 2 to preserve pending tool calls at the conversation boundary (#3760)
+- Token budget for the sliced parent history is estimated by `estimate_parts_size()`, which uses a 50-byte JSON overhead for `ToolUse`/`ToolResult` blocks, base64 expansion ratio for images, and `content.len()` fallback; `flatten_parts()` byte counting is NOT used for budget estimation because it underestimates structured JSON size (#3761)
 
 ### Ask First
 - Enabling `background = true` for long-running subagents (risk of orphaned tasks)

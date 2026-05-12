@@ -440,6 +440,12 @@ tools:
 
 If all three file tools are blocked (via `tools.except` or `tools.deny`), memory is silently disabled — the directory is not created and no content is injected.
 
+### Sandbox and File Tool Access
+
+Sub-agents run in a restricted sandbox that prevents file writes outside the agent's working directory. When an agent declares `memory: user`, Zeph automatically allows writes to the user-scoped memory directory (`~/.zeph/agent-memory/<name>/`) as an exception to the sandbox boundary.
+
+This allows agents with `memory: user` to persist state across projects while remaining sandboxed from accidental writes to system directories or other project data. File paths are validated and canonicalized to prevent traversal attacks.
+
 ### Security
 
 - **Agent name validation** — Names must match `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`. Path traversal attempts (e.g., `../etc/passwd`) are rejected.
@@ -448,6 +454,7 @@ If all three file tools are blocked (via `tools.except` or `tools.deny`), memory
 - **Null byte guard** — Files containing null bytes are rejected.
 - **Tag escaping** — `<agent-memory>` tags in memory content are escaped to prevent prompt injection. Since `MEMORY.md` is agent-written (not user-written), this stricter escaping is applied by default.
 - **Local scope .gitignore check** — When using `local` scope, Zeph warns if `.zeph/agent-memory-local/` is not in `.gitignore`.
+- **Path canonicalization** — Memory directory paths are canonicalized to detect and block symlink-based escape attempts.
 
 ## Tool and Skill Access
 

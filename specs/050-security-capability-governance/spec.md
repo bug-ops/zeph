@@ -161,10 +161,22 @@ prefixed by namespace before scope resolution:
 
 Glob patterns operate on these qualified ids. `mcp:*` is a single-namespace
 glob; `*` covers all namespaces and is allowed only in the explicit
-`default_scope = "general"` configuration. Any *un-namespaced* tool id
-returned by an executor at registration is a fatal startup error — there is
-no path for an MCP server to register `search_arbitrary_shell` and have it
-match `search_*` configured for builtins.
+`default_scope = "general"` configuration.
+
+**Built-in id normalization (#3778).** Built-in executors register tools with
+*unqualified* ids (`"bash"`, `"read"`, etc.) because they predate the namespace
+convention. At the scope boundary, `ScopedToolExecutor::tool_definitions()` and
+`execute_tool_call()` both synthesise the `builtin:` prefix for unqualified ids
+before calling `scope.admits()`. Additionally, `runner.rs` qualifies unqualified
+registry ids with `builtin:` before passing them to `build_scoped_executor` so
+the pre-compiled admitted set resolves correctly. Without this normalization,
+configuring `[security.capability_scopes]` caused a startup crash (#3775) because
+the admitted set contained `"builtin:bash"` but incoming dispatch carried `"bash"`.
+
+MCP and other dynamic-namespace tools are expected to include a namespace separator
+in their registered id; an MCP server that registers `search_arbitrary_shell`
+(no colon) would be treated as a built-in and admitted only if `builtin:*` is in
+scope — there is no cross-namespace leakage.
 
 **Build-time pattern resolution (C2 mitigation).** At agent build, every
 configured glob is compiled and matched against the materialised tool
@@ -559,7 +571,12 @@ follow-on.
    full patterns are fatal startup errors.
 5. **Tool ids are namespaced before scoping.** `builtin:`, `skill:<name>/`,
    `mcp:<server>/`, `acp:<peer>/`, `a2a:<peer>/`. No cross-namespace
-   accidental match.
+   accidental match. Built-in executors register tools with *unqualified*
+   ids (`"bash"`, `"read"`, etc.); `ScopedToolExecutor` normalises them to
+   `builtin:<id>` at the scope boundary (#3778). `runner.rs` also qualifies
+   unqualified ids with `builtin:` before passing them to
+   `build_scoped_executor` so the scope's pre-compiled admitted set
+   resolves correctly.
 6. **Sentinel state is per-`SecurityState`** (per-agent). Subagents inherit
    only via `spawn_child` with `subagent_inheritance_factor` damping, and
    only when the parent is `>= Elevated`.
@@ -579,7 +596,8 @@ follow-on.
   `execute_confirmed()` fenced-block path. Documented carve-out (mirrors
   `PolicyGate` CRIT-03).
 - NEVER use `glob::Pattern::matches` against an unqualified, non-namespaced
-  tool id. All tool ids are `<namespace>:<id>` before scope resolution.
+  tool id. Scope resolution always operates on qualified ids; `ScopedToolExecutor`
+  auto-qualifies built-in ids with `builtin:` before calling `scope.admits()` (#3778).
 - NEVER let an MCP server register a tool id that contains a `:` other
   than the namespace separator inserted by the registry.
 - NEVER let `tool_definitions()` for one scope be reused for dispatch
@@ -612,8 +630,11 @@ follow-on.
 1. `crates/zeph-tools/src/scope.rs` — `ToolScope`, `ScopedToolExecutor`,
    `ScopeError { DeadPattern, AccidentallyFull, … }`. Wired in
    `agent::builder` between `PolicyGateExecutor` and the agent stack.
-2. Tool-id namespacing: registry guarantees every `ToolDef.id` carries a
-   namespace prefix; un-namespaced ids are rejected at registration.
+2. Tool-id namespacing: built-in executors register unqualified ids;
+   `ScopedToolExecutor` normalises them to `builtin:<id>` at the scope
+   boundary. MCP / ACP / A2A tools carry an explicit namespace prefix from
+   their registry. Un-namespaced non-builtin ids that somehow reach the
+   scope boundary are treated as `builtin:` for admission purposes.
 3. `zeph_config::types::security::CapabilityScopesConfig` — TOML schema,
    build-time glob resolution, `strict` and `default_scope` semantics.
 4. `crates/zeph-core/src/agent/trajectory.rs` —
