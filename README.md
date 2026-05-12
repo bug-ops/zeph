@@ -10,7 +10,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![MSRV](https://img.shields.io/badge/MSRV-1.95-blue)](https://www.rust-lang.org)
-  [![Tests](https://img.shields.io/badge/tests-9139-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-9201-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 </div>
 

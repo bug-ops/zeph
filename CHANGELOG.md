@@ -6,12 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- fix(channels): apply 30-second per-request timeout to `TelegramApiClient::new()` and
-  `TelegramApiClient::with_base_url()` to prevent indefinite stalls when `api.telegram.org`
-  is unreachable (issue #3777). The constant `REQUEST_TIMEOUT` is defined in
-  `telegram_api_ext.rs` and matches the project's general policy for external HTTP calls.
+## [0.21.1] - 2026-05-12
 
 ### Added
 
@@ -34,6 +29,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(channels): apply 30-second per-request timeout to `TelegramApiClient::new()` and
+  `TelegramApiClient::with_base_url()` to prevent indefinite stalls when `api.telegram.org`
+  is unreachable (issue #3777). The constant `REQUEST_TIMEOUT` is defined in
+  `telegram_api_ext.rs` and matches the project's general policy for external HTTP calls.
 - fix(core): pass live MCP dispatch to `on_turn_complete` hook dispatcher. The hook path
   previously hardcoded `no_mcp = None`, causing every `mcp_tool` hook configured under
   `on_turn_complete` to fail with `HookError::McpUnavailable`. Now calls `self.mcp_dispatch()`
@@ -5841,7 +5840,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/bug-ops/zeph/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/bug-ops/zeph/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/bug-ops/zeph/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/bug-ops/zeph/compare/v0.20.0...v0.20.1
