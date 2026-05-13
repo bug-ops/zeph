@@ -63,6 +63,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(llm): cascade `collect_stream` now preserves `ToolUse`, `Thinking`, and `Compaction`
+  chunks in a new private `CollectedStream` struct. Previously these variants were silently
+  discarded, causing context loss when cascade routing escalated to the expensive provider.
+  `into_stream()` re-emits all chunk types; `best_seen` tracks the full `CollectedStream`
+  instead of a bare content string. `is_empty()` checks both `content` and `tool_calls`
+  fields. (issue #3802)
+
+- fix(llm): `CascadeRouterConfig::cost_tiers` entries that do not match any registered
+  provider name now emit a `tracing::warn!` at construction time instead of being silently
+  ignored. (issue #3803)
+
 - fix(memory): correct SQL placeholder mismatch in `recall_episodic_causal` — `IN(frontier)`
   and `NOT IN(visited)` were using the same `{placeholders}` string despite `frontier` and
   `visited` having different sizes after the first hop, causing sqlx binding errors or wrong
