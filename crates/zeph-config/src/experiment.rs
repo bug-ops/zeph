@@ -80,6 +80,18 @@ fn default_persistence_enabled() -> bool {
     true
 }
 
+fn default_aggregator_timeout_secs() -> u64 {
+    60
+}
+
+fn default_planner_timeout_secs() -> u64 {
+    120
+}
+
+fn default_verifier_timeout_secs() -> u64 {
+    30
+}
+
 fn default_plan_cache_similarity_threshold() -> f32 {
     0.90
 }
@@ -316,6 +328,29 @@ pub struct OrchestrationConfig {
     /// Default: `0.0` (unlimited).
     #[serde(default)]
     pub default_task_budget_cents: f64,
+
+    /// Timeout in seconds for aggregation LLM calls. Default: 60.
+    ///
+    /// On timeout the aggregator falls back to raw concatenation so that a graph
+    /// result is always returned. Set to `0` is rejected by `Config::validate()`.
+    #[serde(default = "default_aggregator_timeout_secs")]
+    pub aggregator_timeout_secs: u64,
+
+    /// Timeout in seconds for planner LLM calls. Default: 120.
+    ///
+    /// On timeout the planner returns `OrchestrationError::PlanningFailed`.
+    /// Planning has no fallback — without a graph no tasks can be dispatched.
+    /// Set to `0` is rejected by `Config::validate()`.
+    #[serde(default = "default_planner_timeout_secs")]
+    pub planner_timeout_secs: u64,
+
+    /// Timeout in seconds for verifier LLM calls (per-task and whole-plan). Default: 30.
+    ///
+    /// On timeout the verifier returns a fail-open result (`complete = true`, no gaps).
+    /// Matches the existing `predicate_timeout_secs` default.
+    /// Set to `0` is rejected by `Config::validate()`.
+    #[serde(default = "default_verifier_timeout_secs")]
+    pub verifier_timeout_secs: u64,
 }
 
 impl Default for OrchestrationConfig {
@@ -355,6 +390,9 @@ impl Default for OrchestrationConfig {
             persistence_enabled: default_persistence_enabled(),
             orchestrator_provider: ProviderName::default(),
             default_task_budget_cents: 0.0,
+            aggregator_timeout_secs: default_aggregator_timeout_secs(),
+            planner_timeout_secs: default_planner_timeout_secs(),
+            verifier_timeout_secs: default_verifier_timeout_secs(),
         }
     }
 }

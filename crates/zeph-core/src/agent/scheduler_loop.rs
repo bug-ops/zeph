@@ -428,8 +428,10 @@ impl<C: crate::channel::Channel> Agent<C> {
                             .completeness_threshold;
                         let sanitizer = self.services.security.sanitizer.clone();
 
-                        let verifier = plan_verifier
-                            .get_or_insert_with(|| PlanVerifier::new(verify_provider, sanitizer));
+                        let orch_config = self.services.orchestration.orchestration_config.clone();
+                        let verifier = plan_verifier.get_or_insert_with(|| {
+                            PlanVerifier::new(verify_provider, sanitizer, &orch_config)
+                        });
 
                         let task = scheduler.graph().tasks.get(task_id.index()).cloned();
 

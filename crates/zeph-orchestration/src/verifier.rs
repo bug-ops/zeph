@@ -11,8 +11,11 @@
 //! All LLM call failures are fail-open: `verify()` returns `complete = true` on
 //! error; `replan()` returns an empty `Vec`. Verification never blocks execution.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
+use zeph_config::OrchestrationConfig;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
@@ -120,16 +123,21 @@ pub struct PlanVerifier<P: LlmProvider> {
     /// Constructed with `spotlight_untrusted = false` so delimiters do not confuse
     /// the verification LLM (RISK-5): truncation and injection detection still apply.
     sanitizer: ContentSanitizer,
+    /// Maximum time to wait for each verifier LLM call before returning fail-open.
+    timeout: Duration,
 }
 
 impl<P: LlmProvider> PlanVerifier<P> {
-    /// Create a new `PlanVerifier`.
+    /// Create a new `PlanVerifier` from a provider, sanitizer, and orchestration config.
+    ///
+    /// The timeout is taken from `config.verifier_timeout_secs`.
     #[must_use]
-    pub fn new(provider: P, sanitizer: ContentSanitizer) -> Self {
+    pub fn new(provider: P, sanitizer: ContentSanitizer, config: &OrchestrationConfig) -> Self {
         Self {
             provider,
             consecutive_failures: 0,
             sanitizer,
+            timeout: Duration::from_secs(config.verifier_timeout_secs),
         }
     }
 
@@ -144,14 +152,14 @@ impl<P: LlmProvider> PlanVerifier<P> {
     pub async fn verify(&mut self, task: &TaskNode, output: &str) -> VerificationResult {
         let messages = build_verify_prompt(task, output, &self.sanitizer);
 
-        let result: Result<VerificationResult, _> = self.provider.chat_typed(&messages).await;
+        let result = tokio::time::timeout(self.timeout, self.provider.chat_typed(&messages)).await;
 
         match result {
-            Ok(vr) => {
+            Ok(Ok(vr)) => {
                 self.consecutive_failures = 0;
                 vr
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
                 if self.consecutive_failures >= 3 {
                     error!(
@@ -168,6 +176,15 @@ impl<P: LlmProvider> PlanVerifier<P> {
                         "PlanVerifier: LLM call failed, treating task as complete (fail-open)"
                     );
                 }
+                VerificationResult::fail_open()
+            }
+            Err(_elapsed) => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                warn!(
+                    timeout_secs = self.timeout.as_secs(),
+                    task_id = %task.id,
+                    "PlanVerifier: LLM call timed out, treating task as complete (fail-open)"
+                );
                 VerificationResult::fail_open()
             }
         }
@@ -225,10 +242,14 @@ impl<P: LlmProvider> PlanVerifier<P> {
 
         let messages = build_replan_prompt(task, &actionable_gaps, &self.sanitizer);
 
-        let raw: Result<ReplanResponse, _> = self.provider.chat_typed(&messages).await;
+        let raw = tokio::time::timeout(
+            self.timeout,
+            self.provider.chat_typed::<ReplanResponse>(&messages),
+        )
+        .await;
 
         match raw {
-            Ok(resp) => {
+            Ok(Ok(resp)) => {
                 let mut new_tasks = Vec::new();
                 for (i, pt) in resp.tasks.into_iter().enumerate() {
                     let task_idx = next_id + u32::try_from(i).unwrap_or(0);
@@ -240,11 +261,19 @@ impl<P: LlmProvider> PlanVerifier<P> {
                 }
                 Ok(new_tasks)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!(
                     error = %e,
                     task_id = %task.id,
                     "PlanVerifier: replan LLM call failed, skipping replan (fail-open)"
+                );
+                Ok(Vec::new())
+            }
+            Err(_elapsed) => {
+                warn!(
+                    timeout_secs = self.timeout.as_secs(),
+                    task_id = %task.id,
+                    "PlanVerifier: replan LLM call timed out, skipping replan (fail-open)"
                 );
                 Ok(Vec::new())
             }
@@ -262,14 +291,14 @@ impl<P: LlmProvider> PlanVerifier<P> {
     pub async fn verify_plan(&mut self, goal: &str, aggregated_output: &str) -> VerificationResult {
         let messages = build_verify_plan_prompt(goal, aggregated_output, &self.sanitizer);
 
-        let result: Result<VerificationResult, _> = self.provider.chat_typed(&messages).await;
+        let result = tokio::time::timeout(self.timeout, self.provider.chat_typed(&messages)).await;
 
         match result {
-            Ok(vr) => {
+            Ok(Ok(vr)) => {
                 self.consecutive_failures = 0;
                 vr
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
                 if self.consecutive_failures >= 3 {
                     error!(
@@ -285,6 +314,15 @@ impl<P: LlmProvider> PlanVerifier<P> {
                          (fail-open)"
                     );
                 }
+                VerificationResult::fail_open()
+            }
+            Err(_elapsed) => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                warn!(
+                    timeout_secs = self.timeout.as_secs(),
+                    "PlanVerifier: whole-plan LLM call timed out, treating plan as complete \
+                     (fail-open)"
+                );
                 VerificationResult::fail_open()
             }
         }
@@ -332,10 +370,14 @@ impl<P: LlmProvider> PlanVerifier<P> {
 
         let messages = build_replan_from_plan_prompt(goal, &actionable_gaps, &self.sanitizer);
 
-        let raw: Result<ReplanResponse, _> = self.provider.chat_typed(&messages).await;
+        let raw = tokio::time::timeout(
+            self.timeout,
+            self.provider.chat_typed::<ReplanResponse>(&messages),
+        )
+        .await;
 
         match raw {
-            Ok(resp) => {
+            Ok(Ok(resp)) => {
                 let mut new_tasks = Vec::new();
                 for (i, pt) in resp.tasks.into_iter().enumerate() {
                     let task_idx = next_id
@@ -351,10 +393,17 @@ impl<P: LlmProvider> PlanVerifier<P> {
                 }
                 Ok(new_tasks)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!(
                     error = %e,
                     "PlanVerifier: replan_from_plan LLM call failed, skipping replan (fail-open)"
+                );
+                Ok(Vec::new())
+            }
+            Err(_elapsed) => {
+                warn!(
+                    timeout_secs = self.timeout.as_secs(),
+                    "PlanVerifier: replan_from_plan LLM call timed out, skipping replan (fail-open)"
                 );
                 Ok(Vec::new())
             }
@@ -624,6 +673,7 @@ pub fn inject_tasks(
 mod tests {
     use super::*;
     use crate::graph::{TaskGraph, TaskId, TaskNode, TaskStatus};
+    use zeph_config::OrchestrationConfig;
 
     fn make_node(id: u32, deps: &[u32]) -> TaskNode {
         let mut n = TaskNode::new(id, format!("t{id}"), format!("desc {id}"));
@@ -772,7 +822,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(complete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "write code", "write the implementation");
         let result = verifier.verify(&task, "here is the code: ...").await;
         assert!(result.complete);
@@ -785,7 +836,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(incomplete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "write code", "write the implementation");
         let result = verifier.verify(&task, "partial output").await;
         assert!(!result.complete);
@@ -800,7 +852,8 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("timeout".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "write code", "write the implementation");
         let result = verifier.verify(&task, "output").await;
         // Fail-open: complete=true, no gaps, confidence=0.0
@@ -814,7 +867,8 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("error".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "t", "d");
         verifier.verify(&task, "out").await;
         assert_eq!(verifier.consecutive_failures(), 1);
@@ -828,7 +882,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(r#"{"tasks": []}"#.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "t", "d");
         let gaps = vec![Gap {
             description: "minor issue".to_string(),
@@ -850,7 +905,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(replan_json),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "write code", "write implementation");
         let gaps = vec![Gap {
             description: "missing unit tests".to_string(),
@@ -869,7 +925,8 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("replan error".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "t", "d");
         let gaps = vec![Gap {
             description: "critical missing thing".to_string(),
@@ -889,7 +946,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(complete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "t", "d");
         // verify() must not panic and must call the LLM (fail-open if needed).
         let result = verifier
@@ -908,7 +966,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(replan_json),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let task = TaskNode::new(0, "t", "d");
         let gaps = vec![Gap {
             description: long_desc,
@@ -945,7 +1004,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(complete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let result = verifier
             .verify_plan("write a web server", "here is the server code")
             .await;
@@ -959,7 +1019,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(incomplete_result_json()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let result = verifier
             .verify_plan("write a web server", "partial output")
             .await;
@@ -973,7 +1034,8 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("timeout".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let result = verifier.verify_plan("goal", "output").await;
         assert!(result.complete);
         assert!(result.gaps.is_empty());
@@ -994,7 +1056,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(replan_json),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let gaps = vec![
             Gap {
                 description: "no auth".to_string(),
@@ -1023,7 +1086,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(r#"{"tasks": []}"#.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let gaps = vec![Gap {
             description: "minor issue".to_string(),
             severity: GapSeverity::Minor,
@@ -1040,7 +1104,8 @@ mod tests {
         let provider = MockProvider {
             response: Err(LlmError::Other("network error".to_string())),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let gaps = vec![Gap {
             description: "critical gap".to_string(),
             severity: GapSeverity::Critical,
@@ -1061,7 +1126,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(json.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let result = verifier.verify_plan("goal", "output").await;
         assert!(!result.complete);
         assert!((result.confidence - 0.6).abs() < 0.01);
@@ -1082,7 +1148,8 @@ mod tests {
         let provider = MockProvider {
             response: Ok(json.to_string()),
         };
-        let mut verifier = PlanVerifier::new(provider, test_sanitizer());
+        let mut verifier =
+            PlanVerifier::new(provider, test_sanitizer(), &OrchestrationConfig::default());
         let result = verifier.verify_plan("goal", "output").await;
         let threshold = 0.7_f64;
         let should_replan =
@@ -1091,5 +1158,90 @@ mod tests {
             !should_replan,
             "should not trigger replan when confidence >= threshold"
         );
+    }
+
+    // --- timeout tests ---
+
+    fn slow_verifier() -> PlanVerifier<SlowMockProvider> {
+        let config = OrchestrationConfig::default();
+        let mut v = PlanVerifier::new(SlowMockProvider, test_sanitizer(), &config);
+        // Override timeout to 50ms so tests complete quickly.
+        v.timeout = Duration::from_millis(50);
+        v
+    }
+
+    struct SlowMockProvider;
+    impl LlmProvider for SlowMockProvider {
+        async fn chat(&self, _: &[Message]) -> Result<String, zeph_llm::LlmError> {
+            tokio::time::sleep(Duration::from_mins(1)).await;
+            Ok("never".to_string())
+        }
+        async fn chat_stream(
+            &self,
+            msgs: &[Message],
+        ) -> Result<zeph_llm::provider::ChatStream, zeph_llm::LlmError> {
+            use futures::stream;
+            use zeph_llm::provider::StreamChunk;
+            let r = self.chat(msgs).await?;
+            Ok(Box::pin(stream::once(async move {
+                Ok(StreamChunk::Content(r))
+            })))
+        }
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+        async fn embed(&self, _: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
+            Err(zeph_llm::LlmError::Unavailable)
+        }
+        fn supports_embeddings(&self) -> bool {
+            false
+        }
+        fn name(&self) -> &'static str {
+            "slow-mock"
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_timeout_is_fail_open() {
+        let mut verifier = slow_verifier();
+        let task = TaskNode::new(0, "t", "d");
+        let result = verifier.verify(&task, "output").await;
+        assert!(result.complete, "timeout must be fail-open (complete=true)");
+        assert!(result.gaps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replan_timeout_returns_empty() {
+        let mut verifier = slow_verifier();
+        let task = TaskNode::new(0, "t", "d");
+        let gaps = vec![Gap {
+            description: "critical".to_string(),
+            severity: GapSeverity::Critical,
+        }];
+        let graph = graph_from(vec![task.clone()]);
+        let result = verifier.replan(&task, &gaps, &graph, 20).await.unwrap();
+        assert!(result.is_empty(), "timeout must return empty vec");
+    }
+
+    #[tokio::test]
+    async fn verify_plan_timeout_is_fail_open() {
+        let mut verifier = slow_verifier();
+        let result = verifier.verify_plan("goal", "output").await;
+        assert!(result.complete, "timeout must be fail-open (complete=true)");
+        assert!(result.gaps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replan_from_plan_timeout_returns_empty() {
+        let mut verifier = slow_verifier();
+        let gaps = vec![Gap {
+            description: "critical".to_string(),
+            severity: GapSeverity::Critical,
+        }];
+        let result = verifier
+            .replan_from_plan("goal", &gaps, 0, 20)
+            .await
+            .unwrap();
+        assert!(result.is_empty(), "timeout must return empty vec");
     }
 }

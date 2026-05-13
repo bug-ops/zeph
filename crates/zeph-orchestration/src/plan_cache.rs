@@ -7,6 +7,8 @@
 //! On subsequent semantically similar goals, retrieves the closest template
 //! and uses a lightweight LLM adaptation call instead of full decomposition.
 
+use std::time::Duration;
+
 use blake3;
 use serde::{Deserialize, Serialize};
 use zeph_config::PlanCacheConfig;
@@ -470,6 +472,7 @@ pub async fn plan_with_cache<P>(
     goal: &str,
     available_agents: &[SubAgentDef],
     max_tasks: u32,
+    planner_timeout: Duration,
 ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError>
 where
     P: super::planner::Planner,
@@ -484,7 +487,16 @@ where
                     tasks = template.tasks.len(),
                     "plan cache hit, adapting template"
                 );
-                match adapt_plan(provider, goal, &template, available_agents, max_tasks).await {
+                match adapt_plan(
+                    provider,
+                    goal,
+                    &template,
+                    available_agents,
+                    max_tasks,
+                    planner_timeout,
+                )
+                .await
+                {
                     Ok(result) => return Ok(result),
                     Err(e) => {
                         tracing::warn!(
@@ -514,7 +526,7 @@ where
 ///
 /// # Errors
 ///
-/// Returns `OrchestrationError::PlanningFailed` if the LLM call fails or the
+/// Returns `OrchestrationError::PlanningFailed` if the LLM call fails, times out, or the
 /// adapted graph fails DAG validation.
 async fn adapt_plan(
     provider: &impl LlmProvider,
@@ -522,6 +534,7 @@ async fn adapt_plan(
     template: &PlanTemplate,
     available_agents: &[SubAgentDef],
     max_tasks: u32,
+    timeout: Duration,
 ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError> {
     use zeph_subagent::ToolPolicy;
 
@@ -569,9 +582,9 @@ async fn adapt_plan(
         Message::from_legacy(Role::User, user),
     ];
 
-    let response: PlannerResponse = provider
-        .chat_typed(&messages)
+    let response: PlannerResponse = tokio::time::timeout(timeout, provider.chat_typed(&messages))
         .await
+        .map_err(|_| OrchestrationError::PlanningFailed("plan cache adaptation timed out".into()))?
         .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
 
     let usage = provider.last_usage();
@@ -957,6 +970,7 @@ mod tests {
             "do something",
             &[],
             20,
+            Duration::from_mins(2),
         )
         .await
         .unwrap();
@@ -1006,6 +1020,7 @@ mod tests {
             "deploy service",
             &[],
             20,
+            Duration::from_mins(2),
         )
         .await
         .unwrap();
@@ -1056,6 +1071,7 @@ mod tests {
             "deploy service",
             &[],
             20,
+            Duration::from_mins(2),
         )
         .await
         .unwrap();

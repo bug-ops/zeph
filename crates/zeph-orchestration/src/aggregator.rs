@@ -8,6 +8,7 @@
 //! implementation falls back to raw concatenation so that a graph result is always returned.
 
 use std::fmt::Write as _;
+use std::time::Duration;
 
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
@@ -44,21 +45,23 @@ pub trait Aggregator: Send + Sync {
 ///
 /// Divides the total token budget (`config.aggregator_max_tokens × 4 chars/token`) equally
 /// across completed tasks and truncates each output before including it in the prompt.
-/// On LLM failure it falls back to raw concatenation via an internal `build_fallback` path;
-/// the fallback always succeeds if at least one task has a result.
+/// On LLM failure or timeout it falls back to raw concatenation via an internal `build_fallback`
+/// path; the fallback always succeeds if at least one task has a result.
 pub struct LlmAggregator<P: LlmProvider> {
     provider: P,
     /// Total character budget for all task outputs combined. Divided equally among
     /// completed tasks at aggregation time (S1).
     aggregation_char_budget: usize,
     sanitizer: ContentSanitizer,
+    /// Maximum time to wait for the aggregation LLM call before falling back.
+    timeout: Duration,
 }
 
 impl<P: LlmProvider> LlmAggregator<P> {
     /// Create a new `LlmAggregator` from a provider and orchestration config.
     ///
     /// The character budget is derived from `config.aggregator_max_tokens` using a
-    /// 4 chars-per-token estimate.
+    /// 4 chars-per-token estimate. The timeout is taken from `config.aggregator_timeout_secs`.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
         // Estimate 4 chars/token for the total budget.
@@ -67,6 +70,7 @@ impl<P: LlmProvider> LlmAggregator<P> {
             provider,
             aggregation_char_budget,
             sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+            timeout: Duration::from_secs(config.aggregator_timeout_secs),
         }
     }
 }
@@ -143,19 +147,27 @@ impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
             Message::from_legacy(Role::User, user),
         ];
 
-        match self.provider.chat(&messages).await {
-            Ok(synthesis) => {
+        match tokio::time::timeout(self.timeout, self.provider.chat(&messages)).await {
+            Ok(Ok(synthesis)) => {
                 // Capture usage right after the successful API call.
                 let usage = self.provider.last_usage();
                 Ok((synthesis, usage))
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 // I3: on LLM failure, fall back to raw concatenation. Usage is not tracked
                 // for the fallback path because no tokens were successfully consumed.
                 tracing::error!(
                     graph_id = %graph.id,
                     error = %e,
                     "aggregation LLM call failed; falling back to raw concatenation"
+                );
+                Ok((build_fallback(graph, &self.sanitizer, per_task), None))
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_secs = self.timeout.as_secs(),
+                    graph_id = %graph.id,
+                    "aggregation LLM call timed out; falling back to raw concatenation"
                 );
                 Ok((build_fallback(graph, &self.sanitizer, per_task), None))
             }
@@ -351,6 +363,55 @@ mod tests {
                 result.contains("unique-skipped-description"),
                 "fallback must include skipped task description; got: {result}"
             );
+        }
+
+        #[tokio::test]
+        async fn test_aggregate_timeout_falls_back_to_concatenation() {
+            use futures::stream;
+            use zeph_llm::LlmError;
+            use zeph_llm::provider::{ChatStream, Message, StreamChunk};
+
+            struct SlowProvider;
+            impl zeph_llm::provider::LlmProvider for SlowProvider {
+                async fn chat(&self, _: &[Message]) -> Result<String, LlmError> {
+                    tokio::time::sleep(Duration::from_mins(1)).await;
+                    Ok("should not reach".to_string())
+                }
+                async fn chat_stream(&self, msgs: &[Message]) -> Result<ChatStream, LlmError> {
+                    let r = self.chat(msgs).await?;
+                    Ok(Box::pin(stream::once(async move {
+                        Ok(StreamChunk::Content(r))
+                    })))
+                }
+                fn supports_streaming(&self) -> bool {
+                    false
+                }
+                async fn embed(&self, _: &str) -> Result<Vec<f32>, LlmError> {
+                    Err(LlmError::Unavailable)
+                }
+                fn supports_embeddings(&self) -> bool {
+                    false
+                }
+                fn name(&self) -> &'static str {
+                    "slow-mock"
+                }
+            }
+
+            // Build manually with a 50ms timeout for test speed.
+            let agg = LlmAggregator {
+                provider: SlowProvider,
+                aggregation_char_budget: 1024 * 4,
+                sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+                timeout: Duration::from_millis(50),
+            };
+
+            let graph = make_graph_with_tasks(&[(TaskStatus::Completed, Some("raw output"))]);
+            let (result, usage) = agg.aggregate(&graph).await.unwrap();
+            assert!(
+                result.contains("raw output"),
+                "timeout should fall back to raw concatenation; got: {result}"
+            );
+            assert!(usage.is_none(), "timeout fallback must not report usage");
         }
 
         #[tokio::test]

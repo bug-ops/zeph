@@ -388,8 +388,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             .or(self.services.orchestration.orchestrator_provider.as_ref())
             .unwrap_or(&self.provider)
             .clone();
-        let mut verifier =
-            PlanVerifier::new(verify_provider, self.services.security.sanitizer.clone());
+        let mut verifier = PlanVerifier::new(
+            verify_provider,
+            self.services.security.sanitizer.clone(),
+            &self.services.orchestration.orchestration_config,
+        );
         let result = verifier
             .verify_plan(&goal, &truncated_output)
             .instrument(tracing::info_span!("core.plan.whole_plan_verify"))
@@ -821,6 +824,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             let use_cache = topology_hint
                 .as_ref()
                 .is_none_or(|h| h.prompt_sentence().is_none());
+            let planner_timeout = std::time::Duration::from_secs(
+                self.services
+                    .orchestration
+                    .orchestration_config
+                    .planner_timeout_secs,
+            );
             let result = if use_cache {
                 plan_with_cache(
                     &planner,
@@ -831,6 +840,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     goal,
                     &available_agents,
                     max_tasks,
+                    planner_timeout,
                 )
                 .await
             } else {

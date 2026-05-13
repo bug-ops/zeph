@@ -253,6 +253,16 @@ impl Config {
 
     /// Validate orchestration thresholds and cascade settings.
     fn validate_orchestration(&self) -> Result<(), ConfigError> {
+        if self.orchestration.max_parallel == 0 {
+            return Err(ConfigError::Validation(
+                "orchestration.max_parallel must be > 0".into(),
+            ));
+        }
+        if self.orchestration.max_tasks == 0 {
+            return Err(ConfigError::Validation(
+                "orchestration.max_tasks must be > 0".into(),
+            ));
+        }
         let ct = self.orchestration.completeness_threshold;
         if !ct.is_finite() || !(0.0..=1.0).contains(&ct) {
             return Err(ConfigError::Validation(format!(
@@ -278,6 +288,21 @@ impl Config {
                 "orchestration.lineage_ttl_secs must be > 0; \
                  set cascade_chain_threshold=0 to disable lineage tracking instead"
                     .into(),
+            ));
+        }
+        if self.orchestration.aggregator_timeout_secs == 0 {
+            return Err(ConfigError::Validation(
+                "orchestration.aggregator_timeout_secs must be > 0".into(),
+            ));
+        }
+        if self.orchestration.planner_timeout_secs == 0 {
+            return Err(ConfigError::Validation(
+                "orchestration.planner_timeout_secs must be > 0".into(),
+            ));
+        }
+        if self.orchestration.verifier_timeout_secs == 0 {
+            return Err(ConfigError::Validation(
+                "orchestration.verifier_timeout_secs must be > 0".into(),
             ));
         }
         Ok(())
@@ -893,6 +918,75 @@ weight = 0.3
         assert!((skills.disambiguation_threshold - 0.25_f32).abs() < f32::EPSILON);
 
         let _ = wrapped; // silence unused-variable lint
+    }
+
+    #[test]
+    fn validate_max_parallel_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.max_parallel = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("max_parallel"),
+            "expected max_parallel in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_max_parallel_one_accepted() {
+        let mut cfg = Config::default();
+        cfg.orchestration.max_parallel = 1;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_max_tasks_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.max_tasks = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("max_tasks"),
+            "expected max_tasks in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_max_tasks_one_accepted() {
+        let mut cfg = Config::default();
+        cfg.orchestration.max_tasks = 1;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_aggregator_timeout_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.aggregator_timeout_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("aggregator_timeout_secs"),
+            "expected aggregator_timeout_secs in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_planner_timeout_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.planner_timeout_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("planner_timeout_secs"),
+            "expected planner_timeout_secs in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_verifier_timeout_zero_rejected() {
+        let mut cfg = Config::default();
+        cfg.orchestration.verifier_timeout_secs = 0;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("verifier_timeout_secs"),
+            "expected verifier_timeout_secs in error, got: {err}"
+        );
     }
 
     #[test]

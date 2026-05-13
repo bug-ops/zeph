@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_llm::LlmError;
 use zeph_subagent::SubAgentError;
 
 use super::lineage::LineageEntry;
@@ -100,6 +101,14 @@ pub enum OrchestrationError {
     /// Propagated error from a sub-agent execution.
     #[error(transparent)]
     SubAgent(#[from] SubAgentError),
+
+    /// An LLM provider call failed in a context with no more specific variant.
+    ///
+    /// Existing call sites that map `LlmError` to `PlanningFailed` or other semantic
+    /// variants are intentional and should not be changed. This variant is for new code
+    /// and for callers in `zeph-core` that propagate raw LLM errors.
+    #[error("orchestration LLM call failed: {0}")]
+    Llm(#[from] LlmError),
 
     /// A `VerifyPredicate::Expression` was encountered; only `Natural` is
     /// supported in v1.

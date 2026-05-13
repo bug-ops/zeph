@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-orchestration`: wrap all LLM `.await` calls in `LlmAggregator::aggregate`,
+  `LlmPlanner::plan`/`plan_with_hint`, `PlanVerifier::verify`/`replan`/`verify_plan`/`replan_from_plan`,
+  and `plan_cache::adapt_plan` with `tokio::time::timeout`. New `OrchestrationConfig` fields:
+  `aggregator_timeout_secs` (default 60), `planner_timeout_secs` (default 120),
+  `verifier_timeout_secs` (default 30). Validates `> 0` at startup. On timeout: aggregator falls
+  back to concatenation, planner returns `PlanningFailed`, verifier fails open (closes #3840).
+- `zeph-config`: `validate_orchestration()` now rejects `max_parallel = 0` and `max_tasks = 0`
+  with a `ConfigError::Validation` at startup, preventing the DAG scheduler from silently stalling
+  with all tasks stuck in `Pending` (closes #3841).
+- `zeph-orchestration`: add `Llm(#[from] zeph_llm::LlmError)` typed variant to `OrchestrationError`
+  so callers can pattern-match on root LLM error kinds without string comparison (closes #3842).
+
 ### Performance
 
 - `zeph-memory`: replace serial `embed()` calls with a single `embed_batch()` call in

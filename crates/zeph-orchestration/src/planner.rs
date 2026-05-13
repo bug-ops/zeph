@@ -4,6 +4,7 @@
 //! LLM-based goal decomposition into a validated `TaskGraph`.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use serde::Deserialize;
 use zeph_llm::provider::{LlmProvider, Message, Role}; // Role needed for plan_with_hint prompt augmentation
@@ -87,6 +88,8 @@ pub trait Planner: Send + Sync {
 pub struct LlmPlanner<P: LlmProvider> {
     provider: P,
     max_tasks: u32,
+    /// Maximum time to wait for a planner LLM call before returning `PlanningFailed`.
+    timeout: Duration,
 }
 
 impl<P: LlmProvider> LlmPlanner<P> {
@@ -94,12 +97,13 @@ impl<P: LlmProvider> LlmPlanner<P> {
     ///
     /// The caller resolves `config.planner_provider` to a concrete provider and passes
     /// it here. `LlmPlanner` uses whatever provider it receives without further
-    /// provider resolution.
+    /// provider resolution. The timeout is taken from `config.planner_timeout_secs`.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
         Self {
             provider,
             max_tasks: config.max_tasks,
+            timeout: Duration::from_secs(config.planner_timeout_secs),
         }
     }
 }
@@ -156,11 +160,11 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
                 *sys = Message::from_legacy(Role::System, augmented);
             }
         }
-        let response: PlannerResponse = self
-            .provider
-            .chat_typed(&messages)
-            .await
-            .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
+        let response: PlannerResponse =
+            tokio::time::timeout(self.timeout, self.provider.chat_typed(&messages))
+                .await
+                .map_err(|_| OrchestrationError::PlanningFailed("planner timed out".into()))?
+                .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
         let usage = self.provider.last_usage();
         let graph = convert_response(response, goal, available_agents, self.max_tasks)?;
         dag::validate(&graph.tasks, self.max_tasks as usize)?;
@@ -180,11 +184,11 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
 
         let messages = build_prompt(goal, available_agents, self.max_tasks);
 
-        let response: PlannerResponse = self
-            .provider
-            .chat_typed(&messages)
-            .await
-            .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
+        let response: PlannerResponse =
+            tokio::time::timeout(self.timeout, self.provider.chat_typed(&messages))
+                .await
+                .map_err(|_| OrchestrationError::PlanningFailed("planner timed out".into()))?
+                .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
 
         // Capture usage right after the API call, before any fallible post-processing.
         let usage = self.provider.last_usage();
@@ -866,6 +870,50 @@ mod tests {
             let planner = LlmPlanner::new(provider, &make_config());
             let (graph, _usage) = planner.plan("goal", &agents()).await.unwrap();
             assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
+        }
+
+        #[tokio::test]
+        async fn test_plan_timeout_returns_planning_failed() {
+            use futures::stream;
+            use zeph_llm::LlmError;
+            use zeph_llm::provider::{ChatStream, Message, StreamChunk};
+
+            struct SlowProvider;
+            impl zeph_llm::provider::LlmProvider for SlowProvider {
+                async fn chat(&self, _: &[Message]) -> Result<String, LlmError> {
+                    tokio::time::sleep(Duration::from_mins(1)).await;
+                    Ok("never".to_string())
+                }
+                async fn chat_stream(&self, msgs: &[Message]) -> Result<ChatStream, LlmError> {
+                    let r = self.chat(msgs).await?;
+                    Ok(Box::pin(stream::once(async move {
+                        Ok(StreamChunk::Content(r))
+                    })))
+                }
+                fn supports_streaming(&self) -> bool {
+                    false
+                }
+                async fn embed(&self, _: &str) -> Result<Vec<f32>, LlmError> {
+                    Err(LlmError::Unavailable)
+                }
+                fn supports_embeddings(&self) -> bool {
+                    false
+                }
+                fn name(&self) -> &'static str {
+                    "slow-mock"
+                }
+            }
+
+            let planner = LlmPlanner {
+                provider: SlowProvider,
+                max_tasks: 20,
+                timeout: Duration::from_millis(50),
+            };
+            let err = planner.plan("some goal", &agents()).await.unwrap_err();
+            assert!(
+                matches!(err, OrchestrationError::PlanningFailed(_)),
+                "timeout must return PlanningFailed; got: {err:?}"
+            );
         }
     }
 }

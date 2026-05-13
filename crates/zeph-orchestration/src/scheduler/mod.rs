@@ -774,6 +774,9 @@ mod tests {
             persistence_enabled: true,
             orchestrator_provider: Default::default(),
             default_task_budget_cents: 0.0,
+            aggregator_timeout_secs: 60,
+            planner_timeout_secs: 120,
+            verifier_timeout_secs: 30,
         }
     }
 
