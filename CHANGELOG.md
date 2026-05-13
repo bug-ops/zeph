@@ -27,6 +27,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   off by default; enabled via `[memory.optical_forgetting]` and `[memory.em_graph]`
   config sections.
 
+### Fixed
+
+- fix(scheduler): `tick()` now checks the `in_flight` set before dispatching periodic task
+  handlers (issue #3808). Previously only `catch_up_missed()` held the SIGNIFICANT-5 guard,
+  allowing concurrent executions of the same periodic task when a handler ran longer than
+  `tick_secs`. The slot is released after execution completes regardless of handler outcome.
+
+- fix(scheduler): `init()` now emits `tracing::error!` (not `warn!`) and marks the DB row
+  `status = 'error'` when a persisted job has a malformed cron expression (issue #3810). The
+  errored job remains visible in `zeph scheduler list` via the new `JobStore::mark_error()`
+  method. `ScheduledTaskInfo` and `TaskRunSummary` gain a `status` field.
+
 ### Changed
 
 - refactor(arch): propagate `sqlite`/`postgres` feature flags through the full crate DAG
