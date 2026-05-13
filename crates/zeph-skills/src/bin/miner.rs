@@ -126,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         output_dir: output_dir.clone(),
         rate_limit_rpm: config.skills.mining.rate_limit_rpm,
         dry_run: cli.dry_run,
+        generation_timeout_ms: config.skills.mining.generation_timeout_ms,
     };
 
     let miner = SkillMiner::new(

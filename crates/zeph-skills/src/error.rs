@@ -63,6 +63,10 @@ pub enum SkillError {
     #[error("copy failed: {0}")]
     CopyFailed(String),
 
+    /// An LLM call exceeded its configured timeout.
+    #[error("skill generation timed out after {0}ms")]
+    Timeout(u64),
+
     /// Catch-all for errors that do not fit the above categories.
     #[error("{0}")]
     Other(String),

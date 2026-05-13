@@ -213,6 +213,7 @@ impl Default for Config {
                 rl_warmup_updates: 50,
                 rl_embed_dim: None,
                 generation_provider: crate::providers::ProviderName::default(),
+                generation_timeout_ms: 60_000,
                 generation_output_dir: None,
                 mining: crate::features::SkillMiningConfig::default(),
                 evaluation: crate::features::SkillEvaluationConfig::default(),

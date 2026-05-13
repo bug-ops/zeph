@@ -122,6 +122,8 @@ pub(crate) struct SkillState {
     pub(crate) generation_output_dir: Option<std::path::PathBuf>,
     /// Provider name for `/skill create` generation. Empty = primary.
     pub(crate) generation_provider_name: String,
+    /// Timeout in milliseconds for `/skill create` LLM generation. Default: 60 000.
+    pub(crate) generation_timeout_ms: u64,
     /// Optional quality-gate evaluator for generated SKILL.md files (#3319).
     ///
     /// When `Some`, the evaluator is attached to every `SkillGenerator` instance so that
@@ -1090,6 +1092,7 @@ impl SkillState {
             rl_warmup_updates: 50,
             generation_output_dir: None,
             generation_provider_name: String::new(),
+            generation_timeout_ms: 60_000,
             skill_evaluator: None,
             eval_weights: zeph_skills::evaluator::EvaluationWeights::default(),
             eval_threshold: 0.60,

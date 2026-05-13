@@ -284,6 +284,10 @@ pub struct SkillsConfig {
     /// Provider name for `/skill create` NL generation. Empty = primary provider.
     #[serde(default)]
     pub generation_provider: ProviderName,
+    /// Timeout in milliseconds for `/skill create` LLM generation (covers all internal retries).
+    /// Default: `60000` (60 s).
+    #[serde(default = "default_generation_timeout_ms")]
+    pub generation_timeout_ms: u64,
     /// Directory where generated skills are written. Defaults to first entry in `paths`.
     #[serde(default)]
     pub generation_output_dir: Option<String>,
@@ -296,6 +300,10 @@ pub struct SkillsConfig {
     /// Proactive world-knowledge exploration configuration (#3320).
     #[serde(default)]
     pub proactive_exploration: ProactiveExplorationConfig,
+}
+
+fn default_generation_timeout_ms() -> u64 {
+    60_000
 }
 
 // --- SkillEvaluationConfig defaults ---
@@ -463,7 +471,7 @@ fn default_rate_limit_rpm() -> u32 {
 }
 
 /// Configuration for the automated skill mining pipeline (`zeph-skills-miner` binary).
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SkillMiningConfig {
     /// GitHub search queries for repo discovery (e.g. "topic:cli-tool language:rust stars:>100").
     #[serde(default)]
@@ -486,6 +494,28 @@ pub struct SkillMiningConfig {
     /// Maximum GitHub search requests per minute. Default: 25.
     #[serde(default = "default_rate_limit_rpm")]
     pub rate_limit_rpm: u32,
+    /// Timeout in milliseconds for each LLM skill generation call during mining. Default: `30000` (30 s).
+    #[serde(default = "default_mining_generation_timeout_ms")]
+    pub generation_timeout_ms: u64,
+}
+
+impl Default for SkillMiningConfig {
+    fn default() -> Self {
+        Self {
+            queries: Vec::new(),
+            max_repos_per_query: default_max_repos_per_query(),
+            dedup_threshold: default_dedup_threshold(),
+            output_dir: None,
+            generation_provider: ProviderName::default(),
+            embedding_provider: ProviderName::default(),
+            rate_limit_rpm: default_rate_limit_rpm(),
+            generation_timeout_ms: default_mining_generation_timeout_ms(),
+        }
+    }
+}
+
+fn default_mining_generation_timeout_ms() -> u64 {
+    30_000
 }
 
 /// Code indexing and repo-map configuration, nested under `[index]` in TOML.

@@ -75,6 +75,8 @@ pub struct MiningConfig {
     pub rate_limit_rpm: u32,
     /// When `true`, generate and report but do not write skills to disk.
     pub dry_run: bool,
+    /// Timeout in milliseconds for each LLM skill generation call. Default: 30 000.
+    pub generation_timeout_ms: u64,
 }
 
 /// Orchestrates the automated skill mining pipeline.
@@ -390,12 +392,17 @@ impl SkillMiner {
             Message::from_legacy(Role::User, &user_prompt),
         ];
 
-        let raw = self
-            .generator
-            .provider
-            .chat(&messages)
-            .await
-            .map_err(|e| SkillError::Other(format!("LLM generation failed: {e}")))?;
+        let timeout_ms = self.config.generation_timeout_ms;
+        let raw = tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            self.generator.provider.chat(&messages),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(timeout_ms, "mining LLM generation timed out");
+            SkillError::Timeout(timeout_ms)
+        })?
+        .map_err(|e| SkillError::Other(format!("LLM generation failed: {e}")))?;
 
         crate::generator::parse_and_validate_pub(&crate::generator::extract_skill_md_pub(&raw))
     }
@@ -444,6 +451,7 @@ mod tests {
             output_dir: PathBuf::from("/tmp"),
             rate_limit_rpm: 25,
             dry_run: false,
+            generation_timeout_ms: 30_000,
         };
         let miner = SkillMiner {
             generator: SkillGenerator::new(
@@ -470,6 +478,7 @@ mod tests {
             output_dir: PathBuf::from("/tmp"),
             rate_limit_rpm: 25,
             dry_run: false,
+            generation_timeout_ms: 30_000,
         };
         assert!((config.dedup_threshold - 0.85_f32).abs() < f32::EPSILON);
         assert_eq!(config.max_repos_per_query, 20);
@@ -494,6 +503,7 @@ mod tests {
             output_dir: PathBuf::from(output_dir),
             rate_limit_rpm: 25,
             dry_run: false,
+            generation_timeout_ms: 30_000,
         };
         SkillMiner {
             generator: SkillGenerator::new(mock.clone(), PathBuf::from(output_dir)),
@@ -583,6 +593,7 @@ mod tests {
             output_dir: dir.path().to_path_buf(),
             rate_limit_rpm: 25,
             dry_run: true,
+            generation_timeout_ms: 30_000,
         };
         let miner = SkillMiner {
             generator: SkillGenerator::new(mock.clone(), dir.path().to_path_buf()),
@@ -641,6 +652,7 @@ mod tests {
             output_dir: PathBuf::from("/tmp"),
             rate_limit_rpm: 0,
             dry_run: false,
+            generation_timeout_ms: 30_000,
         };
         let miner = SkillMiner {
             generator: SkillGenerator::new(

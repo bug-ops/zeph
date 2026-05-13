@@ -103,9 +103,22 @@ impl<C: Channel> Agent<C> {
             allowed_tools: Vec::new(),
         };
 
-        let mut generated = match generator.generate(request).await {
-            Ok(g) => g,
-            Err(e) => return Ok(format!("Skill generation failed: {e}")),
+        let timeout_ms = self.services.skill.generation_timeout_ms;
+        let mut generated = match tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            generator.generate(request),
+        )
+        .await
+        {
+            Ok(Ok(g)) => g,
+            Ok(Err(e)) => return Ok(format!("Skill generation failed: {e}")),
+            Err(_) => {
+                tracing::warn!(timeout_ms, "skill generation timed out");
+                return Ok(format!(
+                    "Skill generation timed out after {}s.",
+                    timeout_ms / 1000
+                ));
+            }
         };
 
         // Dedup check: compare against existing registry embeddings.
