@@ -701,7 +701,9 @@ impl SubAgentManager {
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
     /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
     /// does not allow it (`allow_bypass_permissions: false`).
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+    #[tracing::instrument(name = "subagent.manager.spawn", skip_all, fields(def_name = def_name))]
     pub fn spawn(
         &mut self,
         def_name: &str,
@@ -938,6 +940,7 @@ impl SubAgentManager {
     /// Iterates every agent ID and calls [`cancel`][Self::cancel] on each.
     /// Unlike [`cancel_all`][Self::cancel_all], this method goes through the normal
     /// cancel path including hook firing. Prefer this during planned shutdown.
+    #[tracing::instrument(name = "subagent.manager.shutdown_all", skip_all)]
     pub fn shutdown_all(&mut self) {
         let ids: Vec<String> = self.agents.keys().cloned().collect();
         for id in ids {
@@ -1096,6 +1099,7 @@ impl SubAgentManager {
     ///
     /// Returns [`SubAgentError::NotFound`] if the task ID is unknown,
     /// [`SubAgentError::Spawn`] if the task panicked.
+    #[tracing::instrument(name = "subagent.manager.collect", skip_all, fields(task_id = task_id))]
     pub async fn collect(&mut self, task_id: &str) -> Result<String, SubAgentError> {
         let mut handle = self
             .agents

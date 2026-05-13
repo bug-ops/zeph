@@ -20,6 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-orchestration`: add `Llm(#[from] zeph_llm::LlmError)` typed variant to `OrchestrationError`
   so callers can pattern-match on root LLM error kinds without string comparison (closes #3842).
 
+### Changed
+
+- `zeph-orchestration`: add `#[tracing::instrument]` spans to `LlmPlanner::plan`,
+  `LlmPlanner::plan_with_hint`, and `LlmAggregator::aggregate`. Span names follow the
+  `orchestration.<component>.<operation>` convention with `goal_len` / `task_count` fields
+  for Perfetto trace analysis (closes #3850).
+- `zeph-subagent`: add `#[tracing::instrument]` spans to `SubAgentManager::spawn`,
+  `SubAgentManager::collect`, `SubAgentManager::shutdown_all`, `run_agent_loop`, and
+  `run_turn`. Span names follow the `subagent.<component>.<operation>` convention with
+  `def_name` / `task_id` / `turn` fields (closes #3851).
+
 ### Performance
 
 - `zeph-memory`: replace serial `embed()` calls with a single `embed_batch()` call in

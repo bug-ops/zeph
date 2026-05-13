@@ -139,6 +139,7 @@ pub(crate) struct PlannedTask {
 }
 
 impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
+    #[tracing::instrument(name = "orchestration.planner.plan_with_hint", skip_all, fields(goal_len = goal.len()))]
     async fn plan_with_hint(
         &self,
         goal: &str,
@@ -171,6 +172,7 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
         Ok((graph, usage))
     }
 
+    #[tracing::instrument(name = "orchestration.planner.plan", skip_all, fields(goal_len = goal.len()))]
     async fn plan(
         &self,
         goal: &str,

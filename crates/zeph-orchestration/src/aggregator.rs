@@ -76,6 +76,7 @@ impl<P: LlmProvider> LlmAggregator<P> {
 }
 
 impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
+    #[tracing::instrument(name = "orchestration.aggregator.aggregate", skip_all, fields(task_count = graph.tasks.len()))]
     async fn aggregate(
         &self,
         graph: &TaskGraph,

@@ -370,6 +370,7 @@ enum TurnOutcome {
 /// Returns a [`TurnOutcome`] that drives the loop control flow in
 /// [`run_agent_loop`].
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(name = "subagent.agent_loop.run_turn", skip_all, fields(task_id = task_id, turn = *turns))]
 async fn run_turn(
     provider: &AnyProvider,
     executor: &FilteredToolExecutor,
@@ -560,6 +561,7 @@ async fn handle_tool_step(
     }
 }
 
+#[tracing::instrument(name = "subagent.agent_loop.run", skip_all, fields(task_id = %args.task_id, agent_name = %args.agent_name))]
 pub(super) async fn run_agent_loop(
     args: AgentLoopArgs,
 ) -> Result<String, super::error::SubAgentError> {
