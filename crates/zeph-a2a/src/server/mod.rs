@@ -191,7 +191,7 @@ impl A2aServer {
     /// Set the per-request timeout for task processing (default: 300 seconds).
     ///
     /// If a [`TaskProcessor`] does not complete within this duration, the server
-    /// aborts the spawned future, marks the task as [`TaskState::Failed`], and returns
+    /// aborts the spawned future, marks the task as [`crate::TaskState::Failed`], and returns
     /// a JSON-RPC internal-error response to the caller.
     ///
     /// For streaming calls, a final SSE event with `failed` state is sent before the
