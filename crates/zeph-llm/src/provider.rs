@@ -667,6 +667,18 @@ impl Message {
 /// hold any backend behind a single type, and [`crate::router::RouterProvider`]
 /// implements this trait to multiplex across multiple backends.
 ///
+/// # Object safety
+///
+/// This trait is **not** object-safe: 6 methods return `impl Future + Send` (RPIT),
+/// and [`chat_typed`](Self::chat_typed) carries a generic type parameter `T`.
+/// The `where Self: Sized` bound on `chat_typed` is a mitigation — it excludes that
+/// method from the vtable — but the RPIT methods remain and prevent `dyn LlmProvider`.
+/// Attempting `Box<dyn LlmProvider>` will produce a compile error.
+///
+/// For dynamic dispatch, use [`Arc<dyn LlmProviderDyn>`](crate::provider_dyn::LlmProviderDyn)
+/// instead — a blanket impl wires every `LlmProvider` implementor automatically.
+/// See the [`provider_dyn`](crate::provider_dyn) module for details.
+///
 /// # Required methods
 ///
 /// Implementors must provide: [`chat`](Self::chat), [`chat_stream`](Self::chat_stream),
@@ -680,6 +692,8 @@ impl Message {
 /// - [`embed_batch`](Self::embed_batch) — sequential fallback via [`embed`](Self::embed)
 /// - [`chat_with_tools`](Self::chat_with_tools) — falls back to [`chat`](Self::chat)
 /// - [`chat_typed`](Self::chat_typed) — schema-prompt injection + retry
+///   (requires `Self: Sized`; use [`chat_typed_dyn`](crate::provider_dyn::chat_typed_dyn)
+///   for trait objects)
 /// - [`supports_vision`](Self::supports_vision) — returns `false`
 /// - [`supports_tool_use`](Self::supports_tool_use) — returns `true`
 ///
@@ -878,6 +892,12 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// Default implementation injects JSON schema into the system prompt and retries once
     /// on parse failure. Providers with native structured output should override this.
+    ///
+    /// # Object safety
+    ///
+    /// This method requires `Self: Sized` and is therefore unavailable on trait objects.
+    /// Use [`chat_typed_dyn`](crate::provider_dyn::chat_typed_dyn) when working with
+    /// `Arc<dyn LlmProviderDyn>`.
     #[allow(async_fn_in_trait)]
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where

@@ -1,29 +1,24 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// TODO(arch-revised-2026-04-26): Full AnyProvider→Arc<dyn LlmProviderDyn> migration
-// spans 883 call sites and is deferred to epic/m49+/anyprovider-deprecation.
-// PR 7a (LlmProviderDyn adapter, no call-site changes) and PR 7b (router/cascade
-// only) land in m48; remaining ~880 sites are per-feature-area follow-ups requiring
-// /specs/<area>/llm-dyn-migration.md. See arch-assessment-revised-2026-04-26T02-04-23.md.
-
 //! Type-erased provider enum wrapping all concrete backends.
 //!
 //! [`AnyProvider`] lets callers hold and clone any backend without generics or
-//! `Box<dyn LlmProvider>`. The macro `delegate_provider!` generates the
+//! heap allocation. The macro `delegate_provider!` generates the
 //! match-over-variants boilerplate for every [`LlmProvider`] method delegation.
 //!
-//! # TODO (D1 — deferred: make `LlmProvider` object-safe, replace `AnyProvider` enum)
+//! # Dynamic dispatch
 //!
-//! `LlmProvider` is not object-safe today because of the `chat_typed<T: DeserializeOwned>` and
-//! `embed_batch` methods. The goal is to make it object-safe so the enum can be replaced by
-//! `Arc<dyn LlmProvider + Send + Sync>`, eliminating the need to patch this crate when adding a
-//! new provider backend.
+//! `LlmProvider` is not object-safe (RPIT returns + generic `chat_typed<T>`), so
+//! `Box<dyn LlmProvider>` / `Arc<dyn LlmProvider + Send + Sync>` do not compile.
+//! The object-safe shadow [`crate::provider_dyn::LlmProviderDyn`] is the current
+//! solution; use `Arc<dyn LlmProviderDyn>` wherever dynamic dispatch is required.
 //!
-//! **Blocked by:** full enumeration of `AnyProvider` match sites (router, cascade fallback,
-//! `chat_typed` callers), migration plan for structured-output extraction, and a streaming
-//! throughput benchmark gate. See critic review `.local/handoff/critic-review.md` §C3.
-//! Each step must be a separate PR; do NOT bundle with other refactors.
+//! # TODO (D1 — deferred: migrate call sites from `AnyProvider` to `Arc<dyn LlmProviderDyn>`)
+//!
+//! `LlmProviderDyn` already exists and works. The remaining work is call-site migration
+//! (~880 sites) across feature areas (epic/m49+/anyprovider-deprecation).
+//! Each area must be a separate PR; do NOT bundle.
 
 #[cfg(feature = "candle")]
 use crate::candle_provider::CandleProvider;
@@ -76,8 +71,9 @@ macro_rules! delegate_provider {
 ///
 /// All variants implement [`LlmProvider`] — `AnyProvider` delegates every trait method
 /// to its inner variant via the `delegate_provider!` macro. This avoids heap allocation
-/// (`Box<dyn LlmProvider>`) while retaining the ability to hold multiple provider types
-/// in a `Vec` or struct field.
+/// while retaining the ability to hold multiple provider types in a `Vec` or struct field.
+/// For dynamic dispatch across an unknown set of backends, prefer
+/// [`Arc<dyn LlmProviderDyn>`](crate::provider_dyn::LlmProviderDyn).
 ///
 /// The `Candle` variant is only available when the `candle` feature is enabled.
 #[derive(Debug, Clone)]

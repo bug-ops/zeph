@@ -19,6 +19,10 @@
 //! - [`LlmProvider::chat_with_tools`] — structured tool-call protocol
 //! - [`LlmProvider::chat_typed`] — schema-driven structured JSON extraction
 //!
+//! `LlmProvider` is not object-safe (RPIT returns + generic `chat_typed`).
+//! For dynamic dispatch use [`LlmProviderDyn`] via `Arc<dyn LlmProviderDyn>` —
+//! see the [`provider_dyn`] module.
+//!
 //! # Backends
 //!
 //! | Module | Backend | Feature flag |
