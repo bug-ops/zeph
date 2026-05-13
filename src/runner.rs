@@ -2270,12 +2270,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     provider_kinds.sort_unstable_by_key(|k| k.as_str());
     provider_kinds.dedup_by_key(|k| k.as_str());
 
-    let instruction_blocks = zeph_core::instructions::load_instructions(
-        &instruction_base,
-        &provider_kinds,
-        &explicit_instruction_files,
+    let instruction_blocks = zeph_core::instructions::load_instructions_async(
+        instruction_base.clone(),
+        provider_kinds.clone(),
+        explicit_instruction_files.clone(),
         config.agent.instruction_auto_detect,
-    );
+    )
+    .await;
 
     let instruction_reload_state = zeph_core::instructions::InstructionReloadState {
         base_dir: instruction_base.clone(),

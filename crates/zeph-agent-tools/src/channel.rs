@@ -143,3 +143,125 @@ pub trait AgentChannel: Sealed + Send {
         event: ToolEventOutput<'_>,
     ) -> impl Future<Output = Result<(), ChannelSinkError>> + Send;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_event_start_field_access() {
+        let event = ToolEventStart {
+            tool_name: "shell",
+            tool_use_id: "id-001",
+            parent_id: Some("parent-001"),
+            args_summary: Some("ls -la"),
+        };
+        assert_eq!(event.tool_name, "shell");
+        assert_eq!(event.tool_use_id, "id-001");
+        assert_eq!(event.parent_id, Some("parent-001"));
+        assert_eq!(event.args_summary, Some("ls -la"));
+    }
+
+    #[test]
+    fn tool_event_start_optional_none() {
+        let event = ToolEventStart {
+            tool_name: "grep",
+            tool_use_id: "id-002",
+            parent_id: None,
+            args_summary: None,
+        };
+        assert_eq!(event.tool_name, "grep");
+        assert!(event.parent_id.is_none());
+        assert!(event.args_summary.is_none());
+    }
+
+    #[test]
+    fn tool_event_start_is_copy() {
+        let event = ToolEventStart {
+            tool_name: "shell",
+            tool_use_id: "id-003",
+            parent_id: None,
+            args_summary: None,
+        };
+        let copy = event;
+        // If Copy is not implemented, this next line would fail to compile (event moved).
+        let _ = event.tool_name;
+        assert_eq!(copy.tool_name, event.tool_name);
+    }
+
+    #[test]
+    fn tool_event_output_field_access() {
+        let event = ToolEventOutput {
+            tool_name: "shell",
+            tool_use_id: "id-004",
+            body: "hello output",
+            is_error: false,
+            streamed: false,
+        };
+        assert_eq!(event.tool_name, "shell");
+        assert_eq!(event.tool_use_id, "id-004");
+        assert_eq!(event.body, "hello output");
+        assert!(!event.is_error);
+        assert!(!event.streamed);
+    }
+
+    #[test]
+    fn tool_event_output_error_streamed() {
+        let event = ToolEventOutput {
+            tool_name: "web",
+            tool_use_id: "id-005",
+            body: "error body",
+            is_error: true,
+            streamed: true,
+        };
+        assert!(event.is_error);
+        assert!(event.streamed);
+    }
+
+    #[test]
+    fn tool_event_output_empty_body() {
+        let event = ToolEventOutput {
+            tool_name: "shell",
+            tool_use_id: "id-006",
+            body: "",
+            is_error: false,
+            streamed: false,
+        };
+        assert_eq!(event.body, "");
+    }
+
+    #[test]
+    fn tool_event_output_is_copy() {
+        let event = ToolEventOutput {
+            tool_name: "shell",
+            tool_use_id: "id-007",
+            body: "data",
+            is_error: false,
+            streamed: false,
+        };
+        let copy = event;
+        // If Copy is not implemented, this next line would fail to compile (event moved).
+        let _ = event.tool_name;
+        assert_eq!(copy.body, event.body);
+    }
+
+    #[test]
+    fn channel_sink_error_display() {
+        let err = ChannelSinkError::new("something broke");
+        assert_eq!(err.to_string(), "agent channel error: something broke");
+    }
+
+    #[test]
+    fn channel_sink_error_from_string() {
+        let msg = String::from("owned message");
+        let err = ChannelSinkError::new(msg);
+        assert!(err.to_string().contains("owned message"));
+    }
+
+    #[test]
+    fn channel_sink_error_debug() {
+        let err = ChannelSinkError::new("debug test");
+        let debug_str = format!("{err:?}");
+        assert!(debug_str.contains("debug test"));
+    }
+}

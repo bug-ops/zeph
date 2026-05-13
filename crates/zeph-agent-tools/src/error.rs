@@ -38,3 +38,63 @@ pub enum ToolDispatchError {
     #[error("channel error: {0}")]
     Channel(#[from] crate::channel::ChannelSinkError),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channel::ChannelSinkError;
+
+    #[test]
+    fn cancelled_display() {
+        assert_eq!(ToolDispatchError::Cancelled.to_string(), "turn cancelled");
+    }
+
+    #[test]
+    fn context_overflow_display() {
+        assert_eq!(
+            ToolDispatchError::ContextOverflow.to_string(),
+            "context length exceeded after compaction"
+        );
+    }
+
+    #[test]
+    fn timeout_display() {
+        let err = ToolDispatchError::Timeout("30s".into());
+        assert_eq!(err.to_string(), "timeout: 30s");
+    }
+
+    #[test]
+    fn mcp_display() {
+        let err = ToolDispatchError::Mcp("server down".into());
+        assert_eq!(err.to_string(), "MCP error: server down");
+    }
+
+    #[test]
+    fn channel_variant_display() {
+        let sink_err = ChannelSinkError::new("broken pipe");
+        let err = ToolDispatchError::Channel(sink_err);
+        assert!(err.to_string().contains("channel error:"));
+        assert!(err.to_string().contains("broken pipe"));
+    }
+
+    #[test]
+    fn from_channel_sink_error() {
+        let sink_err = ChannelSinkError::new("test");
+        let err: ToolDispatchError = sink_err.into();
+        assert!(matches!(err, ToolDispatchError::Channel(_)));
+    }
+
+    #[test]
+    fn from_llm_error() {
+        let llm_err = zeph_llm::LlmError::RateLimited;
+        let err: ToolDispatchError = llm_err.into();
+        assert!(matches!(err, ToolDispatchError::Llm(_)));
+    }
+
+    #[test]
+    fn from_tool_error() {
+        let tool_err = zeph_tools::ToolError::Cancelled;
+        let err: ToolDispatchError = tool_err.into();
+        assert!(matches!(err, ToolDispatchError::Tool(_)));
+    }
+}

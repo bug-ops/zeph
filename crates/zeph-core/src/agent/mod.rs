@@ -871,7 +871,7 @@ impl<C: Channel> Agent<C> {
                         continue;
                     }
                     Some(LoopEvent::InstructionReload) => {
-                        self.reload_instructions();
+                        self.reload_instructions().await;
                         continue;
                     }
                     Some(LoopEvent::ConfigReload) => {
@@ -2913,7 +2913,7 @@ impl<C: Channel> Agent<C> {
         );
     }
 
-    fn reload_instructions(&mut self) {
+    async fn reload_instructions(&mut self) {
         // Drain any additional queued events before reloading to avoid redundant reloads.
         if let Some(ref mut rx) = self.runtime.instructions.reload_rx {
             while rx.try_recv().is_ok() {}
@@ -2921,12 +2921,17 @@ impl<C: Channel> Agent<C> {
         let Some(ref state) = self.runtime.instructions.reload_state else {
             return;
         };
-        let new_blocks = crate::instructions::load_instructions(
-            &state.base_dir,
-            &state.provider_kinds,
-            &state.explicit_files,
-            state.auto_detect,
-        );
+        let base_dir = state.base_dir.clone();
+        let provider_kinds = state.provider_kinds.clone();
+        let explicit_files = state.explicit_files.clone();
+        let auto_detect = state.auto_detect;
+        let new_blocks = crate::instructions::load_instructions_async(
+            base_dir,
+            provider_kinds,
+            explicit_files,
+            auto_detect,
+        )
+        .await;
         let old_sources: std::collections::HashSet<_> = self
             .runtime
             .instructions

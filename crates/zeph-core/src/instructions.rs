@@ -265,6 +265,29 @@ fn detection_paths(kind: ProviderKind, base: &Path) -> Vec<PathBuf> {
     }
 }
 
+/// Async wrapper around [`load_instructions`] that offloads filesystem I/O to the tokio
+/// blocking thread pool.
+///
+/// Returns an empty `Vec` and logs an error if the blocking task panics.
+pub async fn load_instructions_async(
+    base_dir: PathBuf,
+    provider_kinds: Vec<ProviderKind>,
+    explicit_files: Vec<PathBuf>,
+    auto_detect: bool,
+) -> Vec<InstructionBlock> {
+    tokio::task::spawn_blocking(move || {
+        load_instructions(&base_dir, &provider_kinds, &explicit_files, auto_detect)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(
+            error = %e,
+            "load_instructions_async: blocking task panicked, returning empty blocks"
+        );
+        Vec::new()
+    })
+}
+
 #[cfg(test)]
 mod watcher_tests {
     use super::*;

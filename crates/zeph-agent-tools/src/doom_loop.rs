@@ -88,6 +88,8 @@ fn hash_tool_use_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, 
 
 #[cfg(test)]
 mod tests {
+    use std::hash::{DefaultHasher, Hasher};
+
     use super::*;
 
     #[test]
@@ -112,5 +114,58 @@ mod tests {
     #[test]
     fn empty_string_is_stable() {
         assert_eq!(doom_loop_hash(""), doom_loop_hash(""));
+    }
+
+    #[test]
+    fn tool_use_ids_normalized() {
+        let h1 = doom_loop_hash("[tool_use: shell(abc123)]");
+        let h2 = doom_loop_hash("[tool_use: shell(xyz789)]");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn tool_use_different_names_different_hash() {
+        let h1 = doom_loop_hash("[tool_use: shell(id1)]");
+        let h2 = doom_loop_hash("[tool_use: grep(id1)]");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn mixed_tool_result_and_tool_use_same_hash() {
+        let h1 = doom_loop_hash("[tool_result: abc] [tool_use: shell(id1)]");
+        let h2 = doom_loop_hash("[tool_result: xyz] [tool_use: shell(id2)]");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn unclosed_bracket_no_panic() {
+        let h1 = doom_loop_hash("[tool_result: abc");
+        let h2 = doom_loop_hash("[tool_result: abc");
+        // Must not panic; must be deterministic.
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn multiple_tool_results_in_sequence_same_hash() {
+        let h1 = doom_loop_hash("[tool_result: id1][tool_result: id2]");
+        let h2 = doom_loop_hash("[tool_result: aa][tool_result: bb]");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn no_markers_passthrough() {
+        let text = "plain text without any markers";
+        let mut hasher = DefaultHasher::new();
+        hasher.write(text.as_bytes());
+        let expected = hasher.finish();
+        assert_eq!(doom_loop_hash(text), expected);
+    }
+
+    #[test]
+    fn tool_use_no_parens_canonical() {
+        let h1 = doom_loop_hash("[tool_use: shell]");
+        let h2 = doom_loop_hash("[tool_use: shell]");
+        assert_eq!(h1, h2);
+        // Must not panic when there are no parentheses.
     }
 }
