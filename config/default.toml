@@ -22,6 +22,18 @@ max_tool_iterations = 10
 # Routing strategy for multi-provider configs: "none" (default), "ema", "thompson", "cascade", "task", "bandit"
 # routing = "none"
 
+# ── Cascade routing ───────────────────────────────────────────────────────────
+# Set routing = "cascade" to enable escalating provider chain.
+# Cheap provider is tried first; escalates on degenerate output.
+#
+# [llm.router.cascade]
+# quality_threshold = 0.5      # minimum score [0.0, 1.0] to accept without escalating
+# max_escalations = 2          # max quality-based escalations per request
+# classifier_mode = "heuristic" # "heuristic" (default) or "judge"
+# judge_timeout_ms = 5000      # hard timeout for judge LLM call (ms); fallback on exceeded
+# window_size = 50             # rolling quality history window per provider
+# # cost_tiers = ["cheap", "mid", "expensive"]  # explicit cost ordering
+
 # ── PILOT bandit routing ──────────────────────────────────────────────────────
 # Set routing = "bandit" to enable LinUCB contextual bandit provider selection.
 # The bandit learns which provider performs best for each query context using

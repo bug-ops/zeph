@@ -68,6 +68,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm`: add `judge_timeout_ms` field to `CascadeRouterConfig` (default 5 s) and wrap
+  `judge.chat()` in `tokio::time::timeout` inside `judge_score`; on timeout the call is
+  treated as a failure and heuristic scoring is used as fallback, preventing indefinite
+  blocking of the cascade routing loop (closes #3838).
+
 - fix(channels): `spawn_guest_proxy` no longer panics inside a spawned task when
   `tokio::net::TcpListener::from_std` fails (issue #3809). The conversion is now performed
   synchronously before `tokio::spawn`, and failure propagates as `ChannelError::Other` via `?`

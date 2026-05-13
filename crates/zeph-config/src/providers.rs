@@ -274,6 +274,10 @@ fn default_cascade_window_size() -> usize {
     50
 }
 
+fn default_cascade_judge_timeout_ms() -> u64 {
+    5_000
+}
+
 fn default_reputation_decay_factor() -> f64 {
     0.95
 }
@@ -892,6 +896,12 @@ pub struct CascadeConfig {
     /// original chain order. When unset, chain order is used (default behavior).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_tiers: Option<Vec<String>>,
+
+    /// Hard timeout for the judge LLM call (milliseconds).
+    /// If the judge does not respond within this budget, the call is treated as a failure
+    /// and heuristic scoring is used instead. Default: 5000 (5 s).
+    #[serde(default = "default_cascade_judge_timeout_ms")]
+    pub judge_timeout_ms: u64,
 }
 
 impl Default for CascadeConfig {
@@ -903,6 +913,7 @@ impl Default for CascadeConfig {
             window_size: default_cascade_window_size(),
             max_cascade_tokens: None,
             cost_tiers: None,
+            judge_timeout_ms: default_cascade_judge_timeout_ms(),
         }
     }
 }

@@ -94,6 +94,7 @@ fn build_cascade_router_config(
         max_cascade_tokens: cascade_cfg.max_cascade_tokens,
         summary_provider,
         cost_tiers: cascade_cfg.cost_tiers.clone(),
+        judge_timeout_ms: cascade_cfg.judge_timeout_ms,
     }
 }
 

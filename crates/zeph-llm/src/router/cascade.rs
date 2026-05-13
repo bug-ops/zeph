@@ -282,15 +282,35 @@ fn build_judge_prompt(response: &str) -> String {
 /// Sends a single-turn prompt to `judge` asking it to rate `response` on a 0–10 scale.
 /// Normalises the result to [0.0, 1.0].
 ///
-/// Returns `None` on any error (network, parse, etc.); callers must fall back to heuristic.
+/// The call is bounded by `timeout`; if the judge does not respond in time, `None` is
+/// returned and the caller must fall back to heuristic scoring.
+///
+/// Returns `None` on any error (network, parse, timeout, etc.); callers must fall back to heuristic.
 ///
 /// # Errors
 ///
-/// Any `LlmError` from the judge call is swallowed and represented as `None`.
-pub async fn judge_score(judge: &dyn LlmProviderDyn, response: &str) -> Option<f64> {
+/// Any `LlmError` from the judge call or a timeout is swallowed and represented as `None`.
+pub async fn judge_score(
+    judge: &dyn LlmProviderDyn,
+    response: &str,
+    timeout: std::time::Duration,
+) -> Option<f64> {
     let prompt = build_judge_prompt(response);
     let messages = vec![Message::from_legacy(Role::User, prompt)];
-    let reply = judge.chat(&messages).await.ok()?;
+    let reply = match tokio::time::timeout(timeout, judge.chat(&messages)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "cascade: judge call failed");
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = timeout.as_millis(),
+                "cascade: judge call timed out, falling back to heuristic"
+            );
+            return None;
+        }
+    };
     parse_judge_score(&reply)
 }
 
@@ -578,5 +598,19 @@ mod tests {
             response_pos < end_pos,
             "response must appear before closing fence"
         );
+    }
+
+    #[tokio::test]
+    async fn judge_score_times_out_returns_none() {
+        use crate::mock::MockProvider;
+        use crate::provider_dyn::LlmProviderDyn;
+        use std::sync::Arc;
+
+        // Provider sleeps 2 s; timeout is 50 ms — must return None without blocking.
+        let provider: Arc<dyn LlmProviderDyn> =
+            Arc::new(MockProvider::with_responses(vec!["7".to_owned()]).with_delay(2_000));
+        let timeout = std::time::Duration::from_millis(50);
+        let result = judge_score(provider.as_ref(), "some response", timeout).await;
+        assert!(result.is_none(), "expected None on timeout, got {result:?}");
     }
 }

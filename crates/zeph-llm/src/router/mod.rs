@@ -243,6 +243,8 @@ pub struct CascadeRouterConfig {
     /// When set, providers are sorted by their position in this list at construction time.
     /// Providers not listed are appended after listed ones in original chain order.
     pub cost_tiers: Option<Vec<String>>,
+    /// Hard timeout for the judge LLM call (milliseconds). Default: 5000.
+    pub judge_timeout_ms: u64,
 }
 
 impl Default for CascadeRouterConfig {
@@ -255,6 +257,7 @@ impl Default for CascadeRouterConfig {
             max_cascade_tokens: None,
             summary_provider: None,
             cost_tiers: None,
+            judge_timeout_ms: 5_000,
         }
     }
 }
@@ -1286,16 +1289,23 @@ impl RouterProvider {
     /// Evaluate quality using the configured classifier mode.
     ///
     /// For `ClassifierMode::Judge`, calls the summary provider and falls back to heuristic
-    /// on any error. For `ClassifierMode::Heuristic`, evaluates synchronously.
+    /// on any error or timeout. For `ClassifierMode::Heuristic`, evaluates synchronously.
     async fn evaluate_quality(
         response: &str,
         threshold: f64,
         mode: ClassifierMode,
         summary_provider: Option<&dyn crate::provider_dyn::LlmProviderDyn>,
+        judge_timeout_ms: u64,
     ) -> cascade::QualityVerdict {
         if mode == ClassifierMode::Judge {
             if let Some(judge) = summary_provider {
-                match cascade::judge_score(judge, response).await {
+                match cascade::judge_score(
+                    judge,
+                    response,
+                    std::time::Duration::from_millis(judge_timeout_ms),
+                )
+                .await
+                {
                     Some(score) => {
                         let should_escalate = score < threshold;
                         tracing::debug!(
@@ -2082,6 +2092,7 @@ async fn cascade_evaluate_response(
         cfg.quality_threshold,
         cfg.classifier_mode,
         cfg.summary_provider.as_deref(),
+        cfg.judge_timeout_ms,
     )
     .await;
 
