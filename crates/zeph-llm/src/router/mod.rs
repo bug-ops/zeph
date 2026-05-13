@@ -709,8 +709,8 @@ impl RouterProvider {
     ///
     /// When `config.cost_tiers` is set, providers are reordered once at construction
     /// time (no per-request cost). Providers absent from `cost_tiers` are appended
-    /// after listed ones in original chain order. Unknown names in `cost_tiers` are
-    /// silently ignored.
+    /// after listed ones in original chain order. Unknown names in `cost_tiers` emit
+    /// a warning and are otherwise ignored.
     #[must_use]
     pub fn with_cascade(mut self, config: CascadeRouterConfig) -> Self {
         self.strategy = RouterStrategy::Cascade;
@@ -718,6 +718,17 @@ impl RouterProvider {
         if let Some(ref tiers) = config.cost_tiers
             && !tiers.is_empty()
         {
+            let provider_names: std::collections::HashSet<&str> =
+                self.state.providers.iter().map(AnyProvider::name).collect();
+            for name in tiers {
+                if !provider_names.contains(name.as_str()) {
+                    tracing::warn!(
+                        name = %name,
+                        "cascade: cost_tiers entry does not match any provider name"
+                    );
+                }
+            }
+
             let tier_pos: std::collections::HashMap<&str, usize> = tiers
                 .iter()
                 .enumerate()
@@ -2265,7 +2276,7 @@ impl RouterProvider {
         // Tracks the highest-scoring fully-buffered response seen so far.
         // Only populated from the early provider loop; the last provider streams
         // directly without buffering or scoring, so it never updates best_seen.
-        let mut best_seen: Option<(String, f64)> = None;
+        let mut best_seen: Option<(CollectedStream, f64)> = None;
 
         // Try all providers except the last without consuming the escalation budget
         // for errors (only quality failures consume it).
@@ -2305,10 +2316,10 @@ impl RouterProvider {
                     self.record_availability(p.name(), false, latency);
                     tracing::warn!(provider = p.name(), error = %e, "cascade stream: stream error");
                 }
-                Ok(text) => {
+                Ok(collected) => {
                     let eval = cascade_evaluate_response(
                         p.name(),
-                        &text,
+                        &collected.content,
                         cfg,
                         cascade_state,
                         tokens_used,
@@ -2320,8 +2331,9 @@ impl RouterProvider {
                     let budget_exhausted = eval.budget_exhausted;
 
                     // Track the best response seen so far across early providers.
-                    // Skip empty strings to avoid returning silent failures on all-fail fallback.
-                    let is_better = !text.is_empty()
+                    // Skip empty responses (no content and no tool calls) to avoid
+                    // returning silent failures on all-fail fallback.
+                    let is_better = !collected.is_empty()
                         && best_seen
                             .as_ref()
                             .is_none_or(|(_, best_score)| verdict.score > *best_score);
@@ -2331,7 +2343,7 @@ impl RouterProvider {
                             score = verdict.score,
                             "cascade stream: best_seen updated"
                         );
-                        best_seen = Some((text.clone(), verdict.score));
+                        best_seen = Some((collected.clone(), verdict.score));
                     }
 
                     if !verdict.should_escalate || escalations_remaining == 0 || budget_exhausted {
@@ -2341,7 +2353,7 @@ impl RouterProvider {
                         // at zero) and the current response would have triggered escalation,
                         // return the best-seen response instead of the current (possibly
                         // lower-quality) one.
-                        let response_text = if verdict.should_escalate
+                        let response = if verdict.should_escalate
                             && (budget_exhausted || escalations_remaining == 0)
                         {
                             tracing::info!(
@@ -2350,15 +2362,12 @@ impl RouterProvider {
                                 escalations_remaining,
                                 "cascade stream: escalation blocked, returning best response"
                             );
-                            best_seen.take().map_or(text, |(r, _)| r)
+                            best_seen.take().map_or(collected, |(r, _)| r)
                         } else {
-                            text
+                            collected
                         };
 
-                        let stream: ChatStream = Box::pin(tokio_stream::once(Ok(
-                            crate::provider::StreamChunk::Content(response_text),
-                        )));
-                        return Ok(stream);
+                        return Ok(response.into_stream());
                     }
 
                     // Escalate.
@@ -2412,14 +2421,11 @@ impl RouterProvider {
                 );
                 // If we have a best-seen response from an early provider, return it
                 // instead of propagating the last provider's error.
-                if let Some((best_text, _)) = best_seen {
+                if let Some((best_collected, _)) = best_seen {
                     tracing::info!(
                         "cascade stream: last provider failed, returning best-seen response"
                     );
-                    let stream: ChatStream = Box::pin(tokio_stream::once(Ok(
-                        crate::provider::StreamChunk::Content(best_text),
-                    )));
-                    return Ok(stream);
+                    return Ok(best_collected.into_stream());
                 }
                 Err(e)
             }
@@ -2430,30 +2436,74 @@ impl RouterProvider {
 /// Maximum bytes buffered per stream in cascade routing (SEC-CASCADE-03).
 const CASCADE_STREAM_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 
-/// Collect a `ChatStream` into a String, concatenating only `Content` chunks.
+/// All chunks accumulated from a single provider stream, preserving non-Content chunks.
 ///
-/// Returns `Err` if the accumulated buffer exceeds [`CASCADE_STREAM_MAX_BYTES`].
-async fn collect_stream(stream: ChatStream) -> Result<String, LlmError> {
+/// Keeping all chunk types allows the router to re-emit a buffered response faithfully
+/// (including `Thinking`, `ToolUse`, and `Compaction` chunks) instead of silently
+/// dropping them when a best-seen response is replayed.
+#[derive(Clone, Default, Debug)]
+struct CollectedStream {
+    content: String,
+    thinking: Vec<String>,
+    tool_calls: Vec<crate::provider::ToolUseRequest>,
+    compaction: Option<String>,
+}
+
+impl CollectedStream {
+    /// Reconstructs a `ChatStream` that re-emits all accumulated chunks in order.
+    fn into_stream(self) -> ChatStream {
+        use crate::provider::StreamChunk;
+        let mut chunks: Vec<Result<StreamChunk, LlmError>> = Vec::new();
+        for t in self.thinking {
+            chunks.push(Ok(StreamChunk::Thinking(t)));
+        }
+        if !self.tool_calls.is_empty() {
+            chunks.push(Ok(StreamChunk::ToolUse(self.tool_calls)));
+        }
+        if let Some(c) = self.compaction {
+            chunks.push(Ok(StreamChunk::Compaction(c)));
+        }
+        if !self.content.is_empty() {
+            chunks.push(Ok(StreamChunk::Content(self.content)));
+        }
+        Box::pin(tokio_stream::iter(chunks))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.content.is_empty() && self.tool_calls.is_empty()
+    }
+}
+
+/// Collect a `ChatStream` into a [`CollectedStream`], preserving all chunk types.
+///
+/// Returns `Err` if the accumulated `Content` buffer exceeds [`CASCADE_STREAM_MAX_BYTES`].
+async fn collect_stream(stream: ChatStream) -> Result<CollectedStream, LlmError> {
     use tokio_stream::StreamExt as _;
 
     let mut stream = stream;
-    let mut buf = String::new();
+    let mut collected = CollectedStream::default();
     while let Some(chunk) = stream.next().await {
         match chunk? {
             crate::provider::StreamChunk::Content(c) => {
-                if buf.len() + c.len() > CASCADE_STREAM_MAX_BYTES {
+                if collected.content.len() + c.len() > CASCADE_STREAM_MAX_BYTES {
                     return Err(LlmError::Other(
                         "cascade: stream response exceeds 1 MiB buffer limit".into(),
                     ));
                 }
-                buf.push_str(&c);
+                collected.content.push_str(&c);
             }
-            crate::provider::StreamChunk::Thinking(_)
-            | crate::provider::StreamChunk::Compaction(_)
-            | crate::provider::StreamChunk::ToolUse(_) => {}
+            crate::provider::StreamChunk::Thinking(t) => {
+                collected.thinking.push(t);
+            }
+            crate::provider::StreamChunk::ToolUse(tools) => {
+                collected.tool_calls.extend(tools);
+            }
+            crate::provider::StreamChunk::Compaction(c) => {
+                collected.compaction = Some(c);
+            }
         }
     }
-    Ok(buf)
+    Ok(collected)
 }
 
 #[cfg(test)]
@@ -2825,11 +2875,11 @@ mod tests {
         let stream = r.chat_stream(&msgs).await.unwrap();
         let collected = collect_stream(stream).await.unwrap();
         assert_eq!(
-            collected, good_response,
+            collected.content, good_response,
             "should return best-seen (p1), not the degenerate current response (p2)"
         );
         assert_ne!(
-            collected, bad_response,
+            collected.content, bad_response,
             "must not return degenerate p2 response"
         );
     }
@@ -2867,7 +2917,7 @@ mod tests {
         let msgs = vec![Message::from_legacy(Role::User, "q")];
         let stream = r.chat_stream(&msgs).await.unwrap();
         let collected = collect_stream(stream).await.unwrap();
-        assert_eq!(collected, good);
+        assert_eq!(collected.content, good);
     }
 
     #[tokio::test]
@@ -2895,7 +2945,7 @@ mod tests {
         let msgs = vec![Message::from_legacy(Role::User, "q")];
         let stream = r.chat_stream(&msgs).await.unwrap();
         let collected = collect_stream(stream).await.unwrap();
-        assert_eq!(collected, good);
+        assert_eq!(collected.content, good);
     }
 
     #[tokio::test]
@@ -2932,7 +2982,7 @@ mod tests {
         let collected = collect_stream(stream).await.unwrap();
         // Must return best-seen (p1's good response).
         assert_eq!(
-            collected, good_response,
+            collected.content, good_response,
             "should return best-seen p1 response when budget exhausted"
         );
     }
@@ -2975,11 +3025,11 @@ mod tests {
         let collected = collect_stream(stream).await.unwrap();
         // Must return p1 (best_seen), not p2 (current at time of budget exhaustion).
         assert_eq!(
-            collected, good_response,
+            collected.content, good_response,
             "should return best-seen (p1), not current degenerate (p2)"
         );
         assert_ne!(
-            collected, bad_response,
+            collected.content, bad_response,
             "must not return the degenerate p2 response"
         );
     }
@@ -3008,7 +3058,7 @@ mod tests {
         let msgs = vec![Message::from_legacy(Role::User, "hello")];
         let stream = r.chat_stream(&msgs).await.unwrap();
         let collected = collect_stream(stream).await.unwrap();
-        assert_eq!(collected, low_quality);
+        assert_eq!(collected.content, low_quality);
     }
 
     #[tokio::test]
@@ -3113,8 +3163,8 @@ mod tests {
         let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
         let msgs = vec![Message::from_legacy(Role::User, "hi")];
         let stream = r.chat_stream(&msgs).await.expect("should not error");
-        let text = collect_stream(stream).await.expect("stream should succeed");
-        assert_eq!(text, "real answer");
+        let collected = collect_stream(stream).await.expect("stream should succeed");
+        assert_eq!(collected.content, "real answer");
     }
 
     // ── Arc<[AnyProvider]> + cost_tiers tests ──────────────────────────────────
