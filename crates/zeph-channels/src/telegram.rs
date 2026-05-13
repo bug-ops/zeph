@@ -672,9 +672,11 @@ fn spawn_guest_proxy(
         .route("/{*path}", any(proxy_handler))
         .with_state(state);
 
+    let listener = tokio::net::TcpListener::from_std(listener).map_err(|e| {
+        ChannelError::Other(format!("guest proxy: TcpListener conversion failed: {e}"))
+    })?;
+
     let handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::from_std(listener)
-            .expect("guest proxy: TcpListener conversion failed");
         if let Err(e) = axum::serve(listener, app).await {
             tracing::warn!("guest proxy axum serve error: {e}");
         }

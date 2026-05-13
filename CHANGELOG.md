@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(channels): `spawn_guest_proxy` no longer panics inside a spawned task when
+  `tokio::net::TcpListener::from_std` fails (issue #3809). The conversion is now performed
+  synchronously before `tokio::spawn`, and failure propagates as `ChannelError::Other` via `?`
+  to the caller instead of silently killing the guest proxy listener task.
+
 - fix(scheduler): `tick()` now checks the `in_flight` set before dispatching periodic task
   handlers (issue #3808). Previously only `catch_up_missed()` held the SIGNIFICANT-5 guard,
   allowing concurrent executions of the same periodic task when a handler ran longer than
