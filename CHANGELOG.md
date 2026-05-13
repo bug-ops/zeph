@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- `zeph-llm`: wrap cheap provider response in `<response_to_evaluate>` delimiters in
+  `judge_score` to reduce prompt injection surface; added injection-resistance instruction
+  to the judge prompt (closes #3813).
+
 ### Added
 
 - feat(memory): implement MemFlow tiered intent-driven retrieval (issue #3712). New
