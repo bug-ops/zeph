@@ -4,6 +4,7 @@
 //! A2A protocol HTTP client with optional TLS enforcement and SSRF protection.
 
 use std::pin::Pin;
+use std::time::Duration;
 
 use eventsource_stream::Eventsource;
 use futures_core::Stream;
@@ -74,6 +75,14 @@ pub struct A2aClient {
     client: reqwest::Client,
     require_tls: bool,
     ssrf_protection: bool,
+    /// Per-request timeout applied to `rpc_call` (send + JSON parse) and to the initial
+    /// `send()` in `stream_message`. The SSE body stream itself is not bounded — that
+    /// is the caller's responsibility.
+    ///
+    /// If the underlying `reqwest::Client` was also built with `.timeout()`, both limits
+    /// race: whichever fires first wins. `request_timeout` takes semantic priority because
+    /// it maps to `A2aError::Timeout`; the reqwest-level timeout maps to `A2aError::Http`.
+    request_timeout: Duration,
 }
 
 impl A2aClient {
@@ -87,6 +96,7 @@ impl A2aClient {
             client,
             require_tls: false,
             ssrf_protection: false,
+            request_timeout: Duration::from_secs(30),
         }
     }
 
@@ -113,8 +123,20 @@ impl A2aClient {
         self
     }
 
+    /// Set the per-request timeout for RPC and streaming connection calls (default: 30 seconds).
+    ///
+    /// Applied to the full send + JSON response parse in `rpc_call`, and to the initial
+    /// HTTP `send()` in `stream_message`. The SSE body stream after connection is intentionally
+    /// unbounded — streams can legitimately run for a long time.
+    #[must_use]
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
     /// # Errors
-    /// Returns `A2aError` on network, JSON, or JSON-RPC errors.
+    /// Returns `A2aError` on network, JSON, or JSON-RPC errors, or `A2aError::Timeout`
+    /// if the request exceeds the configured `request_timeout`.
     pub async fn send_message(
         &self,
         endpoint: &str,
@@ -139,11 +161,17 @@ impl A2aClient {
         if let Some(t) = token {
             req = req.bearer_auth(t);
         }
-        let resp = req.send().await?;
+        let resp = tokio::time::timeout(self.request_timeout, req.send())
+            .await
+            .map_err(|_| A2aError::Timeout(self.request_timeout))?
+            .map_err(A2aError::Http)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(Duration::from_secs(5), resp.text())
+                .await
+                .unwrap_or(Ok(String::new()))
+                .unwrap_or_default();
             // Truncate body to avoid leaking large upstream error responses.
             let truncated = if body.len() > 256 {
                 format!("{}…", &body[..256])
@@ -176,7 +204,8 @@ impl A2aClient {
     }
 
     /// # Errors
-    /// Returns `A2aError` on network, JSON, or JSON-RPC errors.
+    /// Returns `A2aError` on network, JSON, or JSON-RPC errors, or `A2aError::Timeout`
+    /// if the request exceeds the configured `request_timeout`.
     pub async fn get_task(
         &self,
         endpoint: &str,
@@ -188,7 +217,8 @@ impl A2aClient {
     }
 
     /// # Errors
-    /// Returns `A2aError` on network, JSON, or JSON-RPC errors.
+    /// Returns `A2aError` on network, JSON, or JSON-RPC errors, or `A2aError::Timeout`
+    /// if the request exceeds the configured `request_timeout`.
     pub async fn cancel_task(
         &self,
         endpoint: &str,
@@ -247,8 +277,13 @@ impl A2aClient {
         if let Some(t) = token {
             req = req.bearer_auth(t);
         }
-        let resp = req.send().await?;
-        let rpc_response: JsonRpcResponse<R> = resp.json().await?;
+        let rpc_response: JsonRpcResponse<R> = tokio::time::timeout(self.request_timeout, async {
+            let resp = req.send().await?;
+            resp.json().await
+        })
+        .await
+        .map_err(|_| A2aError::Timeout(self.request_timeout))?
+        .map_err(A2aError::Http)?;
         rpc_response.into_result().map_err(A2aError::from)
     }
 }
@@ -869,5 +904,41 @@ mod wiremock_tests {
             .await;
         let err = result.err().expect("expected error");
         assert!(matches!(err, crate::error::A2aError::Stream(_)));
+    }
+
+    #[tokio::test]
+    async fn rpc_call_times_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(5))
+                    .set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": "req-1",
+                        "result": {
+                            "id": "t-1",
+                            "status": {"state": "completed", "timestamp": "2026-01-01T00:00:00Z"}
+                        }
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new(reqwest::Client::new())
+            .with_request_timeout(std::time::Duration::from_millis(100));
+        let params = SendMessageParams {
+            message: Message::user_text("hello"),
+            configuration: None,
+        };
+        let result = client
+            .send_message(&format!("{}/rpc", server.uri()), params, None)
+            .await;
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), crate::error::A2aError::Timeout(_)),
+            "expected Timeout error"
+        );
     }
 }

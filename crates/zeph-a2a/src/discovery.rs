@@ -51,6 +51,8 @@ pub struct AgentRegistry {
     client: reqwest::Client,
     cache: RwLock<HashMap<String, CachedCard>>,
     ttl: Duration,
+    /// Timeout for each network request in [`discover`](Self::discover).
+    request_timeout: Duration,
 }
 
 impl AgentRegistry {
@@ -63,7 +65,17 @@ impl AgentRegistry {
             client,
             cache: RwLock::new(HashMap::new()),
             ttl,
+            request_timeout: Duration::from_secs(10),
         }
+    }
+
+    /// Set the per-request network timeout for [`discover`](Self::discover) calls (default: 10 seconds).
+    ///
+    /// Discovery is a lightweight GET request for the agent card; 10 seconds is generous.
+    #[must_use]
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     /// Fetch the [`AgentCard`] from `{base_url}/.well-known/agent.json` and update the cache.
@@ -78,19 +90,23 @@ impl AgentRegistry {
     /// variant on non-2xx HTTP status or JSON parse failure.
     pub async fn discover(&self, base_url: &str) -> Result<AgentCard, A2aError> {
         let url = format!("{}{WELL_KNOWN_PATH}", base_url.trim_end_matches('/'));
-        let resp = self.client.get(&url).send().await?;
+        let card: AgentCard = tokio::time::timeout(self.request_timeout, async {
+            let resp = self.client.get(&url).send().await?;
 
-        if !resp.status().is_success() {
-            return Err(A2aError::Discovery {
-                url,
-                reason: format!("HTTP {}", resp.status()),
-            });
-        }
+            if !resp.status().is_success() {
+                return Err(A2aError::Discovery {
+                    url: url.clone(),
+                    reason: format!("HTTP {}", resp.status()),
+                });
+            }
 
-        let card: AgentCard = resp.json().await.map_err(|e| A2aError::Discovery {
-            url,
-            reason: e.to_string(),
-        })?;
+            resp.json().await.map_err(|e| A2aError::Discovery {
+                url: url.clone(),
+                reason: e.to_string(),
+            })
+        })
+        .await
+        .map_err(|_| A2aError::Timeout(self.request_timeout))??;
 
         let mut cache = self.cache.write().await;
         cache.insert(
@@ -336,5 +352,39 @@ mod wiremock_tests {
         // Should re-fetch from mock server
         let card = registry.get_or_discover(&base_url).await.unwrap();
         assert_eq!(card.name, "fresh-agent");
+    }
+
+    #[tokio::test]
+    async fn discover_times_out() {
+        let server = MockServer::start().await;
+        let base_url = server.uri();
+        Mock::given(method("GET"))
+            .and(path("/.well-known/agent.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(5))
+                    .set_body_json(serde_json::json!({
+                        "name": "slow-agent",
+                        "description": "test",
+                        "url": base_url,
+                        "version": "0.1.0",
+                        "protocolVersion": crate::A2A_PROTOCOL_VERSION,
+                        "capabilities": {"streaming": false, "pushNotifications": false, "stateTransitionHistory": false},
+                        "defaultInputModes": [],
+                        "defaultOutputModes": [],
+                        "skills": []
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1))
+            .with_request_timeout(Duration::from_millis(100));
+        let result = registry.discover(&server.uri()).await;
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), A2aError::Timeout(_)),
+            "expected Timeout error from slow discovery"
+        );
     }
 }

@@ -33,6 +33,7 @@ pub mod state;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::watch;
 
@@ -128,6 +129,7 @@ impl A2aServer {
             card,
             task_manager: TaskManager::new(),
             processor,
+            request_timeout: Duration::from_mins(5),
         };
 
         Self {
@@ -183,6 +185,20 @@ impl A2aServer {
     #[must_use]
     pub fn with_max_body_size(mut self, size: usize) -> Self {
         self.max_body_size = size;
+        self
+    }
+
+    /// Set the per-request timeout for task processing (default: 300 seconds).
+    ///
+    /// If a [`TaskProcessor`] does not complete within this duration, the server
+    /// aborts the spawned future, marks the task as [`TaskState::Failed`], and returns
+    /// a JSON-RPC internal-error response to the caller.
+    ///
+    /// For streaming calls, a final SSE event with `failed` state is sent before the
+    /// connection closes, so the client always receives a terminal event.
+    #[must_use]
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.state.request_timeout = timeout;
         self
     }
 
@@ -304,6 +320,7 @@ pub(crate) mod testing {
             card: test_card(),
             task_manager: TaskManager::new(),
             processor: Arc::new(EchoProcessor),
+            request_timeout: std::time::Duration::from_secs(300),
         }
     }
 
@@ -312,6 +329,7 @@ pub(crate) mod testing {
             card: test_card(),
             task_manager: TaskManager::new(),
             processor: Arc::new(FailingProcessor),
+            request_timeout: std::time::Duration::from_secs(300),
         }
     }
 }

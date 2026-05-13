@@ -129,26 +129,42 @@ async fn handle_send_message(
         .process(task.id.clone(), params.message, event_tx);
 
     let proc_handle = tokio::spawn(proc_future);
+    let abort_handle = proc_handle.abort_handle();
 
-    let mut accumulated = String::new();
-    while let Some(event) = event_rx.recv().await {
-        match event {
-            ProcessorEvent::ArtifactChunk { text, .. } => {
-                accumulated.push_str(&text);
+    let (accumulated, final_state) = match tokio::time::timeout(state.request_timeout, async {
+        let mut accumulated = String::new();
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                ProcessorEvent::ArtifactChunk { text, .. } => {
+                    accumulated.push_str(&text);
+                }
+                ProcessorEvent::StatusUpdate { .. } => {}
             }
-            ProcessorEvent::StatusUpdate { .. } => {}
         }
-    }
-
-    let final_state = match proc_handle.await {
-        Ok(Ok(())) => TaskState::Completed,
-        Ok(Err(e)) => {
-            tracing::error!(task_id = %task.id, "task processing failed: {e}");
-            TaskState::Failed
-        }
-        Err(e) => {
-            tracing::error!(task_id = %task.id, "task processor panicked: {e}");
-            TaskState::Failed
+        let final_state = match proc_handle.await {
+            Ok(Ok(())) => TaskState::Completed,
+            Ok(Err(e)) => {
+                tracing::error!(task_id = %task.id, "task processing failed: {e}");
+                TaskState::Failed
+            }
+            Err(e) => {
+                tracing::error!(task_id = %task.id, "task processor panicked: {e}");
+                TaskState::Failed
+            }
+        };
+        (accumulated, final_state)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            tracing::warn!(
+                task_id = %task.id,
+                timeout = ?state.request_timeout,
+                "task processing timed out"
+            );
+            abort_handle.abort();
+            (String::new(), TaskState::Failed)
         }
     };
 
@@ -294,29 +310,14 @@ pub async fn stream_handler(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::Sender<Event>) {
-    let task = state.task_manager.create_task(message.clone()).await;
-    let task_id = task.id.clone();
-    let context_id = task.context_id.clone();
-
-    state
-        .task_manager
-        .update_status(&task_id, TaskState::Working, None)
-        .await;
-    let _ = tx
-        .send(status_event(
-            &task_id,
-            context_id.as_ref(),
-            TaskState::Working,
-            false,
-        ))
-        .await;
-
-    let (event_tx, mut event_rx) = mpsc::channel::<ProcessorEvent>(32);
-    let proc_future = state.processor.process(task_id.clone(), message, event_tx);
-
-    let proc_handle = tokio::spawn(proc_future);
-
+async fn drain_processor_events(
+    state: &AppState,
+    task_id: &str,
+    context_id: Option<&String>,
+    event_rx: &mut tokio::sync::mpsc::Receiver<ProcessorEvent>,
+    proc_handle: tokio::task::JoinHandle<Result<(), crate::error::A2aError>>,
+    tx: &mpsc::Sender<Event>,
+) -> TaskState {
     let mut accumulated = String::new();
     while let Some(event) = event_rx.recv().await {
         match event {
@@ -330,8 +331,8 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
                 };
                 let evt = TaskArtifactUpdateEvent {
                     kind: "artifact-update".into(),
-                    task_id: task_id.clone(),
-                    context_id: context_id.clone(),
+                    task_id: task_id.to_owned(),
+                    context_id: context_id.cloned(),
                     artifact,
                     is_final,
                 };
@@ -343,15 +344,10 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
             } => {
                 state
                     .task_manager
-                    .update_status(&task_id, task_state, None)
+                    .update_status(task_id, task_state, None)
                     .await;
                 let _ = tx
-                    .send(status_event(
-                        &task_id,
-                        context_id.as_ref(),
-                        task_state,
-                        is_final,
-                    ))
+                    .send(status_event(task_id, context_id, task_state, is_final))
                     .await;
             }
         }
@@ -377,8 +373,63 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
             parts: vec![Part::text(accumulated)],
             metadata: None,
         };
-        state.task_manager.add_artifact(&task_id, artifact).await;
+        state.task_manager.add_artifact(task_id, artifact).await;
     }
+
+    final_state
+}
+
+async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::Sender<Event>) {
+    let task = state.task_manager.create_task(message.clone()).await;
+    let task_id = task.id.clone();
+    let context_id = task.context_id.clone();
+
+    state
+        .task_manager
+        .update_status(&task_id, TaskState::Working, None)
+        .await;
+    let _ = tx
+        .send(status_event(
+            &task_id,
+            context_id.as_ref(),
+            TaskState::Working,
+            false,
+        ))
+        .await;
+
+    let (event_tx, mut event_rx) = mpsc::channel::<ProcessorEvent>(32);
+    let proc_future = state.processor.process(task_id.clone(), message, event_tx);
+
+    let proc_handle = tokio::spawn(proc_future);
+    // Processor abort on SSE client disconnect is not handled here — the spawned task
+    // continues until completion or this timeout fires. Aborting on client disconnect
+    // is a separate enhancement (requires select! on tx.closed()).
+    let abort_handle = proc_handle.abort_handle();
+
+    let final_state = match tokio::time::timeout(
+        state.request_timeout,
+        drain_processor_events(
+            &state,
+            &task_id,
+            context_id.as_ref(),
+            &mut event_rx,
+            proc_handle,
+            &tx,
+        ),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(_elapsed) => {
+            tracing::warn!(
+                task_id = %task_id,
+                timeout = ?state.request_timeout,
+                "stream task processing timed out"
+            );
+            abort_handle.abort();
+            TaskState::Failed
+        }
+    };
 
     state
         .task_manager
@@ -531,6 +582,7 @@ mod tests {
             card: super::super::testing::test_card(),
             task_manager: super::super::state::TaskManager::new(),
             processor: Arc::new(MultiChunkProcessor),
+            request_timeout: std::time::Duration::from_secs(300),
         }
     }
 
@@ -559,5 +611,87 @@ mod tests {
         let artifacts = &body["result"]["artifacts"];
         let text = artifacts[0]["parts"][0]["text"].as_str().unwrap_or("");
         assert_eq!(text, "chunk1 chunk2 chunk3");
+    }
+
+    struct SlowProcessor;
+
+    impl super::super::state::TaskProcessor for SlowProcessor {
+        fn process(
+            &self,
+            _task_id: String,
+            _message: crate::types::Message,
+            _event_tx: tokio::sync::mpsc::Sender<super::super::state::ProcessorEvent>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), crate::error::A2aError>> + Send>,
+        > {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok(())
+            })
+        }
+    }
+
+    fn slow_state_with_short_timeout() -> super::super::state::AppState {
+        use std::sync::Arc;
+        super::super::state::AppState {
+            card: super::super::testing::test_card(),
+            task_manager: super::super::state::TaskManager::new(),
+            processor: Arc::new(SlowProcessor),
+            request_timeout: std::time::Duration::from_millis(100),
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_returns_failed_state() {
+        let app = build_router_with_config(slow_state_with_short_timeout(), None, 0);
+        let msg = crate::types::Message {
+            role: crate::types::Role::User,
+            parts: vec![crate::types::Part::Text {
+                text: "hello".into(),
+                metadata: None,
+            }],
+            message_id: Some("m1".into()),
+            task_id: None,
+            context_id: None,
+            metadata: None,
+        };
+        let req = make_rpc_request(
+            "message/send",
+            &serde_json::json!({ "message": serde_json::to_value(&msg).unwrap() }),
+        );
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = get_rpc_body(resp).await;
+        assert_eq!(
+            body["result"]["status"]["state"], "failed",
+            "timed-out task must be in failed state"
+        );
+    }
+
+    #[tokio::test]
+    async fn sse_stream_timeout_sends_failed_event() {
+        let app = build_router_with_config(slow_state_with_short_timeout(), None, 0);
+        let body = serde_json::json!({
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "slow"}]
+                }
+            }
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/a2a/stream")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        assert!(
+            body_str.contains("failed"),
+            "SSE stream must contain failed terminal event on timeout, got: {body_str}"
+        );
     }
 }

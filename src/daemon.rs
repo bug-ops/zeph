@@ -77,7 +77,10 @@ fn spawn_a2a_server(
     .with_auth(config.a2a.auth_token.clone())
     .with_require_auth(config.a2a.require_auth)
     .with_rate_limit(config.a2a.rate_limit)
-    .with_max_body_size(config.a2a.max_body_size);
+    .with_max_body_size(config.a2a.max_body_size)
+    .with_request_timeout(std::time::Duration::from_millis(
+        config.a2a.request_timeout_ms,
+    ));
 
     tracing::info!(
         "A2A server spawned on {}:{}",

@@ -50,6 +50,10 @@ pub enum A2aError {
     /// `ssrf_protection = true` and DNS resolves to a private/loopback address.
     #[error("security policy violation: {0}")]
     Security(String),
+
+    /// A request or task processing operation exceeded its deadline.
+    #[error("operation timed out after {0:?}")]
+    Timeout(std::time::Duration),
 }
 
 impl From<JsonRpcError> for A2aError {

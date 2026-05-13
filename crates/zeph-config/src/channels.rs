@@ -462,6 +462,10 @@ fn default_ibct_ttl() -> u64 {
     300
 }
 
+fn default_a2a_request_timeout_ms() -> u64 {
+    300_000
+}
+
 /// A2A server configuration, nested under `[a2a]` in TOML.
 ///
 /// Controls the Agent-to-Agent HTTP server that exposes the agent via the A2A protocol.
@@ -526,6 +530,13 @@ pub struct A2aServerConfig {
     /// provider and STT configuration — no manual override is needed for those.
     #[serde(default)]
     pub advertise_files: bool,
+    /// Request processing timeout in milliseconds.
+    ///
+    /// Applies to both `message/send` and `tasks/stream` handlers.
+    /// On timeout the task is set to `Failed` and the HTTP connection is closed.
+    /// Defaults to 300 000 ms (5 minutes).
+    #[serde(default = "default_a2a_request_timeout_ms")]
+    pub request_timeout_ms: u64,
 }
 
 impl std::fmt::Debug for A2aServerConfig {
@@ -552,6 +563,7 @@ impl std::fmt::Debug for A2aServerConfig {
             )
             .field("ibct_ttl_secs", &self.ibct_ttl_secs)
             .field("advertise_files", &self.advertise_files)
+            .field("request_timeout_ms", &self.request_timeout_ms)
             .finish()
     }
 }
@@ -574,6 +586,7 @@ impl Default for A2aServerConfig {
             ibct_signing_key_vault_ref: None,
             ibct_ttl_secs: default_ibct_ttl(),
             advertise_files: false,
+            request_timeout_ms: default_a2a_request_timeout_ms(),
         }
     }
 }

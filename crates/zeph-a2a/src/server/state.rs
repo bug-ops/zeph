@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::RwLock;
 
@@ -22,6 +23,9 @@ pub struct AppState {
     pub task_manager: TaskManager,
     /// The application-level logic that handles incoming task messages.
     pub processor: Arc<dyn TaskProcessor>,
+    /// Maximum time to wait for a [`TaskProcessor`] to complete before marking the task
+    /// as [`TaskState::Failed`] and aborting the spawned future.
+    pub request_timeout: Duration,
 }
 
 /// An event emitted by a [`TaskProcessor`] to drive the handler's response.
