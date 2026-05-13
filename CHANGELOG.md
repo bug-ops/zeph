@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- `zeph-memory`: replace serial `embed()` calls with a single `embed_batch()` call in
+  tier promotion sweep (`tiers.rs`), scene consolidation (`scenes.rs`), and episodic
+  consolidation (`episodic_consolidation.rs`). Reduces N HTTP round-trips to the embedding
+  provider down to 1 per sweep; with batch_size=30 this cuts embed latency from ~1.5 s to
+  ~50 ms on cloud providers (closes #3819).
+- `zeph-memory`: add `tracing::info_span!` / `#[tracing::instrument]` to
+  `start_episodic_consolidation_loop`, `fetch_existing_facts`, `mark_consolidated`
+  (episodic_consolidation.rs) and `start_tier_promotion_loop`, `run_promotion_sweep`,
+  `merge_cluster_and_promote` (tiers.rs). All embed_batch call sites instrumented with
+  `.instrument(span).await` (Send-safe pattern). Span naming follows
+  `memory.<subsystem>.<operation>` convention (closes #3821).
+
 ### Security
 
 - `zeph-llm`: replace XML delimiters in `build_judge_prompt` with plain-text fenced delimiters

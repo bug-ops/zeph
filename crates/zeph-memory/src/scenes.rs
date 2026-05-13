@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
@@ -116,10 +117,7 @@ pub struct SceneStats {
 /// # Errors
 ///
 /// Returns an error if the `SQLite` query fails. LLM and embedding errors are logged but skipped.
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "memory.consolidate_scenes", skip_all)
-)]
+#[tracing::instrument(name = "memory.scenes.consolidation_sweep", skip_all)]
 pub async fn consolidate_scenes(
     store: &SqliteStore,
     provider: &AnyProvider,
@@ -138,24 +136,35 @@ pub async fn consolidate_scenes(
         ..SceneStats::default()
     };
 
-    // Embed all candidates.
-    let mut embedded: Vec<(MessageId, String, Vec<f32>)> = Vec::with_capacity(candidates.len());
-    if provider.supports_embeddings() {
-        for (msg_id, content) in candidates {
-            match provider.embed(&content).await {
-                Ok(vec) => embedded.push((msg_id, content, vec)),
-                Err(e) => {
-                    tracing::warn!(
-                        message_id = msg_id.0,
-                        error = %e,
-                        "scene consolidation: failed to embed candidate, skipping"
-                    );
-                }
-            }
-        }
-    } else {
+    if !provider.supports_embeddings() {
         return Ok(stats);
     }
+
+    // Embed all candidates in a single batch call.
+    let texts: Vec<&str> = candidates.iter().map(|(_, c)| c.as_str()).collect();
+    let span = tracing::info_span!("memory.scenes.embed_batch", count = texts.len());
+    let vecs = provider.embed_batch(&texts).instrument(span).await;
+    let embedded: Vec<(MessageId, String, Vec<f32>)> = match vecs {
+        Ok(vecs) => {
+            if vecs.len() != texts.len() {
+                tracing::warn!(
+                    expected = texts.len(),
+                    got = vecs.len(),
+                    "scene consolidation: embed_batch length mismatch, skipping sweep"
+                );
+                return Ok(stats);
+            }
+            candidates
+                .into_iter()
+                .zip(vecs)
+                .map(|((msg_id, content), vec)| (msg_id, content, vec))
+                .collect()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "scene consolidation: batch embed failed, skipping sweep");
+            return Ok(stats);
+        }
+    };
 
     if embedded.len() < 2 {
         return Ok(stats);

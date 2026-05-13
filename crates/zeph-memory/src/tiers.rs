@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 
@@ -121,10 +122,7 @@ struct SweepStats {
 }
 
 /// Execute one full promotion sweep cycle.
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "memory.tier_promotion", skip_all)
-)]
+#[tracing::instrument(name = "memory.tiers.promotion_sweep", skip_all)]
 async fn run_promotion_sweep(
     store: &SqliteStore,
     provider: &AnyProvider,
@@ -143,25 +141,32 @@ async fn run_promotion_sweep(
         ..SweepStats::default()
     };
 
-    // Embed all candidates for clustering. Skip candidates that fail to embed.
-    let mut embedded: Vec<(PromotionCandidate, Vec<f32>)> = Vec::with_capacity(candidates.len());
-    for candidate in candidates {
-        if !provider.supports_embeddings() {
-            // No embedding support — cannot cluster. Promote singletons directly.
-            embedded.push((candidate, Vec::new()));
-            continue;
-        }
-        match provider.embed(&candidate.content).await {
-            Ok(vec) => embedded.push((candidate, vec)),
+    // Embed all candidates in a single batch call, then zip back with candidates.
+    let embedded: Vec<(PromotionCandidate, Vec<f32>)> = if provider.supports_embeddings() {
+        let texts: Vec<&str> = candidates.iter().map(|c| c.content.as_str()).collect();
+        let span = tracing::info_span!("memory.tiers.embed_batch", count = texts.len());
+        let vecs = provider.embed_batch(&texts).instrument(span).await;
+        match vecs {
+            Ok(vecs) => {
+                if vecs.len() != texts.len() {
+                    tracing::warn!(
+                        expected = texts.len(),
+                        got = vecs.len(),
+                        "tier promotion: embed_batch length mismatch, skipping sweep"
+                    );
+                    return Ok(stats);
+                }
+                candidates.into_iter().zip(vecs).collect()
+            }
             Err(e) => {
-                tracing::warn!(
-                    message_id = candidate.id.0,
-                    error = %e,
-                    "tier promotion: failed to embed candidate, skipping"
-                );
+                tracing::warn!(error = %e, "tier promotion: batch embed failed, skipping sweep");
+                return Ok(stats);
             }
         }
-    }
+    } else {
+        // No embedding support — push all with empty vecs (will become singletons).
+        candidates.into_iter().map(|c| (c, Vec::new())).collect()
+    };
 
     if embedded.is_empty() {
         return Ok(stats);
@@ -244,6 +249,7 @@ fn cluster_by_similarity(
 /// Validates the merged output before promoting. If the output is empty or has
 /// a cosine similarity below `MERGE_VALIDATION_MIN_SIMILARITY` to all originals,
 /// returns an error without promoting.
+#[tracing::instrument(name = "memory.tiers.merge_cluster_and_promote", skip_all)]
 async fn merge_cluster_and_promote(
     store: &SqliteStore,
     provider: &AnyProvider,

@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 use zeph_db::{DbPool, sql};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
@@ -87,6 +88,13 @@ struct ConsolidationCandidate {
 struct ExtractedFact {
     fact: String,
     source_event_ids: Vec<i64>,
+}
+
+/// A non-duplicate fact ready for Qdrant embedding and `SQLite` promotion.
+struct PendingFact {
+    fact: ExtractedFact,
+    cog_weight_f32: f32,
+    valid_source_ids: Vec<i64>,
 }
 
 /// Start the background episodic consolidation loop.
@@ -227,6 +235,9 @@ pub async fn run_episodic_consolidation_sweep(
     {
         let mut all_source_event_ids: HashSet<i64> = HashSet::new();
 
+        // Separate unique facts from duplicates upfront so we can batch-embed in one call.
+        let mut pending: Vec<PendingFact> = Vec::new();
+
         for fact in extracted {
             let is_dup = {
                 let _span = tracing::info_span!("memory.episodic_consolidation.dedup").entered();
@@ -235,8 +246,6 @@ pub async fn run_episodic_consolidation_sweep(
 
             if is_dup {
                 result.duplicates_skipped += 1;
-                // Still mark source events — duplicate detection is not an error.
-                // Only mark valid (non-hallucinated) source IDs.
                 for id in fact
                     .source_event_ids
                     .iter()
@@ -248,7 +257,6 @@ pub async fn run_episodic_consolidation_sweep(
                 continue;
             }
 
-            // Compute aggregate cognitive weight for the fact's source events.
             let cog_weight = candidates
                 .iter()
                 .filter(|c| fact.source_event_ids.contains(&c.event_id))
@@ -263,7 +271,6 @@ pub async fn run_episodic_consolidation_sweep(
             #[allow(clippy::cast_possible_truncation)]
             let cog_weight_f32 = cog_weight as f32;
 
-            // S1: filter out LLM-hallucinated source IDs not in the candidate set.
             let valid_source_ids: Vec<i64> = fact
                 .source_event_ids
                 .iter()
@@ -271,18 +278,59 @@ pub async fn run_episodic_consolidation_sweep(
                 .filter(|id| candidates.iter().any(|c| c.event_id == *id))
                 .collect();
 
+            pending.push(PendingFact {
+                fact,
+                cog_weight_f32,
+                valid_source_ids,
+            });
+        }
+
+        // Batch-embed all non-duplicate facts in one call when Qdrant is available.
+        let embeddings: Vec<Option<Vec<f32>>> = if qdrant.is_some()
+            && provider.supports_embeddings()
+            && !pending.is_empty()
+        {
+            let texts: Vec<&str> = pending.iter().map(|p| p.fact.fact.as_str()).collect();
+            let span = tracing::info_span!("memory.episodic.embed_batch", count = texts.len());
+            let vecs = provider.embed_batch(&texts).instrument(span).await;
+            match vecs {
+                Ok(vecs) => {
+                    if vecs.len() == texts.len() {
+                        vecs.into_iter().map(Some).collect()
+                    } else {
+                        tracing::warn!(
+                            expected = texts.len(),
+                            got = vecs.len(),
+                            "episodic consolidation: embed_batch length mismatch, Qdrant upsert skipped"
+                        );
+                        pending.iter().map(|_| None).collect()
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "episodic consolidation: embed_batch failed, facts stored in SQLite only"
+                    );
+                    pending.iter().map(|_| None).collect()
+                }
+            }
+        } else {
+            pending.iter().map(|_| None).collect()
+        };
+
+        for (p, embedding) in pending.into_iter().zip(embeddings) {
             promote_fact(
                 &pool,
-                &fact.fact,
-                cog_weight_f32,
-                &valid_source_ids,
+                &p.fact.fact,
+                p.cog_weight_f32,
+                &p.valid_source_ids,
                 qdrant,
-                provider,
+                embedding,
             )
             .await?;
 
             result.facts_promoted += 1;
-            for id in &fact.source_event_ids {
+            for id in &p.fact.source_event_ids {
                 all_source_event_ids.insert(*id);
             }
         }
@@ -468,6 +516,7 @@ async fn extract_facts_via_llm(
 }
 
 /// Fetch the last `limit` consolidated facts for Jaccard dedup.
+#[tracing::instrument(skip(pool), name = "memory.episodic.fetch_existing_facts")]
 async fn fetch_existing_facts(pool: &DbPool, limit: i64) -> Result<Vec<String>, MemoryError> {
     let rows: Vec<(String,)> = zeph_db::query_as(sql!(
         "SELECT fact_text FROM consolidated_facts ORDER BY created_at DESC LIMIT ?1"
@@ -505,16 +554,17 @@ fn is_jaccard_duplicate(fact: &str, existing: &[String], threshold: f32) -> bool
 
 /// Promote a single accepted fact to `SQLite` and optionally Qdrant.
 ///
-/// All `SQLite` writes for one fact happen in one transaction.
-/// Embeddings are generated via `provider.embed` using the provider's default model.
-#[tracing::instrument(skip_all, name = "memory.episodic_consolidation.promote")]
+/// All `SQLite` writes for one fact happen in one transaction. The `embedding`
+/// parameter carries a pre-computed vector (from `embed_batch` in the caller).
+/// When `None`, Qdrant upsert is skipped (no embedding support, or batch failed).
+#[tracing::instrument(skip_all, name = "memory.episodic.promote_fact")]
 async fn promote_fact(
     pool: &DbPool,
     fact_text: &str,
     cognitive_weight: f32,
     source_event_ids: &[i64],
     qdrant: Option<&EmbeddingStore>,
-    provider: &AnyProvider,
+    embedding: Option<Vec<f32>>,
 ) -> Result<(), MemoryError> {
     // Persist fact and provenance links in a single transaction.
     let fact_id: i64 = {
@@ -547,38 +597,28 @@ async fn promote_fact(
         fid
     };
 
-    // Upsert into Qdrant `zeph_key_facts` when available.
-    if let Some(qdrant) = qdrant.filter(|_| provider.supports_embeddings()) {
-        match provider.embed(fact_text).await {
-            Ok(vector) => {
-                let vector_size = u64::try_from(vector.len()).unwrap_or(896);
-                if let Err(e) = qdrant
-                    .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
-                    .await
-                {
-                    tracing::warn!(error = %e, "episodic consolidation: failed to ensure key_facts collection");
-                } else {
-                    let payload = serde_json::json!({
-                        "fact_text": fact_text,
-                        "source": "episodic_consolidation",
-                        "cognitive_weight": cognitive_weight,
-                        "consolidated_fact_id": fact_id,
-                    });
-                    if let Err(e) = qdrant
-                        .store_to_collection(KEY_FACTS_COLLECTION, payload, vector)
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %e,
-                            "episodic consolidation: Qdrant upsert failed (SQLite fact was stored)"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
+    // Upsert into Qdrant `zeph_key_facts` when a pre-computed embedding is available.
+    if let (Some(qdrant), Some(vector)) = (qdrant, embedding) {
+        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
+        if let Err(e) = qdrant
+            .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
+            .await
+        {
+            tracing::warn!(error = %e, "episodic consolidation: failed to ensure key_facts collection");
+        } else {
+            let payload = serde_json::json!({
+                "fact_text": fact_text,
+                "source": "episodic_consolidation",
+                "cognitive_weight": cognitive_weight,
+                "consolidated_fact_id": fact_id,
+            });
+            if let Err(e) = qdrant
+                .store_to_collection(KEY_FACTS_COLLECTION, payload, vector)
+                .await
+            {
                 tracing::warn!(
                     error = %e,
-                    "episodic consolidation: embedding failed, fact stored in SQLite only"
+                    "episodic consolidation: Qdrant upsert failed (SQLite fact was stored)"
                 );
             }
         }
@@ -588,6 +628,7 @@ async fn promote_fact(
 }
 
 /// Mark an episodic event as consolidated.
+#[tracing::instrument(skip(pool), name = "memory.episodic.mark_consolidated")]
 async fn mark_consolidated(pool: &DbPool, event_id: i64) -> Result<(), MemoryError> {
     zeph_db::query(sql!(
         "UPDATE episodic_events SET consolidated_at = unixepoch() WHERE id = ?1"
