@@ -87,7 +87,7 @@ pub async fn graph_recall_astar(
         };
         for e in &entities {
             entity_name_map
-                .entry(e.id)
+                .entry(e.id.0)
                 .or_insert_with(|| e.canonical_name.clone());
         }
         all_db_edges.extend(edges);
@@ -300,11 +300,13 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "alice", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let b = store
             .upsert_entity("Bob", "bob", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None)
             .await

@@ -1096,13 +1096,15 @@ mod tests {
             .await
             .unwrap()
             .expect("entity 'alice' must exist")
-            .id;
+            .id
+            .0;
         let bob_id = gs
             .find_entity("bob", crate::graph::EntityType::Person)
             .await
             .unwrap()
             .expect("entity 'bob' must exist")
-            .id;
+            .id
+            .0;
         let edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
         assert_eq!(edges.len(), 1, "exactly one edge expected");
         // canonical_relation is lowercased; relation field preserves original casing post-strip

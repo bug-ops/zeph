@@ -973,6 +973,13 @@ pub struct MemoryConfig {
     /// and linked via causal relationships, enabling causal-chain retrieval.
     #[serde(default)]
     pub em_graph: EmGraphConfig,
+    /// Episodic-to-semantic consolidation daemon (issue #3799).
+    ///
+    /// When `episodic_consolidation.enabled = true`, a background loop periodically sweeps
+    /// mature `episodic_events`, extracts durable facts via LLM, deduplicates against existing
+    /// key facts, and promotes them to the semantic tier in `zeph_key_facts`.
+    #[serde(default)]
+    pub episodic_consolidation: EpisodicConsolidationConfig,
 }
 
 // ── MemFlow tiered retrieval config (issue #3712) ──────────────────────────────
@@ -1116,6 +1123,79 @@ impl Default for EmGraphConfig {
             enabled: false,
             extract_provider: ProviderName::default(),
             max_chain_depth: 3,
+        }
+    }
+}
+
+// ── Episodic consolidation daemon config (issue #3799) ────────────────────────
+
+fn default_episodic_consolidation_interval_secs() -> u64 {
+    1800
+}
+
+fn default_episodic_consolidation_batch_size() -> usize {
+    30
+}
+
+fn default_episodic_consolidation_min_age_secs() -> u64 {
+    300
+}
+
+fn default_episodic_consolidation_dedup_jaccard_threshold() -> f32 {
+    0.6
+}
+
+/// Episodic-to-semantic consolidation daemon configuration (issue #3799).
+///
+/// When `enabled = true`, a background loop periodically sweeps mature `episodic_events`,
+/// extracts durable factual statements via LLM, deduplicates them against existing
+/// key facts using Jaccard similarity, and promotes accepted facts to the semantic tier
+/// in both `consolidated_facts` (`SQLite` persistence) and `zeph_key_facts` (Qdrant, if available).
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.episodic_consolidation]
+/// enabled = false
+/// consolidation_provider = ""
+/// interval_secs = 1800
+/// batch_size = 30
+/// min_age_secs = 300
+/// dedup_jaccard_threshold = 0.6
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct EpisodicConsolidationConfig {
+    /// Enable the episodic consolidation daemon. Default: `false`.
+    pub enabled: bool,
+    /// Provider name from `[[llm.providers]]` for fact extraction LLM calls.
+    /// Falls back to the primary provider when empty.
+    pub consolidation_provider: ProviderName,
+    /// How often the consolidation sweep runs, in seconds. Default: `1800` (30 min).
+    #[serde(default = "default_episodic_consolidation_interval_secs")]
+    pub interval_secs: u64,
+    /// Maximum number of episodic events to process per sweep. Default: `30`.
+    #[serde(default = "default_episodic_consolidation_batch_size")]
+    pub batch_size: usize,
+    /// Minimum age in seconds before an episodic event is eligible. Default: `300` (5 min).
+    /// Prevents consolidating events from the active conversation.
+    #[serde(default = "default_episodic_consolidation_min_age_secs")]
+    pub min_age_secs: u64,
+    /// Jaccard similarity threshold for deduplication against existing key facts.
+    /// Facts with token-set Jaccard >= this value are considered duplicates. Default: `0.6`.
+    #[serde(default = "default_episodic_consolidation_dedup_jaccard_threshold")]
+    pub dedup_jaccard_threshold: f32,
+}
+
+impl Default for EpisodicConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            consolidation_provider: ProviderName::default(),
+            interval_secs: default_episodic_consolidation_interval_secs(),
+            batch_size: default_episodic_consolidation_batch_size(),
+            min_age_secs: default_episodic_consolidation_min_age_secs(),
+            dedup_jaccard_threshold: default_episodic_consolidation_dedup_jaccard_threshold(),
         }
     }
 }

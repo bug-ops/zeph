@@ -13,6 +13,7 @@ use zeph_db::{DbPool, sql};
 
 use crate::error::MemoryError;
 use crate::graph::store::GraphStore;
+use crate::types::{EntityId, ExperienceId};
 
 /// Statistics from a single graph evolution sweep.
 #[derive(Debug, Default)]
@@ -40,7 +41,7 @@ impl ExperienceStore {
 
     /// Record a tool execution outcome as an experience node.
     ///
-    /// Returns the row ID of the newly inserted experience node.
+    /// Returns the strongly typed row ID of the newly inserted experience node.
     ///
     /// # Errors
     ///
@@ -70,7 +71,7 @@ impl ExperienceStore {
         outcome: &str,
         detail: Option<&str>,
         error_ctx: Option<&str>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<ExperienceId, MemoryError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs().cast_signed());
@@ -90,7 +91,7 @@ impl ExperienceStore {
         .fetch_one(&self.pool)
         .await
         .map_err(MemoryError::from)?;
-        Ok(id)
+        Ok(ExperienceId(id))
     }
 
     /// Link an experience node to one or more knowledge graph entities.
@@ -102,17 +103,18 @@ impl ExperienceStore {
     /// Returns [`MemoryError`] if any database insert fails.
     pub async fn link_to_entities(
         &self,
-        experience_id: i64,
-        entity_ids: &[i64],
+        experience_id: ExperienceId,
+        entity_ids: &[EntityId],
     ) -> Result<(), MemoryError> {
-        let _span = tracing::info_span!("memory.experience.link_entities", experience_id).entered();
+        let _span =
+            tracing::info_span!("memory.experience.link_entities", exp = experience_id.0).entered();
         for &entity_id in entity_ids {
             zeph_db::query(sql!(
                 "INSERT OR IGNORE INTO experience_entity_links
                  (experience_id, entity_id) VALUES (?1, ?2)"
             ))
-            .bind(experience_id)
-            .bind(entity_id)
+            .bind(experience_id.0)
+            .bind(entity_id.0)
             .execute(&self.pool)
             .await
             .map_err(MemoryError::from)?;
@@ -125,14 +127,18 @@ impl ExperienceStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] if the database insert fails.
-    pub async fn link_sequential(&self, prev: i64, next: i64) -> Result<(), MemoryError> {
+    pub async fn link_sequential(
+        &self,
+        prev: ExperienceId,
+        next: ExperienceId,
+    ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "INSERT INTO experience_edges
              (source_exp_id, target_exp_id, relation)
              VALUES (?1, ?2, 'followed_by')"
         ))
-        .bind(prev)
-        .bind(next)
+        .bind(prev.0)
+        .bind(next.0)
         .execute(&self.pool)
         .await
         .map_err(MemoryError::from)?;
@@ -204,13 +210,13 @@ mod tests {
             .record_tool_outcome("sess1", 1, "shell", "success", Some("exit 0"), None)
             .await
             .unwrap();
-        assert!(id > 0);
+        assert!(id.0 > 0);
 
         let (sid, turn, tool, outcome): (String, i64, String, String) = sqlx::query_as(sql!(
             "SELECT session_id, turn, tool_name, outcome
                  FROM experience_nodes WHERE id = ?1"
         ))
-        .bind(id)
+        .bind(id.0)
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -218,6 +224,45 @@ mod tests {
         assert_eq!(turn, 1);
         assert_eq!(tool, "shell");
         assert_eq!(outcome, "success");
+    }
+
+    #[tokio::test]
+    async fn link_to_entities_populates_link_table() {
+        let (exp, gs, pool) = setup().await;
+        let exp_id = exp
+            .record_tool_outcome("sess2", 1, "shell", "success", None, None)
+            .await
+            .unwrap();
+        let e1 = gs
+            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .await
+            .unwrap();
+        let e2 = gs
+            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .await
+            .unwrap();
+
+        exp.link_to_entities(exp_id, &[e1, e2]).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar(sql!(
+            "SELECT COUNT(*) FROM experience_entity_links WHERE experience_id = ?1"
+        ))
+        .bind(exp_id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 2, "both entity links must be inserted");
+
+        // Idempotency: second call must not duplicate rows.
+        exp.link_to_entities(exp_id, &[e1]).await.unwrap();
+        let count2: i64 = sqlx::query_scalar(sql!(
+            "SELECT COUNT(*) FROM experience_entity_links WHERE experience_id = ?1"
+        ))
+        .bind(exp_id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count2, 2, "INSERT OR IGNORE must prevent duplicate links");
     }
 
     #[tokio::test]
@@ -238,12 +283,12 @@ mod tests {
             "SELECT source_exp_id, target_exp_id, relation
              FROM experience_edges WHERE source_exp_id = ?1"
         ))
-        .bind(id1)
+        .bind(id1.0)
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(src, id1);
-        assert_eq!(tgt, id2);
+        assert_eq!(src, id1.0);
+        assert_eq!(tgt, id2.0);
         assert_eq!(rel, "followed_by");
     }
 
@@ -271,7 +316,7 @@ mod tests {
              (source_entity_id, target_entity_id, relation, fact, confidence, edge_type)
              VALUES (?1, ?1, 'knows', 'self', 0.5, 'semantic')"
         ))
-        .bind(e1)
+        .bind(e1.0)
         .execute(&pool)
         .await
         .unwrap();
@@ -290,7 +335,7 @@ mod tests {
         .unwrap();
 
         // Insert a normal edge that must survive the sweep.
-        gs.insert_edge(e1, e2, "knows", "Alice knows Bob", 0.9, None)
+        gs.insert_edge(e1.0, e2.0, "knows", "Alice knows Bob", 0.9, None)
             .await
             .unwrap();
 
@@ -302,8 +347,8 @@ mod tests {
             "SELECT COUNT(*) FROM graph_edges
              WHERE source_entity_id = ?1 AND target_entity_id = ?2"
         ))
-        .bind(e1)
-        .bind(e2)
+        .bind(e1.0)
+        .bind(e2.0)
         .fetch_one(&pool)
         .await
         .unwrap();

@@ -1449,11 +1449,13 @@ async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
                 Some("systems language"),
             )
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let tokio_id = store
             .upsert_entity("tokio", "tokio", EntityType::Tool, Some("async runtime"))
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         store
             .insert_edge(rust_id, tokio_id, "uses", "Rust uses tokio", 0.9, None)
             .await

@@ -62,7 +62,8 @@ async fn seed_entity(
     let entity_id = graph
         .upsert_entity(name, name, EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({

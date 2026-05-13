@@ -6,7 +6,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::types::MessageId;
+use crate::types::{EntityId, MessageId};
 
 /// MAGMA edge type: the semantic category of a relationship between two entities.
 ///
@@ -84,7 +84,7 @@ impl FromStr for EntityType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entity {
     /// `SQLite` row ID.
-    pub id: i64,
+    pub id: EntityId,
     /// Raw extracted name as it appeared in the source text.
     pub name: String,
     /// Normalized canonical name (lowercase, de-aliased).
@@ -107,7 +107,7 @@ pub struct EntityAlias {
     /// `SQLite` row ID.
     pub id: i64,
     /// The entity this alias resolves to.
-    pub entity_id: i64,
+    pub entity_id: EntityId,
     /// The alternate name string.
     pub alias_name: String,
     /// ISO 8601 timestamp when the alias was recorded.
@@ -201,7 +201,7 @@ pub struct Community {
     /// LLM-generated summary of what the community's entities share.
     pub summary: String,
     /// IDs of all entities assigned to this community.
-    pub entity_ids: Vec<i64>,
+    pub entity_ids: Vec<EntityId>,
     /// Content fingerprint used to detect stale communities after membership changes.
     pub fingerprint: Option<String>,
     /// ISO 8601 timestamp when the community was detected.

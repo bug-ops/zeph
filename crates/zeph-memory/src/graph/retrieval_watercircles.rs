@@ -94,7 +94,7 @@ pub async fn graph_recall_watercircles(
 
             let name_map: HashMap<i64, &str> = entities
                 .iter()
-                .map(|e| (e.id, e.canonical_name.as_str()))
+                .map(|e| (e.id.0, e.canonical_name.as_str()))
                 .collect();
 
             let traversed_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
@@ -254,7 +254,8 @@ mod tests {
         let root = store
             .upsert_entity("Root", "root", EntityType::Concept, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         for i in 0..10usize {
             let target = store
                 .upsert_entity(
@@ -264,7 +265,8 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .0;
             store
                 .insert_edge(root, target, "has", &format!("Root has T{i}"), 0.8, None)
                 .await

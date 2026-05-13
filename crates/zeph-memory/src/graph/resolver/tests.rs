@@ -149,11 +149,13 @@ async fn resolve_edge_inserts_new() {
     let src = gs
         .upsert_entity("src", "src", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let tgt = gs
         .upsert_entity("tgt", "tgt", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let result = resolver
         .resolve_edge(src, tgt, "uses", "src uses tgt", 0.9, None)
@@ -171,11 +173,13 @@ async fn resolve_edge_deduplicates_identical() {
     let src = gs
         .upsert_entity("a", "a", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let tgt = gs
         .upsert_entity("b", "b", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let first = resolver
         .resolve_edge(src, tgt, "uses", "a uses b", 0.9, None)
@@ -198,11 +202,13 @@ async fn resolve_edge_supersedes_contradictory() {
     let src = gs
         .upsert_entity("x", "x", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let tgt = gs
         .upsert_entity("y", "y", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let first_id = resolver
         .resolve_edge(src, tgt, "prefers", "x prefers y (old)", 0.8, None)
@@ -232,11 +238,13 @@ async fn resolve_edge_direction_sensitive() {
     let a = gs
         .upsert_entity("node_a", "node_a", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let b = gs
         .upsert_entity("node_b", "node_b", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     // Insert A->B
     let id1 = resolver
@@ -265,11 +273,13 @@ async fn resolve_edge_normalizes_relation_case() {
     let src = gs
         .upsert_entity("p", "p", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let tgt = gs
         .upsert_entity("q", "q", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     // Insert with uppercase relation
     let id1 = resolver
@@ -439,7 +449,8 @@ async fn resolve_with_embedding_store_score_above_threshold_merges() {
             Some("a programming language"),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -492,7 +503,8 @@ async fn resolve_with_embedding_store_score_below_ambiguous_creates_new() {
     let existing_id = gs
         .upsert_entity("java", "java", EntityType::Language, Some("java language"))
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     // Existing uses [1,0,0,0]; new entity will embed to [0,1,0,0] (orthogonal, score=0)
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -630,7 +642,8 @@ async fn merge_combines_summaries() {
             Some("first summary"),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -692,7 +705,8 @@ async fn merge_preserves_older_entity_id() {
             Some("old info"),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -740,7 +754,8 @@ async fn entity_type_filter_prevents_cross_type_merge() {
             Some("a person named python"),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -795,7 +810,8 @@ async fn custom_thresholds_respected() {
             Some("base"),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let existing_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -876,7 +892,8 @@ async fn seed_entity_with_vector(
     let id = gs
         .upsert_entity(name, name, entity_type, Some(summary))
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     emb.ensure_named_collection(ENTITY_COLLECTION, u64::try_from(vector.len()).unwrap())
         .await
         .unwrap();
@@ -1125,7 +1142,8 @@ async fn resolve_entity_with_many_aliases() {
     let id = gs
         .upsert_entity("bigentity", "bigentity", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     for i in 0..100 {
         gs.add_alias(id, &format!("alias-{i}")).await.unwrap();
     }
@@ -1134,5 +1152,5 @@ async fn resolve_entity_with_many_aliases() {
 
     // Fuzzy search should still work via alias
     let results = gs.find_entities_fuzzy("alias-50", 10).await.unwrap();
-    assert!(results.iter().any(|e| e.id == id));
+    assert!(results.iter().any(|e| e.id.0 == id));
 }

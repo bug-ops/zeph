@@ -35,11 +35,13 @@ async fn recall_graph_returns_facts_for_known_entity() {
     let rust_id = store
         .upsert_entity("rust", "rust", EntityType::Language, Some("a language"))
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let tokio_id = store
         .upsert_entity("tokio", "tokio", EntityType::Tool, Some("async runtime"))
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     store
         .insert_edge(
             rust_id,
@@ -69,15 +71,18 @@ async fn recall_graph_sorted_by_composite_score() {
     let a_id = store
         .upsert_entity("entity_a", "entity_a", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let b_id = store
         .upsert_entity("entity_b", "entity_b", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let c_id = store
         .upsert_entity("entity_c", "entity_c", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     store
         .insert_edge(a_id, b_id, "relates", "a relates b", 0.9, None)
         .await
@@ -166,13 +171,15 @@ async fn recall_graph_truncates_to_limit() {
     let root_id = store
         .upsert_entity("root", "root", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     for i in 0..5 {
         let name = format!("target_{i}");
         let tid = store
             .upsert_entity(&name, &name, EntityType::Concept, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         store
             .insert_edge(
                 root_id,
@@ -201,15 +208,18 @@ async fn recall_graph_multi_hop_traverses_two_hops() {
     let a_id = store
         .upsert_entity("a_entity", "a_entity", EntityType::Person, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let b_id = store
         .upsert_entity("b_entity", "b_entity", EntityType::Person, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let c_id = store
         .upsert_entity("c_entity", "c_entity", EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     store
         .insert_edge(a_id, b_id, "knows", "a knows b", 0.9, None)
@@ -384,7 +394,8 @@ async fn seed_entity_with_zero_embedding(
     let id = store
         .upsert_entity(name, name, EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({
@@ -434,7 +445,8 @@ async fn seed_entity_no_db_point_id(
     let id = store
         .upsert_entity(name, name, EntityType::Concept, None)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({

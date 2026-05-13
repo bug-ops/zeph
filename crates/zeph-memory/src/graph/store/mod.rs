@@ -17,7 +17,7 @@ use zeph_db::{ActiveDialect, DbPool, numbered_placeholder, placeholder_list};
 
 use crate::error::MemoryError;
 use crate::graph::conflict::{ApexMetrics, SUPERSEDE_DEPTH_CAP};
-use crate::types::MessageId;
+use crate::types::{EntityId, MessageId};
 
 use super::types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType};
 
@@ -64,7 +64,7 @@ impl GraphStore {
         canonical_name: &str,
         entity_type: EntityType,
         summary: Option<&str>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EntityId, MemoryError> {
         let type_str = entity_type.as_str();
         let id: i64 = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_entities (name, canonical_name, entity_type, summary)
@@ -81,7 +81,7 @@ impl GraphStore {
         .bind(summary)
         .fetch_one(&self.pool)
         .await?;
-        Ok(id)
+        Ok(EntityId(id))
     }
 
     /// Find an entity by exact canonical name and type.
@@ -869,7 +869,8 @@ impl GraphStore {
         .await?;
         match row {
             Some(row) => {
-                let entity_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+                let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+                let entity_ids = raw_ids.into_iter().map(EntityId).collect();
                 Ok(Some(Community {
                     id: row.id,
                     name: row.name,
@@ -900,7 +901,8 @@ impl GraphStore {
 
         rows.into_iter()
             .map(|row| {
-                let entity_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+                let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+                let entity_ids = raw_ids.into_iter().map(EntityId).collect();
                 Ok(Community {
                     id: row.id,
                     name: row.name,
@@ -1039,7 +1041,8 @@ impl GraphStore {
         .await?;
         match row {
             Some(row) => {
-                let entity_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+                let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
+                let entity_ids = raw_ids.into_iter().map(EntityId).collect();
                 Ok(Some(Community {
                     id: row.id,
                     name: row.name,
@@ -2171,7 +2174,7 @@ fn entity_from_row(row: EntityRow) -> Result<Entity, MemoryError> {
         .parse::<EntityType>()
         .map_err(MemoryError::GraphStore)?;
     Ok(Entity {
-        id: row.id,
+        id: EntityId(row.id),
         name: row.name,
         canonical_name: row.canonical_name,
         entity_type,
@@ -2193,7 +2196,7 @@ struct AliasRow {
 fn alias_from_row(row: AliasRow) -> EntityAlias {
     EntityAlias {
         id: row.id,
-        entity_id: row.entity_id,
+        entity_id: EntityId(row.entity_id),
         alias_name: row.alias_name,
         created_at: row.created_at,
     }
@@ -2963,7 +2966,7 @@ fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Vec<(Entity, f32)> {
             .parse()
             .unwrap_or(super::types::EntityType::Concept);
         let entity = Entity {
-            id,
+            id: EntityId(id),
             name,
             canonical_name,
             entity_type,

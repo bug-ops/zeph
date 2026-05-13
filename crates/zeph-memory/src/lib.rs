@@ -55,6 +55,7 @@
 //! - [`tiers::start_tier_promotion_loop`] — Episodic → Semantic promotion.
 //! - [`semantic::start_tree_consolidation_loop`] — hierarchical note consolidation.
 //! - [`hebbian_consolidation::spawn_consolidation_loop`] — HL-F3/F4 cluster distillation.
+//! - [`episodic_consolidation::start_episodic_consolidation_loop`] — episodic → semantic fact extraction.
 //!
 //! # Feature flags
 //!
@@ -71,6 +72,7 @@ pub mod compression;
 pub mod compression_guidelines;
 pub mod consolidation;
 pub mod document;
+pub mod episodic_consolidation;
 pub mod episodic_graph;
 pub mod facade;
 pub mod forgetting;
@@ -136,6 +138,10 @@ pub use embedding_registry::{
     EmbedFuture, Embeddable, EmbeddingRegistry, EmbeddingRegistryError, SyncStats,
 };
 pub use embedding_store::ensure_qdrant_collection;
+pub use episodic_consolidation::{
+    EpisodicConsolidationConfig, EpisodicConsolidationResult, run_episodic_consolidation_sweep,
+    start_episodic_consolidation_loop,
+};
 pub use episodic_graph::{
     CausalLink, EmGraphConfig, EpisodicEvent, extract_events, fetch_recent_events, link_events,
     recall_episodic_causal, store_events, store_links,
@@ -204,7 +210,7 @@ pub use tiered_retrieval::{
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;
-pub use types::{ConversationId, MemSceneId, MemoryTier, MessageId};
+pub use types::{ConversationId, EntityId, ExperienceId, MemSceneId, MemoryTier, MessageId};
 pub use vector_store::{
     FieldCondition, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,
     VectorStoreError,

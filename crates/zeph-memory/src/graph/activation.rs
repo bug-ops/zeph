@@ -801,7 +801,8 @@ mod tests {
         let alice = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
 
         let sa = SpreadingActivation::new(default_params());
         let seeds = HashMap::from([(alice, 1.0_f32)]);
@@ -819,15 +820,18 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let b = store
             .upsert_entity("B", "B", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let c = store
             .upsert_entity("C", "C", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         store
             .insert_edge(a, b, "knows", "A knows B", 1.0, None)
             .await
@@ -870,15 +874,18 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let b = store
             .upsert_entity("B", "B", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let c = store
             .upsert_entity("C", "C", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         store
             .insert_edge(a, b, "knows", "A knows B", 1.0, None)
             .await
@@ -909,19 +916,23 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let b = store
             .upsert_entity("B", "B", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let c = store
             .upsert_entity("C", "C", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let d = store
             .upsert_entity("D", "D", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         store
             .insert_edge(a, b, "rel", "A-B", 1.0, None)
             .await
@@ -963,7 +974,8 @@ mod tests {
         let hub = store
             .upsert_entity("Hub", "Hub", EntityType::Concept, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
 
         for i in 0..5 {
             let leaf = store
@@ -974,7 +986,8 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .0;
             store
                 .insert_edge(hub, leaf, "has", &format!("Hub has Leaf{i}"), 1.0, None)
                 .await
@@ -1017,7 +1030,8 @@ mod tests {
         let root = store
             .upsert_entity("Root", "Root", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
 
         // Create 20 leaf nodes connected to root
         for i in 0..20 {
@@ -1029,7 +1043,8 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .0;
             store
                 .insert_edge(root, leaf, "has", &format!("Root has Node{i}"), 0.9, None)
                 .await
@@ -1060,15 +1075,18 @@ mod tests {
         let src = store
             .upsert_entity("Src", "Src", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let recent = store
             .upsert_entity("Recent", "Recent", EntityType::Tool, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let old = store
             .upsert_entity("Old", "Old", EntityType::Tool, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
 
         // Insert recent edge (default valid_from = now)
         store
@@ -1119,15 +1137,18 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let b_semantic = store
             .upsert_entity("BSemantic", "BSemantic", EntityType::Tool, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let c_causal = store
             .upsert_entity("CCausal", "CCausal", EntityType::Concept, None)
             .await
-            .unwrap();
+            .unwrap()
+            .0;
 
         // Semantic edge from A
         store
@@ -1183,7 +1204,8 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .0;
             seeds.insert(id, 1.0_f32);
         }
 

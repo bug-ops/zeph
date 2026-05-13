@@ -129,6 +129,76 @@ impl std::fmt::Display for MessageId {
     }
 }
 
+/// Strongly typed wrapper for `experience_nodes.id` row IDs.
+///
+/// Prevents accidental confusion with [`EntityId`], [`ConversationId`], or [`MessageId`]
+/// at experience-memory API boundaries.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::ExperienceId;
+///
+/// let id = ExperienceId(10);
+/// assert_eq!(id.to_string(), "10");
+/// ```
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    sqlx::Type,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[sqlx(transparent)]
+pub struct ExperienceId(pub i64);
+
+impl std::fmt::Display for ExperienceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Strongly typed wrapper for `graph_entities.id` row IDs.
+///
+/// Prevents confusion with [`ExperienceId`] or other integer IDs at graph-store
+/// API boundaries.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::EntityId;
+///
+/// let id = EntityId(5);
+/// assert_eq!(id.to_string(), "5");
+/// ```
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    sqlx::Type,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[sqlx(transparent)]
+pub struct EntityId(pub i64);
+
+impl std::fmt::Display for EntityId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +254,33 @@ mod tests {
         let id = MessageId(5);
         let copied = id;
         assert_eq!(id, copied);
+    }
+
+    #[test]
+    fn experience_id_display() {
+        let id = ExperienceId(10);
+        assert_eq!(format!("{id}"), "10");
+    }
+
+    #[test]
+    fn entity_id_display() {
+        let id = EntityId(5);
+        assert_eq!(format!("{id}"), "5");
+    }
+
+    #[test]
+    fn experience_id_ord() {
+        assert!(ExperienceId(1) < ExperienceId(2));
+        assert_eq!(ExperienceId(3), ExperienceId(3));
+    }
+
+    #[test]
+    fn entity_id_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(EntityId(1));
+        set.insert(EntityId(2));
+        set.insert(EntityId(1));
+        assert_eq!(set.len(), 2);
     }
 }

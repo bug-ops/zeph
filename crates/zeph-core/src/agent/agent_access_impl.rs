@@ -172,7 +172,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
             let entity = &matches[0];
             let edges = store
-                .edges_for_entity(entity.id)
+                .edges_for_entity(entity.id.0)
                 .await
                 .map_err(|e| CommandError::new(e.to_string()))?;
             if edges.is_empty() {
@@ -181,9 +181,9 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
             let mut entity_names: std::collections::HashMap<i64, String> =
                 std::collections::HashMap::new();
-            entity_names.insert(entity.id, entity.name.clone());
+            entity_names.insert(entity.id.0, entity.name.clone());
             for edge in &edges {
-                let other_id = if edge.source_entity_id == entity.id {
+                let other_id = if edge.source_entity_id == entity.id.0 {
                     edge.target_entity_id
                 } else {
                     edge.source_entity_id
@@ -247,7 +247,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
             let entity = &matches[0];
             let edges = store
-                .edge_history_for_entity(entity.id, 50)
+                .edge_history_for_entity(entity.id.0, 50)
                 .await
                 .map_err(|e| CommandError::new(e.to_string()))?;
             if edges.is_empty() {
@@ -256,7 +256,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
 
             let mut entity_names: std::collections::HashMap<i64, String> =
                 std::collections::HashMap::new();
-            entity_names.insert(entity.id, entity.name.clone());
+            entity_names.insert(entity.id.0, entity.name.clone());
             for edge in &edges {
                 for &id in &[edge.source_entity_id, edge.target_entity_id] {
                     entity_names.entry(id).or_default();

@@ -17,6 +17,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `enabled`, `classifier_provider`, `validator_provider`, `token_budget`, `validation_enabled`,
   `validation_threshold`, `max_escalations`.
 
+- feat(memory): introduce `EntityId(i64)` and `ExperienceId(i64)` newtype wrappers (issue #3795).
+  `GraphStore::upsert_entity` now returns `(i64, EntityId)` — the raw `i64` is used at all call
+  sites requiring plain DB IDs; the `EntityId` newtype is stored on `Entity.id` to prevent silent
+  swaps between entity IDs and other integer types across the graph subsystem.
+
+- feat(memory): implement episodic-to-semantic consolidation daemon (issue #3799). New
+  `EpisodicConsolidationDaemon` background loop periodically sweeps unconsolidated
+  `episodic_events` rows, extracts durable facts via LLM, deduplicates with Jaccard token
+  overlap, persists to `consolidated_facts` / `consolidated_fact_sources` tables (migration 087),
+  optionally promotes high-confidence facts to the Qdrant `zeph_key_facts` semantic tier, and
+  marks processed events with `consolidated_at`. Controlled by `[memory.episodic_consolidation]`
+  config section: `enabled`, `consolidation_provider`, `interval_secs`, `batch_size`,
+  `min_age_secs`, `dedup_jaccard_threshold`.
+
 - feat(memory): implement ScrapMem optical forgetting and EM-Graph (issue #3713). New
   `optical_forgetting` module progressively compresses old messages through three fidelity
   levels — `Full` → `Compressed` → `SummaryOnly` — by scheduling background LLM sweeps.

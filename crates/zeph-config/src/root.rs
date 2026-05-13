@@ -278,6 +278,7 @@ impl Default for Config {
                 tiered_retrieval: crate::memory::TieredRetrievalConfig::default(),
                 optical_forgetting: crate::memory::OpticalForgettingConfig::default(),
                 em_graph: crate::memory::EmGraphConfig::default(),
+                episodic_consolidation: crate::memory::EpisodicConsolidationConfig::default(),
             },
             telegram: None,
             discord: None,

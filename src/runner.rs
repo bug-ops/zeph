@@ -1642,6 +1642,40 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
+    if config.memory.episodic_consolidation.enabled {
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let ep_cfg = zeph_memory::EpisodicConsolidationConfig {
+            enabled: config.memory.episodic_consolidation.enabled,
+            consolidation_provider: config
+                .memory
+                .episodic_consolidation
+                .consolidation_provider
+                .to_string(),
+            interval_secs: config.memory.episodic_consolidation.interval_secs,
+            batch_size: config.memory.episodic_consolidation.batch_size,
+            min_age_secs: config.memory.episodic_consolidation.min_age_secs,
+            dedup_jaccard_threshold: config.memory.episodic_consolidation.dedup_jaccard_threshold,
+        };
+        let ep_provider = app
+            .build_episodic_consolidation_provider()
+            .unwrap_or_else(|| provider.clone());
+        let ep_qdrant = memory.embedding_store().cloned();
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-episodic-consolidation",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_episodic_consolidation_loop(
+                    store.clone(),
+                    ep_provider.clone(),
+                    ep_cfg.clone(),
+                    ep_qdrant.clone(),
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+
     let skill_paths = app.skill_paths_for_registry();
     // Cloned so the original can be moved into `with_skill_reload` while the copy is used
     // later for proactive exploration and promotion engine output directory resolution.

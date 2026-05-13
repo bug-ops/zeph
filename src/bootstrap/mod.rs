@@ -1356,6 +1356,35 @@ impl AppBuilder {
         }
     }
 
+    /// Build a dedicated provider for episodic-to-semantic consolidation LLM calls (#3799).
+    ///
+    /// Returns `None` when `consolidation_provider` is empty or resolution fails; the caller
+    /// falls back to the primary provider.
+    pub fn build_episodic_consolidation_provider(&self) -> Option<AnyProvider> {
+        let name = &self
+            .config
+            .memory
+            .episodic_consolidation
+            .consolidation_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "episodic consolidation provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "episodic consolidation provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for orchestration planner LLM calls.
     ///
     /// Returns `None` when `planner_provider` is empty (falls back to primary provider at call site).

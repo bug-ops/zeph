@@ -215,7 +215,7 @@ impl<'a> EntityResolver<'a> {
             self.store
                 .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
                 .await?;
-            return Ok((entity.id, ResolutionOutcome::ExactMatch));
+            return Ok((entity.id.0, ResolutionOutcome::ExactMatch));
         }
 
         // Step 4: canonical name lookup.
@@ -223,7 +223,7 @@ impl<'a> EntityResolver<'a> {
             self.store
                 .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
                 .await?;
-            return Ok((entity.id, ResolutionOutcome::ExactMatch));
+            return Ok((entity.id.0, ResolutionOutcome::ExactMatch));
         }
 
         // Step 5: Embedding-based resolution (when configured).
@@ -240,9 +240,10 @@ impl<'a> EntityResolver<'a> {
             .upsert_entity(&surface_name, &normalized, et, summary)
             .await?;
 
-        self.register_aliases(entity_id, &normalized, name).await?;
+        self.register_aliases(entity_id.0, &normalized, name)
+            .await?;
 
-        Ok((entity_id, ResolutionOutcome::Created))
+        Ok((entity_id.0, ResolutionOutcome::Created))
     }
 
     /// Compute embedding for an entity, incrementing `fallback_count` on failure/timeout.
@@ -488,11 +489,11 @@ impl<'a> EntityResolver<'a> {
             .store
             .upsert_entity(surface_name, normalized, et, summary)
             .await?;
-        self.register_aliases(entity_id, normalized, original_name)
+        self.register_aliases(entity_id.0, normalized, original_name)
             .await?;
         self.store_entity_embedding(
             emb_store,
-            entity_id,
+            entity_id.0,
             None,
             normalized,
             et,
@@ -500,7 +501,7 @@ impl<'a> EntityResolver<'a> {
             query_vec,
         )
         .await;
-        Ok((entity_id, ResolutionOutcome::Created))
+        Ok((entity_id.0, ResolutionOutcome::Created))
     }
 
     /// Register the normalized form and original trimmed form as aliases for an entity.
