@@ -35,7 +35,7 @@ use zeph_llm::any::AnyProvider;
 
 use crate::embedding_store::SearchFilter;
 use crate::error::MemoryError;
-use crate::router::{AsyncMemoryRouter, HeuristicRouter, MemoryRoute, MemoryRouter};
+use crate::router::{HeuristicRouter, HybridRouter, MemoryRoute, MemoryRouter};
 use crate::semantic::RecalledMessage;
 use crate::semantic::SemanticMemory;
 use crate::types::ConversationId;
@@ -111,11 +111,18 @@ pub struct TieredRetrievalResult {
 
 /// Execute `MemFlow` tiered retrieval for a single query.
 ///
-/// 1. Classify intent using the heuristic router (or provide an async router via
-///    [`recall_tiered_async`] for LLM-backed classification).
-/// 2. Retrieve candidates for the selected tier.
-/// 3. Assemble evidence within `remaining_budget` tokens (further constrained to `config.token_budget`).
-/// 4. Optionally validate with `validator_provider` and escalate tier if confidence is low.
+/// Classifies intent, retrieves tier candidates, assembles evidence within budget, and
+/// optionally validates + escalates if evidence is insufficient.
+///
+/// `classifier` should be the provider resolved from
+/// [`TieredRetrievalConfig::classifier_provider`]. When `Some`, a [`HybridRouter`] is
+/// used for LLM-backed intent classification (with [`HeuristicRouter`] as fallback on
+/// LLM failure). When `None`, only the heuristic router is used.
+///
+/// `validator` should be the provider resolved from
+/// [`TieredRetrievalConfig::validator_provider`]. When `Some` and
+/// `config.validation_enabled` is `true`, the validator LLM judges evidence quality and
+/// triggers tier escalation when confidence is low.
 ///
 /// `conversation_id` scopes the search to a single conversation. Pass `None` to search globally.
 ///
@@ -130,7 +137,7 @@ pub async fn recall_tiered(
     memory: &SemanticMemory,
     query: &str,
     conversation_id: Option<ConversationId>,
-    router: &dyn MemoryRouter,
+    classifier: Option<&Arc<AnyProvider>>,
     validator: Option<&Arc<AnyProvider>>,
     config: &TieredRetrievalConfig,
     remaining_budget: Option<usize>,
@@ -138,9 +145,58 @@ pub async fn recall_tiered(
     let effective_budget =
         remaining_budget.map_or(config.token_budget, |rb| rb.min(config.token_budget));
 
-    let initial_intent = classify_intent(query, router);
+    let initial_intent = if let Some(classifier_provider) = classifier {
+        let hybrid = HybridRouter::new(
+            Arc::clone(classifier_provider),
+            MemoryRoute::Hybrid,
+            // 0.7 is the codebase-wide default for HybridRouter confidence threshold
+            0.7,
+        );
+        let decision = if let Ok(d) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            hybrid.classify_async(query),
+        )
+        .await
+        {
+            d
+        } else {
+            tracing::warn!("tiered: classifier LLM timed out, falling back to heuristic");
+            HeuristicRouter.route_with_confidence(query)
+        };
+        IntentClass::from_route(decision.route)
+    } else {
+        let decision = HeuristicRouter.route_with_confidence(query);
+        IntentClass::from_route(decision.route)
+    };
+
     tracing::debug!(intent = %initial_intent, query_len = query.len(), "tiered: classified intent");
 
+    escalation_loop(
+        memory,
+        query,
+        conversation_id,
+        initial_intent,
+        validator,
+        config,
+        effective_budget,
+    )
+    .await
+}
+
+/// Inner escalation loop shared across retrieval entry points.
+///
+/// Iterates through tiers starting at `initial_intent`, retrieving candidates and
+/// validating evidence quality. Escalates to heavier tiers when validation indicates
+/// insufficient evidence.
+async fn escalation_loop(
+    memory: &SemanticMemory,
+    query: &str,
+    conversation_id: Option<ConversationId>,
+    initial_intent: IntentClass,
+    validator: Option<&Arc<AnyProvider>>,
+    config: &TieredRetrievalConfig,
+    effective_budget: usize,
+) -> Result<TieredRetrievalResult, MemoryError> {
     let mut intent = initial_intent;
     let mut escalations: u8 = 0;
     let mut tier_escalated = false;
@@ -194,19 +250,6 @@ pub async fn recall_tiered(
             tier_escalated,
         });
     }
-}
-
-/// Classify query intent using the provided router.
-///
-/// When the router is an async-capable type the async path is used; otherwise the
-/// heuristic sync path is taken. LLM failures in the router are already handled by
-/// the router itself (fall-open to heuristic).
-fn classify_intent(query: &str, router: &dyn MemoryRouter) -> IntentClass {
-    let _span = tracing::debug_span!("memory.tiered.classify").entered();
-
-    // Sync heuristic path; use recall_tiered_async for LLM-backed classification.
-    let decision = router.route_with_confidence(query);
-    IntentClass::from_route(decision.route)
 }
 
 /// Retrieve candidates for the given intent tier from `SemanticMemory`.
@@ -336,91 +379,6 @@ fn parse_validation_response(raw: &str, threshold: f32) -> bool {
 
     tracing::debug!("tiered: could not parse validator response, treating as sufficient");
     true
-}
-
-// ── Async routing adapter ─────────────────────────────────────────────────────
-
-/// Execute `MemFlow` tiered retrieval using an async-capable router for intent classification.
-///
-/// This variant allows LLM-backed routers (e.g. `HybridRouter`, `LlmRouter`) to participate
-/// in intent classification via their `route_async` implementation.
-///
-/// `conversation_id` scopes the search to a single conversation. Pass `None` to search globally.
-///
-/// # Errors
-///
-/// Returns an error if any underlying search or database operation fails.
-pub async fn recall_tiered_async(
-    memory: &SemanticMemory,
-    query: &str,
-    conversation_id: Option<ConversationId>,
-    router: &dyn AsyncMemoryRouter,
-    validator: Option<&Arc<AnyProvider>>,
-    config: &TieredRetrievalConfig,
-    remaining_budget: Option<usize>,
-) -> Result<TieredRetrievalResult, MemoryError> {
-    let effective_budget =
-        remaining_budget.map_or(config.token_budget, |rb| rb.min(config.token_budget));
-
-    let decision = {
-        let _span = tracing::debug_span!("memory.tiered.classify").entered();
-        router.route_async(query).await
-    };
-    let initial_intent = IntentClass::from_route(decision.route);
-    tracing::debug!(intent = %initial_intent, confidence = decision.confidence, "tiered: async classified intent");
-
-    let mut intent = initial_intent;
-    let mut escalations: u8 = 0;
-    let mut tier_escalated = false;
-
-    loop {
-        let candidates = {
-            let _span =
-                tracing::debug_span!("memory.tiered.retrieve_tier", tier = %intent).entered();
-            retrieve_tier(memory, query, conversation_id, intent).await?
-        };
-
-        let (messages, tokens_used) = {
-            let _span = tracing::debug_span!("memory.tiered.assemble").entered();
-            assemble_within_budget(candidates, effective_budget)
-        };
-
-        if config.validation_enabled
-            && escalations < config.max_escalations
-            && let Some(validator_provider) = validator
-            && let Some(next_tier) = intent.escalate()
-        {
-            let sufficient = {
-                let _span = tracing::debug_span!("memory.tiered.validate").entered();
-                validate_evidence(
-                    validator_provider,
-                    query,
-                    &messages,
-                    config.validation_threshold,
-                )
-                .await
-            };
-            if !sufficient {
-                tracing::debug!(
-                    current_tier = %intent,
-                    next_tier = %next_tier,
-                    escalations,
-                    "tiered: evidence insufficient, escalating tier (async)"
-                );
-                intent = next_tier;
-                escalations += 1;
-                tier_escalated = true;
-                continue;
-            }
-        }
-
-        return Ok(TieredRetrievalResult {
-            messages,
-            intent,
-            tokens_used,
-            tier_escalated,
-        });
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -199,7 +199,7 @@ pub use store::retrieval_failures::{RetrievalFailureRecord, RetrievalFailureType
 pub use store::session_digest::SessionDigest;
 pub use store::trajectory::{NewTrajectoryEntry, TrajectoryEntryRow};
 pub use tiered_retrieval::{
-    IntentClass, TieredRetrievalConfig, TieredRetrievalResult, recall_tiered, recall_tiered_async,
+    IntentClass, TieredRetrievalConfig, TieredRetrievalResult, recall_tiered,
 };
 pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
