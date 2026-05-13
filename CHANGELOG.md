@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- `zeph-llm`: replace XML delimiters in `build_judge_prompt` with plain-text fenced delimiters
+  (`--- BEGIN RESPONSE ---` / `--- END RESPONSE ---`) to close the XML closing-tag injection
+  vector in `judge_score` — a cheap provider response containing `</response_to_evaluate>` could
+  break the XML boundary and inject instructions into the judge model (closes #3817).
+
 - `zeph-llm`: wrap cheap provider response in `<response_to_evaluate>` delimiters in
   `judge_score` to reduce prompt injection surface; added injection-resistance instruction
   to the judge prompt (closes #3813).
