@@ -93,6 +93,8 @@ pub struct TaskRunSummary {
     pub last_run: String,
     /// Scheduled next run time (RFC 3339), or empty if not applicable.
     pub next_run: String,
+    /// Job status: `"pending"`, `"completed"`, `"done"`, or `"error"`.
+    pub status: String,
 }
 
 /// Run the scheduler in the current process (foreground / `--foreground` mode).
@@ -267,6 +269,7 @@ pub async fn daemon_status(
             mode: j.task_mode,
             last_run: String::new(), // store does not expose last_run yet; extend in follow-up
             next_run: j.next_run,
+            status: j.status,
         })
         .collect();
 

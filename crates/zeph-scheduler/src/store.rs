@@ -62,6 +62,8 @@ pub struct ScheduledTaskInfo {
     pub next_run: String,
     /// Stored task prompt for custom tasks; empty for config-driven built-in tasks.
     pub task_data: String,
+    /// Current job status: `"pending"`, `"completed"`, `"done"`, or `"error"`.
+    pub status: String,
 }
 
 /// Persistent storage layer for scheduled jobs.
@@ -259,6 +261,24 @@ impl JobStore {
         Ok(())
     }
 
+    /// Mark a job as permanently errored (e.g. invalid cron expression on hydration).
+    ///
+    /// The job remains visible in [`JobStore::list_jobs_full`] with `status = "error"` so
+    /// operators can identify it via `zeph scheduler list` without reading debug logs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL statement fails.
+    pub async fn mark_error(&self, name: &str) -> Result<(), SchedulerError> {
+        zeph_db::query(sql!(
+            "UPDATE scheduled_jobs SET status = 'error' WHERE name = ?"
+        ))
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Delete a job by name.
     ///
     /// # Errors
@@ -348,9 +368,10 @@ impl JobStore {
     ///
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
-        let rows: Vec<(String, String, String, String, Option<String>, String)> =
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(String, String, String, String, Option<String>, String, String)> =
             zeph_db::query_as(sql!(
-                "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data \
+                "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data, status \
                  FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
             ))
             .fetch_all(&self.pool)
@@ -358,13 +379,16 @@ impl JobStore {
         Ok(rows
             .into_iter()
             .map(
-                |(name, kind, task_mode, cron_expr, next_run, task_data)| ScheduledTaskInfo {
-                    name,
-                    kind,
-                    task_mode,
-                    cron_expr,
-                    next_run: next_run.unwrap_or_default(),
-                    task_data,
+                |(name, kind, task_mode, cron_expr, next_run, task_data, status)| {
+                    ScheduledTaskInfo {
+                        name,
+                        kind,
+                        task_mode,
+                        cron_expr,
+                        next_run: next_run.unwrap_or_default(),
+                        task_data,
+                        status,
+                    }
                 },
             )
             .collect())

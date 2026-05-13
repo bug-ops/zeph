@@ -172,6 +172,7 @@ impl Scheduler {
     /// # Errors
     ///
     /// Returns an error if DB init, upsert, `next_run` persistence, or job listing fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn init(&mut self) -> Result<(), SchedulerError> {
         self.store.init().await?;
         let now = Utc::now();
@@ -266,11 +267,17 @@ impl Scheduler {
                     self.tasks.push(task);
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::error!(
                         task = %job.name,
                         cron_expr = %job.cron_expr,
                         "skipping persisted job with invalid cron expression: {e}"
                     );
+                    if let Err(db_err) = self.store.mark_error(&job.name).await {
+                        tracing::warn!(
+                            task = %job.name,
+                            "failed to mark job as error in store: {db_err}"
+                        );
+                    }
                 }
             }
         }
@@ -560,6 +567,7 @@ impl Scheduler {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn tick(&mut self) {
         let now = Utc::now();
         let mut completed_oneshots: Vec<String> = Vec::new();
@@ -594,6 +602,22 @@ impl Scheduler {
             };
 
             if should_run {
+                let is_periodic = matches!(&task.mode, TaskMode::Periodic { .. });
+
+                // SIGNIFICANT-5: guard against concurrent executions of the same periodic task
+                // (e.g. overlap between catch_up_missed and tick). Drop the guard before any
+                // handler .await so the MutexGuard never crosses an await point.
+                if is_periodic {
+                    let mut guard = self.in_flight.lock().await;
+                    if guard.contains(task.name.as_str()) {
+                        tracing::debug!(task = %task.name, "tick: periodic task in-flight, skipping");
+                        drop(guard);
+                        continue;
+                    }
+                    guard.insert(task.name.clone());
+                    drop(guard);
+                }
+
                 if let Some(handler) = self.handlers.get(task.kind.as_str()) {
                     tracing::info!(task = %task.name, kind = task.kind.as_str(), "executing task");
                     match handler.execute(&task.config).await {
@@ -649,6 +673,11 @@ impl Scheduler {
                     }
                 } else {
                     tracing::debug!(task = %task.name, kind = task.kind.as_str(), "no handler registered");
+                }
+
+                // Release the in_flight slot after execution completes (success or error).
+                if is_periodic {
+                    self.in_flight.lock().await.remove(task.name.as_str());
                 }
             }
         }
@@ -1169,6 +1198,146 @@ mod tests {
             count.load(Ordering::Relaxed),
             1,
             "channel-registered task must fire"
+        );
+    }
+
+    /// `tick()` must skip a periodic task that is already present in `in_flight` (SIGNIFICANT-5).
+    ///
+    /// Simulates the overlap scenario: a slow handler is still running (name in `in_flight`)
+    /// when the next tick fires. The task must not execute a second time.
+    #[tokio::test]
+    async fn tick_skips_in_flight_periodic_task() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        let task = ScheduledTask::new(
+            "slow_task",
+            "* * * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        scheduler.add_task(task);
+
+        let count = Arc::new(AtomicU32::new(0));
+        scheduler.register_handler(
+            &TaskKind::HealthCheck,
+            Box::new(CountingHandler {
+                count: count.clone(),
+            }),
+        );
+        scheduler.init().await.unwrap();
+
+        // Backdate next_run to make the task due.
+        zeph_db::query(sql!(
+            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'slow_task'"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Pre-populate in_flight to simulate a concurrent execution already running.
+        scheduler
+            .in_flight
+            .lock()
+            .await
+            .insert("slow_task".to_owned());
+
+        scheduler.tick().await;
+
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            0,
+            "in-flight periodic task must not fire again on tick"
+        );
+
+        // Clean up so in_flight is empty for any subsequent assertions.
+        scheduler.in_flight.lock().await.remove("slow_task");
+    }
+
+    /// After `tick()` executes a periodic task, the task name is removed from `in_flight`.
+    #[tokio::test]
+    async fn tick_releases_in_flight_after_execution() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        let task = ScheduledTask::new(
+            "release_task",
+            "* * * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        scheduler.add_task(task);
+        scheduler.register_handler(
+            &TaskKind::HealthCheck,
+            Box::new(CountingHandler {
+                count: Arc::new(AtomicU32::new(0)),
+            }),
+        );
+        scheduler.init().await.unwrap();
+
+        zeph_db::query(sql!(
+            "UPDATE scheduled_jobs SET next_run = '2000-01-01T00:00:00+00:00' WHERE name = 'release_task'"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        scheduler.tick().await;
+
+        assert!(
+            !scheduler.in_flight.lock().await.contains("release_task"),
+            "in_flight must be empty after tick() completes for a periodic task"
+        );
+    }
+
+    /// `init()` marks a DB job with an invalid cron expression as `'error'` and emits error-level log.
+    ///
+    /// Covers issue #3810: an external tool writing a malformed cron directly to the `SQLite` table
+    /// must not silently disappear — it must be surfaced via `zeph scheduler list`.
+    #[tokio::test]
+    async fn init_marks_error_for_invalid_cron_job() {
+        let pool = test_pool().await;
+
+        // Write a job with an invalid cron expression directly, bypassing the Rust API.
+        let store_pre = JobStore::new(pool.clone());
+        store_pre.init().await.unwrap();
+        zeph_db::query(sql!(
+            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, status) \
+             VALUES ('bad-cron', 'not-a-valid-cron', 'health_check', 'periodic', 'pending')"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+
+        scheduler.init().await.unwrap();
+
+        // The invalid job must not have been hydrated into self.tasks.
+        assert!(
+            scheduler.tasks.iter().all(|t| t.name != "bad-cron"),
+            "invalid cron job must not be added to self.tasks"
+        );
+
+        // The DB row must now carry status = 'error' so it is visible in the job list.
+        let status: String = zeph_db::query_scalar(sql!(
+            "SELECT status FROM scheduled_jobs WHERE name = 'bad-cron'"
+        ))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            status, "error",
+            "invalid cron job must be marked as error in the DB (issue #3810)"
         );
     }
 }
