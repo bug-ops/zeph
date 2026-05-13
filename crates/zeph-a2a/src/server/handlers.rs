@@ -582,7 +582,7 @@ mod tests {
             card: super::super::testing::test_card(),
             task_manager: super::super::state::TaskManager::new(),
             processor: Arc::new(MultiChunkProcessor),
-            request_timeout: std::time::Duration::from_secs(300),
+            request_timeout: std::time::Duration::from_mins(5),
         }
     }
 
@@ -625,7 +625,7 @@ mod tests {
             Box<dyn std::future::Future<Output = Result<(), crate::error::A2aError>> + Send>,
         > {
             Box::pin(async {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(std::time::Duration::from_mins(1)).await;
                 Ok(())
             })
         }

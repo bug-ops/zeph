@@ -320,7 +320,7 @@ pub(crate) mod testing {
             card: test_card(),
             task_manager: TaskManager::new(),
             processor: Arc::new(EchoProcessor),
-            request_timeout: std::time::Duration::from_secs(300),
+            request_timeout: std::time::Duration::from_mins(5),
         }
     }
 
@@ -329,7 +329,7 @@ pub(crate) mod testing {
             card: test_card(),
             task_manager: TaskManager::new(),
             processor: Arc::new(FailingProcessor),
-            request_timeout: std::time::Duration::from_secs(300),
+            request_timeout: std::time::Duration::from_mins(5),
         }
     }
 }
