@@ -358,12 +358,20 @@ fn rewrite_command_with_sandbox_exec(
     // Since tokio 1.x does not expose set_program, we rebuild via the `as_std_mut` method.
     let std_cmd = cmd.as_std_mut();
 
-    // Collect existing args before clearing.
+    // Collect existing program, args, env overrides, and cwd before clearing.
+    // The Command struct is fully replaced below to swap the program to sandbox-exec; without
+    // capturing these, caller-configured per-spawn state (skill secret env, cwd, etc.) is
+    // silently dropped on the floor — see #3871.
     let original_program = std_cmd.get_program().to_os_string();
     let original_args: Vec<std::ffi::OsString> = std_cmd
         .get_args()
         .map(std::ffi::OsStr::to_os_string)
         .collect();
+    let original_envs: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)> = std_cmd
+        .get_envs()
+        .map(|(k, v)| (k.to_os_string(), v.map(std::ffi::OsStr::to_os_string)))
+        .collect();
+    let original_cwd: Option<PathBuf> = std_cmd.get_current_dir().map(Path::to_path_buf);
 
     // Replace program with sandbox-exec.
     *std_cmd = std::process::Command::new(sandbox_exec);
@@ -373,6 +381,21 @@ fn rewrite_command_with_sandbox_exec(
     std_cmd.arg(original_program);
     for arg in original_args {
         std_cmd.arg(arg);
+    }
+
+    // Restore env overrides and cwd captured above. `Some(v)` = explicit set, `None` = remove.
+    for (key, value) in original_envs {
+        match value {
+            Some(val) => {
+                std_cmd.env(key, val);
+            }
+            None => {
+                std_cmd.env_remove(key);
+            }
+        }
+    }
+    if let Some(cwd) = original_cwd {
+        std_cmd.current_dir(cwd);
     }
     // stdout/stderr piping must be re-applied by the caller (execute_bash already does this
     // before calling wrap, so the Stdio handles are set on the freshly-built std_cmd above).
@@ -753,6 +776,66 @@ mod tests {
         assert!(
             allow_pos > deny_pos,
             "allow must appear after deny (last-rule-wins)"
+        );
+    }
+
+    /// Regression for #3871: env overrides and cwd set on the original Command must survive
+    /// the sandbox-exec rewrite. Before the fix, the inner `*std_cmd = Command::new(...)`
+    /// reset replaced the entire struct, dropping `.env(...)` / `.env_remove(...)` / `.current_dir(...)`
+    /// entries — breaking skill secret env injection (`x-requires-secrets`) on macOS.
+    #[test]
+    fn rewrite_preserves_env_overrides_and_cwd() {
+        let mut cmd = tokio::process::Command::new("bash");
+        cmd.arg("-c").arg("echo hi");
+        cmd.env("GITHUB_TOKEN", "tok-xyz");
+        cmd.env("FOO", "bar");
+        cmd.env_remove("SECRET_TO_DROP");
+        cmd.current_dir("/tmp");
+
+        let sandbox_exec = PathBuf::from("/usr/bin/sandbox-exec");
+        let profile_path = PathBuf::from("/tmp/fake-profile.sb");
+        rewrite_command_with_sandbox_exec(&mut cmd, &sandbox_exec, &profile_path);
+
+        let std_cmd = cmd.as_std();
+        assert_eq!(std_cmd.get_program(), "/usr/bin/sandbox-exec");
+
+        let args: Vec<&std::ffi::OsStr> = std_cmd.get_args().collect();
+        assert_eq!(
+            args,
+            vec![
+                std::ffi::OsStr::new("-f"),
+                std::ffi::OsStr::new("/tmp/fake-profile.sb"),
+                std::ffi::OsStr::new("--"),
+                std::ffi::OsStr::new("bash"),
+                std::ffi::OsStr::new("-c"),
+                std::ffi::OsStr::new("echo hi"),
+            ]
+        );
+
+        let envs: std::collections::HashMap<std::ffi::OsString, Option<std::ffi::OsString>> =
+            std_cmd
+                .get_envs()
+                .map(|(k, v)| (k.to_os_string(), v.map(std::ffi::OsStr::to_os_string)))
+                .collect();
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("GITHUB_TOKEN")),
+            Some(&Some(std::ffi::OsString::from("tok-xyz"))),
+            "GITHUB_TOKEN must survive sandbox rewrite (#3871)"
+        );
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("FOO")),
+            Some(&Some(std::ffi::OsString::from("bar")))
+        );
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("SECRET_TO_DROP")),
+            Some(&None),
+            "env_remove entries must also be preserved as removals"
+        );
+
+        assert_eq!(
+            std_cmd.get_current_dir(),
+            Some(std::path::Path::new("/tmp")),
+            "current_dir must survive sandbox rewrite"
         );
     }
 }

@@ -26,6 +26,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bash` subprocess) and bypassing `TrustGateExecutor`'s quarantine enforcement for active
   skills. Added two regression tests using a nested composition and spy executors
   (closes #3869).
+- `zeph-tools` (macOS): `rewrite_command_with_sandbox_exec` now preserves env overrides
+  (`.env`/`.env_remove`) and `current_dir` across the Command rewrite that prepends
+  `sandbox-exec`. Previously, the wholesale `*std_cmd = Command::new(sandbox_exec)` reset
+  dropped every caller-configured env entry on the floor — so even with #3869 fixed, skill
+  secret env injection (`GITHUB_TOKEN` for the `github` skill) never reached the spawned
+  subprocess when `[tools.sandbox] enabled = true`. Added a regression test that asserts
+  env and cwd survive the rewrite (closes #3871).
 
 ### Changed
 
