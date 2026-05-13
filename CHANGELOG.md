@@ -19,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with all tasks stuck in `Pending` (closes #3841).
 - `zeph-orchestration`: add `Llm(#[from] zeph_llm::LlmError)` typed variant to `OrchestrationError`
   so callers can pattern-match on root LLM error kinds without string comparison (closes #3842).
+- `zeph-tools`: `CompositeExecutor` now forwards `set_skill_env` and `set_effective_trust` to both
+  inner executors. The base `ToolExecutor` impls of these setters are no-ops, so the production
+  layered executor (`agent_setup` builds a tree of `CompositeExecutor`s) silently swallowed both
+  calls — breaking `x-requires-secrets` env injection (e.g. `GITHUB_TOKEN` never reached the
+  `bash` subprocess) and bypassing `TrustGateExecutor`'s quarantine enforcement for active
+  skills. Added two regression tests using a nested composition and spy executors
+  (closes #3869).
 
 ### Changed
 

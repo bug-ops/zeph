@@ -85,6 +85,28 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
     fn is_tool_speculatable(&self, tool_id: &str) -> bool {
         self.first.is_tool_speculatable(tool_id) || self.second.is_tool_speculatable(tool_id)
     }
+
+    /// Forward the active skill's env injection to BOTH inner executors.
+    ///
+    /// The base [`ToolExecutor::set_skill_env`] is a no-op, so without this override the
+    /// composition tree built in `agent_setup` silently swallows env injection — the
+    /// underlying `ShellExecutor` never sees `GITHUB_TOKEN` etc. Each layer ignores the call
+    /// if it does not own a `skill_env` slot; layers that do (e.g. `ShellExecutor`) update
+    /// their state. See #3869.
+    fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+        self.first.set_skill_env(env.clone());
+        self.second.set_skill_env(env);
+    }
+
+    /// Forward the active skill's trust level to BOTH inner executors.
+    ///
+    /// Mirrors [`Self::set_skill_env`]: without this override, `TrustGateExecutor` never
+    /// observes a non-`Trusted` level when composed under `CompositeExecutor`, leaving
+    /// quarantine enforcement effectively bypassed. See #3869.
+    fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
+        self.first.set_effective_trust(level);
+        self.second.set_effective_trust(level);
+    }
 }
 
 #[cfg(test)]
@@ -305,5 +327,79 @@ mod tests {
         };
         let result = composite.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
+    }
+
+    /// Regression test for #3869: state-mutating setters MUST reach both inner executors,
+    /// even across nested compositions. Prior to the fix, `set_skill_env` and
+    /// `set_effective_trust` fell through to the default no-op `ToolExecutor` impls and
+    /// were silently dropped at the `CompositeExecutor` boundary — breaking skill secret
+    /// env injection (`x-requires-secrets`) and quarantine trust enforcement.
+    mod state_forwarding {
+        use super::*;
+        use crate::SkillTrustLevel;
+        use std::sync::Mutex;
+
+        #[derive(Debug, Default)]
+        struct SpyExecutor {
+            last_env: Mutex<Option<std::collections::HashMap<String, String>>>,
+            last_trust: Mutex<Option<SkillTrustLevel>>,
+        }
+        impl ToolExecutor for SpyExecutor {
+            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
+                Ok(None)
+            }
+            fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
+                *self.last_env.lock().unwrap() = env;
+            }
+            fn set_effective_trust(&self, level: SkillTrustLevel) {
+                *self.last_trust.lock().unwrap() = Some(level);
+            }
+        }
+
+        #[test]
+        fn set_skill_env_reaches_both_inner_executors_in_nested_composition() {
+            // Mirrors the production wiring shape: a tree of CompositeExecutor with
+            // multiple leaves. All leaves must observe the call.
+            let leaf_a = SpyExecutor::default();
+            let leaf_b = SpyExecutor::default();
+            let leaf_c = SpyExecutor::default();
+            let nested = CompositeExecutor::new(leaf_a, leaf_b);
+            let outer = CompositeExecutor::new(nested, leaf_c);
+
+            let mut env = std::collections::HashMap::new();
+            env.insert("GITHUB_TOKEN".to_owned(), "tok".to_owned());
+            outer.set_skill_env(Some(env.clone()));
+
+            // first.first (leaf_a)
+            assert_eq!(
+                outer.first.first.last_env.lock().unwrap().as_ref(),
+                Some(&env)
+            );
+            // first.second (leaf_b)
+            assert_eq!(
+                outer.first.second.last_env.lock().unwrap().as_ref(),
+                Some(&env)
+            );
+            // second (leaf_c)
+            assert_eq!(outer.second.last_env.lock().unwrap().as_ref(), Some(&env));
+        }
+
+        #[test]
+        fn set_effective_trust_reaches_both_inner_executors_in_nested_composition() {
+            let leaf_a = SpyExecutor::default();
+            let leaf_b = SpyExecutor::default();
+            let outer = CompositeExecutor::new(leaf_a, leaf_b);
+
+            outer.set_effective_trust(SkillTrustLevel::Quarantined);
+
+            assert_eq!(
+                *outer.first.last_trust.lock().unwrap(),
+                Some(SkillTrustLevel::Quarantined)
+            );
+            assert_eq!(
+                *outer.second.last_trust.lock().unwrap(),
+                Some(SkillTrustLevel::Quarantined)
+            );
+        }
     }
 }
