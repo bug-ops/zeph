@@ -10,7 +10,7 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use zeph_tools::patterns::RAW_INJECTION_PATTERNS;
+use zeph_common::patterns::RAW_INJECTION_PATTERNS;
 
 use crate::client::McpClient;
 use crate::trust_score::ServerTrustScore;

@@ -28,9 +28,9 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 
 zeph-common.workspace = true
 zeph-config.workspace = true
-zeph-db = { workspace = true, features = ["sqlite"] }
+zeph-db.workspace = true
 zeph-llm.workspace = true
-zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-memory.workspace = true
 zeph-sanitizer.workspace = true
 zeph-subagent.workspace = true
 
@@ -39,6 +39,11 @@ futures.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 zeph-llm = { workspace = true, features = ["testing"] }
+
+[features]
+sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
+default = ["sqlite"]
 
 [lints]
 workspace = true

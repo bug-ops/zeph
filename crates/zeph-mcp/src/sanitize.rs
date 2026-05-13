@@ -30,7 +30,7 @@ use regex::Regex;
 use zeph_common::text::truncate_to_bytes;
 
 use crate::tool::{FlaggedParameter, McpTool};
-use zeph_tools::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
+use zeph_common::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -678,7 +678,7 @@ pub fn intent_anchor_wrap(server_id: &str, tool_name: &str, content: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeph_tools::patterns::strip_format_chars;
+    use zeph_common::patterns::strip_format_chars;
 
     // Alias for test readability
     const MAX_TOOL_DESCRIPTION_BYTES: usize = DEFAULT_MAX_TOOL_DESCRIPTION_BYTES;

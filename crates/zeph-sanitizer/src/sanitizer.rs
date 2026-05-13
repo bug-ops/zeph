@@ -28,12 +28,12 @@ struct CompiledPattern {
 }
 
 /// Compiled injection-detection patterns, sourced from the canonical
-/// [`zeph_tools::patterns::RAW_INJECTION_PATTERNS`] constant.
+/// [`zeph_common::patterns::RAW_INJECTION_PATTERNS`] constant.
 ///
 /// Using the shared constant ensures that `zeph-core`'s content isolation pipeline
 /// and `zeph-mcp`'s tool-definition sanitizer always apply the same pattern set.
 static INJECTION_PATTERNS: LazyLock<Vec<CompiledPattern>> = LazyLock::new(|| {
-    zeph_tools::patterns::RAW_INJECTION_PATTERNS
+    zeph_common::patterns::RAW_INJECTION_PATTERNS
         .iter()
         .filter_map(|(name, pattern)| {
             Regex::new(pattern)

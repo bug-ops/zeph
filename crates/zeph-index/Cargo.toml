@@ -37,9 +37,9 @@ tree-sitter-toml-ng.workspace = true
 tree-sitter-typescript.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-common = { workspace = true, features = ["treesitter"] }
-zeph-db = { workspace = true, features = ["sqlite"] }
+zeph-db.workspace = true
 zeph-llm.workspace = true
-zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-memory.workspace = true
 zeph-tools.workspace = true
 
 [dev-dependencies]
@@ -47,6 +47,11 @@ sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 zeph-llm = { workspace = true, features = ["testing"] }
+
+[features]
+sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
+default = ["sqlite"]
 
 [lints]
 workspace = true

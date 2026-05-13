@@ -13,7 +13,6 @@ description = "Plugin packaging, installation, and management for Zeph"
 readme = "README.md"
 
 [dependencies]
-anyhow.workspace = true
 dirs.workspace = true
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }

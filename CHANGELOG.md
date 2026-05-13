@@ -27,6 +27,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   off by default; enabled via `[memory.optical_forgetting]` and `[memory.em_graph]`
   config sections.
 
+### Changed
+
+- refactor(arch): propagate `sqlite`/`postgres` feature flags through the full crate DAG
+  (`zeph-mcp`, `zeph-index`, `zeph-orchestration`, `zeph-tools`, `zeph-scheduler`,
+  `zeph-agent-context`, `zeph-agent-persistence`, `zeph-core`) so that `zeph/sqlite` and
+  `zeph/postgres` at the root correctly activate all transitive sqlx backends. Remove
+  hardcoded `features = ["sqlite"]` from seven `Cargo.toml` dependency declarations.
+
+- refactor(arch): move injection-detection patterns from `zeph-tools::patterns` to
+  `zeph-common::patterns` (canonical location); remove the re-export shim from `zeph-tools`.
+  `zeph-sanitizer` no longer depends on `zeph-tools`, breaking a cross-layer coupling
+  that inflated its build parallelism cost.
+
+- refactor(plugins): replace `anyhow::Result` with typed `PluginError` in
+  `IntegrityRegistry::save`, `record`, and `verify`; preserve full I/O context via
+  `PluginError::Io { path, source }`. Remove `anyhow` from `zeph-plugins` dependencies.
+
+- refactor(specs): clarify constitution layer model — Layer 0 split into sub-layers 0a
+  (zero zeph-* deps: `zeph-common`, `zeph-commands`), 0b (`zeph-config`, `zeph-vault`,
+  `zeph-db`), and 0c (`zeph-llm`, `zeph-a2a`, `zeph-gateway`, `zeph-scheduler`); add
+  explicit note that "zero zeph-* deps" permits external crate dependencies at any layer.
+
 ### Fixed
 
 - fix(memory): correct SQL placeholder mismatch in `recall_episodic_causal` — `IN(frontier)`

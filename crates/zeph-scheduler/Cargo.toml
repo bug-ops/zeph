@@ -18,6 +18,9 @@ readme = "README.md"
 ## Pulls in `rustix` (fs + process features) for advisory file locking.
 ## Only meaningful on Unix targets; daemon code is `#[cfg(unix)]`-gated.
 daemon = ["dep:rustix"]
+sqlite = ["zeph-db/sqlite"]
+postgres = ["zeph-db/postgres"]
+default = ["sqlite"]
 
 [dependencies]
 chrono = { workspace = true, features = ["std", "clock"] }
@@ -30,7 +33,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
-zeph-db = { workspace = true, features = ["sqlite"] }
+zeph-db.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]

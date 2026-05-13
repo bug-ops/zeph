@@ -14,7 +14,7 @@
 //! 2. Pre-execution verification: `PreExecutionVerifier` audits tool calls before execution.
 //! 3. **Response verification (this module)**: scans LLM output for echoed injection patterns.
 //!
-//! Pattern matching uses the canonical `zeph_tools::patterns::RAW_RESPONSE_PATTERNS` set.
+//! Pattern matching uses the canonical `zeph_common::patterns::RAW_RESPONSE_PATTERNS` set.
 //! When `block_on_detection` is `true`, matching responses return
 //! [`ResponseVerificationResult::Blocked`] and the agent skips tool dispatch for that turn.
 
@@ -29,7 +29,7 @@ struct CompiledResponsePattern {
 }
 
 static RESPONSE_PATTERNS: LazyLock<Vec<CompiledResponsePattern>> = LazyLock::new(|| {
-    zeph_tools::patterns::RAW_RESPONSE_PATTERNS
+    zeph_common::patterns::RAW_RESPONSE_PATTERNS
         .iter()
         .filter_map(|(name, pattern)| {
             Regex::new(pattern)
@@ -67,7 +67,7 @@ pub enum ResponseVerificationResult {
     Clean,
     /// Injection patterns detected; response is delivered with a WARN log.
     Flagged {
-        /// Names of the patterns that matched (from `zeph_tools::patterns`).
+        /// Names of the patterns that matched (from `zeph_common::patterns`).
         matched: Vec<String>,
     },
     /// Injection patterns detected and `block_on_detection` is `true`. Tool dispatch is skipped.

@@ -26,12 +26,14 @@ zeph-config.workspace = true
 zeph-context.workspace = true
 zeph-index = { workspace = true, optional = true }
 zeph-llm.workspace = true
-zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-memory.workspace = true
 zeph-sanitizer.workspace = true
 zeph-skills.workspace = true
 
 [features]
-default = []
+sqlite = ["zeph-memory/sqlite"]
+postgres = ["zeph-memory/postgres"]
+default = ["sqlite"]
 # Enables `zeph-index` integration via `IndexAccess` in context assembly views.
 index = ["dep:zeph-index"]
 

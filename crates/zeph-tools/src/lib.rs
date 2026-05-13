@@ -73,7 +73,6 @@ pub mod file;
 pub mod filter;
 pub mod moderation;
 pub mod net;
-pub mod patterns;
 pub mod permissions;
 pub mod policy;
 pub mod policy_gate;

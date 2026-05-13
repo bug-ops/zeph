@@ -47,7 +47,7 @@ url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common = { workspace = true, features = ["treesitter"] }
 zeph-config.workspace = true
-zeph-db = { workspace = true, features = ["sqlite"] }
+zeph-db.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
@@ -60,7 +60,9 @@ wiremock.workspace = true
 
 [features]
 profiling = []
-default = []
+sqlite = ["zeph-db/sqlite"]
+postgres = ["zeph-db/postgres"]
+default = ["sqlite"]
 # Gates Linux-only landlock + seccompiler deps. macOS backend compiles unconditionally.
 sandbox = ["dep:landlock", "dep:seccompiler"]
 

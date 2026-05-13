@@ -22,7 +22,12 @@ zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-context.workspace = true
 zeph-llm.workspace = true
-zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-memory.workspace = true
+
+[features]
+sqlite = ["zeph-memory/sqlite"]
+postgres = ["zeph-memory/postgres"]
+default = ["sqlite"]
 
 [lints]
 workspace = true

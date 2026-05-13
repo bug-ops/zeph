@@ -249,8 +249,26 @@ profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
 gonka = ["zeph-llm/gonka", "zeph-core/gonka"]
 cocoon = ["zeph-llm/cocoon", "zeph-core/cocoon", "zeph-tui?/cocoon"]
 index = ["zeph-core/index"]
-sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
-postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
+sqlite = [
+    "zeph-db/sqlite",
+    "zeph-memory/sqlite",
+    "zeph-mcp/sqlite",
+    "zeph-index/sqlite",
+    "zeph-orchestration/sqlite",
+    "zeph-tools/sqlite",
+    "zeph-scheduler?/sqlite",
+    "zeph-core/sqlite",
+]
+postgres = [
+    "zeph-db/postgres",
+    "zeph-memory/postgres",
+    "zeph-mcp/postgres",
+    "zeph-index/postgres",
+    "zeph-orchestration/postgres",
+    "zeph-tools/postgres",
+    "zeph-scheduler?/postgres",
+    "zeph-core/postgres",
+]
 
 [dependencies]
 anyhow.workspace = true

@@ -311,7 +311,7 @@ impl ContentSource {
 /// in the spotlight warning header, but the content is never silently removed.
 #[derive(Debug, Clone)]
 pub struct InjectionFlag {
-    /// Name of the compiled pattern that matched (from `zeph_tools::patterns`).
+    /// Name of the compiled pattern that matched (from `zeph_common::patterns`).
     pub pattern_name: &'static str,
     /// Byte offset of the match within the (already truncated, stripped) content.
     pub byte_offset: usize,

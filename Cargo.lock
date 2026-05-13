@@ -10930,7 +10930,6 @@ dependencies = [
 name = "zeph-plugins"
 version = "0.21.1"
 dependencies = [
- "anyhow",
  "dirs",
  "hex",
  "serde",
@@ -10965,7 +10964,6 @@ dependencies = [
  "zeph-config",
  "zeph-llm",
  "zeph-memory",
- "zeph-tools",
 ]
 
 [[package]]

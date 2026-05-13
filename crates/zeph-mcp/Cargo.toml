@@ -14,7 +14,9 @@ readme = "README.md"
 
 [features]
 profiling = []
-default = []
+sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
+default = ["sqlite"]
 mock = []
 
 [dependencies]
@@ -41,9 +43,9 @@ url.workspace = true
 uuid = { workspace = true, features = ["v5"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
-zeph-db = { workspace = true, features = ["sqlite"] }
+zeph-db.workspace = true
 zeph-llm.workspace = true
-zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-memory.workspace = true
 zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

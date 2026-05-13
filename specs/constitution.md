@@ -23,13 +23,16 @@ related:
 
 - Cargo workspace (Edition 2024, resolver 3): 29 crates (including `zeph-common`, `zeph-commands`, `zeph-context`), root binary `zeph`
 - `zeph-core` orchestrates all crates. Crate dependencies must follow the layered DAG:
-  - **Layer 0** (foundation, no zeph-* deps): `zeph-llm`, `zeph-a2a`, `zeph-gateway`, `zeph-scheduler`, `zeph-common`, `zeph-config`, `zeph-vault`, `zeph-db`, `zeph-commands`
-  - **Layer 1** (depends on Layer 0): `zeph-memory` (→ llm, config, common, db), `zeph-tools` (→ common, config, db), `zeph-context` (→ llm, config, common), `zeph-agent-feedback` (→ common, llm)
-  - **Layer 2** (depends on Layers 0–1): `zeph-skills` (→ llm, memory, tools, common, config), `zeph-mcp` (→ llm, memory, tools, common, db, config), `zeph-sanitizer` (→ llm, memory, tools, config, common), `zeph-index` (→ llm, memory, tools, db, common), `zeph-plugins` (→ skills, tools, common, config), `zeph-subagent` (→ skills, tools, llm, common, config), `zeph-agent-persistence` (→ context, memory, llm, config, common), `zeph-agent-context` (→ skills, sanitizer, context, memory, llm, common, config)
+  - **Layer 0a** (zero zeph-* deps): `zeph-common`, `zeph-commands`
+  - **Layer 0b** (depends on L0a only): `zeph-config`, `zeph-vault`, `zeph-db`
+  - **Layer 0c** (depends on L0a+L0b): `zeph-llm`, `zeph-a2a`, `zeph-gateway`, `zeph-scheduler`
+  - **Layer 1** (depends on Layer 0a–0c): `zeph-memory` (→ llm, config, common, db), `zeph-tools` (→ common, config, db), `zeph-context` (→ llm, config, common), `zeph-agent-feedback` (→ common, llm)
+  - **Layer 2** (depends on Layers 0–1): `zeph-skills` (→ llm, memory, tools, common, config), `zeph-mcp` (→ llm, memory, tools, common, db, config), `zeph-sanitizer` (→ llm, memory, common, config), `zeph-index` (→ llm, memory, tools, db, common), `zeph-plugins` (→ skills, tools, common, config), `zeph-subagent` (→ skills, tools, llm, common, config), `zeph-agent-persistence` (→ context, memory, llm, config, common), `zeph-agent-context` (→ skills, sanitizer, context, memory, llm, common, config)
   - **Layer 3** (depends on Layers 0–2): `zeph-orchestration` (→ sanitizer, subagent, memory, llm, db, common, config), `zeph-agent-tools` (→ orchestration, mcp, sanitizer, skills, agent-persistence, context, llm, tools, common, config)
   - **Layer 4** (orchestrator): `zeph-core` (→ all Layer 0–3 crates)
   - **Layer 5** (consumers): `zeph-channels`, `zeph-tui`, `zeph-acp` (→ core + selective Layer 0–3)
   - **Special** (feature-gated, no mandatory deps): `zeph-bench` (benchmarking), `zeph-experiments` (internal research)
+  - "Zero zeph-* deps" means no dependencies on other `zeph-*` crates; external crate dependencies (serde, regex, etc.) are allowed at any layer
   - Same-layer imports are **prohibited** (e.g., a Layer 1 crate must NOT import another Layer 1 crate)
   - Cross-layer imports are permitted only downward (higher layer → lower layer)
 - New functionality requires integration at all applicable points: config, CLI, TUI, `--init` wizard, `--migrate-config`

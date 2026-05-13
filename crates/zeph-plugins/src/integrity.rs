@@ -32,6 +32,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::error::PluginError;
+
 /// In-memory view of `<data_root>/.plugin-integrity.toml`.
 ///
 /// Maps plugin name to the lowercase hex sha256 of its installed `.plugin.toml` bytes.
@@ -86,9 +88,12 @@ impl IntegrityRegistry {
     /// # Errors
     ///
     /// Returns an error if the file cannot be written.
-    pub(crate) fn save(&self, path: &Path) -> anyhow::Result<()> {
+    pub(crate) fn save(&self, path: &Path) -> Result<(), PluginError> {
         let parent = path.parent().unwrap_or(std::path::Path::new("."));
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|source| PluginError::Io {
+            path: parent.to_owned(),
+            source,
+        })?;
 
         let mut table = toml::value::Table::new();
         for (k, v) in &self.entries {
@@ -99,13 +104,24 @@ impl IntegrityRegistry {
         // Atomic write: write to a sibling temp file, then rename into place.
         // Avoids a corrupt or empty registry if the process crashes mid-write.
         let tmp_path = path.with_extension("toml.tmp");
-        std::fs::write(&tmp_path, &text)?;
+        std::fs::write(&tmp_path, &text).map_err(|source| PluginError::Io {
+            path: tmp_path.clone(),
+            source,
+        })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |source| PluginError::Io {
+                    path: tmp_path.clone(),
+                    source,
+                },
+            )?;
         }
-        std::fs::rename(&tmp_path, path)?;
+        std::fs::rename(&tmp_path, path).map_err(|source| PluginError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(())
     }
 
@@ -114,8 +130,15 @@ impl IntegrityRegistry {
     /// # Errors
     ///
     /// Returns an error if the file cannot be read.
-    pub(crate) fn record(&mut self, plugin_name: &str, toml_path: &Path) -> anyhow::Result<()> {
-        let bytes = std::fs::read(toml_path)?;
+    pub(crate) fn record(
+        &mut self,
+        plugin_name: &str,
+        toml_path: &Path,
+    ) -> Result<(), PluginError> {
+        let bytes = std::fs::read(toml_path).map_err(|source| PluginError::Io {
+            path: toml_path.to_owned(),
+            source,
+        })?;
         let digest = sha256_hex(&bytes);
         self.entries.insert(plugin_name.to_owned(), digest);
         Ok(())
@@ -140,7 +163,7 @@ impl IntegrityRegistry {
         &self,
         plugin_name: &str,
         toml_path: &Path,
-    ) -> anyhow::Result<VerifyResult> {
+    ) -> Result<VerifyResult, PluginError> {
         let Some(expected) = self.entries.get(plugin_name) else {
             tracing::debug!(
                 plugin = %plugin_name,
@@ -148,7 +171,10 @@ impl IntegrityRegistry {
             );
             return Ok(VerifyResult::Missing);
         };
-        let bytes = std::fs::read(toml_path)?;
+        let bytes = std::fs::read(toml_path).map_err(|source| PluginError::Io {
+            path: toml_path.to_owned(),
+            source,
+        })?;
         let actual = sha256_hex(&bytes);
         if &actual == expected {
             Ok(VerifyResult::Match)

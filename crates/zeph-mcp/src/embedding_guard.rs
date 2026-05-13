@@ -19,7 +19,7 @@ use zeph_common::ToolName;
 use dashmap::DashMap;
 use regex::Regex;
 use tokio::sync::mpsc;
-use zeph_tools::patterns::RAW_INJECTION_PATTERNS;
+use zeph_common::patterns::RAW_INJECTION_PATTERNS;
 
 use crate::registry::EmbedFuture;
 

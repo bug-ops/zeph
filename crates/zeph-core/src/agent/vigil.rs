@@ -26,10 +26,10 @@
 use std::collections::HashSet;
 
 use regex::Regex;
+use zeph_common::patterns::RAW_INJECTION_PATTERNS;
 use zeph_config::ConfigError;
 use zeph_config::VigilConfig;
 use zeph_tools::audit::VigilRiskLevel;
-use zeph_tools::patterns::RAW_INJECTION_PATTERNS;
 
 /// Compiled injection pattern with its canonical name.
 struct CompiledPattern {
@@ -153,7 +153,7 @@ impl VigilGate {
 
         // Strip zero-width joiners and other Cf-category characters before matching
         // to prevent homoglyph/ZWJ bypass (SEC-M-01).
-        let stripped = zeph_tools::patterns::strip_format_chars(body);
+        let stripped = zeph_common::patterns::strip_format_chars(body);
         let body_stripped = stripped.as_str();
 
         let mut matched: Vec<String> = Vec::new();

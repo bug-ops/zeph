@@ -23,7 +23,6 @@ zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true
-zeph-tools.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
