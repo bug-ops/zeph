@@ -619,7 +619,7 @@ mod tests {
         AnyProvider::Mock(p)
     }
 
-    /// Insert a message + episodic_event row; returns (message_id, event_id).
+    /// Insert a message + `episodic_event` row; returns (`message_id`, `event_id`).
     async fn insert_episodic_event(
         pool: &DbPool,
         conv_id: crate::ConversationId,

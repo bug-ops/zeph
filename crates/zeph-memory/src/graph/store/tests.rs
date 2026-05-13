@@ -52,8 +52,7 @@ async fn find_entity_found() {
     let gs = setup().await;
     gs.upsert_entity("Bob", "Bob", EntityType::Tool, Some("a tool"))
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let entity = gs
         .find_entity("Bob", EntityType::Tool)
         .await
@@ -75,8 +74,7 @@ async fn find_entities_fuzzy_partial_match() {
     let gs = setup().await;
     gs.upsert_entity("GraphQL", "GraphQL", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
         .await
         .unwrap();
@@ -101,8 +99,7 @@ async fn entity_count_non_empty() {
     let gs = setup().await;
     gs.upsert_entity("A", "A", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     gs.upsert_entity("B", "B", EntityType::Concept, None)
         .await
         .unwrap();
@@ -116,8 +113,7 @@ async fn all_entities_and_stream() {
     let gs = setup().await;
     gs.upsert_entity("X", "X", EntityType::Project, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     gs.upsert_entity("Y", "Y", EntityType::Language, None)
         .await
         .unwrap();
@@ -656,8 +652,7 @@ async fn test_find_entities_fuzzy_no_results() {
     let gs = setup().await;
     gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let results = gs.find_entities_fuzzy("zzzznonexistent", 10).await.unwrap();
     assert!(
         results.is_empty(),
@@ -672,8 +667,7 @@ async fn upsert_entity_stores_canonical_name() {
     let gs = setup().await;
     gs.upsert_entity("rust", "rust", EntityType::Language, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let entity = gs
         .find_entity("rust", EntityType::Language)
         .await
@@ -753,8 +747,7 @@ async fn find_entities_fuzzy_matches_summary() {
         Some("a systems programming language"),
     )
     .await
-    .unwrap()
-    .0;
+    .unwrap();
     gs.upsert_entity(
         "Go",
         "Go",
@@ -774,8 +767,7 @@ async fn find_entities_fuzzy_empty_query() {
     let gs = setup().await;
     gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     // Empty query returns empty vec without hitting the database.
     let results = gs.find_entities_fuzzy("", 10).await.unwrap();
     assert!(results.is_empty(), "empty query should return no results");
@@ -1258,8 +1250,7 @@ async fn find_entities_fuzzy_special_chars() {
     let gs = setup().await;
     gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     // FTS5 special characters in query must not cause an error.
     let results = gs.find_entities_fuzzy("graph\"()*:^", 10).await.unwrap();
     // "graph" survives sanitization and matches.
@@ -1271,8 +1262,7 @@ async fn find_entities_fuzzy_prefix_match() {
     let gs = setup().await;
     gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     gs.upsert_entity("GraphQL", "GraphQL", EntityType::Concept, None)
         .await
         .unwrap();
@@ -1291,8 +1281,7 @@ async fn find_entities_fuzzy_fts5_operator_injection() {
     let gs = setup().await;
     gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None)
         .await
         .unwrap();
@@ -1321,8 +1310,7 @@ async fn find_entities_fuzzy_after_entity_update() {
         Some("initial summary bar"),
     )
     .await
-    .unwrap()
-    .0;
+    .unwrap();
     // Update summary via upsert — triggers the FTS UPDATE trigger.
     gs.upsert_entity(
         "Foo",
@@ -1349,8 +1337,7 @@ async fn find_entities_fuzzy_only_special_chars() {
     let gs = setup().await;
     gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     // Queries consisting solely of FTS5 special characters produce no alphanumeric
     // tokens after sanitization, so the function returns early with an empty vec
     // rather than passing an empty or malformed MATCH expression to FTS5.
@@ -1379,8 +1366,7 @@ async fn find_entity_by_name_exact_wins_over_summary_mention() {
         Some("A person named Alice"),
     )
     .await
-    .unwrap()
-    .0;
+    .unwrap();
     // Google's summary mentions "Alice" — without the fix, FTS5 could rank this first.
     gs.upsert_entity(
         "Google",
@@ -1404,8 +1390,7 @@ async fn find_entity_by_name_case_insensitive_exact() {
     let gs = setup().await;
     gs.upsert_entity("Bob", "Bob", EntityType::Person, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let results = gs.find_entity_by_name("bob").await.unwrap();
     assert!(!results.is_empty());
@@ -1417,8 +1402,7 @@ async fn find_entity_by_name_falls_back_to_fuzzy_when_no_exact_match() {
     let gs = setup().await;
     gs.upsert_entity("Charlie", "Charlie", EntityType::Person, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     // "Char" is not an exact match for "Charlie" → FTS5 prefix fallback should find it.
     let results = gs.find_entity_by_name("Char").await.unwrap();
@@ -1439,8 +1423,7 @@ async fn find_entity_by_name_matches_canonical_name() {
     // upsert_entity sets canonical_name = second arg
     gs.upsert_entity("Dave (Engineer)", "Dave", EntityType::Person, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     // Searching by canonical_name "Dave" must return the entity even though
     // the display name is "Dave (Engineer)".
@@ -3004,8 +2987,7 @@ async fn fts5_cross_session_visibility_after_checkpoint() {
         let gs_a = GraphStore::new(store_a.pool().clone());
         gs_a.upsert_entity("Rust", "rust", EntityType::Concept, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         gs_a.checkpoint_wal().await.unwrap();
     }
 
@@ -3350,8 +3332,7 @@ async fn find_entities_ranked_returns_scores_in_0_1() {
     store
         .upsert_entity("Rust", "rust", EntityType::Language, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     store
         .upsert_entity("RustLang", "rustlang", EntityType::Language, None)
         .await
@@ -3378,8 +3359,7 @@ async fn find_entities_ranked_empty_query_returns_empty() {
     store
         .upsert_entity("Rust", "rust", EntityType::Language, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let results = store.find_entities_ranked("", 10).await.unwrap();
     assert!(results.is_empty(), "empty query must return no results");
@@ -3391,8 +3371,7 @@ async fn find_entities_ranked_top_match_has_highest_score() {
     store
         .upsert_entity("Rust", "rust", EntityType::Language, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     store
         .upsert_entity("Python", "python", EntityType::Language, None)
         .await

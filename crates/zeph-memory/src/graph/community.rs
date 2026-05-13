@@ -660,8 +660,7 @@ mod tests {
         store
             .upsert_entity("Solo", "Solo", EntityType::Concept, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
             .await
             .unwrap();
@@ -787,8 +786,7 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
         }
 
         let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
@@ -861,8 +859,7 @@ mod tests {
             store
                 .upsert_entity(&name, &name, EntityType::Concept, None)
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
         }
 
         let stats = run_graph_eviction(&store, 90, 3).await.unwrap();
