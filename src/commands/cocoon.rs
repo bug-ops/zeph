@@ -247,8 +247,9 @@ async fn check_vault_key(
     let _span = tracing::info_span!("cli.cocoon.doctor.vault").entered();
     let vault_args = crate::bootstrap::parse_vault_args(config, None, None, None);
 
-    let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
-        "age" => {
+    use zeph_config::features::VaultBackend;
+    let vault: Box<dyn VaultProvider> = match vault_args.backend {
+        VaultBackend::Age => {
             let (Some(key), Some(path)) = (
                 vault_args.key_path.as_deref(),
                 vault_args.vault_path.as_deref(),
@@ -276,7 +277,7 @@ async fn check_vault_key(
                 }
             }
         }
-        "env" => Box::new(zeph_core::vault::EnvVaultProvider),
+        VaultBackend::Env => Box::new(zeph_core::vault::EnvVaultProvider),
         other => {
             results.push(CheckResult::warn(
                 "cocoon.vault",

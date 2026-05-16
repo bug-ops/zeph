@@ -47,8 +47,9 @@ async fn resolve_vault_secrets(
     let _span = tracing::info_span!("cli.gonka.doctor.vault").entered();
     let vault_args = crate::bootstrap::parse_vault_args(config, None, None, None);
 
-    let vault: Box<dyn VaultProvider> = match vault_args.backend.as_str() {
-        "age" => {
+    use zeph_config::features::VaultBackend;
+    let vault: Box<dyn VaultProvider> = match vault_args.backend {
+        VaultBackend::Age => {
             let (Some(key), Some(path)) = (
                 vault_args.key_path.as_deref(),
                 vault_args.vault_path.as_deref(),
@@ -78,15 +79,12 @@ async fn resolve_vault_secrets(
                 }
             }
         }
-        "env" => Box::new(zeph_core::vault::EnvVaultProvider),
-        _ => {
+        VaultBackend::Env => Box::new(zeph_core::vault::EnvVaultProvider),
+        other => {
             let start = Instant::now();
             let r = CheckResult::warn(
                 "gonka.vault.private_key",
-                format!(
-                    "unknown vault backend '{}'; cannot resolve secrets",
-                    vault_args.backend
-                ),
+                format!("unknown vault backend '{other}'; cannot resolve secrets"),
                 elapsed_ms(start),
             );
             let addr_r = CheckResult::warn("gonka.vault.address", "skipped (unknown backend)", 0);

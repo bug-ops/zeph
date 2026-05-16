@@ -427,7 +427,7 @@ where
     (agent, Some(result.executor))
 }
 
-#[cfg(all(test, feature = "scheduler"))]
+#[cfg(all(test, feature = "scheduler", feature = "testing"))]
 mod tests {
     use tokio::sync::mpsc;
     use zeph_core::config::{ScheduledTaskConfig, ScheduledTaskKind};
