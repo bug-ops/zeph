@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-common`: added 8 exfiltration-channel patterns to `RAW_INJECTION_PATTERNS` (`exfil_curl`,
+  `exfil_wget_post`, `exfil_api_key_send`, `exfil_extract_all`, `exfil_leak`, `exfil_forward_to`,
+  `exfil_exfiltrate`, `exfil_send_secret`) for detecting skills that attempt to exfiltrate data
+  via shell network tools or social-engineering directives (closes #3959).
+- `zeph-plugins`: Stage-1 advisory SKILL.md injection scan on `plugin add` — each `SKILL.md` is
+  scanned with `scan_skill_body` before files are copied; matches emit `WARN` tracing events but
+  never block installation (advisory only, closes #3959).
+- `zeph-plugins`: `PluginError::SemanticViolation` variant reserved for future Stage-2 LLM
+  semantic scan (closes #3959).
+- `zeph-config`: `skills.semantic_scan` (bool, default `false`) and
+  `skills.semantic_scan_provider` (provider name, default empty) config fields for opt-in
+  LLM-backed SKILL.md compliance scan (closes #3959).
+
+### Changed
+
+- `zeph-skills`: `SkillEmbedding::from_raw` visibility narrowed to `pub(crate)` — it is an
+  internal embedding-provider boundary helper and should not be part of the public API
+  (closes #3958).
+
 ### Performance
 
 - `zeph-gateway`: added `tracing::instrument` spans (`gateway.webhook`, `gateway.health`) to HTTP

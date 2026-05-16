@@ -260,6 +260,7 @@ pub enum SkillPromptMode {
 /// disambiguation_threshold = 0.20
 /// hybrid_search = true
 /// ```
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SkillsConfig {
     /// Directories to scan for `*.skill.md` / `SKILL.md` files.
@@ -339,6 +340,24 @@ pub struct SkillsConfig {
     /// model. When empty (the default), the primary provider is used.
     #[serde(default)]
     pub disambiguate_provider: ProviderName,
+
+    /// Enable LLM-backed semantic SKILL.md compliance scan on `plugin add`.
+    ///
+    /// When `true`, the agent asks an LLM whether the skill's declared purpose is
+    /// consistent with its actual content. Non-compliant skills are rejected with
+    /// [`PluginError::SemanticViolation`]. Stage-1 regex scan always runs and is
+    /// advisory regardless of this setting.
+    ///
+    /// Default: `false`.
+    #[serde(default)]
+    pub semantic_scan: bool,
+
+    /// Provider name (from `[[llm.providers]]`) used for the semantic scan.
+    ///
+    /// When empty (the default), the primary/main provider is used. If no provider
+    /// is configured at all, the semantic scan is skipped with a warning.
+    #[serde(default)]
+    pub semantic_scan_provider: ProviderName,
 }
 
 fn default_generation_timeout_ms() -> u64 {

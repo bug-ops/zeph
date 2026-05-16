@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use zeph_skills::bundled::bundled_skill_names;
 use zeph_skills::registry::SkillRegistry;
+use zeph_skills::scanner::scan_skill_body;
 
 use crate::PluginError;
 use crate::manifest::{PluginManifest, PluginMcpServer};
@@ -191,6 +192,14 @@ impl PluginManager {
 
         // Validate config overlay keys.
         validate_overlay_keys(&manifest.config)?;
+
+        // Stage-1: advisory regex scan over each SKILL.md before copying files.
+        // Results are warnings only — they never block installation.
+        scan_skill_entries(
+            source_path.as_path(),
+            &manifest.skills,
+            &manifest.plugin.name,
+        );
 
         let mut warnings: Vec<String> = Vec::new();
         if let Some(msg) = check_allowed_commands_overlay_effect(
@@ -566,6 +575,43 @@ fn validate_mcp_commands(
         }
     }
     Ok(())
+}
+
+/// Stage-1 advisory scan: run injection/exfiltration regex patterns over each `SKILL.md`.
+///
+/// Matches are logged as `WARN` and never block installation. The Stage-2 LLM semantic
+/// scan (when configured) is the blocking gate.
+fn scan_skill_entries(
+    source_root: &Path,
+    entries: &[crate::manifest::SkillEntry],
+    plugin_name: &str,
+) {
+    let span = tracing::info_span!("plugins.manager.skill_scan", plugin = %plugin_name);
+    let _guard = span.enter();
+    for entry in entries {
+        let skill_md_path = source_root.join(&entry.path).join("SKILL.md");
+        match std::fs::read_to_string(&skill_md_path) {
+            Ok(content) => {
+                let result = scan_skill_body(&content);
+                if result.has_matches() {
+                    tracing::warn!(
+                        plugin = %plugin_name,
+                        skill = %entry.path,
+                        patterns = ?result.matched_patterns,
+                        "SKILL.md matched injection/exfiltration patterns (advisory)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    plugin = %plugin_name,
+                    skill = %entry.path,
+                    error = %e,
+                    "could not read SKILL.md for scan"
+                );
+            }
+        }
+    }
 }
 
 /// Collect skill names from a plugin source tree according to the manifest's `[[skills]]` entries.

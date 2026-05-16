@@ -33,7 +33,7 @@ use crate::error::SkillError;
 /// cosine-similarity bugs where mismatched dimensions return `0.0`.
 ///
 /// Use [`SkillEmbedding::new`] when an expected dimension is known (e.g. when
-/// storing a centroid alongside other embeddings). Use [`SkillEmbedding::from_raw`]
+/// storing a centroid alongside other embeddings). Use `from_raw`
 /// at the embedding-provider boundary where the dimension is whatever the model
 /// returns and no cross-check is yet possible.
 ///
@@ -92,16 +92,14 @@ impl SkillEmbedding {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use zeph_skills::embedding::SkillEmbedding;
-    ///
+    /// ```ignore
     /// // At the provider boundary: dimension is whatever the model returns.
     /// let raw = vec![0.1_f32, 0.2, 0.3];
     /// let emb = SkillEmbedding::from_raw(raw);
     /// assert_eq!(emb.dim(), 3);
     /// ```
     #[must_use]
-    pub fn from_raw(vec: Vec<f32>) -> Self {
+    pub(crate) fn from_raw(vec: Vec<f32>) -> Self {
         Self(vec)
     }
 
@@ -109,9 +107,7 @@ impl SkillEmbedding {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use zeph_skills::embedding::SkillEmbedding;
-    ///
+    /// ```ignore
     /// let emb = SkillEmbedding::from_raw(vec![0.0; 768]);
     /// assert_eq!(emb.dim(), 768);
     /// ```
@@ -124,9 +120,7 @@ impl SkillEmbedding {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use zeph_skills::embedding::SkillEmbedding;
-    ///
+    /// ```ignore
     /// let v = vec![1.0_f32, 2.0, 3.0];
     /// let emb = SkillEmbedding::from_raw(v.clone());
     /// assert_eq!(emb.into_inner(), v);

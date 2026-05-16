@@ -46,6 +46,7 @@ zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }
+regex.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 

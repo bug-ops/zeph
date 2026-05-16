@@ -219,6 +219,8 @@ impl Default for Config {
                 evaluation: crate::features::SkillEvaluationConfig::default(),
                 proactive_exploration: crate::features::ProactiveExplorationConfig::default(),
                 disambiguate_provider: crate::providers::ProviderName::default(),
+                semantic_scan: false,
+                semantic_scan_provider: crate::providers::ProviderName::default(),
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),
