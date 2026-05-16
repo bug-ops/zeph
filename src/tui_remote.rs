@@ -82,6 +82,7 @@ pub(crate) async fn run_tui_remote(
                                     _ => {}
                                 }
                             }
+                            Ok(_) => {}
                             Err(e) => {
                                 let _ = agent_tx_pump
                                     .send(zeph_tui::AgentEvent::FullMessage(format!(

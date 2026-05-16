@@ -98,8 +98,31 @@ fn default_repo_map_ttl_secs() -> u64 {
     300
 }
 
-fn default_vault_backend() -> String {
-    "env".into()
+fn default_vault_backend() -> VaultBackend {
+    VaultBackend::Env
+}
+
+/// Selects the vault backend used to resolve secrets at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VaultBackend {
+    /// Resolve secrets from environment variables (default, zero-config).
+    #[default]
+    Env,
+    /// Resolve secrets from an age-encrypted vault file.
+    Age,
+    /// Resolve secrets from the OS keyring.
+    Keyring,
+}
+
+impl std::fmt::Display for VaultBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Env => f.write_str("env"),
+            Self::Age => f.write_str("age"),
+            Self::Keyring => f.write_str("keyring"),
+        }
+    }
 }
 
 fn default_max_daily_cents() -> u32 {
@@ -634,9 +657,9 @@ impl Default for IndexConfig {
 /// ```
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VaultConfig {
-    /// Vault backend identifier (`"age"`, `"env"`, or `"keyring"`). Default: `"env"`.
+    /// Which backend resolves secrets. Default: [`VaultBackend::Env`].
     #[serde(default = "default_vault_backend")]
-    pub backend: String,
+    pub backend: VaultBackend,
 }
 
 impl Default for VaultConfig {

@@ -33,8 +33,8 @@ fn build_cascade_router_config(
     config: &Config,
 ) -> CascadeRouterConfig {
     let classifier_mode = match cascade_cfg.classifier_mode {
-        zeph_core::config::CascadeClassifierMode::Heuristic => ClassifierMode::Heuristic,
         zeph_core::config::CascadeClassifierMode::Judge => ClassifierMode::Judge,
+        _ => ClassifierMode::Heuristic,
     };
     // SEC-CASCADE-01: clamp quality_threshold to [0.0, 1.0]; reject NaN/Inf.
     let raw_threshold = cascade_cfg.quality_threshold;
@@ -280,7 +280,6 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
     }
 
     match config.llm.routing {
-        LlmRoutingStrategy::None => build_single_provider_from_pool(pool, config),
         LlmRoutingStrategy::Ema => {
             let providers = build_all_pool_providers(pool, config)?;
             let raw_alpha = config.llm.router_ema_alpha;
@@ -390,6 +389,7 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
             )))
         }
         LlmRoutingStrategy::Triage => build_triage_provider(pool, config),
+        _ => build_single_provider_from_pool(pool, config),
     }
 }
 

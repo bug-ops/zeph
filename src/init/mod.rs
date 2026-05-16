@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
-use zeph_config::{GeminiThinkingLevel, ThinkingConfig};
+use zeph_config::{GeminiThinkingLevel, ThinkingConfig, VaultBackend};
 use zeph_core::config::{
     AcpConfig, ChannelSkillsConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy,
     McpServerConfig, McpTrustLevel, MemoryConfig, OrchestrationConfig, ProviderEntry, ProviderKind,
@@ -836,7 +836,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
 
     config.vault = VaultConfig {
-        backend: state.vault_backend.clone(),
+        backend: match state.vault_backend.as_str() {
+            "age" => VaultBackend::Age,
+            "keyring" => VaultBackend::Keyring,
+            _ => VaultBackend::Env,
+        },
     };
 
     apply_daemon_config(&mut config, state);

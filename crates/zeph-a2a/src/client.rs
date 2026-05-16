@@ -30,6 +30,7 @@ pub type TaskEventStream = Pin<Box<dyn Stream<Item = Result<TaskEvent, A2aError>
 /// The A2A spec multiplexes two event kinds over the same SSE channel. This enum
 /// uses `#[serde(untagged)]` so that the deserializer inspects the `kind` field
 /// inside the inner struct to determine the variant.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TaskEvent {

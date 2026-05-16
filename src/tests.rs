@@ -365,7 +365,7 @@ fn build_config_vault_age() {
         ..WizardState::default()
     };
     let config = build_config(&state);
-    assert_eq!(config.vault.backend, "age");
+    assert_eq!(config.vault.backend, zeph_config::VaultBackend::Age);
 }
 
 #[test]

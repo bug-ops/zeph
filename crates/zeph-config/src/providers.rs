@@ -338,6 +338,7 @@ pub fn get_default_router_reorder_interval() -> u64 {
 /// model = "gpt-4o"
 /// name = "quality"
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
@@ -699,6 +700,7 @@ pub struct SttConfig {
 }
 
 /// Routing strategy selection for multi-provider routing.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RouterStrategyConfig {
@@ -919,6 +921,7 @@ impl Default for CascadeConfig {
 }
 
 /// Quality classifier mode for cascade routing.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CascadeClassifierMode {
@@ -1162,6 +1165,7 @@ impl Default for GenerationParams {
 // ─── Unified config types ─────────────────────────────────────────────────────
 
 /// Routing strategy for the `[[llm.providers]]` pool.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmRoutingStrategy {

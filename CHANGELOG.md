@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-config`: `VaultConfig.backend` is now typed as `VaultBackend` enum instead of `String`,
+  with `serde(rename_all = "lowercase")` so existing TOML configs remain compatible (closes #3886).
+- `zeph-a2a`: `TaskState`, `Role`, `Part`, `TaskEvent` are now `#[non_exhaustive]` to allow
+  adding protocol variants without breaking downstream matches (closes #3893).
+- `zeph-config`: `ProviderKind`, `RouterStrategyConfig`, `LlmRoutingStrategy`, `CascadeClassifierMode`
+  are now `#[non_exhaustive]` for forward compatibility (closes #3893).
+
+### Dependencies
+
+- Updated `metrics` 0.24.5 → 0.24.6 and `metrics-util` 0.20.3 → 0.20.4 (closes #3895).
+
 ### Fixed
 
 - `zeph-core`: `Agent::inject_semantic_recall` now delegates to

@@ -262,6 +262,7 @@ fn detection_paths(kind: ProviderKind, base: &Path) -> Vec<PathBuf> {
         | ProviderKind::Cocoon => {
             vec![base.join("AGENTS.md")]
         }
+        _ => vec![base.join("AGENTS.md")],
     }
 }
 

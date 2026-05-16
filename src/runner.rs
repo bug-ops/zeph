@@ -2869,7 +2869,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             active_channel: active_channel_name.clone(),
             token_budget,
             compaction_threshold,
-            vault_backend: config.vault.backend.clone(),
+            vault_backend: config.vault.backend.to_string(),
             autosave_enabled: config.memory.autosave_assistant,
             model_name_override: Some(config.llm.effective_model().to_owned()),
         }

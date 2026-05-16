@@ -38,6 +38,7 @@ use zeph_skills::registry::SkillRegistry;
 use zeph_skills::watcher::{SkillEvent, SkillWatcher};
 
 use url::Url;
+use zeph_config::VaultBackend;
 use zeph_core::config::{Config, SecretResolver};
 use zeph_core::config_watcher::{ConfigEvent, ConfigWatcher};
 use zeph_core::vault::EnvVaultProvider;
@@ -73,7 +74,7 @@ pub struct AppBuilder {
 }
 
 pub struct VaultArgs {
-    pub backend: String,
+    pub backend: VaultBackend,
     pub key_path: Option<String>,
     pub vault_path: Option<String>,
 }
@@ -129,9 +130,9 @@ impl AppBuilder {
         let (vault, age_vault): (
             Box<dyn VaultProvider>,
             Option<Arc<RwLock<AgeVaultProvider>>>,
-        ) = match vault_args.backend.as_str() {
-            "env" => (Box::new(EnvVaultProvider), None),
-            "age" => {
+        ) = match vault_args.backend {
+            VaultBackend::Env => (Box::new(EnvVaultProvider), None),
+            VaultBackend::Age => {
                 let key = vault_args.key_path.ok_or_else(|| {
                     BootstrapError::Provider("--vault-key required for age backend".into())
                 })?;
@@ -145,10 +146,10 @@ impl AppBuilder {
                     Box::new(zeph_core::vault::ArcAgeVaultProvider(Arc::clone(&arc)));
                 (boxed, Some(arc))
             }
-            other => {
-                return Err(BootstrapError::Provider(format!(
-                    "unknown vault backend: {other}"
-                )));
+            VaultBackend::Keyring => {
+                return Err(BootstrapError::Provider(
+                    "keyring vault backend is not yet implemented".into(),
+                ));
             }
         };
 
@@ -1709,9 +1710,9 @@ impl AppBuilder {
 #[cfg(feature = "bench")]
 #[must_use]
 pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> {
-    match args.backend.as_str() {
-        "env" => Some(Box::new(EnvVaultProvider)),
-        "age" => {
+    match args.backend {
+        VaultBackend::Env => Some(Box::new(EnvVaultProvider)),
+        VaultBackend::Age => {
             let key = args.key_path.as_deref()?;
             let path = args.vault_path.as_deref()?;
             let provider =
@@ -1720,7 +1721,7 @@ pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> 
             let arc = Arc::new(RwLock::new(provider));
             Some(Box::new(zeph_core::vault::ArcAgeVaultProvider(arc)))
         }
-        _ => None,
+        VaultBackend::Keyring => None,
     }
 }
 

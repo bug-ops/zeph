@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 /// `Submitted` → `Working` → `Completed` (success) or `Failed` (error).
 /// `InputRequired` pauses processing until the caller sends more data.
 /// Terminal states (`Completed`, `Failed`, `Canceled`, `Rejected`) cannot be resumed.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskState {
     /// Task has been received and queued but processing has not started.
@@ -85,6 +86,7 @@ pub struct TaskStatus {
 }
 
 /// Participant role in a conversation message.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -143,6 +145,7 @@ pub struct Message {
 /// let text_part = Part::text("Hello!");
 /// assert!(matches!(text_part, Part::Text { .. }));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Part {

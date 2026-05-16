@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::bootstrap::VaultArgs;
+use zeph_config::VaultBackend;
 use zeph_core::config::Config;
 
 pub fn resolve_config_path(cli_override: Option<&Path>) -> PathBuf {
@@ -48,6 +49,14 @@ fn resolve_config_path_impl(
     xdg
 }
 
+fn parse_backend_str(s: &str) -> VaultBackend {
+    match s {
+        "age" => VaultBackend::Age,
+        "keyring" => VaultBackend::Keyring,
+        _ => VaultBackend::Env,
+    }
+}
+
 /// Priority: CLI flag > `ZEPH_VAULT_*` env > config.vault.* > defaults
 pub fn parse_vault_args(
     config: &Config,
@@ -57,9 +66,9 @@ pub fn parse_vault_args(
 ) -> VaultArgs {
     let env_backend = std::env::var("ZEPH_VAULT_BACKEND").ok();
     let backend = cli_backend
-        .map(String::from)
-        .or(env_backend)
-        .unwrap_or_else(|| config.vault.backend.clone());
+        .map(parse_backend_str)
+        .or_else(|| env_backend.as_deref().map(parse_backend_str))
+        .unwrap_or(config.vault.backend);
 
     let env_key = std::env::var("ZEPH_VAULT_KEY").ok();
     let default_dir = zeph_core::vault::default_vault_dir();
@@ -67,7 +76,7 @@ pub fn parse_vault_args(
         .map(|p| p.to_string_lossy().into_owned())
         .or(env_key)
         .or_else(|| {
-            if backend == "age" {
+            if backend == VaultBackend::Age {
                 Some(
                     default_dir
                         .join("vault-key.txt")
@@ -84,7 +93,7 @@ pub fn parse_vault_args(
         .map(|p| p.to_string_lossy().into_owned())
         .or(env_vault)
         .or_else(|| {
-            if backend == "age" {
+            if backend == VaultBackend::Age {
                 Some(
                     default_dir
                         .join("secrets.age")

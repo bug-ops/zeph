@@ -130,6 +130,10 @@ pub fn build_provider_from_entry(
         ProviderKind::Cocoon => Err(BootstrapError::Provider(
             "cocoon feature is not enabled; rebuild with --features cocoon".into(),
         )),
+        _ => Err(BootstrapError::Provider(format!(
+            "unknown provider kind: {:?}",
+            entry.provider_type
+        ))),
     }
 }
 

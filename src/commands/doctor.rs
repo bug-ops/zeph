@@ -456,12 +456,12 @@ async fn check_llm_provider(
             .as_deref()
             .unwrap_or("https://generativelanguage.googleapis.com")
             .to_owned(),
-        ProviderKind::Compatible => entry.base_url.clone().unwrap_or_default(),
         ProviderKind::Candle | ProviderKind::Gonka => unreachable!(),
         ProviderKind::Cocoon => entry
             .cocoon_client_url
             .clone()
             .unwrap_or_else(|| "http://localhost:10000".to_owned()),
+        _ => entry.base_url.clone().unwrap_or_default(),
     };
 
     if base_url.is_empty() {
@@ -767,7 +767,7 @@ pub(crate) async fn run_doctor(
     // 2 + 3 + 4. Vault checks
     {
         let vault_args = crate::bootstrap::parse_vault_args(&config, None, None, None);
-        if vault_args.backend == "age" {
+        if vault_args.backend == zeph_config::VaultBackend::Age {
             if let Some(ref vault_path) = vault_args.vault_path {
                 results.push(check_vault_file_exists(vault_path));
                 results.push(check_vault_file_mode(vault_path, "vault.file_mode"));
