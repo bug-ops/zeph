@@ -345,7 +345,7 @@ pub struct SkillsConfig {
     ///
     /// When `true`, the agent asks an LLM whether the skill's declared purpose is
     /// consistent with its actual content. Non-compliant skills are rejected with
-    /// [`PluginError::SemanticViolation`]. Stage-1 regex scan always runs and is
+    /// `PluginError::SemanticViolation`. Stage-1 regex scan always runs and is
     /// advisory regardless of this setting.
     ///
     /// Default: `false`.
