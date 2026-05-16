@@ -625,7 +625,7 @@ mod tests {
         assert!(!result.should_alert, "low drift must not trigger alert");
     }
 
-    /// Integration test: record events → score above threshold → GoalDrift event produced.
+    /// Integration test: record events → score above threshold → `GoalDrift` event produced.
     ///
     /// Verifies the full wiring from `record()` through `goal_drift_score()` to the
     /// `SecurityEventCategory::GoalDrift` variant that callers should push to their sink.
