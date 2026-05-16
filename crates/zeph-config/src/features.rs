@@ -334,8 +334,8 @@ pub struct SkillsConfig {
     /// Provider name for skill disambiguation LLM classification calls.
     ///
     /// When set, the named provider is used instead of the primary provider for
-    /// [`ContextService::disambiguate_skills`]. Useful to route disambiguation to a
-    /// cheaper or faster model. When empty (the default), the primary provider is used.
+    /// skill disambiguation. Useful to route disambiguation to a cheaper or faster
+    /// model. When empty (the default), the primary provider is used.
     #[serde(default)]
     pub disambiguate_provider: ProviderName,
 }
