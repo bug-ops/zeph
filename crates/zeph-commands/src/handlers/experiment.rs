@@ -42,19 +42,24 @@ impl CommandHandler<CommandContext<'_>> for ExperimentCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let input = if args.is_empty() {
-                "/experiment".to_owned()
-            } else {
-                format!("/experiment {args}")
-            };
-            let result = ctx.agent.handle_experiment(&input).await?;
-            if result.is_empty() {
-                Ok(CommandOutput::Silent)
-            } else {
-                Ok(CommandOutput::Message(result))
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.experiment.handle");
+        Box::pin(
+            async move {
+                let input = if args.is_empty() {
+                    "/experiment".to_owned()
+                } else {
+                    format!("/experiment {args}")
+                };
+                let result = ctx.agent.handle_experiment(&input).await?;
+                if result.is_empty() {
+                    Ok(CommandOutput::Silent)
+                } else {
+                    Ok(CommandOutput::Message(result))
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 

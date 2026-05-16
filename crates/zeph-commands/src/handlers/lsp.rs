@@ -34,14 +34,19 @@ impl CommandHandler<CommandContext<'_>> for LspCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.lsp_status().await?;
-            if result.is_empty() {
-                Ok(CommandOutput::Silent)
-            } else {
-                Ok(CommandOutput::Message(result))
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.lsp.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.lsp_status().await?;
+                if result.is_empty() {
+                    Ok(CommandOutput::Silent)
+                } else {
+                    Ok(CommandOutput::Message(result))
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 

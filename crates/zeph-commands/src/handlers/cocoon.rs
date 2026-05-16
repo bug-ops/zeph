@@ -38,7 +38,12 @@ impl CommandHandler<CommandContext<'_>> for CocoonCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move { Ok(CommandOutput::Message(ctx.agent.handle_cocoon(args).await?)) })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.cocoon.handle");
+        Box::pin(
+            async move { Ok(CommandOutput::Message(ctx.agent.handle_cocoon(args).await?)) }
+                .instrument(span),
+        )
     }
 }
 

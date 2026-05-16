@@ -41,10 +41,15 @@ impl CommandHandler<CommandContext<'_>> for SkillCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_skill(args).await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.skill.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_skill(args).await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -71,10 +76,15 @@ impl CommandHandler<CommandContext<'_>> for SkillsCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_skills(args).await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.skills.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_skills(args).await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -103,10 +113,15 @@ impl CommandHandler<CommandContext<'_>> for FeedbackCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_feedback_command(args).await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.feedback.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_feedback_command(args).await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 

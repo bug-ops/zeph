@@ -38,14 +38,19 @@ impl CommandHandler<CommandContext<'_>> for ModelCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_model(args).await;
-            if result.is_empty() {
-                Ok(CommandOutput::Silent)
-            } else {
-                Ok(CommandOutput::Message(result))
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.model.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_model(args).await;
+                if result.is_empty() {
+                    Ok(CommandOutput::Silent)
+                } else {
+                    Ok(CommandOutput::Message(result))
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 
@@ -77,14 +82,19 @@ impl CommandHandler<CommandContext<'_>> for ProviderCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_provider(args).await;
-            if result.is_empty() {
-                Ok(CommandOutput::Silent)
-            } else {
-                Ok(CommandOutput::Message(result))
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.provider.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_provider(args).await;
+                if result.is_empty() {
+                    Ok(CommandOutput::Silent)
+                } else {
+                    Ok(CommandOutput::Message(result))
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 

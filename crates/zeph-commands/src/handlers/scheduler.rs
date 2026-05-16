@@ -40,20 +40,25 @@ impl CommandHandler<CommandContext<'_>> for SchedulerCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            if !args.is_empty() && args != "list" {
-                return Ok(CommandOutput::Message(
-                    "Unknown /scheduler subcommand. Available: /scheduler list".to_owned(),
-                ));
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.scheduler.handle");
+        Box::pin(
+            async move {
+                if !args.is_empty() && args != "list" {
+                    return Ok(CommandOutput::Message(
+                        "Unknown /scheduler subcommand. Available: /scheduler list".to_owned(),
+                    ));
+                }
+                match ctx.agent.list_scheduled_tasks().await? {
+                    Some(msg) if msg.is_empty() => Ok(CommandOutput::Silent),
+                    Some(msg) => Ok(CommandOutput::Message(msg)),
+                    None => Ok(CommandOutput::Message(
+                        "Scheduler is not enabled or list_tasks tool is unavailable.".to_owned(),
+                    )),
+                }
             }
-            match ctx.agent.list_scheduled_tasks().await? {
-                Some(msg) if msg.is_empty() => Ok(CommandOutput::Silent),
-                Some(msg) => Ok(CommandOutput::Message(msg)),
-                None => Ok(CommandOutput::Message(
-                    "Scheduler is not enabled or list_tasks tool is unavailable.".to_owned(),
-                )),
-            }
-        })
+            .instrument(span),
+        )
     }
 }
 

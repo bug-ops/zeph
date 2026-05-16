@@ -46,10 +46,15 @@ impl CommandHandler<CommandContext<'_>> for McpCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let output = ctx.agent.handle_mcp(args).await?;
-            Ok(CommandOutput::Message(output))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.mcp.handle");
+        Box::pin(
+            async move {
+                let output = ctx.agent.handle_mcp(args).await?;
+                Ok(CommandOutput::Message(output))
+            }
+            .instrument(span),
+        )
     }
 }
 

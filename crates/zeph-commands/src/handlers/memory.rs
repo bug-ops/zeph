@@ -36,17 +36,22 @@ impl CommandHandler<CommandContext<'_>> for MemoryCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = if args.is_empty() || args == "tiers" {
-                ctx.agent.memory_tiers().await?
-            } else if let Some(rest) = args.strip_prefix("promote") {
-                ctx.agent.memory_promote(rest.trim()).await?
-            } else {
-                "Unknown /memory subcommand. Available: /memory tiers, /memory promote <id>..."
-                    .to_owned()
-            };
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.memory.handle");
+        Box::pin(
+            async move {
+                let result = if args.is_empty() || args == "tiers" {
+                    ctx.agent.memory_tiers().await?
+                } else if let Some(rest) = args.strip_prefix("promote") {
+                    ctx.agent.memory_promote(rest.trim()).await?
+                } else {
+                    "Unknown /memory subcommand. Available: /memory tiers, /memory promote <id>..."
+                        .to_owned()
+                };
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -78,36 +83,41 @@ impl CommandHandler<CommandContext<'_>> for GraphCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = if args.is_empty() {
-                ctx.agent.graph_stats().await?
-            } else if args == "entities" || args.starts_with("entities ") {
-                ctx.agent.graph_entities().await?
-            } else if let Some(name) = args.strip_prefix("facts ") {
-                ctx.agent.graph_facts(name.trim()).await?
-            } else if args == "communities" {
-                ctx.agent.graph_communities().await?
-            } else if args == "backfill" || args.starts_with("backfill ") {
-                let limit = parse_backfill_limit(args);
-                let mut progress_messages: Vec<String> = Vec::new();
-                let final_msg = ctx
-                    .agent
-                    .graph_backfill(limit, &mut |msg| progress_messages.push(msg))
-                    .await?;
-                for msg in &progress_messages {
-                    ctx.sink.send(msg).await?;
-                }
-                final_msg
-            } else if let Some(name) = args.strip_prefix("history ") {
-                ctx.agent.graph_history(name.trim()).await?
-            } else {
-                "Unknown /graph subcommand. Available: /graph, /graph entities, \
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.graph.handle");
+        Box::pin(
+            async move {
+                let result = if args.is_empty() {
+                    ctx.agent.graph_stats().await?
+                } else if args == "entities" || args.starts_with("entities ") {
+                    ctx.agent.graph_entities().await?
+                } else if let Some(name) = args.strip_prefix("facts ") {
+                    ctx.agent.graph_facts(name.trim()).await?
+                } else if args == "communities" {
+                    ctx.agent.graph_communities().await?
+                } else if args == "backfill" || args.starts_with("backfill ") {
+                    let limit = parse_backfill_limit(args);
+                    let mut progress_messages: Vec<String> = Vec::new();
+                    let final_msg = ctx
+                        .agent
+                        .graph_backfill(limit, &mut |msg| progress_messages.push(msg))
+                        .await?;
+                    for msg in &progress_messages {
+                        ctx.sink.send(msg).await?;
+                    }
+                    final_msg
+                } else if let Some(name) = args.strip_prefix("history ") {
+                    ctx.agent.graph_history(name.trim()).await?
+                } else {
+                    "Unknown /graph subcommand. Available: /graph, /graph entities, \
                  /graph facts <name>, /graph history <name>, /graph communities, \
                  /graph backfill [--limit N]"
-                    .to_owned()
-            };
-            Ok(CommandOutput::Message(result))
-        })
+                        .to_owned()
+                };
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -136,10 +146,15 @@ impl CommandHandler<CommandContext<'_>> for GuidelinesCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.guidelines().await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.guidelines.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.guidelines().await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 

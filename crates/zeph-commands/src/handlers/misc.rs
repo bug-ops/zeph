@@ -30,10 +30,15 @@ impl CommandHandler<CommandContext<'_>> for CacheStatsCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.cache_stats();
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.cache_stats.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.cache_stats();
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -58,10 +63,15 @@ impl CommandHandler<CommandContext<'_>> for NotifyTestCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.notify_test().await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.notify_test.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.notify_test().await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -93,13 +103,18 @@ impl CommandHandler<CommandContext<'_>> for ImageCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            if args.is_empty() {
-                return Ok(CommandOutput::Message("Usage: /image <path>".to_owned()));
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.image.handle");
+        Box::pin(
+            async move {
+                if args.is_empty() {
+                    return Ok(CommandOutput::Message("Usage: /image <path>".to_owned()));
+                }
+                let result = ctx.agent.load_image(args).await?;
+                Ok(CommandOutput::Message(result))
             }
-            let result = ctx.agent.load_image(args).await?;
-            Ok(CommandOutput::Message(result))
-        })
+            .instrument(span),
+        )
     }
 }
 

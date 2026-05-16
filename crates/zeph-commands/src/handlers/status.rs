@@ -30,10 +30,15 @@ impl CommandHandler<CommandContext<'_>> for StatusCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.session_status().await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.status.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.session_status().await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -62,10 +67,15 @@ impl CommandHandler<CommandContext<'_>> for GuardrailCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.guardrail_status();
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.guardrail.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.guardrail_status();
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -94,10 +104,15 @@ impl CommandHandler<CommandContext<'_>> for FocusCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.focus_status();
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.focus.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.focus_status();
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -126,10 +141,15 @@ impl CommandHandler<CommandContext<'_>> for SideQuestCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.sidequest_status();
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.sidequest.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.sidequest_status();
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 

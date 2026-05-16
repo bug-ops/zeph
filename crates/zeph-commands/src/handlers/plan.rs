@@ -38,20 +38,25 @@ impl CommandHandler<CommandContext<'_>> for PlanCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            // Reconstruct the full command string so the plan parser can parse it.
-            let input = if args.is_empty() {
-                "/plan".to_owned()
-            } else {
-                format!("/plan {args}")
-            };
-            let result = ctx.agent.handle_plan(&input).await?;
-            if result.is_empty() {
-                Ok(CommandOutput::Silent)
-            } else {
-                Ok(CommandOutput::Message(result))
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.plan.handle");
+        Box::pin(
+            async move {
+                // Reconstruct the full command string so the plan parser can parse it.
+                let input = if args.is_empty() {
+                    "/plan".to_owned()
+                } else {
+                    format!("/plan {args}")
+                };
+                let result = ctx.agent.handle_plan(&input).await?;
+                if result.is_empty() {
+                    Ok(CommandOutput::Silent)
+                } else {
+                    Ok(CommandOutput::Message(result))
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 

@@ -31,15 +31,20 @@ impl CommandHandler<CommandContext<'_>> for LogCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let mut out = ctx.debug.log_status();
-            if let Some(tail) = ctx.debug.read_log_tail(20).await {
-                out.push('\n');
-                out.push_str("Recent entries:\n");
-                out.push_str(&ctx.debug.scrub(&tail));
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.log.handle");
+        Box::pin(
+            async move {
+                let mut out = ctx.debug.log_status();
+                if let Some(tail) = ctx.debug.read_log_tail(20).await {
+                    out.push('\n');
+                    out.push_str("Recent entries:\n");
+                    out.push_str(&ctx.debug.scrub(&tail));
+                }
+                Ok(CommandOutput::Message(out.trim_end().to_owned()))
             }
-            Ok(CommandOutput::Message(out.trim_end().to_owned()))
-        })
+            .instrument(span),
+        )
     }
 }
 
@@ -71,26 +76,31 @@ impl CommandHandler<CommandContext<'_>> for DebugDumpCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            if args.is_empty() {
-                let msg = match ctx.debug.dump_status() {
-                    Some(path) => format!("Debug dump active: {path}"),
-                    None => "Debug dump is inactive. Use `/debug-dump <path>` to enable, \
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.debug_dump.handle");
+        Box::pin(
+            async move {
+                if args.is_empty() {
+                    let msg = match ctx.debug.dump_status() {
+                        Some(path) => format!("Debug dump active: {path}"),
+                        None => "Debug dump is inactive. Use `/debug-dump <path>` to enable, \
                          or start with `--debug-dump [dir]`."
-                        .to_owned(),
-                };
-                return Ok(CommandOutput::Message(msg));
-            }
+                            .to_owned(),
+                    };
+                    return Ok(CommandOutput::Message(msg));
+                }
 
-            match ctx.debug.enable_dump(args) {
-                Ok(path) => Ok(CommandOutput::Message(format!(
-                    "Debug dump enabled: {path}"
-                ))),
-                Err(e) => Ok(CommandOutput::Message(format!(
-                    "Failed to enable debug dump: {e}"
-                ))),
+                match ctx.debug.enable_dump(args) {
+                    Ok(path) => Ok(CommandOutput::Message(format!(
+                        "Debug dump enabled: {path}"
+                    ))),
+                    Err(e) => Ok(CommandOutput::Message(format!(
+                        "Failed to enable debug dump: {e}"
+                    ))),
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 
@@ -119,21 +129,26 @@ impl CommandHandler<CommandContext<'_>> for DumpFormatCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            if args.is_empty() {
-                return Ok(CommandOutput::Message(format!(
-                    "Current dump format: {}. Use `/dump-format json|raw|trace` to change.",
-                    ctx.debug.dump_format_name()
-                )));
-            }
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.dump_format.handle");
+        Box::pin(
+            async move {
+                if args.is_empty() {
+                    return Ok(CommandOutput::Message(format!(
+                        "Current dump format: {}. Use `/dump-format json|raw|trace` to change.",
+                        ctx.debug.dump_format_name()
+                    )));
+                }
 
-            match ctx.debug.set_dump_format(args) {
-                Ok(()) => Ok(CommandOutput::Message(format!(
-                    "Debug dump format set to: {args}"
-                ))),
-                Err(e) => Ok(CommandOutput::Message(e.to_string())),
+                match ctx.debug.set_dump_format(args) {
+                    Ok(()) => Ok(CommandOutput::Message(format!(
+                        "Debug dump format set to: {args}"
+                    ))),
+                    Err(e) => Ok(CommandOutput::Message(e.to_string())),
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 

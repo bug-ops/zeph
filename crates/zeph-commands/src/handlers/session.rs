@@ -35,16 +35,21 @@ impl CommandHandler<CommandContext<'_>> for ExitCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            if ctx.session.supports_exit() {
-                Ok(CommandOutput::Exit)
-            } else {
-                ctx.sink
-                    .send("/exit is not supported in this channel.")
-                    .await?;
-                Ok(CommandOutput::Continue)
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.exit.handle");
+        Box::pin(
+            async move {
+                if ctx.session.supports_exit() {
+                    Ok(CommandOutput::Exit)
+                } else {
+                    ctx.sink
+                        .send("/exit is not supported in this channel.")
+                        .await?;
+                    Ok(CommandOutput::Continue)
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 
@@ -69,16 +74,21 @@ impl CommandHandler<CommandContext<'_>> for QuitCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            if ctx.session.supports_exit() {
-                Ok(CommandOutput::Exit)
-            } else {
-                ctx.sink
-                    .send("/exit is not supported in this channel.")
-                    .await?;
-                Ok(CommandOutput::Continue)
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.quit.handle");
+        Box::pin(
+            async move {
+                if ctx.session.supports_exit() {
+                    Ok(CommandOutput::Exit)
+                } else {
+                    ctx.sink
+                        .send("/exit is not supported in this channel.")
+                        .await?;
+                    Ok(CommandOutput::Continue)
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 
@@ -106,10 +116,15 @@ impl CommandHandler<CommandContext<'_>> for ClearCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            ctx.messages.clear_history();
-            Ok(CommandOutput::Silent)
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.clear.handle");
+        Box::pin(
+            async move {
+                ctx.messages.clear_history();
+                Ok(CommandOutput::Silent)
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -134,12 +149,17 @@ impl CommandHandler<CommandContext<'_>> for ResetCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            ctx.messages.clear_history();
-            Ok(CommandOutput::Message(
-                "Conversation history reset.".to_owned(),
-            ))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.reset.handle");
+        Box::pin(
+            async move {
+                ctx.messages.clear_history();
+                Ok(CommandOutput::Message(
+                    "Conversation history reset.".to_owned(),
+                ))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -164,14 +184,19 @@ impl CommandHandler<CommandContext<'_>> for ClearQueueCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let n = ctx.messages.drain_queue();
-            // Notify the channel of the updated count; ignore errors (best-effort).
-            let _ = ctx.sink.send_queue_count(0).await;
-            Ok(CommandOutput::Message(format!(
-                "Cleared {n} queued messages."
-            )))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.clear_queue.handle");
+        Box::pin(
+            async move {
+                let n = ctx.messages.drain_queue();
+                // Notify the channel of the updated count; ignore errors (best-effort).
+                let _ = ctx.sink.send_queue_count(0).await;
+                Ok(CommandOutput::Message(format!(
+                    "Cleared {n} queued messages."
+                )))
+            }
+            .instrument(span),
+        )
     }
 }
 

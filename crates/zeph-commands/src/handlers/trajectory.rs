@@ -36,10 +36,15 @@ impl CommandHandler<CommandContext<'_>> for TrajectoryCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_trajectory(args);
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.trajectory.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_trajectory(args);
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -70,10 +75,15 @@ impl CommandHandler<CommandContext<'_>> for ScopeCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_scope(args);
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.scope.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_scope(args);
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 

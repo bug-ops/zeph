@@ -38,17 +38,22 @@ impl CommandHandler<CommandContext<'_>> for AgentCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let input = if args.is_empty() {
-                "/agent".to_owned()
-            } else {
-                format!("/agent {args}")
-            };
-            match ctx.agent.handle_agent_dispatch(&input).await? {
-                Some(msg) => Ok(CommandOutput::Message(msg)),
-                None => Ok(CommandOutput::Silent),
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.agent.handle");
+        Box::pin(
+            async move {
+                let input = if args.is_empty() {
+                    "/agent".to_owned()
+                } else {
+                    format!("/agent {args}")
+                };
+                match ctx.agent.handle_agent_dispatch(&input).await? {
+                    Some(msg) => Ok(CommandOutput::Message(msg)),
+                    None => Ok(CommandOutput::Silent),
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 

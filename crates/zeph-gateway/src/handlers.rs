@@ -88,6 +88,7 @@ struct HealthResponse {
 /// | 200 | Message accepted and queued |
 /// | 422 | Payload failed field-length validation |
 /// | 503 | Internal channel closed or send timed out due to backpressure |
+#[tracing::instrument(name = "gateway.webhook", skip_all)]
 pub(crate) async fn webhook_handler(
     State(state): State<AppState>,
     payload: Result<Json<WebhookPayload>, JsonRejection>,
@@ -156,6 +157,7 @@ pub(crate) async fn webhook_handler(
 /// ```json
 /// { "status": "ok", "uptime_secs": 42 }
 /// ```
+#[tracing::instrument(name = "gateway.health", skip_all)]
 pub(crate) async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(HealthResponse {
         status: "ok",

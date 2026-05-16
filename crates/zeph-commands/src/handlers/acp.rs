@@ -38,7 +38,12 @@ impl CommandHandler<CommandContext<'_>> for AcpCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move { Ok(CommandOutput::Message(ctx.agent.handle_acp(args).await?)) })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.acp.handle");
+        Box::pin(
+            async move { Ok(CommandOutput::Message(ctx.agent.handle_acp(args).await?)) }
+                .instrument(span),
+        )
     }
 }
 

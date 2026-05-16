@@ -37,10 +37,15 @@ impl CommandHandler<CommandContext<'_>> for CompactCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.compact_context().await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.compact.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.compact_context().await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -73,11 +78,16 @@ impl CommandHandler<CommandContext<'_>> for NewConversationCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let (keep_plan, no_digest) = parse_new_flags(args);
-            let result = ctx.agent.reset_conversation(keep_plan, no_digest).await?;
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.new_conversation.handle");
+        Box::pin(
+            async move {
+                let (keep_plan, no_digest) = parse_new_flags(args);
+                let result = ctx.agent.reset_conversation(keep_plan, no_digest).await?;
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -110,10 +120,15 @@ impl CommandHandler<CommandContext<'_>> for RecapCommand {
         ctx: &'a mut CommandContext<'_>,
         _args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let text = ctx.agent.session_recap().await?;
-            Ok(CommandOutput::Message(text))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.recap.handle");
+        Box::pin(
+            async move {
+                let text = ctx.agent.session_recap().await?;
+                Ok(CommandOutput::Message(text))
+            }
+            .instrument(span),
+        )
     }
 }
 

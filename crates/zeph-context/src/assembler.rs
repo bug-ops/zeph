@@ -531,6 +531,7 @@ pub(crate) async fn fetch_graph_facts(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[tracing::instrument(name = "context.persona_facts", skip_all)]
 pub(crate) async fn fetch_persona_facts(
     memory: &ContextMemoryView,
     budget_tokens: usize,
@@ -573,6 +574,7 @@ pub(crate) async fn fetch_persona_facts(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[tracing::instrument(name = "context.trajectory_hints", skip_all)]
 pub(crate) async fn fetch_trajectory_hints(
     memory: &ContextMemoryView,
     budget_tokens: usize,
@@ -623,6 +625,7 @@ pub(crate) async fn fetch_trajectory_hints(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[tracing::instrument(name = "context.tree_memory", skip_all)]
 pub(crate) async fn fetch_tree_memory(
     memory: &ContextMemoryView,
     budget_tokens: usize,

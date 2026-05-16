@@ -42,12 +42,17 @@ impl CommandHandler<CommandContext<'_>> for LoopCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            match ctx.agent.handle_loop(args).await? {
-                msg if msg.is_empty() => Ok(CommandOutput::Silent),
-                msg => Ok(CommandOutput::Message(msg)),
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.loop.handle");
+        Box::pin(
+            async move {
+                match ctx.agent.handle_loop(args).await? {
+                    msg if msg.is_empty() => Ok(CommandOutput::Silent),
+                    msg => Ok(CommandOutput::Message(msg)),
+                }
             }
-        })
+            .instrument(span),
+        )
     }
 }
 

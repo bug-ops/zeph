@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- `zeph-gateway`: added `tracing::instrument` spans (`gateway.webhook`, `gateway.health`) to HTTP
+  handler functions for latency visibility in traces (closes #3906).
+- `zeph-commands`: added `tracing::info_span!` instrumentation to all slash command `handle()`
+  implementations; span name format `commands.<name>.handle` (closes #3927).
+- `zeph-context`: added `tracing::instrument` spans (`context.persona_facts`,
+  `context.trajectory_hints`, `context.tree_memory`) to the three async context fetchers in the
+  assembler (closes #3984).
+
 ### Changed
 
 - `zeph-config`: `VaultConfig.backend` is now typed as `VaultBackend` enum instead of `String`,

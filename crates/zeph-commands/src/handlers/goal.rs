@@ -47,10 +47,15 @@ impl CommandHandler<CommandContext<'_>> for GoalCommand {
         ctx: &'a mut CommandContext<'_>,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let result = ctx.agent.handle_goal(args).await.unwrap_or_else(|e| e.0);
-            Ok(CommandOutput::Message(result))
-        })
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.goal.handle");
+        Box::pin(
+            async move {
+                let result = ctx.agent.handle_goal(args).await.unwrap_or_else(|e| e.0);
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
     }
 }
 
