@@ -42,14 +42,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   functions in the assembler (`context.graph_facts`, `context.reasoning_strategies`,
   `context.corrections`, `context.semantic_recall`, `context.document_rag`, `context.summaries`,
   `context.cross_session`), completing full hot-path trace coverage (closes #4092).
+- `zeph-memory`: added `#[tracing::instrument(skip_all)]` to 6 hot-path async functions in
+  `skills.rs` (`record_skill_usage`, `record_skill_outcomes_batch`, `active_skill_version`,
+  `activate_skill_version`, `increment_heuristic_use_count`, `save_routing_head_weights`) and
+  2 functions in `graph_store.rs` (`save_graph`, `load_graph`) for trace visibility (closes #4129).
 
 ### Fixed
+
+- `zeph-memory`: `increment_heuristic_use_count` and `save_routing_head_weights` in
+  `skills.rs` now have `#[cfg(not(feature = "postgres"))]` / `#[cfg(feature = "postgres")]`
+  variants; the postgres variant uses `CURRENT_TIMESTAMP` instead of the SQLite-only
+  `datetime('now')` (closes #4126).
 
 - `zeph-core`: `/graph` command handlers now distinguish "graph enabled but vector store unavailable
   (Qdrant unreachable)" from "Graph memory is not enabled." when `memory.graph.enabled = true` but
   Qdrant is down, resolving the inconsistency with `/status` output (closes #4111).
 - `zeph-commands`: `ClearQueueCommand` now logs a `tracing::debug!` message when
   `send_queue_count` fails instead of silently discarding the error (closes #4115).
+
+### Documentation
+
+- `zeph-memory`: added `///` doc comments to `SkillUsageRow`, `SkillMetricsRow`, and
+  `SkillVersionRow` public structs and their fields in `skills.rs` (closes #4130).
 
 ### Refactored
 

@@ -88,6 +88,7 @@ impl TaskGraphStore {
 }
 
 impl RawGraphStore for TaskGraphStore {
+    #[tracing::instrument(skip_all, name = "memory.graph.save_graph")]
     async fn save_graph(
         &self,
         id: &str,
@@ -120,6 +121,7 @@ impl RawGraphStore for TaskGraphStore {
     }
 
     #[cfg(not(feature = "postgres"))]
+    #[tracing::instrument(skip_all, name = "memory.graph.load_graph")]
     async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
         let row: Option<(String,)> =
             zeph_db::query_as(sql!("SELECT graph_json FROM task_graphs WHERE id = ?"))
@@ -156,6 +158,7 @@ impl RawGraphStore for TaskGraphStore {
     }
 
     #[cfg(feature = "postgres")]
+    #[tracing::instrument(skip_all, name = "memory.graph.load_graph")]
     async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
         let row: Option<String> = sqlx::query_scalar::<sqlx::Postgres, String>(sql!(
             "SELECT graph_json FROM task_graphs WHERE id = ?"

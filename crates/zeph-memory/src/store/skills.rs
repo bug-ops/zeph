@@ -6,33 +6,54 @@ use crate::error::MemoryError;
 #[allow(unused_imports)]
 use zeph_db::{begin_write, sql};
 
+/// Aggregated usage statistics for a single skill, returned by [`SqliteStore::load_skill_usage`].
 #[derive(Debug)]
 pub struct SkillUsageRow {
+    /// The skill's unique name.
     pub skill_name: String,
+    /// Total number of times this skill has been invoked.
     pub invocation_count: i64,
+    /// ISO-8601 timestamp of the most recent invocation.
     pub last_used_at: String,
 }
 
+/// Per-skill outcome metrics (success/failure counts) returned by [`SqliteStore::load_skill_outcome_stats`].
 #[derive(Debug)]
 pub struct SkillMetricsRow {
+    /// The skill's unique name.
     pub skill_name: String,
+    /// The version ID this row refers to, if tracked per-version.
     pub version_id: Option<i64>,
+    /// Total number of recorded outcomes.
     pub total: i64,
+    /// Number of successful outcomes.
     pub successes: i64,
+    /// Number of failed outcomes.
     pub failures: i64,
 }
 
+/// A single persisted skill version, returned by [`SqliteStore::load_skill_versions`] and related queries.
 #[derive(Debug)]
 pub struct SkillVersionRow {
+    /// Primary key assigned by the database.
     pub id: i64,
+    /// The skill's unique name.
     pub skill_name: String,
+    /// Monotonically increasing version number within the skill.
     pub version: i64,
+    /// Full SKILL.md body for this version.
     pub body: String,
+    /// Human-readable description extracted from the skill body.
     pub description: String,
+    /// Origin of the version: `"manual"`, `"auto"`, etc.
     pub source: String,
+    /// Whether this version is currently the active one for the skill.
     pub is_active: bool,
+    /// Number of successful tool invocations recorded against this version.
     pub success_count: i64,
+    /// Number of failed tool invocations recorded against this version.
     pub failure_count: i64,
+    /// ISO-8601 timestamp when this version was created.
     pub created_at: String,
 }
 
@@ -70,6 +91,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.record_skill_usage")]
     pub async fn record_skill_usage(&self, skill_names: &[&str]) -> Result<(), MemoryError> {
         for name in skill_names {
             zeph_db::query(sql!(
@@ -146,6 +168,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if any insert fails (whole batch is rolled back).
+    #[tracing::instrument(skip_all, name = "memory.skills.record_skill_outcomes_batch")]
     pub async fn record_skill_outcomes_batch(
         &self,
         skill_names: &[String],
@@ -313,6 +336,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.active_skill_version")]
     pub async fn active_skill_version(
         &self,
         skill_name: &str,
@@ -334,6 +358,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the update fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.activate_skill_version")]
     pub async fn activate_skill_version(
         &self,
         skill_name: &str,
@@ -732,11 +757,31 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on update failure.
+    #[cfg(not(feature = "postgres"))]
+    #[tracing::instrument(skip_all, name = "memory.skills.increment_heuristic_use_count")]
     pub async fn increment_heuristic_use_count(&self, id: i64) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "UPDATE skill_heuristics \
              SET use_count = use_count + 1, updated_at = datetime('now') \
              WHERE id = ?"
+        ))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Increment `use_count` and update `updated_at` for an existing heuristic by ID.
+    ///
+    /// # Errors
+    /// Returns [`MemoryError`] on update failure.
+    #[cfg(feature = "postgres")]
+    #[tracing::instrument(skip_all, name = "memory.skills.increment_heuristic_use_count")]
+    pub async fn increment_heuristic_use_count(&self, id: i64) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "UPDATE skill_heuristics \
+             SET use_count = use_count + 1, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = $1"
         ))
         .bind(id)
         .execute(&self.pool)
@@ -953,6 +998,8 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] on query failure.
+    #[cfg(not(feature = "postgres"))]
+    #[tracing::instrument(skip_all, name = "memory.skills.save_routing_head_weights")]
     pub async fn save_routing_head_weights(
         &self,
         embed_dim: i64,
@@ -969,6 +1016,39 @@ impl SqliteStore {
                baseline = excluded.baseline, \
                update_count = excluded.update_count, \
                updated_at = datetime('now')"
+        ))
+        .bind(embed_dim)
+        .bind(weights)
+        .bind(baseline)
+        .bind(update_count)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persist routing head weights (upsert singleton row).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] on query failure.
+    #[cfg(feature = "postgres")]
+    #[tracing::instrument(skip_all, name = "memory.skills.save_routing_head_weights")]
+    pub async fn save_routing_head_weights(
+        &self,
+        embed_dim: i64,
+        weights: &[u8],
+        baseline: f64,
+        update_count: i64,
+    ) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "INSERT INTO routing_head_weights (id, embed_dim, weights, baseline, update_count, updated_at) \
+             VALUES (1, $1, $2, $3, $4, CURRENT_TIMESTAMP) \
+             ON CONFLICT(id) DO UPDATE SET \
+               embed_dim = excluded.embed_dim, \
+               weights = excluded.weights, \
+               baseline = excluded.baseline, \
+               update_count = excluded.update_count, \
+               updated_at = CURRENT_TIMESTAMP"
         ))
         .bind(embed_dim)
         .bind(weights)
