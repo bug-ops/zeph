@@ -40,6 +40,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(scheduler): replace sync `EnterGuard` held across `.await` in `catch_up_missed` with `.instrument()` to comply with tracing invariant (#4024)
+- fix(gateway): rate limiter now supports `trusted_proxy_cidrs` config — when set, uses rightmost-untrusted XFF IP instead of TCP peer address to prevent bypass behind reverse proxies (#3909)
+- refactor(gateway): `spawn_gateway_server` now returns both `JoinHandle`s to the caller; panics propagate and tasks can be joined during shutdown (#3907)
 - `zeph-common`: new `timestamp` module with `utc_now_rfc3339()`, `utc_now_compact()`, and
   `utc_now_datetime()` helpers — eliminates ~60 lines of duplicated Gregorian calendar arithmetic
   that existed independently in `zeph-bench` and `zeph-experiments` (closes #3837).

@@ -143,7 +143,7 @@ pub(crate) fn spawn_gateway_server(
         std::sync::Arc<prometheus_client::registry::Registry>,
         String,
     )>,
-) {
+) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
     use zeph_gateway::GatewayServer;
 
     let (webhook_tx, mut webhook_rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -158,7 +158,8 @@ pub(crate) fn spawn_gateway_server(
     .with_max_body_size(config.gateway.max_body_size)
     .with_webhook_timeout(std::time::Duration::from_secs(
         config.gateway.webhook_send_timeout_secs,
-    ));
+    ))
+    .with_trusted_proxy_cidrs(config.gateway.trusted_proxy_cidrs.clone());
 
     #[cfg(feature = "prometheus")]
     let gw = if let Some((registry, path)) = metrics_registry {
@@ -173,13 +174,13 @@ pub(crate) fn spawn_gateway_server(
         config.gateway.port
     );
 
-    tokio::spawn(async move {
+    let server_handle = tokio::spawn(async move {
         if let Err(e) = gw.serve().await {
             tracing::error!("gateway error: {e:#}");
         }
     });
 
-    tokio::spawn(async move {
+    let forwarder_handle = tokio::spawn(async move {
         while let Some(payload) = webhook_rx.recv().await {
             let msg = zeph_core::ChannelMessage {
                 text: payload,
@@ -193,6 +194,8 @@ pub(crate) fn spawn_gateway_server(
             }
         }
     });
+
+    (server_handle, forwarder_handle)
 }
 
 #[cfg(all(test, feature = "gateway"))]

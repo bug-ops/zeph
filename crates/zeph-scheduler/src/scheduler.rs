@@ -310,9 +310,12 @@ impl Scheduler {
     ///
     /// Returns the first error encountered during store or handler operations.
     pub async fn catch_up_missed(&mut self) -> Result<(), SchedulerError> {
-        let _span =
-            tracing::info_span!("scheduler.daemon.catch_up", tasks = self.tasks.len()).entered();
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("scheduler.daemon.catch_up", tasks = self.tasks.len());
+        self.catch_up_missed_inner().instrument(span).await
+    }
 
+    async fn catch_up_missed_inner(&mut self) -> Result<(), SchedulerError> {
         let now = chrono::Utc::now();
         let mut replayed = 0usize;
 

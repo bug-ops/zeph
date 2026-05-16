@@ -66,6 +66,7 @@ pub struct GatewayServer {
     webhook_send_timeout: Duration,
     webhook_tx: mpsc::Sender<String>,
     shutdown_rx: watch::Receiver<bool>,
+    trusted_proxy_cidrs: Vec<String>,
     /// Prometheus metrics registry and endpoint path (feature-gated).
     #[cfg(feature = "prometheus")]
     metrics_registry: Option<(
@@ -114,6 +115,7 @@ impl GatewayServer {
             webhook_send_timeout: Duration::from_secs(5),
             webhook_tx,
             shutdown_rx,
+            trusted_proxy_cidrs: Vec::new(),
             #[cfg(feature = "prometheus")]
             metrics_registry: None,
         }
@@ -220,6 +222,33 @@ impl GatewayServer {
         self
     }
 
+    /// Set CIDR ranges for trusted reverse proxies.
+    ///
+    /// When non-empty, the rate limiter uses the `X-Forwarded-For` header to
+    /// determine the real client IP when the TCP peer falls within a trusted CIDR.
+    /// The **rightmost-untrusted** algorithm is applied: the header is scanned right
+    /// to left and the first IP not in any trusted CIDR is used.
+    ///
+    /// Leave empty (the default) to rate-limit by raw TCP peer address.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tokio::sync::{mpsc, watch};
+    /// use zeph_gateway::GatewayServer;
+    ///
+    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (_stx, srx) = watch::channel(false);
+    ///
+    /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
+    ///     .with_trusted_proxy_cidrs(vec!["10.0.0.0/8".into(), "172.16.0.0/12".into()]);
+    /// ```
+    #[must_use]
+    pub fn with_trusted_proxy_cidrs(mut self, cidrs: Vec<String>) -> Self {
+        self.trusted_proxy_cidrs = cidrs;
+        self
+    }
+
     /// Attach a Prometheus metrics registry to the gateway.
     ///
     /// When set, the server mounts an additional route at `path` that returns the registry
@@ -288,6 +317,7 @@ impl GatewayServer {
             self.auth_token.as_deref(),
             self.rate_limit,
             self.max_body_size,
+            &self.trusted_proxy_cidrs,
         );
 
         #[cfg(feature = "prometheus")]
@@ -355,6 +385,7 @@ mod tests {
             server.auth_token.as_deref(),
             server.rate_limit,
             server.max_body_size,
+            &server.trusted_proxy_cidrs,
         );
         let metrics_route = axum::Router::new()
             .route(

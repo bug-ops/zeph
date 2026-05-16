@@ -721,6 +721,21 @@ pub struct GatewayConfig {
     /// returning `503 Service Unavailable`. Default: `5`.
     #[serde(default = "default_gateway_webhook_send_timeout_secs")]
     pub webhook_send_timeout_secs: u64,
+    /// CIDR ranges of trusted reverse proxies (e.g. `["10.0.0.0/8", "172.16.0.0/12"]`).
+    ///
+    /// When non-empty, the rate limiter applies the **rightmost-untrusted** algorithm on the
+    /// `X-Forwarded-For` header: it walks the header from right to left and picks the first
+    /// IP address that does NOT fall within any listed CIDR.  This is the correct algorithm
+    /// when your proxy chain always appends, never prepends, so the rightmost entry added by
+    /// the infrastructure is the one closest to your origin.
+    ///
+    /// Leave empty (the default) to use the raw TCP peer address for rate limiting, which is
+    /// correct for deployments without a reverse proxy.
+    ///
+    /// Security note: only list CIDRs you fully control.  Any IP in a trusted CIDR can forge
+    /// `X-Forwarded-For` and bypass per-IP rate limiting.
+    #[serde(default)]
+    pub trusted_proxy_cidrs: Vec<String>,
 }
 
 impl Default for GatewayConfig {
@@ -733,6 +748,7 @@ impl Default for GatewayConfig {
             rate_limit: default_gateway_rate_limit(),
             max_body_size: default_gateway_max_body(),
             webhook_send_timeout_secs: default_gateway_webhook_send_timeout_secs(),
+            trusted_proxy_cidrs: Vec::new(),
         }
     }
 }

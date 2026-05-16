@@ -701,16 +701,18 @@ pub(crate) async fn run_daemon(
     );
 
     #[cfg(feature = "gateway")]
-    if config.gateway.enabled {
-        spawn_gateway_server(
+    let _gateway_handles = if config.gateway.enabled {
+        Some(spawn_gateway_server(
             config,
             shutdown_rx.clone(),
             gateway_input_tx,
             // Daemon mode has no MetricsSnapshot watch channel — skip Prometheus sync.
             #[cfg(feature = "prometheus")]
             None,
-        );
-    }
+        ))
+    } else {
+        None
+    };
 
     let pid_file = config.daemon.pid_file.clone();
     let mut supervisor = DaemonSupervisor::new(&config.daemon, shutdown_rx.clone());

@@ -3153,7 +3153,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 p.clone()
             }
         };
-        crate::gateway_spawn::spawn_gateway_server(
+        let _gateway_handles = crate::gateway_spawn::spawn_gateway_server(
             config,
             shutdown_rx.clone(),
             gateway_input_tx.clone(),
@@ -3167,7 +3167,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         if config.gateway.enabled {
-            crate::gateway_spawn::spawn_gateway_server(
+            let _gateway_handles = crate::gateway_spawn::spawn_gateway_server(
                 config,
                 shutdown_rx.clone(),
                 gateway_input_tx.clone(),
@@ -3180,7 +3180,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // When `prometheus` feature is disabled, spawn gateway unconditionally if enabled.
     #[cfg(all(feature = "gateway", not(feature = "prometheus")))]
     if !exec_mode.bare && config.gateway.enabled {
-        crate::gateway_spawn::spawn_gateway_server(config, shutdown_rx.clone(), gateway_input_tx);
+        let _gateway_handles = crate::gateway_spawn::spawn_gateway_server(
+            config,
+            shutdown_rx.clone(),
+            gateway_input_tx,
+        );
     }
 
     let mut agent = agent;

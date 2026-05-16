@@ -41,6 +41,51 @@ const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
 /// Fixed window duration for the per-IP request counter.
 const RATE_WINDOW: Duration = Duration::from_mins(1);
 
+/// A parsed CIDR block used for trusted-proxy matching.
+#[derive(Clone, Debug)]
+struct Cidr {
+    addr: IpAddr,
+    prefix_len: u8,
+}
+
+impl Cidr {
+    /// Parse `"a.b.c.d/n"` or `"addr/n"`.  Returns `None` on any parse error.
+    fn parse(s: &str) -> Option<Self> {
+        let (addr_str, prefix_str) = s.split_once('/')?;
+        let addr: IpAddr = addr_str.parse().ok()?;
+        let prefix_len: u8 = prefix_str.parse().ok()?;
+        let max = match addr {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        if prefix_len > max {
+            return None;
+        }
+        Some(Self { addr, prefix_len })
+    }
+
+    /// Returns `true` when `ip` falls within this CIDR block.
+    fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr, ip) {
+            (IpAddr::V4(net), IpAddr::V4(candidate)) => {
+                if self.prefix_len == 0 {
+                    return true;
+                }
+                let shift = 32 - u32::from(self.prefix_len);
+                u32::from(net) >> shift == u32::from(candidate) >> shift
+            }
+            (IpAddr::V6(net), IpAddr::V6(candidate)) => {
+                if self.prefix_len == 0 {
+                    return true;
+                }
+                let shift = 128 - u32::from(self.prefix_len);
+                u128::from(net) >> shift == u128::from(candidate) >> shift
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Shared state threaded through the rate-limiting middleware.
 #[derive(Clone)]
 struct RateLimitState {
@@ -49,6 +94,8 @@ struct RateLimitState {
     limit: u32,
     /// Map from remote IP to `(request_count, window_start)`.
     counters: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
+    /// Parsed CIDR blocks for trusted reverse proxies.
+    trusted_cidrs: Arc<Vec<Cidr>>,
 }
 
 /// Build the complete axum [`Router`] for the gateway.
@@ -67,13 +114,25 @@ pub(crate) fn build_router(
     auth_token: Option<&str>,
     rate_limit: u32,
     max_body_size: usize,
+    trusted_proxy_cidrs: &[String],
 ) -> Router {
     let auth_cfg = AuthConfig {
         token_hash: auth_token.map(|t| blake3::hash(t.as_bytes())),
     };
+    let parsed_cidrs: Vec<Cidr> = trusted_proxy_cidrs
+        .iter()
+        .filter_map(|s| {
+            let c = Cidr::parse(s);
+            if c.is_none() {
+                tracing::warn!(cidr = %s, "gateway: invalid trusted_proxy_cidr, ignoring");
+            }
+            c
+        })
+        .collect();
     let rate_state = RateLimitState {
         limit: rate_limit,
         counters: Arc::new(Mutex::new(HashMap::new())),
+        trusted_cidrs: Arc::new(parsed_cidrs),
     };
 
     let protected = Router::new()
@@ -149,10 +208,32 @@ async fn rate_limit_middleware(
         return next.run(req).await;
     }
 
-    let ip = req
+    let peer_ip = req
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), |ci| ci.0.ip());
+
+    // When trusted proxy CIDRs are configured and the TCP peer falls within one of them,
+    // apply the rightmost-untrusted algorithm on X-Forwarded-For: walk the header values
+    // from right to left and pick the first IP that is not in any trusted CIDR.
+    let ip = if !state.trusted_cidrs.is_empty()
+        && state.trusted_cidrs.iter().any(|c| c.contains(peer_ip))
+    {
+        let xff_ip = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter_map(|s| s.parse::<IpAddr>().ok())
+                    .rev()
+                    .find(|ip| !state.trusted_cidrs.iter().any(|c| c.contains(*ip)))
+            });
+        xff_ip.unwrap_or(peer_ip)
+    } else {
+        peer_ip
+    };
 
     let now = Instant::now();
     let mut counters = state.counters.lock().await;
@@ -199,7 +280,7 @@ mod tests {
         rate_limit: u32,
     ) -> (Router, tokio::sync::mpsc::Receiver<String>) {
         let (state, rx) = test_state();
-        (build_router(state, auth, rate_limit, 1_048_576), rx)
+        (build_router(state, auth, rate_limit, 1_048_576, &[]), rx)
     }
 
     #[tokio::test]
@@ -224,7 +305,7 @@ mod tests {
             started_at: Instant::now(),
             webhook_send_timeout: std::time::Duration::from_secs(5),
         };
-        let app = build_router(state, None, 0, 1_048_576);
+        let app = build_router(state, None, 0, 1_048_576, &[]);
 
         let body = serde_json::json!({
             "channel": "discord",
@@ -408,7 +489,7 @@ mod tests {
             started_at: Instant::now(),
             webhook_send_timeout: std::time::Duration::from_secs(5),
         };
-        let app = build_router(state, None, 0, 1_048_576);
+        let app = build_router(state, None, 0, 1_048_576, &[]);
 
         let body = serde_json::json!({"channel": "c", "sender": "s", "body": "b"});
         let req = Request::builder()
@@ -438,7 +519,7 @@ mod tests {
     #[tokio::test]
     async fn body_size_limit() {
         let (state, _rx) = test_state();
-        let app = build_router(state, None, 0, 64);
+        let app = build_router(state, None, 0, 64, &[]);
         let oversized = vec![b'a'; 128];
         let req = Request::builder()
             .method("POST")
@@ -489,5 +570,131 @@ mod tests {
             min > 0 && max / min < MAX_RATIO,
             "ct_eq timing ratio {max}/{min} exceeds {MAX_RATIO}×; times per iter: {times_ns:?} ns"
         );
+    }
+
+    // ── Cidr unit tests (#3909 regression) ──────────────────────────────────
+
+    #[test]
+    fn cidr_ipv4_contains_in_range() {
+        let cidr = Cidr::parse("10.0.0.0/8").unwrap();
+        assert!(cidr.contains("10.1.2.3".parse().unwrap()));
+        assert!(cidr.contains("10.255.255.255".parse().unwrap()));
+        assert!(!cidr.contains("11.0.0.0".parse().unwrap()));
+        assert!(!cidr.contains("9.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_ipv4_slash32_exact_host() {
+        let cidr = Cidr::parse("192.168.1.100/32").unwrap();
+        assert!(cidr.contains("192.168.1.100".parse().unwrap()));
+        assert!(!cidr.contains("192.168.1.101".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_ipv4_slash0_matches_all() {
+        let cidr = Cidr::parse("0.0.0.0/0").unwrap();
+        assert!(cidr.contains("1.2.3.4".parse().unwrap()));
+        assert!(cidr.contains("255.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_ipv6_contains_in_range() {
+        let cidr = Cidr::parse("::1/128").unwrap();
+        assert!(cidr.contains("::1".parse().unwrap()));
+        assert!(!cidr.contains("::2".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_ipv4_v6_mismatch_returns_false() {
+        let cidr = Cidr::parse("10.0.0.0/8").unwrap();
+        assert!(!cidr.contains("::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_parse_rejects_invalid() {
+        assert!(Cidr::parse("not-a-cidr").is_none());
+        assert!(Cidr::parse("10.0.0.0/33").is_none());
+        assert!(Cidr::parse("::1/129").is_none());
+        assert!(Cidr::parse("10.0.0.0/").is_none());
+    }
+
+    // ── XFF rightmost-untrusted tests (#3909 regression) ────────────────────
+
+    #[tokio::test]
+    async fn xff_rightmost_untrusted_selected() {
+        use tower::Service;
+
+        // Trusted proxy: 10.0.0.1. XFF: "1.2.3.4, 10.0.0.1".
+        // Rate-limit counter should key on 1.2.3.4 (rightmost untrusted).
+        let (state, _rx) = test_state();
+        let cidrs = vec!["0.0.0.0/0".to_string()];
+        let mut app = build_router(state, None, 1, 1_048_576, &cidrs);
+
+        let make_req = || {
+            let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
+            Request::builder()
+                .method("POST")
+                .uri("/webhook")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", "1.2.3.4, 10.0.0.1")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        };
+
+        let resp1 = app.call(make_req()).await.unwrap();
+        assert_eq!(resp1.status(), 200);
+        let resp2 = app.call(make_req()).await.unwrap();
+        assert_eq!(
+            resp2.status(),
+            429,
+            "second request from same real IP must be rate-limited"
+        );
+    }
+
+    #[tokio::test]
+    async fn xff_absent_falls_back_to_tcp_peer() {
+        // No trusted CIDRs → ignores XFF, uses peer IP for rate limiting.
+        let (state, _rx) = test_state();
+        let mut app = build_router(state, None, 1, 1_048_576, &[]);
+        use tower::Service;
+
+        let make_req = || {
+            let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
+            Request::builder()
+                .method("POST")
+                .uri("/webhook")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap()
+        };
+
+        let resp1 = app.call(make_req()).await.unwrap();
+        assert_eq!(resp1.status(), 200);
+        let resp2 = app.call(make_req()).await.unwrap();
+        assert_eq!(
+            resp2.status(),
+            429,
+            "second request must be rate-limited via TCP peer"
+        );
+    }
+
+    #[tokio::test]
+    async fn xff_all_trusted_falls_back_to_peer() {
+        // All IPs in XFF are trusted → no untrusted entry found → fall back to TCP peer.
+        let (state, rx) = test_state();
+        let cidrs = vec!["0.0.0.0/0".to_string()];
+        let app = build_router(state, None, 0, 1_048_576, &cidrs);
+
+        let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", "10.0.0.1, 10.0.0.2")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        drop(rx);
     }
 }
