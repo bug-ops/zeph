@@ -37,6 +37,8 @@ pub enum SecurityEventCategory {
     CrossBoundaryMcpToAcp,
     /// VIGIL pre-sanitizer gate flagged a tool output.
     VigilFlag,
+    /// Shadow memory detected goal drift above threshold across recent turns.
+    GoalDrift,
 }
 
 impl SecurityEventCategory {
@@ -59,6 +61,7 @@ impl SecurityEventCategory {
             Self::CausalIpiFlag => "causal_ipi",
             Self::CrossBoundaryMcpToAcp => "cross_boundary_mcp_to_acp",
             Self::VigilFlag => "vigil",
+            Self::GoalDrift => "goal_drift",
         }
     }
 }

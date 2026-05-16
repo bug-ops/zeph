@@ -612,6 +612,10 @@ pub struct CausalIpiConfig {
     /// On timeout: WARN log, skip causal analysis for the batch (never block).
     #[serde(default = "default_probe_timeout_ms")]
     pub probe_timeout_ms: u64,
+
+    /// Shadow memory configuration for cross-turn trajectory analysis.
+    #[serde(default)]
+    pub shadow_memory: ShadowMemoryConfig,
 }
 
 impl Default for CausalIpiConfig {
@@ -622,6 +626,122 @@ impl Default for CausalIpiConfig {
             provider: None,
             probe_max_tokens: default_probe_max_tokens(),
             probe_timeout_ms: default_probe_timeout_ms(),
+            shadow_memory: ShadowMemoryConfig::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShadowMemoryConfig
+// ---------------------------------------------------------------------------
+
+fn default_shadow_window() -> usize {
+    8
+}
+
+fn default_shadow_max_events() -> usize {
+    64
+}
+
+fn default_shadow_drift_threshold() -> f32 {
+    0.6
+}
+
+fn validate_shadow_window<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "shadow_memory.window_size must be >= 1",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_shadow_max_events<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "shadow_memory.max_events must be >= 1",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_shadow_drift_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() {
+        return Err(serde::de::Error::custom(
+            "shadow_memory.drift_threshold must be a finite number",
+        ));
+    }
+    if !(value > 0.0 && value <= 1.0) {
+        return Err(serde::de::Error::custom(
+            "shadow_memory.drift_threshold must be in (0.0, 1.0]",
+        ));
+    }
+    Ok(value)
+}
+
+/// Per-session append-only event store for cross-turn trajectory analysis.
+///
+/// Detects multi-turn attacks that distribute payload across several turns —
+/// invisible to the stateless [`CausalIpiConfig`] single-batch analysis.
+///
+/// Config section: `[security.causal_ipi.shadow_memory]`
+///
+/// # Examples
+///
+/// ```toml
+/// [security.causal_ipi.shadow_memory]
+/// enabled = true
+/// window_size = 8
+/// max_events = 64
+/// drift_threshold = 0.6
+/// ```
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ShadowMemoryConfig {
+    /// Enable shadow memory trajectory tracking. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Sliding window size for drift computation. Must be >= 1. Default: 8.
+    #[serde(
+        default = "default_shadow_window",
+        deserialize_with = "validate_shadow_window"
+    )]
+    pub window_size: usize,
+
+    /// Maximum events retained before oldest are evicted. Must be >= 1. Default: 64.
+    #[serde(
+        default = "default_shadow_max_events",
+        deserialize_with = "validate_shadow_max_events"
+    )]
+    pub max_events: usize,
+
+    /// Goal drift score threshold for flagging. Range: (0.0, 1.0]. Default: 0.6.
+    #[serde(
+        default = "default_shadow_drift_threshold",
+        deserialize_with = "validate_shadow_drift_threshold"
+    )]
+    pub drift_threshold: f32,
+}
+
+impl Default for ShadowMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            window_size: default_shadow_window(),
+            max_events: default_shadow_max_events(),
+            drift_threshold: default_shadow_drift_threshold(),
         }
     }
 }
@@ -673,5 +793,64 @@ mod causal_ipi_tests {
     fn causal_ipi_threshold_exactly_one_accepted() {
         let cfg: CausalIpiConfig = toml::from_str("threshold = 1.0").unwrap();
         assert!((cfg.threshold - 1.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod shadow_memory_config_tests {
+    use super::*;
+
+    #[test]
+    fn shadow_memory_defaults() {
+        let cfg = ShadowMemoryConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.window_size, 8);
+        assert_eq!(cfg.max_events, 64);
+        assert!((cfg.drift_threshold - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shadow_memory_window_zero_rejected() {
+        let result: Result<ShadowMemoryConfig, _> = toml::from_str("window_size = 0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shadow_memory_max_events_zero_rejected() {
+        let result: Result<ShadowMemoryConfig, _> = toml::from_str("max_events = 0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shadow_memory_drift_threshold_zero_rejected() {
+        let result: Result<ShadowMemoryConfig, _> = toml::from_str("drift_threshold = 0.0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shadow_memory_drift_threshold_above_one_rejected() {
+        let result: Result<ShadowMemoryConfig, _> = toml::from_str("drift_threshold = 1.1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shadow_memory_drift_threshold_exactly_one_accepted() {
+        let cfg: ShadowMemoryConfig = toml::from_str("drift_threshold = 1.0").unwrap();
+        assert!((cfg.drift_threshold - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shadow_memory_full_deserialization() {
+        let toml = r#"
+            enabled = true
+            window_size = 4
+            max_events = 32
+            drift_threshold = 0.8
+        "#;
+        let cfg: ShadowMemoryConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.window_size, 4);
+        assert_eq!(cfg.max_events, 32);
+        assert!((cfg.drift_threshold - 0.8).abs() < 1e-6);
     }
 }

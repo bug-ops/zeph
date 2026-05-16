@@ -228,6 +228,7 @@ fn append_event_items<'a>(
                 ("[xbnd] ", Style::default().fg(Color::Red))
             }
             SecurityEventCategory::VigilFlag => ("[vigi] ", block_style),
+            SecurityEventCategory::GoalDrift => ("[gdft] ", flag_style),
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![

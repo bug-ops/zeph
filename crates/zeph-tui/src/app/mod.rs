@@ -1274,6 +1274,7 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
             SecurityEventCategory::CausalIpiFlag => "CAUSAL_IPI     ",
             SecurityEventCategory::CrossBoundaryMcpToAcp => "CROSS_BOUNDARY ",
             SecurityEventCategory::VigilFlag => "VIGIL_FLAG     ",
+            SecurityEventCategory::GoalDrift => "GOAL_DRIFT     ",
         };
         lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
     }

@@ -68,9 +68,11 @@ pub mod pipeline;
 pub mod quarantine;
 pub mod response_verifier;
 mod sanitizer;
+pub mod shadow_memory;
 pub mod types;
 
 pub use sanitizer::ContentSanitizer;
+pub use shadow_memory::{GoalDriftResult, ShadowEvent, ShadowMemory, classify_tool_permission};
 pub use types::{
     ContentSource, ContentSourceKind, ContentTrustLevel, InjectionFlag, MemorySourceHint,
     SanitizedContent,
