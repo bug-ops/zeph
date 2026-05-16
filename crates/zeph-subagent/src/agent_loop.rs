@@ -14,7 +14,7 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use super::filter::FilteredToolExecutor;
 use super::grants::SecretRequest;
-use super::hooks::{HookDef, SubagentHooks, fire_hooks, matching_hooks};
+use super::hooks::{HookDef, SubagentHooks, fire_hooks, make_base_hook_env, matching_hooks};
 use super::manager::SubAgentStatus;
 use super::state::SubAgentState;
 use super::transcript::TranscriptWriter;
@@ -27,35 +27,15 @@ enum SecretRequestOutcome {
     Cancelled,
 }
 
-/// Maximum byte length of `ZEPH_TOOL_ARGS_JSON` to avoid `E2BIG` when spawning hook processes.
-const TOOL_ARGS_JSON_LIMIT: usize = 64 * 1024;
-
 fn make_hook_env(
     task_id: &str,
     agent_name: &str,
     tool_name: &str,
     tool_input: &serde_json::Value,
 ) -> std::collections::HashMap<String, String> {
-    let mut env = std::collections::HashMap::new();
+    let mut env = make_base_hook_env(tool_name, tool_input);
     env.insert("ZEPH_AGENT_ID".to_owned(), task_id.to_owned());
     env.insert("ZEPH_AGENT_NAME".to_owned(), agent_name.to_owned());
-    env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
-
-    let raw = serde_json::to_string(tool_input).unwrap_or_default();
-    let args_json = if raw.len() > TOOL_ARGS_JSON_LIMIT {
-        tracing::warn!(
-            tool = tool_name,
-            len = raw.len(),
-            limit = TOOL_ARGS_JSON_LIMIT,
-            "ZEPH_TOOL_ARGS_JSON truncated for hook dispatch"
-        );
-        let limit = raw.floor_char_boundary(TOOL_ARGS_JSON_LIMIT);
-        format!("{}…", &raw[..limit])
-    } else {
-        raw
-    };
-    env.insert("ZEPH_TOOL_ARGS_JSON".to_owned(), args_json);
-
     env
 }
 
@@ -715,6 +695,7 @@ pub(super) async fn run_agent_loop(
 
 #[cfg(test)]
 mod make_hook_env_tests {
+    use super::super::hooks::TOOL_ARGS_JSON_LIMIT;
     use super::*;
 
     #[test]

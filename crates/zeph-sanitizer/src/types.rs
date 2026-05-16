@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ContentTrustLevel {
     /// System prompt, hardcoded instructions, direct user input. No wrapping applied.
     Trusted,
@@ -64,6 +65,7 @@ pub enum ContentTrustLevel {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ContentSourceKind {
     /// Output from a locally-executed tool (shell, file I/O).
     ToolResult,
