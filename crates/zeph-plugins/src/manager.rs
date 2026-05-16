@@ -173,9 +173,10 @@ impl PluginManager {
                 path: source_path.clone(),
                 source: e,
             })?;
-            let canonical_skill = skill_path
-                .canonicalize()
-                .unwrap_or_else(|_| skill_path.clone());
+            let canonical_skill = skill_path.canonicalize().map_err(|e| PluginError::Io {
+                path: skill_path.clone(),
+                source: e,
+            })?;
             if !canonical_skill.starts_with(&canonical_source) {
                 return Err(PluginError::InvalidSource {
                     path: entry.path.clone(),
@@ -913,16 +914,60 @@ path = "skills/{conflict_name}"
     #[test]
     fn path_traversal_in_skill_path_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("source");
-        let manifest = r#"[plugin]
+        // Use canonicalized base to avoid macOS /var → /private/var redirect.
+        let real_tmp = tmp.path().canonicalize().unwrap();
+        let source = real_tmp.join("source");
+
+        // Create a skill directory that exists but is outside source root via ../escape.
+        let outside = real_tmp.join("outside-skill");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        // The plugin manifest references ../outside-skill, which canonicalizes to a real path
+        // outside the source directory — this is what the traversal guard must catch.
+        let manifest = format!(
+            r#"[plugin]
 name = "traversal-test"
 version = "0.1.0"
 description = "test"
 
 [[skills]]
-path = "../../../etc/passwd"
-"#;
+path = "../outside-skill"
+"#
+        );
         std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("plugin.toml"), &manifest).unwrap();
+
+        let plugins_dir = real_tmp.join("plugins");
+        let managed_dir = real_tmp.join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        let err = mgr.add(source.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { .. }),
+            "expected InvalidSource for path traversal, got {err:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn skill_path_canonicalize_failure_returns_io_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+
+        // Create a broken symlink inside the source directory.
+        let skill_dir = source.join("skills").join("broken-skill");
+        std::fs::create_dir_all(source.join("skills")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", &skill_dir).unwrap();
+
+        let manifest = r#"[plugin]
+name = "broken-link-test"
+version = "0.1.0"
+description = "test"
+
+[[skills]]
+path = "skills/broken-skill"
+"#;
         std::fs::write(source.join("plugin.toml"), manifest).unwrap();
 
         let plugins_dir = tmp.path().join("plugins");
@@ -931,8 +976,8 @@ path = "../../../etc/passwd"
 
         let err = mgr.add(source.to_str().unwrap()).unwrap_err();
         assert!(
-            matches!(err, PluginError::InvalidSource { .. }),
-            "expected InvalidSource for path traversal, got {err:?}"
+            matches!(err, PluginError::Io { .. }),
+            "expected Io error when canonicalize fails on broken symlink, got {err:?}"
         );
     }
 

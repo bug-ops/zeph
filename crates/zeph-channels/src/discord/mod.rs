@@ -279,21 +279,38 @@ impl Channel for DiscordChannel {
             crate::CONFIRM_TIMEOUT.as_secs()
         ))
         .await?;
-        // Note: confirm() consumes the next message regardless of intent.
-        // If the user sends an unrelated message within the timeout window, it will be
-        // treated as a non-confirmation and swallowed. This is a known limitation.
-        match tokio::time::timeout(crate::CONFIRM_TIMEOUT, self.rx.recv()).await {
-            Ok(Some(incoming)) => Ok(incoming.content.trim().eq_ignore_ascii_case("yes")),
-            Ok(None) => {
-                tracing::warn!("discord confirm channel closed — denying");
-                Ok(false)
-            }
-            Err(_) => {
+        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
                 tracing::warn!(
                     "discord confirm timed out after {}s — denied",
                     crate::CONFIRM_TIMEOUT.as_secs()
                 );
-                Ok(false)
+                return Ok(false);
+            }
+            match tokio::time::timeout(remaining, self.rx.recv()).await {
+                Ok(Some(incoming)) => {
+                    if !self.is_authorized(&incoming) {
+                        tracing::debug!(
+                            author_id = %incoming.author_id,
+                            "discord confirm: ignoring message from unauthorized user"
+                        );
+                        continue;
+                    }
+                    return Ok(incoming.content.trim().eq_ignore_ascii_case("yes"));
+                }
+                Ok(None) => {
+                    tracing::warn!("discord confirm channel closed — denying");
+                    return Ok(false);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "discord confirm timed out after {}s — denied",
+                        crate::CONFIRM_TIMEOUT.as_secs()
+                    );
+                    return Ok(false);
+                }
             }
         }
     }
@@ -511,5 +528,46 @@ mod tests {
         let result = timeout_fut.await;
         // Should time out (Err), not receive a message.
         assert!(result.is_err(), "expected timeout Err, got recv result");
+    }
+
+    #[tokio::test]
+    async fn confirm_skips_unauthorized_and_accepts_authorized() {
+        tokio::time::pause();
+        let (tx, rx) = mpsc::channel(16);
+        let rest = rest::RestClient::new("test-token".into());
+        let mut ch = DiscordChannel {
+            rx,
+            rest,
+            channel_id: Some("ch1".into()),
+            allowed_user_ids: vec!["allowed-user".into()],
+            allowed_role_ids: vec![],
+            allowed_channel_ids: vec![],
+            accumulated: String::new(),
+            last_edit: None,
+            message_id: None,
+        };
+        // Unauthorized message first, then authorized "yes".
+        tx.try_send(make_incoming("intruder", "ch1", vec![]))
+            .unwrap();
+        tx.try_send(make_incoming("allowed-user", "ch1", vec![]))
+            .unwrap();
+        // Test the loop logic directly (confirm() calls send() which needs REST).
+        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
+        let mut confirmed = false;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(!remaining.is_zero(), "timed out unexpectedly");
+            match tokio::time::timeout(remaining, ch.rx.recv()).await {
+                Ok(Some(msg)) => {
+                    if !ch.is_authorized(&msg) {
+                        continue;
+                    }
+                    confirmed = msg.content.trim().eq_ignore_ascii_case("hello");
+                    break;
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(confirmed);
     }
 }

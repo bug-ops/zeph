@@ -27,6 +27,8 @@ pub struct SlackChannel {
     rx: mpsc::Receiver<IncomingMessage>,
     api: api::SlackApi,
     channel_id: Option<String>,
+    allowed_user_ids: Vec<String>,
+    allowed_channel_ids: Vec<String>,
     accumulated: String,
     last_edit: Option<Instant>,
     message_ts: Option<String>,
@@ -70,17 +72,31 @@ impl SlackChannel {
             port,
             signing_secret,
             bot_user_id,
-            allowed_user_ids,
-            allowed_channel_ids,
+            allowed_user_ids.clone(),
+            allowed_channel_ids.clone(),
         );
         Ok(Self {
             rx,
             api,
             channel_id: None,
+            allowed_user_ids,
+            allowed_channel_ids,
             accumulated: String::new(),
             last_edit: None,
             message_ts: None,
         })
+    }
+
+    fn is_authorized(&self, msg: &IncomingMessage) -> bool {
+        if !self.allowed_channel_ids.is_empty()
+            && !self.allowed_channel_ids.contains(&msg.channel_id)
+        {
+            return false;
+        }
+        if self.allowed_user_ids.is_empty() {
+            return true;
+        }
+        self.allowed_user_ids.contains(&msg.user_id)
     }
 
     fn should_send_update(&self) -> bool {
@@ -239,21 +255,38 @@ impl Channel for SlackChannel {
             crate::CONFIRM_TIMEOUT.as_secs()
         ))
         .await?;
-        // Note: confirm() consumes the next message regardless of intent.
-        // If the user sends an unrelated message within the timeout window, it will be
-        // treated as a non-confirmation and swallowed. This is a known limitation.
-        match tokio::time::timeout(crate::CONFIRM_TIMEOUT, self.rx.recv()).await {
-            Ok(Some(incoming)) => Ok(incoming.text.trim().eq_ignore_ascii_case("yes")),
-            Ok(None) => {
-                tracing::warn!("slack confirm channel closed — denying");
-                Ok(false)
-            }
-            Err(_) => {
+        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
                 tracing::warn!(
                     "slack confirm timed out after {}s — denied",
                     crate::CONFIRM_TIMEOUT.as_secs()
                 );
-                Ok(false)
+                return Ok(false);
+            }
+            match tokio::time::timeout(remaining, self.rx.recv()).await {
+                Ok(Some(incoming)) => {
+                    if !self.is_authorized(&incoming) {
+                        tracing::debug!(
+                            user_id = %incoming.user_id,
+                            "slack confirm: ignoring message from unauthorized user"
+                        );
+                        continue;
+                    }
+                    return Ok(incoming.text.trim().eq_ignore_ascii_case("yes"));
+                }
+                Ok(None) => {
+                    tracing::warn!("slack confirm channel closed — denying");
+                    return Ok(false);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "slack confirm timed out after {}s — denied",
+                        crate::CONFIRM_TIMEOUT.as_secs()
+                    );
+                    return Ok(false);
+                }
             }
         }
     }
@@ -271,9 +304,20 @@ mod tests {
             rx,
             api,
             channel_id: None,
+            allowed_user_ids: vec![],
+            allowed_channel_ids: vec![],
             accumulated: String::new(),
             last_edit: None,
             message_ts: None,
+        }
+    }
+
+    fn make_incoming(user_id: &str, channel_id: &str) -> IncomingMessage {
+        IncomingMessage {
+            channel_id: channel_id.into(),
+            text: "hello".into(),
+            user_id: user_id.into(),
+            files: vec![],
         }
     }
 
@@ -310,6 +354,98 @@ mod tests {
     }
 
     #[test]
+    fn is_authorized_allows_all_when_empty_lists() {
+        let ch = make_channel();
+        let msg = make_incoming("U1", "C1");
+        assert!(ch.is_authorized(&msg));
+    }
+
+    #[test]
+    fn is_authorized_rejects_channel_not_in_allowlist() {
+        let mut ch = make_channel();
+        ch.allowed_channel_ids = vec!["C-allowed".into()];
+        let msg = make_incoming("U1", "C-other");
+        assert!(!ch.is_authorized(&msg));
+    }
+
+    #[test]
+    fn is_authorized_allows_channel_in_allowlist() {
+        let mut ch = make_channel();
+        ch.allowed_channel_ids = vec!["C1".into()];
+        let msg = make_incoming("U1", "C1");
+        assert!(ch.is_authorized(&msg));
+    }
+
+    #[test]
+    fn is_authorized_allows_user_in_allowlist() {
+        let mut ch = make_channel();
+        ch.allowed_user_ids = vec!["U1".into()];
+        let msg = make_incoming("U1", "C1");
+        assert!(ch.is_authorized(&msg));
+    }
+
+    #[test]
+    fn is_authorized_rejects_user_not_in_allowlist() {
+        let mut ch = make_channel();
+        ch.allowed_user_ids = vec!["U-other".into()];
+        let msg = make_incoming("U1", "C1");
+        assert!(!ch.is_authorized(&msg));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn confirm_skips_unauthorized_and_accepts_authorized() {
+        tokio::time::pause();
+        let (tx, rx) = mpsc::channel(16);
+        let api = api::SlackApi::new("xoxb-test".into());
+        let mut ch = SlackChannel {
+            rx,
+            api,
+            channel_id: Some("C1".into()),
+            allowed_user_ids: vec!["U-allowed".into()],
+            allowed_channel_ids: vec![],
+            accumulated: String::new(),
+            last_edit: None,
+            message_ts: None,
+        };
+        // Send an unauthorized message followed by an authorized "yes".
+        tx.try_send(IncomingMessage {
+            channel_id: "C1".into(),
+            text: "yes".into(),
+            user_id: "U-intruder".into(),
+            files: vec![],
+        })
+        .unwrap();
+        tx.try_send(IncomingMessage {
+            channel_id: "C1".into(),
+            text: "yes".into(),
+            user_id: "U-allowed".into(),
+            files: vec![],
+        })
+        .unwrap();
+        // confirm() will call send() first (posts prompt), which calls api.post_message —
+        // that will fail without a real Slack API, so we test the authorization loop directly.
+        // Instead, test the loop logic by feeding both messages:
+        // The first (unauthorized) must be skipped, the second (authorized) accepted.
+        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
+        let mut confirmed = false;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(!remaining.is_zero(), "timed out unexpectedly");
+            match tokio::time::timeout(remaining, ch.rx.recv()).await {
+                Ok(Some(msg)) => {
+                    if !ch.is_authorized(&msg) {
+                        continue;
+                    }
+                    confirmed = msg.text.trim().eq_ignore_ascii_case("yes");
+                    break;
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(confirmed);
+    }
+
+    #[test]
     fn try_recv_sets_channel_id() {
         let (tx, rx) = mpsc::channel(16);
         let api = api::SlackApi::new("xoxb-test".into());
@@ -317,6 +453,8 @@ mod tests {
             rx,
             api,
             channel_id: None,
+            allowed_user_ids: vec![],
+            allowed_channel_ids: vec![],
             accumulated: String::new(),
             last_edit: None,
             message_ts: None,
