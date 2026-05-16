@@ -23,6 +23,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use tracing::Instrument as _;
+
 use crate::error::SchedulerError;
 use crate::pidfile::PidFile;
 use crate::scheduler::Scheduler;
@@ -121,39 +123,42 @@ pub async fn run_foreground(
     mut scheduler: Scheduler,
     cfg: &DaemonConfig,
 ) -> Result<(), SchedulerError> {
-    let _span = tracing::info_span!(
+    let span = tracing::info_span!(
         "scheduler.daemon.start",
         pid_file = %cfg.pid_file.display(),
         detached = false,
-    )
-    .entered();
-
-    // Detach from the controlling terminal so the daemon survives terminal close.
-    // setsid(2) only modifies session state and is safe to call after the tokio runtime
-    // has started — it has no interaction with tokio threads. EPERM means we are already
-    // a session leader (e.g. launched by systemd or launchd); ignore it.
-    let _ = rustix::process::setsid();
-
-    let _pidfile = PidFile::acquire(&cfg.pid_file)?;
-    tracing::info!(
-        pid = std::process::id(),
-        pid_file = %cfg.pid_file.display(),
-        "scheduler daemon started (foreground)"
     );
 
-    scheduler = scheduler.with_handler_timeout(Duration::from_secs(cfg.handler_timeout_secs));
-    scheduler.init().await?;
+    async move {
+        // Detach from the controlling terminal so the daemon survives terminal close.
+        // setsid(2) only modifies session state and is safe to call after the tokio runtime
+        // has started — it has no interaction with tokio threads. EPERM means we are already
+        // a session leader (e.g. launched by systemd or launchd); ignore it.
+        let _ = rustix::process::setsid();
 
-    if cfg.catch_up {
-        scheduler.catch_up_missed().await?;
+        let _pidfile = PidFile::acquire(&cfg.pid_file)?;
+        tracing::info!(
+            pid = std::process::id(),
+            pid_file = %cfg.pid_file.display(),
+            "scheduler daemon started (foreground)"
+        );
+
+        scheduler = scheduler.with_handler_timeout(Duration::from_secs(cfg.handler_timeout_secs));
+        scheduler.init().await?;
+
+        if cfg.catch_up {
+            scheduler.catch_up_missed().await?;
+        }
+
+        scheduler
+            .run_with_interval_and_grace(cfg.tick_secs, cfg.shutdown_grace_secs)
+            .await;
+
+        tracing::info!("scheduler daemon stopped");
+        Ok(())
     }
-
-    scheduler
-        .run_with_interval_and_grace(cfg.tick_secs, cfg.shutdown_grace_secs)
-        .await;
-
-    tracing::info!("scheduler daemon stopped");
-    Ok(())
+    .instrument(span)
+    .await
 }
 
 /// Re-exec the current binary with `--foreground` to detach from the controlling
