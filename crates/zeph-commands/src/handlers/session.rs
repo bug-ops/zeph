@@ -176,8 +176,11 @@ impl CommandHandler<CommandContext<'_>> for ClearQueueCommand {
         Box::pin(
             async move {
                 let n = ctx.messages.drain_queue();
-                // Notify the channel of the updated count; ignore errors (best-effort).
-                let _ = ctx.sink.send_queue_count(0).await;
+                if let Err(e) = ctx.sink.send_queue_count(0).await {
+                    tracing::debug!(
+                        "clear_queue: send_queue_count notification failed (best-effort): {e}"
+                    );
+                }
                 Ok(CommandOutput::Message(format!(
                     "Cleared {n} queued messages."
                 )))
