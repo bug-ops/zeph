@@ -983,6 +983,12 @@ verify_max_tokens = 1024
 max_replans = 2
 # Enable post-task completeness verification (best-effort, does not gate dispatch)
 verify_completeness = false
+# Timeout in seconds for aggregation LLM calls (0 rejected by validation). Default: 60.
+# aggregator_timeout_secs = 60
+# Timeout in seconds for planner LLM calls (0 rejected by validation). Default: 120.
+# planner_timeout_secs = 120
+# Timeout in seconds for verifier LLM calls (0 rejected by validation). Default: 30.
+# verifier_timeout_secs = 30
 
 [classifiers]
 # Enable ML-backed classifiers (requires the `classifiers` feature at compile time).

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-orchestration`: `PlanVerifier::verify` and `PlanVerifier::verify_plan` now check the
+  `>= 3 consecutive_failures` escalation threshold on timeout-driven failures, not just LLM
+  error returns. Previously, an over-loaded or misconfigured `verify_provider` that always
+  timed out would silently fail-open forever — operators saw repeated `warn!` entries but
+  never the `error!` escalation. Both timeout arms now emit the same `error!` log as the
+  `Ok(Err(_))` path when `consecutive_failures >= 3`, advising the operator to inspect
+  `verify_provider` configuration (closes #3868).
+- `zeph-config`: document the orchestration timeout fields added in #3860 — added commented
+  `aggregator_timeout_secs = 60`, `planner_timeout_secs = 120`, and `verifier_timeout_secs = 30`
+  entries in the `[orchestration]` section of `config/default.toml` (closes #3867).
 - `zeph-orchestration`: wrap all LLM `.await` calls in `LlmAggregator::aggregate`,
   `LlmPlanner::plan`/`plan_with_hint`, `PlanVerifier::verify`/`replan`/`verify_plan`/`replan_from_plan`,
   and `plan_cache::adapt_plan` with `tokio::time::timeout`. New `OrchestrationConfig` fields:

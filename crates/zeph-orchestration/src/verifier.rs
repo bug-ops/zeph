@@ -180,11 +180,21 @@ impl<P: LlmProvider> PlanVerifier<P> {
             }
             Err(_elapsed) => {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-                warn!(
-                    timeout_secs = self.timeout.as_secs(),
-                    task_id = %task.id,
-                    "PlanVerifier: LLM call timed out, treating task as complete (fail-open)"
-                );
+                if self.consecutive_failures >= 3 {
+                    error!(
+                        consecutive_failures = self.consecutive_failures,
+                        timeout_secs = self.timeout.as_secs(),
+                        task_id = %task.id,
+                        "PlanVerifier: 3+ consecutive LLM failures — check verify_provider \
+                         configuration; all tasks will pass verification (fail-open)"
+                    );
+                } else {
+                    warn!(
+                        timeout_secs = self.timeout.as_secs(),
+                        task_id = %task.id,
+                        "PlanVerifier: LLM call timed out, treating task as complete (fail-open)"
+                    );
+                }
                 VerificationResult::fail_open()
             }
         }
@@ -318,11 +328,20 @@ impl<P: LlmProvider> PlanVerifier<P> {
             }
             Err(_elapsed) => {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-                warn!(
-                    timeout_secs = self.timeout.as_secs(),
-                    "PlanVerifier: whole-plan LLM call timed out, treating plan as complete \
-                     (fail-open)"
-                );
+                if self.consecutive_failures >= 3 {
+                    error!(
+                        consecutive_failures = self.consecutive_failures,
+                        timeout_secs = self.timeout.as_secs(),
+                        "PlanVerifier: 3+ consecutive LLM failures in whole-plan verify — \
+                         check verify_provider configuration; plan treated as complete (fail-open)"
+                    );
+                } else {
+                    warn!(
+                        timeout_secs = self.timeout.as_secs(),
+                        "PlanVerifier: whole-plan LLM call timed out, treating plan as complete \
+                         (fail-open)"
+                    );
+                }
                 VerificationResult::fail_open()
             }
         }
@@ -1243,5 +1262,34 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_empty(), "timeout must return empty vec");
+    }
+
+    #[tokio::test]
+    async fn verify_timeout_increments_counter_and_crosses_threshold() {
+        let mut verifier = slow_verifier();
+        let task = TaskNode::new(0, "t", "d");
+        for _ in 0..3 {
+            let _ = verifier.verify(&task, "output").await;
+        }
+        assert_eq!(
+            verifier.consecutive_failures(),
+            3,
+            "three consecutive verify() timeouts must accumulate to 3 — the threshold the \
+             error! escalation arm checks"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_plan_timeout_increments_counter_and_crosses_threshold() {
+        let mut verifier = slow_verifier();
+        for _ in 0..3 {
+            let _ = verifier.verify_plan("goal", "output").await;
+        }
+        assert_eq!(
+            verifier.consecutive_failures(),
+            3,
+            "three consecutive verify_plan() timeouts must accumulate to 3 — the threshold \
+             the error! escalation arm checks"
+        );
     }
 }
