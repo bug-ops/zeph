@@ -12,13 +12,34 @@
 use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
+use tracing::Instrument as _;
 use zeph_commands::CommandError;
 use zeph_commands::traits::agent::AgentAccess;
-use zeph_memory::{GraphExtractionConfig, MessageId, extract_and_store};
+use zeph_memory::semantic::SemanticMemory;
+use zeph_memory::{GraphExtractionConfig, GraphStore, MessageId, extract_and_store};
 
 use super::{Agent, error::AgentError};
 use crate::channel::Channel;
+
+impl<C: Channel + Send + 'static> Agent<C> {
+    fn resolve_graph_store(&self) -> Result<(Arc<SemanticMemory>, Arc<GraphStore>), String> {
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
+            return Err("Graph memory is not enabled.".to_owned());
+        };
+        let Some(store) = memory.graph_store.clone() else {
+            if self.services.memory.extraction.graph_config.enabled {
+                return Err(
+                    "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
+                        .to_owned(),
+                );
+            }
+            return Err("Graph memory is not enabled.".to_owned());
+        };
+        Ok((memory, store))
+    }
+}
 
 impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     // ----- /memory -----
@@ -26,47 +47,53 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     fn memory_tiers<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.clone() else {
-                return Ok("Memory not configured.".to_owned());
-            };
-            match memory.sqlite().count_messages_by_tier().await {
-                Ok((episodic, semantic)) => {
-                    let mut out = String::new();
-                    let _ = writeln!(out, "Memory tiers:");
-                    let _ = writeln!(out, "  Working:  (current context window — virtual)");
-                    let _ = writeln!(out, "  Episodic: {episodic} messages");
-                    let _ = writeln!(out, "  Semantic: {semantic} facts");
-                    Ok(out.trim_end().to_owned())
+        Box::pin(
+            async move {
+                let Some(memory) = self.services.memory.persistence.memory.clone() else {
+                    return Ok("Memory not configured.".to_owned());
+                };
+                match memory.sqlite().count_messages_by_tier().await {
+                    Ok((episodic, semantic)) => {
+                        let mut out = String::new();
+                        let _ = writeln!(out, "Memory tiers:");
+                        let _ = writeln!(out, "  Working:  (current context window — virtual)");
+                        let _ = writeln!(out, "  Episodic: {episodic} messages");
+                        let _ = writeln!(out, "  Semantic: {semantic} facts");
+                        Ok(out.trim_end().to_owned())
+                    }
+                    Err(e) => Ok(format!("Failed to query tier stats: {e}")),
                 }
-                Err(e) => Ok(format!("Failed to query tier stats: {e}")),
             }
-        })
+            .instrument(tracing::info_span!("core.agent_access.memory_tiers")),
+        )
     }
 
     fn memory_promote<'a>(
         &'a mut self,
         ids_str: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.clone() else {
-                return Ok("Memory not configured.".to_owned());
-            };
-            let ids: Vec<MessageId> = ids_str
-                .split_whitespace()
-                .filter_map(|s| s.parse::<i64>().ok().map(MessageId))
-                .collect();
-            if ids.is_empty() {
-                return Ok(
-                    "Usage: /memory promote <id> [id...]\nExample: /memory promote 42 43 44"
-                        .to_owned(),
-                );
+        Box::pin(
+            async move {
+                let Some(memory) = self.services.memory.persistence.memory.clone() else {
+                    return Ok("Memory not configured.".to_owned());
+                };
+                let ids: Vec<MessageId> = ids_str
+                    .split_whitespace()
+                    .filter_map(|s| s.parse::<i64>().ok().map(MessageId))
+                    .collect();
+                if ids.is_empty() {
+                    return Ok(
+                        "Usage: /memory promote <id> [id...]\nExample: /memory promote 42 43 44"
+                            .to_owned(),
+                    );
+                }
+                match memory.sqlite().manual_promote(&ids).await {
+                    Ok(count) => Ok(format!("Promoted {count} message(s) to semantic tier.")),
+                    Err(e) => Ok(format!("Promotion failed: {e}")),
+                }
             }
-            match memory.sqlite().manual_promote(&ids).await {
-                Ok(count) => Ok(format!("Promoted {count} message(s) to semantic tier.")),
-                Err(e) => Ok(format!("Promotion failed: {e}")),
-            }
-        })
+            .instrument(tracing::info_span!("core.agent_access.memory_promote")),
+        )
     }
 
     // ----- /graph -----
@@ -74,299 +101,275 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     fn graph_stats<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-            let Some(store) = memory.graph_store.as_ref() else {
-                if self.services.memory.extraction.graph_config.enabled {
-                    return Ok(
-                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
-                            .to_owned(),
-                    );
-                }
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
+        Box::pin(
+            async move {
+                let (_, store) = match self.resolve_graph_store() {
+                    Ok(pair) => pair,
+                    Err(msg) => return Ok(msg),
+                };
 
-            let (entities, edges, communities, distribution) = tokio::join!(
-                store.entity_count(),
-                store.active_edge_count(),
-                store.community_count(),
-                store.edge_type_distribution()
-            );
-            let mut msg = format!(
-                "Graph memory: {} entities, {} edges, {} communities",
-                entities.unwrap_or(0),
-                edges.unwrap_or(0),
-                communities.unwrap_or(0)
-            );
-            if let Ok(dist) = distribution
-                && !dist.is_empty()
-            {
-                let dist_str: Vec<String> = dist.iter().map(|(t, c)| format!("{t}={c}")).collect();
-                write!(msg, "\nEdge types: {}", dist_str.join(", ")).unwrap_or(());
+                let (entities, edges, communities, distribution) = tokio::join!(
+                    store.entity_count(),
+                    store.active_edge_count(),
+                    store.community_count(),
+                    store.edge_type_distribution()
+                );
+                let mut msg = format!(
+                    "Graph memory: {} entities, {} edges, {} communities",
+                    entities.unwrap_or(0),
+                    edges.unwrap_or(0),
+                    communities.unwrap_or(0)
+                );
+                if let Ok(dist) = distribution
+                    && !dist.is_empty()
+                {
+                    let dist_str: Vec<String> =
+                        dist.iter().map(|(t, c)| format!("{t}={c}")).collect();
+                    write!(msg, "\nEdge types: {}", dist_str.join(", ")).unwrap_or(());
+                }
+                Ok(msg)
             }
-            Ok(msg)
-        })
+            .instrument(tracing::info_span!("core.agent_access.graph_stats")),
+        )
     }
 
     fn graph_entities<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-            let Some(store) = memory.graph_store.as_ref() else {
-                if self.services.memory.extraction.graph_config.enabled {
-                    return Ok(
-                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
-                            .to_owned(),
-                    );
+        Box::pin(
+            async move {
+                let (_, store) = match self.resolve_graph_store() {
+                    Ok(pair) => pair,
+                    Err(msg) => return Ok(msg),
+                };
+
+                let entities = store
+                    .all_entities()
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))?;
+                if entities.is_empty() {
+                    return Ok("No entities found.".to_owned());
                 }
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
 
-            let entities = store
-                .all_entities()
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))?;
-            if entities.is_empty() {
-                return Ok("No entities found.".to_owned());
+                let total = entities.len();
+                let display: Vec<String> = entities
+                    .iter()
+                    .take(50)
+                    .map(|e| {
+                        format!(
+                            "  {:<40}  {:<15}  {}",
+                            e.name,
+                            e.entity_type.as_str(),
+                            e.last_seen_at.split('T').next().unwrap_or(&e.last_seen_at)
+                        )
+                    })
+                    .collect();
+                let mut msg = format!(
+                    "Entities ({total} total):\n  {:<40}  {:<15}  {}\n{}",
+                    "NAME",
+                    "TYPE",
+                    "LAST SEEN",
+                    display.join("\n")
+                );
+                if total > 50 {
+                    write!(msg, "\n  ...and {} more", total - 50).unwrap_or(());
+                }
+                Ok(msg)
             }
-
-            let total = entities.len();
-            let display: Vec<String> = entities
-                .iter()
-                .take(50)
-                .map(|e| {
-                    format!(
-                        "  {:<40}  {:<15}  {}",
-                        e.name,
-                        e.entity_type.as_str(),
-                        e.last_seen_at.split('T').next().unwrap_or(&e.last_seen_at)
-                    )
-                })
-                .collect();
-            let mut msg = format!(
-                "Entities ({total} total):\n  {:<40}  {:<15}  {}\n{}",
-                "NAME",
-                "TYPE",
-                "LAST SEEN",
-                display.join("\n")
-            );
-            if total > 50 {
-                write!(msg, "\n  ...and {} more", total - 50).unwrap_or(());
-            }
-            Ok(msg)
-        })
+            .instrument(tracing::info_span!("core.agent_access.graph_entities")),
+        )
     }
 
     fn graph_facts<'a>(
         &'a mut self,
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-            let Some(store) = memory.graph_store.as_ref() else {
-                if self.services.memory.extraction.graph_config.enabled {
-                    return Ok(
-                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
-                            .to_owned(),
-                    );
-                }
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-
-            let matches = store
-                .find_entity_by_name(name)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))?;
-            if matches.is_empty() {
-                return Ok(format!("No entity found matching '{name}'."));
-            }
-
-            let entity = &matches[0];
-            let edges = store
-                .edges_for_entity(entity.id.0)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))?;
-            if edges.is_empty() {
-                return Ok(format!("Entity '{}' has no known facts.", entity.name));
-            }
-
-            let mut entity_names: std::collections::HashMap<i64, String> =
-                std::collections::HashMap::new();
-            entity_names.insert(entity.id.0, entity.name.clone());
-            for edge in &edges {
-                let other_id = if edge.source_entity_id == entity.id.0 {
-                    edge.target_entity_id
-                } else {
-                    edge.source_entity_id
+        Box::pin(
+            async move {
+                let (_, store) = match self.resolve_graph_store() {
+                    Ok(pair) => pair,
+                    Err(msg) => return Ok(msg),
                 };
-                entity_names.entry(other_id).or_default();
-            }
-            for (&id, name_val) in &mut entity_names {
-                if name_val.is_empty() {
-                    if let Ok(Some(other)) = store.find_entity_by_id(id).await {
-                        *name_val = other.name;
+
+                let matches = store
+                    .find_entity_by_name(name)
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))?;
+                if matches.is_empty() {
+                    return Ok(format!("No entity found matching '{name}'."));
+                }
+
+                let entity = &matches[0];
+                let edges = store
+                    .edges_for_entity(entity.id.0)
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))?;
+                if edges.is_empty() {
+                    return Ok(format!("Entity '{}' has no known facts.", entity.name));
+                }
+
+                let mut entity_names: std::collections::HashMap<i64, String> =
+                    std::collections::HashMap::new();
+                entity_names.insert(entity.id.0, entity.name.clone());
+                for edge in &edges {
+                    let other_id = if edge.source_entity_id == entity.id.0 {
+                        edge.target_entity_id
                     } else {
-                        *name_val = format!("#{id}");
+                        edge.source_entity_id
+                    };
+                    entity_names.entry(other_id).or_default();
+                }
+                for (&id, name_val) in &mut entity_names {
+                    if name_val.is_empty() {
+                        if let Ok(Some(other)) = store.find_entity_by_id(id).await {
+                            *name_val = other.name;
+                        } else {
+                            *name_val = format!("#{id}");
+                        }
                     }
                 }
-            }
 
-            let lines: Vec<String> = edges
-                .iter()
-                .map(|e| {
-                    let src = entity_names
-                        .get(&e.source_entity_id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("#{}", e.source_entity_id));
-                    let tgt = entity_names
-                        .get(&e.target_entity_id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("#{}", e.target_entity_id));
-                    format!(
-                        "  {} --[{}/{}]--> {}: {} (confidence: {:.2})",
-                        src, e.relation, e.edge_type, tgt, e.fact, e.confidence
-                    )
-                })
-                .collect();
-            Ok(format!(
-                "Facts for '{}':\n{}",
-                entity.name,
-                lines.join("\n")
-            ))
-        })
+                let lines: Vec<String> = edges
+                    .iter()
+                    .map(|e| {
+                        let src = entity_names
+                            .get(&e.source_entity_id)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", e.source_entity_id));
+                        let tgt = entity_names
+                            .get(&e.target_entity_id)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", e.target_entity_id));
+                        format!(
+                            "  {} --[{}/{}]--> {}: {} (confidence: {:.2})",
+                            src, e.relation, e.edge_type, tgt, e.fact, e.confidence
+                        )
+                    })
+                    .collect();
+                Ok(format!(
+                    "Facts for '{}':\n{}",
+                    entity.name,
+                    lines.join("\n")
+                ))
+            }
+            .instrument(tracing::info_span!("core.agent_access.graph_facts")),
+        )
     }
 
     fn graph_history<'a>(
         &'a mut self,
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-            let Some(store) = memory.graph_store.as_ref() else {
-                if self.services.memory.extraction.graph_config.enabled {
-                    return Ok(
-                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
-                            .to_owned(),
-                    );
+        Box::pin(
+            async move {
+                let (_, store) = match self.resolve_graph_store() {
+                    Ok(pair) => pair,
+                    Err(msg) => return Ok(msg),
+                };
+
+                let matches = store
+                    .find_entity_by_name(name)
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))?;
+                if matches.is_empty() {
+                    return Ok(format!("No entity found matching '{name}'."));
                 }
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
 
-            let matches = store
-                .find_entity_by_name(name)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))?;
-            if matches.is_empty() {
-                return Ok(format!("No entity found matching '{name}'."));
-            }
-
-            let entity = &matches[0];
-            let edges = store
-                .edge_history_for_entity(entity.id.0, 50)
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))?;
-            if edges.is_empty() {
-                return Ok(format!("Entity '{}' has no edge history.", entity.name));
-            }
-
-            let mut entity_names: std::collections::HashMap<i64, String> =
-                std::collections::HashMap::new();
-            entity_names.insert(entity.id.0, entity.name.clone());
-            for edge in &edges {
-                for &id in &[edge.source_entity_id, edge.target_entity_id] {
-                    entity_names.entry(id).or_default();
+                let entity = &matches[0];
+                let edges = store
+                    .edge_history_for_entity(entity.id.0, 50)
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))?;
+                if edges.is_empty() {
+                    return Ok(format!("Entity '{}' has no edge history.", entity.name));
                 }
-            }
-            for (&id, name_val) in &mut entity_names {
-                if name_val.is_empty() {
-                    if let Ok(Some(other)) = store.find_entity_by_id(id).await {
-                        *name_val = other.name;
-                    } else {
-                        *name_val = format!("#{id}");
+
+                let mut entity_names: std::collections::HashMap<i64, String> =
+                    std::collections::HashMap::new();
+                entity_names.insert(entity.id.0, entity.name.clone());
+                for edge in &edges {
+                    for &id in &[edge.source_entity_id, edge.target_entity_id] {
+                        entity_names.entry(id).or_default();
                     }
                 }
-            }
+                for (&id, name_val) in &mut entity_names {
+                    if name_val.is_empty() {
+                        if let Ok(Some(other)) = store.find_entity_by_id(id).await {
+                            *name_val = other.name;
+                        } else {
+                            *name_val = format!("#{id}");
+                        }
+                    }
+                }
 
-            let n = edges.len();
-            let lines: Vec<String> = edges
-                .iter()
-                .map(|e| {
-                    let status = if e.valid_to.is_some() {
-                        let date = e
-                            .valid_to
-                            .as_deref()
-                            .and_then(|s| s.split('T').next().or_else(|| s.split(' ').next()))
-                            .unwrap_or("?");
-                        format!("[expired {date}]")
-                    } else {
-                        "[active]".to_string()
-                    };
-                    let src = entity_names
-                        .get(&e.source_entity_id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("#{}", e.source_entity_id));
-                    let tgt = entity_names
-                        .get(&e.target_entity_id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("#{}", e.target_entity_id));
-                    format!(
-                        "  {status} {} --[{}/{}]--> {}: {} (confidence: {:.2})",
-                        src, e.relation, e.edge_type, tgt, e.fact, e.confidence
-                    )
-                })
-                .collect();
-            Ok(format!(
-                "Edge history for '{}' ({n} edges):\n{}",
-                entity.name,
-                lines.join("\n")
-            ))
-        })
+                let n = edges.len();
+                let lines: Vec<String> = edges
+                    .iter()
+                    .map(|e| {
+                        let status = if e.valid_to.is_some() {
+                            let date = e
+                                .valid_to
+                                .as_deref()
+                                .and_then(|s| s.split('T').next().or_else(|| s.split(' ').next()))
+                                .unwrap_or("?");
+                            format!("[expired {date}]")
+                        } else {
+                            "[active]".to_string()
+                        };
+                        let src = entity_names
+                            .get(&e.source_entity_id)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", e.source_entity_id));
+                        let tgt = entity_names
+                            .get(&e.target_entity_id)
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", e.target_entity_id));
+                        format!(
+                            "  {status} {} --[{}/{}]--> {}: {} (confidence: {:.2})",
+                            src, e.relation, e.edge_type, tgt, e.fact, e.confidence
+                        )
+                    })
+                    .collect();
+                Ok(format!(
+                    "Edge history for '{}' ({n} edges):\n{}",
+                    entity.name,
+                    lines.join("\n")
+                ))
+            }
+            .instrument(tracing::info_span!("core.agent_access.graph_history")),
+        )
     }
 
     fn graph_communities<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.as_ref() else {
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-            let Some(store) = memory.graph_store.as_ref() else {
-                if self.services.memory.extraction.graph_config.enabled {
-                    return Ok(
-                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
-                            .to_owned(),
-                    );
+        Box::pin(
+            async move {
+                let (_, store) = match self.resolve_graph_store() {
+                    Ok(pair) => pair,
+                    Err(msg) => return Ok(msg),
+                };
+
+                let communities = store
+                    .all_communities()
+                    .await
+                    .map_err(|e| CommandError::new(e.to_string()))?;
+                if communities.is_empty() {
+                    return Ok("No communities detected yet. Run graph backfill first.".to_owned());
                 }
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
 
-            let communities = store
-                .all_communities()
-                .await
-                .map_err(|e| CommandError::new(e.to_string()))?;
-            if communities.is_empty() {
-                return Ok("No communities detected yet. Run graph backfill first.".to_owned());
+                let lines: Vec<String> = communities
+                    .iter()
+                    .map(|c| format!("  [{}]: {}", c.name, c.summary))
+                    .collect();
+                Ok(format!(
+                    "Communities ({}):\n{}",
+                    communities.len(),
+                    lines.join("\n")
+                ))
             }
-
-            let lines: Vec<String> = communities
-                .iter()
-                .map(|c| format!("  [{}]: {}", c.name, c.summary))
-                .collect();
-            Ok(format!(
-                "Communities ({}):\n{}",
-                communities.len(),
-                lines.join("\n")
-            ))
-        })
+            .instrument(tracing::info_span!("core.agent_access.graph_communities")),
+        )
     }
 
     #[allow(clippy::too_many_lines)]
@@ -375,117 +378,114 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         limit: Option<usize>,
         progress_cb: &'a mut (dyn FnMut(String) + Send),
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        let graph_enabled = self.services.memory.extraction.graph_config.enabled;
-        Box::pin(async move {
-            let Some(memory) = self.services.memory.persistence.memory.clone() else {
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-            let Some(store) = memory.graph_store.clone() else {
-                if graph_enabled {
-                    return Ok(
-                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
-                            .to_owned(),
-                    );
-                }
-                return Ok("Graph memory is not enabled.".to_owned());
-            };
-
-            let total = store.unprocessed_message_count().await.unwrap_or(0);
-            let cap = limit.unwrap_or(usize::MAX);
-
-            progress_cb(format!(
-                "Starting graph backfill... ({total} unprocessed messages)"
-            ));
-
-            let batch_size = 50usize;
-            let mut processed = 0usize;
-            let mut total_entities = 0usize;
-            let mut total_edges = 0usize;
-
-            let graph_cfg = self.services.memory.extraction.graph_config.clone();
-            let provider = self.provider.clone();
-
-            loop {
-                let remaining_cap = cap.saturating_sub(processed);
-                if remaining_cap == 0 {
-                    break;
-                }
-                let batch_limit = batch_size.min(remaining_cap);
-                let messages = store
-                    .unprocessed_messages_for_backfill(batch_limit)
-                    .await
-                    .map_err(|e| CommandError::new(e.to_string()))?;
-                if messages.is_empty() {
-                    break;
-                }
-
-                let ids: Vec<zeph_memory::types::MessageId> =
-                    messages.iter().map(|(id, _)| *id).collect();
-
-                for (_id, content) in &messages {
-                    if content.trim().is_empty() {
-                        continue;
-                    }
-                    let extraction_cfg = GraphExtractionConfig {
-                        max_entities: graph_cfg.max_entities_per_message,
-                        max_edges: graph_cfg.max_edges_per_message,
-                        extraction_timeout_secs: graph_cfg.extraction_timeout_secs,
-                        community_refresh_interval: 0,
-                        expired_edge_retention_days: graph_cfg.expired_edge_retention_days,
-                        max_entities_cap: graph_cfg.max_entities,
-                        community_summary_max_prompt_bytes: graph_cfg
-                            .community_summary_max_prompt_bytes,
-                        community_summary_concurrency: graph_cfg.community_summary_concurrency,
-                        lpa_edge_chunk_size: graph_cfg.lpa_edge_chunk_size,
-                        note_linking: zeph_memory::NoteLinkingConfig::default(),
-                        link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda,
-                        link_weight_decay_interval_secs: graph_cfg.link_weight_decay_interval_secs,
-                        belief_revision_enabled: graph_cfg.belief_revision.enabled,
-                        belief_revision_similarity_threshold: graph_cfg
-                            .belief_revision
-                            .similarity_threshold,
-                        conversation_id: None,
-                        apex_mem_enabled: graph_cfg.apex_mem.enabled,
-                    };
-                    let pool = store.pool().clone();
-                    match extract_and_store(
-                        content.clone(),
-                        vec![],
-                        provider.clone(),
-                        pool,
-                        extraction_cfg,
-                        None,
-                        None,
-                    )
-                    .await
-                    {
-                        Ok(result) => {
-                            total_entities += result.stats.entities_upserted;
-                            total_edges += result.stats.edges_inserted;
-                        }
-                        Err(e) => {
-                            tracing::warn!("backfill extraction error: {e:#}");
-                        }
-                    }
-                }
-
-                store
-                    .mark_messages_graph_processed(&ids)
-                    .await
-                    .map_err(|e| CommandError::new(e.to_string()))?;
-                processed += messages.len();
+        let store = match self.resolve_graph_store() {
+            Ok((_, s)) => s,
+            Err(msg) => return Box::pin(async move { Ok(msg) }),
+        };
+        let graph_cfg = self.services.memory.extraction.graph_config.clone();
+        let provider = if graph_cfg.extract_provider.as_str().is_empty() {
+            self.provider.clone()
+        } else {
+            self.resolve_background_provider(graph_cfg.extract_provider.as_str())
+        };
+        Box::pin(
+            async move {
+                let total = store.unprocessed_message_count().await.unwrap_or(0);
+                let cap = limit.unwrap_or(usize::MAX);
 
                 progress_cb(format!(
-                    "Backfill progress: {processed} messages processed, \
-                     {total_entities} entities, {total_edges} edges"
+                    "Starting graph backfill... ({total} unprocessed messages)"
                 ));
-            }
 
-            Ok(format!(
-                "Backfill complete: {total_entities} entities, {total_edges} edges \
+                let batch_size = 50usize;
+                let mut processed = 0usize;
+                let mut total_entities = 0usize;
+                let mut total_edges = 0usize;
+
+                loop {
+                    let remaining_cap = cap.saturating_sub(processed);
+                    if remaining_cap == 0 {
+                        break;
+                    }
+                    let batch_limit = batch_size.min(remaining_cap);
+                    let messages = store
+                        .unprocessed_messages_for_backfill(batch_limit)
+                        .await
+                        .map_err(|e| CommandError::new(e.to_string()))?;
+                    if messages.is_empty() {
+                        break;
+                    }
+
+                    let ids: Vec<zeph_memory::types::MessageId> =
+                        messages.iter().map(|(id, _)| *id).collect();
+
+                    for (_id, content) in &messages {
+                        if content.trim().is_empty() {
+                            continue;
+                        }
+                        let extraction_cfg = GraphExtractionConfig {
+                            max_entities: graph_cfg.max_entities_per_message,
+                            max_edges: graph_cfg.max_edges_per_message,
+                            extraction_timeout_secs: graph_cfg.extraction_timeout_secs,
+                            community_refresh_interval: 0,
+                            expired_edge_retention_days: graph_cfg.expired_edge_retention_days,
+                            max_entities_cap: graph_cfg.max_entities,
+                            community_summary_max_prompt_bytes: graph_cfg
+                                .community_summary_max_prompt_bytes,
+                            community_summary_concurrency: graph_cfg.community_summary_concurrency,
+                            lpa_edge_chunk_size: graph_cfg.lpa_edge_chunk_size,
+                            note_linking: zeph_memory::NoteLinkingConfig::default(),
+                            link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda,
+                            link_weight_decay_interval_secs: graph_cfg
+                                .link_weight_decay_interval_secs,
+                            belief_revision_enabled: graph_cfg.belief_revision.enabled,
+                            belief_revision_similarity_threshold: graph_cfg
+                                .belief_revision
+                                .similarity_threshold,
+                            conversation_id: None,
+                            apex_mem_enabled: graph_cfg.apex_mem.enabled,
+                        };
+                        let pool = store.pool().clone();
+                        match extract_and_store(
+                            content.clone(),
+                            vec![],
+                            provider.clone(),
+                            pool,
+                            extraction_cfg,
+                            None,
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                total_entities += result.stats.entities_upserted;
+                                total_edges += result.stats.edges_inserted;
+                            }
+                            Err(e) => {
+                                tracing::warn!("backfill extraction error: {e:#}");
+                            }
+                        }
+                    }
+
+                    store
+                        .mark_messages_graph_processed(&ids)
+                        .await
+                        .map_err(|e| CommandError::new(e.to_string()))?;
+                    processed += messages.len();
+
+                    progress_cb(format!(
+                        "Backfill progress: {processed} messages processed, \
+                     {total_entities} entities, {total_edges} edges"
+                    ));
+                }
+
+                Ok(format!(
+                    "Backfill complete: {total_entities} entities, {total_edges} edges \
                  extracted from {processed} messages"
-            ))
-        })
+                ))
+            }
+            .instrument(tracing::info_span!("core.agent_access.graph_backfill")),
+        )
     }
 
     // ----- /guidelines -----
@@ -493,44 +493,47 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     fn guidelines<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            const MAX_DISPLAY_CHARS: usize = 4096;
+        Box::pin(
+            async move {
+                const MAX_DISPLAY_CHARS: usize = 4096;
 
-            let Some(memory) = &self.services.memory.persistence.memory else {
-                return Ok("No memory backend initialised.".to_owned());
-            };
+                let Some(memory) = &self.services.memory.persistence.memory else {
+                    return Ok("No memory backend initialised.".to_owned());
+                };
 
-            let cid = self.services.memory.persistence.conversation_id;
-            let sqlite = memory.sqlite();
+                let cid = self.services.memory.persistence.conversation_id;
+                let sqlite = memory.sqlite();
 
-            let (version, text) = sqlite
-                .load_compression_guidelines(cid)
-                .await
-                .map_err(|e: zeph_memory::MemoryError| CommandError::new(e.to_string()))?;
+                let (version, text) = sqlite
+                    .load_compression_guidelines(cid)
+                    .await
+                    .map_err(|e: zeph_memory::MemoryError| CommandError::new(e.to_string()))?;
 
-            if version == 0 || text.is_empty() {
-                return Ok("No compression guidelines generated yet.".to_owned());
+                if version == 0 || text.is_empty() {
+                    return Ok("No compression guidelines generated yet.".to_owned());
+                }
+
+                let (_, created_at) = sqlite
+                    .load_compression_guidelines_meta(cid)
+                    .await
+                    .unwrap_or((0, String::new()));
+
+                let (body, truncated) = if text.len() > MAX_DISPLAY_CHARS {
+                    let end = text.floor_char_boundary(MAX_DISPLAY_CHARS);
+                    (&text[..end], true)
+                } else {
+                    (text.as_str(), false)
+                };
+
+                let mut output =
+                    format!("Compression Guidelines (v{version}, updated {created_at}):\n\n{body}");
+                if truncated {
+                    output.push_str("\n\n[truncated]");
+                }
+                Ok(output)
             }
-
-            let (_, created_at) = sqlite
-                .load_compression_guidelines_meta(cid)
-                .await
-                .unwrap_or((0, String::new()));
-
-            let (body, truncated) = if text.len() > MAX_DISPLAY_CHARS {
-                let end = text.floor_char_boundary(MAX_DISPLAY_CHARS);
-                (&text[..end], true)
-            } else {
-                (text.as_str(), false)
-            };
-
-            let mut output =
-                format!("Compression Guidelines (v{version}, updated {created_at}):\n\n{body}");
-            if truncated {
-                output.push_str("\n\n[truncated]");
-            }
-            Ok(output)
-        })
+            .instrument(tracing::info_span!("core.agent_access.guidelines")),
+        )
     }
 
     // ----- /model, /provider -----
@@ -604,18 +607,21 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     fn session_recap<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move {
-            match self.build_recap().await {
-                Ok(text) => Ok(text),
-                Err(e) => {
-                    // /recap is an explicit user command — surface a fixed message so that
-                    // LlmError internals (URLs with embedded credentials, response excerpts)
-                    // are never forwarded to the user channel. Full detail goes to the log.
-                    tracing::warn!("session recap command: {}", e.0);
-                    Ok("Recap unavailable — see logs for details".to_string())
+        Box::pin(
+            async move {
+                match self.build_recap().await {
+                    Ok(text) => Ok(text),
+                    Err(e) => {
+                        // /recap is an explicit user command — surface a fixed message so that
+                        // LlmError internals (URLs with embedded credentials, response excerpts)
+                        // are never forwarded to the user channel. Full detail goes to the log.
+                        tracing::warn!("session recap command: {}", e.0);
+                        Ok("Recap unavailable — see logs for details".to_string())
+                    }
                 }
             }
-        })
+            .instrument(tracing::info_span!("core.agent_access.session_recap")),
+        )
     }
 
     // ----- /compact -----
@@ -623,7 +629,10 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     fn compact_context<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(self.compact_context_command())
+        Box::pin(
+            self.compact_context_command()
+                .instrument(tracing::info_span!("core.agent_access.compact_context")),
+        )
     }
 
     // ----- /new -----
@@ -1357,6 +1366,47 @@ mod tests {
         assert!(
             result.contains("not enabled"),
             "expected 'not enabled' but got: {result}"
+        );
+    }
+
+    // R-CRIT-4136: graph_backfill must resolve extract_provider before entering the async block.
+    // When extract_provider is set to an unknown name, resolve_background_provider falls back to
+    // the primary provider — the backfill still completes (no messages to process).
+    // This test confirms that the provider-resolution code path executes without panic or borrow
+    // errors, which would occur if the old code tried to access `&mut self` inside `async move`.
+    #[tokio::test]
+    async fn graph_backfill_with_extract_provider_resolves_without_panic() {
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            extract_provider: zeph_config::providers::ProviderName::new("nonexistent-provider"),
+            ..Default::default()
+        };
+        let mut memory = memory_without_qdrant().await;
+        // Install a real SQLite-backed GraphStore so resolve_graph_store succeeds.
+        let pool = memory.sqlite().pool().clone();
+        memory.graph_store = Some(std::sync::Arc::new(zeph_memory::GraphStore::new(pool)));
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let mut progress = vec![];
+        let result = agent
+            .graph_backfill(Some(10), &mut |msg| progress.push(msg))
+            .await
+            .unwrap();
+
+        // With an empty store there are zero unprocessed messages → backfill completes immediately.
+        assert!(
+            result.contains("Backfill complete"),
+            "expected 'Backfill complete' but got: {result}"
         );
     }
 }
