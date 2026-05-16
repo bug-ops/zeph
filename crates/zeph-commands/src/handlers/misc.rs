@@ -108,7 +108,7 @@ impl CommandHandler<CommandContext<'_>> for ImageCommand {
         Box::pin(
             async move {
                 if args.is_empty() {
-                    return Ok(CommandOutput::Message("Usage: /image <path>".to_owned()));
+                    return Err(CommandError::new("Usage: /image <path>"));
                 }
                 let result = ctx.agent.load_image(args).await?;
                 Ok(CommandOutput::Message(result))
@@ -167,18 +167,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn image_no_args_returns_usage_hint() {
+    async fn image_no_args_returns_error() {
         let mut sink = NullSink;
         let mut debug = MockDebug;
         let mut messages = MockMessages;
         let session = MockSession;
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
-        let out = ImageCommand.handle(&mut ctx, "").await.unwrap();
-        let CommandOutput::Message(msg) = out else {
-            panic!("expected Message")
-        };
-        assert!(msg.contains("/image"));
+        let err = ImageCommand.handle(&mut ctx, "").await.unwrap_err();
+        assert!(err.to_string().contains("/image"));
     }
 
     #[tokio::test]

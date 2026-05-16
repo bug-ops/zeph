@@ -10,6 +10,17 @@ use crate::CommandHandler;
 use crate::context::CommandContext;
 use crate::{CommandError, CommandOutput, SlashCategory};
 
+async fn handle_exit(ctx: &mut CommandContext<'_>) -> Result<CommandOutput, CommandError> {
+    if ctx.session.supports_exit() {
+        Ok(CommandOutput::Exit)
+    } else {
+        ctx.sink
+            .send("/exit is not supported in this channel.")
+            .await?;
+        Ok(CommandOutput::Continue)
+    }
+}
+
 /// Exit the agent loop.
 ///
 /// `/exit` and `/quit` are treated as aliases; both map to this handler via the registry.
@@ -37,19 +48,7 @@ impl CommandHandler<CommandContext<'_>> for ExitCommand {
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
         use tracing::Instrument as _;
         let span = tracing::info_span!("commands.exit.handle");
-        Box::pin(
-            async move {
-                if ctx.session.supports_exit() {
-                    Ok(CommandOutput::Exit)
-                } else {
-                    ctx.sink
-                        .send("/exit is not supported in this channel.")
-                        .await?;
-                    Ok(CommandOutput::Continue)
-                }
-            }
-            .instrument(span),
-        )
+        Box::pin(async move { handle_exit(ctx).await }.instrument(span))
     }
 }
 
@@ -76,19 +75,7 @@ impl CommandHandler<CommandContext<'_>> for QuitCommand {
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
         use tracing::Instrument as _;
         let span = tracing::info_span!("commands.quit.handle");
-        Box::pin(
-            async move {
-                if ctx.session.supports_exit() {
-                    Ok(CommandOutput::Exit)
-                } else {
-                    ctx.sink
-                        .send("/exit is not supported in this channel.")
-                        .await?;
-                    Ok(CommandOutput::Continue)
-                }
-            }
-            .instrument(span),
-        )
+        Box::pin(async move { handle_exit(ctx).await }.instrument(span))
     }
 }
 

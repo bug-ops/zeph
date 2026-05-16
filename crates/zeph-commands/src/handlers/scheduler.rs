@@ -45,8 +45,8 @@ impl CommandHandler<CommandContext<'_>> for SchedulerCommand {
         Box::pin(
             async move {
                 if !args.is_empty() && args != "list" {
-                    return Ok(CommandOutput::Message(
-                        "Unknown /scheduler subcommand. Available: /scheduler list".to_owned(),
+                    return Err(CommandError::new(
+                        "Unknown /scheduler subcommand. Available: /scheduler list",
                     ));
                 }
                 match ctx.agent.list_scheduled_tasks().await? {
@@ -91,17 +91,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduler_unknown_subcommand_returns_error_message() {
+    async fn scheduler_unknown_subcommand_returns_error() {
         let mut sink = NullSink;
         let mut debug = MockDebug;
         let mut messages = MockMessages;
         let session = MockSession;
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
-        let out = SchedulerCommand.handle(&mut ctx, "start").await.unwrap();
-        let CommandOutput::Message(msg) = out else {
-            panic!("expected Message")
-        };
-        assert!(msg.contains("Unknown") || msg.contains("Available"));
+        let err = SchedulerCommand
+            .handle(&mut ctx, "start")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Unknown") || err.to_string().contains("Available"));
     }
 }

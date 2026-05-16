@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-commands`: `ExitCommand` and `QuitCommand` exit logic extracted into a shared `handle_exit`
+  helper, eliminating duplicate `handle()` bodies (closes #4094).
+- `zeph-commands`: `ImageCommand` and `SchedulerCommand` now return `Err(CommandError)` for invalid
+  arguments instead of `Ok(CommandOutput::Message)`, making error propagation consistent with other
+  handlers (closes #4095).
+- `zeph-commands`: `LogCommand::description()` corrected from `"Toggle verbose log output"` to
+  `"Show log tail and current log file path"` to match the handler's actual behavior (closes #4093).
 - `zeph-commands`: `GoalCommand::handle` now propagates errors via `?` instead of silently converting
   them to a display string with `unwrap_or_else` (closes #3933).
 - `zeph-commands`: shared test mock types (`MockDebug`, `MockMessages`, `MockSession`, `make_ctx`)

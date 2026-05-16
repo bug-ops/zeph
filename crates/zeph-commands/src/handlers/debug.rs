@@ -19,7 +19,7 @@ impl CommandHandler<CommandContext<'_>> for LogCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Toggle verbose log output"
+        "Show log tail and current log file path"
     }
 
     fn category(&self) -> SlashCategory {
