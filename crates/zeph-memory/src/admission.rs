@@ -348,10 +348,14 @@ async fn compute_semantic_novelty(
     if !provider.supports_embeddings() {
         return 1.0;
     }
-    let vector = match provider.embed(content).await {
-        Ok(v) => v,
-        Err(e) => {
+    let vector = match tokio::time::timeout(Duration::from_secs(5), provider.embed(content)).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
             tracing::debug!(error = %e, "A-MAC: failed to embed for novelty, using 1.0");
+            return 1.0;
+        }
+        Err(_) => {
+            tracing::warn!("A-MAC: embed timed out in semantic_novelty, using 1.0");
             return 1.0;
         }
     };
@@ -443,20 +447,30 @@ async fn compute_goal_utility(
         return 0.0;
     }
 
-    let goal_emb = match provider.embed(goal_text).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::debug!(error = %e, "goal_utility: failed to embed goal text, using 0.0");
-            return 0.0;
-        }
-    };
-    let content_emb = match provider.embed(content).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::debug!(error = %e, "goal_utility: failed to embed content, using 0.0");
-            return 0.0;
-        }
-    };
+    let goal_emb =
+        match tokio::time::timeout(Duration::from_secs(5), provider.embed(goal_text)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "goal_utility: failed to embed goal text, using 0.0");
+                return 0.0;
+            }
+            Err(_) => {
+                tracing::warn!("A-MAC: embed timed out in goal_utility (goal text), using 0.0");
+                return 0.0;
+            }
+        };
+    let content_emb =
+        match tokio::time::timeout(Duration::from_secs(5), provider.embed(content)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "goal_utility: failed to embed content, using 0.0");
+                return 0.0;
+            }
+            Err(_) => {
+                tracing::warn!("A-MAC: embed timed out in goal_utility (content), using 0.0");
+                return 0.0;
+            }
+        };
 
     // Qdrant is used for novelty search, not for goal utility — we compute cosine directly.
     let _ = qdrant; // unused here; kept for API symmetry

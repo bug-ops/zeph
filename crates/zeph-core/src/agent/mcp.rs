@@ -11,6 +11,7 @@ impl<C: Channel> Agent<C> {
     /// All output is collected into the returned string; no channel sends are
     /// performed.  This makes the future `Send`-compatible for use in
     /// `AgentAccess::handle_mcp`.
+    #[tracing::instrument(skip_all, name = "core.agent.handle_mcp_command")]
     pub(super) async fn handle_mcp_command(
         &mut self,
         args: &str,

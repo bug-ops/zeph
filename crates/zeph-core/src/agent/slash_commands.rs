@@ -452,6 +452,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
+    #[tracing::instrument(skip_all, name = "core.agent.handle_skills")]
     pub(super) async fn handle_skills_as_string(
         &mut self,
         subcommand: &str,
