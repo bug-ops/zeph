@@ -250,6 +250,7 @@ impl DagScheduler {
     /// Returns immediately — sleeping for the current deferral backoff — when no tasks
     /// are running. Uses a deadline derived from the nearest task timeout so that
     /// periodic timeout checking occurs even when no events arrive.
+    #[tracing::instrument(name = "orchestration.scheduler.wait_event", skip(self), fields(running = self.running.len()))]
     pub async fn wait_event(&mut self) {
         if self.running.is_empty() {
             tokio::time::sleep(self.current_deferral_backoff()).await;

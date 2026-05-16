@@ -229,6 +229,7 @@ impl TopologyAdvisor {
     /// Classify the goal and sample the best topology hint for this turn.
     ///
     /// Classification failures fall back to `TaskClass::Unknown` + `TopologyHint::Hybrid`.
+    #[tracing::instrument(name = "orchestration.adaptorch.recommend", skip(self), fields(goal_len = goal.len()))]
     pub async fn recommend(&self, goal: &str) -> AdvisorVerdict {
         self.metrics.classify_calls.fetch_add(1, Ordering::Relaxed);
 
@@ -320,6 +321,7 @@ impl TopologyAdvisor {
 
     // ─── private helpers ─────────────────────────────────────────────────────
 
+    #[tracing::instrument(name = "orchestration.adaptorch.classify", skip(self), fields(goal_len = goal.len()))]
     async fn classify(&self, goal: &str) -> TaskClass {
         let truncated: String = goal.chars().take(400).collect();
         let system = "\
