@@ -61,7 +61,7 @@ insta.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 toml.workspace = true
 tracing-test.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }

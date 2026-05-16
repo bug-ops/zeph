@@ -4087,4 +4087,43 @@ mod tests {
              got: {prompt_empty}"
         );
     }
+
+    // ── sanitize_identity_field unit tests (#4183) ───────────────────────────
+
+    #[test]
+    fn sanitize_identity_field_passthrough_short_ascii() {
+        assert_eq!(sanitize_identity_field("planner"), "planner");
+    }
+
+    #[test]
+    fn sanitize_identity_field_newline_injection_returns_first_line() {
+        let input = "planner\nmalicious second line\nevil third";
+        assert_eq!(sanitize_identity_field(input), "planner");
+    }
+
+    #[test]
+    fn sanitize_identity_field_caps_at_128_chars() {
+        let long = "a".repeat(200);
+        let result = sanitize_identity_field(&long);
+        assert_eq!(result.len(), 128);
+    }
+
+    #[test]
+    fn sanitize_identity_field_empty_string_returns_empty() {
+        assert_eq!(sanitize_identity_field(""), "");
+    }
+
+    #[test]
+    fn sanitize_identity_field_unicode_char_safe_truncation() {
+        // Each '€' is 3 bytes in UTF-8. Build a string of 130 '€' chars (390 bytes).
+        // The function caps at 128 chars, so it must return exactly 128 '€' chars (384 bytes)
+        // without splitting a codepoint.
+        let input: String = "€".repeat(130);
+        let result = sanitize_identity_field(&input);
+        assert_eq!(result.chars().count(), 128);
+        assert!(
+            result.is_char_boundary(result.len()),
+            "result must be valid UTF-8"
+        );
+    }
 }

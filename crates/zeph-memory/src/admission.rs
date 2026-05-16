@@ -876,4 +876,46 @@ mod tests {
         let ctrl = ctrl.with_goal_gate(config);
         assert!(ctrl.weights.goal_utility.abs() < f32::EPSILON);
     }
+
+    // ── timeout regression tests (#4212) ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn compute_semantic_novelty_returns_one_on_embed_timeout() {
+        tokio::time::pause();
+        let mock = zeph_llm::mock::MockProvider::default()
+            .with_embed_delay(10_000)
+            .with_embedding(vec![0.0; 4]);
+        let provider = zeph_llm::any::AnyProvider::Mock(mock);
+        let handle =
+            tokio::spawn(async move { compute_semantic_novelty("hello", &provider, None).await });
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        let result = handle.await.expect("task panicked");
+        assert!(
+            (result - 1.0).abs() < f32::EPSILON,
+            "expected 1.0 on embed timeout, got {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compute_goal_utility_returns_zero_on_embed_timeout() {
+        tokio::time::pause();
+        let mock = zeph_llm::mock::MockProvider::default()
+            .with_embed_delay(10_000)
+            .with_embedding(vec![0.0; 4]);
+        let provider = zeph_llm::any::AnyProvider::Mock(mock);
+        let gate = GoalGateConfig {
+            weight: 0.5,
+            threshold: 0.5,
+            provider: None,
+        };
+        let handle = tokio::spawn(async move {
+            compute_goal_utility("content", "goal", &gate, &provider, None).await
+        });
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        let result = handle.await.expect("task panicked");
+        assert!(
+            result.abs() < f32::EPSILON,
+            "expected 0.0 on embed timeout, got {result}"
+        );
+    }
 }
