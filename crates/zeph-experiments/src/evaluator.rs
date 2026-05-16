@@ -354,13 +354,16 @@ impl Evaluator {
                     .await
                     .map_err(|e| EvalError::Semaphore(e.to_string()))?;
 
-                // Check budget before making the judge call.
-                let current = tokens_used.load(Ordering::Relaxed);
-                if current >= budget {
-                    return Err(EvalError::BudgetExceeded {
-                        used: current,
-                        budget,
-                    });
+                // Atomically check the budget before making the judge call to eliminate
+                // the TOCTOU race: two tasks could both pass a plain load() check and
+                // both proceed, overshooting the budget. We use fetch_add(1) to claim
+                // a reservation slot; if we are already at or above budget we roll back.
+                // The real token cost is added inside score_case_with_provider after the
+                // call completes, at which point the reservation is included in the total.
+                let prev = tokens_used.fetch_add(1, Ordering::AcqRel);
+                if prev >= budget {
+                    tokens_used.fetch_sub(1, Ordering::AcqRel);
+                    return Err(EvalError::BudgetExceeded { used: prev, budget });
                 }
 
                 // Clone the provider so each task has its own last_usage() state.
@@ -423,6 +426,12 @@ impl Evaluator {
 }
 
 /// Call the judge provider and return a `CaseScore`. Updates the shared token counter.
+#[tracing::instrument(
+    name = "experiments.evaluator.score_case",
+    skip(judge, case, response, tokens_used),
+    fields(case_index),
+    err(level = tracing::Level::WARN)
+)]
 async fn score_case_with_provider(
     judge: &AnyProvider,
     case_index: usize,
@@ -1162,5 +1171,81 @@ mod tests {
         // but the test verifies no deadlock, panic, or resource leak occurs.
         drop(peak_ref);
         assert_eq!(peak.load(AOrdering::Relaxed), 0); // unused, just ensures compilation
+    }
+
+    /// Regression test for #4197: atomic budget enforcement under parallel load.
+    ///
+    /// With `parallel_evals=4` and `budget_tokens=1`, only a single judge call can
+    /// claim the reservation slot (fetch_add sees prev=0). All other tasks must see
+    /// prev >= 1 and roll back. The total tokens committed must not exceed 1 plus the
+    /// real token cost of the one permitted call (MockProvider reports 0 tokens, so
+    /// the final counter stays at 1 from the reservation that was not rolled back).
+    #[tokio::test]
+    async fn budget_not_exceeded_under_parallel_load() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let benchmark = BenchmarkSet {
+            cases: vec![
+                BenchmarkCase {
+                    prompt: "Q1".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q2".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q3".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q4".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+            ],
+        };
+        // Subject: 4 responses for 4 cases.
+        let subject_mock = AnyProvider::Mock(MockProvider::with_responses(vec![
+            "A1".into(),
+            "A2".into(),
+            "A3".into(),
+            "A4".into(),
+        ]));
+        // Judge: 4 responses; only <=1 should ever be consumed.
+        let judge_mock = AnyProvider::Mock(MockProvider::with_responses(vec![
+            r#"{"score": 9.0, "reason": "ok"}"#.into(),
+            r#"{"score": 8.0, "reason": "ok"}"#.into(),
+            r#"{"score": 7.0, "reason": "ok"}"#.into(),
+            r#"{"score": 6.0, "reason": "ok"}"#.into(),
+        ]));
+
+        // budget_tokens=1 means only one task may pass the atomic reservation check.
+        let evaluator = Evaluator::new(Arc::new(judge_mock), benchmark, 1)
+            .unwrap()
+            .with_parallel_evals(4);
+
+        let report = evaluator.evaluate(&subject_mock).await.unwrap();
+
+        assert!(
+            report.is_partial,
+            "budget=1 with 4 cases must produce partial report"
+        );
+        // The atomic fix ensures at most 1 case gets through the budget gate.
+        assert!(
+            report.cases_scored <= 1,
+            "at most 1 case may be scored with budget=1; got {}",
+            report.cases_scored
+        );
+        assert_eq!(report.cases_total, 4);
     }
 }
