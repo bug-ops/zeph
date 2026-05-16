@@ -201,8 +201,8 @@ pub struct LearningConfig {
     /// Regex confidence at or above this value is accepted without judge confirmation.
     #[serde(default = "default_judge_adaptive_high")]
     pub judge_adaptive_high: f32,
-    /// Maximum seconds to wait for the judge LLM to respond before returning
-    /// [`JudgeError::Timeout`]. Applies to `detector_mode = "judge"` only.
+    /// Maximum seconds to wait for the judge LLM to respond before timing out.
+    /// Applies to `detector_mode = "judge"` only.
     #[serde(default = "default_judge_llm_timeout_secs")]
     pub judge_llm_timeout_secs: u64,
     #[serde(default = "default_correction_recall_limit")]
