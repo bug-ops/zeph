@@ -43,6 +43,7 @@ use crate::scheduler::Scheduler;
 ///     catch_up: true,
 ///     tick_secs: 60,
 ///     shutdown_grace_secs: 30,
+///     handler_timeout_secs: 300,
 /// };
 /// ```
 #[derive(Debug, Clone)]
