@@ -88,6 +88,10 @@ impl SlackChannel {
             .is_none_or(|last| last.elapsed() > EDIT_THROTTLE)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.send_or_edit", skip_all, level = "debug", fields(buf_len = %self.accumulated.len()))
+    )]
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let channel_id = self
             .channel_id
@@ -144,6 +148,10 @@ impl Channel for SlackChannel {
         })
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.recv", skip_all, fields(msg_len = tracing::field::Empty))
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         let Some(incoming) = self.rx.recv().await else {
             return Ok(None);
@@ -178,6 +186,10 @@ impl Channel for SlackChannel {
         }))
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.send", skip_all, fields(msg_len = %text.len()))
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         let channel_id = self
             .channel_id
@@ -191,6 +203,10 @@ impl Channel for SlackChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
+    )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.accumulated.push_str(chunk);
         if self.should_send_update() {
@@ -199,6 +215,10 @@ impl Channel for SlackChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.flush_chunks", skip_all, level = "debug")
+    )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         if self.message_ts.is_some() {
             self.send_or_edit().await?;
@@ -209,6 +229,10 @@ impl Channel for SlackChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.confirm", skip_all, fields(prompt_len = %prompt.len()))
+    )]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         self.send(&format!(
             "{prompt}\nReply 'yes' to confirm (timeout: {}s).",

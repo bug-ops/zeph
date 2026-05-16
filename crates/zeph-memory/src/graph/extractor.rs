@@ -122,6 +122,7 @@ impl GraphExtractor {
     ///
     /// Returns an error only for transport-level failures (network, auth).
     /// JSON parse failures are logged and return `Ok(None)`.
+    #[tracing::instrument(name = "memory.graph.extract", skip_all, level = "debug", err)]
     pub async fn extract(
         &self,
         message: &str,
