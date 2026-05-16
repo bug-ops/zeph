@@ -188,13 +188,12 @@ impl ExperimentEngine {
     ///
     /// Returns [`EvalError`] if the baseline evaluation or any subject LLM call fails.
     /// `SQLite` persistence failures are returned as [`EvalError::Storage`].
+    #[tracing::instrument(
+        name = "experiments.engine.run",
+        skip(self),
+        fields(session_id = %self.session_id, source = %self.source)
+    )]
     pub async fn run(&mut self) -> Result<ExperimentSessionReport, EvalError> {
-        let _span = tracing::info_span!(
-            "experiments.engine.run",
-            session_id = %self.session_id,
-            source = %self.source,
-        )
-        .entered();
         let start = Instant::now();
         let best_snapshot = self.baseline.clone();
 
@@ -243,18 +242,17 @@ impl ExperimentEngine {
     ///
     /// Returns [`EvalError`] if any LLM call or `SQLite` persist fails.
     #[allow(clippy::too_many_lines)] // experiment loop with inherent complexity: variation→evaluate→compare
+    #[tracing::instrument(
+        name = "experiments.engine.run_loop",
+        skip(self, start, best_snapshot),
+        fields(session_id = %self.session_id, source = %self.source)
+    )]
     async fn run_loop(
         &mut self,
         start: Instant,
         initial_baseline_score: f64,
         mut best_snapshot: ConfigSnapshot,
     ) -> Result<ExperimentSessionReport, EvalError> {
-        let _span = tracing::info_span!(
-            "experiments.engine.run_loop",
-            session_id = %self.session_id,
-            source = %self.source,
-        )
-        .entered();
         let wall_limit = std::time::Duration::from_secs(self.config.max_wall_time_secs);
         let mut results: Vec<ExperimentResult> = Vec::new();
         let mut visited: HashSet<Variation> = HashSet::new();
