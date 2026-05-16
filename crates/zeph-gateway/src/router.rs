@@ -260,7 +260,7 @@ async fn rate_limit_middleware(
 mod tests {
     use axum::body::Body;
     use http_body_util::BodyExt;
-    use tower::ServiceExt;
+    use tower::{Service, ServiceExt};
 
     use super::*;
     use crate::server::AppState;
@@ -382,8 +382,6 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_enforced() {
-        use tower::Service;
-
         let (mut app, _rx) = make_router(None, 2);
         let make_req = || {
             let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
@@ -622,8 +620,6 @@ mod tests {
 
     #[tokio::test]
     async fn xff_rightmost_untrusted_selected() {
-        use tower::Service;
-
         // Trusted proxy: 10.0.0.1. XFF: "1.2.3.4, 10.0.0.1".
         // Rate-limit counter should key on 1.2.3.4 (rightmost untrusted).
         let (state, _rx) = test_state();
@@ -656,7 +652,6 @@ mod tests {
         // No trusted CIDRs → ignores XFF, uses peer IP for rate limiting.
         let (state, _rx) = test_state();
         let mut app = build_router(state, None, 1, 1_048_576, &[]);
-        use tower::Service;
 
         let make_req = || {
             let body = serde_json::json!({"channel":"a","sender":"b","body":"c"});
