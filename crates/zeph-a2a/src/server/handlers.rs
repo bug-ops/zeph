@@ -708,7 +708,7 @@ mod tests {
 
     // --- Regression: #4045 — sse_rpc_error_event produces valid JSON-RPC error SSE frame ---
 
-    /// Verifies that sse_rpc_error_event constructs a JSON payload with the correct
+    /// Verifies that `sse_rpc_error_event` constructs a JSON payload with the correct
     /// jsonrpc/error fields and does not panic (covers primary and fallback paths).
     #[test]
     fn sse_rpc_error_event_produces_valid_json_rpc_payload() {
@@ -735,7 +735,7 @@ mod tests {
         assert_eq!(fb["error"]["code"], -32603_i32);
     }
 
-    /// Verifies that calling sse_rpc_error_event does not panic and returns an Event
+    /// Verifies that calling `sse_rpc_error_event` does not panic and returns an Event
     /// (the function is callable without crashing — regression guard for #4045).
     #[test]
     fn sse_rpc_error_event_does_not_panic() {
@@ -746,8 +746,8 @@ mod tests {
     // --- Regression: #4046 — stream_task aborts processor on SSE client disconnect ---
 
     /// When the SSE receiver is dropped immediately (simulating client disconnect),
-    /// stream_task must complete well within the processor's own sleep duration.
-    /// If the fix is absent stream_task would block for 60 s and the 5 s timeout
+    /// `stream_task` must complete well within the processor's own sleep duration.
+    /// If the fix is absent `stream_task` would block for 60 s and the 5 s timeout
     /// here would fire, failing the test.
     #[tokio::test]
     async fn stream_task_aborts_processor_on_sse_disconnect() {
@@ -770,7 +770,7 @@ mod tests {
                 Box<dyn std::future::Future<Output = Result<(), crate::error::A2aError>> + Send>,
             > {
                 Box::pin(async {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    tokio::time::sleep(std::time::Duration::from_mins(1)).await;
                     Ok(())
                 })
             }

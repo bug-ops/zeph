@@ -522,8 +522,8 @@ mod tests {
 
     // --- Regression: #4044 — eviction JoinHandle stored in AppState ---
 
-    /// When rate_limit > 0, build_router_with_full_config must store the eviction
-    /// task handle in AppState.eviction_task.  Before #4044 the handle was dropped
+    /// When `rate_limit` > 0, `build_router_with_full_config` must store the eviction
+    /// task handle in `AppState.eviction_task`.  Before #4044 the handle was dropped
     /// immediately, making it impossible to abort the task on server shutdown.
     #[tokio::test]
     async fn eviction_task_stored_in_state_when_rate_limit_enabled() {
@@ -551,8 +551,8 @@ mod tests {
         // Reaching here means spawn_eviction_task ran and the handle was stored.
     }
 
-    /// Verifies that AppState.eviction_task is None when rate_limit is 0, and that
-    /// build_router_with_full_config sets it to Some when rate_limit > 0 by checking
+    /// Verifies that `AppState.eviction_task` is `None` when `rate_limit` is 0, and that
+    /// `build_router_with_full_config` sets it to `Some` when `rate_limit` > 0 by checking
     /// that the spawned task is still running shortly after construction.
     #[tokio::test]
     async fn eviction_task_is_alive_after_build_with_rate_limit() {
