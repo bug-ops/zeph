@@ -490,119 +490,102 @@ fn rebuild_persisted(guard: &HashMap<String, PermissionDecision>) -> PersistedPe
     result
 }
 
-// Tests disabled pending ACP 0.11 test infrastructure update (issue #3267 PR3)
-#[cfg(any())] // ACP 0.10 tests disabled — pending PR3 test infrastructure
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
+    use agent_client_protocol::{self as acp_proto, ByteStreams, Responder};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-    struct AlwaysAllowClient;
+    /// Build an in-memory ACP agent↔client connection.
+    ///
+    /// `option_id` is the permission option the mock client returns for every
+    /// `session/request_permission` request (e.g. `"allow_once"`, `"reject_always"`).
+    /// Returns `ConnectionTo<acp::Client>` for use with `AcpPermissionGate::new`.
+    async fn make_conn_async(
+        option_id: &'static str,
+    ) -> std::sync::Arc<acp::ConnectionTo<acp::Client>> {
+        let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
+        let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
 
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for AlwaysAllowClient {
-        async fn request_permission(
-            &self,
-            args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            let option_id = args.options[0].option_id.clone();
-            Ok(acp::RequestPermissionResponse::new(
-                acp::schema::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new(option_id),
-                ),
-            ))
-        }
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
+        let client_transport =
+            ByteStreams::new(client_writer.compat_write(), client_reader.compat());
+        tokio::task::spawn_local(async move {
+            let _ = acp::Client
+                .builder()
+                .on_receive_request(
+                    async move |_req: acp::schema::RequestPermissionRequest,
+                                responder: Responder<acp::schema::RequestPermissionResponse>,
+                                _cx| {
+                        responder.respond(acp::schema::RequestPermissionResponse::new(
+                            acp::schema::RequestPermissionOutcome::Selected(
+                                acp::schema::SelectedPermissionOutcome::new(option_id),
+                            ),
+                        ))
+                    },
+                    acp_proto::on_receive_request!(),
+                )
+                .connect_to(client_transport)
+                .await;
+        });
+
+        let (conn_tx, conn_rx) = tokio::sync::oneshot::channel();
+        let agent_transport = ByteStreams::new(agent_writer.compat_write(), agent_reader.compat());
+        tokio::task::spawn_local(async move {
+            let _ = acp::Agent
+                .builder()
+                .connect_with(
+                    agent_transport,
+                    async |cx: acp::ConnectionTo<acp::Client>| {
+                        let _ = conn_tx.send(std::sync::Arc::new(cx));
+                        std::future::pending::<Result<(), acp_proto::Error>>().await
+                    },
+                )
+                .await;
+        });
+
+        conn_rx.await.expect("agent connection not established")
     }
 
-    struct AlwaysRejectClient;
+    /// Async make_conn variant that responds with Cancelled outcome.
+    async fn make_conn_cancelled() -> std::sync::Arc<acp::ConnectionTo<acp::Client>> {
+        let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
+        let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
 
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for AlwaysRejectClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Ok(acp::RequestPermissionResponse::new(
-                acp::schema::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new("reject_once"),
-                ),
-            ))
-        }
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
-    }
+        let client_transport =
+            ByteStreams::new(client_writer.compat_write(), client_reader.compat());
+        tokio::task::spawn_local(async move {
+            let _ = acp::Client
+                .builder()
+                .on_receive_request(
+                    async |_req: acp::schema::RequestPermissionRequest,
+                           responder: Responder<acp::schema::RequestPermissionResponse>,
+                           _cx| {
+                        responder.respond(acp::schema::RequestPermissionResponse::new(
+                            acp::schema::RequestPermissionOutcome::Cancelled,
+                        ))
+                    },
+                    acp_proto::on_receive_request!(),
+                )
+                .connect_to(client_transport)
+                .await;
+        });
 
-    struct AllowAlwaysClient;
+        let (conn_tx, conn_rx) = tokio::sync::oneshot::channel();
+        let agent_transport = ByteStreams::new(agent_writer.compat_write(), agent_reader.compat());
+        tokio::task::spawn_local(async move {
+            let _ = acp::Agent
+                .builder()
+                .connect_with(
+                    agent_transport,
+                    async |cx: acp::ConnectionTo<acp::Client>| {
+                        let _ = conn_tx.send(std::sync::Arc::new(cx));
+                        std::future::pending::<Result<(), acp_proto::Error>>().await
+                    },
+                )
+                .await;
+        });
 
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for AllowAlwaysClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Ok(acp::RequestPermissionResponse::new(
-                acp::schema::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new("allow_always"),
-                ),
-            ))
-        }
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
-    }
-
-    struct RejectAlwaysClient;
-
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for RejectAlwaysClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Ok(acp::RequestPermissionResponse::new(
-                acp::schema::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new("reject_always"),
-                ),
-            ))
-        }
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
-    }
-
-    struct CancelledClient;
-
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for CancelledClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Ok(acp::RequestPermissionResponse::new(
-                acp::schema::RequestPermissionOutcome::Cancelled,
-            ))
-        }
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
+        conn_rx.await.expect("agent connection not established")
     }
 
     fn make_tool_call(id: &str) -> acp::schema::ToolCallUpdate {
@@ -612,12 +595,23 @@ mod tests {
         )
     }
 
+    fn make_tool_call_with_command(
+        id: &str,
+        title: &str,
+        command: &str,
+    ) -> acp::schema::ToolCallUpdate {
+        let fields = acp::schema::ToolCallUpdateFields::new()
+            .title(title.to_owned())
+            .raw_input(serde_json::json!({ "command": command }));
+        acp::schema::ToolCallUpdate::new(id.to_owned(), fields)
+    }
+
     #[tokio::test]
     async fn allow_once_returns_true() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let conn = Rc::new(AlwaysAllowClient);
+                let conn = make_conn_async("allow_once").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
@@ -634,7 +628,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let conn = Rc::new(AlwaysRejectClient);
+                let conn = make_conn_async("reject_once").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
@@ -651,7 +645,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let conn = Rc::new(AllowAlwaysClient);
+                let conn = make_conn_async("allow_always").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
@@ -673,7 +667,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let conn = Rc::new(RejectAlwaysClient);
+                let conn = make_conn_async("reject_always").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
@@ -695,7 +689,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let conn = Rc::new(CancelledClient);
+                let conn = make_conn_cancelled().await;
                 let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
@@ -713,7 +707,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("acp-permissions.toml");
 
-        // Write persisted file manually.
         let mut perms = PersistedPermissions::default();
         perms.tools.insert(
             "shell_execute".to_owned(),
@@ -725,7 +718,6 @@ mod tests {
         );
         save_persisted(&file, &perms);
 
-        // Load and verify.
         let loaded = load_persisted(&file);
         assert!(matches!(
             loaded.tools.get("shell_execute"),
@@ -773,8 +765,8 @@ mod tests {
         assert!(loaded.tools.is_empty());
     }
 
-    #[test]
-    fn unknown_decision_string_skipped() {
+    #[tokio::test]
+    async fn unknown_decision_string_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("acp-permissions.toml");
         std::fs::write(
@@ -783,37 +775,32 @@ mod tests {
         )
         .unwrap();
 
-        let local = tokio::runtime::Runtime::new().unwrap();
-        local.block_on(async {
-            let local_set = tokio::task::LocalSet::new();
-            local_set
-                .run_until(async {
-                    let conn = Rc::new(AlwaysRejectClient);
-                    let (gate, handler) = AcpPermissionGate::new(conn, Some(file));
-                    tokio::task::spawn_local(handler);
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let conn = make_conn_async("reject_once").await;
+                let (gate, handler) = AcpPermissionGate::new(conn, Some(file));
+                tokio::task::spawn_local(handler);
 
-                    // shell_execute should be allowed from persisted "allow".
-                    let sid = acp::schema::SessionId::new("s1");
-                    let tc = make_tool_call("shell_execute");
-                    assert!(gate.check_permission(sid, tc).await.unwrap());
+                // shell_execute should be allowed from persisted "allow".
+                let sid = acp::schema::SessionId::new("s1");
+                let tc = make_tool_call("shell_execute");
+                assert!(gate.check_permission(sid, tc).await.unwrap());
 
-                    // bad_tool should NOT be in cache — falls through to RejectClient.
-                    let sid2 = acp::schema::SessionId::new("s1");
-                    let tc2 = make_tool_call("bad_tool");
-                    assert!(!gate.check_permission(sid2, tc2).await.unwrap());
-                })
-                .await;
-        });
+                // bad_tool should NOT be in cache — falls through to reject_once client.
+                let sid2 = acp::schema::SessionId::new("s1");
+                let tc2 = make_tool_call("bad_tool");
+                assert!(!gate.check_permission(sid2, tc2).await.unwrap());
+            })
+            .await;
     }
 
     #[tokio::test]
     async fn null_byte_in_tool_name_does_not_collide() {
-        // "a\0b" should not collide with session="a" + tool="b"
-        // because \0 is stripped from tool_name before building the key.
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let conn = Rc::new(AllowAlwaysClient);
+                let conn = make_conn_async("allow_always").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
@@ -822,16 +809,16 @@ mod tests {
                 let tc = make_tool_call("b");
                 assert!(gate.check_permission(sid, tc).await.unwrap());
 
-                // Now a call with tool_name "a\0b" — after stripping \0 becomes "ab",
-                // which is a different cache key than "a\0b".
-                let conn2 = Rc::new(AlwaysRejectClient);
+                // A call with tool_name "a\0b" — after stripping \0 becomes "ab",
+                // which is a different cache key.
+                let conn2 = make_conn_async("reject_once").await;
                 let (gate2, handler2) = AcpPermissionGate::new(conn2, None);
                 tokio::task::spawn_local(handler2);
 
                 let sid2 = acp::schema::SessionId::new("s2");
                 let mut tc2 = make_tool_call("tc-null");
                 tc2.fields.title = Some("a\0b".to_owned());
-                // AllowAlways was cached for "b", not "ab", so gate2 (RejectClient) should reject.
+                // AllowAlways was cached for "b", not "ab", so gate2 (reject) should reject.
                 assert!(!gate2.check_permission(sid2, tc2).await.unwrap());
             })
             .await;
@@ -842,7 +829,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("acp-permissions.toml");
 
-        // Pre-populate permission file.
         let mut perms = PersistedPermissions::default();
         perms.tools.insert(
             "tc-persisted".to_owned(),
@@ -853,29 +839,17 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                // Gate should load file and short-circuit without asking IDE.
-                let conn = Rc::new(AlwaysRejectClient); // would reject if asked
+                // Would reject if asked — but persisted "allow" must short-circuit.
+                let conn = make_conn_async("reject_once").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(file.clone()));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::SessionId::new("s-new");
                 let tc = make_tool_call("tc-persisted");
-                // Should be allowed from persisted cache, not forwarded to RejectClient.
                 let result = gate.check_permission(sid, tc).await.unwrap();
                 assert!(result);
             })
             .await;
-    }
-
-    fn make_tool_call_with_command(
-        id: &str,
-        title: &str,
-        command: &str,
-    ) -> acp::schema::ToolCallUpdate {
-        let fields = acp::schema::ToolCallUpdateFields::new()
-            .title(title.to_owned())
-            .raw_input(serde_json::json!({ "command": command }));
-        acp::schema::ToolCallUpdate::new(id.to_owned(), fields)
     }
 
     #[test]
@@ -912,7 +886,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("acp-permissions.toml");
 
-        // Pre-populate: bash.git = allow
         let mut patterns = HashMap::new();
         patterns.insert("git".to_owned(), "allow".to_owned());
         let mut perms = PersistedPermissions::default();
@@ -928,13 +901,12 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let conn = Rc::new(AlwaysRejectClient);
+                let conn = make_conn_async("reject_once").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(file));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::SessionId::new("s1");
                 let tc = make_tool_call_with_command("tc1", "git", "git status");
-                // Should be allowed from pattern cache.
                 assert!(gate.check_permission(sid, tc).await.unwrap());
             })
             .await;
@@ -945,7 +917,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("acp-permissions.toml");
 
-        // Pre-populate: bash.rm = deny
         let mut patterns = HashMap::new();
         patterns.insert("rm".to_owned(), "deny".to_owned());
         let mut perms = PersistedPermissions::default();
@@ -961,14 +932,13 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                // AlwaysAllowClient would allow if asked — but pattern must short-circuit.
-                let conn = Rc::new(AllowAlwaysClient);
+                // allow_always client would allow — but pattern cache must short-circuit.
+                let conn = make_conn_async("allow_always").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, Some(file));
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::SessionId::new("s1");
                 let tc = make_tool_call_with_command("tc1", "rm", "rm -rf /tmp/test");
-                // Should be rejected from pattern cache without asking IDE.
                 assert!(!gate.check_permission(sid, tc).await.unwrap());
             })
             .await;
@@ -989,27 +959,21 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                // AllowAlwaysClient always responds allow_always.
-                let conn = Rc::new(AllowAlwaysClient);
+                let conn = make_conn_async("allow_always").await;
                 let (gate, handler) = AcpPermissionGate::new(conn, None);
                 tokio::task::spawn_local(handler);
 
                 let sid = acp::schema::SessionId::new("s1");
-                // First call: "git" gets AllowAlways cached.
                 let tc_git = make_tool_call_with_command("tc1", "git", "git status");
                 assert!(gate.check_permission(sid.clone(), tc_git).await.unwrap());
 
-                // Now check "rm" — different binary, must NOT inherit git's AllowAlways.
-                // AllowAlwaysClient will be asked and return allow_always, but the point is
-                // the cache key is "rm", not "git". We verify by using a different gate
-                // backed by RejectClient for "rm".
-                let conn2 = Rc::new(AlwaysRejectClient);
+                // Different binary in a new gate backed by reject_once — must not inherit "git" cache.
+                let conn2 = make_conn_async("reject_once").await;
                 let (gate2, handler2) = AcpPermissionGate::new(conn2, None);
                 tokio::task::spawn_local(handler2);
 
                 let sid2 = acp::schema::SessionId::new("s2");
                 let tc_rm = make_tool_call_with_command("tc2", "rm", "rm /tmp/test");
-                // gate2 has no cache for "rm" — falls through to AlwaysRejectClient.
                 assert!(!gate2.check_permission(sid2, tc_rm).await.unwrap());
             })
             .await;
@@ -1017,8 +981,6 @@ mod tests {
 
     #[test]
     fn rebuild_persisted_simple_deny_not_lost_when_patterned_present() {
-        // SEC-ACP-S1: a Simple deny for "web_scrape" must survive rebuild_persisted
-        // even when a Patterned entry for "bash" is also in the cache.
         let mut cache: HashMap<String, PermissionDecision> = HashMap::new();
         cache.insert("web_scrape".to_owned(), PermissionDecision::RejectAlways);
         cache.insert("bash\x01git".to_owned(), PermissionDecision::AllowAlways);
@@ -1026,13 +988,11 @@ mod tests {
 
         let persisted = rebuild_persisted(&cache);
 
-        // Simple deny for web_scrape must be present.
         assert!(
             matches!(persisted.tools.get("web_scrape"), Some(ToolPermission::Simple(s)) if s == "deny"),
             "Simple deny for web_scrape was lost: {:?}",
             persisted.tools
         );
-        // Patterned entry for bash must be present.
         match persisted.tools.get("bash") {
             Some(ToolPermission::Patterned { patterns, .. }) => {
                 assert_eq!(patterns.get("git").map(String::as_str), Some("allow"));
@@ -1044,21 +1004,13 @@ mod tests {
 
     #[tokio::test]
     async fn within_gate_allow_git_does_not_allow_rm() {
-        // GAP-002: stronger isolation proof — same gate, one session, git allowed but rm rejected.
-        // We use AllowAlwaysClient for git's first call, then RejectAlwaysClient via a second gate.
-        // The key check: AllowAlways cached for "git" must NOT affect "rm" in the SAME gate
-        // instance backed by a new client.
-        //
-        // Implementation: we use one gate backed by AllowAlwaysClient to cache "git",
-        // then a second gate backed by RejectAlwaysClient to prove "rm" is NOT cached.
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
                 let dir = tempfile::tempdir().unwrap();
                 let perm_file = dir.path().join("perms.toml");
 
-                // Gate 1: allows git always — writes to perm_file.
-                let conn1 = Rc::new(AllowAlwaysClient);
+                let conn1 = make_conn_async("allow_always").await;
                 let (gate1, handler1) = AcpPermissionGate::new(conn1, Some(perm_file.clone()));
                 tokio::task::spawn_local(handler1);
 
@@ -1066,17 +1018,14 @@ mod tests {
                 let tc_git = make_tool_call_with_command("tc1", "git", "git status");
                 assert!(gate1.check_permission(sid.clone(), tc_git).await.unwrap());
 
-                // Drop gate1 to ensure perm_file is written. Give it a tick.
                 tokio::task::yield_now().await;
 
-                // Gate 2: backed by RejectAlwaysClient — rm must NOT be in the loaded perms.
-                let conn2 = Rc::new(RejectAlwaysClient);
+                let conn2 = make_conn_async("reject_always").await;
                 let (gate2, handler2) = AcpPermissionGate::new(conn2, Some(perm_file));
                 tokio::task::spawn_local(handler2);
 
                 let sid2 = acp::schema::SessionId::new("s2");
                 let tc_rm = make_tool_call_with_command("tc2", "rm", "rm /tmp/test");
-                // rm was never allowed — gate2 must ask RejectAlwaysClient which rejects.
                 assert!(!gate2.check_permission(sid2, tc_rm).await.unwrap());
             })
             .await;

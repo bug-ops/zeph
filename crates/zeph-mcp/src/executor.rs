@@ -88,6 +88,10 @@ impl ToolExecutor for McpToolExecutor {
             .collect()
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.executor.execute_tool_call", skip_all, fields(tool_id = %call.tool_id))
+    )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         // Lookup by sanitized_id because the LLM sees sanitized names (no ':' character).
         //
@@ -142,6 +146,10 @@ impl ToolExecutor for McpToolExecutor {
         }))
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.executor.execute", skip_all)
+    )]
     async fn execute(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         let blocks = extract_fenced_blocks(response, "mcp");
         if blocks.is_empty() {
