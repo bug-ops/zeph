@@ -113,6 +113,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.load_skill_usage")]
     pub async fn load_skill_usage(&self) -> Result<Vec<SkillUsageRow>, MemoryError> {
         let rows: Vec<(String, i64, String)> = zeph_db::query_as(sql!(
             "SELECT skill_name, invocation_count, last_used_at \
@@ -138,6 +139,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.record_skill_outcome")]
     pub async fn record_skill_outcome(
         &self,
         skill_name: &str,
@@ -218,6 +220,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.skill_metrics")]
     pub async fn skill_metrics(
         &self,
         skill_name: &str,
@@ -252,6 +255,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.load_skill_outcome_stats")]
     pub async fn load_skill_outcome_stats(&self) -> Result<Vec<SkillMetricsRow>, MemoryError> {
         let rows: Vec<(String, Option<i64>, i64, i64, i64)> = zeph_db::query_as(sql!(
             "SELECT skill_name, version_id, \
@@ -284,7 +288,9 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[allow(clippy::too_many_arguments)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[tracing::instrument(skip_all, name = "memory.skills.save_skill_version")]
     pub async fn save_skill_version(
         &self,
         skill_name: &str,
@@ -320,6 +326,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.distinct_session_count")]
     pub async fn distinct_session_count(&self, skill_name: &str) -> Result<i64, MemoryError> {
         let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(DISTINCT conversation_id) FROM skill_outcomes \
@@ -387,6 +394,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.next_skill_version")]
     pub async fn next_skill_version(&self, skill_name: &str) -> Result<i64, MemoryError> {
         let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COALESCE(MAX(version), 0) + 1 FROM skill_versions WHERE skill_name = ?"
@@ -402,6 +410,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.last_improvement_time")]
     pub async fn last_improvement_time(
         &self,
         skill_name: &str,
@@ -422,6 +431,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the DB operation fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.ensure_skill_version_exists")]
     pub async fn ensure_skill_version_exists(
         &self,
         skill_name: &str,
@@ -449,6 +459,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.load_skill_versions")]
     pub async fn load_skill_versions(
         &self,
         skill_name: &str,
@@ -470,6 +481,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.count_auto_versions")]
     pub async fn count_auto_versions(&self, skill_name: &str) -> Result<i64, MemoryError> {
         let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM skill_versions WHERE skill_name = ? AND source = 'auto'"
@@ -487,6 +499,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the delete fails.
     #[cfg(not(feature = "postgres"))]
+    #[tracing::instrument(skip_all, name = "memory.skills.prune_skill_versions")]
     pub async fn prune_skill_versions(
         &self,
         skill_name: &str,
@@ -515,6 +528,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     #[cfg(feature = "postgres")]
+    #[tracing::instrument(skip_all, name = "memory.skills.prune_skill_versions")]
     pub async fn prune_skill_versions(
         &self,
         skill_name: &str,
@@ -540,6 +554,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.predecessor_version")]
     pub async fn predecessor_version(
         &self,
         version_id: i64,
@@ -573,6 +588,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on `SQLite` query failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.list_active_auto_versions")]
     pub async fn list_active_auto_versions(&self) -> Result<Vec<String>, MemoryError> {
         let rows: Vec<(String,)> = zeph_db::query_as(sql!(
             "SELECT skill_name FROM skill_versions WHERE is_active = 1 AND source = 'auto'"
@@ -591,6 +607,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on insert failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.insert_tool_usage_log")]
     pub async fn insert_tool_usage_log(
         &self,
         tool_sequence: &str,
@@ -622,6 +639,7 @@ impl SqliteStore {
     /// # Errors
     /// Returns [`MemoryError`] on query failure.
     #[cfg(not(feature = "postgres"))]
+    #[tracing::instrument(skip_all, name = "memory.skills.find_recurring_patterns")]
     pub async fn find_recurring_patterns(
         &self,
         min_count: u32,
@@ -662,6 +680,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     #[cfg(feature = "postgres")]
+    #[tracing::instrument(skip_all, name = "memory.skills.find_recurring_patterns")]
     pub async fn find_recurring_patterns(
         &self,
         min_count: u32,
@@ -701,6 +720,7 @@ impl SqliteStore {
     /// # Errors
     /// Returns [`MemoryError`] on delete failure.
     #[cfg(not(feature = "postgres"))]
+    #[tracing::instrument(skip_all, name = "memory.skills.prune_tool_usage_log")]
     pub async fn prune_tool_usage_log(&self, retention_days: u32) -> Result<u64, MemoryError> {
         let result = zeph_db::query(sql!(
             "DELETE FROM skill_usage_log \
@@ -718,6 +738,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     #[cfg(feature = "postgres")]
+    #[tracing::instrument(skip_all, name = "memory.skills.prune_tool_usage_log")]
     pub async fn prune_tool_usage_log(&self, retention_days: u32) -> Result<u64, MemoryError> {
         let result = zeph_db::query(sql!(
             "DELETE FROM skill_usage_log \
@@ -735,6 +756,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on insert failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.insert_skill_heuristic")]
     pub async fn insert_skill_heuristic(
         &self,
         skill_name: Option<&str>,
@@ -796,6 +818,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on query failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.load_skill_heuristics")]
     pub async fn load_skill_heuristics(
         &self,
         skill_name: &str,
@@ -824,6 +847,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on query failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.load_all_heuristics_for_skill")]
     pub async fn load_all_heuristics_for_skill(
         &self,
         skill_name: Option<&str>,
@@ -850,6 +874,7 @@ impl SqliteStore {
     ///
     /// Returns [`MemoryError`] on query failure.
     #[cfg(not(feature = "postgres"))]
+    #[tracing::instrument(skip_all, name = "memory.skills.find_step_corrections")]
     pub async fn find_step_corrections(
         &self,
         skill_name: &str,
@@ -883,6 +908,7 @@ impl SqliteStore {
     ///
     /// Returns an error if the database query fails.
     #[cfg(feature = "postgres")]
+    #[tracing::instrument(skip_all, name = "memory.skills.find_step_corrections")]
     pub async fn find_step_corrections(
         &self,
         skill_name: &str,
@@ -918,6 +944,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] on query failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.insert_step_correction")]
     pub async fn insert_step_correction(
         &self,
         skill_name: &str,
@@ -947,6 +974,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] on query failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.record_correction_usage")]
     pub async fn record_correction_usage(
         &self,
         correction_id: i64,
@@ -981,6 +1009,8 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] on query failure.
+    #[tracing::instrument(skip_all, name = "memory.skills.load_routing_head_weights")]
+    #[allow(clippy::type_complexity)]
     pub async fn load_routing_head_weights(
         &self,
     ) -> Result<Option<(i64, Vec<u8>, f64, i64)>, MemoryError> {
