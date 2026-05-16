@@ -739,7 +739,7 @@ pub(crate) async fn fetch_corrections(
     let corrections = mem
         .retrieve_corrections(query, limit, min_score)
         .await
-        .unwrap_or_default();
+        .map_err(ContextError::Memory)?;
     if corrections.is_empty() {
         return Ok(None);
     }
@@ -1802,15 +1802,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_corrections_swallows_error_returns_none() {
-        // fetch_corrections uses unwrap_or_default() so retrieve_corrections errors
-        // are swallowed: error → empty vec → None. This documents the production behavior.
+    async fn fetch_corrections_propagates_error() {
+        // fetch_corrections uses map_err(ContextError::Memory)? so retrieve_corrections
+        // errors are propagated instead of silently discarded.
         let mock = MockMemoryBackend::with_fail_on("retrieve_corrections");
         let view = mock_view(mock);
-        let result = fetch_corrections(&view, "query", 10, 0.5, |s| s.into())
-            .await
-            .unwrap();
-        assert!(result.is_none());
+        let result = fetch_corrections(&view, "query", 10, 0.5, |s| s.into()).await;
+        assert!(result.is_err(), "expected Err, got {result:?}");
     }
 
     // ── fetch_semantic_recall ─────────────────────────────────────────────────

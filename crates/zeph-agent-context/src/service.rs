@@ -885,18 +885,19 @@ impl ContextService {
         use zeph_context::manager::{CompactionState, CompactionTier};
 
         // Increment turn counter unconditionally (tracks pressure regardless of guards).
-        if let Some(ref mut count) = summ.context_manager.turns_since_last_hard_compaction {
+        if let Some(count) = summ.context_manager.turns_since_last_hard_compaction_mut() {
             *count += 1;
         }
 
         // Guard: exhaustion — warn once, then no-op permanently.
-        if let CompactionState::Exhausted { ref mut warned } = summ.context_manager.compaction
-            && !*warned
+        if let CompactionState::Exhausted { warned } = summ.context_manager.compaction_state()
+            && !warned
         {
-            *warned = true;
+            summ.context_manager
+                .set_compaction_state(CompactionState::Exhausted { warned: true });
             tracing::warn!("compaction exhausted: context budget too tight for this session");
         }
-        if summ.context_manager.compaction.is_exhausted() {
+        if summ.context_manager.compaction_state().is_exhausted() {
             return Ok(());
         }
 
@@ -921,21 +922,28 @@ impl ContextService {
         }
 
         // Guard: already compacted this turn.
-        if summ.context_manager.compaction.is_compacted_this_turn() {
+        if summ
+            .context_manager
+            .compaction_state()
+            .is_compacted_this_turn()
+        {
             return Ok(());
         }
 
         // Decrement cooldown counter; record whether we are in cooldown.
-        let in_cooldown = summ.context_manager.compaction.cooldown_remaining() > 0;
+        let in_cooldown = summ.context_manager.compaction_state().cooldown_remaining() > 0;
         if in_cooldown
-            && let CompactionState::Cooling {
-                ref mut turns_remaining,
-            } = summ.context_manager.compaction
+            && let CompactionState::Cooling { turns_remaining } =
+                summ.context_manager.compaction_state()
         {
-            *turns_remaining -= 1;
-            if *turns_remaining == 0 {
-                summ.context_manager.compaction = CompactionState::Ready;
-            }
+            let next = turns_remaining - 1;
+            summ.context_manager.set_compaction_state(if next == 0 {
+                CompactionState::Ready
+            } else {
+                CompactionState::Cooling {
+                    turns_remaining: next,
+                }
+            });
         }
 
         match summ
@@ -1029,16 +1037,17 @@ impl ContextService {
         // Track hard compaction event for pressure metrics.
         let turns_since_last = summ
             .context_manager
-            .turns_since_last_hard_compaction
+            .turns_since_last_hard_compaction()
             .map(|t| u32::try_from(t).unwrap_or(u32::MAX));
-        summ.context_manager.turns_since_last_hard_compaction = Some(0);
+        summ.context_manager
+            .set_turns_since_last_hard_compaction(Some(0));
         if let Some(metrics) = summ.metrics {
             metrics.record_hard_compaction(turns_since_last);
         }
 
         if in_cooldown {
             tracing::debug!(
-                turns_remaining = summ.context_manager.compaction.cooldown_remaining(),
+                turns_remaining = summ.context_manager.compaction_state().cooldown_remaining(),
                 "hard compaction skipped: cooldown active"
             );
             return Ok(());
@@ -1063,9 +1072,10 @@ impl ContextService {
         let freed = crate::summarization::pruning::prune_tool_outputs(summ, min_to_free);
         if freed >= min_to_free {
             tracing::info!(freed, "hard compaction: pruning sufficient");
-            summ.context_manager.compaction = CompactionState::CompactedThisTurn {
-                cooldown: summ.context_manager.compaction_cooldown_turns,
-            };
+            summ.context_manager
+                .set_compaction_state(CompactionState::CompactedThisTurn {
+                    cooldown: summ.context_manager.compaction_cooldown_turns(),
+                });
             if let Err(e) = crate::summarization::deferred::flush_deferred_summaries(summ).await {
                 tracing::warn!(%e, "flush_deferred_summaries failed after hard compaction");
             }
@@ -1081,7 +1091,8 @@ impl ContextService {
                 compactable,
                 "hard compaction: too few messages, marking exhausted"
             );
-            summ.context_manager.compaction = CompactionState::Exhausted { warned: false };
+            summ.context_manager
+                .set_compaction_state(CompactionState::Exhausted { warned: false });
             status.send_status("").await;
             return Ok(());
         }
@@ -1098,7 +1109,8 @@ impl ContextService {
 
         if !outcome.is_compacted() || freed_tokens == 0 {
             tracing::warn!("hard compaction: no net reduction, marking exhausted");
-            summ.context_manager.compaction = CompactionState::Exhausted { warned: false };
+            summ.context_manager
+                .set_compaction_state(CompactionState::Exhausted { warned: false });
             status.send_status("").await;
             return Ok(());
         }
@@ -1112,14 +1124,16 @@ impl ContextService {
                 freed_tokens,
                 "hard compaction: still above hard threshold after compaction, marking exhausted"
             );
-            summ.context_manager.compaction = CompactionState::Exhausted { warned: false };
+            summ.context_manager
+                .set_compaction_state(CompactionState::Exhausted { warned: false });
             status.send_status("").await;
             return Ok(());
         }
 
-        summ.context_manager.compaction = CompactionState::CompactedThisTurn {
-            cooldown: summ.context_manager.compaction_cooldown_turns,
-        };
+        summ.context_manager
+            .set_compaction_state(CompactionState::CompactedThisTurn {
+                cooldown: summ.context_manager.compaction_cooldown_turns(),
+            });
 
         if tokens_before > *summ.cached_prompt_tokens {
             tracing::info!(
@@ -1260,8 +1274,9 @@ impl ContextService {
             .await
         {
             Ok(outcome) if outcome.is_compacted() => {
-                summ.context_manager.compaction =
-                    zeph_context::manager::CompactionState::CompactedThisTurn { cooldown: 0 };
+                summ.context_manager.set_compaction_state(
+                    zeph_context::manager::CompactionState::CompactedThisTurn { cooldown: 0 },
+                );
                 tracing::info!("proactive compression complete");
             }
             Ok(_) => {}

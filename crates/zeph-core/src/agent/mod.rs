@@ -678,11 +678,12 @@ impl<C: Channel> Agent<C> {
         // Finalize compaction trajectory: push the last open segment into the Vec.
         // This segment would otherwise only be pushed when the next hard compaction fires,
         // which never happens at session end.
-        if let Some(turns) = self.context_manager.turns_since_last_hard_compaction {
+        if let Some(turns) = self.context_manager.turns_since_last_hard_compaction() {
             self.update_metrics(|m| {
                 m.compaction_turns_after_hard.push(turns);
             });
-            self.context_manager.turns_since_last_hard_compaction = None;
+            self.context_manager
+                .set_turns_since_last_hard_compaction(None);
         }
 
         if let Some(ref tx) = self.runtime.metrics.metrics_tx {
@@ -2001,7 +2002,8 @@ impl<C: Channel> Agent<C> {
         // complete_focus and maybe_sidequest_eviction set this flag when they run (C1 fix).
         // advance_turn() transitions CompactedThisTurn → Cooling/Ready; all other states
         // pass through unchanged. See CompactionState::advance_turn for ordering guarantees.
-        self.context_manager.compaction = self.context_manager.compaction.advance_turn();
+        self.context_manager
+            .set_compaction_state(self.context_manager.compaction_state().advance_turn());
 
         // Tick Focus Agent and SideQuest turn counters (#1850, #1885).
         {
@@ -2010,7 +2012,12 @@ impl<C: Channel> Agent<C> {
             // SideQuest eviction: runs every N user turns when enabled.
             // Skipped when is_compacted_this_turn (focus truncation or prior eviction ran).
             let sidequest_should_fire = self.services.sidequest.tick();
-            if sidequest_should_fire && !self.context_manager.compaction.is_compacted_this_turn() {
+            if sidequest_should_fire
+                && !self
+                    .context_manager
+                    .compaction_state()
+                    .is_compacted_this_turn()
+            {
                 self.maybe_sidequest_eviction();
             }
         }
@@ -3018,7 +3025,8 @@ impl<C: Channel> Agent<C> {
         self.context_manager.soft_compaction_threshold = config.memory.soft_compaction_threshold;
         self.context_manager.hard_compaction_threshold = config.memory.hard_compaction_threshold;
         self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;
-        self.context_manager.compaction_cooldown_turns = config.memory.compaction_cooldown_turns;
+        self.context_manager
+            .set_compaction_cooldown_turns(config.memory.compaction_cooldown_turns);
         self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
         self.context_manager.compression = config.memory.compression.clone();
         self.context_manager.routing = config.memory.store_routing.clone();
@@ -3226,10 +3234,11 @@ impl<C: Channel> Agent<C> {
                     self.recompute_prompt_tokens();
                     // C1 fix: prevent maybe_compact() from firing in the same turn.
                     // cooldown=0: eviction does not impose post-compaction cooldown.
-                    self.context_manager.compaction =
+                    self.context_manager.set_compaction_state(
                         crate::agent::context_manager::CompactionState::CompactedThisTurn {
                             cooldown: 0,
-                        };
+                        },
+                    );
                     tracing::info!(
                         freed_tokens = freed,
                         evicted_cursors = evicted_indices.len(),

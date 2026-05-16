@@ -63,13 +63,6 @@ pub struct TurnContext {
     /// Snapshotting (rather than reading from a shared config) ensures the turn's
     /// timeout policy is stable even if the live config is reloaded mid-turn.
     pub timeouts: TimeoutConfig,
-    /// Optional channel-scoped tool allowlist for this turn.
-    ///
-    /// `None` means no channel-level restriction applies (other layers may still gate tool
-    /// access). Always `None` until Phase 2 wires channel config into the agent runtime.
-    ///
-    /// TODO(#3498): populate from active channel config during Phase 2 crate extraction.
-    pub tool_allowlist: Option<Vec<String>>,
 }
 
 impl TurnContext {
@@ -91,7 +84,6 @@ impl TurnContext {
             id,
             cancel_token,
             timeouts,
-            tool_allowlist: None,
         }
     }
 }
@@ -132,7 +124,6 @@ mod tests {
         let token = CancellationToken::new();
         let ctx = TurnContext::new(TurnId(1), token.clone(), TimeoutConfig::default());
         assert_eq!(ctx.id, TurnId(1));
-        assert!(ctx.tool_allowlist.is_none());
     }
 
     #[test]

@@ -35,7 +35,11 @@ use super::pruning::prune_tool_outputs;
     clippy::cast_sign_loss
 )]
 pub(crate) fn maybe_soft_compact_mid_iteration(summ: &mut ContextSummarizationView<'_>) {
-    if summ.context_manager.compaction.is_compacted_this_turn() {
+    if summ
+        .context_manager
+        .compaction_state()
+        .is_compacted_this_turn()
+    {
         return;
     }
     if !matches!(

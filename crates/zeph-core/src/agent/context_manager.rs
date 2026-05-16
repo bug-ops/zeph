@@ -19,7 +19,7 @@ mod tests {
         assert!((cm.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
         assert_eq!(cm.compaction_preserve_tail, 6);
         assert_eq!(cm.prune_protect_tokens, 40_000);
-        assert_eq!(cm.compaction, CompactionState::Ready);
+        assert_eq!(cm.compaction_state(), CompactionState::Ready);
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
             threshold_tokens: 80_000,
             max_summary_tokens: 4_000,
         };
-        cm.compaction = CompactionState::CompactedThisTurn { cooldown: 0 };
+        cm.set_compaction_state(CompactionState::CompactedThisTurn { cooldown: 0 });
         assert!(cm.should_proactively_compress(100_000).is_none());
     }
 

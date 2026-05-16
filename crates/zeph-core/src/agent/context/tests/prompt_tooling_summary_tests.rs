@@ -776,7 +776,9 @@ async fn compacted_this_turn_reset_between_turns() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     // Manually set state as if proactive compression fired
-    agent.context_manager.compaction = CompactionState::CompactedThisTurn { cooldown: 0 };
+    agent
+        .context_manager
+        .set_compaction_state(CompactionState::CompactedThisTurn { cooldown: 0 });
 
     // Process a message — advance_turn() resets state at turn start
     let _ = agent.process_user_message("first".to_owned(), vec![]).await;
@@ -785,7 +787,12 @@ async fn compacted_this_turn_reset_between_turns() {
     // have been set again only if proactive compression fired. Since threshold is
     // reactive by default, state should be Ready after turn (no proactive).
     // We can't inspect mid-turn, but we can check the default config doesn't trigger.
-    assert!(!agent.context_manager.compaction.is_compacted_this_turn());
+    assert!(
+        !agent
+            .context_manager
+            .compaction_state()
+            .is_compacted_this_turn()
+    );
 }
 
 #[tokio::test]
@@ -802,7 +809,12 @@ async fn maybe_proactive_compress_does_not_fire_with_reactive_strategy() {
     // should_proactively_compress returns None for Reactive → no compression
     let result = agent.maybe_proactive_compress().await;
     assert!(result.is_ok());
-    assert!(!agent.context_manager.compaction.is_compacted_this_turn());
+    assert!(
+        !agent
+            .context_manager
+            .compaction_state()
+            .is_compacted_this_turn()
+    );
 }
 
 // BudgetAllocation.graph_facts tests
@@ -1340,10 +1352,18 @@ fn tier0_does_not_set_compacted_this_turn() {
     // Simulate token usage above 70% soft threshold
     agent.runtime.providers.cached_prompt_tokens = 75_000;
 
-    assert!(!agent.context_manager.compaction.is_compacted_this_turn());
+    assert!(
+        !agent
+            .context_manager
+            .compaction_state()
+            .is_compacted_this_turn()
+    );
     agent.maybe_apply_deferred_summaries();
     assert!(
-        !agent.context_manager.compaction.is_compacted_this_turn(),
+        !agent
+            .context_manager
+            .compaction_state()
+            .is_compacted_this_turn(),
         "tier-0 must not set compacted_this_turn"
     );
 }

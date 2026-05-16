@@ -35,7 +35,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
-        let Some(turns) = self.context_manager.turns_since_last_hard_compaction else {
+        let Some(turns) = self.context_manager.turns_since_last_hard_compaction() else {
             return;
         };
         if turns > config.detection_window_turns {

@@ -159,13 +159,13 @@ pub struct ContextManager {
     pub store_routing_provider: Option<Arc<zeph_llm::any::AnyProvider>>,
     /// Compaction lifecycle state. Replaces four independent boolean/u8 fields to make
     /// invalid states unrepresentable. See [`CompactionState`] for the full transition map.
-    pub compaction: CompactionState,
+    pub(crate) compaction: CompactionState,
     /// Number of cooling turns to enforce after a successful hard compaction.
-    pub compaction_cooldown_turns: u8,
+    pub(crate) compaction_cooldown_turns: u8,
     /// Counts user-message turns since the last hard compaction event.
     /// `None` = no hard compaction has occurred yet in this session.
     /// `Some(n)` = n turns have elapsed since the last hard compaction.
-    pub turns_since_last_hard_compaction: Option<u64>,
+    pub(crate) turns_since_last_hard_compaction: Option<u64>,
 }
 
 impl ContextManager {
@@ -275,6 +275,49 @@ impl ContextManager {
     /// `max_summary_tokens` element is unused on the Focus path — the auto-consolidation
     /// function uses `FocusConfig.max_knowledge_tokens / 2` instead.
     ///
+    /// Returns the current compaction lifecycle state.
+    #[must_use]
+    pub fn compaction_state(&self) -> CompactionState {
+        self.compaction
+    }
+
+    /// Returns a mutable reference to the compaction lifecycle state.
+    pub fn compaction_state_mut(&mut self) -> &mut CompactionState {
+        &mut self.compaction
+    }
+
+    /// Replaces the compaction lifecycle state.
+    pub fn set_compaction_state(&mut self, state: CompactionState) {
+        self.compaction = state;
+    }
+
+    /// Returns the number of cooling turns enforced after a hard compaction.
+    #[must_use]
+    pub fn compaction_cooldown_turns(&self) -> u8 {
+        self.compaction_cooldown_turns
+    }
+
+    /// Sets the number of cooling turns enforced after a hard compaction.
+    pub fn set_compaction_cooldown_turns(&mut self, turns: u8) {
+        self.compaction_cooldown_turns = turns;
+    }
+
+    /// Returns the number of user-message turns since the last hard compaction, if any.
+    #[must_use]
+    pub fn turns_since_last_hard_compaction(&self) -> Option<u64> {
+        self.turns_since_last_hard_compaction
+    }
+
+    /// Returns a mutable reference to the turns-since-last-hard-compaction counter.
+    pub fn turns_since_last_hard_compaction_mut(&mut self) -> &mut Option<u64> {
+        &mut self.turns_since_last_hard_compaction
+    }
+
+    /// Sets the turns-since-last-hard-compaction counter.
+    pub fn set_turns_since_last_hard_compaction(&mut self, value: Option<u64>) {
+        self.turns_since_last_hard_compaction = value;
+    }
+
     /// Will return `None` if compaction already happened this turn (CRIT-03 fix).
     #[must_use]
     pub fn should_proactively_compress(&self, current_tokens: u64) -> Option<(usize, usize)> {

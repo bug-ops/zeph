@@ -28,7 +28,7 @@ impl<C: Channel> Agent<C> {
         let status = CollectStatusSink::default();
 
         // Capture pre-call state to detect what the service did.
-        let turns_before = self.context_manager.turns_since_last_hard_compaction;
+        let turns_before = self.context_manager.turns_since_last_hard_compaction();
         let msg_count_before = self.msg.messages.len();
 
         let mut summ = self.summarization_view();
@@ -50,7 +50,7 @@ impl<C: Channel> Agent<C> {
         // Update metrics that the service cannot track (no MetricsCallback in ContextSummarizationView).
         let msg_count_after = self.msg.messages.len();
         let compacted = msg_count_after < msg_count_before;
-        let hard_fired = self.context_manager.turns_since_last_hard_compaction == Some(0)
+        let hard_fired = self.context_manager.turns_since_last_hard_compaction() == Some(0)
             && turns_before != Some(0);
 
         if compacted {

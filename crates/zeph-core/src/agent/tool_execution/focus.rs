@@ -169,8 +169,9 @@ impl<C: Channel> Agent<C> {
         self.recompute_prompt_tokens();
         // C1 fix: mark compacted so maybe_compact() does not double-fire this turn.
         // cooldown=0: focus truncation does not impose post-compaction cooldown.
-        self.context_manager.compaction =
-            crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 };
+        self.context_manager.set_compaction_state(
+            crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 },
+        );
 
         self.rebuild_knowledge_block();
 
@@ -273,8 +274,9 @@ impl<C: Channel> Agent<C> {
             .append_llm_knowledge(summary.trim().to_owned());
         self.apply_compression_removals(to_remove_indices);
 
-        self.context_manager.compaction =
-            crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 };
+        self.context_manager.set_compaction_state(
+            crate::agent::context_manager::CompactionState::CompactedThisTurn { cooldown: 0 },
+        );
         self.services.focus.release_compression();
 
         format!(
