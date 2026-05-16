@@ -1353,27 +1353,47 @@ impl<C: Channel> Agent<C> {
         query: &str,
         token_budget: usize,
     ) -> Result<(), super::super::error::AgentError> {
-        self.remove_recall_messages();
+        // Snapshot all read-only fields before the mutable borrow for the window view.
+        let tiered_config = self
+            .services
+            .memory
+            .persistence
+            .tiered_retrieval_config
+            .clone();
+        let tiered_classifier = self
+            .services
+            .memory
+            .persistence
+            .tiered_retrieval_classifier
+            .clone();
+        let tiered_validator = self
+            .services
+            .memory
+            .persistence
+            .tiered_retrieval_validator
+            .clone();
+        let memory = self.services.memory.persistence.memory.clone();
+        let recall_limit = self.services.memory.persistence.recall_limit;
+        let context_format = self.services.memory.persistence.context_format;
+        let conversation_id = self.services.memory.persistence.conversation_id;
 
-        let (msg, _score) = zeph_agent_context::helpers::fetch_semantic_recall_raw(
-            self.services.memory.persistence.memory.as_deref(),
-            self.services.memory.persistence.recall_limit,
-            self.services.memory.persistence.context_format,
+        let svc = zeph_agent_context::ContextService::new();
+        let mut window = self.message_window_view();
+
+        svc.inject_semantic_recall_bare(
             query,
             token_budget,
-            &self.runtime.metrics.token_counter,
-            None,
-            None,
+            &mut window,
+            memory.as_deref(),
+            recall_limit,
+            context_format,
+            conversation_id,
+            tiered_classifier.as_ref(),
+            tiered_validator.as_ref(),
+            &tiered_config,
         )
         .await
-        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;
-        if let Some(msg) = msg
-            && self.msg.messages.len() > 1
-        {
-            self.msg.messages.insert(1, msg);
-        }
-
-        Ok(())
+        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))
     }
 
     pub(in crate::agent) fn remove_summary_messages(&mut self) {

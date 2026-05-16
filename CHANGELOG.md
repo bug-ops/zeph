@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-core`: `Agent::inject_semantic_recall` now delegates to
+  `ContextService::inject_semantic_recall_bare`, activating tiered retrieval on the
+  turn-loop hot path instead of bypassing it via `fetch_semantic_recall_raw` (closes #4022).
+- `zeph-agent-context`: `remove_by_part_or_prefix` now also removes `Role::User` messages
+  whose content starts with `RECALL_PREFIX`, preventing tiered-retrieval recall messages
+  from accumulating across turns (closes #4019).
+
 ### Added
 
 - `zeph-scheduler`: `Scheduler::with_handler_timeout(Duration)` builder method sets a

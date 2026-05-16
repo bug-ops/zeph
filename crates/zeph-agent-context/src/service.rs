@@ -282,6 +282,106 @@ impl ContextService {
         Ok(())
     }
 
+    /// Inject semantic recall without a full [`ContextAssemblyView`].
+    ///
+    /// This variant is called from `Agent::inject_semantic_recall` in `zeph-core`, where
+    /// constructing a full `ContextAssemblyView` would require duplicating all of
+    /// `prepare_context`'s setup. It carries only the fields that
+    /// `inject_semantic_recall` actually reads, enabling tiered retrieval on the
+    /// hot-path turn loop without the overhead of the full view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContextError::Memory`] if the recall backend returns an error.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn inject_semantic_recall_bare(
+        &self,
+        query: &str,
+        token_budget: usize,
+        window: &mut MessageWindowView<'_>,
+        memory: Option<&zeph_memory::semantic::SemanticMemory>,
+        recall_limit: usize,
+        context_format: zeph_config::ContextFormat,
+        conversation_id: Option<zeph_memory::ConversationId>,
+        tiered_classifier: Option<&std::sync::Arc<zeph_llm::any::AnyProvider>>,
+        tiered_validator: Option<&std::sync::Arc<zeph_llm::any::AnyProvider>>,
+        tiered_config: &zeph_config::memory::TieredRetrievalConfig,
+    ) -> Result<(), ContextError> {
+        self.remove_recall_messages(window);
+
+        let msg = if tiered_config.enabled {
+            use tracing::Instrument as _;
+            let Some(mem) = memory else {
+                return Ok(());
+            };
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                zeph_memory::recall_tiered(
+                    mem,
+                    query,
+                    conversation_id,
+                    tiered_classifier,
+                    tiered_validator,
+                    tiered_config,
+                    Some(token_budget),
+                )
+                .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
+            )
+            .await
+            .map_err(|_| {
+                tracing::warn!("tiered_retrieval: recall_tiered timed out after 30s");
+                ContextError::Memory(zeph_memory::MemoryError::Timeout(
+                    "recall_tiered timed out".to_owned(),
+                ))
+            })?
+            .map_err(ContextError::Memory)?;
+
+            tracing::debug!(
+                intent = %result.intent,
+                tokens_used = result.tokens_used,
+                tier_escalated = result.tier_escalated,
+                count = result.messages.len(),
+                "tiered_retrieval: recall complete"
+            );
+
+            if result.messages.is_empty() {
+                return Ok(());
+            }
+
+            let recalled_text = result
+                .messages
+                .iter()
+                .map(|m| m.message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+            Some(Message::from_legacy(
+                Role::User,
+                format!("{RECALL_PREFIX}{recalled_text}"),
+            ))
+        } else {
+            let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
+                memory,
+                recall_limit,
+                context_format,
+                query,
+                token_budget,
+                &window.token_counter,
+                None,
+                None,
+            )
+            .await?;
+            msg
+        };
+
+        if let Some(msg) = msg
+            && window.messages.len() > 1
+        {
+            window.messages.insert(1, msg);
+        }
+
+        Ok(())
+    }
+
     /// Inject cross-session context messages into the window for the given query.
     ///
     /// Removes any existing cross-session messages first, fetches fresh cross-session
@@ -1361,17 +1461,25 @@ pub(crate) fn remove_by_prefix(
     messages.retain(|m| m.role != role || !m.content.starts_with(prefix));
 }
 
-/// Remove system messages that match either a typed `MessagePart` or a content prefix.
+/// Remove messages that match either a typed `MessagePart` or a content prefix.
 ///
-/// Typed-part matching takes priority — a message is removed if its **first** part
-/// satisfies `part_matches`. As a fallback, messages that start with `prefix` are also
-/// removed. Non-system messages are always retained.
+/// For `Role::System` messages: typed-part matching takes priority — a message is removed
+/// if its **first** part satisfies `part_matches`. As a fallback, messages that start with
+/// `prefix` are also removed.
+/// For `Role::User` messages: removed if their content starts with `prefix` (tiered-recall
+/// cleanup).
+/// All other roles are always retained.
 pub(crate) fn remove_by_part_or_prefix(
     messages: &mut Vec<zeph_llm::provider::Message>,
     prefix: &str,
     part_matches: impl Fn(&MessagePart) -> bool,
 ) {
     messages.retain(|m| {
+        // Role::User recall messages are produced by the tiered-retrieval path in
+        // inject_semantic_recall. They must be cleaned up the same way as Role::System ones.
+        if m.role == Role::User {
+            return !m.content.starts_with(prefix);
+        }
         if m.role != Role::System {
             return true;
         }
@@ -1478,6 +1586,42 @@ mod tests {
                 .messages
                 .iter()
                 .all(|m| !m.content.starts_with(RECALL_PREFIX))
+        );
+    }
+
+    // Regression test for #4019: Role::User recall messages must be removed by
+    // remove_recall_messages, not just Role::System ones.
+    #[test]
+    fn remove_recall_messages_removes_user_role_recall() {
+        let mut msgs = vec![
+            sys("system"),
+            user(&format!("{RECALL_PREFIX}recalled via tiered path")),
+            user("real user message"),
+        ];
+        let mut cached = 0u64;
+        let mut completed = HashSet::new();
+        let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+        ContextService::new().remove_recall_messages(&mut window);
+
+        assert_eq!(
+            window.messages.len(),
+            2,
+            "Role::User recall message must be removed"
+        );
+        assert!(
+            window
+                .messages
+                .iter()
+                .all(|m| !m.content.starts_with(RECALL_PREFIX)),
+            "no message with RECALL_PREFIX must remain"
+        );
+        assert!(
+            window
+                .messages
+                .iter()
+                .any(|m| m.content == "real user message"),
+            "non-recall user message must survive"
         );
     }
 
@@ -1842,6 +1986,45 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "prepare_context with tiered enabled and no budget must return Ok"
+            );
+        }
+
+        // Regression test for #4022: inject_semantic_recall_bare must be callable without a
+        // full ContextAssemblyView and must return Ok(()) when memory is None.
+        #[tokio::test]
+        async fn inject_semantic_recall_bare_no_memory_returns_ok() {
+            use zeph_config::memory::TieredRetrievalConfig;
+
+            let mut msgs: Vec<Message> = vec![];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let result = ContextService::new()
+                .inject_semantic_recall_bare(
+                    "test query",
+                    1000,
+                    &mut window,
+                    None,
+                    10,
+                    zeph_config::ContextFormat::default(),
+                    None,
+                    None,
+                    None,
+                    &TieredRetrievalConfig {
+                        enabled: true,
+                        ..TieredRetrievalConfig::default()
+                    },
+                )
+                .await;
+
+            assert!(
+                result.is_ok(),
+                "inject_semantic_recall_bare with memory=None must return Ok(())"
+            );
+            assert!(
+                window.messages.is_empty(),
+                "no recall message must be injected when memory is None"
             );
         }
     }
