@@ -134,6 +134,10 @@ fn default_scheduler_daemon_tick_secs() -> u64 {
     60
 }
 
+fn default_scheduler_handler_timeout_secs() -> u64 {
+    300
+}
+
 fn default_scheduler_daemon_shutdown_grace_secs() -> u64 {
     30
 }
@@ -818,6 +822,10 @@ pub struct SchedulerDaemonConfig {
     /// after a SIGTERM before forcing an exit. Default: `30`.
     #[serde(default = "default_scheduler_daemon_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
+    /// Maximum seconds a task handler may run before being forcibly cancelled.
+    /// Default: `300`. Set to `0` to disable the timeout.
+    #[serde(default = "default_scheduler_handler_timeout_secs")]
+    pub handler_timeout_secs: u64,
 }
 
 impl Default for SchedulerDaemonConfig {
@@ -828,6 +836,7 @@ impl Default for SchedulerDaemonConfig {
             catch_up: true,
             tick_secs: default_scheduler_daemon_tick_secs(),
             shutdown_grace_secs: default_scheduler_daemon_shutdown_grace_secs(),
+            handler_timeout_secs: default_scheduler_handler_timeout_secs(),
         }
     }
 }

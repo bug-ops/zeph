@@ -87,6 +87,7 @@ fn build_daemon_config(config: &zeph_core::config::Config) -> zeph_scheduler::Da
         catch_up: sched.catch_up,
         tick_secs: sched.tick_secs,
         shutdown_grace_secs: sched.shutdown_grace_secs,
+        handler_timeout_secs: sched.handler_timeout_secs,
     }
 }
 

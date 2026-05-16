@@ -301,7 +301,11 @@ pub(crate) async fn init_scheduler(
     let (scheduler, task_tx) =
         Scheduler::with_max_tasks(scheduler_store, shutdown_rx, config.scheduler.max_tasks);
     let (custom_tx, custom_rx) = mpsc::channel::<String>(16);
-    let mut scheduler = scheduler.with_custom_task_sender(custom_tx.clone());
+    let mut scheduler = scheduler
+        .with_custom_task_sender(custom_tx.clone())
+        .with_handler_timeout(std::time::Duration::from_secs(
+            config.scheduler.daemon.handler_timeout_secs,
+        ));
 
     load_config_tasks(&config.scheduler.tasks, &task_tx);
 

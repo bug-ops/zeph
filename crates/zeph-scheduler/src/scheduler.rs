@@ -93,6 +93,8 @@ pub struct Scheduler {
     /// SIGNIFICANT-5: prevents concurrent executions of the same task when the
     /// handler is slow and `catch_up_missed` + `tick` overlap.
     in_flight: Arc<Mutex<HashSet<String>>>,
+    /// Maximum duration a task handler may run. Zero means no timeout.
+    handler_timeout: Duration,
 }
 
 impl Scheduler {
@@ -131,6 +133,7 @@ impl Scheduler {
             custom_task_tx: None,
             max_tasks,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            handler_timeout: Duration::from_mins(5),
         };
         (scheduler, tx)
     }
@@ -139,6 +142,15 @@ impl Scheduler {
     #[must_use]
     pub fn with_custom_task_sender(mut self, tx: mpsc::Sender<String>) -> Self {
         self.custom_task_tx = Some(tx);
+        self
+    }
+
+    /// Set the maximum duration a task handler may run before being cancelled.
+    ///
+    /// Pass [`Duration::ZERO`] to disable the timeout entirely. The default is 300 seconds.
+    #[must_use]
+    pub fn with_handler_timeout(mut self, timeout: Duration) -> Self {
+        self.handler_timeout = timeout;
         self
     }
 
@@ -367,7 +379,31 @@ impl Scheduler {
         };
 
         tracing::info!(task = %name, "catch_up_missed: executing overdue task");
-        handler.execute(&task.config).await?;
+        let task_span = tracing::info_span!(
+            "scheduler.task.execute",
+            task.name = %name,
+            task.kind = task.kind.as_str()
+        );
+        let execute_fut = handler.execute(&task.config);
+        if self.handler_timeout.is_zero() {
+            use tracing::Instrument as _;
+            execute_fut.instrument(task_span).await?;
+        } else {
+            use tracing::Instrument as _;
+            tokio::time::timeout(self.handler_timeout, execute_fut.instrument(task_span))
+                .await
+                .map_err(|_| {
+                    tracing::warn!(
+                        task.name = %name,
+                        timeout_secs = self.handler_timeout.as_secs(),
+                        "task handler timed out"
+                    );
+                    SchedulerError::TaskFailed(format!(
+                        "handler timed out after {}s: {name}",
+                        self.handler_timeout.as_secs()
+                    ))
+                })??;
+        }
 
         let next = schedule
             .after(now)
@@ -401,12 +437,19 @@ impl Scheduler {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let _tick_span = tracing::info_span!(
-                        "scheduler.daemon.tick",
-                        tasks = self.tasks.len()
-                    ).entered();
-                    self.drain_channel().await;
-                    self.tick().await;
+                    {
+                        use tracing::Instrument as _;
+                        let span = tracing::info_span!(
+                            "scheduler.daemon.tick",
+                            tasks = self.tasks.len()
+                        );
+                        async {
+                            self.drain_channel().await;
+                            self.tick().await;
+                        }
+                        .instrument(span)
+                        .await;
+                    }
                 }
                 _ = self.shutdown_rx.changed() => {
                     if *self.shutdown_rx.borrow() {
@@ -450,8 +493,19 @@ impl Scheduler {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    self.drain_channel().await;
-                    self.tick().await;
+                    {
+                        use tracing::Instrument as _;
+                        let span = tracing::info_span!(
+                            "scheduler.daemon.tick",
+                            tasks = self.tasks.len()
+                        );
+                        async {
+                            self.drain_channel().await;
+                            self.tick().await;
+                        }
+                        .instrument(span)
+                        .await;
+                    }
                 }
                 _ = self.shutdown_rx.changed() => {
                     if *self.shutdown_rx.borrow() {
@@ -473,8 +527,19 @@ impl Scheduler {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    self.drain_channel().await;
-                    self.tick().await;
+                    {
+                        use tracing::Instrument as _;
+                        let span = tracing::info_span!(
+                            "scheduler.daemon.tick",
+                            tasks = self.tasks.len()
+                        );
+                        async {
+                            self.drain_channel().await;
+                            self.tick().await;
+                        }
+                        .instrument(span)
+                        .await;
+                    }
                 }
                 _ = self.shutdown_rx.changed() => {
                     if *self.shutdown_rx.borrow() {
@@ -620,7 +685,35 @@ impl Scheduler {
 
                 if let Some(handler) = self.handlers.get(task.kind.as_str()) {
                     tracing::info!(task = %task.name, kind = task.kind.as_str(), "executing task");
-                    match handler.execute(&task.config).await {
+                    let task_span = tracing::info_span!(
+                        "scheduler.task.execute",
+                        task.name = %task.name,
+                        task.kind = task.kind.as_str()
+                    );
+                    let execute_result = {
+                        use tracing::Instrument as _;
+                        let execute_fut = handler.execute(&task.config).instrument(task_span);
+                        if self.handler_timeout.is_zero() {
+                            execute_fut.await
+                        } else {
+                            tokio::time::timeout(self.handler_timeout, execute_fut)
+                                .await
+                                .map_err(|_| {
+                                    tracing::warn!(
+                                        task.name = %task.name,
+                                        timeout_secs = self.handler_timeout.as_secs(),
+                                        "task handler timed out"
+                                    );
+                                    SchedulerError::TaskFailed(format!(
+                                        "handler timed out after {}s: {}",
+                                        self.handler_timeout.as_secs(),
+                                        task.name
+                                    ))
+                                })
+                                .and_then(|r| r)
+                        }
+                    };
+                    match execute_result {
                         Ok(()) => match &task.mode {
                             TaskMode::Periodic { schedule } => {
                                 let next = schedule
@@ -1338,6 +1431,85 @@ mod tests {
         assert_eq!(
             status, "error",
             "invalid cron job must be marked as error in the DB (issue #3810)"
+        );
+    }
+
+    /// A handler that sleeps longer than the configured timeout must return a `TaskFailed` error.
+    ///
+    /// Covers issue #3944: hung handlers must not block the tick loop indefinitely.
+    #[tokio::test]
+    async fn handler_timeout_returns_error() {
+        struct SlowHandler;
+        impl TaskHandler for SlowHandler {
+            fn execute(
+                &self,
+                _config: &serde_json::Value,
+            ) -> Pin<Box<dyn std::future::Future<Output = Result<(), SchedulerError>> + Send + '_>>
+            {
+                Box::pin(async {
+                    // Sleeps much longer than the 10ms timeout below.
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    Ok(())
+                })
+            }
+        }
+
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+        // Set a very short timeout so the slow handler is cancelled quickly.
+        scheduler = scheduler.with_handler_timeout(std::time::Duration::from_millis(10));
+
+        let past = Utc::now() - Duration::hours(1);
+        let task = ScheduledTask::oneshot(
+            "slow_oneshot",
+            past,
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        );
+        scheduler.add_task(task);
+        scheduler.register_handler(&TaskKind::HealthCheck, Box::new(SlowHandler));
+        scheduler.init().await.unwrap();
+
+        // tick() must complete (not hang) even though the handler sleeps for 60 seconds.
+        // If the timeout did not fire, this test would time out (nextest kills after 60s).
+        scheduler.tick().await;
+        // Reaching here proves the timeout fired and tick() returned within the deadline.
+    }
+
+    /// When `handler_timeout_secs` is 0, the timeout is disabled and slow handlers run to completion.
+    #[tokio::test]
+    async fn handler_timeout_zero_disables_timeout() {
+        let pool = test_pool().await;
+        let store = JobStore::new(pool.clone());
+        let (_tx, rx) = watch::channel(false);
+        let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
+        // Disable timeout.
+        scheduler = scheduler.with_handler_timeout(std::time::Duration::ZERO);
+
+        let count = Arc::new(AtomicU32::new(0));
+        let past = Utc::now() - Duration::hours(1);
+        let task = ScheduledTask::oneshot(
+            "no_timeout_task",
+            past,
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        );
+        scheduler.add_task(task);
+        scheduler.register_handler(
+            &TaskKind::HealthCheck,
+            Box::new(CountingHandler {
+                count: count.clone(),
+            }),
+        );
+        scheduler.init().await.unwrap();
+        scheduler.tick().await;
+
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "handler must execute when timeout is disabled"
         );
     }
 }

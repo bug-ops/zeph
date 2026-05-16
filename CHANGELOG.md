@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-scheduler`: `Scheduler::with_handler_timeout(Duration)` builder method sets a
+  maximum execution time for task handlers. Defaults to 300 seconds; pass `Duration::ZERO`
+  to disable. Hung handlers are now cancelled with a `SchedulerError::TaskFailed` instead
+  of blocking the tick loop indefinitely (closes #3944).
+- `zeph-scheduler`: `SchedulerDaemonConfig.handler_timeout_secs` config field (default 300,
+  set to 0 to disable). Applied automatically by `run_foreground` and the agent bootstrap.
+- `zeph-scheduler`: `scheduler.daemon.tick` tracing spans on every tick in `run()`,
+  `run_with_interval()`, and `run_with_interval_and_grace()`, and `scheduler.task.execute`
+  spans around each handler invocation in `tick()` and `catch_up_missed()` (closes #3945).
+
 ### Changed
 
 - `zeph-bench`: `BenchRunner::new` no longer takes a `_no_deterministic: bool` parameter.

@@ -748,6 +748,11 @@ max_restart_backoff_secs = 60
 [scheduler]
 # Enable cron scheduler (included in default features)
 enabled = true
+
+[scheduler.daemon]
+# Maximum seconds a task handler may run before it is forcibly cancelled.
+# Set to 0 to disable the timeout (not recommended for production).
+handler_timeout_secs = 300
 # Example task definitions:
 # [[scheduler.tasks]]
 # name = "memory_cleanup"
