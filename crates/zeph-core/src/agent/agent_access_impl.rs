@@ -79,6 +79,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
+                if self.services.memory.extraction.graph_config.enabled {
+                    return Ok(
+                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
+                            .to_owned(),
+                    );
+                }
                 return Ok("Graph memory is not enabled.".to_owned());
             };
 
@@ -112,6 +118,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
+                if self.services.memory.extraction.graph_config.enabled {
+                    return Ok(
+                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
+                            .to_owned(),
+                    );
+                }
                 return Ok("Graph memory is not enabled.".to_owned());
             };
 
@@ -159,6 +171,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
+                if self.services.memory.extraction.graph_config.enabled {
+                    return Ok(
+                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
+                            .to_owned(),
+                    );
+                }
                 return Ok("Graph memory is not enabled.".to_owned());
             };
 
@@ -234,6 +252,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
+                if self.services.memory.extraction.graph_config.enabled {
+                    return Ok(
+                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
+                            .to_owned(),
+                    );
+                }
                 return Ok("Graph memory is not enabled.".to_owned());
             };
 
@@ -316,6 +340,12 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.as_ref() else {
+                if self.services.memory.extraction.graph_config.enabled {
+                    return Ok(
+                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
+                            .to_owned(),
+                    );
+                }
                 return Ok("Graph memory is not enabled.".to_owned());
             };
 
@@ -339,16 +369,24 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn graph_backfill<'a>(
         &'a mut self,
         limit: Option<usize>,
         progress_cb: &'a mut (dyn FnMut(String) + Send),
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let graph_enabled = self.services.memory.extraction.graph_config.enabled;
         Box::pin(async move {
             let Some(memory) = self.services.memory.persistence.memory.clone() else {
                 return Ok("Graph memory is not enabled.".to_owned());
             };
             let Some(store) = memory.graph_store.clone() else {
+                if graph_enabled {
+                    return Ok(
+                        "Graph memory enabled but vector store unavailable (Qdrant unreachable)."
+                            .to_owned(),
+                    );
+                }
                 return Ok("Graph memory is not enabled.".to_owned());
             };
 
@@ -1239,5 +1277,86 @@ fn parse_goal_create_args(args: &str) -> (&str, Option<u64>) {
 impl From<AgentError> for CommandError {
     fn from(e: AgentError) -> Self {
         Self(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use super::*;
+    use zeph_commands::traits::agent::AgentAccess;
+    use zeph_memory::semantic::SemanticMemory;
+
+    async fn memory_without_qdrant() -> SemanticMemory {
+        SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap()
+    }
+
+    // R-CRIT-4111: when graph is enabled in config but graph_store is None
+    // (Qdrant unreachable), graph command handlers must report
+    // "unavailable" rather than "not enabled".
+    #[tokio::test]
+    async fn graph_stats_enabled_but_no_store_reports_unavailable() {
+        let cfg = crate::config::GraphConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_stats().await.unwrap();
+        assert!(
+            result.contains("unavailable"),
+            "expected 'unavailable' but got: {result}"
+        );
+        assert!(
+            !result.contains("not enabled"),
+            "must not report 'not enabled' when graph is enabled: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_stats_disabled_reports_not_enabled() {
+        let cfg = crate::config::GraphConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_graph_config(cfg);
+
+        let result = agent.graph_stats().await.unwrap();
+        assert!(
+            result.contains("not enabled"),
+            "expected 'not enabled' but got: {result}"
+        );
     }
 }

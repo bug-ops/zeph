@@ -22,6 +22,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `context.corrections`, `context.semantic_recall`, `context.document_rag`, `context.summaries`,
   `context.cross_session`), completing full hot-path trace coverage (closes #4092).
 
+### Fixed
+
+- `zeph-core`: `/graph` command handlers now distinguish "graph enabled but vector store unavailable
+  (Qdrant unreachable)" from "Graph memory is not enabled." when `memory.graph.enabled = true` but
+  Qdrant is down, resolving the inconsistency with `/status` output (closes #4111).
+- `zeph-commands`: `ClearQueueCommand` now logs a `tracing::debug!` message when
+  `send_queue_count` fails instead of silently discarding the error (closes #4115).
+
 ### Refactored
 
 - `zeph-subagent`: extracted `make_base_hook_env` and `TOOL_ARGS_JSON_LIMIT` into
