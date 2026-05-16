@@ -31,7 +31,9 @@
 
 use std::collections::VecDeque;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -593,7 +595,7 @@ pub struct JudgeDetector {
     /// Upper bound: at or above this, regex "is correction" is trusted without judge.
     adaptive_high: f32,
     /// Sliding-window timestamps for rate limiting (owned, not shared across spawns).
-    pub(crate) call_times: VecDeque<Instant>,
+    call_times: VecDeque<Instant>,
 }
 
 impl JudgeDetector {
@@ -1114,21 +1116,19 @@ mod tests {
         assert!(!jd.check_rate_limit(), "should block after limit exceeded");
     }
 
-    #[test]
-    fn rate_limiter_evicts_expired_entries() {
+    #[tokio::test]
+    async fn rate_limiter_evicts_expired_entries() {
+        tokio::time::pause();
         let mut jd = JudgeDetector::new(0.5, 0.8);
-        let expired = Instant::now()
-            .checked_sub(JUDGE_RATE_WINDOW)
-            .and_then(|t| t.checked_sub(Duration::from_secs(1)))
-            .unwrap();
         for _ in 0..JUDGE_RATE_LIMIT {
-            jd.call_times.push_back(expired);
+            assert!(jd.check_rate_limit());
         }
+        // Advance time past the rate-limit window so all entries expire.
+        tokio::time::advance(JUDGE_RATE_WINDOW + Duration::from_secs(1)).await;
         assert!(
             jd.check_rate_limit(),
             "expired entries should be evicted, new call must be allowed"
         );
-        assert_eq!(jd.call_times.len(), 1, "only the new entry remains");
     }
 
     // ── GAP-01: reasoning field defaults to empty string ──────────────────

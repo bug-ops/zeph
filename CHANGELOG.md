@@ -18,6 +18,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-context`: `run_chunk_summaries` now converts the `guidelines` string to `Arc<str>` once
   before the chunk iterator, replacing a `String` clone per chunk with a cheap `Arc` clone (closes #3991).
 
+### Refactored
+
+- `zeph-subagent`: extracted `make_base_hook_env` and `TOOL_ARGS_JSON_LIMIT` into
+  `zeph-subagent::hooks`, eliminating duplicate env-building logic between subagent and
+  core tier-loop hook dispatch (closes #4015).
+- `zeph-agent-feedback`: `JudgeDetector::call_times` is now a private field; switched
+  `VecDeque<Instant>` from `std::time::Instant` to `tokio::time::Instant` to enable
+  deterministic time control in tests (closes #3988).
+- `zeph-sanitizer`: `ContentTrustLevel` and `ContentSourceKind` are now `#[non_exhaustive]`
+  to allow adding variants without breaking external exhaustive matches (closes #3932).
+
 ### Changed
 
 - `zeph-commands`: `GoalCommand::handle` now propagates errors via `?` instead of silently converting

@@ -233,6 +233,57 @@ pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&
     result
 }
 
+// ── Hook env helpers ──────────────────────────────────────────────────────────
+
+/// Maximum byte length of `ZEPH_TOOL_ARGS_JSON` to avoid `E2BIG` when spawning hook processes.
+///
+/// OS `ARG_MAX` is ~1 MB on macOS and ~2 MB on Linux; staying well below that avoids `E2BIG`.
+pub const TOOL_ARGS_JSON_LIMIT: usize = 64 * 1024;
+
+/// Build the common hook environment variables shared by all hook dispatch sites.
+///
+/// Sets `ZEPH_TOOL_NAME` and `ZEPH_TOOL_ARGS_JSON`. The serialized `tool_input` is
+/// truncated to [`TOOL_ARGS_JSON_LIMIT`] bytes at a valid UTF-8 boundary when it
+/// would exceed the OS `ARG_MAX` limit.
+///
+/// Callers should extend the returned map with site-specific variables such as
+/// `ZEPH_AGENT_ID`, `ZEPH_AGENT_NAME`, or `ZEPH_SESSION_ID`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_subagent::make_base_hook_env;
+///
+/// let env = make_base_hook_env("Edit", &serde_json::Value::Null);
+/// assert_eq!(env["ZEPH_TOOL_NAME"], "Edit");
+/// assert!(env.contains_key("ZEPH_TOOL_ARGS_JSON"));
+/// ```
+#[must_use]
+pub fn make_base_hook_env(
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
+
+    let raw = serde_json::to_string(tool_input).unwrap_or_default();
+    let args_json = if raw.len() > TOOL_ARGS_JSON_LIMIT {
+        tracing::warn!(
+            tool = tool_name,
+            len = raw.len(),
+            limit = TOOL_ARGS_JSON_LIMIT,
+            "ZEPH_TOOL_ARGS_JSON truncated for hook dispatch"
+        );
+        let limit = raw.floor_char_boundary(TOOL_ARGS_JSON_LIMIT);
+        format!("{}…", &raw[..limit])
+    } else {
+        raw
+    };
+    env.insert("ZEPH_TOOL_ARGS_JSON".to_owned(), args_json);
+
+    env
+}
+
 // ── Execution ─────────────────────────────────────────────────────────────────
 
 /// Execute a list of hook definitions, setting the provided environment variables.

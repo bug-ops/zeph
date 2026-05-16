@@ -16,37 +16,12 @@ use super::{
 use crate::agent::Agent;
 use crate::channel::{Channel, StopHint, ToolStartEvent};
 
-/// Maximum byte length of `ZEPH_TOOL_ARGS_JSON`. OS `ARG_MAX` is ~1 MB on macOS and ~2 MB on
-/// Linux; staying well below that avoids `E2BIG` when spawning hook processes.
-const TOOL_ARGS_JSON_LIMIT: usize = 64 * 1024;
-
-/// Build the base env map for `pre_tool_use` / `post_tool_use` hook dispatch.
-///
-/// `ZEPH_TOOL_ARGS_JSON` is truncated to [`TOOL_ARGS_JSON_LIMIT`] bytes when the serialized
-/// argument object would exceed the OS `ARG_MAX` limit.
 fn make_tool_hook_env(
     tool_name: &str,
     tool_input: &serde_json::Value,
     session_id: Option<&str>,
 ) -> std::collections::HashMap<String, String> {
-    let mut env = std::collections::HashMap::new();
-    env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
-
-    let raw = serde_json::to_string(tool_input).unwrap_or_default();
-    let args_json = if raw.len() > TOOL_ARGS_JSON_LIMIT {
-        tracing::warn!(
-            tool = tool_name,
-            len = raw.len(),
-            limit = TOOL_ARGS_JSON_LIMIT,
-            "ZEPH_TOOL_ARGS_JSON truncated for hook dispatch"
-        );
-        let limit = raw.floor_char_boundary(TOOL_ARGS_JSON_LIMIT);
-        format!("{}…", &raw[..limit])
-    } else {
-        raw
-    };
-    env.insert("ZEPH_TOOL_ARGS_JSON".to_owned(), args_json);
-
+    let mut env = zeph_subagent::make_base_hook_env(tool_name, tool_input);
     if let Some(sid) = session_id {
         env.insert("ZEPH_SESSION_ID".to_owned(), sid.to_owned());
     }
@@ -2350,6 +2325,7 @@ fn build_gated_defs_for_iteration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_subagent::TOOL_ARGS_JSON_LIMIT;
 
     fn json_val(s: &str) -> serde_json::Value {
         serde_json::from_str(s).unwrap()

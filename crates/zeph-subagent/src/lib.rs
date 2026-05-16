@@ -61,7 +61,8 @@ pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
 pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
 pub use hooks::{
     HookAction, HookDef, HookError, HookMatcher, HookOutput, HookRunResult, McpDispatch,
-    PostToolUseHookInput, SubagentHooks, fire_hooks, matching_hooks,
+    PostToolUseHookInput, SubagentHooks, TOOL_ARGS_JSON_LIMIT, fire_hooks, make_base_hook_env,
+    matching_hooks,
 };
 pub use manager::{SpawnContext, SubAgentHandle, SubAgentManager, SubAgentStatus};
 pub use memory::{ensure_memory_dir, load_memory_content};
