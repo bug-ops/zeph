@@ -583,8 +583,9 @@ async fn promote_fact(
 
         for &event_id in source_event_ids {
             sqlx::query(sql!(
-                "INSERT OR IGNORE INTO consolidated_fact_sources (fact_id, event_id)
-                 VALUES (?1, ?2)"
+                "INSERT INTO consolidated_fact_sources (fact_id, event_id)
+                 VALUES (?1, ?2)
+                 ON CONFLICT (fact_id, event_id) DO NOTHING"
             ))
             .bind(fid)
             .bind(event_id)

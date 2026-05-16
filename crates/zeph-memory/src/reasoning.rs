@@ -212,9 +212,15 @@ impl ReasoningMemory {
     ) -> Result<(), MemoryError> {
         let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
         let raw = format!(
-            "INSERT OR REPLACE INTO reasoning_strategies \
+            "INSERT INTO reasoning_strategies \
              (id, summary, outcome, task_hint, created_at, last_used_at, use_count, embedded_at) \
-             VALUES (?, ?, ?, ?, {epoch_now}, {epoch_now}, 0, NULL)"
+             VALUES (?, ?, ?, ?, {epoch_now}, {epoch_now}, 0, NULL) \
+             ON CONFLICT (id) DO UPDATE SET \
+               summary = EXCLUDED.summary, \
+               outcome = EXCLUDED.outcome, \
+               task_hint = EXCLUDED.task_hint, \
+               last_used_at = EXCLUDED.last_used_at, \
+               embedded_at = EXCLUDED.embedded_at"
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
         zeph_db::query(&sql)

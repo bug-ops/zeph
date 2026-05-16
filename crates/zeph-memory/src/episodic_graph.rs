@@ -34,6 +34,8 @@ use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
 pub use zeph_config::memory::EmGraphConfig;
 
+use zeph_db::ActiveDialect;
+
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::MessageId;
@@ -320,17 +322,20 @@ pub async fn store_events(
     }
     let mut tx = store.pool().begin().await?;
     for event in events.iter_mut() {
-        let id = sqlx::query_scalar::<_, i64>(
-            "INSERT INTO episodic_events (session_id, message_id, event_type, summary, created_at)
-             VALUES (?, ?, ?, ?, unixepoch())
-             RETURNING id",
-        )
-        .bind(&event.session_id)
-        .bind(event.message_id.0)
-        .bind(&event.event_type)
-        .bind(&event.summary)
-        .fetch_one(&mut *tx)
-        .await?;
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let raw = format!(
+            "INSERT INTO episodic_events (session_id, message_id, event_type, summary, created_at) \
+             VALUES (?, ?, ?, ?, {epoch_now}) \
+             RETURNING id"
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        let id = sqlx::query_scalar::<_, i64>(&sql)
+            .bind(&event.session_id)
+            .bind(event.message_id.0)
+            .bind(&event.event_type)
+            .bind(&event.summary)
+            .fetch_one(&mut *tx)
+            .await?;
         event.id = id;
     }
     tx.commit().await?;
@@ -340,7 +345,8 @@ pub async fn store_events(
 /// Persist causal links to the `causal_links` table.
 ///
 /// All inserts are batched inside a single transaction. Duplicate
-/// `(cause_event_id, effect_event_id)` pairs are silently ignored via `INSERT OR IGNORE`
+/// `(cause_event_id, effect_event_id)` pairs are silently ignored via
+/// `ON CONFLICT (cause_event_id, effect_event_id) DO NOTHING`
 /// (requires the `UNIQUE` constraint added in migration 086).
 ///
 /// # Errors
@@ -352,16 +358,20 @@ pub async fn store_links(store: &SqliteStore, links: &[CausalLink]) -> Result<()
     }
     let mut tx = store.pool().begin().await?;
     for link in links {
-        sqlx::query(
-            "INSERT OR IGNORE INTO causal_links
-             (cause_event_id, effect_event_id, strength, created_at)
-             VALUES (?, ?, ?, unixepoch())",
-        )
-        .bind(link.cause_event_id)
-        .bind(link.effect_event_id)
-        .bind(link.strength)
-        .execute(&mut *tx)
-        .await?;
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let raw = format!(
+            "INSERT INTO causal_links \
+             (cause_event_id, effect_event_id, strength, created_at) \
+             VALUES (?, ?, ?, {epoch_now}) \
+             ON CONFLICT (cause_event_id, effect_event_id) DO NOTHING"
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        sqlx::query(&sql)
+            .bind(link.cause_event_id)
+            .bind(link.effect_event_id)
+            .bind(link.strength)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(())

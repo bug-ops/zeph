@@ -238,8 +238,11 @@ impl SqliteStore {
         sample_count: i64,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
-            "INSERT OR REPLACE INTO admission_rl_weights (id, weights_json, sample_count) \
-             VALUES (1, ?, ?)"
+            "INSERT INTO admission_rl_weights (id, weights_json, sample_count) \
+             VALUES (1, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET \
+               weights_json = EXCLUDED.weights_json, \
+               sample_count = EXCLUDED.sample_count"
         ))
         .bind(weights_json)
         .bind(sample_count)

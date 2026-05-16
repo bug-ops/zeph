@@ -2285,10 +2285,13 @@ impl GraphStore {
         // Ensure the conversation row exists before inserting into graph_episodes,
         // which has a FK referencing conversations(id). On a fresh database the agent
         // may run graph extraction before the conversation row is committed.
-        zeph_db::query(sql!("INSERT OR IGNORE INTO conversations (id) VALUES (?)"))
-            .bind(conversation_id)
-            .execute(&self.pool)
-            .await?;
+        zeph_db::query(sql!(
+            "INSERT INTO conversations (id) VALUES (?)
+             ON CONFLICT (id) DO NOTHING"
+        ))
+        .bind(conversation_id)
+        .execute(&self.pool)
+        .await?;
 
         let id: i64 = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_episodes (conversation_id)
@@ -2315,8 +2318,9 @@ impl GraphStore {
         entity_id: i64,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
-            "INSERT OR IGNORE INTO graph_episode_entities (episode_id, entity_id)
-             VALUES (?, ?)"
+            "INSERT INTO graph_episode_entities (episode_id, entity_id)
+             VALUES (?, ?)
+             ON CONFLICT (episode_id, entity_id) DO NOTHING"
         ))
         .bind(episode_id)
         .bind(entity_id)

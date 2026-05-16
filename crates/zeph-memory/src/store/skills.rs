@@ -762,9 +762,10 @@ impl SqliteStore {
         hint: &str,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
-            "INSERT OR IGNORE INTO step_corrections \
+            "INSERT INTO step_corrections \
              (skill_name, failure_kind, error_substring, tool_name, hint) \
-             VALUES (?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT (skill_name, failure_kind, error_substring, tool_name) DO NOTHING"
         ))
         .bind(skill_name)
         .bind(failure_kind)

@@ -2,7 +2,7 @@
 -- Stores per-conversation procedural and episodic entries extracted from tool-call turns.
 CREATE TABLE IF NOT EXISTS trajectory_memory (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id INTEGER REFERENCES conversations(id),
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE,
     turn_index      INTEGER NOT NULL,
     kind            TEXT NOT NULL CHECK(kind IN ('procedural', 'episodic')),
     intent          TEXT NOT NULL,

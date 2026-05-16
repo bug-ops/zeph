@@ -110,8 +110,9 @@ impl ExperienceStore {
             tracing::info_span!("memory.experience.link_entities", exp = experience_id.0).entered();
         for &entity_id in entity_ids {
             zeph_db::query(sql!(
-                "INSERT OR IGNORE INTO experience_entity_links
-                 (experience_id, entity_id) VALUES (?1, ?2)"
+                "INSERT INTO experience_entity_links
+                 (experience_id, entity_id) VALUES (?1, ?2)
+                 ON CONFLICT (experience_id, entity_id) DO NOTHING"
             ))
             .bind(experience_id.0)
             .bind(entity_id.0)
