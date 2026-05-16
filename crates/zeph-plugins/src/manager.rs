@@ -924,18 +924,16 @@ path = "skills/{conflict_name}"
 
         // The plugin manifest references ../outside-skill, which canonicalizes to a real path
         // outside the source directory — this is what the traversal guard must catch.
-        let manifest = format!(
-            r#"[plugin]
+        let manifest = r#"[plugin]
 name = "traversal-test"
 version = "0.1.0"
 description = "test"
 
 [[skills]]
 path = "../outside-skill"
-"#
-        );
+"#;
         std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(source.join("plugin.toml"), &manifest).unwrap();
+        std::fs::write(source.join("plugin.toml"), manifest).unwrap();
 
         let plugins_dir = real_tmp.join("plugins");
         let managed_dir = real_tmp.join("managed");
