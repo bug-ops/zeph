@@ -1128,4 +1128,230 @@ allowed_commands = []
             "non-directory entries inside plugins_dir must not be surfaced as installed plugins"
         );
     }
+
+    // --- validate_plugin_name edge cases ---
+
+    #[test]
+    fn validate_plugin_name_empty_string_rejected() {
+        let err = validate_plugin_name("").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for empty string, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_plugin_name_with_dot_rejected() {
+        let err = validate_plugin_name("foo.bar").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for name with dot, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_plugin_name_with_backslash_rejected() {
+        let err = validate_plugin_name("foo\\bar").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for name with backslash, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_plugin_name_with_space_rejected() {
+        let err = validate_plugin_name("foo bar").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for name with space, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_plugin_name_max_length_boundary() {
+        // Names consisting purely of valid chars should be accepted regardless of length;
+        // the current implementation imposes no length cap — just verify it does not panic.
+        let long_name = "a".repeat(256);
+        assert!(validate_plugin_name(&long_name).is_ok());
+    }
+
+    // --- validate_overlay_keys direct tests ---
+
+    #[test]
+    fn validate_overlay_keys_empty_config_accepted() {
+        let config = toml::Value::Table(toml::map::Map::new());
+        assert!(validate_overlay_keys(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_overlay_keys_safe_keys_accepted() {
+        let toml_str = r#"
+[tools]
+blocked_commands = ["rm -rf /"]
+allowed_commands = ["git"]
+
+[skills]
+disambiguation_threshold = 0.8
+"#;
+        let config: toml::Value = toml::from_str(toml_str).unwrap();
+        assert!(validate_overlay_keys(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_overlay_keys_unsafe_key_rejected() {
+        let toml_str = r#"
+[llm]
+model = "evil-model"
+"#;
+        let config: toml::Value = toml::from_str(toml_str).unwrap();
+        let err = validate_overlay_keys(&config).unwrap_err();
+        assert!(
+            matches!(err, PluginError::UnsafeOverlay { ref key } if key == "llm.model"),
+            "expected UnsafeOverlay with key=\"llm.model\", got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_overlay_keys_non_table_section_rejected() {
+        // A section value that is not a table (e.g. a string) must be rejected.
+        let toml_str = r#"
+tools = "not-a-table"
+"#;
+        let config: toml::Value = toml::from_str(toml_str).unwrap();
+        let err = validate_overlay_keys(&config).unwrap_err();
+        assert!(
+            matches!(err, PluginError::UnsafeOverlay { .. }),
+            "expected UnsafeOverlay for non-table section, got {err:?}"
+        );
+    }
+
+    // --- list_installed sort order ---
+
+    #[test]
+    fn list_installed_returns_plugins_sorted_alphabetically() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        // Install in reverse alphabetical order with unique skill names to avoid cross-plugin
+        // name conflicts — the sort test only cares about plugin ordering, not skill uniqueness.
+        let plugins = [
+            ("zeta-plugin", "skill-zeta"),
+            ("beta-plugin", "skill-beta"),
+            ("alpha-plugin", "skill-alpha"),
+        ];
+        for (name, skill) in &plugins {
+            let source = tmp.path().join(format!("src-{name}"));
+            write_plugin(
+                &source,
+                name,
+                &simple_manifest(name, skill),
+                &[(skill, "body")],
+            );
+            mgr.add(source.to_str().unwrap()).unwrap();
+        }
+
+        let installed = mgr.list_installed().unwrap();
+        let names: Vec<&str> = installed.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha-plugin", "beta-plugin", "zeta-plugin"],
+            "list_installed must return plugins in alphabetical order regardless of install order"
+        );
+    }
+
+    // --- add() error: SkillEntryMissing when SKILL.md is absent ---
+
+    #[test]
+    fn add_skill_entry_without_skill_md_returns_skill_entry_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+
+        // Create the plugin manifest that references a skill path, but do NOT write SKILL.md.
+        std::fs::create_dir_all(source.join("skills").join("no-skill-md")).unwrap();
+        let manifest = r#"[plugin]
+name = "missing-skill-md"
+version = "0.1.0"
+description = "test"
+
+[[skills]]
+path = "skills/no-skill-md"
+"#;
+        std::fs::write(source.join("plugin.toml"), manifest).unwrap();
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        let err = mgr.add(source.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PluginError::SkillEntryMissing { .. }),
+            "expected SkillEntryMissing when SKILL.md is absent, got {err:?}"
+        );
+    }
+
+    // --- collect_skill_dirs ---
+
+    #[test]
+    fn collect_skill_dirs_empty_when_no_plugins_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Use canonicalized path to work around macOS /var → /private/var symlink.
+        let real = tmp.path().canonicalize().unwrap();
+        let plugins_dir = real.join("plugins");
+        let mgr = PluginManager::new(plugins_dir, real.clone(), vec![], vec![]);
+        let dirs = mgr.collect_skill_dirs().unwrap();
+        assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn collect_skill_dirs_returns_installed_skill_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize so that the path prefix check inside collect_skill_dirs works on macOS.
+        let real = tmp.path().canonicalize().unwrap();
+        let plugins_dir = real.join("plugins");
+        let managed_dir = real.join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        let source = real.join("source");
+        write_plugin(
+            &source,
+            "dir-plugin",
+            &simple_manifest("dir-plugin", "my-skill"),
+            &[("my-skill", "body")],
+        );
+        mgr.add(source.to_str().unwrap()).unwrap();
+
+        let dirs = mgr.collect_skill_dirs().unwrap();
+        assert_eq!(dirs.len(), 1, "expected exactly one skill dir");
+        assert!(
+            dirs[0].ends_with("skills/my-skill"),
+            "skill dir path must end with skills/my-skill, got {:?}",
+            dirs[0]
+        );
+    }
+
+    #[test]
+    fn collect_skill_dirs_aggregates_multiple_plugins() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize so that the path prefix check inside collect_skill_dirs works on macOS.
+        let real = tmp.path().canonicalize().unwrap();
+        let plugins_dir = real.join("plugins");
+        let managed_dir = real.join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        for (plugin_name, skill_name) in &[("plugin-a", "skill-a"), ("plugin-b", "skill-b")] {
+            let source = real.join(plugin_name);
+            write_plugin(
+                &source,
+                plugin_name,
+                &simple_manifest(plugin_name, skill_name),
+                &[(skill_name, "body")],
+            );
+            mgr.add(source.to_str().unwrap()).unwrap();
+        }
+
+        let dirs = mgr.collect_skill_dirs().unwrap();
+        assert_eq!(dirs.len(), 2, "expected two skill dirs from two plugins");
+    }
 }

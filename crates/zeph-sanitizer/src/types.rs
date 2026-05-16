@@ -414,3 +414,115 @@ pub struct SanitizedContent {
     /// `true` when content was truncated to `max_content_size`.
     pub was_truncated: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- ContentSourceKind::from_str_opt roundtrip ---
+
+    #[test]
+    fn from_str_opt_known_variants_roundtrip() {
+        let variants = [
+            (ContentSourceKind::ToolResult, "tool_result"),
+            (ContentSourceKind::WebScrape, "web_scrape"),
+            (ContentSourceKind::McpResponse, "mcp_response"),
+            (ContentSourceKind::A2aMessage, "a2a_message"),
+            (ContentSourceKind::MemoryRetrieval, "memory_retrieval"),
+            (ContentSourceKind::InstructionFile, "instruction_file"),
+        ];
+        for (kind, s) in &variants {
+            assert_eq!(ContentSourceKind::from_str_opt(s), Some(*kind));
+            assert_eq!(kind.as_str(), *s);
+        }
+    }
+
+    #[test]
+    fn from_str_opt_unknown_returns_none() {
+        assert_eq!(ContentSourceKind::from_str_opt("unknown"), None);
+        assert_eq!(ContentSourceKind::from_str_opt(""), None);
+    }
+
+    #[test]
+    fn from_str_opt_case_sensitive() {
+        assert_eq!(ContentSourceKind::from_str_opt("WebScrape"), None);
+        assert_eq!(ContentSourceKind::from_str_opt("TOOL_RESULT"), None);
+    }
+
+    // --- ContentSource builder methods ---
+
+    #[test]
+    fn content_source_new_has_default_trust_and_no_identifier() {
+        let source = ContentSource::new(ContentSourceKind::WebScrape);
+        assert_eq!(source.trust_level, ContentTrustLevel::ExternalUntrusted);
+        assert!(source.identifier.is_none());
+        assert!(source.memory_hint.is_none());
+    }
+
+    #[test]
+    fn content_source_with_identifier() {
+        let source = ContentSource::new(ContentSourceKind::ToolResult).with_identifier("shell");
+        assert_eq!(source.identifier.as_deref(), Some("shell"));
+    }
+
+    #[test]
+    fn content_source_with_trust_level_override() {
+        let source = ContentSource::new(ContentSourceKind::McpResponse)
+            .with_trust_level(ContentTrustLevel::LocalUntrusted);
+        assert_eq!(source.trust_level, ContentTrustLevel::LocalUntrusted);
+    }
+
+    #[test]
+    fn content_source_with_memory_hint() {
+        let source = ContentSource::new(ContentSourceKind::MemoryRetrieval)
+            .with_memory_hint(MemorySourceHint::ConversationHistory);
+        assert_eq!(
+            source.memory_hint,
+            Some(MemorySourceHint::ConversationHistory)
+        );
+    }
+
+    // --- ContentTrustLevel ---
+
+    #[test]
+    fn content_trust_level_equality() {
+        assert_eq!(ContentTrustLevel::Trusted, ContentTrustLevel::Trusted);
+        assert_ne!(
+            ContentTrustLevel::Trusted,
+            ContentTrustLevel::LocalUntrusted
+        );
+        assert_ne!(
+            ContentTrustLevel::LocalUntrusted,
+            ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    // --- default_trust_level mapping ---
+
+    #[test]
+    fn default_trust_level_local_kinds() {
+        assert_eq!(
+            ContentSourceKind::ToolResult.default_trust_level(),
+            ContentTrustLevel::LocalUntrusted
+        );
+        assert_eq!(
+            ContentSourceKind::InstructionFile.default_trust_level(),
+            ContentTrustLevel::LocalUntrusted
+        );
+    }
+
+    #[test]
+    fn default_trust_level_external_kinds() {
+        for kind in [
+            ContentSourceKind::WebScrape,
+            ContentSourceKind::McpResponse,
+            ContentSourceKind::A2aMessage,
+            ContentSourceKind::MemoryRetrieval,
+        ] {
+            assert_eq!(
+                kind.default_trust_level(),
+                ContentTrustLevel::ExternalUntrusted
+            );
+        }
+    }
+}
