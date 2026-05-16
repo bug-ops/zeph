@@ -546,7 +546,7 @@ mod tests {
         conn_rx.await.expect("agent connection not established")
     }
 
-    /// Async make_conn variant that responds with Cancelled outcome.
+    /// Async `make_conn` variant that responds with Cancelled outcome.
     async fn make_conn_cancelled() -> std::sync::Arc<acp::ConnectionTo<acp::Client>> {
         let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
         let (client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
