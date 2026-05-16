@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-db`: add 8 missing PostgreSQL migration files to reach parity with SQLite schema
+  (migrations 069–071, 079–083): `trajectory_memory`, `message_category`, `memory_tree`,
+  `pending_beliefs` + `belief_evidence`, `safety_shadow_events`, `memflow_scrapmem`
+  (ScrapMem + EM-Graph), `episodic_consolidation`, and `experience_memory` — any deployment
+  using the `postgres` feature flag was missing these tables, causing silent empty results
+  (closes #3874).
 - `zeph-orchestration`: `PlanVerifier::verify` and `PlanVerifier::verify_plan` now check the
   `>= 3 consecutive_failures` escalation threshold on timeout-driven failures, not just LLM
   error returns. Previously, an over-loaded or misconfigured `verify_provider` that always
