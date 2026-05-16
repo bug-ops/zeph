@@ -18,6 +18,32 @@ use crate::state::{
     ProviderHandles, StatusSink,
 };
 
+/// Configuration parameters for semantic recall injection.
+///
+/// Collects the 8 config-like arguments shared between the tiered and flat recall paths so
+/// callers do not need to pass them positionally to [`ContextService::inject_semantic_recall_bare`].
+///
+/// `window` and `memory` are kept as direct parameters on the method because they are
+/// mutable/output args rather than configuration.
+pub struct SemanticRecallParams<'a> {
+    /// Query string used for retrieval.
+    pub query: &'a str,
+    /// Maximum number of tokens the injected recall may consume.
+    pub token_budget: usize,
+    /// Maximum number of memories to retrieve (flat path only).
+    pub recall_limit: usize,
+    /// Format applied when serialising recalled memories.
+    pub context_format: zeph_config::ContextFormat,
+    /// Conversation scope used for tiered retrieval.
+    pub conversation_id: Option<zeph_memory::ConversationId>,
+    /// Optional LLM provider for intent classification (tiered path).
+    pub tiered_classifier: Option<&'a std::sync::Arc<zeph_llm::any::AnyProvider>>,
+    /// Optional LLM provider for result validation (tiered path).
+    pub tiered_validator: Option<&'a std::sync::Arc<zeph_llm::any::AnyProvider>>,
+    /// Tiered retrieval configuration controlling whether the tiered path is active.
+    pub tiered_config: &'a zeph_config::memory::TieredRetrievalConfig,
+}
+
 /// Stateless façade for agent context-assembly operations.
 ///
 /// This struct has no fields. All state flows through method parameters, which allows the
@@ -209,69 +235,19 @@ impl ContextService {
     ) -> Result<(), ContextError> {
         self.remove_recall_messages(window);
 
-        let msg = if view.tiered_retrieval_config.enabled {
-            use tracing::Instrument as _;
-            let Some(memory) = view.memory.as_deref() else {
-                return Ok(());
-            };
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                zeph_memory::recall_tiered(
-                    memory,
-                    query,
-                    view.conversation_id,
-                    view.tiered_retrieval_classifier.as_ref(),
-                    view.tiered_retrieval_validator.as_ref(),
-                    &view.tiered_retrieval_config,
-                    Some(token_budget),
-                )
-                .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
-            )
-            .await
-            .map_err(|_| {
-                tracing::warn!("tiered_retrieval: recall_tiered timed out after 30s");
-                ContextError::Memory(zeph_memory::MemoryError::Timeout(
-                    "recall_tiered timed out".to_owned(),
-                ))
-            })?
-            .map_err(ContextError::Memory)?;
-
-            tracing::debug!(
-                intent = %result.intent,
-                tokens_used = result.tokens_used,
-                tier_escalated = result.tier_escalated,
-                count = result.messages.len(),
-                "tiered_retrieval: recall complete"
-            );
-
-            if result.messages.is_empty() {
-                return Ok(());
-            }
-
-            let recalled_text = result
-                .messages
-                .iter()
-                .map(|m| m.message.content.as_str())
-                .collect::<Vec<_>>()
-                .join("\n---\n");
-            Some(Message::from_legacy(
-                Role::User,
-                format!("{RECALL_PREFIX}{recalled_text}"),
-            ))
-        } else {
-            let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
-                view.memory.as_deref(),
-                view.recall_limit,
-                view.context_format,
-                query,
-                token_budget,
-                &view.token_counter,
-                None,
-                None,
-            )
-            .await?;
-            msg
+        let params = SemanticRecallParams {
+            query,
+            token_budget,
+            recall_limit: view.recall_limit,
+            context_format: view.context_format,
+            conversation_id: view.conversation_id,
+            tiered_classifier: view.tiered_retrieval_classifier.as_ref(),
+            tiered_validator: view.tiered_retrieval_validator.as_ref(),
+            tiered_config: &view.tiered_retrieval_config,
         };
+        let msg = self
+            .run_tiered_recall(&params, window, view.memory.as_deref())
+            .await?;
 
         if let Some(msg) = msg
             && window.messages.len() > 1
@@ -293,37 +269,50 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if the recall backend returns an error.
-    #[allow(clippy::too_many_arguments)]
     pub async fn inject_semantic_recall_bare(
         &self,
-        query: &str,
-        token_budget: usize,
+        params: SemanticRecallParams<'_>,
         window: &mut MessageWindowView<'_>,
         memory: Option<&zeph_memory::semantic::SemanticMemory>,
-        recall_limit: usize,
-        context_format: zeph_config::ContextFormat,
-        conversation_id: Option<zeph_memory::ConversationId>,
-        tiered_classifier: Option<&std::sync::Arc<zeph_llm::any::AnyProvider>>,
-        tiered_validator: Option<&std::sync::Arc<zeph_llm::any::AnyProvider>>,
-        tiered_config: &zeph_config::memory::TieredRetrievalConfig,
     ) -> Result<(), ContextError> {
         self.remove_recall_messages(window);
 
-        let msg = if tiered_config.enabled {
+        let msg = self.run_tiered_recall(&params, window, memory).await?;
+
+        if let Some(msg) = msg
+            && window.messages.len() > 1
+        {
+            window.messages.insert(1, msg);
+        }
+
+        Ok(())
+    }
+
+    /// Execute tiered or flat semantic recall and return the message to inject, if any.
+    ///
+    /// Both `inject_semantic_recall` and `inject_semantic_recall_bare` share identical
+    /// retrieval logic; this method holds the single implementation.
+    async fn run_tiered_recall(
+        &self,
+        params: &SemanticRecallParams<'_>,
+        window: &MessageWindowView<'_>,
+        memory: Option<&zeph_memory::semantic::SemanticMemory>,
+    ) -> Result<Option<Message>, ContextError> {
+        if params.tiered_config.enabled {
             use tracing::Instrument as _;
             let Some(mem) = memory else {
-                return Ok(());
+                return Ok(None);
             };
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 zeph_memory::recall_tiered(
                     mem,
-                    query,
-                    conversation_id,
-                    tiered_classifier,
-                    tiered_validator,
-                    tiered_config,
-                    Some(token_budget),
+                    params.query,
+                    params.conversation_id,
+                    params.tiered_classifier,
+                    params.tiered_validator,
+                    params.tiered_config,
+                    Some(params.token_budget),
                 )
                 .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
             )
@@ -345,7 +334,7 @@ impl ContextService {
             );
 
             if result.messages.is_empty() {
-                return Ok(());
+                return Ok(None);
             }
 
             let recalled_text = result
@@ -354,32 +343,24 @@ impl ContextService {
                 .map(|m| m.message.content.as_str())
                 .collect::<Vec<_>>()
                 .join("\n---\n");
-            Some(Message::from_legacy(
+            Ok(Some(Message::from_legacy(
                 Role::User,
                 format!("{RECALL_PREFIX}{recalled_text}"),
-            ))
+            )))
         } else {
             let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
                 memory,
-                recall_limit,
-                context_format,
-                query,
-                token_budget,
+                params.recall_limit,
+                params.context_format,
+                params.query,
+                params.token_budget,
                 &window.token_counter,
                 None,
                 None,
             )
             .await?;
-            msg
-        };
-
-        if let Some(msg) = msg
-            && window.messages.len() > 1
-        {
-            window.messages.insert(1, msg);
+            Ok(msg)
         }
-
-        Ok(())
     }
 
     /// Inject cross-session context messages into the window for the given query.
@@ -485,7 +466,7 @@ impl ContextService {
             prompt,
         )];
         match providers
-            .primary
+            .disambiguate
             .chat_typed::<zeph_skills::IntentClassification>(&messages)
             .await
         {
@@ -2000,22 +1981,22 @@ mod tests {
             let mut completed = HashSet::new();
             let mut window = make_window(&mut msgs, &mut cached, &mut completed);
 
+            let tiered_config = TieredRetrievalConfig {
+                enabled: true,
+                ..TieredRetrievalConfig::default()
+            };
+            let params = SemanticRecallParams {
+                query: "test query",
+                token_budget: 1000,
+                recall_limit: 10,
+                context_format: zeph_config::ContextFormat::default(),
+                conversation_id: None,
+                tiered_classifier: None,
+                tiered_validator: None,
+                tiered_config: &tiered_config,
+            };
             let result = ContextService::new()
-                .inject_semantic_recall_bare(
-                    "test query",
-                    1000,
-                    &mut window,
-                    None,
-                    10,
-                    zeph_config::ContextFormat::default(),
-                    None,
-                    None,
-                    None,
-                    &TieredRetrievalConfig {
-                        enabled: true,
-                        ..TieredRetrievalConfig::default()
-                    },
-                )
+                .inject_semantic_recall_bare(params, &mut window, None)
                 .await;
 
             assert!(

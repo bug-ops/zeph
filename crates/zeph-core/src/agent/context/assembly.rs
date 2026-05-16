@@ -45,9 +45,12 @@ impl zeph_agent_context::state::SecurityEventSink for SecuritySink<'_> {
 impl<C: Channel> Agent<C> {
     /// Construct a `ProviderHandles` bundle from the agent's primary and embedding providers.
     pub(in crate::agent) fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
+        let disambiguate =
+            self.resolve_background_provider(&self.services.skill.disambiguate_provider_name);
         zeph_agent_context::state::ProviderHandles {
             primary: self.provider.clone(),
             embedding: self.embedding_provider.clone(),
+            disambiguate,
         }
     }
 
@@ -1379,21 +1382,20 @@ impl<C: Channel> Agent<C> {
 
         let svc = zeph_agent_context::ContextService::new();
         let mut window = self.message_window_view();
-
-        svc.inject_semantic_recall_bare(
+        let params = zeph_agent_context::service::SemanticRecallParams {
             query,
             token_budget,
-            &mut window,
-            memory.as_deref(),
             recall_limit,
             context_format,
             conversation_id,
-            tiered_classifier.as_ref(),
-            tiered_validator.as_ref(),
-            &tiered_config,
-        )
-        .await
-        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))
+            tiered_classifier: tiered_classifier.as_ref(),
+            tiered_validator: tiered_validator.as_ref(),
+            tiered_config: &tiered_config,
+        };
+
+        svc.inject_semantic_recall_bare(params, &mut window, memory.as_deref())
+            .await
+            .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))
     }
 
     pub(in crate::agent) fn remove_summary_messages(&mut self) {

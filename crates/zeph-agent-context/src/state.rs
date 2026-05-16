@@ -374,6 +374,10 @@ pub struct ProviderHandles {
     pub primary: AnyProvider,
     /// Dedicated embedding provider.
     pub embedding: AnyProvider,
+    /// Provider for skill disambiguation classification calls.
+    ///
+    /// Falls back to `primary` when the `[skills] disambiguate_provider` config field is empty.
+    pub disambiguate: AnyProvider,
 }
 
 /// Abstract status sink for emitting short progress strings to the channel.

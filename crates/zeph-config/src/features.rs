@@ -331,6 +331,13 @@ pub struct SkillsConfig {
     /// Proactive world-knowledge exploration configuration (#3320).
     #[serde(default)]
     pub proactive_exploration: ProactiveExplorationConfig,
+    /// Provider name for skill disambiguation LLM classification calls.
+    ///
+    /// When set, the named provider is used instead of the primary provider for
+    /// [`ContextService::disambiguate_skills`]. Useful to route disambiguation to a
+    /// cheaper or faster model. When empty (the default), the primary provider is used.
+    #[serde(default)]
+    pub disambiguate_provider: ProviderName,
 }
 
 fn default_generation_timeout_ms() -> u64 {
