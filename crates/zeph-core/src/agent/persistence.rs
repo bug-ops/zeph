@@ -4,7 +4,8 @@
 use crate::channel::Channel;
 use zeph_agent_persistence::graph::{build_graph_extraction_config, collect_context_messages};
 use zeph_agent_persistence::{
-    MemoryPersistenceView, MetricsView, PersistMessageRequest, PersistenceService, SecurityView,
+    LoadHistoryParams, MemoryPersistenceView, MetricsView, PersistMessageRequest,
+    PersistenceService, SecurityView,
 };
 use zeph_llm::provider::{LlmProvider as _, MessagePart, Role};
 
@@ -49,26 +50,15 @@ impl<C: Channel> Agent<C> {
             unsummarized_count: &mut unsummarized,
             goal_text: self.services.memory.extraction.goal_text.clone(),
         };
-        let mut sqlite_delta = 0u64;
-        let mut embed_delta = 0u64;
-        let mut guard_delta = 0u64;
-        let mut metrics_view = MetricsView {
-            sqlite_message_count: &mut sqlite_delta,
-            embeddings_generated: &mut embed_delta,
-            exfiltration_memory_guards: &mut guard_delta,
-        };
 
         let svc = PersistenceService::new();
         let outcome = svc
-            .load_history(
-                &mut self.msg.messages,
-                &mut self.msg.last_persisted_message_id,
-                &mut self.msg.deferred_db_hide_ids,
-                &mut self.msg.deferred_db_summaries,
-                &memory_view,
-                &zeph_config::Config::default(),
-                &mut metrics_view,
-            )
+            .load_history(LoadHistoryParams {
+                messages: &mut self.msg.messages,
+                last_persisted_message_id: &mut self.msg.last_persisted_message_id,
+                deferred_hide_ids: &mut self.msg.deferred_db_hide_ids,
+                memory_view: &memory_view,
+            })
             .await
             .map_err(|e| {
                 super::error::AgentError::Memory(zeph_memory::MemoryError::Other(e.to_string()))
@@ -172,7 +162,6 @@ impl<C: Channel> Agent<C> {
                 &mut self.msg.last_persisted_message_id,
                 &mut memory_view,
                 &security,
-                &zeph_config::Config::default(),
                 &mut metrics_view,
             )
             .await;

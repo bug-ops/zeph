@@ -34,5 +34,5 @@ pub mod state;
 
 pub use error::PersistenceError;
 pub use request::{LoadHistoryOutcome, PersistMessageOutcome, PersistMessageRequest};
-pub use service::PersistenceService;
+pub use service::{LoadHistoryParams, PersistenceService};
 pub use state::{MemoryPersistenceView, MetricsView, ProviderHandles, SecurityView};

@@ -11,6 +11,21 @@ use crate::request::{LoadHistoryOutcome, PersistMessageOutcome, PersistMessageRe
 use crate::sanitize::sanitize_tool_pairs;
 use crate::state::{MemoryPersistenceView, MetricsView, SecurityView};
 
+/// Parameters for [`PersistenceService::load_history`].
+///
+/// Groups the mutable state that `load_history` reads and updates, replacing the previous
+/// seven positional arguments (two of which were unused placeholders).
+pub struct LoadHistoryParams<'a> {
+    /// Message buffer to populate with restored history.
+    pub messages: &'a mut Vec<Message>,
+    /// Updated to the `db_id` of the last loaded message on success.
+    pub last_persisted_message_id: &'a mut Option<i64>,
+    /// Accumulates `db_id` values of soft-deleted orphaned tool-pair messages.
+    pub deferred_hide_ids: &'a mut Vec<i64>,
+    /// Borrow-lens into the agent's memory and conversation state.
+    pub memory_view: &'a MemoryPersistenceView<'a>,
+}
+
 /// Stateless façade for agent message persistence operations.
 ///
 /// This struct has no fields. All inputs flow through method parameters, which allows the
@@ -40,7 +55,7 @@ impl PersistenceService {
         Self
     }
 
-    /// Load conversation history from `SemanticMemory` into `messages`.
+    /// Load conversation history from `SemanticMemory` into the message buffer.
     ///
     /// Sanitizes orphaned tool-use/tool-result pairs and soft-deletes their `SQLite` rows.
     /// Updates `last_persisted_message_id` and populates `deferred_hide_ids` with IDs to be
@@ -51,17 +66,16 @@ impl PersistenceService {
     /// # Errors
     ///
     /// Returns [`PersistenceError`] if `SQLite` fails during history load or soft-delete.
-    #[allow(clippy::too_many_arguments)]
     pub async fn load_history(
         &self,
-        messages: &mut Vec<Message>,
-        last_persisted_message_id: &mut Option<i64>,
-        deferred_hide_ids: &mut Vec<i64>,
-        _deferred_summaries: &mut Vec<String>,
-        memory_view: &MemoryPersistenceView<'_>,
-        _config: &zeph_config::Config,
-        _metrics: &mut MetricsView<'_>,
+        params: LoadHistoryParams<'_>,
     ) -> Result<LoadHistoryOutcome, PersistenceError> {
+        let LoadHistoryParams {
+            messages,
+            last_persisted_message_id,
+            deferred_hide_ids,
+            memory_view,
+        } = params;
         let (Some(memory), Some(cid)) = (memory_view.memory, memory_view.conversation_id) else {
             return Ok(LoadHistoryOutcome {
                 messages_loaded: 0,
@@ -166,7 +180,6 @@ impl PersistenceService {
         last_persisted_message_id: &mut Option<i64>,
         memory_view: &mut MemoryPersistenceView<'_>,
         security: &SecurityView<'_>,
-        _config: &zeph_config::Config,
         metrics: &mut MetricsView<'_>,
     ) -> PersistMessageOutcome {
         let (Some(memory), Some(cid)) = (memory_view.memory, memory_view.conversation_id) else {

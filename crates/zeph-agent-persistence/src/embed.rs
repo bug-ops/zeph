@@ -6,6 +6,7 @@
 //! These are pure async functions that operate on `SemanticMemory` and message slices — no
 //! agent state or borrow-lens views required.
 
+use tracing::Instrument as _;
 use zeph_llm::provider::{MessagePart, Role};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::store::role_str;
@@ -71,6 +72,7 @@ pub fn should_embed_message(
 /// - `parts_json` — JSON-serialized message parts
 /// - `goal_text` — Optional current conversation goal (used for embedding enrichment)
 /// - `should_embed` — Whether to embed into Qdrant or write to `SQLite` only
+#[tracing::instrument(name = "persistence.write_message", skip_all, fields(cid = %cid, role = ?role, should_embed))]
 pub async fn write_message_to_memory(
     memory: &SemanticMemory,
     cid: zeph_memory::ConversationId,
@@ -81,8 +83,10 @@ pub async fn write_message_to_memory(
     should_embed: bool,
 ) -> Option<(bool, i64)> {
     if should_embed {
+        let span = tracing::info_span!("persistence.remember_with_parts");
         match memory
             .remember_with_parts(cid, role_str(role), content, parts_json, goal_text)
+            .instrument(span)
             .await
         {
             Ok((Some(message_id), stored)) => Some((stored, message_id.0)),
@@ -96,8 +100,10 @@ pub async fn write_message_to_memory(
             }
         }
     } else {
+        let span = tracing::info_span!("persistence.save_only");
         match memory
             .save_only(cid, role_str(role), content, parts_json)
+            .instrument(span)
             .await
         {
             Ok(message_id) => Some((false, message_id.0)),

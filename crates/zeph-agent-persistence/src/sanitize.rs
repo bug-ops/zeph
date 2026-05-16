@@ -46,47 +46,51 @@ pub fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
     let mut removed = 0;
     let mut db_ids: Vec<i64> = Vec::new();
 
-    loop {
-        // Remove trailing orphaned tool_use (assistant message with ToolUse, no following tool_result).
-        if let Some(last) = messages.last()
-            && last.role == Role::Assistant
-            && last
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
-        {
-            let ids: Vec<String> = last
-                .parts
-                .iter()
-                .filter_map(|p| {
-                    if let MessagePart::ToolUse { id, .. } = p {
-                        Some(id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            tracing::warn!(
-                tool_ids = ?ids,
-                "removing orphaned trailing tool_use message from restored history"
-            );
-            if let Some(db_id) = messages.last().and_then(|m| m.metadata.db_id) {
-                db_ids.push(db_id);
-            }
-            messages.pop();
-            removed += 1;
-            continue;
+    // Remove trailing orphaned tool_use messages (assistant with ToolUse, no following tool_result).
+    while let Some(last) = messages.last()
+        && last.role == Role::Assistant
+        && last
+            .parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+    {
+        let ids: Vec<String> = last
+            .parts
+            .iter()
+            .filter_map(|p| {
+                if let MessagePart::ToolUse { id, .. } = p {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        tracing::warn!(
+            tool_ids = ?ids,
+            "removing orphaned trailing tool_use message from restored history"
+        );
+        if let Some(db_id) = messages.last().and_then(|m| m.metadata.db_id) {
+            db_ids.push(db_id);
         }
+        messages.pop();
+        removed += 1;
+    }
 
-        // Remove leading orphaned tool_result (user message with ToolResult, no preceding tool_use).
-        if let Some(first) = messages.first()
-            && first.role == Role::User
-            && first
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-        {
-            let ids: Vec<String> = first
+    // Count leading orphaned tool_result messages (user with ToolResult, no preceding tool_use),
+    // then drain them in a single O(N) pass instead of repeated O(N) remove(0) calls.
+    let skip_count = messages
+        .iter()
+        .take_while(|m| {
+            m.role == Role::User
+                && m.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+        })
+        .count();
+
+    if skip_count > 0 {
+        for m in messages.iter().take(skip_count) {
+            let ids: Vec<String> = m
                 .parts
                 .iter()
                 .filter_map(|p| {
@@ -101,15 +105,12 @@ pub fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
                 tool_use_ids = ?ids,
                 "removing orphaned leading tool_result message from restored history"
             );
-            if let Some(db_id) = messages.first().and_then(|m| m.metadata.db_id) {
+            if let Some(db_id) = m.metadata.db_id {
                 db_ids.push(db_id);
             }
-            messages.remove(0);
-            removed += 1;
-            continue;
         }
-
-        break;
+        messages.drain(0..skip_count);
+        removed += skip_count;
     }
 
     let (mid_removed, mid_db_ids) = strip_mid_history_orphans(messages);
@@ -368,6 +369,62 @@ mod tests {
         let (removed, _) = sanitize_tool_pairs(&mut msgs);
         assert_eq!(removed, 1);
         assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn single_leading_orphan_tool_result_removed() {
+        let tool_result = MessagePart::ToolResult {
+            tool_use_id: "x1".to_owned(),
+            content: "output".to_owned(),
+            is_error: false,
+        };
+        let mut msgs = vec![
+            msg_with_parts(Role::User, "[tool_result: x1]", vec![tool_result]),
+            msg(Role::User, "hello"),
+            msg(Role::Assistant, "hi"),
+        ];
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+        assert_eq!(removed, 1);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].content, "hello");
+    }
+
+    #[test]
+    fn multiple_consecutive_leading_orphans_removed() {
+        let tr = |id: &str| MessagePart::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: "out".to_owned(),
+            is_error: false,
+        };
+        let mut msgs = vec![
+            msg_with_parts(Role::User, "[tool_result: a]", vec![tr("a")]),
+            msg_with_parts(Role::User, "[tool_result: b]", vec![tr("b")]),
+            msg_with_parts(Role::User, "[tool_result: c]", vec![tr("c")]),
+            msg(Role::User, "real message"),
+            msg(Role::Assistant, "ok"),
+        ];
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+        assert_eq!(removed, 3);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].content, "real message");
+    }
+
+    #[test]
+    fn trailing_orphan_does_not_remove_leading_clean_messages() {
+        let tool_use = MessagePart::ToolUse {
+            id: "t1".to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        };
+        let mut msgs = vec![
+            msg(Role::User, "first"),
+            msg(Role::Assistant, "second"),
+            msg(Role::User, "third"),
+            msg_with_parts(Role::Assistant, "[tool_use: bash(t1)]", vec![tool_use]),
+        ];
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+        assert_eq!(removed, 1);
+        assert_eq!(msgs.len(), 3);
     }
 
     #[test]
