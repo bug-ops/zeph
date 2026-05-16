@@ -111,7 +111,7 @@ impl ResponseCache {
         ))
         .bind(embedding_model)
         .bind(now)
-        .bind(max_candidates)
+        .bind(i64::from(max_candidates))
         .fetch_all(&self.pool)
         .await?;
 

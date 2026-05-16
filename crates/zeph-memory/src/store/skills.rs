@@ -461,6 +461,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the delete fails.
+    #[cfg(not(feature = "postgres"))]
     pub async fn prune_skill_versions(
         &self,
         skill_name: &str,
@@ -478,6 +479,32 @@ impl SqliteStore {
         .bind(skill_name)
         .bind(skill_name)
         .bind(max_versions)
+        .execute(&self.pool)
+        .await?;
+        Ok(u32::try_from(result.rows_affected()).unwrap_or(0))
+    }
+
+    /// Prune old auto-generated skill versions, keeping only the most recent `max_versions`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "postgres")]
+    pub async fn prune_skill_versions(
+        &self,
+        skill_name: &str,
+        max_versions: u32,
+    ) -> Result<u32, MemoryError> {
+        let result = zeph_db::query(sql!(
+            "DELETE FROM skill_versions WHERE id IN (\
+                SELECT id FROM skill_versions \
+                WHERE skill_name = ? AND source = 'auto' AND is_active = 0 \
+                ORDER BY id DESC \
+                OFFSET ?\
+            )"
+        ))
+        .bind(skill_name)
+        .bind(i64::from(max_versions))
         .execute(&self.pool)
         .await?;
         Ok(u32::try_from(result.rows_affected()).unwrap_or(0))
@@ -569,6 +596,7 @@ impl SqliteStore {
     ///
     /// # Errors
     /// Returns [`MemoryError`] on query failure.
+    #[cfg(not(feature = "postgres"))]
     pub async fn find_recurring_patterns(
         &self,
         min_count: u32,
@@ -603,16 +631,74 @@ impl SqliteStore {
             .collect())
     }
 
+    /// Find tool+skill combinations used at least `min_count` times within `window_days` days.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "postgres")]
+    pub async fn find_recurring_patterns(
+        &self,
+        min_count: u32,
+        window_days: u32,
+    ) -> Result<Vec<(String, String, u32, u32)>, MemoryError> {
+        let rows: Vec<(String, String, i64, i64)> = zeph_db::query_as(sql!(
+            "SELECT tool_sequence, sequence_hash, \
+                    COUNT(*) as occurrence_count, \
+                    SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as success_count \
+             FROM skill_usage_log \
+             WHERE created_at > NOW() - INTERVAL '1 day' * ? \
+             GROUP BY sequence_hash, tool_sequence \
+             HAVING COUNT(*) >= ? \
+             ORDER BY occurrence_count DESC \
+             LIMIT 10"
+        ))
+        .bind(i64::from(window_days))
+        .bind(i64::from(min_count))
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(seq, hash, occ, suc)| {
+                (
+                    seq,
+                    hash,
+                    u32::try_from(occ).unwrap_or(u32::MAX),
+                    u32::try_from(suc).unwrap_or(0),
+                )
+            })
+            .collect())
+    }
+
     /// Delete `skill_usage_log` rows older than `retention_days` days.
     ///
     /// # Errors
     /// Returns [`MemoryError`] on delete failure.
+    #[cfg(not(feature = "postgres"))]
     pub async fn prune_tool_usage_log(&self, retention_days: u32) -> Result<u64, MemoryError> {
         let result = zeph_db::query(sql!(
             "DELETE FROM skill_usage_log \
              WHERE created_at < datetime('now', '-' || ? || ' days')"
         ))
         .bind(retention_days)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Delete tool usage log entries older than `retention_days` days.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "postgres")]
+    pub async fn prune_tool_usage_log(&self, retention_days: u32) -> Result<u64, MemoryError> {
+        let result = zeph_db::query(sql!(
+            "DELETE FROM skill_usage_log \
+             WHERE created_at < NOW() - INTERVAL '1 day' * ?"
+        ))
+        .bind(i64::from(retention_days))
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -681,7 +767,7 @@ impl SqliteStore {
         ))
         .bind(skill_name)
         .bind(min_confidence)
-        .bind(limit)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -718,6 +804,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] on query failure.
+    #[cfg(not(feature = "postgres"))]
     pub async fn find_step_corrections(
         &self,
         skill_name: &str,
@@ -740,6 +827,39 @@ impl SqliteStore {
         .bind(error_context)
         .bind(tool_name)
         .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Find corrections that match the given skill, failure kind, error context, and tool name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[cfg(feature = "postgres")]
+    pub async fn find_step_corrections(
+        &self,
+        skill_name: &str,
+        failure_kind: &str,
+        error_context: &str,
+        tool_name: &str,
+        limit: u32,
+    ) -> Result<Vec<(i64, String)>, MemoryError> {
+        let rows: Vec<(i64, String)> = zeph_db::query_as(sql!(
+            "SELECT id, hint FROM step_corrections \
+             WHERE skill_name = ? \
+               AND (failure_kind = '' OR failure_kind = ?) \
+               AND (error_substring = '' OR strpos(?, error_substring) > 0) \
+               AND (tool_name = '' OR tool_name = ?) \
+             ORDER BY success_count DESC, use_count DESC \
+             LIMIT ?"
+        ))
+        .bind(skill_name)
+        .bind(failure_kind)
+        .bind(error_context)
+        .bind(tool_name)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)

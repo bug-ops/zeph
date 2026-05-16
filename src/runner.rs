@@ -2138,6 +2138,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.skills.two_stage_matching,
         config.skills.confusability_threshold,
     )
+    .with_skill_provider_names(
+        config.skills.generation_provider.as_str().to_owned(),
+        config.skills.disambiguate_provider.as_str().to_owned(),
+    )
     .with_skill_reload(skill_paths, reload_rx)
     .with_plugin_dirs_supplier(plugin_dirs_supplier)
     .with_managed_skills_dir(crate::bootstrap::managed_skills_dir())

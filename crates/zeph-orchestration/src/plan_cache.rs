@@ -304,7 +304,7 @@ impl PlanCache {
              ORDER BY last_accessed_at DESC LIMIT ?"
         ))
         .bind(embedding_model)
-        .bind(self.config.max_templates)
+        .bind(i64::from(self.config.max_templates))
         .fetch_all(&self.pool)
         .await?;
 

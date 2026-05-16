@@ -85,7 +85,7 @@ impl SqliteStore {
              ORDER BY id DESC LIMIT ?"
         ))
         .bind(skill_name)
-        .bind(limit)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
@@ -105,7 +105,7 @@ impl SqliteStore {
              skill_name, correction_kind, created_at \
              FROM user_corrections ORDER BY id DESC LIMIT ?"
         ))
-        .bind(limit)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())

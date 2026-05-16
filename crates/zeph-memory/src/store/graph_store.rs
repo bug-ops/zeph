@@ -119,6 +119,7 @@ impl RawGraphStore for TaskGraphStore {
         Ok(())
     }
 
+    #[cfg(not(feature = "postgres"))]
     async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
         let row: Option<(String,)> =
             zeph_db::query_as(sql!("SELECT graph_json FROM task_graphs WHERE id = ?"))
@@ -129,6 +130,7 @@ impl RawGraphStore for TaskGraphStore {
         Ok(row.map(|(json,)| json))
     }
 
+    #[cfg(not(feature = "postgres"))]
     async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, MemoryError> {
         let rows: Vec<(String, String, String, String, Option<String>)> = zeph_db::query_as(sql!(
             "SELECT id, goal, status, created_at, finished_at \
@@ -149,6 +151,45 @@ impl RawGraphStore for TaskGraphStore {
                 status,
                 created_at,
                 finished_at,
+            })
+            .collect())
+    }
+
+    #[cfg(feature = "postgres")]
+    async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
+        let row: Option<String> = sqlx::query_scalar::<sqlx::Postgres, String>(sql!(
+            "SELECT graph_json FROM task_graphs WHERE id = ?"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+        Ok(row)
+    }
+
+    #[cfg(feature = "postgres")]
+    async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, MemoryError> {
+        use sqlx::Row as _;
+
+        let rows = sqlx::query::<sqlx::Postgres>(sql!(
+            "SELECT id, goal, status, created_at, finished_at \
+             FROM task_graphs \
+             ORDER BY created_at DESC \
+             LIMIT ?"
+        ))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| GraphSummary {
+                id: row.get("id"),
+                goal: row.get("goal"),
+                status: row.get("status"),
+                created_at: row.get("created_at"),
+                finished_at: row.get("finished_at"),
             })
             .collect())
     }

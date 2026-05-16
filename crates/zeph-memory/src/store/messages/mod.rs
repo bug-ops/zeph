@@ -272,7 +272,7 @@ impl SqliteStore {
              ) ORDER BY id ASC"
         ))
         .bind(conversation_id)
-        .bind(limit)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
 
@@ -334,7 +334,7 @@ impl SqliteStore {
         .bind(conversation_id)
         .bind(exclude_user_only)
         .bind(exclude_agent_only)
-        .bind(limit)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
 
@@ -491,7 +491,7 @@ impl SqliteStore {
             sql!("SELECT id FROM messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?"),
         )
         .bind(conversation_id)
-        .bind(n)
+        .bind(i64::from(n))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| r.0).collect())

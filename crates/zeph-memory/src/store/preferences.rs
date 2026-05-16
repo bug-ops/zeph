@@ -135,7 +135,7 @@ impl SqliteStore {
              ORDER BY id ASC LIMIT ?"
         ))
         .bind(after_id)
-        .bind(limit)
+        .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await?;
 

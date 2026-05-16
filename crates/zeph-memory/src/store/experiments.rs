@@ -169,7 +169,7 @@ impl SqliteStore {
                  FROM experiment_results WHERE session_id = ? ORDER BY id DESC LIMIT ?"
             ))
             .bind(sid)
-            .bind(limit)
+            .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await?
         } else {
@@ -178,7 +178,7 @@ impl SqliteStore {
                  delta, latency_ms, tokens_used, accepted, source, created_at \
                  FROM experiment_results ORDER BY id DESC LIMIT ?"
             ))
-            .bind(limit)
+            .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await?
         };

@@ -345,6 +345,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the LLM provider names for skill generation and disambiguation.
+    ///
+    /// Both names are resolved at runtime via the provider registry. An empty string falls back
+    /// to the primary provider.
+    #[must_use]
+    pub fn with_skill_provider_names(
+        mut self,
+        generation_provider_name: String,
+        disambiguate_provider_name: String,
+    ) -> Self {
+        self.services.skill.generation_provider_name = generation_provider_name;
+        self.services.skill.disambiguate_provider_name = disambiguate_provider_name;
+        self
+    }
+
     /// Override the embedding model name used for skill matching.
     #[must_use]
     pub fn with_embedding_model(mut self, model: String) -> Self {
