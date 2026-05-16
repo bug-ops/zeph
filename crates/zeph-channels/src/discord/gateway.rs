@@ -84,11 +84,17 @@ async fn run_session(
     token: &str,
     tx: &mpsc::Sender<IncomingMessage>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (ws_stream, _): (WsStream, _) = connect_async(GATEWAY_URL).await?;
+    let (ws_stream, _): (WsStream, _) =
+        tokio::time::timeout(Duration::from_secs(10), connect_async(GATEWAY_URL))
+            .await
+            .map_err(|_| "discord gateway connect timed out")?
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
     let (mut write, mut read) = ws_stream.split();
 
     // Wait for Hello (op 10)
-    let hello_text = read_next_text(&mut read).await?;
+    let hello_text = tokio::time::timeout(Duration::from_secs(30), read_next_text(&mut read))
+        .await
+        .map_err(|_| "discord gateway hello timed out")??;
     let hello: Value = serde_json::from_str(&hello_text)?;
     let op = hello.get("op").and_then(Value::as_u64).unwrap_or(0);
     if op != 10 {
@@ -234,12 +240,12 @@ async fn ack_interaction(
     );
     // type 5 = DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
     let body = serde_json::json!({"type": 5});
-    client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await?
-        .error_for_status()?;
+    tokio::time::timeout(Duration::from_secs(3), client.post(&url).json(&body).send())
+        .await
+        .map_err(|_| "discord interaction ack timed out")?
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        .error_for_status()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
     Ok(())
 }
 
