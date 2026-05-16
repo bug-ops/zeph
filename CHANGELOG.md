@@ -20,6 +20,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-commands`: `GoalCommand::handle` now propagates errors via `?` instead of silently converting
+  them to a display string with `unwrap_or_else` (closes #3933).
+- `zeph-commands`: shared test mock types (`MockDebug`, `MockMessages`, `MockSession`, `make_ctx`)
+  extracted from 14 handler modules into a single `handlers::test_helpers` module, eliminating
+  ~1400 lines of duplicated boilerplate (closes #3926).
+- `zeph-llm`: `EmaTracker` internal state consolidated from two separate `Arc<Mutex<>>` fields into
+  a single `Arc<parking_lot::RwLock<EmaState>>`, eliminating the TOCTOU window in `maybe_reorder`
+  and enabling concurrent reads via `snapshot` (closes #3892).
 - `zeph-experiments`: `ExperimentResult.id` changed from `i64` (with `-1` sentinel for
   unpersisted results) to `Option<i64>`; `None` now represents an unpersisted result, eliminating
   the sentinel value (closes #3950).
