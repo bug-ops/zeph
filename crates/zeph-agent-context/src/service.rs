@@ -1773,9 +1773,6 @@ mod tests {
         // path compiles and does not panic with the new conditional blocks in place.
         #[tokio::test]
         async fn prepare_context_tiered_enabled_no_budget_returns_default() {
-            use zeph_llm::any::AnyProvider;
-            use zeph_llm::mock::MockProvider;
-
             let mut msgs: Vec<zeph_llm::provider::Message> = vec![];
             let mut cached = 0u64;
             let mut completed = HashSet::new();
@@ -1838,14 +1835,8 @@ mod tests {
                 tiered_retrieval_validator: None,
             };
 
-            let mock = AnyProvider::Mock(MockProvider::default());
-            let providers = crate::state::ProviderHandles {
-                primary: mock.clone(),
-                embedding: mock,
-            };
-
             let result = ContextService::new()
-                .prepare_context("test query", &mut window, &mut view, &providers)
+                .prepare_context("test query", &mut window, &mut view)
                 .await;
 
             assert!(
