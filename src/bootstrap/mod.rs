@@ -1724,7 +1724,6 @@ pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> 
             let arc = Arc::new(RwLock::new(provider));
             Some(Box::new(zeph_core::vault::ArcAgeVaultProvider(arc)))
         }
-        VaultBackend::Keyring => None,
         _ => None,
     }
 }
