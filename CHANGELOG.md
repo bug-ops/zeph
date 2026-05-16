@@ -18,28 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `run_with_interval()`, and `run_with_interval_and_grace()`, and `scheduler.task.execute`
   spans around each handler invocation in `tick()` and `catch_up_missed()` (closes #3945).
 
-### Changed
-
-- `zeph-bench`: `BenchRunner::new` no longer takes a `_no_deterministic: bool` parameter.
-  The flag was dead code — deterministic overrides are applied to the provider before
-  construction via `apply_deterministic_overrides`. All call sites updated (closes #3952).
-- `zeph-bench`: scenario-filter validation and skip logic extracted into a shared
-  `filter_scenarios` helper, eliminating duplicate code in `run_dataset` and
-  `run_dataset_with_env_factory` (closes #3953).
-- `zeph-bench`: `run_dataset`, `run_dataset_with_env_factory`, and `run_one_with_executor`
-  are now instrumented with `tracing::info_span!` blocks (`bench.run_dataset`,
-  `bench.run_dataset_with_env_factory`, `bench.scenario`, `bench.run_one`), making bench
-  runs visible in Perfetto and Jaeger traces (closes #3948).
-
-- `zeph-skills`: skill embedding vectors are now typed as `SkillEmbedding(Vec<f32>)` instead
-  of raw `Vec<f32>`. The newtype carries its dimension and requires explicit construction via
-  `SkillEmbedding::new(vec, expected_dim)` (validated) or `SkillEmbedding::from_raw(vec)`
-  (trusted provider boundary). All call sites in `SkillMatcher`, `CategoryMatcher`, and
-  `SkillMiner` — including test helpers — have been migrated. `EmbeddingDimMismatch` error
-  variant added to `SkillError` for future runtime validation (closes #3804).
-
 ### Fixed
 
+- `zeph-subagent` hooks: eliminated a deadlock in `fire_shell_hook` where `tokio::join!` caused
+  `read_fut` to block on stdout EOF while `child.kill()` was gated behind the same join, preventing
+  the process from ever exiting. Replaced with a sequential await pattern: wait with timeout first,
+  then read stdout after the child exits (closes #4011).
+- `zeph-core` tier_loop: replaced sync `EnteredSpan` guards (`_span = span.entered()`) held across
+  `.await` in `PreToolUse`, `PostToolUse`, and `permission_denied` hook dispatch with
+  `.instrument(span)` to eliminate undefined behaviour due to `EnteredSpan: !Send` on thread
+  migration (closes #4008).
 - `zeph-common`: new `timestamp` module with `utc_now_rfc3339()`, `utc_now_compact()`, and
   `utc_now_datetime()` helpers — eliminates ~60 lines of duplicated Gregorian calendar arithmetic
   that existed independently in `zeph-bench` and `zeph-experiments` (closes #3837).
@@ -100,6 +88,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   enforcing `[a-z][a-z0-9-]*` as the full grammar (closes #3929).
 - `zeph-plugins`: `validate_plugin_name` now enforces a 64-character length cap;
   names exceeding this limit return `PluginError::InvalidName` with a clear message (closes #3930).
+
+### Changed
+
+- `zeph-bench`: `BenchRunner::new` no longer takes a `_no_deterministic: bool` parameter.
+  The flag was dead code — deterministic overrides are applied to the provider before
+  construction via `apply_deterministic_overrides`. All call sites updated (closes #3952).
+- `zeph-bench`: scenario-filter validation and skip logic extracted into a shared
+  `filter_scenarios` helper, eliminating duplicate code in `run_dataset` and
+  `run_dataset_with_env_factory` (closes #3953).
+- `zeph-bench`: `run_dataset`, `run_dataset_with_env_factory`, and `run_one_with_executor`
+  are now instrumented with `tracing::info_span!` blocks (`bench.run_dataset`,
+  `bench.run_dataset_with_env_factory`, `bench.scenario`, `bench.run_one`), making bench
+  runs visible in Perfetto and Jaeger traces (closes #3948).
+
+- `zeph-skills`: skill embedding vectors are now typed as `SkillEmbedding(Vec<f32>)` instead
+  of raw `Vec<f32>`. The newtype carries its dimension and requires explicit construction via
+  `SkillEmbedding::new(vec, expected_dim)` (validated) or `SkillEmbedding::from_raw(vec)`
+  (trusted provider boundary). All call sites in `SkillMatcher`, `CategoryMatcher`, and
+  `SkillMiner` — including test helpers — have been migrated. `EmbeddingDimMismatch` error
+  variant added to `SkillError` for future runtime validation (closes #3804).
 
 ### Changed
 
