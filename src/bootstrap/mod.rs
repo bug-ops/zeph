@@ -151,6 +151,9 @@ impl AppBuilder {
                     "keyring vault backend is not yet implemented".into(),
                 ));
             }
+            _ => {
+                return Err(BootstrapError::Provider("unsupported vault backend".into()));
+            }
         };
 
         config.resolve_secrets(vault.as_ref()).await?;
@@ -1722,6 +1725,7 @@ pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> 
             Some(Box::new(zeph_core::vault::ArcAgeVaultProvider(arc)))
         }
         VaultBackend::Keyring => None,
+        _ => None,
     }
 }
 

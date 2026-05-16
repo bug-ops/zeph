@@ -53,7 +53,14 @@ fn parse_backend_str(s: &str) -> VaultBackend {
     match s {
         "age" => VaultBackend::Age,
         "keyring" => VaultBackend::Keyring,
-        _ => VaultBackend::Env,
+        _ => {
+            tracing::warn!(
+                input = s,
+                "unknown vault backend '{}', falling back to env",
+                s
+            );
+            VaultBackend::Env
+        }
     }
 }
 

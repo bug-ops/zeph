@@ -103,6 +103,7 @@ fn default_vault_backend() -> VaultBackend {
 }
 
 /// Selects the vault backend used to resolve secrets at startup.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum VaultBackend {
