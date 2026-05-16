@@ -698,6 +698,31 @@ mod tests {
     }
 
     #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn evaluate_emits_tracing_span() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let benchmark = BenchmarkSet {
+            cases: vec![BenchmarkCase {
+                prompt: "What is 1+1?".into(),
+                context: None,
+                reference: None,
+                tags: None,
+            }],
+        };
+        let subject = AnyProvider::Mock(MockProvider::with_responses(vec!["Two".into()]));
+        let judge = AnyProvider::Mock(MockProvider::with_responses(vec![
+            r#"{"score": 9.0, "reason": "correct"}"#.into(),
+        ]));
+        let evaluator = Evaluator::new(Arc::new(judge), benchmark, 1_000_000).unwrap();
+        evaluator.evaluate(&subject).await.unwrap();
+
+        assert!(logs_contain("experiments.evaluator.evaluate"));
+    }
+
+    #[tokio::test]
     async fn evaluator_with_mock_provider() {
         use std::sync::Arc;
         use zeph_llm::any::AnyProvider;

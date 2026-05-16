@@ -10721,6 +10721,7 @@ dependencies = [
  "tokio-util",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
+ "tracing-test",
  "zeph-common",
  "zeph-config",
  "zeph-llm",

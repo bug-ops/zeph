@@ -189,6 +189,12 @@ impl ExperimentEngine {
     /// Returns [`EvalError`] if the baseline evaluation or any subject LLM call fails.
     /// `SQLite` persistence failures are returned as [`EvalError::Storage`].
     pub async fn run(&mut self) -> Result<ExperimentSessionReport, EvalError> {
+        let _span = tracing::info_span!(
+            "experiments.engine.run",
+            session_id = %self.session_id,
+            source = %self.source,
+        )
+        .entered();
         let start = Instant::now();
         let best_snapshot = self.baseline.clone();
 
@@ -243,6 +249,12 @@ impl ExperimentEngine {
         initial_baseline_score: f64,
         mut best_snapshot: ConfigSnapshot,
     ) -> Result<ExperimentSessionReport, EvalError> {
+        let _span = tracing::info_span!(
+            "experiments.engine.run_loop",
+            session_id = %self.session_id,
+            source = %self.source,
+        )
+        .entered();
         let wall_limit = std::time::Duration::from_secs(self.config.max_wall_time_secs);
         let mut results: Vec<ExperimentResult> = Vec::new();
         let mut visited: HashSet<Variation> = HashSet::new();
@@ -870,6 +882,46 @@ mod tests {
         let ts = timestamp::utc_now_rfc3339();
         assert!(!ts.is_empty());
         assert_eq!(ts.len(), 20);
+    }
+
+    #[tokio::test]
+    async fn experiment_result_created_at_is_rfc3339() {
+        let config = ExperimentConfig {
+            max_experiments: 1,
+            max_wall_time_secs: 3600,
+            min_improvement: 0.0,
+            ..Default::default()
+        };
+        let subject = make_subject_mock(2);
+        let judge = make_judge_mock(2);
+        let evaluator = Evaluator::new(Arc::new(judge), make_benchmark(), 1_000_000).unwrap();
+
+        let mut engine = ExperimentEngine::new(
+            evaluator,
+            Box::new(NVariationGenerator::new(1)),
+            Arc::new(subject),
+            ConfigSnapshot::default(),
+            config,
+            None,
+        );
+
+        let report = engine.run().await.unwrap();
+        assert_eq!(report.results.len(), 1);
+        let created_at = &report.results[0].created_at;
+        assert!(!created_at.is_empty(), "created_at must not be empty");
+        assert_eq!(
+            created_at.len(),
+            20,
+            "RFC 3339 timestamp must be 20 chars: {created_at}"
+        );
+        assert!(
+            created_at.contains('T'),
+            "RFC 3339 timestamp must contain 'T': {created_at}"
+        );
+        assert!(
+            created_at.ends_with('Z'),
+            "RFC 3339 timestamp must end with 'Z': {created_at}"
+        );
     }
 
     /// `ExperimentEngine` must be Send to be used with `tokio::spawn`.
