@@ -326,7 +326,7 @@ impl SqliteStore {
     /// Save a new skill version and atomically activate it within a single `BEGIN IMMEDIATE`
     /// transaction, preventing orphaned saved-but-inactive versions on crash or concurrent access.
     ///
-    /// Equivalent to calling [`save_skill_version`] followed by [`activate_skill_version`] but
+    /// Equivalent to calling [`Self::save_skill_version`] followed by [`Self::activate_skill_version`] but
     /// without the window between the two calls where the DB can be left in an inconsistent state.
     ///
     /// # Errors
