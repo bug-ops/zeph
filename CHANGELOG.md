@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   adding protocol variants without breaking downstream matches (closes #3893).
 - `zeph-config`: `ProviderKind`, `RouterStrategyConfig`, `LlmRoutingStrategy`, `CascadeClassifierMode`
   are now `#[non_exhaustive]` for forward compatibility (closes #3893).
+- `zeph-config`: `VaultBackend` is now `#[non_exhaustive]` for consistency with other public
+  enums introduced in ec361936; external exhaustive matches updated with a wildcard arm (closes #4061).
+
+### Fixed
+
+- `parse_backend_str` now emits a `tracing::warn!` when the input string does not match any known
+  vault backend, preventing silent fallback to `VaultBackend::Env` on typos (closes #4062).
 
 ### Dependencies
 
