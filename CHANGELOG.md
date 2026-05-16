@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   assembler (closes #3984).
 - `zeph-context`: `run_chunk_summaries` now converts the `guidelines` string to `Arc<str>` once
   before the chunk iterator, replacing a `String` clone per chunk with a cheap `Arc` clone (closes #3991).
+- `zeph-context`: added `tracing::instrument` spans to the remaining 7 uninstrumented `fetch_*`
+  functions in the assembler (`context.graph_facts`, `context.reasoning_strategies`,
+  `context.corrections`, `context.semantic_recall`, `context.document_rag`, `context.summaries`,
+  `context.cross_session`), completing full hot-path trace coverage (closes #4092).
 
 ### Refactored
 

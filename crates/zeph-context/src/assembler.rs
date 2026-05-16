@@ -386,6 +386,7 @@ pub fn effective_recall_timeout_ms(configured: u64) -> u64 {
 
 use crate::input::ContextMemoryView;
 
+#[tracing::instrument(name = "context.graph_facts", skip_all)]
 #[allow(clippy::too_many_lines)] // single-pass view-aware enrichment pipeline
 pub(crate) async fn fetch_graph_facts(
     memory: &ContextMemoryView,
@@ -668,6 +669,7 @@ pub(crate) async fn fetch_tree_memory(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[tracing::instrument(name = "context.reasoning_strategies", skip_all)]
 pub(crate) async fn fetch_reasoning_strategies(
     memory: &ContextMemoryView,
     query: &str,
@@ -729,6 +731,7 @@ pub(crate) async fn fetch_reasoning_strategies(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+#[tracing::instrument(name = "context.corrections", skip_all)]
 pub(crate) async fn fetch_corrections(
     memory: &ContextMemoryView,
     query: &str,
@@ -755,6 +758,7 @@ pub(crate) async fn fetch_corrections(
     Ok(Some(Message::from_legacy(Role::System, text)))
 }
 
+#[tracing::instrument(name = "context.semantic_recall", skip_all)]
 pub(crate) async fn fetch_semantic_recall(
     memory: &ContextMemoryView,
     query: &str,
@@ -809,6 +813,7 @@ pub(crate) async fn fetch_semantic_recall(
     }
 }
 
+#[tracing::instrument(name = "context.document_rag", skip_all)]
 pub(crate) async fn fetch_document_rag(
     memory: &ContextMemoryView,
     query: &str,
@@ -860,6 +865,7 @@ pub(crate) async fn fetch_document_rag(
     }
 }
 
+#[tracing::instrument(name = "context.summaries", skip_all)]
 pub(crate) async fn fetch_summaries(
     memory: &ContextMemoryView,
     token_budget: usize,
@@ -905,6 +911,7 @@ pub(crate) async fn fetch_summaries(
     }
 }
 
+#[tracing::instrument(name = "context.cross_session", skip_all)]
 pub(crate) async fn fetch_cross_session(
     memory: &ContextMemoryView,
     query: &str,
