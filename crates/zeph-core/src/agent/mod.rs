@@ -2619,6 +2619,7 @@ impl<C: Channel> Agent<C> {
                 let score = child.score_now();
                 if score > 0.0 { Some(score) } else { None }
             },
+            content_isolation: self.runtime.config.security.content_isolation.clone(),
         }
     }
 

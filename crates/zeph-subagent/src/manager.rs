@@ -18,7 +18,7 @@ use zeph_tools::FileExecutor;
 use zeph_tools::ToolCall;
 use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
 
-use zeph_config::SubAgentConfig;
+use zeph_config::{ContentIsolationConfig, SubAgentConfig};
 
 use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
 
@@ -66,6 +66,9 @@ pub struct SpawnContext {
     /// rather than `0.0`, preventing a subagent spawn from acting as a free risk reset.
     /// The subagent loop applies this via `TrajectorySentinel::seed_score` after build.
     pub seed_trajectory_score: Option<f32>,
+    /// Parent's content isolation config, propagated so the subagent loop can run the
+    /// same sanitizer settings on hook-replaced tool output.
+    pub content_isolation: ContentIsolationConfig,
 }
 
 /// Wraps an executor to allow file operations on the agent's memory directory.
@@ -827,6 +830,7 @@ impl SubAgentManager {
                 transcript_writer,
                 spawn_depth: spawn_depth + 1,
                 mcp_tool_names,
+                content_isolation: ctx.content_isolation,
             }));
 
         let handle_transcript_dir = if config.transcript_enabled {
@@ -1303,6 +1307,7 @@ impl SubAgentManager {
                 transcript_writer,
                 spawn_depth: 0,
                 mcp_tool_names: Vec::new(),
+                content_isolation: ContentIsolationConfig::default(),
             }));
 
         let resume_handle_transcript_dir = if config.transcript_enabled {
@@ -1538,7 +1543,7 @@ mod tests {
 
     use crate::agent_loop::{AgentLoopArgs, make_message, run_agent_loop};
     use crate::def::{MemoryScope, ModelSpec};
-    use zeph_config::SubAgentConfig;
+    use zeph_config::{ContentIsolationConfig, SubAgentConfig};
     use zeph_llm::provider::ChatResponse;
 
     use super::*;
@@ -3257,6 +3262,7 @@ mod tests {
             transcript_writer: None,
             spawn_depth: 0,
             mcp_tool_names: Vec::new(),
+            content_isolation: ContentIsolationConfig::default(),
         }
     }
 

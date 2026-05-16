@@ -11043,6 +11043,7 @@ dependencies = [
  "zeph-common",
  "zeph-config",
  "zeph-llm",
+ "zeph-sanitizer",
  "zeph-skills",
  "zeph-tools",
 ]

@@ -500,9 +500,12 @@ fn skill_paths_for_watcher_includes_plugins_root() {
 
 #[tokio::test]
 async fn create_skill_matcher_when_semantic_disabled() {
-    let tmp = std::env::temp_dir().join("zeph_test_skill_matcher_bootstrap.db");
-    let _ = std::fs::remove_file(&tmp);
-    let tmp_path = tmp.to_string_lossy().to_string();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let tmp_path = tmp_dir
+        .path()
+        .join("skill_matcher_bootstrap.db")
+        .to_string_lossy()
+        .to_string();
 
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.memory.semantic.enabled = false;
@@ -528,8 +531,6 @@ async fn create_skill_matcher_when_semantic_disabled() {
     let meta: Vec<&SkillMeta> = vec![];
     let result = create_skill_matcher(&config, &provider, &meta, &memory, "test-model", None).await;
     assert!(result.is_none());
-
-    let _ = std::fs::remove_file(&tmp);
 }
 
 #[test]

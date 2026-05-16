@@ -9,6 +9,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
     ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ToolDefinition,
 };
+use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use super::filter::FilteredToolExecutor;
@@ -78,6 +79,7 @@ pub(super) struct AgentLoopArgs {
     pub(super) transcript_writer: Option<TranscriptWriter>,
     pub(super) spawn_depth: u32,
     pub(super) mcp_tool_names: Vec<String>,
+    pub(super) content_isolation: zeph_config::ContentIsolationConfig,
 }
 
 pub(super) fn make_message(role: Role, content: String) -> Message {
@@ -390,6 +392,7 @@ async fn run_turn(
     started_at: Instant,
     secret_request_tx: &mpsc::Sender<SecretRequest>,
     secret_rx: &mut mpsc::Receiver<Option<String>>,
+    sanitizer: &ContentSanitizer,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let response =
         call_provider_with_status(provider, messages, tool_defs, status_tx, *turns, started_at)
@@ -424,7 +427,10 @@ async fn run_turn(
     }
 
     let prev_len = messages.len();
-    let no_tool = handle_tool_step(executor, response, messages, hooks, task_id, agent_name).await;
+    let no_tool = handle_tool_step(
+        executor, response, messages, hooks, task_id, agent_name, sanitizer,
+    )
+    .await;
 
     if no_tool {
         let mut nudge_messages = Vec::new();
@@ -460,6 +466,7 @@ async fn handle_tool_step(
     hooks: &SubagentHooks,
     task_id: &str,
     agent_name: &str,
+    sanitizer: &ContentSanitizer,
 ) -> bool {
     match response {
         ChatResponse::Text(text) => {
@@ -569,7 +576,22 @@ async fn handle_tool_step(
                                         tool = %tc.name,
                                         "PostToolUse hook replaced sub-agent tool output"
                                     );
-                                    content = replacement;
+                                    let source = if tc.name.as_str().contains(':') {
+                                        ContentSource::new(ContentSourceKind::McpResponse)
+                                            .with_identifier(tc.name.as_str())
+                                    } else {
+                                        ContentSource::new(ContentSourceKind::ToolResult)
+                                            .with_identifier(tc.name.as_str())
+                                    };
+                                    let san_result = sanitizer.sanitize(&replacement, source);
+                                    if !san_result.injection_flags.is_empty() {
+                                        tracing::warn!(
+                                            tool = %tc.name,
+                                            flags = san_result.injection_flags.len(),
+                                            "injection patterns detected in hook-replaced sub-agent tool output"
+                                        );
+                                    }
+                                    content = san_result.body;
                                 }
                             }
                             Err(e) => {
@@ -620,7 +642,10 @@ pub(super) async fn run_agent_loop(
         mut transcript_writer,
         spawn_depth: _spawn_depth,
         mcp_tool_names,
+        content_isolation,
     } = args;
+
+    let sanitizer = ContentSanitizer::new(&content_isolation);
 
     let effective_system_prompt =
         build_effective_system_prompt(system_prompt, skills, &mcp_tool_names);
@@ -668,6 +693,7 @@ pub(super) async fn run_agent_loop(
             started_at,
             &secret_request_tx,
             &mut secret_rx,
+            &sanitizer,
         )
         .await?
         {
