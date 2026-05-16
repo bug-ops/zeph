@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 /// Per-provider EMA statistics used for routing decisions.
 #[derive(Debug, Clone)]
@@ -26,30 +26,34 @@ impl Default for ProviderStats {
     }
 }
 
+#[derive(Debug, Default)]
+struct EmaState {
+    stats: HashMap<String, ProviderStats>,
+    call_counter: u64,
+}
+
 /// Thread-safe EMA tracker for multiple named providers.
 #[derive(Debug, Clone)]
 pub struct EmaTracker {
-    stats: Arc<Mutex<HashMap<String, ProviderStats>>>,
+    inner: Arc<RwLock<EmaState>>,
     alpha: f64,
     reorder_interval: u64,
-    call_counter: Arc<Mutex<u64>>,
 }
 
 impl EmaTracker {
     #[must_use]
     pub fn new(alpha: f64, reorder_interval: u64) -> Self {
         Self {
-            stats: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(RwLock::new(EmaState::default())),
             alpha,
             reorder_interval,
-            call_counter: Arc::new(Mutex::new(0)),
         }
     }
 
     /// Record the outcome of a provider call.
     pub fn record(&self, provider_name: &str, success: bool, latency_ms: u64) {
-        let mut stats = self.stats.lock();
-        let entry = stats.entry(provider_name.to_owned()).or_default();
+        let mut state = self.inner.write();
+        let entry = state.stats.entry(provider_name.to_owned()).or_default();
         let success_val = if success { 1.0 } else { 0.0 };
         entry.success_ema = self.alpha * success_val + (1.0 - self.alpha) * entry.success_ema;
         #[allow(clippy::cast_precision_loss)]
@@ -63,17 +67,21 @@ impl EmaTracker {
     /// Returns `None` if the interval has not been reached yet.
     #[must_use]
     pub fn maybe_reorder(&self, current_order: &[String]) -> Option<Vec<String>> {
-        let mut counter = self.call_counter.lock();
-        *counter += 1;
-        if self.reorder_interval == 0 || !(*counter).is_multiple_of(self.reorder_interval) {
-            return None;
+        {
+            let mut state = self.inner.write();
+            state.call_counter += 1;
+            if self.reorder_interval == 0
+                || !state.call_counter.is_multiple_of(self.reorder_interval)
+            {
+                return None;
+            }
         }
 
-        let stats = self.stats.lock();
+        let state = self.inner.read();
         let mut scored: Vec<(String, f64)> = current_order
             .iter()
             .map(|name| {
-                let s = stats.get(name).cloned().unwrap_or_default();
+                let s = state.stats.get(name).cloned().unwrap_or_default();
                 // Higher score = preferred. Penalize high latency (normalized to ~0-1).
                 let score = s.success_ema - s.latency_ema_ms / 10_000.0;
                 (name.clone(), score)
@@ -86,7 +94,7 @@ impl EmaTracker {
     /// Return a snapshot of current stats for all tracked providers.
     #[must_use]
     pub fn snapshot(&self) -> HashMap<String, ProviderStats> {
-        self.stats.lock().clone()
+        self.inner.read().stats.clone()
     }
 }
 

@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-commands`: `GoalCommand::handle` now propagates errors via `?` instead of silently converting
+  them to a display string with `unwrap_or_else` (closes #3933).
+- `zeph-commands`: shared test mock types (`MockDebug`, `MockMessages`, `MockSession`, `make_ctx`)
+  extracted from 14 handler modules into a single `handlers::test_helpers` module, eliminating
+  ~1400 lines of duplicated boilerplate (closes #3926).
+- `zeph-llm`: `EmaTracker` internal state consolidated from two separate `Arc<Mutex<>>` fields into
+  a single `Arc<parking_lot::RwLock<EmaState>>`, eliminating the TOCTOU window in `maybe_reorder`
+  and enabling concurrent reads via `snapshot` (closes #3892).
+
 - `zeph-config`: `VaultConfig.backend` is now typed as `VaultBackend` enum instead of `String`,
   with `serde(rename_all = "lowercase")` so existing TOML configs remain compatible (closes #3886).
 - `zeph-a2a`: `TaskState`, `Role`, `Part`, `TaskEvent` are now `#[non_exhaustive]` to allow

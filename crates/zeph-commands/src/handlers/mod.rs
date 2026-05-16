@@ -35,4 +35,6 @@ pub mod status;
 // These commands continue to be dispatched via dispatch_slash_command in zeph-core until
 // SemanticMemory and AnyProvider implement Sync.
 pub mod skill;
+#[cfg(test)]
+pub mod test_helpers;
 pub mod trajectory;
