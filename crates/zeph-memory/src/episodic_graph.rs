@@ -29,6 +29,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
@@ -101,54 +102,57 @@ pub async fn extract_events(
     message_id: MessageId,
     config: &EmGraphConfig,
 ) -> Vec<EpisodicEvent> {
-    let _span =
-        tracing::debug_span!("memory.em_graph.extract_events", message_id = message_id.0).entered();
+    let span = tracing::debug_span!("memory.em_graph.extract_events", message_id = message_id.0);
 
-    if !config.enabled {
-        return vec![];
+    async move {
+        if !config.enabled {
+            return vec![];
+        }
+
+        let snippet = content.chars().take(2000).collect::<String>();
+
+        let prompt = format!(
+            "Identify episodic events in the following conversation turn. \
+            An event is a concrete action, decision, discovery, or error. \
+            Return a JSON array of objects with fields: \
+            {{\"event_type\": \"<type>\", \"summary\": \"<one sentence>\"}}. \
+            Types: decision, discovery, error, tool_use, question, answer, other. \
+            Return [] if no notable events. Output JSON only.\n\nTurn:\n{snippet}"
+        );
+
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "You are an episodic memory extractor. Extract concrete events from \
+                          conversation turns as structured JSON. Output only valid JSON, no preamble."
+                    .to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+
+        let raw = match tokio::time::timeout(Duration::from_secs(10), provider.chat(&messages)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "em_graph: event extraction LLM call failed");
+                return vec![];
+            }
+            Err(_) => {
+                tracing::warn!("em_graph: event extraction timed out");
+                return vec![];
+            }
+        };
+
+        parse_events_response(&raw, session_id, message_id)
     }
-
-    let snippet = content.chars().take(2000).collect::<String>();
-
-    let prompt = format!(
-        "Identify episodic events in the following conversation turn. \
-        An event is a concrete action, decision, discovery, or error. \
-        Return a JSON array of objects with fields: \
-        {{\"event_type\": \"<type>\", \"summary\": \"<one sentence>\"}}. \
-        Types: decision, discovery, error, tool_use, question, answer, other. \
-        Return [] if no notable events. Output JSON only.\n\nTurn:\n{snippet}"
-    );
-
-    let messages = vec![
-        Message {
-            role: Role::System,
-            content: "You are an episodic memory extractor. Extract concrete events from \
-                      conversation turns as structured JSON. Output only valid JSON, no preamble."
-                .to_owned(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-        Message {
-            role: Role::User,
-            content: prompt,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-    ];
-
-    let raw = match tokio::time::timeout(Duration::from_secs(10), provider.chat(&messages)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "em_graph: event extraction LLM call failed");
-            return vec![];
-        }
-        Err(_) => {
-            tracing::warn!("em_graph: event extraction timed out");
-            return vec![];
-        }
-    };
-
-    parse_events_response(&raw, session_id, message_id)
+    .instrument(span)
+    .await
 }
 
 fn parse_events_response(raw: &str, session_id: &str, message_id: MessageId) -> Vec<EpisodicEvent> {
@@ -199,76 +203,80 @@ pub async fn link_events(
     recent_events: &[EpisodicEvent],
     config: &EmGraphConfig,
 ) -> Vec<CausalLink> {
-    let _span = tracing::debug_span!(
+    let span = tracing::debug_span!(
         "memory.em_graph.link_events",
         new_count = new_events.len(),
         recent_count = recent_events.len()
-    )
-    .entered();
-
-    if !config.enabled || new_events.is_empty() || recent_events.is_empty() {
-        return vec![];
-    }
-
-    // Summaries are stored LLM output; cap length to limit prompt injection surface.
-    let new_desc: Vec<String> = new_events
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            let s: String = e.summary.chars().take(200).collect();
-            format!("NEW[{i}] (id={}): {s}", e.id)
-        })
-        .collect();
-
-    let recent_desc: Vec<String> = recent_events
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            let s: String = e.summary.chars().take(200).collect();
-            format!("RECENT[{i}] (id={}): {s}", e.id)
-        })
-        .collect();
-
-    let prompt = format!(
-        "Given these recent events and new events, identify causal relationships \
-        (cause → effect). Return a JSON array of objects: \
-        {{\"cause_id\": <event_id>, \"effect_id\": <event_id>, \"strength\": 0.0-1.0}}. \
-        Only include strong causal links (strength >= 0.5). Output [] if none.\n\n\
-        Recent events:\n{}\n\nNew events:\n{}",
-        recent_desc.join("\n"),
-        new_desc.join("\n"),
     );
 
-    let messages = vec![
-        Message {
-            role: Role::System,
-            content: "You are a causal reasoning engine. Identify cause-and-effect \
-                      relationships between events. Output only valid JSON."
-                .to_owned(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-        Message {
-            role: Role::User,
-            content: prompt,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        },
-    ];
-
-    let raw = match tokio::time::timeout(Duration::from_secs(10), provider.chat(&messages)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "em_graph: causal link LLM call failed");
+    async move {
+        if !config.enabled || new_events.is_empty() || recent_events.is_empty() {
             return vec![];
         }
-        Err(_) => {
-            tracing::warn!("em_graph: causal link detection timed out");
-            return vec![];
-        }
-    };
 
-    parse_links_response(&raw)
+        // Summaries are stored LLM output; cap length to limit prompt injection surface.
+        let new_desc: Vec<String> = new_events
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let s: String = e.summary.chars().take(200).collect();
+                format!("NEW[{i}] (id={}): {s}", e.id)
+            })
+            .collect();
+
+        let recent_desc: Vec<String> = recent_events
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let s: String = e.summary.chars().take(200).collect();
+                format!("RECENT[{i}] (id={}): {s}", e.id)
+            })
+            .collect();
+
+        let prompt = format!(
+            "Given these recent events and new events, identify causal relationships \
+            (cause → effect). Return a JSON array of objects: \
+            {{\"cause_id\": <event_id>, \"effect_id\": <event_id>, \"strength\": 0.0-1.0}}. \
+            Only include strong causal links (strength >= 0.5). Output [] if none.\n\n\
+            Recent events:\n{}\n\nNew events:\n{}",
+            recent_desc.join("\n"),
+            new_desc.join("\n"),
+        );
+
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "You are a causal reasoning engine. Identify cause-and-effect \
+                          relationships between events. Output only valid JSON."
+                    .to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+            Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+
+        let raw =
+            match tokio::time::timeout(Duration::from_secs(10), provider.chat(&messages)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "em_graph: causal link LLM call failed");
+                    return vec![];
+                }
+                Err(_) => {
+                    tracing::warn!("em_graph: causal link detection timed out");
+                    return vec![];
+                }
+            };
+
+        parse_links_response(&raw)
+    }
+    .instrument(span)
+    .await
 }
 
 fn parse_links_response(raw: &str) -> Vec<CausalLink> {
@@ -434,81 +442,88 @@ pub async fn recall_episodic_causal(
     max_depth: u32,
     config: &EmGraphConfig,
 ) -> Result<Vec<EpisodicEvent>, MemoryError> {
-    let _span =
-        tracing::debug_span!("memory.em_graph.causal_recall", seed_event_id, max_depth).entered();
+    let span = tracing::debug_span!("memory.em_graph.causal_recall", seed_event_id, max_depth);
 
     if !config.enabled {
         return Ok(vec![]);
     }
 
-    let mut visited: Vec<i64> = vec![seed_event_id];
-    let mut frontier: Vec<i64> = vec![seed_event_id];
+    // Clone the pool (cheap Arc clone) so the async block can be 'static / Send.
+    let pool = store.pool().clone();
+    let session_id = session_id.to_owned();
 
-    for depth in 0..max_depth {
-        if frontier.is_empty() || visited.len() >= MAX_CAUSAL_VISITED {
-            break;
+    async move {
+        let mut visited: Vec<i64> = vec![seed_event_id];
+        let mut frontier: Vec<i64> = vec![seed_event_id];
+
+        for depth in 0..max_depth {
+            if frontier.is_empty() || visited.len() >= MAX_CAUSAL_VISITED {
+                break;
+            }
+
+            let frontier_ph = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let visited_ph = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+            let query = format!(
+                "SELECT DISTINCT effect_event_id FROM causal_links
+                 WHERE cause_event_id IN ({frontier_ph})
+                   AND effect_event_id NOT IN ({visited_ph})"
+            );
+
+            let mut q = sqlx::query_scalar::<_, i64>(&query);
+            for &id in &frontier {
+                q = q.bind(id);
+            }
+            for &id in &visited {
+                q = q.bind(id);
+            }
+
+            let next: Vec<i64> = q.fetch_all(&pool).await?;
+
+            tracing::debug!(depth, next_count = next.len(), "em_graph: causal hop");
+            visited.extend_from_slice(&next);
+            frontier = next;
         }
 
-        let frontier_ph = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let visited_ph = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        if visited.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Fetch all collected events ordered by creation time.
+        let placeholders = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
         let query = format!(
-            "SELECT DISTINCT effect_event_id FROM causal_links
-             WHERE cause_event_id IN ({frontier_ph})
-               AND effect_event_id NOT IN ({visited_ph})"
+            "SELECT id, session_id, message_id, event_type, summary, created_at
+             FROM episodic_events
+             WHERE id IN ({placeholders}) AND session_id = ?
+             ORDER BY created_at ASC"
         );
 
-        let mut q = sqlx::query_scalar::<_, i64>(&query);
-        for &id in &frontier {
-            q = q.bind(id);
-        }
+        let mut q = sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(&query);
         for &id in &visited {
             q = q.bind(id);
         }
+        q = q.bind(session_id);
 
-        let next: Vec<i64> = q.fetch_all(store.pool()).await?;
+        let rows = q.fetch_all(&pool).await?;
 
-        tracing::debug!(depth, next_count = next.len(), "em_graph: causal hop");
-        visited.extend_from_slice(&next);
-        frontier = next;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, session_id, message_id, event_type, summary, created_at)| EpisodicEvent {
+                    id,
+                    session_id,
+                    message_id: MessageId(message_id),
+                    event_type,
+                    summary,
+                    embedding: None,
+                    created_at,
+                },
+            )
+            .collect())
     }
-
-    if visited.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Fetch all collected events ordered by creation time.
-    let placeholders = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-
-    let query = format!(
-        "SELECT id, session_id, message_id, event_type, summary, created_at
-         FROM episodic_events
-         WHERE id IN ({placeholders}) AND session_id = ?
-         ORDER BY created_at ASC"
-    );
-
-    let mut q = sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(&query);
-    for &id in &visited {
-        q = q.bind(id);
-    }
-    q = q.bind(session_id);
-
-    let rows = q.fetch_all(store.pool()).await?;
-
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, session_id, message_id, event_type, summary, created_at)| EpisodicEvent {
-                id,
-                session_id,
-                message_id: MessageId(message_id),
-                event_type,
-                summary,
-                embedding: None,
-                created_at,
-            },
-        )
-        .collect())
+    .instrument(span)
+    .await
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
