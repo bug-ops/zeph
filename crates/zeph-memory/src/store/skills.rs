@@ -88,11 +88,15 @@ fn skill_version_from_tuple(t: SkillVersionTuple) -> SkillVersionRow {
 impl SqliteStore {
     /// Record usage of skills (UPSERT: increment count and update timestamp).
     ///
+    /// All UPSERTs are issued inside a single write transaction to avoid N
+    /// round-trips and WAL contention under concurrent callers.
+    ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
     #[tracing::instrument(skip_all, name = "memory.skills.record_skill_usage")]
     pub async fn record_skill_usage(&self, skill_names: &[&str]) -> Result<(), MemoryError> {
+        let mut tx = begin_write(&self.pool).await?;
         for name in skill_names {
             zeph_db::query(sql!(
                 "INSERT INTO skill_usage (skill_name, invocation_count, last_used_at) \
@@ -102,9 +106,10 @@ impl SqliteStore {
                  last_used_at = CURRENT_TIMESTAMP"
             ))
             .bind(name)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -428,6 +433,10 @@ impl SqliteStore {
 
     /// Ensure a base (v1 manual) version exists for a skill. Idempotent.
     ///
+    /// The check-then-insert-then-activate sequence runs inside a single write
+    /// transaction so that two concurrent callers cannot both observe
+    /// `existing.is_none()` and race to insert duplicate v1 rows.
+    ///
     /// # Errors
     ///
     /// Returns an error if the DB operation fails.
@@ -438,19 +447,42 @@ impl SqliteStore {
         body: &str,
         description: &str,
     ) -> Result<(), MemoryError> {
+        let mut tx = begin_write(&self.pool).await?;
+
         let existing: Option<(i64,)> = zeph_db::query_as(sql!(
             "SELECT id FROM skill_versions WHERE skill_name = ? LIMIT 1"
         ))
         .bind(skill_name)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if existing.is_none() {
-            let id = self
-                .save_skill_version(skill_name, 1, body, description, "manual", None, None)
+            let row: (i64,) = zeph_db::query_as(sql!(
+                "INSERT INTO skill_versions \
+                 (skill_name, version, body, description, source, error_context, predecessor_id) \
+                 VALUES (?, 1, ?, ?, 'manual', NULL, NULL) RETURNING id"
+            ))
+            .bind(skill_name)
+            .bind(body)
+            .bind(description)
+            .fetch_one(&mut *tx)
+            .await?;
+            let id = row.0;
+
+            zeph_db::query(sql!(
+                "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1"
+            ))
+            .bind(skill_name)
+            .execute(&mut *tx)
+            .await?;
+
+            zeph_db::query(sql!("UPDATE skill_versions SET is_active = 1 WHERE id = ?"))
+                .bind(id)
+                .execute(&mut *tx)
                 .await?;
-            self.activate_skill_version(skill_name, id).await?;
         }
+
+        tx.commit().await?;
         Ok(())
     }
 
