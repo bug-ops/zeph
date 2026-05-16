@@ -22,7 +22,6 @@ impl<C: Channel> Agent<C> {
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
         let svc = zeph_agent_context::ContextService::new();
-        let providers = self.providers();
 
         // Collect status messages from the service so they can be forwarded to the channel.
         // The service uses StatusSink (async trait) — CollectStatusSink gathers them synchronously.
@@ -33,7 +32,7 @@ impl<C: Channel> Agent<C> {
         let msg_count_before = self.msg.messages.len();
 
         let mut summ = self.summarization_view();
-        svc.maybe_compact(&mut summ, &providers, &status)
+        svc.maybe_compact(&mut summ, &status)
             .await
             .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))?;
 
@@ -90,13 +89,11 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), crate::agent::error::AgentError> {
         let guidelines = self.load_compression_guidelines_for_compact().await;
         let svc = zeph_agent_context::ContextService::new();
-        let providers = self.providers();
         let status = TxStatusSink(self.services.session.status_tx.clone());
         let mut summ = self
             .summarization_view()
             .with_compression_guidelines(guidelines);
-        svc.maybe_proactive_compress(&mut summ, &providers, &status)
-            .await;
+        svc.maybe_proactive_compress(&mut summ, &status).await;
         Ok(())
     }
 

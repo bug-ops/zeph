@@ -354,7 +354,6 @@ impl<C: Channel> Agent<C> {
         // the mutable borrows in window/view — snapshot before establishing the long-lived
         // mutable borrows so the borrow checker accepts disjoint field access.
         let cached_prompt_tokens_snapshot = self.runtime.providers.cached_prompt_tokens;
-        let providers = self.providers();
 
         let correction_config = self.services.learning_engine.config.as_ref().map(|c| {
             zeph_context::input::CorrectionConfig {
@@ -453,9 +452,7 @@ impl<C: Channel> Agent<C> {
                 .clone(),
         };
         let _ = self.channel.send_status("recalling context...").await;
-        let result = svc
-            .prepare_context(query, &mut window, &mut view, &providers)
-            .await;
+        let result = svc.prepare_context(query, &mut window, &mut view).await;
         let _ = self.channel.send_status("").await;
 
         let delta =

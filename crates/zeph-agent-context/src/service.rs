@@ -210,7 +210,7 @@ impl ContextService {
         self.remove_recall_messages(window);
 
         let msg = if view.tiered_retrieval_config.enabled {
-            let _span = tracing::info_span!("agent_context.tiered_retrieval.recall").entered();
+            use tracing::Instrument as _;
             let Some(memory) = view.memory.as_deref() else {
                 return Ok(());
             };
@@ -224,7 +224,8 @@ impl ContextService {
                     view.tiered_retrieval_validator.as_ref(),
                     &view.tiered_retrieval_config,
                     Some(token_budget),
-                ),
+                )
+                .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
             )
             .await
             .map_err(|_| {
@@ -428,7 +429,6 @@ impl ContextService {
         query: &str,
         window: &mut MessageWindowView<'_>,
         view: &mut ContextAssemblyView<'_>,
-        _providers: &ProviderHandles,
     ) -> Result<ContextDelta, ContextError> {
         if view.context_manager.budget.is_none() {
             return Ok(ContextDelta::default());
@@ -880,7 +880,6 @@ impl ContextService {
     pub async fn maybe_compact(
         &self,
         summ: &mut ContextSummarizationView<'_>,
-        _providers: &ProviderHandles,
         status: &(impl StatusSink + ?Sized),
     ) -> Result<(), ContextError> {
         use zeph_context::manager::{CompactionState, CompactionTier};
@@ -1220,7 +1219,6 @@ impl ContextService {
     pub async fn maybe_proactive_compress(
         &self,
         summ: &mut ContextSummarizationView<'_>,
-        _providers: &ProviderHandles,
         status: &(impl StatusSink + ?Sized),
     ) {
         let Some((_threshold, max_summary_tokens)) = summ
