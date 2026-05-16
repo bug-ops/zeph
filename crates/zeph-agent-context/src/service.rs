@@ -553,9 +553,23 @@ impl ContextService {
             router,
         };
 
-        let prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;
+        let mut prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;
+
+        // When tiered retrieval is enabled, suppress the flat recall assembled above and
+        // replace it with the tiered result injected directly into the window.  The span
+        // `agent_context.tiered_retrieval.recall` will appear in traces for every enabled
+        // turn, satisfying the observability requirement in issue #3996.
+        if view.tiered_retrieval_config.enabled {
+            prepared.recall = None;
+        }
 
         let delta = self.apply_prepared_context(window, view, prepared).await;
+
+        if view.tiered_retrieval_config.enabled {
+            self.inject_semantic_recall(query, usize::MAX, window, view)
+                .await?;
+        }
+
         Ok(delta)
     }
 
@@ -1750,6 +1764,93 @@ mod tests {
             assert!(
                 window.messages.is_empty(),
                 "no recall message must be injected when memory is None"
+            );
+        }
+
+        // Regression test for #3996: prepare_context must call inject_semantic_recall when
+        // tiered_retrieval.enabled = true. When context_manager.budget is None the function
+        // returns early with Ok(ContextDelta::default()); this test verifies that early-return
+        // path compiles and does not panic with the new conditional blocks in place.
+        #[tokio::test]
+        async fn prepare_context_tiered_enabled_no_budget_returns_default() {
+            use zeph_llm::any::AnyProvider;
+            use zeph_llm::mock::MockProvider;
+
+            let mut msgs: Vec<zeph_llm::provider::Message> = vec![];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let sanitizer = zeph_sanitizer::ContentSanitizer::new(
+                &zeph_sanitizer::ContentIsolationConfig::default(),
+            );
+            let mut ctx_mgr = zeph_context::manager::ContextManager::new();
+            // budget = None → prepare_context returns Ok(ContextDelta::default()) immediately.
+            assert!(ctx_mgr.budget.is_none());
+
+            let mut sink = NoopSink;
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+            let registry = Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::default()));
+
+            let mut view = ContextAssemblyView {
+                memory: None,
+                conversation_id: None,
+                recall_limit: 10,
+                cross_session_score_threshold: 0.5,
+                context_format: ContextFormat::default(),
+                last_recall_confidence: &mut last_confidence,
+                context_strategy: ContextStrategy::default(),
+                crossover_turn_threshold: 0,
+                cached_session_digest: None,
+                digest_enabled: false,
+                graph_config: GraphConfig::default(),
+                document_config: DocumentConfig::default(),
+                persona_config: PersonaConfig::default(),
+                trajectory_config: TrajectoryConfig::default(),
+                reasoning_config: ReasoningConfig::default(),
+                memcot_config: zeph_config::MemCotConfig::default(),
+                memcot_state: None,
+                tree_config: TreeConfig::default(),
+                last_skills_prompt: &mut last_skills_prompt,
+                active_skill_names: &mut active_skill_names,
+                skill_registry: registry,
+                skill_paths: &[],
+                correction_config: None,
+                sidequest_turn_counter: 0,
+                proactive_explorer: None,
+                sanitizer: &sanitizer,
+                quarantine_summarizer: None,
+                context_manager: &mut ctx_mgr,
+                token_counter: make_counter(),
+                metrics: MetricsCounters::default(),
+                security_events: &mut sink,
+                cached_prompt_tokens: 0,
+                redact_credentials: false,
+                channel_skills: &[],
+                scrub: scrub_noop,
+                tiered_retrieval_config: TieredRetrievalConfig {
+                    enabled: true,
+                    ..TieredRetrievalConfig::default()
+                },
+                tiered_retrieval_classifier: None,
+                tiered_retrieval_validator: None,
+            };
+
+            let mock = AnyProvider::Mock(MockProvider::default());
+            let providers = crate::state::ProviderHandles {
+                primary: mock.clone(),
+                embedding: mock,
+            };
+
+            let result = ContextService::new()
+                .prepare_context("test query", &mut window, &mut view, &providers)
+                .await;
+
+            assert!(
+                result.is_ok(),
+                "prepare_context with tiered enabled and no budget must return Ok"
             );
         }
     }

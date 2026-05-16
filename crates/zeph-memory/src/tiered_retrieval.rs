@@ -30,6 +30,7 @@
 
 use std::sync::Arc;
 
+use tracing::Instrument as _;
 pub use zeph_config::memory::TieredRetrievalConfig;
 use zeph_llm::any::AnyProvider;
 
@@ -199,11 +200,9 @@ async fn escalation_loop(
     let mut tier_escalated = false;
 
     loop {
-        let candidates = {
-            let _span =
-                tracing::debug_span!("memory.tiered.retrieve_tier", tier = %intent).entered();
-            retrieve_tier(memory, query, conversation_id, intent).await?
-        };
+        let candidates = retrieve_tier(memory, query, conversation_id, intent)
+            .instrument(tracing::debug_span!("memory.tiered.retrieve_tier", tier = %intent))
+            .await?;
 
         let (messages, tokens_used) = {
             let _span = tracing::debug_span!("memory.tiered.assemble").entered();
@@ -216,16 +215,14 @@ async fn escalation_loop(
             && let Some(validator_provider) = validator
             && let Some(next_tier) = intent.escalate()
         {
-            let sufficient = {
-                let _span = tracing::debug_span!("memory.tiered.validate").entered();
-                validate_evidence(
-                    validator_provider,
-                    query,
-                    &messages,
-                    config.validation_threshold,
-                )
-                .await
-            };
+            let sufficient = validate_evidence(
+                validator_provider,
+                query,
+                &messages,
+                config.validation_threshold,
+            )
+            .instrument(tracing::debug_span!("memory.tiered.validate"))
+            .await;
             if !sufficient {
                 tracing::debug!(
                     current_tier = %intent,
