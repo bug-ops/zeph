@@ -23,5 +23,9 @@ tracing.workspace = true
 zeph-common.workspace = true
 zeph-llm.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "time", "test-util", "macros"] }
+zeph-llm = { workspace = true, features = ["testing"] }
+
 [lints]
 workspace = true

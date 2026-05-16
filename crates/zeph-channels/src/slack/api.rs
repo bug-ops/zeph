@@ -3,6 +3,8 @@
 
 //! Slack Web API client for message operations.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -59,14 +61,19 @@ impl SlackApi {
     ///
     /// Returns an error if the HTTP request or Slack API fails.
     pub async fn auth_test(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let resp: Value = self
-            .client
-            .post(format!("{SLACK_API}/auth.test"))
-            .bearer_auth(&self.token)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: Value = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client
+                .post(format!("{SLACK_API}/auth.test"))
+                .bearer_auth(&self.token)
+                .send(),
+        )
+        .await
+        .map_err(|_| "slack auth.test timed out")?
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        .json()
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
         if resp.get("ok").and_then(Value::as_bool) != Some(true) {
             let err = resp
@@ -91,15 +98,20 @@ impl SlackApi {
         channel: &str,
         text: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let resp: SlackResponse = self
-            .client
-            .post(format!("{SLACK_API}/chat.postMessage"))
-            .bearer_auth(&self.token)
-            .json(&PostMessage { channel, text })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: SlackResponse = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client
+                .post(format!("{SLACK_API}/chat.postMessage"))
+                .bearer_auth(&self.token)
+                .json(&PostMessage { channel, text })
+                .send(),
+        )
+        .await
+        .map_err(|_| "slack chat.postMessage timed out")?
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        .json()
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
         if !resp.ok {
             return Err(
@@ -120,15 +132,20 @@ impl SlackApi {
         ts: &str,
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let resp: SlackResponse = self
-            .client
-            .post(format!("{SLACK_API}/chat.update"))
-            .bearer_auth(&self.token)
-            .json(&UpdateMessage { channel, ts, text })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: SlackResponse = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client
+                .post(format!("{SLACK_API}/chat.update"))
+                .bearer_auth(&self.token)
+                .json(&UpdateMessage { channel, ts, text })
+                .send(),
+        )
+        .await
+        .map_err(|_| "slack chat.update timed out")?
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        .json()
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
         if !resp.ok {
             return Err(format!("slack chat.update: {}", resp.error.unwrap_or_default()).into());
@@ -152,11 +169,20 @@ impl SlackApi {
             return Err(format!("refusing to send token to non-slack host: {url}").into());
         }
 
-        let resp = self.client.get(url).bearer_auth(&self.token).send().await?;
+        let resp = tokio::time::timeout(
+            Duration::from_secs(15),
+            self.client.get(url).bearer_auth(&self.token).send(),
+        )
+        .await
+        .map_err(|_| "slack file download timed out")?
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         if !resp.status().is_success() {
             return Err(format!("slack file download failed: {}", resp.status()).into());
         }
-        let bytes = resp.bytes().await?;
+        let bytes = tokio::time::timeout(Duration::from_secs(15), resp.bytes())
+            .await
+            .map_err(|_| "slack file download body timed out")?
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         if bytes.len() > MAX_AUDIO_BYTES {
             return Err(format!(
                 "slack file too large: {} bytes (max {MAX_AUDIO_BYTES})",

@@ -579,6 +579,8 @@ impl JudgeVerdict {
 pub enum JudgeError {
     #[error("LLM call failed: {0}")]
     Llm(#[from] zeph_llm::LlmError),
+    #[error("judge LLM call timed out")]
+    Timeout,
 }
 
 /// LLM-backed correction detector with a sliding-window rate limiter.
@@ -688,7 +690,9 @@ impl JudgeDetector {
     ///
     /// # Errors
     ///
-    /// Returns [`JudgeError::Llm`] if the provider call fails.
+    /// Returns [`JudgeError::Llm`] if the provider call fails, or [`JudgeError::Timeout`]
+    /// if the LLM does not respond within 30 seconds.
+    #[tracing::instrument(skip(provider, user_message, assistant_response), err)]
     pub async fn evaluate(
         provider: &AnyProvider,
         user_message: &str,
@@ -696,7 +700,12 @@ impl JudgeDetector {
         confidence_threshold: f32,
     ) -> Result<JudgeVerdict, JudgeError> {
         let messages = Self::build_messages(user_message, assistant_response);
-        let verdict: JudgeVerdict = provider.chat_typed_erased(&messages).await?;
+        let verdict: JudgeVerdict = tokio::time::timeout(
+            Duration::from_secs(30),
+            provider.chat_typed_erased(&messages),
+        )
+        .await
+        .map_err(|_| JudgeError::Timeout)??;
 
         tracing::debug!(
             is_correction = verdict.is_correction,
@@ -1919,6 +1928,25 @@ mod tests {
         let d = detector();
         let signal = d.detect("That's неправильно", &[]).unwrap();
         assert_eq!(signal.kind, CorrectionKind::ExplicitRejection);
+    }
+
+    // ── JudgeDetector::evaluate timeout regression (#4179) ───────────────
+
+    #[tokio::test]
+    async fn judge_evaluate_returns_timeout_error_when_provider_hangs() {
+        tokio::time::pause();
+        // Delay exceeds the 30s guard so the timeout fires before provider responds.
+        let mock = zeph_llm::mock::MockProvider::default().with_delay(60_000);
+        let provider = zeph_llm::any::AnyProvider::Mock(mock);
+        let handle = tokio::spawn(async move {
+            JudgeDetector::evaluate(&provider, "user msg", "assistant resp", 0.5).await
+        });
+        tokio::time::advance(Duration::from_secs(31)).await;
+        let result = handle.await.expect("task panicked");
+        assert!(
+            matches!(result, Err(JudgeError::Timeout)),
+            "expected JudgeError::Timeout, got {result:?}"
+        );
     }
 
     // ── JudgeVerdict / FeedbackVerdict sync test (#2250) ─────────────────

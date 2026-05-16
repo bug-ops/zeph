@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-memory`: added `#[tracing::instrument]` span to `compute_semantic_novelty` in
   `admission.rs` so embedding latency during admission is visible in local Chrome JSON traces
   (closes #4145).
+- `zeph-agent-feedback`: wrap `JudgeDetector::evaluate` LLM call in 30 s `tokio::time::timeout`; add `JudgeError::Timeout` variant (closes #4179).
+- `zeph-channels`: wrap Discord gateway `connect_async` (10 s), Hello receive (30 s), and interaction ACK (3 s) in `tokio::time::timeout` guards (closes #4180).
+- `zeph-channels`: wrap all Slack Web API HTTP calls (`auth_test`, `post_message`, `update_message`, `download_file`) in 15 s `tokio::time::timeout` guards (closes #4181).
 
 ### Added
 
