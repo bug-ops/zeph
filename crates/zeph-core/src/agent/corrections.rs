@@ -112,6 +112,13 @@ impl<C: crate::channel::Channel> Agent<C> {
             .config
             .as_ref()
             .map_or(0.6_f32, |c| c.correction_confidence_threshold);
+        let judge_timeout = std::time::Duration::from_secs(
+            self.services
+                .learning_engine
+                .config
+                .as_ref()
+                .map_or(30, |c| c.judge_llm_timeout_secs),
+        );
 
         if let Some(llm_classifier) = self.services.feedback.llm_classifier.clone() {
             let classifier_metrics_bg = self.runtime.metrics.classifier_metrics.clone();
@@ -146,6 +153,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     user_msg_owned,
                     assistant_snippet,
                     confidence_threshold,
+                    judge_timeout,
                     memory_arc,
                     conv_id_bg,
                     skill_name,
@@ -448,11 +456,13 @@ async fn evaluate_with_llm_classifier(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn evaluate_with_judge(
     judge_provider: zeph_llm::any::AnyProvider,
     user_msg: String,
     assistant: String,
     confidence_threshold: f32,
+    timeout: std::time::Duration,
     memory_arc: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
     conv_id: Option<zeph_memory::ConversationId>,
     skill_name: String,
@@ -462,6 +472,7 @@ async fn evaluate_with_judge(
         &user_msg,
         &assistant,
         confidence_threshold,
+        timeout,
     )
     .await
     {

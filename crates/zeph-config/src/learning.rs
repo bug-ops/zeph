@@ -44,6 +44,10 @@ fn default_judge_adaptive_high() -> f32 {
     0.8
 }
 
+fn default_judge_llm_timeout_secs() -> u64 {
+    30
+}
+
 fn default_correction_recall_limit() -> u32 {
     3
 }
@@ -197,6 +201,10 @@ pub struct LearningConfig {
     /// Regex confidence at or above this value is accepted without judge confirmation.
     #[serde(default = "default_judge_adaptive_high")]
     pub judge_adaptive_high: f32,
+    /// Maximum seconds to wait for the judge LLM to respond before returning
+    /// [`JudgeError::Timeout`]. Applies to `detector_mode = "judge"` only.
+    #[serde(default = "default_judge_llm_timeout_secs")]
+    pub judge_llm_timeout_secs: u64,
     #[serde(default = "default_correction_recall_limit")]
     pub correction_recall_limit: u32,
     #[serde(default = "default_correction_min_similarity")]
@@ -324,6 +332,7 @@ impl Default for LearningConfig {
             feedback_provider: ProviderName::default(),
             judge_adaptive_low: default_judge_adaptive_low(),
             judge_adaptive_high: default_judge_adaptive_high(),
+            judge_llm_timeout_secs: default_judge_llm_timeout_secs(),
             correction_recall_limit: default_correction_recall_limit(),
             correction_min_similarity: default_correction_min_similarity(),
             auto_promote_min_uses: default_auto_promote_min_uses(),
@@ -418,6 +427,14 @@ feedback_provider = "fast""#;
         assert_eq!(cfg.min_failures, 3);
         assert_eq!(cfg.detector_mode, DetectorMode::Regex);
         assert!(cfg.feedback_provider.is_empty());
+    }
+
+    #[test]
+    fn judge_llm_timeout_secs_default_and_roundtrip() {
+        let cfg = LearningConfig::default();
+        assert_eq!(cfg.judge_llm_timeout_secs, 30);
+        let cfg: LearningConfig = toml::from_str("judge_llm_timeout_secs = 60").unwrap();
+        assert_eq!(cfg.judge_llm_timeout_secs, 60);
     }
 
     #[test]

@@ -691,21 +691,20 @@ impl JudgeDetector {
     /// # Errors
     ///
     /// Returns [`JudgeError::Llm`] if the provider call fails, or [`JudgeError::Timeout`]
-    /// if the LLM does not respond within 30 seconds.
+    /// if the LLM does not respond within `timeout`.
     #[tracing::instrument(skip(provider, user_message, assistant_response), err)]
     pub async fn evaluate(
         provider: &AnyProvider,
         user_message: &str,
         assistant_response: &str,
         confidence_threshold: f32,
+        timeout: Duration,
     ) -> Result<JudgeVerdict, JudgeError> {
         let messages = Self::build_messages(user_message, assistant_response);
-        let verdict: JudgeVerdict = tokio::time::timeout(
-            Duration::from_secs(30),
-            provider.chat_typed_erased(&messages),
-        )
-        .await
-        .map_err(|_| JudgeError::Timeout)??;
+        let verdict: JudgeVerdict =
+            tokio::time::timeout(timeout, provider.chat_typed_erased(&messages))
+                .await
+                .map_err(|_| JudgeError::Timeout)??;
 
         tracing::debug!(
             is_correction = verdict.is_correction,
@@ -1939,7 +1938,14 @@ mod tests {
         let mock = zeph_llm::mock::MockProvider::default().with_delay(60_000);
         let provider = zeph_llm::any::AnyProvider::Mock(mock);
         let handle = tokio::spawn(async move {
-            JudgeDetector::evaluate(&provider, "user msg", "assistant resp", 0.5).await
+            JudgeDetector::evaluate(
+                &provider,
+                "user msg",
+                "assistant resp",
+                0.5,
+                Duration::from_secs(30),
+            )
+            .await
         });
         tokio::time::advance(Duration::from_secs(31)).await;
         let result = handle.await.expect("task panicked");
