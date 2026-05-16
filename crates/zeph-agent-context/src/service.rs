@@ -287,7 +287,7 @@ impl ContextService {
     /// This variant is called from `Agent::inject_semantic_recall` in `zeph-core`, where
     /// constructing a full `ContextAssemblyView` would require duplicating all of
     /// `prepare_context`'s setup. It carries only the fields that
-    /// [`inject_semantic_recall`] actually reads, enabling tiered retrieval on the
+    /// `inject_semantic_recall` actually reads, enabling tiered retrieval on the
     /// hot-path turn loop without the overhead of the full view.
     ///
     /// # Errors
