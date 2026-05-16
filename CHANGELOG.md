@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `GraphConfig.llm_timeout_secs` (default 30s); previously hardcoded to 30s (closes #4169).
 - `zeph-memory`: summarization LLM timeout is now configurable via `MemoryConfig.summarization_llm_timeout_secs`
   (default 60s); previously hardcoded to 60s in both the structured and plain-text fallback paths (closes #4170).
+- `zeph-memory`: added `#[tracing::instrument]` span to `compute_semantic_novelty` in
+  `admission.rs` so embedding latency during admission is visible in local Chrome JSON traces
+  (closes #4145).
 
 ### Added
 

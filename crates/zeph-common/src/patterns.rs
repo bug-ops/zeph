@@ -13,8 +13,9 @@
 //! The patterns cover common English-language prompt-injection techniques. Known evasion
 //! vectors include: non-English injections, semantic rephrasing, encoded payloads in
 //! markdown code blocks, multi-line splitting (regex `.` does not match `\n` by default),
-//! and homoglyph substitution. [`strip_format_chars`] mitigates Unicode Cf-category bypass
-//! but does not handle homoglyphs. This scanner is **advisory and defense-in-depth only**,
+//! and homoglyph substitution. [`strip_format_chars`] mitigates Unicode Cf-category codepoints
+//! and selected Lo-category fillers (U+115F Hangul Choseong Filler, U+1160 Hangul Jungseong
+//! Filler) but does not handle homoglyphs. This scanner is **advisory and defense-in-depth only**,
 //! not a security boundary. The trust gate (tool blocking via `TrustGateExecutor`) is the
 //! primary enforcement mechanism.
 
@@ -132,12 +133,13 @@ pub const RAW_RESPONSE_PATTERNS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Strip Unicode format (Cf) characters and ASCII control characters (except tab/newline)
-/// from `text` before injection pattern matching.
+/// Strip Unicode format (Cf) characters, selected Lo-category fillers (U+115F, U+1160),
+/// and ASCII control characters (except tab/newline) from `text` before injection pattern
+/// matching.
 ///
 /// These characters are invisible to humans but can break regex word boundaries,
 /// allowing attackers to smuggle injection keywords through zero-width joiners,
-/// soft hyphens, BOM, etc.
+/// soft hyphens, BOM, or Hangul filler codepoints.
 ///
 /// # Examples
 ///
@@ -262,5 +264,17 @@ mod tests {
         let result = strip_format_chars(input);
         assert!(!result.contains('\u{00AD}'));
         assert!(result.contains("normal"));
+    }
+
+    #[test]
+    fn strip_format_chars_covers_lo_fillers() {
+        // U+115F and U+1160 are Lo-category Hangul fillers used as bypass vectors
+        assert!(!strip_format_chars("\u{115F}").contains('\u{115F}'));
+        assert!(!strip_format_chars("\u{1160}").contains('\u{1160}'));
+        // Cf-category: U+200B ZERO WIDTH SPACE, U+FEFF BOM
+        assert!(!strip_format_chars("\u{200B}").contains('\u{200B}'));
+        assert!(!strip_format_chars("\u{FEFF}").contains('\u{FEFF}'));
+        // Normal ASCII is preserved
+        assert_eq!(strip_format_chars("hello world"), "hello world");
     }
 }

@@ -48,6 +48,21 @@ pub enum EvalError {
     #[error("LLM error during evaluation: {0}")]
     Llm(#[from] zeph_llm::LlmError),
 
+    /// The subject or judge LLM call did not complete within the configured timeout.
+    ///
+    /// The case is excluded from scores and counted in [`EvalReport::error_count`].
+    ///
+    /// [`EvalReport::error_count`]: crate::EvalReport::error_count
+    #[error("{role} LLM call timed out after {timeout_secs}s for case {case_index}")]
+    Timeout {
+        /// Which model timed out: `"subject"` or `"judge"`.
+        role: &'static str,
+        /// Configured timeout in seconds.
+        timeout_secs: u64,
+        /// Zero-based index of the benchmark case.
+        case_index: usize,
+    },
+
     /// The judge model returned a non-finite or structurally invalid score.
     #[error("judge output parse failed for case {case_index}: {detail}")]
     JudgeParse {

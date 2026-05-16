@@ -68,6 +68,8 @@ pub struct InstalledPlugin {
     pub description: String,
     /// Absolute path to the installed plugin root.
     pub path: PathBuf,
+    /// Skill names provided by this plugin (collected at list time to avoid re-reading manifests).
+    pub skill_names: Vec<String>,
 }
 
 /// Manages plugin lifecycle: install, remove, list.
@@ -351,11 +353,13 @@ impl PluginManager {
             let Ok(manifest): Result<PluginManifest, _> = toml::from_str(&text) else {
                 continue;
             };
+            let skill_names = collect_skill_names(&path, &manifest);
             plugins.push(InstalledPlugin {
                 name: manifest.plugin.name,
                 version: manifest.plugin.version,
                 description: manifest.plugin.description,
                 path,
+                skill_names,
             });
         }
 
@@ -424,7 +428,7 @@ impl PluginManager {
             .map(|m| m.name.clone())
             .collect();
 
-        // Other installed plugins' skill names.
+        // Other installed plugins' skill names — already collected by list_installed.
         let installed = self.list_installed().unwrap_or_default();
         let mut other_plugin_skills: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
@@ -432,15 +436,8 @@ impl PluginManager {
             if plugin.name == this_plugin {
                 continue;
             }
-            let manifest_path = plugin.path.join(".plugin.toml");
-            if let Ok(bytes) = std::fs::read(&manifest_path)
-                && let Ok(text) = String::from_utf8(bytes)
-                && let Ok(manifest) = toml::from_str::<PluginManifest>(&text)
-            {
-                let names = collect_skill_names(&plugin.path, &manifest);
-                for name in names {
-                    other_plugin_skills.insert(name, plugin.name.clone());
-                }
+            for name in &plugin.skill_names {
+                other_plugin_skills.insert(name.clone(), plugin.name.clone());
             }
         }
 
