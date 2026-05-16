@@ -84,6 +84,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   secret env injection (`GITHUB_TOKEN` for the `github` skill) never reached the spawned
   subprocess when `[tools.sandbox] enabled = true`. Added a regression test that asserts
   env and cwd survive the rewrite (closes #3871).
+- `zeph-plugins`: `validate_plugin_name` now rejects names starting with a digit or dash,
+  enforcing `[a-z][a-z0-9-]*` as the full grammar (closes #3929).
+- `zeph-plugins`: `validate_plugin_name` now enforces a 64-character length cap;
+  names exceeding this limit return `PluginError::InvalidName` with a clear message (closes #3930).
 
 ### Changed
 

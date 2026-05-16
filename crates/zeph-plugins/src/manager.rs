@@ -453,12 +453,18 @@ impl PluginManager {
     }
 }
 
-/// Validate that a plugin name is a safe identifier: `[a-z0-9][a-z0-9-]*`.
+/// Validate that a plugin name is a safe identifier: `[a-z][a-z0-9-]*`, max 64 chars.
 pub(crate) fn validate_plugin_name(name: &str) -> Result<(), PluginError> {
     if name.is_empty() {
         return Err(PluginError::InvalidName {
             name: name.to_owned(),
             reason: "name must not be empty".to_owned(),
+        });
+    }
+    if name.len() > 64 {
+        return Err(PluginError::InvalidName {
+            name: name.to_owned(),
+            reason: "name must not exceed 64 characters".to_owned(),
         });
     }
     if name.contains('/') || name.contains('\\') || name.contains('.') {
@@ -467,13 +473,19 @@ pub(crate) fn validate_plugin_name(name: &str) -> Result<(), PluginError> {
             reason: "name must not contain path separators or dots".to_owned(),
         });
     }
+    if !name.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return Err(PluginError::InvalidName {
+            name: name.to_owned(),
+            reason: "name must start with a lowercase ASCII letter [a-z]".to_owned(),
+        });
+    }
     if !name
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
         return Err(PluginError::InvalidName {
             name: name.to_owned(),
-            reason: "name must match [a-z0-9][a-z0-9-]*".to_owned(),
+            reason: "name must match [a-z][a-z0-9-]*".to_owned(),
         });
     }
     Ok(())
@@ -1212,10 +1224,42 @@ allowed_commands = []
 
     #[test]
     fn validate_plugin_name_max_length_boundary() {
-        // Names consisting purely of valid chars should be accepted regardless of length;
-        // the current implementation imposes no length cap — just verify it does not panic.
-        let long_name = "a".repeat(256);
-        assert!(validate_plugin_name(&long_name).is_ok());
+        assert!(validate_plugin_name(&"a".repeat(64)).is_ok());
+        let err = validate_plugin_name(&"a".repeat(65)).unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for 65-char name, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_plugin_name_leading_dash_rejected() {
+        let err = validate_plugin_name("-foo").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for leading dash, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_plugin_name_leading_digit_rejected() {
+        let err = validate_plugin_name("123").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for digit-only name, got {err:?}"
+        );
+        let err = validate_plugin_name("1abc").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for digit-prefixed name, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_plugin_name_valid_names_accepted() {
+        assert!(validate_plugin_name("abc").is_ok());
+        assert!(validate_plugin_name("my-plugin").is_ok());
+        assert!(validate_plugin_name("plugin123").is_ok());
     }
 
     // --- validate_overlay_keys direct tests ---
