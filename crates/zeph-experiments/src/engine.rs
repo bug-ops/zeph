@@ -26,6 +26,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use zeph_common::SessionId;
+use zeph_common::timestamp;
 use zeph_llm::any::AnyProvider;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::store::experiments::NewExperimentResult;
@@ -321,7 +322,7 @@ impl ExperimentEngine {
                 tokens_used: candidate_report.total_tokens,
                 accepted,
                 source: self.source.clone(),
-                created_at: chrono_now_utc(),
+                created_at: timestamp::utc_now_rfc3339(),
             });
         }
 
@@ -410,58 +411,6 @@ impl ExperimentEngine {
             );
         }
     }
-}
-
-/// Return a UTC timestamp string in `YYYY-MM-DD HH:MM:SS` format.
-#[allow(clippy::many_single_char_names)]
-fn chrono_now_utc() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Simple UTC formatter — no external date dependency.
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let days = secs / 86400;
-    // Days since 1970-01-01
-    let (y, mo, d) = days_to_ymd(days);
-    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
-}
-
-/// Convert days since Unix epoch to (year, month, day).
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    // Gregorian calendar algorithm.
-    let mut year = 1970u64;
-    loop {
-        let leap = is_leap(year);
-        let dy = if leap { 366 } else { 365 };
-        if days < dy {
-            break;
-        }
-        days -= dy;
-        year += 1;
-    }
-    let leap = is_leap(year);
-    let month_days: [u64; 12] = if leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month = 1u64;
-    for md in &month_days {
-        if days < *md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap(y: u64) -> bool {
-    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 #[cfg(test)]
@@ -907,34 +856,23 @@ mod tests {
     }
 
     #[test]
-    fn chrono_now_utc_format() {
-        let s = chrono_now_utc();
-        assert_eq!(s.len(), 19, "timestamp must be 19 chars: {s}");
+    fn utc_now_rfc3339_format() {
+        let s = timestamp::utc_now_rfc3339();
+        assert_eq!(s.len(), 20, "timestamp must be 20 chars (RFC 3339): {s}");
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[7..8], "-");
-        assert_eq!(&s[10..11], " ");
+        assert_eq!(&s[10..11], "T");
         assert_eq!(&s[13..14], ":");
         assert_eq!(&s[16..17], ":");
+        assert!(s.ends_with('Z'));
     }
 
-    /// Verify that `days_to_ymd` correctly handles a known date including a leap year.
-    /// 2024-02-29 (leap day) = 19782 days since 1970-01-01.
+    /// Verify that the shared timestamp module returns a non-empty RFC 3339 string.
     #[test]
-    fn chrono_known_timestamp_leap_year() {
-        // 2024-02-29 00:00:00 UTC = 1_709_164_800 seconds since epoch.
-        // Verified via: date -d "2024-02-29 00:00:00 UTC" +%s
-        let secs: u64 = 1_709_164_800;
-        let second = secs % 60;
-        let minute = (secs / 60) % 60;
-        let hour = (secs / 3600) % 24;
-        let days = secs / 86400;
-        let (year, month, day) = days_to_ymd(days);
-        assert_eq!(year, 2024);
-        assert_eq!(month, 2);
-        assert_eq!(day, 29);
-        assert_eq!(second, 0);
-        assert_eq!(minute, 0);
-        assert_eq!(hour, 0);
+    fn utc_now_rfc3339_is_non_empty() {
+        let ts = timestamp::utc_now_rfc3339();
+        assert!(!ts.is_empty());
+        assert_eq!(ts.len(), 20);
     }
 
     /// `ExperimentEngine` must be Send to be used with `tokio::spawn`.

@@ -17,6 +17,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-common`: new `timestamp` module with `utc_now_rfc3339()`, `utc_now_compact()`, and
+  `utc_now_datetime()` helpers — eliminates ~60 lines of duplicated Gregorian calendar arithmetic
+  that existed independently in `zeph-bench` and `zeph-experiments` (closes #3837).
+- `zeph-experiments`: `Evaluator::evaluate` is now wrapped in a `tracing::instrument` span
+  (`experiments.evaluator.evaluate`) with `subject_provider`, `cases`, and `err` fields,
+  making evaluation latency and LLM call timing visible in Perfetto/Jaeger traces (closes #3877).
+- `zeph-bench`: `uuid()` now samples `SystemTime::now()` once, eliminating a TOCTOU race where
+  seconds and nanoseconds could come from different clock ticks.
 - `zeph-db`: add 8 missing PostgreSQL migration files to reach parity with SQLite schema
   (migrations 069–071, 079–083): `trajectory_memory`, `message_category`, `memory_tree`,
   `pending_beliefs` + `belief_evidence`, `safety_shadow_events`, `memflow_scrapmem`

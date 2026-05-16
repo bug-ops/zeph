@@ -222,6 +222,12 @@ impl Evaluator {
     ///
     /// Returns [`EvalError::Llm`] if any subject call fails fatally.
     /// Budget exhaustion and judge errors are handled gracefully (excluded from scores).
+    #[tracing::instrument(
+        name = "experiments.evaluator.evaluate",
+        skip(self, subject),
+        fields(subject_provider = %subject.name(), cases = self.benchmark.cases.len()),
+        err(level = tracing::Level::WARN)
+    )]
     pub async fn evaluate(&self, subject: &AnyProvider) -> Result<EvalReport, EvalError> {
         let cases_total = self.benchmark.cases.len();
 
