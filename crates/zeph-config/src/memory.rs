@@ -62,6 +62,10 @@ fn default_summarization_threshold() -> usize {
     50
 }
 
+fn default_summarization_llm_timeout_secs() -> u64 {
+    60
+}
+
 fn default_context_budget_tokens() -> usize {
     0
 }
@@ -718,6 +722,9 @@ pub struct MemoryConfig {
     pub semantic: SemanticConfig,
     #[serde(default = "default_summarization_threshold")]
     pub summarization_threshold: usize,
+    /// LLM call timeout for summarization, in seconds. Default: `60`.
+    #[serde(default = "default_summarization_llm_timeout_secs")]
+    pub summarization_llm_timeout_secs: u64,
     #[serde(default = "default_context_budget_tokens")]
     pub context_budget_tokens: usize,
     #[serde(default = "default_soft_compaction_threshold")]
@@ -2132,10 +2139,17 @@ pub struct GraphConfig {
     /// supersession chains instead of the legacy destructive-update path.
     #[serde(default)]
     pub apex_mem: ApexMemConfig,
+    /// LLM call timeout per extraction request, in seconds. Default: `30`.
+    #[serde(default = "default_graph_llm_timeout_secs")]
+    pub llm_timeout_secs: u64,
 }
 
 fn default_graph_pool_size() -> u32 {
     3
+}
+
+fn default_graph_llm_timeout_secs() -> u64 {
+    30
 }
 
 /// APEX-MEM append-only write path configuration (`[memory.graph.apex_mem]`).
@@ -2293,6 +2307,7 @@ impl Default for GraphConfig {
             rpe: RpeConfig::default(),
             pool_size: default_graph_pool_size(),
             apex_mem: ApexMemConfig::default(),
+            llm_timeout_secs: default_graph_llm_timeout_secs(),
         }
     }
 }
@@ -2340,6 +2355,9 @@ pub struct ConsolidationConfig {
     /// Default: `0.85`.
     #[serde(default = "default_consolidation_similarity_threshold")]
     pub similarity_threshold: f32,
+    /// LLM call timeout per `propose_merge_op` invocation, in seconds. Default: `30`.
+    #[serde(default = "default_consolidation_llm_timeout_secs")]
+    pub llm_timeout_secs: u64,
 }
 
 impl Default for ConsolidationConfig {
@@ -2351,8 +2369,13 @@ impl Default for ConsolidationConfig {
             sweep_interval_secs: default_consolidation_sweep_interval_secs(),
             sweep_batch_size: default_consolidation_sweep_batch_size(),
             similarity_threshold: default_consolidation_similarity_threshold(),
+            llm_timeout_secs: default_consolidation_llm_timeout_secs(),
         }
     }
+}
+
+fn default_consolidation_llm_timeout_secs() -> u64 {
+    30
 }
 
 fn default_link_weight_decay_lambda() -> f64 {
@@ -2843,6 +2866,9 @@ pub struct AutoDreamConfig {
     pub consolidation_provider: ProviderName,
     /// Maximum agent loop iterations for the consolidation subagent. Default: `8`.
     pub max_iterations: u8,
+    /// LLM call timeout per `propose_merge_op` invocation, in seconds. Default: `30`.
+    #[serde(default = "default_autodream_llm_timeout_secs")]
+    pub llm_timeout_secs: u64,
 }
 
 impl Default for AutoDreamConfig {
@@ -2853,8 +2879,13 @@ impl Default for AutoDreamConfig {
             min_hours: 24,
             consolidation_provider: ProviderName::default(),
             max_iterations: 8,
+            llm_timeout_secs: default_autodream_llm_timeout_secs(),
         }
     }
+}
+
+fn default_autodream_llm_timeout_secs() -> u64 {
+    30
 }
 
 /// `MagicDocs` auto-maintained markdown configuration (#2702).

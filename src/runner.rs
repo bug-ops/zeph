@@ -1512,6 +1512,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             sweep_interval_secs: config.memory.consolidation.sweep_interval_secs,
             sweep_batch_size: config.memory.consolidation.sweep_batch_size,
             similarity_threshold: config.memory.consolidation.similarity_threshold,
+            llm_timeout_secs: config.memory.consolidation.llm_timeout_secs,
         };
         let consolidation_provider = app
             .build_consolidation_provider()

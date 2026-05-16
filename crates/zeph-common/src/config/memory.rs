@@ -73,6 +73,8 @@ pub struct ConsolidationConfig {
     pub sweep_interval_secs: u64,
     pub sweep_batch_size: usize,
     pub similarity_threshold: f32,
+    /// LLM call timeout per `propose_merge_op` invocation, in seconds.
+    pub llm_timeout_secs: u64,
 }
 
 /// Runtime config for the forgetting sweep (#2397).

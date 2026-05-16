@@ -57,6 +57,8 @@ pub struct GraphExtractionConfig {
     pub conversation_id: Option<i64>,
     /// APEX-MEM: use `insert_or_supersede` instead of `resolve_edge_typed`. Default: `false`.
     pub apex_mem_enabled: bool,
+    /// LLM call timeout for extraction, in seconds. Default: `30`.
+    pub llm_timeout_secs: u64,
 }
 
 impl Default for GraphExtractionConfig {
@@ -78,6 +80,7 @@ impl Default for GraphExtractionConfig {
             belief_revision_similarity_threshold: 0.85,
             conversation_id: None,
             apex_mem_enabled: false,
+            llm_timeout_secs: 30,
         }
     }
 }
@@ -356,7 +359,12 @@ pub async fn extract_and_store(
 ) -> Result<ExtractionResult, MemoryError> {
     use crate::graph::{EntityResolver, GraphExtractor, GraphStore};
 
-    let extractor = GraphExtractor::new(provider.clone(), config.max_entities, config.max_edges);
+    let extractor = GraphExtractor::new(
+        provider.clone(),
+        config.max_entities,
+        config.max_edges,
+        config.llm_timeout_secs,
+    );
     let ctx_refs: Vec<&str> = context_messages.iter().map(String::as_str).collect();
 
     let store = GraphStore::new(pool);

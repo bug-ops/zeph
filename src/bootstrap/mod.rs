@@ -426,6 +426,9 @@ impl AppBuilder {
             memory = memory.with_retrieval_failure_logger(logger);
         }
 
+        memory =
+            memory.with_summarization_timeout(self.config.memory.summarization_llm_timeout_secs);
+
         Ok(memory)
     }
 

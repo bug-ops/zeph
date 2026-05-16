@@ -517,6 +517,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                                 .similarity_threshold,
                             conversation_id: None,
                             apex_mem_enabled: graph_cfg.apex_mem.enabled,
+                            llm_timeout_secs: graph_cfg.llm_timeout_secs,
                         };
                         let pool = store.pool().clone();
                         match extract_and_store(

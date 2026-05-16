@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-memory`: consolidation LLM timeout is now configurable via `ConsolidationConfig.llm_timeout_secs`
+  (default 30s); previously hardcoded to 30s (closes #4168).
+- `zeph-memory`: graph extractor LLM timeout is now configurable via `GraphExtractionConfig.llm_timeout_secs`
+  and `GraphConfig.llm_timeout_secs` (default 30s); previously hardcoded to 30s (closes #4169).
+- `zeph-memory`: summarization LLM timeout is now configurable via `MemoryConfig.summarization_llm_timeout_secs`
+  (default 60s); previously hardcoded to 60s in both the structured and plain-text fallback paths (closes #4170).
+
 ### Added
 
 - `zeph-common`: added 8 exfiltration-channel patterns to `RAW_INJECTION_PATTERNS` (`exfil_curl`,

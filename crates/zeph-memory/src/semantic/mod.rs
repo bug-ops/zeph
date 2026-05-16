@@ -353,6 +353,8 @@ pub struct SemanticMemory {
     ///
     /// `Some` when `memory.retrieval_failures.enabled = true` at bootstrap.
     pub(crate) retrieval_failure_logger: Option<RetrievalFailureLogger>,
+    /// LLM call timeout for summarization, in seconds. Default: `60`.
+    pub(crate) summarization_llm_timeout_secs: u64,
 }
 
 impl SemanticMemory {
@@ -484,6 +486,7 @@ impl SemanticMemory {
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
+            summarization_llm_timeout_secs: 60,
         })
     }
 
@@ -547,6 +550,7 @@ impl SemanticMemory {
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
+            summarization_llm_timeout_secs: 60,
         })
     }
 
@@ -688,6 +692,15 @@ impl SemanticMemory {
     #[must_use]
     pub fn with_key_facts_dedup_threshold(mut self, threshold: f32) -> Self {
         self.key_facts_dedup_threshold = threshold;
+        self
+    }
+
+    /// Set the LLM call timeout for summarization, in seconds.
+    ///
+    /// Applies to both structured and plain-text fallback summarization calls.
+    #[must_use]
+    pub fn with_summarization_timeout(mut self, timeout_secs: u64) -> Self {
+        self.summarization_llm_timeout_secs = timeout_secs;
         self
     }
 
@@ -1038,6 +1051,7 @@ impl SemanticMemory {
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
+            summarization_llm_timeout_secs: 60,
         }
     }
 
@@ -1120,6 +1134,7 @@ impl SemanticMemory {
             hebbian_lr: 0.1,
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
+            summarization_llm_timeout_secs: 60,
         })
     }
 

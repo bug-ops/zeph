@@ -362,6 +362,7 @@ async fn summarize_fails_when_provider_chat_fails() {
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
+        summarization_llm_timeout_secs: 60,
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -442,6 +443,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
+        summarization_llm_timeout_secs: 60,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -607,6 +609,7 @@ async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::Seman
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
+        summarization_llm_timeout_secs: 60,
     }
 }
 
@@ -715,6 +718,7 @@ async fn store_key_facts_fail_open_on_search_error() {
         hebbian_lr: 0.1,
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
+        summarization_llm_timeout_secs: 60,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

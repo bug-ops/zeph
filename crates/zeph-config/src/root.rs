@@ -229,6 +229,7 @@ impl Default for Config {
                 qdrant_api_key: None,
                 semantic: SemanticConfig::default(),
                 summarization_threshold: 50,
+                summarization_llm_timeout_secs: 60,
                 context_budget_tokens: 0,
                 soft_compaction_threshold: 0.60,
                 hard_compaction_threshold: 0.90,

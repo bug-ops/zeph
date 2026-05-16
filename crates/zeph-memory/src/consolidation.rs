@@ -249,7 +249,7 @@ async fn apply_topology_op(
     config: &ConsolidationConfig,
     result: &mut ConsolidationResult,
 ) {
-    let ops = propose_merge_op(provider, &cluster).await;
+    let ops = propose_merge_op(provider, &cluster, config.llm_timeout_secs).await;
     match ops {
         None => {
             tracing::debug!(
@@ -356,7 +356,11 @@ fn cluster_by_similarity(
 ///
 /// Returns `None` if the LLM response cannot be parsed or if the LLM declines.
 #[tracing::instrument(name = "memory.consolidation.propose_merge_llm", skip_all, fields(cluster_size = cluster.len()))]
-async fn propose_merge_op(provider: &AnyProvider, cluster: &[(i64, String)]) -> Option<TopologyOp> {
+async fn propose_merge_op(
+    provider: &AnyProvider,
+    cluster: &[(i64, String)],
+    llm_timeout_secs: u64,
+) -> Option<TopologyOp> {
     use zeph_llm::provider::{Message, Role};
 
     let entries: String = cluster
@@ -379,20 +383,24 @@ async fn propose_merge_op(provider: &AnyProvider, cluster: &[(i64, String)]) -> 
         Message::from_legacy(Role::System, system_prompt),
         Message::from_legacy(Role::User, &user_prompt),
     ];
-    let text =
-        match tokio::time::timeout(std::time::Duration::from_secs(30), provider.chat(&messages))
-            .await
-        {
-            Err(_elapsed) => {
-                tracing::warn!("consolidation: propose_merge_op LLM call timed out after 30s");
-                return None;
-            }
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "consolidation: LLM call failed");
-                return None;
-            }
-        };
+    let text = match tokio::time::timeout(
+        std::time::Duration::from_secs(llm_timeout_secs),
+        provider.chat(&messages),
+    )
+    .await
+    {
+        Err(_elapsed) => {
+            tracing::warn!(
+                "consolidation: propose_merge_op LLM call timed out after {llm_timeout_secs}s"
+            );
+            return None;
+        }
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "consolidation: LLM call failed");
+            return None;
+        }
+    };
 
     // Try to parse from the first JSON object in the response.
     let start = text.find('{')?;
@@ -608,6 +616,19 @@ mod tests {
     }
 
     /// Sweep on an empty DB (no conversations) must return Ok with all-zero counters.
+    #[test]
+    fn consolidation_config_stores_custom_llm_timeout() {
+        let cfg = ConsolidationConfig {
+            enabled: true,
+            confidence_threshold: 0.75,
+            sweep_interval_secs: 300,
+            sweep_batch_size: 100,
+            similarity_threshold: 0.85,
+            llm_timeout_secs: 99,
+        };
+        assert_eq!(cfg.llm_timeout_secs, 99);
+    }
+
     #[tokio::test]
     async fn run_consolidation_sweep_empty_db_returns_ok() {
         use std::sync::Arc;
@@ -624,6 +645,7 @@ mod tests {
             sweep_interval_secs: 300,
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
+            llm_timeout_secs: 30,
         };
 
         let result = run_consolidation_sweep(&store, &provider, &config).await;
@@ -662,6 +684,7 @@ mod tests {
             sweep_interval_secs: 300,
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
+            llm_timeout_secs: 30,
         };
 
         let result = run_consolidation_sweep(&store, &provider, &config)
@@ -790,6 +813,7 @@ mod tests {
             sweep_interval_secs: 300,
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
+            llm_timeout_secs: 30,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -832,6 +856,7 @@ mod tests {
             sweep_interval_secs: 300,
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
+            llm_timeout_secs: 30,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -874,6 +899,7 @@ mod tests {
             sweep_interval_secs: 300,
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
+            llm_timeout_secs: 30,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -917,6 +943,7 @@ mod tests {
             sweep_interval_secs: 300,
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
+            llm_timeout_secs: 30,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -961,6 +988,7 @@ mod tests {
             sweep_interval_secs: 300,
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
+            llm_timeout_secs: 30,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)

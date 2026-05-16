@@ -49,6 +49,7 @@ pub fn build_graph_extraction_config(
         belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold,
         conversation_id,
         apex_mem_enabled: cfg.apex_mem.enabled,
+        llm_timeout_secs: cfg.llm_timeout_secs,
     }
 }
 

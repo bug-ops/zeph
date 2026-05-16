@@ -181,7 +181,7 @@ impl SemanticMemory {
 
     /// Call the LLM to produce a [`StructuredSummary`], falling back to plain text on parse error.
     ///
-    /// Both the structured and fallback calls are bounded by a 60-second timeout.
+    /// Both the structured and fallback calls are bounded by `summarization_llm_timeout_secs`.
     ///
     /// # Errors
     ///
@@ -191,8 +191,10 @@ impl SemanticMemory {
         &self,
         chat_messages: &[Message],
     ) -> Result<StructuredSummary, MemoryError> {
+        let timeout_secs = self.summarization_llm_timeout_secs;
+        let timeout = std::time::Duration::from_secs(timeout_secs);
         match tokio::time::timeout(
-            std::time::Duration::from_mins(1),
+            timeout,
             self.provider
                 .chat_typed_erased::<StructuredSummary>(chat_messages),
         )
@@ -203,12 +205,7 @@ impl SemanticMemory {
                 tracing::warn!(
                     "structured summarization failed, falling back to plain text: {e:#}"
                 );
-                match tokio::time::timeout(
-                    std::time::Duration::from_mins(1),
-                    self.provider.chat(chat_messages),
-                )
-                .await
-                {
+                match tokio::time::timeout(timeout, self.provider.chat(chat_messages)).await {
                     Ok(Ok(plain)) => Ok(StructuredSummary {
                         summary: plain,
                         key_facts: vec![],
@@ -217,14 +214,16 @@ impl SemanticMemory {
                     Ok(Err(e)) => Err(MemoryError::Llm(e)),
                     Err(_elapsed) => {
                         tracing::warn!(
-                            "summarization: plain text fallback LLM call timed out after 60s"
+                            "summarization: plain text fallback LLM call timed out after {timeout_secs}s"
                         );
                         Err(MemoryError::Timeout("LLM call timed out".into()))
                     }
                 }
             }
             Err(_elapsed) => {
-                tracing::warn!("summarization: structured LLM call timed out after 60s");
+                tracing::warn!(
+                    "summarization: structured LLM call timed out after {timeout_secs}s"
+                );
                 Err(MemoryError::Timeout("LLM call timed out".into()))
             }
         }

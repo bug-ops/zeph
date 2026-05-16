@@ -101,15 +101,22 @@ pub struct GraphExtractor {
     provider: AnyProvider,
     max_entities: usize,
     max_edges: usize,
+    llm_timeout_secs: u64,
 }
 
 impl GraphExtractor {
     #[must_use]
-    pub fn new(provider: AnyProvider, max_entities: usize, max_edges: usize) -> Self {
+    pub fn new(
+        provider: AnyProvider,
+        max_entities: usize,
+        max_edges: usize,
+        llm_timeout_secs: u64,
+    ) -> Self {
         Self {
             provider,
             max_entities,
             max_edges,
+            llm_timeout_secs,
         }
     }
 
@@ -139,14 +146,15 @@ impl GraphExtractor {
         ];
 
         match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(self.llm_timeout_secs),
             self.provider
                 .chat_typed_erased::<ExtractionResult>(&messages),
         )
         .await
         {
             Err(_elapsed) => {
-                tracing::warn!("graph_extractor: extract LLM call timed out after 30s");
+                let t = self.llm_timeout_secs;
+                tracing::warn!("graph_extractor: extract LLM call timed out after {t}s");
                 return Ok(None);
             }
             Ok(Ok(mut result)) => {
@@ -374,7 +382,7 @@ mod tests {
         async fn extract_truncates_to_max_entities() {
             let json = make_entities_json(20);
             let mock = MockProvider::with_responses(vec![json]);
-            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 5, 100);
+            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 5, 100, 30);
             let result = extractor.extract("test message", &[]).await.unwrap();
             let result = result.unwrap();
             assert_eq!(result.entities.len(), 5);
@@ -384,7 +392,7 @@ mod tests {
         async fn extract_truncates_to_max_edges() {
             let json = make_edges_json(15);
             let mock = MockProvider::with_responses(vec![json]);
-            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 100, 3);
+            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 100, 3, 30);
             let result = extractor.extract("test message", &[]).await.unwrap();
             let result = result.unwrap();
             assert_eq!(result.edges.len(), 3);
@@ -393,7 +401,7 @@ mod tests {
         #[tokio::test]
         async fn extract_returns_none_on_parse_failure() {
             let mock = MockProvider::with_responses(vec!["not valid json at all".into()]);
-            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 10, 10);
+            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 10, 10, 30);
             let result = extractor.extract("test message", &[]).await.unwrap();
             assert!(result.is_none());
         }
@@ -402,16 +410,27 @@ mod tests {
         async fn extract_returns_err_on_transport_failure() {
             let mock = MockProvider::default()
                 .with_errors(vec![zeph_llm::LlmError::Other("connection refused".into())]);
-            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 10, 10);
+            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 10, 10, 30);
             let result = extractor.extract("test message", &[]).await;
             assert!(result.is_err());
             assert!(matches!(result.unwrap_err(), MemoryError::Llm(_)));
         }
 
+        #[test]
+        fn graph_extractor_stores_custom_llm_timeout() {
+            let extractor = GraphExtractor::new(
+                zeph_llm::any::AnyProvider::Mock(MockProvider::default()),
+                10,
+                5,
+                42,
+            );
+            assert_eq!(extractor.llm_timeout_secs, 42);
+        }
+
         #[tokio::test]
         async fn extract_returns_none_on_empty_message() {
             let mock = MockProvider::with_responses(vec!["should not be called".into()]);
-            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 10, 10);
+            let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 10, 10, 30);
 
             let result_empty = extractor.extract("", &[]).await.unwrap();
             assert!(result_empty.is_none());

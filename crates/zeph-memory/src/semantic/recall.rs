@@ -1979,6 +1979,7 @@ mod tests {
             hebbian_lr: 0.1,
             hebbian_spread: crate::HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
+            summarization_llm_timeout_secs: 60,
         }
     }
 
