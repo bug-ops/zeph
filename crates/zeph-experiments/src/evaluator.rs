@@ -26,6 +26,12 @@ use super::error::EvalError;
 /// Default maximum number of concurrent judge calls.
 const DEFAULT_PARALLEL_EVALS: usize = 3;
 
+/// Default timeout for subject model calls, in seconds.
+const DEFAULT_SUBJECT_TIMEOUT_SECS: u64 = 60;
+
+/// Default timeout for judge model calls, in seconds.
+const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 30;
+
 const JUDGE_SYSTEM_PROMPT_BASE: &str = "\
 You are an impartial quality evaluator. Rate the assistant's response on a scale of 1-10.
 
@@ -161,6 +167,10 @@ pub struct Evaluator {
     benchmark: BenchmarkSet,
     budget_tokens: u64,
     parallel_evals: usize,
+    /// Maximum seconds to wait for the subject model to respond per case.
+    subject_timeout_secs: u64,
+    /// Maximum seconds to wait for the judge model to respond per case.
+    judge_timeout_secs: u64,
 }
 
 impl Evaluator {
@@ -180,6 +190,8 @@ impl Evaluator {
             benchmark,
             budget_tokens,
             parallel_evals: DEFAULT_PARALLEL_EVALS,
+            subject_timeout_secs: DEFAULT_SUBJECT_TIMEOUT_SECS,
+            judge_timeout_secs: DEFAULT_JUDGE_TIMEOUT_SECS,
         })
     }
 
@@ -212,6 +224,70 @@ impl Evaluator {
         self
     }
 
+    /// Override the timeout for subject model calls.
+    ///
+    /// Defaults to 60 seconds. A value of 0 is promoted to 1 second.
+    /// Cases that exceed the timeout are excluded from scores and counted in
+    /// [`EvalReport::error_count`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use std::sync::Arc;
+    /// # use zeph_experiments::{BenchmarkSet, BenchmarkCase, Evaluator, EvalError};
+    /// # use zeph_llm::any::AnyProvider;
+    /// # use zeph_llm::mock::MockProvider;
+    /// # fn example() -> Result<Evaluator, EvalError> {
+    /// let judge = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![])));
+    /// let benchmark = BenchmarkSet {
+    ///     cases: vec![BenchmarkCase {
+    ///         prompt: "hi".into(), context: None, reference: None, tags: None,
+    ///     }],
+    /// };
+    /// let evaluator = Evaluator::new(judge, benchmark, 10_000)?.with_subject_timeout_secs(120);
+    /// # Ok(evaluator)
+    /// # }
+    /// ```
+    ///
+    /// [`EvalReport::error_count`]: EvalReport::error_count
+    #[must_use]
+    pub fn with_subject_timeout_secs(mut self, secs: u64) -> Self {
+        self.subject_timeout_secs = secs.max(1);
+        self
+    }
+
+    /// Override the timeout for judge model calls.
+    ///
+    /// Defaults to 30 seconds. A value of 0 is promoted to 1 second.
+    /// Cases that exceed the timeout are excluded from scores and counted in
+    /// [`EvalReport::error_count`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use std::sync::Arc;
+    /// # use zeph_experiments::{BenchmarkSet, BenchmarkCase, Evaluator, EvalError};
+    /// # use zeph_llm::any::AnyProvider;
+    /// # use zeph_llm::mock::MockProvider;
+    /// # fn example() -> Result<Evaluator, EvalError> {
+    /// let judge = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![])));
+    /// let benchmark = BenchmarkSet {
+    ///     cases: vec![BenchmarkCase {
+    ///         prompt: "hi".into(), context: None, reference: None, tags: None,
+    ///     }],
+    /// };
+    /// let evaluator = Evaluator::new(judge, benchmark, 10_000)?.with_judge_timeout_secs(60);
+    /// # Ok(evaluator)
+    /// # }
+    /// ```
+    ///
+    /// [`EvalReport::error_count`]: EvalReport::error_count
+    #[must_use]
+    pub fn with_judge_timeout_secs(mut self, secs: u64) -> Self {
+        self.judge_timeout_secs = secs.max(1);
+        self
+    }
+
     /// Run the full benchmark against `subject`, returning aggregate scores.
     ///
     /// Subject calls are sequential; judge calls are parallelized up to
@@ -236,7 +312,23 @@ impl Evaluator {
             Vec::with_capacity(cases_total);
         for (i, case) in self.benchmark.cases.iter().enumerate() {
             let messages = build_subject_messages(case);
-            let response = subject.chat(&messages).await?;
+            let timeout = std::time::Duration::from_secs(self.subject_timeout_secs);
+            let response = match tokio::time::timeout(timeout, subject.chat(&messages)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => return Err(EvalError::Llm(e)),
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        case_index = i,
+                        timeout_secs = self.subject_timeout_secs,
+                        "evaluator: subject LLM call timed out"
+                    );
+                    return Err(EvalError::Timeout {
+                        role: "subject",
+                        timeout_secs: self.subject_timeout_secs,
+                        case_index: i,
+                    });
+                }
+            };
             subject_responses.push((i, case, response));
         }
 
@@ -253,6 +345,7 @@ impl Evaluator {
             let case_index = *case_index;
             let case = *case;
             let response = response.clone();
+            let judge_timeout_secs = self.judge_timeout_secs;
 
             futures.push(async move {
                 // Acquire semaphore inside the async block for correct backpressure.
@@ -272,8 +365,15 @@ impl Evaluator {
 
                 // Clone the provider so each task has its own last_usage() state.
                 let judge_clone = (*judge).clone();
-                score_case_with_provider(&judge_clone, case_index, case, &response, &tokens_used)
-                    .await
+                score_case_with_provider(
+                    &judge_clone,
+                    case_index,
+                    case,
+                    &response,
+                    &tokens_used,
+                    judge_timeout_secs,
+                )
+                .await
             });
         }
 
@@ -329,12 +429,31 @@ async fn score_case_with_provider(
     case: &BenchmarkCase,
     response: &str,
     tokens_used: &Arc<AtomicU64>,
+    timeout_secs: u64,
 ) -> Result<CaseScore, EvalError> {
     let messages = build_judge_messages(case, response);
     let start = std::time::Instant::now();
-    // LLM infrastructure errors (timeout, auth, connectivity) propagate as EvalError::Llm
-    // via the #[from] impl. Only structural parse failures become JudgeParse.
-    let output: JudgeOutput = judge.chat_typed_erased(&messages).await?;
+    let output: JudgeOutput = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        judge.chat_typed_erased(&messages),
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(EvalError::Llm(e)),
+        Err(_elapsed) => {
+            tracing::warn!(
+                case_index,
+                timeout_secs,
+                "evaluator: judge LLM call timed out"
+            );
+            return Err(EvalError::Timeout {
+                role: "judge",
+                timeout_secs,
+                case_index,
+            });
+        }
+    };
     #[allow(clippy::cast_possible_truncation)]
     let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -869,6 +988,118 @@ mod tests {
             // MockProvider may handle this differently — ensure no panic at minimum.
             assert!(report.mean_score.is_finite() || report.mean_score.is_nan());
         }
+    }
+
+    /// Regression test for #4164: subject timeout returns `EvalError::Timeout` instead of hanging.
+    #[tokio::test]
+    async fn subject_timeout_returns_error() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let benchmark = BenchmarkSet {
+            cases: vec![BenchmarkCase {
+                prompt: "Q1".into(),
+                context: None,
+                reference: None,
+                tags: None,
+            }],
+        };
+        // Subject sleeps 5 s; timeout is 1 s. Use tokio::time::pause so the test
+        // completes in wall-clock milliseconds rather than waiting real seconds.
+        let slow_subject = AnyProvider::Mock(MockProvider::default().with_delay(5_000));
+        let judge = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![
+            r#"{"score": 8.0, "reason": "ok"}"#.into(),
+        ])));
+        let evaluator = Evaluator::new(judge, benchmark, 1_000_000)
+            .unwrap()
+            .with_subject_timeout_secs(1);
+
+        tokio::time::pause();
+
+        let handle = tokio::spawn(async move { evaluator.evaluate(&slow_subject).await });
+
+        // Yield so the spawned task can register its sleep, then advance past the timeout.
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+
+        let eval_result = handle.await.expect("task must not panic");
+        match eval_result {
+            Err(EvalError::Timeout { role, .. }) => {
+                assert_eq!(role, "subject", "timeout must be attributed to subject");
+            }
+            other => panic!("expected EvalError::Timeout, got: {other:?}"),
+        }
+    }
+
+    /// Regression test for #4164: judge timeout increments error_count; case excluded from scores.
+    #[tokio::test]
+    async fn judge_timeout_excluded_from_scores() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let benchmark = BenchmarkSet {
+            cases: vec![
+                BenchmarkCase {
+                    prompt: "Q1".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q2".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+            ],
+        };
+
+        // Subject responds instantly; judge sleeps 5 s per call, timeout is 1 s.
+        let subject =
+            AnyProvider::Mock(MockProvider::with_responses(vec!["A1".into(), "A2".into()]));
+        let slow_judge = MockProvider::with_responses(vec![
+            r#"{"score": 9.0, "reason": "correct"}"#.into(),
+            r#"{"score": 8.0, "reason": "correct"}"#.into(),
+        ])
+        .with_delay(5_000);
+        let judge = Arc::new(AnyProvider::Mock(slow_judge));
+        let evaluator = Evaluator::new(judge, benchmark, 1_000_000)
+            .unwrap()
+            .with_judge_timeout_secs(1)
+            .with_parallel_evals(1); // sequential for determinism
+
+        tokio::time::pause();
+
+        let handle = tokio::spawn(async move { evaluator.evaluate(&subject).await });
+
+        // Advance time past judge timeout twice (once per sequential judge call).
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+
+        let report = handle
+            .await
+            .expect("task must not panic")
+            .expect("evaluate must not err");
+
+        assert_eq!(report.cases_total, 2);
+        assert_eq!(
+            report.error_count, 2,
+            "both judge timeouts must be counted as errors"
+        );
+        assert_eq!(
+            report.cases_scored, 0,
+            "timed-out cases must be excluded from scores"
+        );
+        assert!(
+            report.is_partial,
+            "is_partial must be true when errors occurred"
+        );
     }
 
     /// R8-GAP-2: Semaphore limits concurrent judge calls.
