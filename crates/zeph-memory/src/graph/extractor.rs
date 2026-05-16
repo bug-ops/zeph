@@ -138,25 +138,31 @@ impl GraphExtractor {
             Message::from_legacy(Role::User, user_prompt),
         ];
 
-        match self
-            .provider
-            .chat_typed_erased::<ExtractionResult>(&messages)
-            .await
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.provider
+                .chat_typed_erased::<ExtractionResult>(&messages),
+        )
+        .await
         {
-            Ok(mut result) => {
+            Err(_elapsed) => {
+                tracing::warn!("graph_extractor: extract LLM call timed out after 30s");
+                return Ok(None);
+            }
+            Ok(Ok(mut result)) => {
                 result.entities.truncate(self.max_entities);
                 result.edges.truncate(self.max_edges);
-                Ok(Some(result))
+                return Ok(Some(result));
             }
-            Err(LlmError::StructuredParse(msg)) => {
+            Ok(Err(LlmError::StructuredParse(msg))) => {
                 tracing::warn!(
                     "graph extraction: LLM returned unparseable output (len={}): {:.200}",
                     msg.len(),
                     msg
                 );
-                Ok(None)
+                return Ok(None);
             }
-            Err(other) => Err(MemoryError::Llm(other)),
+            Ok(Err(other)) => return Err(MemoryError::Llm(other)),
         }
     }
 }

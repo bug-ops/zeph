@@ -89,10 +89,7 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if LLM call or database operation fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "memory.summarize", skip_all, fields(input_msgs = %message_count, output_len = tracing::field::Empty))
-    )]
+    #[tracing::instrument(name = "memory.summarize", skip_all, fields(input_msgs = %message_count, output_len = tracing::field::Empty))]
     pub async fn summarize(
         &self,
         conversation_id: ConversationId,
@@ -127,24 +124,7 @@ impl SemanticMemory {
             metadata: MessageMetadata::default(),
         }];
 
-        let structured = match self
-            .provider
-            .chat_typed_erased::<StructuredSummary>(&chat_messages)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(
-                    "structured summarization failed, falling back to plain text: {e:#}"
-                );
-                let plain = self.provider.chat(&chat_messages).await?;
-                StructuredSummary {
-                    summary: plain,
-                    key_facts: vec![],
-                    entities: vec![],
-                }
-            }
-        };
+        let structured = self.call_summarization_llm(&chat_messages).await?;
         let summary_text = &structured.summary;
 
         let token_estimate = i64::try_from(self.token_counter.count_tokens(summary_text))?;
@@ -197,6 +177,57 @@ impl SemanticMemory {
         }
 
         Ok(Some(summary_id))
+    }
+
+    /// Call the LLM to produce a [`StructuredSummary`], falling back to plain text on parse error.
+    ///
+    /// Both the structured and fallback calls are bounded by a 60-second timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Timeout`] if the LLM exceeds the deadline, or
+    /// [`MemoryError::Llm`] if the provider returns an error.
+    async fn call_summarization_llm(
+        &self,
+        chat_messages: &[Message],
+    ) -> Result<StructuredSummary, MemoryError> {
+        match tokio::time::timeout(
+            std::time::Duration::from_mins(1),
+            self.provider
+                .chat_typed_erased::<StructuredSummary>(chat_messages),
+        )
+        .await
+        {
+            Ok(Ok(s)) => Ok(s),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "structured summarization failed, falling back to plain text: {e:#}"
+                );
+                match tokio::time::timeout(
+                    std::time::Duration::from_mins(1),
+                    self.provider.chat(chat_messages),
+                )
+                .await
+                {
+                    Ok(Ok(plain)) => Ok(StructuredSummary {
+                        summary: plain,
+                        key_facts: vec![],
+                        entities: vec![],
+                    }),
+                    Ok(Err(e)) => Err(MemoryError::Llm(e)),
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            "summarization: plain text fallback LLM call timed out after 60s"
+                        );
+                        Err(MemoryError::Timeout("LLM call timed out".into()))
+                    }
+                }
+            }
+            Err(_elapsed) => {
+                tracing::warn!("summarization: structured LLM call timed out after 60s");
+                Err(MemoryError::Timeout("LLM call timed out".into()))
+            }
+        }
     }
 
     pub(super) async fn store_key_facts(

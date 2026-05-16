@@ -379,13 +379,20 @@ async fn propose_merge_op(provider: &AnyProvider, cluster: &[(i64, String)]) -> 
         Message::from_legacy(Role::System, system_prompt),
         Message::from_legacy(Role::User, &user_prompt),
     ];
-    let text = match provider.chat(&messages).await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(error = %e, "consolidation: LLM call failed");
-            return None;
-        }
-    };
+    let text =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), provider.chat(&messages))
+            .await
+        {
+            Err(_elapsed) => {
+                tracing::warn!("consolidation: propose_merge_op LLM call timed out after 30s");
+                return None;
+            }
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "consolidation: LLM call failed");
+                return None;
+            }
+        };
 
     // Try to parse from the first JSON object in the response.
     let start = text.find('{')?;
