@@ -1368,7 +1368,6 @@ impl<C: Channel> Agent<C> {
         if pd_hooks.is_empty() {
             return;
         }
-        let _span = tracing::info_span!("core.hooks.permission_denied", tool = %tc.name).entered();
         let mut env = std::collections::HashMap::new();
         env.insert("ZEPH_DENIED_TOOL".to_owned(), tc.name.to_string());
         env.insert("ZEPH_DENY_REASON".to_owned(), reason.to_owned());
@@ -1376,7 +1375,13 @@ impl<C: Channel> Agent<C> {
         let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
             .as_ref()
             .map(|d| d as &dyn zeph_subagent::McpDispatch);
-        if let Err(e) = zeph_subagent::hooks::fire_hooks(&pd_hooks, &env, mcp, None).await {
+        if let Err(e) = zeph_subagent::hooks::fire_hooks(&pd_hooks, &env, mcp, None)
+            .instrument(tracing::info_span!(
+                "core.hooks.permission_denied",
+                tool = %tc.name
+            ))
+            .await
+        {
             tracing::warn!(error = %e, tool = %tc.name, "PermissionDenied hook failed");
         }
     }
@@ -1436,8 +1441,6 @@ impl<C: Channel> Agent<C> {
                 let matched: Vec<&zeph_config::HookDef> =
                     zeph_subagent::matching_hooks(&pre_hooks, tc.name.as_str());
                 if !matched.is_empty() {
-                    let _span =
-                        tracing::info_span!("core.hooks.pre_tool_use", tool = %tc.name).entered();
                     let conv_id_str = self
                         .services
                         .memory
@@ -1451,7 +1454,12 @@ impl<C: Channel> Agent<C> {
                     let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                         .as_ref()
                         .map(|d| d as &dyn zeph_subagent::McpDispatch);
-                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp, None).await
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp, None)
+                        .instrument(tracing::info_span!(
+                            "core.hooks.pre_tool_use",
+                            tool = %tc.name
+                        ))
+                        .await
                     {
                         tracing::warn!(
                             error = %e,
@@ -1689,11 +1697,6 @@ impl<C: Channel> Agent<C> {
                 let matched: Vec<&zeph_config::HookDef> =
                     zeph_subagent::matching_hooks(&post_hooks, tool_calls[idx].name.as_str());
                 if !matched.is_empty() {
-                    let _span = tracing::info_span!(
-                        "core.hooks.post_tool_use",
-                        tool = %tool_calls[idx].name
-                    )
-                    .entered();
                     let conv_id_str = self
                         .services
                         .memory
@@ -1739,6 +1742,10 @@ impl<C: Channel> Agent<C> {
                         mcp,
                         stdin_bytes.as_deref(),
                     )
+                    .instrument(tracing::info_span!(
+                        "core.hooks.post_tool_use",
+                        tool = %tool_calls[idx].name
+                    ))
                     .await
                     {
                         Ok(run_result) => {

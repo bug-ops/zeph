@@ -2620,6 +2620,8 @@ impl<C: Channel> Agent<C> {
                 if score > 0.0 { Some(score) } else { None }
             },
             content_isolation: self.runtime.config.security.content_isolation.clone(),
+            orchestrator_name: Some("zeph".to_owned()),
+            orchestrator_role: Some("orchestrator".to_owned()),
         }
     }
 

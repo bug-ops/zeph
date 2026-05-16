@@ -382,32 +382,25 @@ async fn fire_shell_hook<S: BuildHasher>(
         );
     }
 
-    // Read stdout up to HOOK_STDOUT_CAP bytes; truncated output will fail JSON parse
-    // and be treated as no substitution, logging a warning.
+    // Wait for process exit with a timeout, then read stdout. Sequential order avoids the
+    // deadlock where read_fut blocks on EOF while kill() is gated behind join! completion.
     let stdout_handle = child.stdout.take();
-    let read_fut = async {
-        let mut buf = Vec::new();
-        if let Some(handle) = stdout_handle {
-            let mut limited = handle.take(HOOK_STDOUT_CAP as u64 + 1);
-            let _ = limited.read_to_end(&mut buf).await;
+    match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
+        Ok(Ok(status)) => {
+            let mut stdout_bytes = Vec::new();
+            if let Some(handle) = stdout_handle {
+                let mut limited = handle.take(HOOK_STDOUT_CAP as u64 + 1);
+                let _ = limited.read_to_end(&mut stdout_bytes).await;
+            }
+            if status.success() {
+                Ok(parse_hook_stdout(command, &stdout_bytes))
+            } else {
+                Err(HookError::NonZeroExit {
+                    command: command.to_owned(),
+                    code: status.code().unwrap_or(-1),
+                })
+            }
         }
-        buf
-    };
-
-    let (wait_res, stdout_bytes) = tokio::join!(
-        timeout(Duration::from_secs(timeout_secs), child.wait()),
-        read_fut
-    );
-
-    match wait_res {
-        Ok(Ok(status)) if status.success() => {
-            let hook_output = parse_hook_stdout(command, &stdout_bytes);
-            Ok(hook_output)
-        }
-        Ok(Ok(status)) => Err(HookError::NonZeroExit {
-            command: command.to_owned(),
-            code: status.code().unwrap_or(-1),
-        }),
         Ok(Err(e)) => Err(HookError::Io {
             command: command.to_owned(),
             source: e,
@@ -814,5 +807,33 @@ PreToolUse:
         let hooks = SubagentHooks::default();
         assert!(hooks.pre_tool_use.is_empty());
         assert!(hooks.post_tool_use.is_empty());
+    }
+
+    // ── regression: #4011 ────────────────────────────────────────────────────
+
+    /// Regression for #4011: a hook that writes to stdout and then hangs must be killed
+    /// within `timeout_secs` and return `HookError::Timeout`.  The old `tokio::join!`
+    /// implementation deadlocked here because the stdout reader blocked on EOF while
+    /// `child.kill()` was gated behind the join completing.
+    #[tokio::test]
+    async fn fire_shell_hook_timeout_with_stdout_does_not_deadlock() {
+        // Write a line to stdout, then block forever — this is the exact pattern that
+        // triggered the deadlock in the original implementation.
+        let cmd = r#"echo "some output"; sleep 60"#;
+        let hooks = vec![cmd_hook(cmd, true, 1)];
+        let env = HashMap::new();
+
+        // Must complete in bounded time (the timeout is 1 s; allow 5 s total for CI variance).
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fire_hooks(&hooks, &env, None, None),
+        )
+        .await
+        .expect("fire_hooks must return within 5 s — deadlock regression #4011");
+
+        assert!(
+            matches!(result, Err(HookError::Timeout { .. })),
+            "expected HookError::Timeout, got: {result:?}"
+        );
     }
 }
