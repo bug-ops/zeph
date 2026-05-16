@@ -211,8 +211,8 @@ impl std::fmt::Display for VariationValue {
 /// [`ExperimentSessionReport`]: crate::engine::ExperimentSessionReport
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentResult {
-    /// Row ID in the SQLite experiments table (`-1` when not yet persisted).
-    pub id: i64,
+    /// Row ID in the SQLite experiments table. `None` when not yet persisted.
+    pub id: Option<i64>,
     /// Session ID of the experiment session that produced this result.
     pub session_id: SessionId,
     /// The parameter variation that was tested.
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn experiment_result_serde_roundtrip() {
         let result = ExperimentResult {
-            id: 1,
+            id: Some(1),
             session_id: SessionId::new("sess-abc"),
             variation: Variation {
                 parameter: ParameterKind::Temperature,
@@ -398,7 +398,7 @@ mod tests {
         };
         let json = serde_json::to_string(&result).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(parsed["id"], 1);
+        assert_eq!(parsed["id"], 1); // Some(1) serializes as 1
         assert_eq!(parsed["session_id"], "sess-abc");
         assert_eq!(parsed["accepted"], true);
         assert_eq!(parsed["source"], "manual");

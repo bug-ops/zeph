@@ -98,10 +98,10 @@ impl VariationGenerator for Random {
         for _ in 0..MAX_RETRIES {
             let idx = rng.random_range(0..self.search_space.parameters.len());
             let range = &self.search_space.parameters[idx];
-            let raw: f64 = rng.random_range(range.min..=range.max);
+            let raw: f64 = rng.random_range(range.min()..=range.max());
             let value = range.quantize(raw);
             let variation = Variation {
-                parameter: range.kind,
+                parameter: range.kind(),
                 value: VariationValue::Float(OrderedFloat(value)),
             };
             if !visited.contains(&variation) {
@@ -129,13 +129,9 @@ mod tests {
     #[test]
     fn random_produces_values_in_range() {
         let space = SearchSpace {
-            parameters: vec![ParameterRange {
-                kind: ParameterKind::Temperature,
-                min: 0.0,
-                max: 1.0,
-                step: Some(0.1),
-                default: 0.5,
-            }],
+            parameters: vec![
+                ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.1), 0.5).unwrap(),
+            ],
         };
         let mut generator = Random::new(space, 42);
         let baseline = ConfigSnapshot::default();
@@ -150,14 +146,11 @@ mod tests {
 
     #[test]
     fn random_skips_visited() {
+        // Use a very small range with a large step so only one grid point exists (0.5).
         let space = SearchSpace {
-            parameters: vec![ParameterRange {
-                kind: ParameterKind::Temperature,
-                min: 0.5,
-                max: 0.5,
-                step: Some(0.1),
-                default: 0.5,
-            }],
+            parameters: vec![
+                ParameterRange::new(ParameterKind::Temperature, 0.5, 0.6, Some(1.0), 0.55).unwrap(),
+            ],
         };
         let mut generator = Random::new(space, 0);
         let baseline = ConfigSnapshot::default();
@@ -166,7 +159,7 @@ mod tests {
             parameter: ParameterKind::Temperature,
             value: VariationValue::Float(OrderedFloat(0.5)),
         });
-        // Only one point in space (min==max==0.5), so after visiting it, must return None.
+        // Only one grid point (0.5 clamped from min), after visiting it must return None.
         let result = generator.next(&baseline, &visited);
         assert!(
             result.is_none(),
@@ -197,13 +190,9 @@ mod tests {
     #[test]
     fn random_quantizes_sampled_values() {
         let space = SearchSpace {
-            parameters: vec![ParameterRange {
-                kind: ParameterKind::TopP,
-                min: 0.1,
-                max: 1.0,
-                step: Some(0.05),
-                default: 0.9,
-            }],
+            parameters: vec![
+                ParameterRange::new(ParameterKind::TopP, 0.1, 1.0, Some(0.05), 0.9).unwrap(),
+            ],
         };
         let mut generator = Random::new(space, 7);
         let baseline = ConfigSnapshot::default();

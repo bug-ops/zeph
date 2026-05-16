@@ -96,11 +96,11 @@ impl VariationGenerator for Neighborhood {
         for _ in 0..MAX_RETRIES {
             let idx = self.rng.random_range(0..self.search_space.parameters.len());
             let range = &self.search_space.parameters[idx];
-            let current = baseline.get(range.kind);
+            let current = baseline.get(range.kind());
             // DEFAULT_STEPS is used when step is None (continuous parameter).
             let step = range
-                .step
-                .unwrap_or_else(|| (range.max - range.min) / DEFAULT_STEPS);
+                .step()
+                .unwrap_or_else(|| (range.max() - range.min()) / DEFAULT_STEPS);
             let delta = self.rng.random_range(-self.radius..=self.radius) * step;
             // Skip zero perturbations — they produce the baseline value, wasting an attempt.
             if delta.abs() < f64::EPSILON {
@@ -113,7 +113,7 @@ impl VariationGenerator for Neighborhood {
                 continue;
             }
             let variation = Variation {
-                parameter: range.kind,
+                parameter: range.kind(),
                 value: VariationValue::Float(OrderedFloat(value)),
             };
             if !visited.contains(&variation) {
@@ -145,13 +145,9 @@ mod tests {
 
     fn make_space(kind: ParameterKind, min: f64, max: f64, step: f64) -> SearchSpace {
         SearchSpace {
-            parameters: vec![ParameterRange {
-                kind,
-                min,
-                max,
-                step: Some(step),
-                default: f64::midpoint(min, max),
-            }],
+            parameters: vec![
+                ParameterRange::new(kind, min, max, Some(step), f64::midpoint(min, max)).unwrap(),
+            ],
         }
     }
 
@@ -183,14 +179,19 @@ mod tests {
 
     #[test]
     fn neighborhood_skips_visited() {
-        // Single-point space: min == max == 0.5, step 0.1
-        let space = make_space(ParameterKind::Temperature, 0.5, 0.5, 0.1);
+        // Narrow range [0.5, 0.6] with large step: perturbations always clamp to 0.5 or 0.6.
+        // After visiting both, must return None.
+        let space = make_space(ParameterKind::Temperature, 0.5, 0.6, 0.1);
         let mut generator = Neighborhood::new(space, 1.0, 0).unwrap();
         let baseline = ConfigSnapshot::default();
         let mut visited = HashSet::new();
         visited.insert(Variation {
             parameter: ParameterKind::Temperature,
             value: VariationValue::Float(OrderedFloat(0.5)),
+        });
+        visited.insert(Variation {
+            parameter: ParameterKind::Temperature,
+            value: VariationValue::Float(OrderedFloat(0.6)),
         });
         assert!(generator.next(&baseline, &visited).is_none());
     }
@@ -225,13 +226,16 @@ mod tests {
     fn neighborhood_step_none_uses_default_steps() {
         // Continuous parameter (step=None) — neighborhood must still produce values.
         let space = SearchSpace {
-            parameters: vec![super::super::search_space::ParameterRange {
-                kind: ParameterKind::Temperature,
-                min: 0.0,
-                max: 2.0,
-                step: None,
-                default: 1.0,
-            }],
+            parameters: vec![
+                super::super::search_space::ParameterRange::new(
+                    ParameterKind::Temperature,
+                    0.0,
+                    2.0,
+                    None,
+                    1.0,
+                )
+                .unwrap(),
+            ],
         };
         let mut generator = Neighborhood::new(space, 1.0, 77).unwrap();
         let baseline = ConfigSnapshot::default();

@@ -112,4 +112,28 @@ pub enum EvalError {
     /// An experiment result could not be persisted to SQLite.
     #[error("experiment storage error: {0}")]
     Storage(String),
+
+    /// The `min` and `max` bounds of a [`ParameterRange`] are inverted or equal.
+    ///
+    /// [`ParameterRange`]: crate::ParameterRange
+    #[error("invalid parameter range: min ({min}) must be strictly less than max ({max})")]
+    InvalidRange {
+        /// The minimum bound that was rejected.
+        min: f64,
+        /// The maximum bound that was rejected.
+        max: f64,
+    },
+
+    /// The `default` value of a [`ParameterRange`] lies outside `[min, max]`.
+    ///
+    /// [`ParameterRange`]: crate::ParameterRange
+    #[error("parameter default ({default}) out of range [{min}, {max}]")]
+    DefaultOutOfRange {
+        /// The default value that was rejected.
+        default: f64,
+        /// Minimum allowed value (inclusive).
+        min: f64,
+        /// Maximum allowed value (inclusive).
+        max: f64,
+    },
 }

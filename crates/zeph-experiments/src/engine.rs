@@ -246,8 +246,7 @@ impl ExperimentEngine {
         let wall_limit = std::time::Duration::from_secs(self.config.max_wall_time_secs);
         let mut results: Vec<ExperimentResult> = Vec::new();
         let mut visited: HashSet<Variation> = HashSet::new();
-        let (mut best_score, mut counter, mut consecutive_nan) =
-            (initial_baseline_score, 0i64, 0u32);
+        let (mut best_score, mut consecutive_nan) = (initial_baseline_score, 0u32);
 
         'main: loop {
             if results.len() >= self.config.max_experiments as usize {
@@ -301,10 +300,8 @@ impl ExperimentEngine {
                     accepted,
                     candidate_report.p50_latency_ms,
                     candidate_report.total_tokens,
-                    counter,
                 )
                 .await?;
-            counter += 1;
             let pre_accept_baseline = best_score;
             self.log_outcome(&variation, delta, accepted, best_score);
             if accepted {
@@ -349,8 +346,8 @@ impl ExperimentEngine {
 
     /// Persist a single experiment result to `SQLite` when memory is configured.
     ///
-    /// Returns the row ID from `SQLite`, or a synthetic monotonic counter when
-    /// persistence is disabled (`memory` is `None`).
+    /// Returns `Some(row_id)` from `SQLite`, or `None` when persistence is disabled
+    /// (`memory` is `None`).
     ///
     /// # Errors
     ///
@@ -365,10 +362,9 @@ impl ExperimentEngine {
         accepted: bool,
         p50_latency_ms: u64,
         total_tokens: u64,
-        counter: i64,
-    ) -> Result<i64, EvalError> {
+    ) -> Result<Option<i64>, EvalError> {
         let Some(mem) = &self.memory else {
-            return Ok(counter);
+            return Ok(None);
         };
         let value_json = serde_json::to_string(&variation.value)
             .map_err(|e| EvalError::Storage(e.to_string()))?;
@@ -388,6 +384,7 @@ impl ExperimentEngine {
         mem.sqlite()
             .insert_experiment_result(&new_result)
             .await
+            .map(Some)
             .map_err(|e: zeph_memory::error::MemoryError| EvalError::Storage(e.to_string()))
     }
 

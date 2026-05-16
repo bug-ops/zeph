@@ -183,11 +183,11 @@ async fn run_chunk_summaries(
     guidelines: &str,
 ) -> Vec<String> {
     let provider = deps.provider.clone();
-    let guidelines_owned = guidelines.to_string();
+    let guidelines_arc: Arc<str> = Arc::from(guidelines);
     let timeout = deps.llm_timeout;
 
     let results: Vec<_> = futures::stream::iter(chunks.into_iter().map(|chunk| {
-        let guidelines_ref = guidelines_owned.clone();
+        let guidelines_ref = Arc::clone(&guidelines_arc);
         let prompt = build_chunk_prompt(&chunk, &guidelines_ref);
         let p = provider.clone();
         async move {

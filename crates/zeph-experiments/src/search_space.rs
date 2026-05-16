@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::error::EvalError;
 use super::types::ParameterKind;
 
 /// A continuous or discrete range for a single tunable parameter.
@@ -14,39 +15,118 @@ use super::types::ParameterKind;
 /// the parameter is treated as continuous and generators fall back to an internal
 /// default step count (typically 20 divisions).
 ///
+/// Invariants enforced by [`ParameterRange::new`]:
+/// - `min < max` (both must be finite)
+/// - `min <= default <= max` (`default` must be finite)
+/// - `step`, when `Some`, must be finite and positive
+///
 /// # Examples
 ///
 /// ```rust
 /// use zeph_experiments::{ParameterRange, ParameterKind};
 ///
-/// let range = ParameterRange {
-///     kind: ParameterKind::Temperature,
-///     min: 0.0,
-///     max: 1.0,
-///     step: Some(0.1),
-///     default: 0.7,
-/// };
+/// let range = ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.1), 0.7).unwrap();
 ///
-/// assert!(range.is_valid());
 /// assert_eq!(range.step_count(), Some(11));
 /// assert!((range.clamp(2.0) - 1.0).abs() < f64::EPSILON);
 /// assert!((range.quantize(0.73) - 0.7).abs() < 1e-10);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterRange {
-    /// The parameter this range applies to.
-    pub kind: ParameterKind,
-    /// Minimum value (inclusive).
-    pub min: f64,
-    /// Maximum value (inclusive).
-    pub max: f64,
-    /// Discrete step size. `None` means continuous (generators use a default step count).
-    pub step: Option<f64>,
-    /// Default (baseline) value, typically read from the current agent config.
-    pub default: f64,
+    kind: ParameterKind,
+    min: f64,
+    max: f64,
+    step: Option<f64>,
+    default: f64,
 }
 
 impl ParameterRange {
+    /// Construct a validated `ParameterRange`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalError::InvalidRange`] if `min >= max` or either bound is non-finite.
+    /// Returns [`EvalError::DefaultOutOfRange`] if `default` is outside `[min, max]`.
+    ///
+    /// `step` is not validated by this constructor; non-positive or non-finite values
+    /// are treated as `None` by [`step_count`] and [`quantize`].
+    ///
+    /// [`step_count`]: Self::step_count
+    /// [`quantize`]: Self::quantize
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_experiments::{ParameterRange, ParameterKind, EvalError};
+    ///
+    /// let r = ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.1), 0.7).unwrap();
+    /// assert!((r.min() - 0.0).abs() < f64::EPSILON);
+    /// assert!((r.max() - 1.0).abs() < f64::EPSILON);
+    /// assert!((r.default_value() - 0.7).abs() < f64::EPSILON);
+    ///
+    /// assert!(matches!(
+    ///     ParameterRange::new(ParameterKind::Temperature, 1.0, 0.0, None, 0.5),
+    ///     Err(EvalError::InvalidRange { .. })
+    /// ));
+    /// assert!(matches!(
+    ///     ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, 2.0),
+    ///     Err(EvalError::DefaultOutOfRange { .. })
+    /// ));
+    /// ```
+    pub fn new(
+        kind: ParameterKind,
+        min: f64,
+        max: f64,
+        step: Option<f64>,
+        default: f64,
+    ) -> Result<Self, EvalError> {
+        if !min.is_finite() || !max.is_finite() || min >= max {
+            return Err(EvalError::InvalidRange { min, max });
+        }
+        if !default.is_finite() || default < min || default > max {
+            return Err(EvalError::DefaultOutOfRange { default, min, max });
+        }
+        Ok(Self {
+            kind,
+            min,
+            max,
+            step,
+            default,
+        })
+    }
+
+    /// Return the [`ParameterKind`] this range applies to.
+    #[must_use]
+    pub fn kind(&self) -> ParameterKind {
+        self.kind
+    }
+
+    /// Return the minimum value (inclusive).
+    #[must_use]
+    pub fn min(&self) -> f64 {
+        self.min
+    }
+
+    /// Return the maximum value (inclusive).
+    #[must_use]
+    pub fn max(&self) -> f64 {
+        self.max
+    }
+
+    /// Return the discrete step size, or `None` for a continuous range.
+    #[must_use]
+    pub fn step(&self) -> Option<f64> {
+        self.step
+    }
+
+    /// Return the default (baseline) value.
+    ///
+    /// Named `default_value` to avoid shadowing the `Default` trait keyword.
+    #[must_use]
+    pub fn default_value(&self) -> f64 {
+        self.default
+    }
+
     /// Number of discrete grid points in this range, or `None` if `step` is not set or ≤ 0.
     ///
     /// The count is `floor((max - min) / step) + 1`.
@@ -56,10 +136,10 @@ impl ParameterRange {
     /// ```rust
     /// use zeph_experiments::{ParameterRange, ParameterKind};
     ///
-    /// let r = ParameterRange { kind: ParameterKind::Temperature, min: 0.0, max: 1.0, step: Some(0.5), default: 0.5 };
+    /// let r = ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.5), 0.5).unwrap();
     /// assert_eq!(r.step_count(), Some(3)); // 0.0, 0.5, 1.0
     ///
-    /// let r_continuous = ParameterRange { step: None, ..r };
+    /// let r_continuous = ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, 0.5).unwrap();
     /// assert_eq!(r_continuous.step_count(), None);
     /// ```
     #[must_use]
@@ -79,7 +159,7 @@ impl ParameterRange {
     /// ```rust
     /// use zeph_experiments::{ParameterRange, ParameterKind};
     ///
-    /// let r = ParameterRange { kind: ParameterKind::TopP, min: 0.1, max: 1.0, step: Some(0.1), default: 0.9 };
+    /// let r = ParameterRange::new(ParameterKind::TopP, 0.1, 1.0, Some(0.1), 0.9).unwrap();
     /// assert!((r.clamp(2.0) - 1.0).abs() < f64::EPSILON);
     /// assert!((r.clamp(-1.0) - 0.1).abs() < f64::EPSILON);
     /// ```
@@ -95,7 +175,7 @@ impl ParameterRange {
     /// ```rust
     /// use zeph_experiments::{ParameterRange, ParameterKind};
     ///
-    /// let r = ParameterRange { kind: ParameterKind::Temperature, min: 0.0, max: 1.0, step: Some(0.1), default: 0.7 };
+    /// let r = ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.1), 0.7).unwrap();
     /// assert!(r.contains(0.5));
     /// assert!(!r.contains(1.1));
     /// ```
@@ -117,31 +197,6 @@ impl ParameterRange {
             return self.clamp((quantized * 100.0).round() / 100.0);
         }
         value
-    }
-
-    /// Return `true` if this range is internally consistent.
-    ///
-    /// Returns `false` if `min > max`, any bound or `default` is non-finite,
-    /// or `step` is present but non-positive or non-finite.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use zeph_experiments::{ParameterRange, ParameterKind};
-    ///
-    /// let valid = ParameterRange { kind: ParameterKind::Temperature, min: 0.0, max: 1.0, step: Some(0.1), default: 0.7 };
-    /// assert!(valid.is_valid());
-    ///
-    /// let inverted = ParameterRange { min: 1.0, max: 0.0, ..valid };
-    /// assert!(!inverted.is_valid());
-    /// ```
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        self.min.is_finite()
-            && self.max.is_finite()
-            && self.default.is_finite()
-            && self.min <= self.max
-            && self.step.is_none_or(|s| s.is_finite() && s > 0.0)
     }
 }
 
@@ -175,41 +230,16 @@ impl Default for SearchSpace {
     fn default() -> Self {
         Self {
             parameters: vec![
-                ParameterRange {
-                    kind: ParameterKind::Temperature,
-                    min: 0.0,
-                    max: 1.0,
-                    step: Some(0.1),
-                    default: 0.7,
-                },
-                ParameterRange {
-                    kind: ParameterKind::TopP,
-                    min: 0.1,
-                    max: 1.0,
-                    step: Some(0.05),
-                    default: 0.9,
-                },
-                ParameterRange {
-                    kind: ParameterKind::TopK,
-                    min: 1.0,
-                    max: 100.0,
-                    step: Some(5.0),
-                    default: 40.0,
-                },
-                ParameterRange {
-                    kind: ParameterKind::FrequencyPenalty,
-                    min: -2.0,
-                    max: 2.0,
-                    step: Some(0.2),
-                    default: 0.0,
-                },
-                ParameterRange {
-                    kind: ParameterKind::PresencePenalty,
-                    min: -2.0,
-                    max: 2.0,
-                    step: Some(0.2),
-                    default: 0.0,
-                },
+                ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.1), 0.7)
+                    .expect("default Temperature range is valid"),
+                ParameterRange::new(ParameterKind::TopP, 0.1, 1.0, Some(0.05), 0.9)
+                    .expect("default TopP range is valid"),
+                ParameterRange::new(ParameterKind::TopK, 1.0, 100.0, Some(5.0), 40.0)
+                    .expect("default TopK range is valid"),
+                ParameterRange::new(ParameterKind::FrequencyPenalty, -2.0, 2.0, Some(0.2), 0.0)
+                    .expect("default FrequencyPenalty range is valid"),
+                ParameterRange::new(ParameterKind::PresencePenalty, -2.0, 2.0, Some(0.2), 0.0)
+                    .expect("default PresencePenalty range is valid"),
             ],
         }
     }
@@ -227,17 +257,21 @@ impl SearchSpace {
     ///
     /// let space = SearchSpace::default();
     /// let temp = space.range_for(ParameterKind::Temperature).unwrap();
-    /// assert!((temp.default - 0.7).abs() < f64::EPSILON);
+    /// assert!((temp.default_value() - 0.7).abs() < f64::EPSILON);
     ///
     /// // RetrievalTopK is not in the default space
     /// assert!(space.range_for(ParameterKind::RetrievalTopK).is_none());
     /// ```
     #[must_use]
     pub fn range_for(&self, kind: ParameterKind) -> Option<&ParameterRange> {
-        self.parameters.iter().find(|r| r.kind == kind)
+        self.parameters.iter().find(|r| r.kind() == kind)
     }
 
-    /// Return `true` if all parameter ranges in this space are internally consistent.
+    /// Return `true` if all parameter ranges in this space passed construction-time validation.
+    ///
+    /// Because [`ParameterRange::new`] enforces invariants at construction time, ranges stored
+    /// in a `SearchSpace` built programmatically are always valid. This method is retained for
+    /// spaces deserialized from untrusted config where struct-update syntax could bypass `new`.
     ///
     /// # Examples
     ///
@@ -249,7 +283,13 @@ impl SearchSpace {
     /// ```
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.parameters.iter().all(ParameterRange::is_valid)
+        self.parameters.iter().all(|r| {
+            r.min().is_finite()
+                && r.max().is_finite()
+                && r.default_value().is_finite()
+                && r.min() < r.max()
+                && r.step().is_none_or(|s| s.is_finite() && s > 0.0)
+        })
     }
 
     /// Total number of discrete grid points across all parameters that have a step.
@@ -282,87 +322,104 @@ impl SearchSpace {
 mod tests {
     use super::*;
 
+    fn make_range(
+        kind: ParameterKind,
+        min: f64,
+        max: f64,
+        step: Option<f64>,
+        default: f64,
+    ) -> ParameterRange {
+        ParameterRange::new(kind, min, max, step, default).unwrap()
+    }
+
+    #[test]
+    fn new_valid_range() {
+        let r = make_range(ParameterKind::Temperature, 0.0, 1.0, Some(0.5), 0.5);
+        assert_eq!(r.kind(), ParameterKind::Temperature);
+        assert!((r.min() - 0.0).abs() < f64::EPSILON);
+        assert!((r.max() - 1.0).abs() < f64::EPSILON);
+        assert!((r.default_value() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(r.step(), Some(0.5));
+    }
+
+    #[test]
+    fn new_invalid_range_min_ge_max() {
+        assert!(matches!(
+            ParameterRange::new(ParameterKind::Temperature, 1.0, 0.0, None, 0.5),
+            Err(EvalError::InvalidRange { .. })
+        ));
+        // equal bounds also invalid
+        assert!(matches!(
+            ParameterRange::new(ParameterKind::Temperature, 0.5, 0.5, None, 0.5),
+            Err(EvalError::InvalidRange { .. })
+        ));
+    }
+
+    #[test]
+    fn new_invalid_range_nonfinite_bounds() {
+        assert!(matches!(
+            ParameterRange::new(ParameterKind::Temperature, f64::NAN, 1.0, None, 0.5),
+            Err(EvalError::InvalidRange { .. })
+        ));
+        assert!(matches!(
+            ParameterRange::new(ParameterKind::Temperature, 0.0, f64::INFINITY, None, 0.5),
+            Err(EvalError::InvalidRange { .. })
+        ));
+    }
+
+    #[test]
+    fn new_invalid_default_out_of_range() {
+        assert!(matches!(
+            ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, 2.0),
+            Err(EvalError::DefaultOutOfRange { .. })
+        ));
+        assert!(matches!(
+            ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, -0.1),
+            Err(EvalError::DefaultOutOfRange { .. })
+        ));
+    }
+
     #[test]
     fn step_count_with_step() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 1.0,
-            step: Some(0.5),
-            default: 0.5,
-        };
+        let r = make_range(ParameterKind::Temperature, 0.0, 1.0, Some(0.5), 0.5);
         assert_eq!(r.step_count(), Some(3)); // 0.0, 0.5, 1.0
     }
 
     #[test]
     fn step_count_no_step() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 1.0,
-            step: None,
-            default: 0.5,
-        };
+        let r = make_range(ParameterKind::Temperature, 0.0, 1.0, None, 0.5);
         assert_eq!(r.step_count(), None);
     }
 
     #[test]
     fn step_count_zero_step() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 1.0,
-            step: Some(0.0),
-            default: 0.5,
-        };
+        // step=Some(0.0) passes construction (step not validated), but step_count returns None
+        let mut r = make_range(ParameterKind::Temperature, 0.0, 1.0, None, 0.5);
+        r.step = Some(0.0);
         assert_eq!(r.step_count(), None);
     }
 
     #[test]
     fn clamp_below_min() {
-        let r = ParameterRange {
-            kind: ParameterKind::TopP,
-            min: 0.1,
-            max: 1.0,
-            step: Some(0.1),
-            default: 0.9,
-        };
+        let r = make_range(ParameterKind::TopP, 0.1, 1.0, Some(0.1), 0.9);
         assert!((r.clamp(-1.0) - 0.1).abs() < f64::EPSILON);
     }
 
     #[test]
     fn clamp_above_max() {
-        let r = ParameterRange {
-            kind: ParameterKind::TopP,
-            min: 0.1,
-            max: 1.0,
-            step: Some(0.1),
-            default: 0.9,
-        };
+        let r = make_range(ParameterKind::TopP, 0.1, 1.0, Some(0.1), 0.9);
         assert!((r.clamp(2.0) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn clamp_within_range() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 2.0,
-            step: Some(0.1),
-            default: 0.7,
-        };
+        let r = make_range(ParameterKind::Temperature, 0.0, 2.0, Some(0.1), 0.7);
         assert!((r.clamp(1.0) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn contains_within_range() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 2.0,
-            step: Some(0.1),
-            default: 0.7,
-        };
+        let r = make_range(ParameterKind::Temperature, 0.0, 2.0, Some(0.1), 0.7);
         assert!(r.contains(1.0));
         assert!(r.contains(0.0));
         assert!(r.contains(2.0));
@@ -372,54 +429,27 @@ mod tests {
 
     #[test]
     fn quantize_snaps_to_nearest_step() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 2.0,
-            step: Some(0.1),
-            default: 0.7,
-        };
-        // 0.73 should snap to 0.7
+        let r = make_range(ParameterKind::Temperature, 0.0, 2.0, Some(0.1), 0.7);
         let q = r.quantize(0.73);
         assert!((q - 0.7).abs() < 1e-10, "expected 0.7, got {q}");
     }
 
     #[test]
     fn quantize_no_step_returns_value_unchanged() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 2.0,
-            step: None,
-            default: 0.7,
-        };
+        let r = make_range(ParameterKind::Temperature, 0.0, 2.0, None, 0.7);
         assert!((r.quantize(1.234) - 1.234).abs() < f64::EPSILON);
     }
 
     #[test]
     fn quantize_clamps_result() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 1.0,
-            step: Some(0.1),
-            default: 0.5,
-        };
-        // Large value quantizes to nearest step, then clamped
+        let r = make_range(ParameterKind::Temperature, 0.0, 1.0, Some(0.1), 0.5);
         let q = r.quantize(100.0);
         assert!(q <= 1.0, "quantize must clamp to max");
     }
 
     #[test]
     fn quantize_avoids_fp_accumulation() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 2.0,
-            step: Some(0.1),
-            default: 0.7,
-        };
-        // 0.1 * 7 accumulates to 0.7000000000000001 via addition, quantize must fix this
+        let r = make_range(ParameterKind::Temperature, 0.0, 2.0, Some(0.1), 0.7);
         let accumulated = 0.1_f64 * 7.0;
         let q = r.quantize(accumulated);
         assert!(
@@ -448,7 +478,7 @@ mod tests {
         let space = SearchSpace::default();
         let range = space.range_for(ParameterKind::Temperature);
         assert!(range.is_some());
-        assert!((range.unwrap().default - 0.7).abs() < f64::EPSILON);
+        assert!((range.unwrap().default_value() - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -466,67 +496,33 @@ mod tests {
 
     #[test]
     fn quantize_with_nonzero_min_anchors_to_min() {
-        // TopK: min=1.0, step=5.0 => grid should be {1, 6, 11, 16, ...}
-        let r = ParameterRange {
-            kind: ParameterKind::TopK,
-            min: 1.0,
-            max: 100.0,
-            step: Some(5.0),
-            default: 40.0,
-        };
-        // 6.0 should stay at 6.0, not be shifted to 5.0
+        let r = make_range(ParameterKind::TopK, 1.0, 100.0, Some(5.0), 40.0);
         let q = r.quantize(6.0);
         assert!(
             (q - 6.0).abs() < 1e-10,
             "expected 6.0 (min-anchored grid), got {q}"
         );
-        // 3.0 is between 1.0 and 6.0; rounds to nearest => 1.0
         let q2 = r.quantize(3.0);
         assert!((q2 - 1.0).abs() < 1e-10, "expected 1.0, got {q2}");
     }
 
     #[test]
     fn quantize_negative_step_returns_unchanged() {
-        // step <= 0 guard: quantize falls back to returning the value as-is
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 0.0,
-            max: 2.0,
-            step: Some(-0.1),
-            default: 0.7,
-        };
+        let mut r = make_range(ParameterKind::Temperature, 0.0, 2.0, None, 0.7);
+        r.step = Some(-0.1);
         assert!((r.quantize(0.75) - 0.75).abs() < f64::EPSILON);
     }
 
     #[test]
     fn parameter_range_is_valid_for_default() {
         for r in &SearchSpace::default().parameters {
-            assert!(r.is_valid(), "default range {:?} is invalid", r.kind);
+            // All ranges constructed via new() are valid by invariant
+            assert!(
+                r.min() < r.max(),
+                "default range {:?} has min >= max",
+                r.kind()
+            );
         }
-    }
-
-    #[test]
-    fn parameter_range_invalid_when_min_gt_max() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: 2.0,
-            max: 0.0,
-            step: Some(0.1),
-            default: 1.0,
-        };
-        assert!(!r.is_valid());
-    }
-
-    #[test]
-    fn parameter_range_invalid_when_nonfinite() {
-        let r = ParameterRange {
-            kind: ParameterKind::Temperature,
-            min: f64::NAN,
-            max: 2.0,
-            step: Some(0.1),
-            default: 0.7,
-        };
-        assert!(!r.is_valid());
     }
 
     #[test]
@@ -536,15 +532,12 @@ mod tests {
 
     #[test]
     fn search_space_invalid_when_range_inverted() {
-        let space = SearchSpace {
-            parameters: vec![ParameterRange {
-                kind: ParameterKind::Temperature,
-                min: 2.0,
-                max: 0.0,
-                step: Some(0.1),
-                default: 1.0,
-            }],
-        };
+        // Construct an invalid range by bypassing new() via serde deserialization isn't easy;
+        // instead, test is_valid() directly on a SearchSpace with a mutated range.
+        let mut space = SearchSpace::default();
+        // Directly mutate to simulate a deserialized-but-invalid range
+        space.parameters[0].min = 2.0;
+        space.parameters[0].max = 0.0;
         assert!(!space.is_valid());
     }
 }

@@ -15,9 +15,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-context`: added `tracing::instrument` spans (`context.persona_facts`,
   `context.trajectory_hints`, `context.tree_memory`) to the three async context fetchers in the
   assembler (closes #3984).
+- `zeph-context`: `run_chunk_summaries` now converts the `guidelines` string to `Arc<str>` once
+  before the chunk iterator, replacing a `String` clone per chunk with a cheap `Arc` clone (closes #3991).
 
 ### Changed
 
+- `zeph-experiments`: `ExperimentResult.id` changed from `i64` (with `-1` sentinel for
+  unpersisted results) to `Option<i64>`; `None` now represents an unpersisted result, eliminating
+  the sentinel value (closes #3950).
+- `zeph-experiments`: `ParameterRange` fields are now private; a validated constructor
+  `ParameterRange::new(kind, min, max, step, default)` enforces `min < max` (finite) and
+  `min <= default <= max`; getters `kind()`, `min()`, `max()`, `step()`, `default_value()` are
+  added; `EvalError::InvalidRange` and `EvalError::DefaultOutOfRange` added for constructor
+  failure cases (closes #3951).
 - `zeph-config`: `VaultConfig.backend` is now typed as `VaultBackend` enum instead of `String`,
   with `serde(rename_all = "lowercase")` so existing TOML configs remain compatible (closes #3886).
 - `zeph-a2a`: `TaskState`, `Role`, `Part`, `TaskEvent` are now `#[non_exhaustive]` to allow

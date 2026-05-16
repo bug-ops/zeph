@@ -39,13 +39,9 @@ use super::types::{Variation, VariationValue};
 /// };
 ///
 /// let space = SearchSpace {
-///     parameters: vec![ParameterRange {
-///         kind: ParameterKind::Temperature,
-///         min: 0.0,
-///         max: 1.0,
-///         step: Some(0.5),
-///         default: 0.5,
-///     }],
+///     parameters: vec![
+///         ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, Some(0.5), 0.5).unwrap(),
+///     ],
 /// };
 /// let mut generator = GridStep::new(space);
 /// let baseline = ConfigSnapshot::default();
@@ -94,7 +90,9 @@ impl VariationGenerator for GridStep {
     ) -> Option<Variation> {
         while self.current_param < self.search_space.parameters.len() {
             let range = &self.search_space.parameters[self.current_param];
-            let step = range.step.unwrap_or_else(|| (range.max - range.min) / 20.0);
+            let step = range
+                .step()
+                .unwrap_or_else(|| (range.max() - range.min()) / 20.0);
             if step <= 0.0 {
                 self.current_param += 1;
                 self.current_step = 0;
@@ -102,9 +100,9 @@ impl VariationGenerator for GridStep {
             }
 
             #[allow(clippy::cast_precision_loss)]
-            let raw = range.min + step * self.current_step as f64;
+            let raw = range.min() + step * self.current_step as f64;
 
-            if raw > range.max + f64::EPSILON {
+            if raw > range.max() + f64::EPSILON {
                 self.current_param += 1;
                 self.current_step = 0;
                 continue;
@@ -116,7 +114,7 @@ impl VariationGenerator for GridStep {
             let value = range.quantize(raw);
 
             let variation = Variation {
-                parameter: range.kind,
+                parameter: range.kind(),
                 value: VariationValue::Float(OrderedFloat(value)),
             };
 
@@ -141,14 +139,13 @@ mod tests {
     use super::*;
 
     fn single_param_space(min: f64, max: f64, step: f64) -> SearchSpace {
+        // default = midpoint so it satisfies min <= default <= max
+        let default = (min + max) / 2.0;
         SearchSpace {
-            parameters: vec![ParameterRange {
-                kind: ParameterKind::Temperature,
-                min,
-                max,
-                step: Some(step),
-                default: min,
-            }],
+            parameters: vec![
+                ParameterRange::new(ParameterKind::Temperature, min, max, Some(step), default)
+                    .unwrap(),
+            ],
         }
     }
 
@@ -187,7 +184,8 @@ mod tests {
 
     #[test]
     fn grid_step_returns_none_when_exhausted() {
-        let mut generator = GridStep::new(single_param_space(0.0, 0.0, 1.0));
+        // step=1.0 over [0.0, 0.5]: only one grid point (0.0), then exhausted.
+        let mut generator = GridStep::new(single_param_space(0.0, 0.5, 1.0));
         let baseline = ConfigSnapshot::default();
         let mut visited = HashSet::new();
         // Only one point: 0.0
@@ -203,20 +201,8 @@ mod tests {
     fn grid_step_multiple_params() {
         let space = SearchSpace {
             parameters: vec![
-                ParameterRange {
-                    kind: ParameterKind::Temperature,
-                    min: 0.0,
-                    max: 0.5,
-                    step: Some(0.5),
-                    default: 0.0,
-                },
-                ParameterRange {
-                    kind: ParameterKind::TopP,
-                    min: 0.5,
-                    max: 1.0,
-                    step: Some(0.5),
-                    default: 0.5,
-                },
+                ParameterRange::new(ParameterKind::Temperature, 0.0, 0.5, Some(0.5), 0.0).unwrap(),
+                ParameterRange::new(ParameterKind::TopP, 0.5, 1.0, Some(0.5), 0.5).unwrap(),
             ],
         };
         let mut generator = GridStep::new(space);
@@ -275,13 +261,9 @@ mod tests {
     fn grid_step_none_step_uses_fallback() {
         // Parameter with step=None — GridStep falls back to (max-min)/20.0 as step size.
         let space = SearchSpace {
-            parameters: vec![ParameterRange {
-                kind: ParameterKind::Temperature,
-                min: 0.0,
-                max: 1.0,
-                step: None,
-                default: 0.5,
-            }],
+            parameters: vec![
+                ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, 0.5).unwrap(),
+            ],
         };
         let mut generator = GridStep::new(space);
         let baseline = ConfigSnapshot::default();
