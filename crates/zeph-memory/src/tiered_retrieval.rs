@@ -312,7 +312,12 @@ async fn validate_evidence(
     let evidence_snippet = messages
         .iter()
         .take(5)
-        .map(|m| m.message.content.chars().take(200).collect::<String>())
+        .map(|m| {
+            zeph_common::sanitize::strip_control_chars_preserve_whitespace(&m.message.content)
+                .chars()
+                .take(200)
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join("\n---\n");
 
@@ -320,9 +325,10 @@ async fn validate_evidence(
         Given a query and evidence snippets, decide if the evidence is sufficient to answer the query. \
         Respond ONLY with a JSON object: {\"sufficient\": true|false, \"confidence\": 0.0-1.0}";
 
+    let sanitized_query = zeph_common::sanitize::strip_control_chars_preserve_whitespace(query);
     let user = format!(
         "<query>{}</query>\n<evidence>{}</evidence>",
-        query.chars().take(500).collect::<String>(),
+        sanitized_query.chars().take(500).collect::<String>(),
         evidence_snippet
     );
 

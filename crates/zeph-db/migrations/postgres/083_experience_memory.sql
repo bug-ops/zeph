@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS experience_nodes (
     outcome     TEXT    NOT NULL,
     detail      TEXT,
     error_ctx   TEXT,
-    created_at  BIGINT  NOT NULL
+    created_at  BIGINT  NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
 );
 
 -- Experience edges: temporal sequence between consecutive experience nodes

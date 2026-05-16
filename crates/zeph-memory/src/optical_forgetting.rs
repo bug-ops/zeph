@@ -319,7 +319,8 @@ async fn compress_content(
     provider: &Arc<AnyProvider>,
     content: &str,
 ) -> Result<String, MemoryError> {
-    let snippet = content.chars().take(2000).collect::<String>();
+    let cleaned = zeph_common::sanitize::strip_control_chars_preserve_whitespace(content);
+    let snippet = cleaned.chars().take(2000).collect::<String>();
     let messages = vec![
         Message {
             role: Role::System,
@@ -352,7 +353,8 @@ async fn summarize_content(
     provider: &Arc<AnyProvider>,
     content: &str,
 ) -> Result<String, MemoryError> {
-    let snippet = content.chars().take(1000).collect::<String>();
+    let cleaned = zeph_common::sanitize::strip_control_chars_preserve_whitespace(content);
+    let snippet = cleaned.chars().take(1000).collect::<String>();
     let messages = vec![
         Message {
             role: Role::System,
