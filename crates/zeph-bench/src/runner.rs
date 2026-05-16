@@ -18,7 +18,7 @@
 //!
 //! # async fn example() -> Result<(), zeph_bench::BenchError> {
 //! let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["1945".into()]));
-//! let runner = BenchRunner::new(provider, false);
+//! let runner = BenchRunner::new(provider);
 //! let opts = RunOptions::default();
 //! let run = runner.run_dataset(&GaiaLoader::all_levels(), &GaiaEvaluator, Path::new("/data/gaia.jsonl"), opts).await?;
 //! println!("mean score: {:.4}", run.aggregate.mean_score);
@@ -163,7 +163,7 @@ impl ToolExecutor for NoopExecutor {
 /// use zeph_llm::{any::AnyProvider, mock::MockProvider};
 ///
 /// let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["Paris".into()]));
-/// let runner = BenchRunner::new(provider, false);
+/// let runner = BenchRunner::new(provider);
 /// ```
 pub struct BenchRunner {
     provider: AnyProvider,
@@ -188,10 +188,10 @@ impl BenchRunner {
     /// use zeph_llm::{any::AnyProvider, mock::MockProvider};
     ///
     /// let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
-    /// let runner = BenchRunner::new(provider, false);
+    /// let runner = BenchRunner::new(provider);
     /// ```
     #[must_use]
-    pub fn new(provider: AnyProvider, _no_deterministic: bool) -> Self {
+    pub fn new(provider: AnyProvider) -> Self {
         Self {
             provider,
             memory_params: None,
@@ -217,7 +217,7 @@ impl BenchRunner {
     ///     run_id: "bench-abc".into(),
     ///     dataset: "locomo".into(),
     /// };
-    /// let runner = BenchRunner::new(provider, false).with_memory_params(params);
+    /// let runner = BenchRunner::new(provider).with_memory_params(params);
     /// ```
     #[must_use]
     pub fn with_memory_params(mut self, params: BenchMemoryParams) -> Self {
@@ -251,16 +251,14 @@ impl BenchRunner {
         E: Evaluator,
     {
         let scenarios = loader.load(path)?;
+        let filtered = filter_scenarios(&scenarios, &opts, loader.name())?;
 
-        if let Some(ref filter) = opts.scenario_filter
-            && !scenarios.iter().any(|s| &s.id == filter)
-        {
-            return Err(BenchError::InvalidFormat(format!(
-                "scenario '{}' not found in dataset '{}'",
-                filter,
-                loader.name()
-            )));
-        }
+        let _span = tracing::info_span!(
+            "bench.run_dataset",
+            dataset = loader.name(),
+            scenarios = filtered.len(),
+        )
+        .entered();
 
         let model_id = self.provider.model_identifier().to_owned();
 
@@ -275,17 +273,8 @@ impl BenchRunner {
             aggregate: crate::results::Aggregate::default(),
         };
 
-        for scenario in &scenarios {
-            // Skip if resume is active and scenario already completed.
-            if opts.completed_ids.contains(&scenario.id) {
-                continue;
-            }
-            // Skip if a single-scenario filter is active.
-            if let Some(ref filter) = opts.scenario_filter
-                && &scenario.id != filter
-            {
-                continue;
-            }
+        for scenario in filtered {
+            let _s = tracing::info_span!("bench.scenario", id = %scenario.id).entered();
 
             let t0 = Instant::now();
             let response_text = Box::pin(self.run_one(scenario, opts.memory_mode)).await?;
@@ -332,16 +321,14 @@ impl BenchRunner {
         X: ToolExecutor + Send + Sync + 'static,
     {
         let scenarios = loader.load(path)?;
+        let filtered = filter_scenarios(&scenarios, &opts, loader.name())?;
 
-        if let Some(ref filter) = opts.scenario_filter
-            && !scenarios.iter().any(|s| &s.id == filter)
-        {
-            return Err(BenchError::InvalidFormat(format!(
-                "scenario '{}' not found in dataset '{}'",
-                filter,
-                loader.name()
-            )));
-        }
+        let _span = tracing::info_span!(
+            "bench.run_dataset_with_env_factory",
+            dataset = loader.name(),
+            scenarios = filtered.len(),
+        )
+        .entered();
 
         let model_id = self.provider.model_identifier().to_owned();
 
@@ -356,15 +343,8 @@ impl BenchRunner {
             aggregate: crate::results::Aggregate::default(),
         };
 
-        for scenario in &scenarios {
-            if opts.completed_ids.contains(&scenario.id) {
-                continue;
-            }
-            if let Some(ref filter) = opts.scenario_filter
-                && &scenario.id != filter
-            {
-                continue;
-            }
+        for scenario in filtered {
+            let _s = tracing::info_span!("bench.scenario", id = %scenario.id).entered();
 
             let (executor, trace) = env_factory(scenario)?;
             let evaluator = TauBenchEvaluator::from_scenario(scenario, trace)?;
@@ -436,6 +416,12 @@ impl BenchRunner {
         memory_mode: MemoryMode,
         mode: ResponseMode,
     ) -> Result<String, BenchError> {
+        let _span = tracing::info_span!(
+            "bench.run_one",
+            scenario_id = %scenario.id,
+            mode = ?mode,
+        )
+        .entered();
         let prompt = scenario.primary_prompt()?.to_owned();
         let channel = BenchmarkChannel::new(vec![prompt]);
         // TODO(multi-turn-history): when loaders emit multiple user turns, push each in
@@ -555,6 +541,42 @@ impl BenchRunner {
     }
 }
 
+/// Return the subset of `scenarios` that should run given `opts`.
+///
+/// Validates that when a `scenario_filter` is set, at least one matching scenario exists in
+/// `scenarios`. Then filters out already-completed IDs and non-matching scenarios.
+///
+/// # Errors
+///
+/// Returns [`BenchError::InvalidFormat`] when `opts.scenario_filter` names a scenario that
+/// does not appear in `scenarios`.
+fn filter_scenarios<'a>(
+    scenarios: &'a [Scenario],
+    opts: &RunOptions,
+    loader_name: &str,
+) -> Result<Vec<&'a Scenario>, BenchError> {
+    if let Some(ref filter) = opts.scenario_filter
+        && !scenarios.iter().any(|s| &s.id == filter)
+    {
+        return Err(BenchError::InvalidFormat(format!(
+            "scenario '{filter}' not found in dataset '{loader_name}'"
+        )));
+    }
+
+    Ok(scenarios
+        .iter()
+        .filter(|s| {
+            if opts.completed_ids.contains(&s.id) {
+                return false;
+            }
+            if let Some(ref filter) = opts.scenario_filter {
+                return &s.id == filter;
+            }
+            true
+        })
+        .collect())
+}
+
 /// Post-process the raw agent response to extract a clean, terse answer.
 ///
 /// Applies these transformations in order:
@@ -620,7 +642,7 @@ mod tests {
             run_id: "bench-abc".into(),
             dataset: "locomo".into(),
         };
-        let runner = BenchRunner::new(provider, false).with_memory_params(params.clone());
+        let runner = BenchRunner::new(provider).with_memory_params(params.clone());
         assert!(runner.memory_params.is_some());
         let stored = runner.memory_params.unwrap();
         assert_eq!(stored.run_id, "bench-abc");

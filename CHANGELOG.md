@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-bench`: `BenchRunner::new` no longer takes a `_no_deterministic: bool` parameter.
+  The flag was dead code — deterministic overrides are applied to the provider before
+  construction via `apply_deterministic_overrides`. All call sites updated (closes #3952).
+- `zeph-bench`: scenario-filter validation and skip logic extracted into a shared
+  `filter_scenarios` helper, eliminating duplicate code in `run_dataset` and
+  `run_dataset_with_env_factory` (closes #3953).
+- `zeph-bench`: `run_dataset`, `run_dataset_with_env_factory`, and `run_one_with_executor`
+  are now instrumented with `tracing::info_span!` blocks (`bench.run_dataset`,
+  `bench.run_dataset_with_env_factory`, `bench.scenario`, `bench.run_one`), making bench
+  runs visible in Perfetto and Jaeger traces (closes #3948).
+
 - `zeph-skills`: skill embedding vectors are now typed as `SkillEmbedding(Vec<f32>)` instead
   of raw `Vec<f32>`. The newtype carries its dimension and requires explicit construction via
   `SkillEmbedding::new(vec, expected_dim)` (validated) or `SkillEmbedding::from_raw(vec)`

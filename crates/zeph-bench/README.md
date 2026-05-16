@@ -76,7 +76,7 @@ use zeph_llm::{any::AnyProvider, mock::MockProvider};
 
 # async fn example() -> Result<(), zeph_bench::BenchError> {
 let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["1945".into()]));
-let runner = BenchRunner::new(provider, false);
+let runner = BenchRunner::new(provider);
 let opts = RunOptions::default();
 let run = runner
     .run_dataset(&GaiaLoader::all_levels(), &GaiaEvaluator, Path::new("gaia.jsonl"), opts)

@@ -185,7 +185,7 @@ async fn run_memory_off_pass(
         completed_ids,
         memory_mode: MemoryMode::Off,
     };
-    let runner = BenchRunner::new(provider, no_deterministic);
+    let runner = BenchRunner::new(provider);
     let mut run = dispatch_run(&runner, dataset, data_path, opts).await?;
     run.status = RunStatus::Completed;
     run.finished_at = finished_at_now();
@@ -224,7 +224,7 @@ async fn run_memory_on_pass(
         completed_ids: std::collections::HashSet::new(),
         memory_mode: MemoryMode::On,
     };
-    let runner = BenchRunner::new(provider, no_deterministic).with_memory_params(memory_params);
+    let runner = BenchRunner::new(provider).with_memory_params(memory_params);
     let mut run = dispatch_run(&runner, dataset, data_path, opts).await?;
     run.status = RunStatus::Completed;
     run.finished_at = finished_at_now();
@@ -416,7 +416,7 @@ async fn handle_run(
         memory_mode: MemoryMode::Off,
     };
 
-    let runner = BenchRunner::new(provider, no_deterministic);
+    let runner = BenchRunner::new(provider);
     let mut run = dispatch_run(&runner, dataset, &data_path, opts).await?;
 
     run.status = RunStatus::Completed;
