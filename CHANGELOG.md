@@ -45,6 +45,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - fix(scheduler): replace sync `EnterGuard` held across `.await` in `catch_up_missed` with `.instrument()` to comply with tracing invariant (#4024)
 - fix(gateway): rate limiter now supports `trusted_proxy_cidrs` config — when set, uses rightmost-untrusted XFF IP instead of TCP peer address to prevent bypass behind reverse proxies (#3909)
 - refactor(gateway): `spawn_gateway_server` now returns both `JoinHandle`s to the caller; panics propagate and tasks can be joined during shutdown (#3907)
+- `zeph-a2a`: `spawn_eviction_task` in `server/router.rs` now returns its `JoinHandle`, which
+  is stored in `AppState`. The rate-limiter eviction loop is no longer fire-and-forget and
+  panics will surface via the stored handle (closes #4044).
+- `zeph-a2a`: `sse_rpc_event` in `server/handlers.rs` no longer silently emits an empty SSE
+  `data` field when JSON serialization fails. Serialization errors now produce a proper
+  JSON-RPC 2.0 error event (`code: -32603`) via a new `sse_rpc_error_event` helper
+  (closes #4045).
+- `zeph-a2a`: `stream_handler` in `server/handlers.rs` now aborts the spawned processor task
+  immediately when the SSE client disconnects, instead of running until `request_timeout`
+  fires. Abort is implemented via `AbortOnDrop` guard and `tokio::select!` on `tx.closed()`
+  (closes #4046).
 - `zeph-subagent` hooks: eliminated a deadlock in `fire_shell_hook` where `tokio::join!` caused
   `read_fut` to block on stdout EOF while `child.kill()` was gated behind the same join, preventing
   the process from ever exiting. Replaced with a sequential await pattern: wait with timeout first,

@@ -130,6 +130,7 @@ impl A2aServer {
             task_manager: TaskManager::new(),
             processor,
             request_timeout: Duration::from_mins(5),
+            eviction_task: None,
         };
 
         Self {
@@ -321,6 +322,7 @@ pub(crate) mod testing {
             task_manager: TaskManager::new(),
             processor: Arc::new(EchoProcessor),
             request_timeout: std::time::Duration::from_mins(5),
+            eviction_task: None,
         }
     }
 
@@ -330,6 +332,7 @@ pub(crate) mod testing {
             task_manager: TaskManager::new(),
             processor: Arc::new(FailingProcessor),
             request_timeout: std::time::Duration::from_mins(5),
+            eviction_task: None,
         }
     }
 }
