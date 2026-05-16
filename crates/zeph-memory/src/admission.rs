@@ -375,6 +375,7 @@ async fn compute_semantic_novelty(
 /// LLM-based future utility estimate.
 ///
 /// On timeout or error, returns `0.5` (neutral — no bias toward admit or reject).
+#[tracing::instrument(name = "memory.admission.future_utility_llm", skip_all)]
 async fn compute_future_utility(content: &str, role: &str, provider: &AnyProvider) -> f32 {
     use zeph_llm::provider::{Message, MessageMetadata, Role};
 
@@ -487,6 +488,7 @@ async fn compute_goal_utility(
 /// LLM-based goal utility refinement for borderline cases.
 ///
 /// Returns the original `embedding_sim` on failure (safe fallback).
+#[tracing::instrument(name = "memory.admission.goal_utility_refine_llm", skip_all)]
 async fn refine_goal_utility_llm(
     content: &str,
     goal_text: &str,

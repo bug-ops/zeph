@@ -462,7 +462,8 @@ impl PlanCache {
 /// # Errors
 ///
 /// Returns `OrchestrationError` from the planner on full-decomposition fallback.
-#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(name = "orchestration.plan_cache.plan", skip_all, fields(goal_len = goal.len()))]
 pub async fn plan_with_cache<P>(
     planner: &P,
     plan_cache: Option<&PlanCache>,
@@ -528,6 +529,7 @@ where
 ///
 /// Returns `OrchestrationError::PlanningFailed` if the LLM call fails, times out, or the
 /// adapted graph fails DAG validation.
+#[tracing::instrument(name = "orchestration.plan_cache.adapt", skip_all, fields(goal_len = goal.len()))]
 async fn adapt_plan(
     provider: &impl LlmProvider,
     goal: &str,

@@ -205,6 +205,7 @@ async fn process_conversation(
 ///
 /// Runs all embeds concurrently via `join_all`.  Candidates that fail to embed are logged
 /// and dropped; they will be retried in a future sweep cycle.
+#[tracing::instrument(name = "memory.consolidation.embed_batch", skip_all, fields(count = candidates.len()))]
 async fn embed_candidates(
     provider: &AnyProvider,
     candidates: &[(crate::types::MessageId, String)],
@@ -354,6 +355,7 @@ fn cluster_by_similarity(
 /// Ask the LLM to produce a `TopologyOp` for a cluster of similar messages.
 ///
 /// Returns `None` if the LLM response cannot be parsed or if the LLM declines.
+#[tracing::instrument(name = "memory.consolidation.propose_merge_llm", skip_all, fields(cluster_size = cluster.len()))]
 async fn propose_merge_op(provider: &AnyProvider, cluster: &[(i64, String)]) -> Option<TopologyOp> {
     use zeph_llm::provider::{Message, Role};
 
