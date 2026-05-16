@@ -157,49 +157,30 @@ mod tests {
     use super::*;
     use crate::CommandRegistry;
     use crate::context::CommandContext;
-    use crate::sink::ChannelSink;
+    use crate::handlers::test_helpers::{MockMessages, MockSession};
+    use crate::sink::NullSink;
     use crate::traits::debug::DebugAccess;
-    use crate::traits::messages::MessageAccess;
     use crate::traits::session::SessionAccess;
     use std::future::Future;
     use std::pin::Pin;
 
-    struct MockSession;
-
-    impl SessionAccess for MockSession {
-        fn supports_exit(&self) -> bool {
-            false
+    fn make_ctx<'a>(
+        sink: &'a mut NullSink,
+        debug: &'a mut MockDebug,
+        messages: &'a mut MockMessages,
+        session: &'a MockSession,
+        agent: &'a mut crate::NullAgent,
+    ) -> crate::context::CommandContext<'a> {
+        crate::context::CommandContext {
+            sink,
+            debug,
+            messages,
+            session: session as &dyn SessionAccess,
+            agent,
         }
     }
 
-    struct MockSink;
-
-    impl ChannelSink for MockSink {
-        fn send<'a>(
-            &'a mut self,
-            _msg: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), CommandError>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-
-        fn flush_chunks<'a>(
-            &'a mut self,
-        ) -> Pin<Box<dyn Future<Output = Result<(), CommandError>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-
-        fn send_queue_count<'a>(
-            &'a mut self,
-            _count: usize,
-        ) -> Pin<Box<dyn Future<Output = Result<(), CommandError>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-
-        fn supports_exit(&self) -> bool {
-            false
-        }
-    }
-
+    // Stateful mock required to assert dump enable/format behaviour.
     struct MockDebug {
         dump_active: bool,
         format: String,
@@ -255,46 +236,9 @@ mod tests {
         }
     }
 
-    struct MockMessages;
-
-    impl MessageAccess for MockMessages {
-        fn clear_history(&mut self) {}
-
-        fn queue_len(&self) -> usize {
-            0
-        }
-
-        fn drain_queue(&mut self) -> usize {
-            0
-        }
-
-        fn notify_queue_count<'a>(
-            &'a mut self,
-            _count: usize,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-            Box::pin(async {})
-        }
-    }
-
-    fn make_ctx<'a>(
-        sink: &'a mut MockSink,
-        debug: &'a mut MockDebug,
-        messages: &'a mut MockMessages,
-        session: &'a MockSession,
-        agent: &'a mut crate::NullAgent,
-    ) -> CommandContext<'a> {
-        CommandContext {
-            sink,
-            debug,
-            messages,
-            session: session as &dyn SessionAccess,
-            agent,
-        }
-    }
-
     #[tokio::test]
     async fn log_command_formats_status() {
-        let mut sink = MockSink;
+        let mut sink = NullSink;
         let mut debug = MockDebug::ok();
         let mut messages = MockMessages;
         let session = MockSession;
@@ -309,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn debug_dump_no_args_reports_inactive() {
-        let mut sink = MockSink;
+        let mut sink = NullSink;
         let mut debug = MockDebug::ok();
         let mut messages = MockMessages;
         let session = MockSession;
@@ -324,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn debug_dump_with_path_enables_dump() {
-        let mut sink = MockSink;
+        let mut sink = NullSink;
         let mut debug = MockDebug::ok();
         let mut messages = MockMessages;
         let session = MockSession;
@@ -342,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn dump_format_no_args_shows_current() {
-        let mut sink = MockSink;
+        let mut sink = NullSink;
         let mut debug = MockDebug::ok();
         let mut messages = MockMessages;
         let session = MockSession;
@@ -357,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn dump_format_with_arg_switches_format() {
-        let mut sink = MockSink;
+        let mut sink = NullSink;
         let mut debug = MockDebug::ok();
         let mut messages = MockMessages;
         let session = MockSession;

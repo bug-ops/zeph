@@ -195,8 +195,8 @@ mod tests {
     use super::*;
     use crate::CommandRegistry;
     use crate::context::CommandContext;
+    use crate::handlers::test_helpers::MockDebug;
     use crate::sink::ChannelSink;
-    use crate::traits::debug::DebugAccess;
     use crate::traits::messages::MessageAccess;
     use crate::traits::session::SessionAccess;
     use std::future::Future;
@@ -232,41 +232,6 @@ mod tests {
 
         fn supports_exit(&self) -> bool {
             false
-        }
-    }
-
-    struct MockDebug;
-
-    impl DebugAccess for MockDebug {
-        fn log_status(&self) -> String {
-            String::new()
-        }
-
-        fn read_log_tail<'a>(
-            &'a self,
-            _n: usize,
-        ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>> {
-            Box::pin(async { None })
-        }
-
-        fn scrub(&self, text: &str) -> String {
-            text.to_owned()
-        }
-
-        fn dump_status(&self) -> Option<String> {
-            None
-        }
-
-        fn dump_format_name(&self) -> String {
-            "raw".to_owned()
-        }
-
-        fn enable_dump(&mut self, _dir: &str) -> Result<String, CommandError> {
-            Ok("/tmp".to_owned())
-        }
-
-        fn set_dump_format(&mut self, _name: &str) -> Result<(), CommandError> {
-            Ok(())
         }
     }
 

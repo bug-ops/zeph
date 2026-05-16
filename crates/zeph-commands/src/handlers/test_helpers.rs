@@ -15,6 +15,10 @@ use crate::traits::debug::DebugAccess;
 use crate::traits::messages::MessageAccess;
 use crate::traits::session::SessionAccess;
 
+/// No-op stub for [`DebugAccess`] used in handler unit tests.
+///
+/// All methods return empty/default values; use a local override when a test
+/// needs to assert dump state or format changes.
 pub struct MockDebug;
 
 impl DebugAccess for MockDebug {
@@ -50,6 +54,10 @@ impl DebugAccess for MockDebug {
     }
 }
 
+/// No-op stub for [`MessageAccess`] used in handler unit tests.
+///
+/// History and queue operations are no-ops; use a local override when a test
+/// needs to assert that history was cleared or the queue was drained.
 pub struct MockMessages;
 
 impl MessageAccess for MockMessages {
@@ -71,6 +79,10 @@ impl MessageAccess for MockMessages {
     }
 }
 
+/// No-op stub for [`SessionAccess`] used in handler unit tests.
+///
+/// Always reports `supports_exit = false`; use a local override when exit
+/// behaviour needs to be asserted.
 pub struct MockSession;
 
 impl SessionAccess for MockSession {
@@ -79,6 +91,9 @@ impl SessionAccess for MockSession {
     }
 }
 
+/// Assemble a [`CommandContext`] from the provided mock components.
+///
+/// Convenience constructor so handler tests do not repeat the struct literal.
 pub fn make_ctx<'a>(
     sink: &'a mut NullSink,
     debug: &'a mut MockDebug,
