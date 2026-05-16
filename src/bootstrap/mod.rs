@@ -1385,6 +1385,81 @@ impl AppBuilder {
         }
     }
 
+    /// Build a dedicated provider for `ScrapMem` optical forgetting LLM calls (#3713).
+    ///
+    /// Returns `None` when `compress_provider` is empty (falls back to primary provider at call site)
+    /// or when provider resolution fails (logs a warning, fails open).
+    pub fn build_optical_forgetting_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.optical_forgetting.compress_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "optical forgetting compress provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "optical forgetting compress provider resolution failed — primary provider will be used"
+                );
+                None
+            }
+        }
+    }
+
+    /// Build a dedicated provider for `MemFlow` tiered retrieval intent classification (#3712).
+    ///
+    /// Returns `None` when `classifier_provider` is empty (heuristic router is used) or when
+    /// resolution fails (logs a warning, fails open).
+    pub fn build_tiered_retrieval_classifier_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.tiered_retrieval.classifier_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "tiered retrieval classifier provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "tiered retrieval classifier provider resolution failed — heuristic router will be used"
+                );
+                None
+            }
+        }
+    }
+
+    /// Build a dedicated provider for `MemFlow` tiered retrieval evidence validation (#3712).
+    ///
+    /// Returns `None` when `validator_provider` is empty or resolution fails. When `None`,
+    /// no validation step is performed (evidence is accepted without escalation).
+    pub fn build_tiered_retrieval_validator_provider(&self) -> Option<AnyProvider> {
+        let name = &self.config.memory.tiered_retrieval.validator_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "tiered retrieval validator provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "tiered retrieval validator provider resolution failed — validation step will be skipped"
+                );
+                None
+            }
+        }
+    }
+
     /// Build a dedicated provider for orchestration planner LLM calls.
     ///
     /// Returns `None` when `planner_provider` is empty (falls back to primary provider at call site).

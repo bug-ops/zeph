@@ -433,6 +433,24 @@ impl<C: Channel> Agent<C> {
             scrub: crate::redact::scrub_content,
             #[cfg(feature = "index")]
             index: Some(&self.services.index as &dyn zeph_context::input::IndexAccess),
+            tiered_retrieval_config: self
+                .services
+                .memory
+                .persistence
+                .tiered_retrieval_config
+                .clone(),
+            tiered_retrieval_classifier: self
+                .services
+                .memory
+                .persistence
+                .tiered_retrieval_classifier
+                .clone(),
+            tiered_retrieval_validator: self
+                .services
+                .memory
+                .persistence
+                .tiered_retrieval_validator
+                .clone(),
         };
         let _ = self.channel.send_status("recalling context...").await;
         let result = svc

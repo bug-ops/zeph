@@ -123,6 +123,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- feat(memory,agent): wire `ScrapMem` optical forgetting loop into agent startup (issue #3910).
+  `start_optical_forgetting_loop` is now spawned via `TaskSupervisor` when
+  `memory.optical_forgetting.enabled = true`. Provider is resolved from
+  `optical_forgetting.compress_provider` (falls back to primary). Added
+  `build_optical_forgetting_provider` to `bootstrap`. Fixed `compress_content` /
+  `summarize_content` instrumentation to use `#[tracing::instrument]` (was `Entered` guard
+  through await, making the future `!Send`).
+
+- feat(memory,agent): wire `MemFlow` tiered retrieval into agent semantic recall path (issue
+  #3911). `inject_semantic_recall` in `ContextService` now dispatches to `recall_tiered` when
+  `memory.tiered_retrieval.enabled = true`, falling back to `fetch_semantic_recall_raw` when
+  disabled. Providers (`classifier_provider`, `validator_provider`) are resolved at agent
+  construction via `build_tiered_retrieval_classifier_provider` /
+  `build_tiered_retrieval_validator_provider` in `bootstrap` and stored in
+  `MemoryPersistenceState`. Added `with_tiered_retrieval_providers` builder method to
+  `Agent<C>`.
+
 - feat(memory): implement MemFlow tiered intent-driven retrieval (issue #3712). New
   `tiered_retrieval` module in `zeph-memory` classifies incoming queries into three tiers —
   `ProfileLookup`, `TargetedRetrieval`, and `DeepReasoning` — via the existing `MemoryRouter`

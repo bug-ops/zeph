@@ -10,6 +10,8 @@
 use std::sync::Arc;
 
 use zeph_config::ContextFormat;
+use zeph_config::memory::TieredRetrievalConfig;
+use zeph_llm::any::AnyProvider;
 use zeph_memory::semantic::SemanticMemory;
 
 /// `SQLite` connection, conversation tracking, history limits, recall budget, and autosave policy.
@@ -44,6 +46,23 @@ pub(crate) struct MemoryPersistenceState {
     ///
     /// Applied exclusively in `assembler_helpers::fetch_semantic_recall` — never persisted.
     pub(crate) context_format: ContextFormat,
+
+    // ── MemFlow tiered retrieval (#3712) ─────────────────────────────────────────
+    /// `MemFlow` tiered retrieval configuration snapshot.
+    ///
+    /// Stored here so `ContextAssemblyView` can read it without accessing the full
+    /// config tree. Set by `with_tiered_retrieval_providers`.
+    pub(crate) tiered_retrieval_config: TieredRetrievalConfig,
+    /// Optional provider for LLM-backed intent classification in tiered retrieval.
+    ///
+    /// `None` when `tiered_retrieval.classifier_provider` is empty; falls back to
+    /// `HeuristicRouter`. Resolved at agent construction, never changed at runtime.
+    pub(crate) tiered_retrieval_classifier: Option<Arc<AnyProvider>>,
+    /// Optional provider for evidence quality validation and tier escalation.
+    ///
+    /// `None` when `tiered_retrieval.validator_provider` is empty. Resolved at agent
+    /// construction, never changed at runtime.
+    pub(crate) tiered_retrieval_validator: Option<Arc<AnyProvider>>,
 }
 
 impl Default for MemoryPersistenceState {
@@ -60,6 +79,9 @@ impl Default for MemoryPersistenceState {
             unsummarized_count: 0,
             last_recall_confidence: None,
             context_format: ContextFormat::default(),
+            tiered_retrieval_config: TieredRetrievalConfig::default(),
+            tiered_retrieval_classifier: None,
+            tiered_retrieval_validator: None,
         }
     }
 }

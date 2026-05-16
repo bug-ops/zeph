@@ -129,10 +129,7 @@ pub struct TieredRetrievalResult {
 /// # Errors
 ///
 /// Returns an error if any underlying search or database operation fails.
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "memory.tiered.retrieve", skip_all, fields(intent = tracing::field::Empty))
-)]
+#[tracing::instrument(name = "memory.tiered.retrieve", skip_all, fields(intent = tracing::field::Empty))]
 pub async fn recall_tiered(
     memory: &SemanticMemory,
     query: &str,

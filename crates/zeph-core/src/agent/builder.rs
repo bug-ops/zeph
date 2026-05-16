@@ -174,6 +174,24 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Wire `MemFlow` tiered retrieval providers and config snapshot (#3712).
+    ///
+    /// When `classifier` is `Some`, LLM-backed intent classification is used; otherwise the
+    /// `HeuristicRouter` is used. When `validator` is `Some` and `validation_enabled = true`
+    /// in config, evidence quality is validated and escalation may occur.
+    #[must_use]
+    pub fn with_tiered_retrieval_providers(
+        mut self,
+        config: zeph_config::memory::TieredRetrievalConfig,
+        classifier: Option<Arc<zeph_llm::any::AnyProvider>>,
+        validator: Option<Arc<zeph_llm::any::AnyProvider>>,
+    ) -> Self {
+        self.services.memory.persistence.tiered_retrieval_config = config;
+        self.services.memory.persistence.tiered_retrieval_classifier = classifier;
+        self.services.memory.persistence.tiered_retrieval_validator = validator;
+        self
+    }
+
     /// Configure memory formatting: compression guidelines, digest, and context strategy.
     #[must_use]
     pub fn with_memory_formatting_config(
@@ -2314,6 +2332,43 @@ mod tests {
             agent.context_manager.routing.strategy,
             StoreRoutingStrategy::Heuristic,
             "routing strategy must be set by with_routing"
+        );
+    }
+
+    #[test]
+    fn with_tiered_retrieval_providers_stores_fields() {
+        use zeph_config::memory::TieredRetrievalConfig;
+        let cfg = TieredRetrievalConfig {
+            enabled: true,
+            ..TieredRetrievalConfig::default()
+        };
+        let agent = make_agent().with_tiered_retrieval_providers(cfg.clone(), None, None);
+        assert!(
+            agent
+                .services
+                .memory
+                .persistence
+                .tiered_retrieval_config
+                .enabled,
+            "tiered_retrieval_config must be stored by with_tiered_retrieval_providers"
+        );
+        assert!(
+            agent
+                .services
+                .memory
+                .persistence
+                .tiered_retrieval_classifier
+                .is_none(),
+            "classifier must be None when passed as None"
+        );
+        assert!(
+            agent
+                .services
+                .memory
+                .persistence
+                .tiered_retrieval_validator
+                .is_none(),
+            "validator must be None when passed as None"
         );
     }
 

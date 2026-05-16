@@ -1676,6 +1676,30 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
+    if config.memory.optical_forgetting.enabled {
+        let _span = tracing::info_span!("runner.memory.optical_forgetting.startup").entered();
+        let store = std::sync::Arc::new(memory.sqlite().clone());
+        let optical_provider = app
+            .build_optical_forgetting_provider()
+            .unwrap_or_else(|| provider.clone());
+        let optical_cfg = config.memory.optical_forgetting.clone();
+        let forgetting_floor = config.memory.forgetting.forgetting_floor;
+        let cancel = supervisor.cancellation_token();
+        supervisor.spawn(TaskDescriptor {
+            name: "mem-optical-forgetting",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                zeph_memory::start_optical_forgetting_loop(
+                    store.clone(),
+                    optical_provider.clone(),
+                    optical_cfg.clone(),
+                    forgetting_floor,
+                    cancel.clone(),
+                )
+            },
+        });
+    }
+
     let skill_paths = app.skill_paths_for_registry();
     // Cloned so the original can be moved into `with_skill_reload` while the copy is used
     // later for proactive exploration and promotion engine output directory resolution.
@@ -2163,6 +2187,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.crossover_turn_threshold,
     )
     .with_retrieval_config(config.memory.retrieval.context_format)
+    .with_tiered_retrieval_providers(
+        config.memory.tiered_retrieval.clone(),
+        app.build_tiered_retrieval_classifier_provider()
+            .map(std::sync::Arc::new),
+        app.build_tiered_retrieval_validator_provider()
+            .map(std::sync::Arc::new),
+    )
     .with_focus_and_sidequest_config(config.agent.focus.clone(), config.memory.sidequest.clone())
     .with_trajectory_and_category_config(
         config.memory.trajectory.clone(),

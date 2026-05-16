@@ -211,6 +211,23 @@ pub struct ContextAssemblyView<'a> {
     /// `zeph-core::redact`. The shim in `zeph-core` sets this to `crate::redact::scrub_content`.
     /// When `redact_credentials = false` the service does not call this function.
     pub scrub: fn(&str) -> Cow<'_, str>,
+
+    // ── MemFlow tiered retrieval (#3712) ──────────────────────────────────────────────
+    /// `MemFlow` tiered retrieval configuration (`[memory.tiered_retrieval]`).
+    ///
+    /// When `enabled = true`, `inject_semantic_recall` dispatches to [`zeph_memory::recall_tiered`]
+    /// instead of the flat `fetch_semantic_recall_raw` path.
+    pub tiered_retrieval_config: zeph_config::memory::TieredRetrievalConfig,
+    /// Optional provider for LLM-backed intent classification in tiered retrieval.
+    ///
+    /// Resolved from `tiered_retrieval.classifier_provider` at agent construction.
+    /// `None` means the `HeuristicRouter` is used (no LLM call).
+    pub tiered_retrieval_classifier: Option<Arc<zeph_llm::any::AnyProvider>>,
+    /// Optional provider for evidence quality validation and tier escalation.
+    ///
+    /// Resolved from `tiered_retrieval.validator_provider` at agent construction.
+    /// `None` means validation is skipped (evidence accepted as-is).
+    pub tiered_retrieval_validator: Option<Arc<zeph_llm::any::AnyProvider>>,
 }
 
 /// Values produced by [`crate::service::ContextService::prepare_context`] that must be applied by the caller.

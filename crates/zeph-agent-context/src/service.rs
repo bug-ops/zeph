@@ -5,7 +5,7 @@
 
 use zeph_context::budget::ContextBudget;
 use zeph_llm::LlmProvider;
-use zeph_llm::provider::{MessagePart, Role};
+use zeph_llm::provider::{Message, MessagePart, Role};
 
 use crate::error::ContextError;
 use crate::helpers::{
@@ -209,17 +209,68 @@ impl ContextService {
     ) -> Result<(), ContextError> {
         self.remove_recall_messages(window);
 
-        let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
-            view.memory.as_deref(),
-            view.recall_limit,
-            view.context_format,
-            query,
-            token_budget,
-            &view.token_counter,
-            None,
-            None,
-        )
-        .await?;
+        let msg = if view.tiered_retrieval_config.enabled {
+            let _span = tracing::info_span!("agent_context.tiered_retrieval.recall").entered();
+            let Some(memory) = view.memory.as_deref() else {
+                return Ok(());
+            };
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                zeph_memory::recall_tiered(
+                    memory,
+                    query,
+                    view.conversation_id,
+                    view.tiered_retrieval_classifier.as_ref(),
+                    view.tiered_retrieval_validator.as_ref(),
+                    &view.tiered_retrieval_config,
+                    Some(token_budget),
+                ),
+            )
+            .await
+            .map_err(|_| {
+                tracing::warn!("tiered_retrieval: recall_tiered timed out after 30s");
+                ContextError::Memory(zeph_memory::MemoryError::Timeout(
+                    "recall_tiered timed out".to_owned(),
+                ))
+            })?
+            .map_err(ContextError::Memory)?;
+
+            tracing::debug!(
+                intent = %result.intent,
+                tokens_used = result.tokens_used,
+                tier_escalated = result.tier_escalated,
+                count = result.messages.len(),
+                "tiered_retrieval: recall complete"
+            );
+
+            if result.messages.is_empty() {
+                return Ok(());
+            }
+
+            let recalled_text = result
+                .messages
+                .iter()
+                .map(|m| m.message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+            Some(Message::from_legacy(
+                Role::User,
+                format!("{RECALL_PREFIX}{recalled_text}"),
+            ))
+        } else {
+            let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
+                view.memory.as_deref(),
+                view.recall_limit,
+                view.context_format,
+                query,
+                token_budget,
+                &view.token_counter,
+                None,
+                None,
+            )
+            .await?;
+            msg
+        };
 
         if let Some(msg) = msg
             && window.messages.len() > 1
@@ -1479,5 +1530,214 @@ mod tests {
             Role::System,
             "system prompt must survive trim"
         );
+    }
+
+    mod inject_semantic_recall_tests {
+        use parking_lot::RwLock;
+        use std::borrow::Cow;
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        use zeph_config::memory::TieredRetrievalConfig;
+        use zeph_config::{
+            ContextFormat, ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig,
+            ReasoningConfig, TrajectoryConfig, TreeConfig,
+        };
+        use zeph_context::manager::ContextManager;
+        use zeph_llm::provider::Message;
+        use zeph_memory::TokenCounter;
+        use zeph_sanitizer::ContentIsolationConfig;
+        use zeph_sanitizer::ContentSanitizer;
+        use zeph_skills::registry::SkillRegistry;
+
+        use zeph_common::SecurityEventCategory;
+
+        use super::super::*;
+        use crate::helpers::RECALL_PREFIX;
+        use crate::state::{
+            ContextAssemblyView, MessageWindowView, MetricsCounters, SecurityEventSink,
+        };
+
+        struct NoopSink;
+        impl SecurityEventSink for NoopSink {
+            fn push(&mut self, _: SecurityEventCategory, _: &'static str, _: String) {}
+        }
+
+        fn make_counter() -> Arc<TokenCounter> {
+            Arc::new(TokenCounter::default())
+        }
+
+        fn make_window<'a>(
+            messages: &'a mut Vec<Message>,
+            cached: &'a mut u64,
+            completed: &'a mut HashSet<String>,
+        ) -> MessageWindowView<'a> {
+            let last = Box::leak(Box::new(None::<i64>));
+            let deferred_hide = Box::leak(Box::new(Vec::<i64>::new()));
+            let deferred_summ = Box::leak(Box::new(Vec::<String>::new()));
+            MessageWindowView {
+                messages,
+                last_persisted_message_id: last,
+                deferred_db_hide_ids: deferred_hide,
+                deferred_db_summaries: deferred_summ,
+                cached_prompt_tokens: cached,
+                token_counter: make_counter(),
+                completed_tool_ids: completed,
+            }
+        }
+
+        fn scrub_noop(s: &str) -> Cow<'_, str> {
+            Cow::Borrowed(s)
+        }
+
+        #[tokio::test]
+        async fn tiered_recall_disabled_uses_flat_path() {
+            // With tiered_retrieval disabled and no memory, inject_semantic_recall must
+            // return Ok(()) without inserting any recall message (flat path returns empty).
+            let mut msgs: Vec<Message> = vec![];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = NoopSink;
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+            let registry = Arc::new(RwLock::new(SkillRegistry::default()));
+
+            let view = ContextAssemblyView {
+                memory: None,
+                conversation_id: None,
+                recall_limit: 10,
+                cross_session_score_threshold: 0.5,
+                context_format: ContextFormat::default(),
+                last_recall_confidence: &mut last_confidence,
+                context_strategy: ContextStrategy::default(),
+                crossover_turn_threshold: 0,
+                cached_session_digest: None,
+                digest_enabled: false,
+                graph_config: GraphConfig::default(),
+                document_config: DocumentConfig::default(),
+                persona_config: PersonaConfig::default(),
+                trajectory_config: TrajectoryConfig::default(),
+                reasoning_config: ReasoningConfig::default(),
+                memcot_config: zeph_config::MemCotConfig::default(),
+                memcot_state: None,
+                tree_config: TreeConfig::default(),
+                last_skills_prompt: &mut last_skills_prompt,
+                active_skill_names: &mut active_skill_names,
+                skill_registry: registry,
+                skill_paths: &[],
+                correction_config: None,
+                sidequest_turn_counter: 0,
+                proactive_explorer: None,
+                sanitizer: &sanitizer,
+                quarantine_summarizer: None,
+                context_manager: &mut ctx_mgr,
+                token_counter: make_counter(),
+                metrics: MetricsCounters::default(),
+                security_events: &mut sink,
+                cached_prompt_tokens: 0,
+                redact_credentials: false,
+                channel_skills: &[],
+                scrub: scrub_noop,
+                tiered_retrieval_config: TieredRetrievalConfig {
+                    enabled: false,
+                    ..TieredRetrievalConfig::default()
+                },
+                tiered_retrieval_classifier: None,
+                tiered_retrieval_validator: None,
+            };
+
+            let result = ContextService::new()
+                .inject_semantic_recall("test query", 1000, &mut window, &view)
+                .await;
+
+            assert!(result.is_ok(), "disabled tiered recall must return Ok(())");
+            assert!(
+                window
+                    .messages
+                    .iter()
+                    .all(|m| !m.content.starts_with(RECALL_PREFIX)),
+                "no recall message must be injected when memory is None"
+            );
+        }
+
+        #[tokio::test]
+        async fn tiered_recall_enabled_no_memory_returns_ok() {
+            // With tiered_retrieval enabled but memory = None, inject_semantic_recall must
+            // return Ok(()) via the early-return guard without inserting any recall message.
+            let mut msgs: Vec<Message> = vec![];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = NoopSink;
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+            let registry = Arc::new(RwLock::new(SkillRegistry::default()));
+
+            let view = ContextAssemblyView {
+                memory: None,
+                conversation_id: None,
+                recall_limit: 10,
+                cross_session_score_threshold: 0.5,
+                context_format: ContextFormat::default(),
+                last_recall_confidence: &mut last_confidence,
+                context_strategy: ContextStrategy::default(),
+                crossover_turn_threshold: 0,
+                cached_session_digest: None,
+                digest_enabled: false,
+                graph_config: GraphConfig::default(),
+                document_config: DocumentConfig::default(),
+                persona_config: PersonaConfig::default(),
+                trajectory_config: TrajectoryConfig::default(),
+                reasoning_config: ReasoningConfig::default(),
+                memcot_config: zeph_config::MemCotConfig::default(),
+                memcot_state: None,
+                tree_config: TreeConfig::default(),
+                last_skills_prompt: &mut last_skills_prompt,
+                active_skill_names: &mut active_skill_names,
+                skill_registry: registry,
+                skill_paths: &[],
+                correction_config: None,
+                sidequest_turn_counter: 0,
+                proactive_explorer: None,
+                sanitizer: &sanitizer,
+                quarantine_summarizer: None,
+                context_manager: &mut ctx_mgr,
+                token_counter: make_counter(),
+                metrics: MetricsCounters::default(),
+                security_events: &mut sink,
+                cached_prompt_tokens: 0,
+                redact_credentials: false,
+                channel_skills: &[],
+                scrub: scrub_noop,
+                tiered_retrieval_config: TieredRetrievalConfig {
+                    enabled: true,
+                    ..TieredRetrievalConfig::default()
+                },
+                tiered_retrieval_classifier: None,
+                tiered_retrieval_validator: None,
+            };
+
+            let result = ContextService::new()
+                .inject_semantic_recall("test query", 1000, &mut window, &view)
+                .await;
+
+            assert!(
+                result.is_ok(),
+                "enabled tiered recall with no memory must return Ok(())"
+            );
+            assert!(
+                window.messages.is_empty(),
+                "no recall message must be injected when memory is None"
+            );
+        }
     }
 }

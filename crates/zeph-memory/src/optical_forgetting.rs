@@ -108,7 +108,7 @@ pub struct OpticalForgettingResult {
 /// The loop respects `cancel` for graceful shutdown.
 pub async fn start_optical_forgetting_loop(
     store: Arc<SqliteStore>,
-    provider: Arc<AnyProvider>,
+    provider: AnyProvider,
     config: OpticalForgettingConfig,
     forgetting_floor: f32,
     cancel: CancellationToken,
@@ -118,6 +118,7 @@ pub async fn start_optical_forgetting_loop(
         return;
     }
 
+    let provider = Arc::new(provider);
     let mut ticker = tokio::time::interval(Duration::from_secs(config.sweep_interval_secs));
     ticker.tick().await; // skip first immediate tick
 
@@ -167,10 +168,7 @@ pub async fn start_optical_forgetting_loop(
 /// # Errors
 ///
 /// Returns an error if any database operation fails.
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(name = "memory.optical_forgetting", skip_all)
-)]
+#[tracing::instrument(name = "memory.optical_forgetting", skip_all)]
 pub async fn run_optical_forgetting_sweep(
     store: &SqliteStore,
     provider: &Arc<AnyProvider>,
@@ -316,11 +314,11 @@ async fn store_summary_only(
 // ── LLM compression helpers ───────────────────────────────────────────────────
 
 /// Ask the LLM to produce a compressed summary of `content`.
+#[tracing::instrument(name = "memory.optical_forgetting.compress", skip_all, err)]
 async fn compress_content(
     provider: &Arc<AnyProvider>,
     content: &str,
 ) -> Result<String, MemoryError> {
-    let _span = tracing::debug_span!("memory.optical_forgetting.compress").entered();
     let snippet = content.chars().take(2000).collect::<String>();
     let messages = vec![
         Message {
@@ -349,11 +347,11 @@ async fn compress_content(
 }
 
 /// Ask the LLM to distill `content` into a single-line summary.
+#[tracing::instrument(name = "memory.optical_forgetting.summarize", skip_all, err)]
 async fn summarize_content(
     provider: &Arc<AnyProvider>,
     content: &str,
 ) -> Result<String, MemoryError> {
-    let _span = tracing::debug_span!("memory.optical_forgetting.summarize").entered();
     let snippet = content.chars().take(1000).collect::<String>();
     let messages = vec![
         Message {
