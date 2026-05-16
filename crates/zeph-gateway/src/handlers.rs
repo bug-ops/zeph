@@ -77,13 +77,17 @@ struct HealthResponse {
 /// characters, then forwards the message as `"[sender@channel] body"` on the
 /// internal webhook channel.
 ///
+/// The send is wrapped in a timeout (`AppState::webhook_send_timeout`).  If the
+/// agent cannot consume the message within that window, the handler returns
+/// `503 Service Unavailable` rather than blocking the Axum worker indefinitely.
+///
 /// # Responses
 ///
 /// | Status | Condition |
 /// |---|---|
 /// | 200 | Message accepted and queued |
 /// | 422 | Payload failed field-length validation |
-/// | 503 | Internal channel is closed (agent shut down) |
+/// | 503 | Internal channel closed or send timed out due to backpressure |
 pub(crate) async fn webhook_handler(
     State(state): State<AppState>,
     payload: Result<Json<WebhookPayload>, JsonRejection>,
@@ -114,9 +118,9 @@ pub(crate) async fn webhook_handler(
     let sender = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.sender);
     let channel = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.channel);
     let msg = format!("[{}@{}] {}", sender, channel, payload.body);
-    match state.webhook_tx.send(msg).await {
-        Ok(()) => Json(WebhookResponse { status: "accepted" }).into_response(),
-        Err(_) => (
+    match tokio::time::timeout(state.webhook_send_timeout, state.webhook_tx.send(msg)).await {
+        Ok(Ok(())) => Json(WebhookResponse { status: "accepted" }).into_response(),
+        Ok(Err(_)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
                 error: "agent unavailable".to_string(),
@@ -124,6 +128,20 @@ pub(crate) async fn webhook_handler(
             }),
         )
             .into_response(),
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = state.webhook_send_timeout.as_secs_f64(),
+                "webhook send timed out: agent backpressure"
+            );
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: "service unavailable: agent backpressure".to_string(),
+                    status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -189,6 +207,7 @@ pub(crate) async fn metrics_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn health_response_serializes() {
@@ -261,6 +280,35 @@ mod tests {
         let input = "he\x00llo";
         let result = zeph_common::sanitize::strip_control_chars_preserve_whitespace(input);
         assert_eq!(result, "hello");
+    }
+
+    /// When the webhook channel is full and the send times out, the handler must
+    /// return 503 rather than blocking the Axum worker indefinitely.
+    #[tokio::test]
+    async fn webhook_handler_returns_503_on_send_timeout() {
+        use axum::extract::State;
+        use axum::response::IntoResponse as _;
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(1);
+        // Fill the channel so the next send() will block.
+        tx.send("fill".to_string()).await.unwrap();
+
+        let state = AppState {
+            webhook_tx: tx,
+            started_at: Instant::now(),
+            webhook_send_timeout: Duration::from_millis(5),
+        };
+
+        let payload = WebhookPayload {
+            channel: "ch".into(),
+            sender: "user".into(),
+            body: "hello".into(),
+        };
+
+        let response = webhook_handler(State(state), Ok(axum::Json(payload)))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

@@ -155,7 +155,10 @@ pub(crate) fn spawn_gateway_server(
     )
     .with_auth(config.gateway.auth_token.clone())
     .with_rate_limit(config.gateway.rate_limit)
-    .with_max_body_size(config.gateway.max_body_size);
+    .with_max_body_size(config.gateway.max_body_size)
+    .with_webhook_timeout(std::time::Duration::from_secs(
+        config.gateway.webhook_send_timeout_secs,
+    ));
 
     #[cfg(feature = "prometheus")]
     let gw = if let Some((registry, path)) = metrics_registry {

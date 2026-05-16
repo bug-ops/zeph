@@ -204,6 +204,10 @@ fn default_gateway_max_body() -> usize {
     1_048_576
 }
 
+fn default_gateway_webhook_send_timeout_secs() -> u64 {
+    5
+}
+
 /// Controls how skills are formatted in the system prompt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -686,6 +690,7 @@ impl Default for CostConfig {
 /// auth_token = "secret"
 /// rate_limit = 60
 /// max_body_size = 1048576
+/// webhook_send_timeout_secs = 5
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GatewayConfig {
@@ -708,6 +713,10 @@ pub struct GatewayConfig {
     /// Maximum request body size in bytes. Must be `<= 10 MiB`. Default: `1048576` (1 MiB).
     #[serde(default = "default_gateway_max_body")]
     pub max_body_size: usize,
+    /// Maximum seconds to wait for the agent to consume a webhook message before
+    /// returning `503 Service Unavailable`. Default: `5`.
+    #[serde(default = "default_gateway_webhook_send_timeout_secs")]
+    pub webhook_send_timeout_secs: u64,
 }
 
 impl Default for GatewayConfig {
@@ -719,6 +728,7 @@ impl Default for GatewayConfig {
             auth_token: None,
             rate_limit: default_gateway_rate_limit(),
             max_body_size: default_gateway_max_body(),
+            webhook_send_timeout_secs: default_gateway_webhook_send_timeout_secs(),
         }
     }
 }

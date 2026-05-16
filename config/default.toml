@@ -723,6 +723,8 @@ port = 8090
 rate_limit = 120
 # Maximum request body size in bytes (1MB)
 max_body_size = 1048576
+# Seconds to wait for the agent to consume a webhook message before returning 503
+webhook_send_timeout_secs = 5
 
 [metrics]
 # Enable Prometheus metrics export on the gateway /metrics endpoint.

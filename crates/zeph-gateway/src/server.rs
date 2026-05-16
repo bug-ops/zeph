@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
 
@@ -19,6 +19,9 @@ pub(crate) struct AppState {
     pub webhook_tx: mpsc::Sender<String>,
     /// Monotonic timestamp recorded when the server started, used by `/health`.
     pub started_at: Instant,
+    /// Maximum time to wait for [`webhook_tx`] to accept a message before the
+    /// handler returns `503 Service Unavailable`.
+    pub webhook_send_timeout: Duration,
 }
 
 /// HTTP gateway server with bearer-auth, rate limiting, and body-size enforcement.
@@ -60,6 +63,7 @@ pub struct GatewayServer {
     auth_token: Option<String>,
     rate_limit: u32,
     max_body_size: usize,
+    webhook_send_timeout: Duration,
     webhook_tx: mpsc::Sender<String>,
     shutdown_rx: watch::Receiver<bool>,
     /// Prometheus metrics registry and endpoint path (feature-gated).
@@ -107,6 +111,7 @@ impl GatewayServer {
             auth_token: None,
             rate_limit: 120,
             max_body_size: 1_048_576,
+            webhook_send_timeout: Duration::from_secs(5),
             webhook_tx,
             shutdown_rx,
             #[cfg(feature = "prometheus")]
@@ -190,6 +195,31 @@ impl GatewayServer {
         self
     }
 
+    /// Set the maximum time the webhook handler will wait for the agent to
+    /// consume a message before returning `503 Service Unavailable`.
+    ///
+    /// The default is 5 seconds.  Set to a very large value to approximate
+    /// the previous unbounded behaviour (not recommended in production).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use tokio::sync::{mpsc, watch};
+    /// use zeph_gateway::GatewayServer;
+    ///
+    /// let (tx, _rx) = mpsc::channel::<String>(1);
+    /// let (_stx, srx) = watch::channel(false);
+    ///
+    /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
+    ///     .with_webhook_timeout(Duration::from_secs(10));
+    /// ```
+    #[must_use]
+    pub fn with_webhook_timeout(mut self, timeout: Duration) -> Self {
+        self.webhook_send_timeout = timeout;
+        self
+    }
+
     /// Attach a Prometheus metrics registry to the gateway.
     ///
     /// When set, the server mounts an additional route at `path` that returns the registry
@@ -244,6 +274,7 @@ impl GatewayServer {
         let state = AppState {
             webhook_tx: self.webhook_tx,
             started_at: Instant::now(),
+            webhook_send_timeout: self.webhook_send_timeout,
         };
 
         if self.auth_token.is_none() {
@@ -317,6 +348,7 @@ mod tests {
         let state = AppState {
             webhook_tx: server.webhook_tx,
             started_at: Instant::now(),
+            webhook_send_timeout: server.webhook_send_timeout,
         };
         let router = crate::router::build_router(
             state,

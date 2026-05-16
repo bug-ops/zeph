@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-config`: document the orchestration timeout fields added in #3860 — added commented
   `aggregator_timeout_secs = 60`, `planner_timeout_secs = 120`, and `verifier_timeout_secs = 30`
   entries in the `[orchestration]` section of `config/default.toml` (closes #3867).
+- `zeph-gateway`: `webhook_handler` now wraps `webhook_tx.send().await` in
+  `tokio::time::timeout`. When the agent cannot consume the message within the
+  configured window the handler returns `503 Service Unavailable` immediately
+  instead of blocking the Axum worker indefinitely. Timeout is configurable via
+  `gateway.webhook_send_timeout_secs` (default `5`). Builder method
+  `GatewayServer::with_webhook_timeout(Duration)` exposed for programmatic use
+  (closes #3844).
 - `zeph-orchestration`: wrap all LLM `.await` calls in `LlmAggregator::aggregate`,
   `LlmPlanner::plan`/`plan_with_hint`, `PlanVerifier::verify`/`replan`/`verify_plan`/`replan_from_plan`,
   and `plan_cache::adapt_plan` with `tokio::time::timeout`. New `OrchestrationConfig` fields:

@@ -189,6 +189,7 @@ mod tests {
         let state = AppState {
             webhook_tx: tx,
             started_at: Instant::now(),
+            webhook_send_timeout: std::time::Duration::from_secs(5),
         };
         (state, rx)
     }
@@ -221,6 +222,7 @@ mod tests {
         let state = AppState {
             webhook_tx: tx,
             started_at: Instant::now(),
+            webhook_send_timeout: std::time::Duration::from_secs(5),
         };
         let app = build_router(state, None, 0, 1_048_576);
 
@@ -404,6 +406,7 @@ mod tests {
         let state = AppState {
             webhook_tx: tx,
             started_at: Instant::now(),
+            webhook_send_timeout: std::time::Duration::from_secs(5),
         };
         let app = build_router(state, None, 0, 1_048_576);
 
