@@ -336,6 +336,7 @@ pub fn compute_content_type_prior(role: &str) -> f32 {
 /// Compute semantic novelty as `1.0 - max_cosine_similarity_to_top3_neighbors`.
 ///
 /// Returns `1.0` when the memory is empty (everything is novel at cold start).
+#[tracing::instrument(name = "memory.admission.semantic_novelty", skip_all)]
 async fn compute_semantic_novelty(
     content: &str,
     provider: &AnyProvider,

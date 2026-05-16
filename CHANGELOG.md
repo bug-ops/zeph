@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-memory`: added `#[tracing::instrument]` span to `compute_semantic_novelty` in
+  `admission.rs` so embedding latency during admission is visible in local Chrome JSON traces
+  (closes #4145).
+
 ### Added
 
 - `zeph-common`: added 8 exfiltration-channel patterns to `RAW_INJECTION_PATTERNS` (`exfil_curl`,
