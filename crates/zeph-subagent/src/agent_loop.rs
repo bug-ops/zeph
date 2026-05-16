@@ -452,6 +452,7 @@ async fn run_turn(
 }
 
 // Returns `true` if no tool was called (loop should break).
+#[allow(clippy::too_many_lines)]
 async fn handle_tool_step(
     executor: &FilteredToolExecutor,
     response: ChatResponse,
@@ -493,7 +494,7 @@ async fn handle_tool_step(
                     let hook_env = make_hook_env(task_id, agent_name, tc.name.as_str(), &tc.input);
                     let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
                     // MCP dispatch is not available in the subagent execution path.
-                    if let Err(e) = fire_hooks(&pre_owned, &hook_env, None).await {
+                    if let Err(e) = fire_hooks(&pre_owned, &hook_env, None, None).await {
                         tracing::warn!(error = %e, tool = %tc.name, "PreToolUse hook failed");
                     }
                 }
@@ -513,7 +514,11 @@ async fn handle_tool_step(
                     tool_call_id: String::new(),
                 };
                 let tool_start = Instant::now();
-                let (content, is_error) = match executor.execute_tool_call_erased(&call).await {
+                let exec_result = executor.execute_tool_call_erased(&call).await;
+                let duration_ms =
+                    u64::try_from(tool_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                let (mut content, is_error) = match &exec_result {
                     Ok(Some(output)) => (
                         format!(
                             "[tool output: {}]\n```\n{}\n```",
@@ -527,12 +532,6 @@ async fn handle_tool_step(
                         (format!("[tool error]: {e}"), true)
                     }
                 };
-                let duration_ms = tool_start.elapsed().as_millis();
-                result_parts.push(MessagePart::ToolResult {
-                    tool_use_id: tc.id.clone(),
-                    content,
-                    is_error,
-                });
 
                 if !hooks.post_tool_use.is_empty() {
                     let post_hooks: Vec<&HookDef> =
@@ -543,16 +542,52 @@ async fn handle_tool_step(
                         hook_env
                             .insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
                         let post_owned: Vec<HookDef> = post_hooks.into_iter().cloned().collect();
+                        let tool_output_text = exec_result
+                            .as_ref()
+                            .ok()
+                            .and_then(|r| r.as_ref())
+                            .map(|o| o.summary.as_str());
+                        let tool_error_text = exec_result
+                            .as_ref()
+                            .err()
+                            .map(std::string::ToString::to_string);
+                        let hook_input = super::hooks::PostToolUseHookInput {
+                            tool_name: tc.name.as_str(),
+                            tool_args: &tc.input,
+                            session_id: None,
+                            duration_ms,
+                            tool_output: tool_output_text,
+                            tool_error: tool_error_text.as_deref(),
+                        };
+                        let stdin_bytes = serde_json::to_vec(&hook_input).ok();
                         // MCP dispatch is not available in the subagent execution path.
-                        if let Err(e) = fire_hooks(&post_owned, &hook_env, None).await {
-                            tracing::warn!(
-                                error = %e,
-                                tool = %tc.name,
-                                "PostToolUse hook failed"
-                            );
+                        match fire_hooks(&post_owned, &hook_env, None, stdin_bytes.as_deref()).await
+                        {
+                            Ok(run_result) => {
+                                if let Some(replacement) = run_result.output.updated_tool_output {
+                                    tracing::debug!(
+                                        tool = %tc.name,
+                                        "PostToolUse hook replaced sub-agent tool output"
+                                    );
+                                    content = replacement;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    tool = %tc.name,
+                                    "PostToolUse hook failed"
+                                );
+                            }
                         }
                     }
                 }
+
+                result_parts.push(MessagePart::ToolResult {
+                    tool_use_id: tc.id.clone(),
+                    content,
+                    is_error,
+                });
             }
 
             messages.push(Message::from_parts(Role::User, result_parts));

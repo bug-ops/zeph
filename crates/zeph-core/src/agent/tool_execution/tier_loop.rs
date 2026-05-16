@@ -1376,7 +1376,7 @@ impl<C: Channel> Agent<C> {
         let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
             .as_ref()
             .map(|d| d as &dyn zeph_subagent::McpDispatch);
-        if let Err(e) = zeph_subagent::hooks::fire_hooks(&pd_hooks, &env, mcp).await {
+        if let Err(e) = zeph_subagent::hooks::fire_hooks(&pd_hooks, &env, mcp, None).await {
             tracing::warn!(error = %e, tool = %tc.name, "PermissionDenied hook failed");
         }
     }
@@ -1451,7 +1451,8 @@ impl<C: Channel> Agent<C> {
                     let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                         .as_ref()
                         .map(|d| d as &dyn zeph_subagent::McpDispatch);
-                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp).await {
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp, None).await
+                    {
                         tracing::warn!(
                             error = %e,
                             tool = %tc.name,
@@ -1614,7 +1615,7 @@ impl<C: Channel> Agent<C> {
         Ok(Some(result))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn apply_tier_results(
         &mut self,
         indices: Vec<usize>,
@@ -1627,7 +1628,7 @@ impl<C: Channel> Agent<C> {
         failed_ids: &mut std::collections::HashSet<String>,
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
     ) {
-        for (idx, result) in indices.into_iter().zip(tier_results) {
+        for (idx, mut result) in indices.into_iter().zip(tier_results) {
             // IMP-02: Err(_) covers all error variants including ConfirmationRequired.
             // Ok(Some(out)) with "[error]" prefix covers synthetic/blocked results.
             let is_failed = match &result {
@@ -1704,19 +1705,63 @@ impl<C: Channel> Agent<C> {
                         &tool_calls[idx].input,
                         conv_id_str.as_deref(),
                     );
-                    let duration_ms = tool_started_ats[idx].elapsed().as_millis();
+                    let duration_ms = u64::try_from(tool_started_ats[idx].elapsed().as_millis())
+                        .unwrap_or(u64::MAX);
                     env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
                     let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
                     let dispatch = self.mcp_dispatch();
                     let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                         .as_ref()
                         .map(|d| d as &dyn zeph_subagent::McpDispatch);
-                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp).await {
-                        tracing::warn!(
-                            error = %e,
-                            tool = %tool_calls[idx].name,
-                            "PostToolUse hook failed"
-                        );
+
+                    // Build stdin JSON context for the hook process.
+                    let tool_output_text = match &result {
+                        Ok(Some(out)) => Some(out.summary.as_str()),
+                        _ => None,
+                    };
+                    let tool_error_text = match &result {
+                        Err(e) => Some(e.to_string()),
+                        _ => None,
+                    };
+                    let hook_input = zeph_subagent::PostToolUseHookInput {
+                        tool_name: tool_calls[idx].name.as_str(),
+                        tool_args: &tool_calls[idx].input,
+                        session_id: conv_id_str.as_deref(),
+                        duration_ms,
+                        tool_output: tool_output_text,
+                        tool_error: tool_error_text.as_deref(),
+                    };
+                    let stdin_bytes = serde_json::to_vec(&hook_input).ok();
+
+                    match zeph_subagent::hooks::fire_hooks(
+                        &owned,
+                        &env,
+                        mcp,
+                        stdin_bytes.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(run_result) => {
+                            if let Some(replacement) = run_result.output.updated_tool_output {
+                                // Apply hook-requested output substitution.
+                                if let Ok(Some(ref mut out)) = result {
+                                    tracing::debug!(
+                                        tool = %tool_calls[idx].name,
+                                        original_len = out.summary.len(),
+                                        replacement_len = replacement.len(),
+                                        "PostToolUse hook replaced tool output"
+                                    );
+                                    out.summary = replacement;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                tool = %tool_calls[idx].name,
+                                "PostToolUse hook failed"
+                            );
+                        }
                     }
                 }
             }

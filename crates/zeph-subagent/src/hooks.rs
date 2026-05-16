@@ -24,6 +24,38 @@
 //! Hooks within a matcher are run sequentially. `fail_closed = true` hooks abort on the
 //! first error; `fail_closed = false` (default) log the error and continue.
 //!
+//! # `PostToolUse` stdout replacement
+//!
+//! Shell hooks for `PostToolUse` events may emit a JSON object to stdout to replace the
+//! tool output seen by the agent. The JSON must contain:
+//!
+//! ```json
+//! { "hookSpecificOutput": { "updatedToolOutput": "replacement text" } }
+//! ```
+//!
+//! If `updatedToolOutput` is `null` or absent, or stdout is empty / not valid JSON, the
+//! original tool output is preserved (backward compatible). Hook stdout is capped at 1 MiB
+//! to prevent memory exhaustion; output exceeding the cap is silently truncated and treated
+//! as if no substitution was requested.
+//!
+//! # Hook stdin (`PostToolUse`)
+//!
+//! For `PostToolUse` and `PostToolUseFailure` events, a JSON context object is written to
+//! the hook process's stdin:
+//!
+//! ```json
+//! {
+//!   "tool_name": "Shell",
+//!   "tool_args": { ... },
+//!   "session_id": "abc123",
+//!   "duration_ms": 142,
+//!   "tool_output": "command output here"
+//! }
+//! ```
+//!
+//! `tool_error` replaces `tool_output` for failure events. Hooks that do not read stdin
+//! are unaffected — the pipe is closed when the child ignores it.
+//!
 //! # Examples
 //!
 //! ```rust,no_run
@@ -36,7 +68,7 @@
 //!         timeout_secs: 5,
 //!         fail_closed: false,
 //!     }];
-//!     fire_hooks(&hooks, &HashMap::new(), None).await.unwrap();
+//!     fire_hooks(&hooks, &HashMap::new(), None, None).await.unwrap();
 //! }
 //! ```
 
@@ -44,11 +76,66 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::time::Duration;
 
+use serde::Serialize;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt as _;
 use tokio::process::Command;
 use tokio::time::timeout;
 
 pub use zeph_config::{HookAction, HookDef, HookMatcher, SubagentHooks};
+
+// ── Hook output types ─────────────────────────────────────────────────────────
+
+/// Structured output captured from a hook's stdout.
+///
+/// Only populated for shell `PostToolUse` hooks; MCP hooks always produce
+/// `updated_tool_output: None`.
+#[derive(Debug, Default)]
+pub struct HookOutput {
+    /// Replacement text for the tool output, when the hook requests a substitution.
+    ///
+    /// `None` means the original tool output is preserved.
+    pub updated_tool_output: Option<String>,
+}
+
+/// Aggregate result of executing one or more hooks in sequence.
+///
+/// Callers that do not need the output can ignore this and check only for `Err`.
+#[derive(Debug, Default)]
+pub struct HookRunResult {
+    /// Merged output from the hook sequence. When multiple hooks emit
+    /// `updatedToolOutput`, the last non-`None` value wins.
+    pub output: HookOutput,
+}
+
+// ── Hook stdin payload ────────────────────────────────────────────────────────
+
+/// Context serialized to hook stdin for `PostToolUse` and `PostToolUseFailure` events.
+///
+/// The `tool_output` field is present for success events; `tool_error` is present
+/// for failure events. Both are `Option` with `skip_serializing_if` so only the
+/// relevant field appears in the JSON written to stdin.
+#[derive(Debug, Serialize)]
+pub struct PostToolUseHookInput<'a> {
+    /// Name of the tool that was invoked.
+    pub tool_name: &'a str,
+    /// Arguments passed to the tool (the parsed JSON value).
+    pub tool_args: &'a serde_json::Value,
+    /// Conversation / session identifier, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<&'a str>,
+    /// Wall-clock time the tool took to execute, in milliseconds.
+    pub duration_ms: u64,
+    /// Tool output text (success path). Absent for failure events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_output: Option<&'a str>,
+    /// Tool error text (failure path). Absent for success events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_error: Option<&'a str>,
+}
+
+/// Maximum number of bytes read from hook stdout before truncation.
+const HOOK_STDOUT_CAP: usize = 1024 * 1024; // 1 MiB
 
 // ── McpDispatch ───────────────────────────────────────────────────────────────
 
@@ -154,6 +241,16 @@ pub fn matching_hooks<'a>(matchers: &'a [HookMatcher], tool_name: &str) -> Vec<&
 /// execution stops immediately and `Err` is returned. Otherwise errors are logged
 /// and execution continues.
 ///
+/// The optional `stdin_json` bytes are written to the hook process's stdin before
+/// it runs (shell hooks only). Pass `None` for hooks that do not require context
+/// on stdin (e.g., `PreToolUse`). MCP hooks never receive stdin data.
+///
+/// When multiple shell hooks run in sequence and emit `updatedToolOutput`, the last
+/// non-`None` value wins. If a fail-closed hook aborts after a previous hook already
+/// produced a replacement, the prior replacement is preserved in the returned error
+/// path — callers should discard `HookRunResult` on `Err` if appropriate for their
+/// use-case, but the struct always reflects what was captured before the abort.
+///
 /// The `mcp` parameter provides MCP tool dispatch for `type = "mcp_tool"` hooks.
 /// Pass `None` when no MCP manager is available; `mcp_tool` hooks will fail with
 /// [`HookError::McpUnavailable`] (respecting `fail_closed`).
@@ -166,11 +263,25 @@ pub async fn fire_hooks<S: BuildHasher>(
     hooks: &[HookDef],
     env: &HashMap<String, String, S>,
     mcp: Option<&dyn McpDispatch>,
-) -> Result<(), HookError> {
+    stdin_json: Option<&[u8]>,
+) -> Result<HookRunResult, HookError> {
+    let mut run_result = HookRunResult::default();
     for hook in hooks {
-        let result = fire_single_hook(hook, env, mcp).await;
+        // For chaining: pass the already-replaced output as the new stdin so each
+        // subsequent hook sees the current (potentially substituted) output.
+        let effective_stdin = run_result
+            .output
+            .updated_tool_output
+            .as_deref()
+            .map(str::as_bytes)
+            .or(stdin_json);
+        let result = fire_single_hook(hook, env, mcp, effective_stdin).await;
         match result {
-            Ok(()) => {}
+            Ok(hook_output) => {
+                if hook_output.updated_tool_output.is_some() {
+                    run_result.output.updated_tool_output = hook_output.updated_tool_output;
+                }
+            }
             Err(e) if hook.fail_closed => {
                 tracing::error!(
                     error = %e,
@@ -186,16 +297,19 @@ pub async fn fire_hooks<S: BuildHasher>(
             }
         }
     }
-    Ok(())
+    Ok(run_result)
 }
 
 async fn fire_single_hook<S: BuildHasher>(
     hook: &HookDef,
     env: &HashMap<String, String, S>,
     mcp: Option<&dyn McpDispatch>,
-) -> Result<(), HookError> {
+    stdin_json: Option<&[u8]>,
+) -> Result<HookOutput, HookError> {
     match &hook.action {
-        HookAction::Command { command } => fire_shell_hook(command, hook.timeout_secs, env).await,
+        HookAction::Command { command } => {
+            fire_shell_hook(command, hook.timeout_secs, env, stdin_json).await
+        }
         HookAction::McpTool { server, tool, args } => {
             let dispatcher = mcp.ok_or_else(|| HookError::McpUnavailable {
                 server: server.clone(),
@@ -203,7 +317,10 @@ async fn fire_single_hook<S: BuildHasher>(
             })?;
             let call_fut = dispatcher.call_tool(server, tool, args.clone());
             match timeout(Duration::from_secs(hook.timeout_secs), call_fut).await {
-                Ok(Ok(_)) => Ok(()),
+                Ok(Ok(_)) => {
+                    // MCP hooks produce no stdout — output substitution is not supported.
+                    Ok(HookOutput::default())
+                }
                 Ok(Err(reason)) => Err(HookError::McpToolFailed {
                     server: server.clone(),
                     tool: tool.clone(),
@@ -222,7 +339,11 @@ async fn fire_shell_hook<S: BuildHasher>(
     command: &str,
     timeout_secs: u64,
     env: &HashMap<String, String, S>,
-) -> Result<(), HookError> {
+    stdin_json: Option<&[u8]>,
+) -> Result<HookOutput, HookError> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt as _;
+
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(command);
     // SEC-H-002: clear inherited env to prevent secret leakage, then set only hook vars.
@@ -234,19 +355,55 @@ async fn fire_shell_hook<S: BuildHasher>(
     for (k, v) in env {
         cmd.env(k, v);
     }
-    // Suppress stdout/stderr to prevent hook output flooding the agent.
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stdin(if stdin_json.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    // Capture stdout to parse potential updatedToolOutput JSON.
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::null());
 
     let mut child = cmd.spawn().map_err(|e| HookError::Io {
         command: command.to_owned(),
         source: e,
     })?;
 
-    let result = timeout(Duration::from_secs(timeout_secs), child.wait()).await;
+    // Write stdin before awaiting child exit to avoid deadlock on full pipes.
+    // Drop the handle to close the pipe so the child gets EOF when it stops reading.
+    if let Some(bytes) = stdin_json
+        && let Some(mut stdin_handle) = child.stdin.take()
+        && let Err(e) = stdin_handle.write_all(bytes).await
+    {
+        tracing::warn!(
+            command,
+            error = %e,
+            "failed to write stdin to hook — continuing without stdin data"
+        );
+    }
 
-    match result {
-        Ok(Ok(status)) if status.success() => Ok(()),
+    // Read stdout up to HOOK_STDOUT_CAP bytes; truncated output will fail JSON parse
+    // and be treated as no substitution, logging a warning.
+    let stdout_handle = child.stdout.take();
+    let read_fut = async {
+        let mut buf = Vec::new();
+        if let Some(handle) = stdout_handle {
+            let mut limited = handle.take(HOOK_STDOUT_CAP as u64 + 1);
+            let _ = limited.read_to_end(&mut buf).await;
+        }
+        buf
+    };
+
+    let (wait_res, stdout_bytes) = tokio::join!(
+        timeout(Duration::from_secs(timeout_secs), child.wait()),
+        read_fut
+    );
+
+    match wait_res {
+        Ok(Ok(status)) if status.success() => {
+            let hook_output = parse_hook_stdout(command, &stdout_bytes);
+            Ok(hook_output)
+        }
         Ok(Ok(status)) => Err(HookError::NonZeroExit {
             command: command.to_owned(),
             code: status.code().unwrap_or(-1),
@@ -262,6 +419,57 @@ async fn fire_shell_hook<S: BuildHasher>(
                 command: command.to_owned(),
                 timeout_secs,
             })
+        }
+    }
+}
+
+/// Parse hook stdout bytes into a [`HookOutput`].
+///
+/// Returns a default (no substitution) value on any parse error to preserve
+/// backward compatibility with hooks that write non-JSON to stdout.
+fn parse_hook_stdout(command: &str, bytes: &[u8]) -> HookOutput {
+    if bytes.is_empty() {
+        return HookOutput::default();
+    }
+    if bytes.len() > HOOK_STDOUT_CAP {
+        tracing::warn!(
+            command,
+            bytes = bytes.len(),
+            cap = HOOK_STDOUT_CAP,
+            "hook stdout exceeds 1 MiB cap — treating as no substitution"
+        );
+        return HookOutput::default();
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        tracing::warn!(command, "hook stdout is not valid UTF-8 — no substitution");
+        return HookOutput::default();
+    };
+    // Silent on JSON parse failure: backward compat — hooks may write human-readable output.
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+        return HookOutput::default();
+    };
+    let updated = json
+        .get("hookSpecificOutput")
+        .and_then(|h| h.get("updatedToolOutput"));
+
+    match updated {
+        None | Some(serde_json::Value::Null) => HookOutput::default(),
+        Some(serde_json::Value::String(s)) => HookOutput {
+            updated_tool_output: Some(s.clone()),
+        },
+        Some(other) => {
+            tracing::warn!(
+                command,
+                kind = other
+                    .is_object()
+                    .then_some("object")
+                    .or_else(|| other.is_array().then_some("array"))
+                    .or_else(|| other.is_number().then_some("number"))
+                    .or_else(|| other.is_boolean().then_some("boolean"))
+                    .unwrap_or("unknown"),
+                "hookSpecificOutput.updatedToolOutput has unexpected type — no substitution"
+            );
+            HookOutput::default()
         }
     }
 }
@@ -362,7 +570,7 @@ mod tests {
     async fn fire_hooks_success() {
         let hooks = vec![cmd_hook("true", false, 5)];
         let env = HashMap::new();
-        assert!(fire_hooks(&hooks, &env, None).await.is_ok());
+        assert!(fire_hooks(&hooks, &env, None, None).await.is_ok());
     }
 
     #[tokio::test]
@@ -372,14 +580,14 @@ mod tests {
             cmd_hook("true", false, 5),  // should still run
         ];
         let env = HashMap::new();
-        assert!(fire_hooks(&hooks, &env, None).await.is_ok());
+        assert!(fire_hooks(&hooks, &env, None, None).await.is_ok());
     }
 
     #[tokio::test]
     async fn fire_hooks_fail_closed_returns_err() {
         let hooks = vec![cmd_hook("false", true, 5)];
         let env = HashMap::new();
-        let result = fire_hooks(&hooks, &env, None).await;
+        let result = fire_hooks(&hooks, &env, None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, HookError::NonZeroExit { .. }));
@@ -389,7 +597,7 @@ mod tests {
     async fn fire_hooks_timeout() {
         let hooks = vec![cmd_hook("sleep 10", true, 1)];
         let env = HashMap::new();
-        let result = fire_hooks(&hooks, &env, None).await;
+        let result = fire_hooks(&hooks, &env, None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, HookError::Timeout { .. }));
@@ -400,13 +608,13 @@ mod tests {
         let hooks = vec![cmd_hook(r#"test "$ZEPH_TEST_VAR" = "hello""#, true, 5)];
         let mut env = HashMap::new();
         env.insert("ZEPH_TEST_VAR".to_owned(), "hello".to_owned());
-        assert!(fire_hooks(&hooks, &env, None).await.is_ok());
+        assert!(fire_hooks(&hooks, &env, None, None).await.is_ok());
     }
 
     #[tokio::test]
     async fn fire_hooks_empty_list_ok() {
         let env = HashMap::new();
-        assert!(fire_hooks(&[], &env, None).await.is_ok());
+        assert!(fire_hooks(&[], &env, None, None).await.is_ok());
     }
 
     #[tokio::test]
@@ -422,7 +630,7 @@ mod tests {
         }];
         let env = HashMap::new();
         // fail_open: should succeed even though MCP is unavailable
-        assert!(fire_hooks(&hooks, &env, None).await.is_ok());
+        assert!(fire_hooks(&hooks, &env, None, None).await.is_ok());
     }
 
     #[tokio::test]
@@ -437,7 +645,7 @@ mod tests {
             fail_closed: true,
         }];
         let env = HashMap::new();
-        let result = fire_hooks(&hooks, &env, None).await;
+        let result = fire_hooks(&hooks, &env, None, None).await;
         assert!(matches!(result, Err(HookError::McpUnavailable { .. })));
     }
 
@@ -475,7 +683,7 @@ mod tests {
             fail_closed: true,
         }];
         let env = HashMap::new();
-        let result = fire_hooks(&hooks, &env, Some(&dispatch)).await;
+        let result = fire_hooks(&hooks, &env, Some(&dispatch), None).await;
         assert!(
             result.is_ok(),
             "fire_hooks should succeed with mcp dispatch"
@@ -485,6 +693,78 @@ mod tests {
             1,
             "MCP dispatch should have been called exactly once"
         );
+    }
+
+    // ── stdout replacement tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fire_hooks_stdout_replacement_json() {
+        let cmd = r#"printf '{"hookSpecificOutput":{"updatedToolOutput":"replaced"}}'"#;
+        let hooks = vec![cmd_hook(cmd, true, 5)];
+        let env = HashMap::new();
+        let result = fire_hooks(&hooks, &env, None, None).await.unwrap();
+        assert_eq!(
+            result.output.updated_tool_output.as_deref(),
+            Some("replaced")
+        );
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_stdout_empty_no_replacement() {
+        let hooks = vec![cmd_hook("true", true, 5)];
+        let env = HashMap::new();
+        let result = fire_hooks(&hooks, &env, None, None).await.unwrap();
+        assert!(result.output.updated_tool_output.is_none());
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_stdout_non_json_no_replacement() {
+        let hooks = vec![cmd_hook("echo hello", true, 5)];
+        let env = HashMap::new();
+        let result = fire_hooks(&hooks, &env, None, None).await.unwrap();
+        assert!(result.output.updated_tool_output.is_none());
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_stdout_null_updatedtooloutput_no_replacement() {
+        let cmd = r#"printf '{"hookSpecificOutput":{"updatedToolOutput":null}}'"#;
+        let hooks = vec![cmd_hook(cmd, true, 5)];
+        let env = HashMap::new();
+        let result = fire_hooks(&hooks, &env, None, None).await.unwrap();
+        assert!(result.output.updated_tool_output.is_none());
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_stdin_passed_to_hook() {
+        // Hook reads stdin and checks that "duration_ms" key is present in the JSON.
+        let cmd = r#"python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if 'duration_ms' in d else 1)""#;
+        let hooks = vec![cmd_hook(cmd, true, 10)];
+        let env = HashMap::new();
+        let stdin = br#"{"tool_name":"Shell","tool_args":{},"duration_ms":42}"#;
+        let result = fire_hooks(&hooks, &env, None, Some(stdin)).await;
+        assert!(
+            result.is_ok(),
+            "hook should succeed when stdin has duration_ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_chaining_last_replacement_wins() {
+        // First hook produces replacement "first", second produces "second" — second wins.
+        let h1 = cmd_hook(
+            r#"printf '{"hookSpecificOutput":{"updatedToolOutput":"first"}}'"#,
+            false,
+            5,
+        );
+        let h2 = cmd_hook(
+            r#"printf '{"hookSpecificOutput":{"updatedToolOutput":"second"}}'"#,
+            false,
+            5,
+        );
+        let hooks = vec![h1, h2];
+        let env = HashMap::new();
+        let result = fire_hooks(&hooks, &env, None, None).await.unwrap();
+        assert_eq!(result.output.updated_tool_output.as_deref(), Some("second"));
     }
 
     // ── YAML parsing ──────────────────────────────────────────────────────────

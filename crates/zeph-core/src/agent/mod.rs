@@ -1817,7 +1817,8 @@ impl<C: Channel> Agent<C> {
                     let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                         .as_ref()
                         .map(|d| d as &dyn zeph_subagent::McpDispatch);
-                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
+                    if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp, None).await
+                    {
                         tracing::warn!(error = %e, "turn_complete hook failed");
                     }
                 },
@@ -3389,7 +3390,7 @@ impl<C: Channel> Agent<C> {
             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                 .as_ref()
                 .map(|d| d as &dyn zeph_subagent::McpDispatch);
-            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
+            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp, None).await {
                 tracing::warn!(error = %e, "CwdChanged hook failed");
             } else {
                 tracing::info!(count = hooks.len(), "CwdChanged: hooks fired");
@@ -3430,7 +3431,7 @@ impl<C: Channel> Agent<C> {
             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                 .as_ref()
                 .map(|d| d as &dyn zeph_subagent::McpDispatch);
-            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp).await {
+            if let Err(e) = zeph_subagent::hooks::fire_hooks(&hooks, &env, mcp, None).await {
                 tracing::warn!(error = %e, "FileChanged hook failed");
             } else {
                 tracing::info!(count = hooks.len(), path = %event.path.display(), "FileChanged: hooks fired");
