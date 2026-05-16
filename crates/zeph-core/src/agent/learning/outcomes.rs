@@ -327,6 +327,9 @@ impl<C: Channel> Agent<C> {
         let predecessor_id = active.as_ref().map(|v| v.id);
 
         let next_ver = memory.sqlite().next_skill_version(skill_name).await?;
+
+        // When auto_activate is off or a domain gate must run first, save without activating.
+        // The gate may veto activation, so we cannot commit the activate atomically up front.
         let version_id = memory
             .sqlite()
             .save_skill_version(
@@ -378,6 +381,7 @@ impl<C: Channel> Agent<C> {
         }
 
         if config.auto_activate {
+            // Activate atomically after the gate passed.
             memory
                 .sqlite()
                 .activate_skill_version(skill_name, version_id)

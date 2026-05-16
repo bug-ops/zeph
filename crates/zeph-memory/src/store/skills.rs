@@ -323,6 +323,62 @@ impl SqliteStore {
         Ok(row.0)
     }
 
+    /// Save a new skill version and atomically activate it within a single `BEGIN IMMEDIATE`
+    /// transaction, preventing orphaned saved-but-inactive versions on crash or concurrent access.
+    ///
+    /// Equivalent to calling [`save_skill_version`] followed by [`activate_skill_version`] but
+    /// without the window between the two calls where the DB can be left in an inconsistent state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert, deactivate, or activate queries fail. The transaction is
+    /// rolled back automatically on error.
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(skip_all, name = "memory.skills.save_and_activate_skill_version")]
+    pub async fn save_and_activate_skill_version(
+        &self,
+        skill_name: &str,
+        version: i64,
+        body: &str,
+        description: &str,
+        source: &str,
+        error_context: Option<&str>,
+        predecessor_id: Option<i64>,
+    ) -> Result<i64, MemoryError> {
+        let mut tx = begin_write(&self.pool).await?;
+
+        let row: (i64,) = zeph_db::query_as(sql!(
+            "INSERT INTO skill_versions \
+             (skill_name, version, body, description, source, error_context, predecessor_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"
+        ))
+        .bind(skill_name)
+        .bind(version)
+        .bind(body)
+        .bind(description)
+        .bind(source)
+        .bind(error_context)
+        .bind(predecessor_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let id = row.0;
+
+        zeph_db::query(sql!(
+            "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1"
+        ))
+        .bind(skill_name)
+        .execute(&mut *tx)
+        .await?;
+
+        zeph_db::query(sql!("UPDATE skill_versions SET is_active = 1 WHERE id = ?"))
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(id)
+    }
+
     /// Count the number of distinct conversation sessions in which a skill produced an outcome.
     ///
     /// Uses `COUNT(DISTINCT conversation_id)` from `skill_outcomes`. Rows where
@@ -1889,6 +1945,84 @@ mod tests {
         assert_eq!(
             trust.0, "quarantined",
             "schema default for skill_trust.trust_level must be 'quarantined'"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_and_activate_skill_version_activates_new() {
+        let store = test_store().await;
+
+        let id = store
+            .save_and_activate_skill_version(
+                "git",
+                1,
+                "body v1",
+                "Git helper",
+                "manual",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(id > 0);
+
+        let active = store.active_skill_version("git").await.unwrap().unwrap();
+        assert_eq!(active.id, id);
+        assert_eq!(active.version, 1);
+        assert_eq!(active.body, "body v1");
+        assert!(active.is_active);
+    }
+
+    #[tokio::test]
+    async fn save_and_activate_skill_version_deactivates_previous() {
+        let store = test_store().await;
+
+        let v1 = store
+            .save_and_activate_skill_version("git", 1, "v1", "desc", "manual", None, None)
+            .await
+            .unwrap();
+
+        let v2 = store
+            .save_and_activate_skill_version("git", 2, "v2", "desc", "auto", None, Some(v1))
+            .await
+            .unwrap();
+
+        let versions = store.load_skill_versions("git").await.unwrap();
+        assert_eq!(versions.len(), 2);
+
+        let old = versions.iter().find(|v| v.id == v1).unwrap();
+        let new = versions.iter().find(|v| v.id == v2).unwrap();
+        assert!(!old.is_active, "previous version must be deactivated");
+        assert!(new.is_active, "new version must be active");
+    }
+
+    #[tokio::test]
+    async fn save_and_activate_skill_version_only_one_active() {
+        let store = test_store().await;
+
+        let mut last_id = 0i64;
+        for i in 1i64..=4 {
+            last_id = store
+                .save_and_activate_skill_version(
+                    "git",
+                    i,
+                    &format!("v{i}"),
+                    "desc",
+                    "auto",
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let versions = store.load_skill_versions("git").await.unwrap();
+        let active_count = versions.iter().filter(|v| v.is_active).count();
+        assert_eq!(active_count, 1, "exactly one version must be active");
+        assert_eq!(
+            versions.iter().find(|v| v.is_active).unwrap().id,
+            last_id,
+            "the last saved version must be the active one"
         );
     }
 }

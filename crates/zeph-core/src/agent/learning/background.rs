@@ -193,47 +193,49 @@ async fn arise_store_version(args: AriseTaskArgs, generated: String) {
     };
     let predecessor_id = active.as_ref().map(|v| v.id);
     // CRITICAL: ARISE-generated versions MUST start at quarantined trust level.
-    let version_id = match args
-        .memory
-        .sqlite()
-        .save_skill_version(
-            &args.skill_name,
-            next_ver,
-            &generated,
-            &args.skill_desc,
-            "arise_trace",
-            None,
-            predecessor_id,
-        )
-        .await
-    {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::warn!("ARISE: save_skill_version failed: {e:#}");
-            return;
-        }
-    };
-    tracing::info!(skill = %args.skill_name, version = next_ver, "ARISE: saved trace-improved version (quarantined)");
-    if args.auto_activate {
-        if let Err(e) = args
-            .memory
+    // When auto_activate is set, save and activate atomically to prevent orphaned versions.
+    let save_result = if args.auto_activate {
+        args.memory
             .sqlite()
-            .activate_skill_version(&args.skill_name, version_id)
+            .save_and_activate_skill_version(
+                &args.skill_name,
+                next_ver,
+                &generated,
+                &args.skill_desc,
+                "arise_trace",
+                None,
+                predecessor_id,
+            )
             .await
-        {
-            tracing::warn!("ARISE: activate_skill_version failed: {e:#}");
-            return;
-        }
-        if let Err(e) = write_skill_file(
+    } else {
+        args.memory
+            .sqlite()
+            .save_skill_version(
+                &args.skill_name,
+                next_ver,
+                &generated,
+                &args.skill_desc,
+                "arise_trace",
+                None,
+                predecessor_id,
+            )
+            .await
+    };
+    if let Err(e) = save_result {
+        tracing::warn!("ARISE: save_skill_version failed: {e:#}");
+        return;
+    }
+    tracing::info!(skill = %args.skill_name, version = next_ver, "ARISE: saved trace-improved version (quarantined)");
+    if args.auto_activate
+        && let Err(e) = write_skill_file(
             &args.skill_paths,
             &args.skill_name,
             &args.skill_desc,
             &generated,
         )
         .await
-        {
-            tracing::warn!("ARISE: write_skill_file failed: {e:#}");
-        }
+    {
+        tracing::warn!("ARISE: write_skill_file failed: {e:#}");
     }
     if let Err(e) = args
         .memory
