@@ -53,6 +53,7 @@
 
 pub mod bm25;
 pub mod bundled;
+pub mod embedding;
 pub mod erl;
 pub mod error;
 pub mod evaluator;
@@ -76,6 +77,7 @@ pub mod trust_score;
 pub mod watcher;
 
 pub use bundled::bundled_skill_names;
+pub use embedding::SkillEmbedding;
 pub use error::SkillError;
 pub use evaluator::{
     EvaluationWeights, SkillEvaluationRequest, SkillEvaluator, SkillQualityScore, SkillVerdict,

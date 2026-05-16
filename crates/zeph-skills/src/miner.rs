@@ -19,6 +19,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use zeph_common::secret::Secret;
 
+use crate::embedding::SkillEmbedding;
 use crate::error::SkillError;
 use crate::generator::{GeneratedSkill, SkillGenerator};
 use crate::loader::SkillMeta;
@@ -164,11 +165,11 @@ impl SkillMiner {
     }
 
     /// Pre-compute embeddings for existing skill descriptions.
-    async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(String, Vec<f32>)> {
+    async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(String, SkillEmbedding)> {
         let mut embeddings = Vec::with_capacity(skills.len());
         for skill in skills {
             match self.embed_provider.embed(&skill.description).await {
-                Ok(emb) => embeddings.push((skill.name.clone(), emb)),
+                Ok(emb) => embeddings.push((skill.name.clone(), SkillEmbedding::from_raw(emb))),
                 Err(e) => {
                     tracing::warn!(
                         skill = %skill.name,
@@ -185,7 +186,7 @@ impl SkillMiner {
     async fn process_repo(
         &self,
         repo: &RepoCandidate,
-        existing_embeddings: &[(String, Vec<f32>)],
+        existing_embeddings: &[(String, SkillEmbedding)],
         is_dry_run: bool,
     ) -> Result<Option<MinedSkill>, SkillError> {
         // Generate skill from repo.
@@ -417,21 +418,22 @@ impl SkillMiner {
     pub async fn is_novel(
         &self,
         candidate: &GeneratedSkill,
-        existing_embeddings: &[(String, Vec<f32>)],
+        existing_embeddings: &[(String, SkillEmbedding)],
     ) -> Result<(bool, f32), SkillError> {
         if existing_embeddings.is_empty() {
             return Ok((true, 0.0));
         }
 
-        let candidate_emb = self
-            .embed_provider
-            .embed(&candidate.meta.description)
-            .await
-            .map_err(|e| SkillError::Other(format!("embed failed: {e}")))?;
+        let candidate_emb = SkillEmbedding::from_raw(
+            self.embed_provider
+                .embed(&candidate.meta.description)
+                .await
+                .map_err(|e| SkillError::Other(format!("embed failed: {e}")))?,
+        );
 
         let max_sim = existing_embeddings
             .iter()
-            .map(|(_, emb)| cosine_similarity(&candidate_emb, emb))
+            .map(|(_, emb)| cosine_similarity(candidate_emb.as_ref(), emb.as_ref()))
             .fold(0.0_f32, f32::max);
 
         Ok((max_sim < self.config.dedup_threshold, max_sim))
@@ -539,15 +541,15 @@ mod tests {
         // Directly invoke the dedup logic that is_novel implements, bypassing LLM calls.
         fn is_novel_direct(
             &self,
-            candidate_emb: &[f32],
-            existing: &[(String, Vec<f32>)],
+            candidate_emb: &SkillEmbedding,
+            existing: &[(String, SkillEmbedding)],
         ) -> (bool, f32) {
             if existing.is_empty() {
                 return (true, 0.0);
             }
             let max_sim = existing
                 .iter()
-                .map(|(_, emb)| cosine_similarity(candidate_emb, emb))
+                .map(|(_, emb)| cosine_similarity(candidate_emb.as_ref(), emb.as_ref()))
                 .fold(0.0_f32, f32::max);
             (max_sim < self.threshold, max_sim)
         }
@@ -560,8 +562,12 @@ mod tests {
             embed_vec: vec![1.0, 0.0, 0.0],
             threshold: 0.85,
         };
-        let existing = vec![("existing".to_string(), vec![1.0, 0.0, 0.0])];
-        let (novel, sim) = helper.is_novel_direct(&helper.embed_vec, &existing);
+        let candidate = SkillEmbedding::from_raw(helper.embed_vec.clone());
+        let existing = vec![(
+            "existing".to_string(),
+            SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]),
+        )];
+        let (novel, sim) = helper.is_novel_direct(&candidate, &existing);
         assert!(!novel, "identical vectors should not be novel");
         assert!(
             (sim - 1.0_f32).abs() < 1e-5,
@@ -576,8 +582,12 @@ mod tests {
             embed_vec: vec![1.0, 0.0, 0.0],
             threshold: 0.85,
         };
-        let existing = vec![("other".to_string(), vec![0.0, 1.0, 0.0])];
-        let (novel, sim) = helper.is_novel_direct(&helper.embed_vec, &existing);
+        let candidate = SkillEmbedding::from_raw(helper.embed_vec.clone());
+        let existing = vec![(
+            "other".to_string(),
+            SkillEmbedding::from_raw(vec![0.0, 1.0, 0.0]),
+        )];
+        let (novel, sim) = helper.is_novel_direct(&candidate, &existing);
         assert!(novel, "orthogonal vectors should be novel, sim={sim}");
         assert!(sim < 0.85);
     }

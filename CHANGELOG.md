@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-skills`: skill embedding vectors are now typed as `SkillEmbedding(Vec<f32>)` instead
+  of raw `Vec<f32>`. The newtype carries its dimension and requires explicit construction via
+  `SkillEmbedding::new(vec, expected_dim)` (validated) or `SkillEmbedding::from_raw(vec)`
+  (trusted provider boundary). All call sites in `SkillMatcher`, `CategoryMatcher`, and
+  `SkillMiner` — including test helpers — have been migrated. `EmbeddingDimMismatch` error
+  variant added to `SkillError` for future runtime validation (closes #3804).
+
 ### Fixed
 
 - `zeph-db`: add 8 missing PostgreSQL migration files to reach parity with SQLite schema

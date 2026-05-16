@@ -67,6 +67,19 @@ pub enum SkillError {
     #[error("skill generation timed out after {0}ms")]
     Timeout(u64),
 
+    /// Embedding vector length does not match the expected model dimension.
+    ///
+    /// Raised by [`crate::embedding::SkillEmbedding::new`] when the provided vector length
+    /// differs from `expected_dim`. Prevents silent zero-similarity results caused by
+    /// mismatched dimensions in `cosine_similarity`.
+    #[error("embedding dimension mismatch: expected {expected}, got {actual}")]
+    EmbeddingDimMismatch {
+        /// Dimension that was expected.
+        expected: usize,
+        /// Dimension of the provided vector.
+        actual: usize,
+    },
+
     /// Catch-all for errors that do not fit the above categories.
     #[error("{0}")]
     Other(String),

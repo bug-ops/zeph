@@ -51,6 +51,7 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::embedding::SkillEmbedding;
 use crate::error::SkillError;
 use crate::loader::SkillMeta;
 use futures::stream::{self, StreamExt};
@@ -168,7 +169,7 @@ struct CategoryMatcher {
     /// Only categories with ≥ 2 embedded skills are stored here.
     categories: HashMap<String, Vec<usize>>,
     /// Centroid embedding per category.
-    centroids: HashMap<String, Vec<f32>>,
+    centroids: HashMap<String, SkillEmbedding>,
     /// Embedding positions for uncategorized skills or singleton-category skills.
     uncategorized: Vec<usize>,
 }
@@ -176,7 +177,7 @@ struct CategoryMatcher {
 impl CategoryMatcher {
     /// Build from completed embeddings. `skills` is the original skill slice passed to
     /// `SkillMatcher::new`; `embeddings` is the successful subset.
-    fn build(skills: &[&SkillMeta], embeddings: &[(usize, Vec<f32>)]) -> Self {
+    fn build(skills: &[&SkillMeta], embeddings: &[(usize, SkillEmbedding)]) -> Self {
         // Group embedding positions by category.
         let mut by_category: HashMap<String, Vec<usize>> = HashMap::new();
         let mut uncategorized: Vec<usize> = Vec::new();
@@ -199,12 +200,12 @@ impl CategoryMatcher {
         }
 
         // Compute centroids for multi-skill categories.
-        let mut centroids: HashMap<String, Vec<f32>> = HashMap::new();
+        let mut centroids: HashMap<String, SkillEmbedding> = HashMap::new();
         for (cat, positions) in &categories {
-            let dim = embeddings[positions[0]].1.len();
+            let dim = embeddings[positions[0]].1.dim();
             let mut centroid = vec![0.0f32; dim];
             for &pos in positions {
-                for (c, v) in centroid.iter_mut().zip(embeddings[pos].1.iter()) {
+                for (c, v) in centroid.iter_mut().zip(embeddings[pos].1.as_ref()) {
                     *c += v;
                 }
             }
@@ -213,7 +214,7 @@ impl CategoryMatcher {
             for c in &mut centroid {
                 *c /= n;
             }
-            centroids.insert(cat.clone(), centroid);
+            centroids.insert(cat.clone(), SkillEmbedding::from_raw(centroid));
         }
 
         Self {
@@ -235,7 +236,12 @@ impl CategoryMatcher {
         let mut cat_scores: Vec<(&str, f32)> = self
             .centroids
             .iter()
-            .map(|(cat, centroid)| (cat.as_str(), cosine_similarity(query_vec, centroid)))
+            .map(|(cat, centroid)| {
+                (
+                    cat.as_str(),
+                    cosine_similarity(query_vec, centroid.as_ref()),
+                )
+            })
             .collect();
         cat_scores
             .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -252,7 +258,7 @@ impl CategoryMatcher {
 
 #[derive(Debug, Clone)]
 pub struct SkillMatcher {
-    embeddings: Vec<(usize, Vec<f32>)>,
+    embeddings: Vec<(usize, SkillEmbedding)>,
     /// Populated when at least 2 multi-skill categories exist.
     category_matcher: Option<CategoryMatcher>,
 }
@@ -293,7 +299,7 @@ impl SkillMatcher {
 
         for (i, name, result) in raw {
             match result {
-                Ok(vec) => embeddings.push((i, vec)),
+                Ok(vec) => embeddings.push((i, SkillEmbedding::from_raw(vec))),
                 Err(Some(zeph_llm::LlmError::EmbedUnsupported { provider })) => {
                     unsupported_provider = Some(provider);
                     unsupported_count += 1;
@@ -337,7 +343,7 @@ impl SkillMatcher {
         self.embeddings
             .iter()
             .find(|(idx, _)| *idx == skill_index)
-            .map(|(_, v)| v.as_slice())
+            .map(|(_, v)| v.as_ref())
     }
 
     /// Match a user query against stored skill embeddings, returning the top-K scored matches
@@ -389,7 +395,7 @@ impl SkillMatcher {
                 .iter()
                 .map(|&pos| ScoredMatch {
                     index: self.embeddings[pos].0,
-                    score: cosine_similarity(&query_vec, &self.embeddings[pos].1),
+                    score: cosine_similarity(&query_vec, self.embeddings[pos].1.as_ref()),
                 })
                 .collect(),
             None => self
@@ -397,7 +403,7 @@ impl SkillMatcher {
                 .iter()
                 .map(|(idx, emb)| ScoredMatch {
                     index: *idx,
-                    score: cosine_similarity(&query_vec, emb),
+                    score: cosine_similarity(&query_vec, emb.as_ref()),
                 })
                 .collect(),
         };
@@ -436,7 +442,8 @@ impl SkillMatcher {
         let mut pairs = Vec::new();
         for i in 0..self.embeddings.len() {
             for j in (i + 1)..self.embeddings.len() {
-                let sim = cosine_similarity(&self.embeddings[i].1, &self.embeddings[j].1);
+                let sim =
+                    cosine_similarity(self.embeddings[i].1.as_ref(), self.embeddings[j].1.as_ref());
                 if sim >= threshold {
                     pairs.push(ConfusabilityPair {
                         skill_a: skills[self.embeddings[i].0].name.clone(),
@@ -898,7 +905,7 @@ mod tests {
     #[test]
     fn matcher_backend_in_memory_is_not_qdrant() {
         let matcher = SkillMatcher {
-            embeddings: vec![(0, vec![1.0, 0.0])],
+            embeddings: vec![(0, SkillEmbedding::from_raw(vec![1.0, 0.0]))],
             category_matcher: None,
         };
         let backend = SkillMatcherBackend::InMemory(matcher);
@@ -935,7 +942,7 @@ mod tests {
     #[test]
     fn matcher_debug() {
         let matcher = SkillMatcher {
-            embeddings: vec![(0, vec![1.0])],
+            embeddings: vec![(0, SkillEmbedding::from_raw(vec![1.0]))],
             category_matcher: None,
         };
         let dbg = format!("{matcher:?}");
@@ -1142,7 +1149,10 @@ mod tests {
     #[test]
     fn confusability_report_empty_when_threshold_high() {
         let matcher = SkillMatcher {
-            embeddings: vec![(0, vec![1.0, 0.0]), (1, vec![0.0, 1.0])],
+            embeddings: vec![
+                (0, SkillEmbedding::from_raw(vec![1.0, 0.0])),
+                (1, SkillEmbedding::from_raw(vec![0.0, 1.0])),
+            ],
             category_matcher: None,
         };
         let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
@@ -1156,7 +1166,10 @@ mod tests {
     fn confusability_report_finds_similar_pair() {
         let v = vec![1.0_f32, 0.0, 0.0];
         let matcher = SkillMatcher {
-            embeddings: vec![(0, v.clone()), (1, v)],
+            embeddings: vec![
+                (0, SkillEmbedding::from_raw(v.clone())),
+                (1, SkillEmbedding::from_raw(v)),
+            ],
             category_matcher: None,
         };
         let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
@@ -1170,7 +1183,7 @@ mod tests {
     fn confusability_report_tracks_excluded_skills() {
         // embeddings only contains index 0; index 1 has no embedding.
         let matcher = SkillMatcher {
-            embeddings: vec![(0, vec![1.0, 0.0])],
+            embeddings: vec![(0, SkillEmbedding::from_raw(vec![1.0, 0.0]))],
             category_matcher: None,
         };
         let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
