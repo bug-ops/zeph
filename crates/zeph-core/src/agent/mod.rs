@@ -3049,7 +3049,11 @@ impl<C: Channel> Agent<C> {
             None
         } else {
             let resolved = self.resolve_background_provider(
-                &config.memory.store_routing.routing_classifier_provider,
+                config
+                    .memory
+                    .store_routing
+                    .routing_classifier_provider
+                    .as_str(),
             );
             Some(std::sync::Arc::new(resolved))
         };

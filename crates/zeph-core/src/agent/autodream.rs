@@ -106,7 +106,7 @@ impl<C: Channel> super::Agent<C> {
             .as_ref()
             .map(|tx| tx.send("Consolidating memories…".into()));
 
-        let provider = self.resolve_consolidation_provider(&cfg.consolidation_provider);
+        let provider = self.resolve_consolidation_provider(cfg.consolidation_provider.as_str());
 
         let store = memory.sqlite().clone();
         let consolidation_cfg = zeph_memory::ConsolidationConfig {

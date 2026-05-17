@@ -203,7 +203,11 @@ fn apply_routing_signals(router: RouterProvider, config: &Config) -> RouterProvi
 /// Look up a provider entry from the pool by name (exact match on `effective_name()`) or type.
 ///
 /// Used by quarantine, guardrail, judge, and experiment eval model resolution.
-pub fn create_named_provider(name: &str, config: &Config) -> Result<AnyProvider, BootstrapError> {
+pub fn create_named_provider(
+    name: impl AsRef<str>,
+    config: &Config,
+) -> Result<AnyProvider, BootstrapError> {
+    let name = name.as_ref();
     let entry = config
         .llm
         .providers
@@ -443,10 +447,10 @@ fn build_triage_provider(
         .first()
         .map(zeph_core::config::ProviderEntry::effective_name)
         .unwrap_or_default();
-    let triage_prov_name = cr
-        .triage_provider
-        .as_deref()
-        .unwrap_or(default_triage_name.as_str());
+    let triage_prov_name = cr.triage_provider.as_ref().map_or_else(
+        || default_triage_name.as_str(),
+        zeph_common::ProviderName::as_str,
+    );
     let triage_provider = create_named_provider(triage_prov_name, config).map_err(|e| {
         BootstrapError::Provider(format!(
             "triage_provider '{triage_prov_name}' not found in [[llm.providers]]: {e}"

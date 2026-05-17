@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 
 // ── LLM provider config types (moved from zeph-llm) ─────────────────────────
@@ -86,125 +84,7 @@ pub enum GeminiThinkingLevel {
     High,
 }
 
-/// Newtype wrapper for a provider name referencing an entry in `[[llm.providers]]`.
-///
-/// Using a dedicated type instead of bare `String` makes provider cross-references
-/// explicit in the type system and enables validation at config load time.
-///
-/// # Note
-///
-/// `zeph-common` now defines a canonical `ProviderName(Arc<str>)` newtype. This
-/// config-local type uses `String` and exists for backward compat within `zeph-config`.
-///
-/// TODO(critic): migrate to `zeph_common::ProviderName` once `zeph-config` → `zeph-common`
-/// dependency inversion (A-1) lands.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ProviderName(String);
-
-impl ProviderName {
-    /// Create a new `ProviderName` from any string-like value.
-    ///
-    /// An empty string is a sentinel meaning "use the primary provider" and is the
-    /// default value. Check [`is_empty`](Self::is_empty) before using in routing.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zeph_config::providers::ProviderName;
-    ///
-    /// let name = ProviderName::new("fast");
-    /// assert_eq!(name.as_str(), "fast");
-    /// ```
-    #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
-    }
-
-    /// Return `true` when this is the empty sentinel (use primary provider).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zeph_config::providers::ProviderName;
-    ///
-    /// assert!(ProviderName::default().is_empty());
-    /// assert!(!ProviderName::new("fast").is_empty());
-    /// ```
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Return the inner string slice.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zeph_config::providers::ProviderName;
-    ///
-    /// let name = ProviderName::new("quality");
-    /// assert_eq!(name.as_str(), "quality");
-    /// ```
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Return `Some(&str)` when non-empty, `None` for the empty sentinel.
-    ///
-    /// Bridges `Option<ProviderName>` fields and the legacy
-    /// `.as_deref().filter(|s| !s.is_empty())` pattern.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zeph_config::providers::ProviderName;
-    ///
-    /// assert_eq!(ProviderName::default().as_non_empty(), None);
-    /// assert_eq!(ProviderName::new("fast").as_non_empty(), Some("fast"));
-    /// ```
-    #[must_use]
-    pub fn as_non_empty(&self) -> Option<&str> {
-        if self.0.is_empty() {
-            None
-        } else {
-            Some(&self.0)
-        }
-    }
-}
-
-impl fmt::Display for ProviderName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl AsRef<str> for ProviderName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::ops::Deref for ProviderName {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl PartialEq<str> for ProviderName {
-    fn eq(&self, other: &str) -> bool {
-        self.0 == other
-    }
-}
-
-impl PartialEq<&str> for ProviderName {
-    fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
-    }
-}
+pub use zeph_common::ProviderName;
 
 fn default_response_cache_ttl_secs() -> u64 {
     3600
@@ -304,25 +184,25 @@ pub fn default_stt_language() -> String {
 
 /// Returns the default embedding model name used by `[llm] embedding_model`.
 #[must_use]
-pub fn get_default_embedding_model() -> String {
+pub(crate) fn get_default_embedding_model() -> String {
     default_embedding_model()
 }
 
 /// Returns the default response cache TTL in seconds.
 #[must_use]
-pub fn get_default_response_cache_ttl_secs() -> u64 {
+pub(crate) fn get_default_response_cache_ttl_secs() -> u64 {
     default_response_cache_ttl_secs()
 }
 
 /// Returns the default EMA alpha for the router latency estimator.
 #[must_use]
-pub fn get_default_router_ema_alpha() -> f64 {
+pub(crate) fn get_default_router_ema_alpha() -> f64 {
     default_router_ema_alpha()
 }
 
 /// Returns the default router reorder interval (turns between provider re-ranking).
 #[must_use]
-pub fn get_default_router_reorder_interval() -> u64 {
+pub(crate) fn get_default_router_reorder_interval() -> u64 {
     default_router_reorder_interval()
 }
 
@@ -2207,7 +2087,10 @@ expert = "opus"
         let cr = cfg
             .complexity_routing
             .expect("complexity_routing must be present");
-        assert_eq!(cr.triage_provider.as_deref(), Some("fast"));
+        assert_eq!(
+            cr.triage_provider.as_ref().map(ProviderName::as_str),
+            Some("fast")
+        );
         assert!(!cr.bypass_single_provider);
         assert_eq!(cr.triage_timeout_secs, 10);
         assert_eq!(cr.max_triage_tokens, 100);
@@ -2538,13 +2421,6 @@ alpha = 1.5
         let n = ProviderName::default();
         assert!(n.is_empty());
         assert_eq!(n.as_str(), "");
-    }
-
-    #[test]
-    fn provider_name_deref_to_str() {
-        let n = ProviderName::new("quality");
-        let s: &str = &n;
-        assert_eq!(s, "quality");
     }
 
     #[test]

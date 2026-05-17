@@ -876,7 +876,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         Some("model") => {
             config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Model;
             if let Some(ref provider) = state.feedback_provider {
-                config.skills.learning.feedback_provider = ProviderName::new(provider);
+                config.skills.learning.feedback_provider = ProviderName::new(provider.as_str());
             }
         }
         _ => {}
@@ -1003,7 +1003,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     config.tools.retry.max_attempts = state.retry_max_attempts;
     config.tools.retry.parameter_reformat_provider =
-        zeph_config::ProviderName::new(&state.retry_parameter_reformat_provider);
+        zeph_config::ProviderName::new(state.retry_parameter_reformat_provider.as_str());
 
     config.logging.file.clone_from(&state.log_file);
     config.logging.level.clone_from(&state.log_level);
@@ -1052,7 +1052,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     if state.mcp_discovery_strategy == "embedding" {
         config.mcp.tool_discovery.top_k = state.mcp_discovery_top_k;
         config.mcp.tool_discovery.embedding_provider =
-            ProviderName::new(&state.mcp_discovery_provider);
+            ProviderName::new(state.mcp_discovery_provider.as_str());
     }
 
     if state.experiments_enabled {
@@ -2272,7 +2272,13 @@ mod tests {
         };
         let config = build_config(&state);
         assert_eq!(
-            config.memory.compression.probe.probe_provider.as_deref(),
+            config
+                .memory
+                .compression
+                .probe
+                .probe_provider
+                .as_ref()
+                .map(|p| p.as_str()),
             Some("fast")
         );
     }

@@ -241,6 +241,40 @@ impl ProviderName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Return `true` when this is the empty sentinel (use the primary provider).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ProviderName;
+    ///
+    /// assert!(ProviderName::default().is_empty());
+    /// assert!(!ProviderName::new("fast").is_empty());
+    /// ```
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Return `Some(&str)` when non-empty, `None` for the empty sentinel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ProviderName;
+    ///
+    /// assert_eq!(ProviderName::default().as_non_empty(), None);
+    /// assert_eq!(ProviderName::new("fast").as_non_empty(), Some("fast"));
+    /// ```
+    #[must_use]
+    pub fn as_non_empty(&self) -> Option<&str> {
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(&self.0)
+        }
+    }
 }
 
 impl Default for ProviderName {

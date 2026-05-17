@@ -1571,7 +1571,7 @@ impl AppBuilder {
         }
         let classify_provider = if cfg.topology_provider.is_empty() {
             match create_named_provider(
-                &self.config.llm.providers.first()?.effective_name(),
+                self.config.llm.providers.first()?.effective_name(),
                 &self.config,
             ) {
                 Ok(p) => p,
