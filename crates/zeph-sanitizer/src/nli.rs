@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn parse_score_malformed_returns_zero() {
-        assert_eq!(NliSanitizer::parse_score("garbage response"), 0.0);
+        assert!((NliSanitizer::parse_score("garbage response") - 0.0_f32).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -382,8 +382,7 @@ mod tests {
         // Set open_at to now — circuit should be open.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         s.circuit_open_at.store(now, Ordering::Relaxed);
         assert!(s.circuit_is_open());
     }
@@ -505,7 +504,7 @@ mod tests {
             }
         }
 
-        /// Provider that sleeps longer than timeout_ms.
+        /// Provider that sleeps longer than `timeout_ms`.
         #[derive(Debug)]
         struct SlowProvider;
 
@@ -542,7 +541,7 @@ mod tests {
             }
         }
 
-        /// Fail-open: when the provider returns Err, check() returns Some with flagged=false.
+        /// Fail-open: when the provider returns `Err`, `check()` returns Some with flagged=false.
         #[tokio::test]
         async fn provider_error_fails_open() {
             let cfg = NliConfig {
@@ -558,7 +557,7 @@ mod tests {
                 !v.flagged,
                 "fail-open: provider error must not flag content"
             );
-            assert_eq!(v.injection_score, 0.0);
+            assert!(v.injection_score.abs() < f32::EPSILON);
         }
 
         /// Successful check with safe content: flagged=false.
@@ -593,7 +592,7 @@ mod tests {
             assert!(v.injection_score >= 0.75);
         }
 
-        /// Timeout fails open and increments consecutive_timeouts.
+        /// Timeout fails open and increments `consecutive_timeouts`.
         #[tokio::test]
         async fn timeout_fails_open_and_increments_counter() {
             let cfg = NliConfig {
@@ -613,7 +612,7 @@ mod tests {
             );
         }
 
-        /// After CIRCUIT_BREAKER_THRESHOLD consecutive timeouts via actual check() calls,
+        /// After `CIRCUIT_BREAKER_THRESHOLD` consecutive timeouts via actual `check()` calls,
         /// the circuit opens and subsequent calls return None (skip LLM).
         #[tokio::test]
         async fn circuit_breaker_opens_after_threshold_via_check() {

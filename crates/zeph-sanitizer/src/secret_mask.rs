@@ -425,7 +425,7 @@ mod tests {
             );
         }
         // Check all 20 are pairwise distinct (extremely unlikely to collide with rand u64).
-        let unique: std::collections::HashSet<&str> = nonces.iter().map(|s| s.as_str()).collect();
+        let unique: std::collections::HashSet<&str> = nonces.iter().map(String::as_str).collect();
         assert_eq!(
             unique.len(),
             nonces.len(),
