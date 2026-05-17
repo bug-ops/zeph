@@ -155,7 +155,7 @@ pub async fn link_memory_notes(
         return stats;
     }
 
-    let valid = embed_work_items(&work_items, &provider).await;
+    let valid = embed_work_items(&work_items, &provider, cfg).await;
 
     let search_limit = cfg.top_k + 1; // +1 to account for self-match
     let search_results = search_similar_for_items(&valid, &embedding_store, search_limit).await;
@@ -214,11 +214,12 @@ async fn collect_note_link_work_items(
 async fn embed_work_items(
     work_items: &[EntityWorkItem],
     provider: &AnyProvider,
+    cfg: &NoteLinkingConfig,
 ) -> Vec<(usize, Vec<f32>)> {
     use futures::future;
 
     let Ok(embed_results) = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(cfg.timeout_secs),
         future::join_all(work_items.iter().map(|w| provider.embed(&w.embed_text))),
     )
     .await
@@ -864,7 +865,7 @@ mod tests {
 
     use zeph_llm::any::AnyProvider;
 
-    use super::extract_and_store;
+    use super::{NoteLinkingConfig, extract_and_store};
     use crate::embedding_store::EmbeddingStore;
     use crate::graph::GraphStore;
     use crate::in_memory_store::InMemoryVectorStore;
@@ -1154,7 +1155,11 @@ mod tests {
             self_point_id: None,
         }];
 
-        let result = super::embed_work_items(&work_items, &provider).await;
+        let cfg = NoteLinkingConfig {
+            timeout_secs: 30,
+            ..NoteLinkingConfig::default()
+        };
+        let result = super::embed_work_items(&work_items, &provider, &cfg).await;
         assert!(
             result.is_empty(),
             "embed_work_items must return empty Vec on 30 s timeout (fail-open)"

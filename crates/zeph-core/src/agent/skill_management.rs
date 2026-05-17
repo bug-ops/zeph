@@ -56,7 +56,7 @@ impl<C: Channel> Agent<C> {
                         .sqlite()
                         .upsert_skill_trust(
                             &installed.name,
-                            "quarantined",
+                            zeph_common::SkillTrustLevel::Quarantined,
                             source_kind,
                             source_url,
                             source_path.as_deref(),

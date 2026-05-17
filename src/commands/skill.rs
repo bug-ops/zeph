@@ -56,7 +56,7 @@ pub(crate) async fn handle_skill_command(
             store
                 .upsert_skill_trust(
                     &result.name,
-                    "quarantined",
+                    zeph_common::SkillTrustLevel::Quarantined,
                     source_kind,
                     source_url,
                     source_path.as_deref(),
@@ -112,7 +112,10 @@ pub(crate) async fn handle_skill_command(
                     .await
                     .ok()
                     .flatten()
-                    .map_or_else(|| "no trust record".to_owned(), |r| r.trust_level);
+                    .map_or_else(
+                        || "no trust record".to_owned(),
+                        |r| r.trust_level.to_string(),
+                    );
                 if skill.requires_secrets.is_empty() {
                     println!("  {} — {} [{}]", skill.name, skill.description, trust);
                 } else {
@@ -147,7 +150,7 @@ pub(crate) async fn handle_skill_command(
                     Some(_) => {
                         println!("{name}: MISMATCH (hash changed, setting to quarantined)");
                         store
-                            .set_skill_trust_level(&name, "quarantined")
+                            .set_skill_trust_level(&name, zeph_common::SkillTrustLevel::Quarantined)
                             .await
                             .map_err(|e| anyhow::anyhow!("trust update failed: {e}"))?;
                         store
@@ -178,7 +181,10 @@ pub(crate) async fn handle_skill_command(
                         Some(false) => {
                             println!("{}: MISMATCH (setting to quarantined)", r.name);
                             store
-                                .set_skill_trust_level(&r.name, "quarantined")
+                                .set_skill_trust_level(
+                                    &r.name,
+                                    zeph_common::SkillTrustLevel::Quarantined,
+                                )
                                 .await
                                 .map_err(|e| anyhow::anyhow!("trust update failed: {e}"))?;
                             store
@@ -193,18 +199,17 @@ pub(crate) async fn handle_skill_command(
         }
 
         SkillCommand::Trust { name, level } => {
-            let valid = matches!(
-                level.as_str(),
-                "trusted" | "verified" | "quarantined" | "blocked"
-            );
-            if !valid {
-                anyhow::bail!(
+            let trust_level = level.parse::<zeph_common::SkillTrustLevel>().map_err(|_| {
+                anyhow::anyhow!(
                     "invalid trust level: {level}. Use: trusted, verified, quarantined, blocked"
-                );
-            }
+                )
+            })?;
 
             // REV-003: re-verify hash before promoting to trusted/verified.
-            if matches!(level.as_str(), "trusted" | "verified") {
+            if matches!(
+                trust_level,
+                zeph_common::SkillTrustLevel::Trusted | zeph_common::SkillTrustLevel::Verified
+            ) {
                 let managed_dir = crate::bootstrap::managed_skills_dir();
                 let mgr = zeph_skills::manager::SkillManager::new(managed_dir.clone());
                 let name_clone = name.clone();
@@ -230,11 +235,11 @@ pub(crate) async fn handle_skill_command(
                 }
 
                 let updated = store
-                    .set_skill_trust_level(&name, &level)
+                    .set_skill_trust_level(&name, trust_level)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 if updated {
-                    println!("Trust level for \"{name}\" set to {level}.");
+                    println!("Trust level for \"{name}\" set to {trust_level}.");
                 } else {
                     anyhow::bail!("skill \"{name}\" not found in trust database");
                 }
@@ -243,11 +248,11 @@ pub(crate) async fn handle_skill_command(
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
                 let updated = store
-                    .set_skill_trust_level(&name, &level)
+                    .set_skill_trust_level(&name, trust_level)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 if updated {
-                    println!("Trust level for \"{name}\" set to {level}.");
+                    println!("Trust level for \"{name}\" set to {trust_level}.");
                 } else {
                     anyhow::bail!("skill \"{name}\" not found in trust database");
                 }
@@ -259,7 +264,7 @@ pub(crate) async fn handle_skill_command(
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             let updated = store
-                .set_skill_trust_level(&name, "blocked")
+                .set_skill_trust_level(&name, zeph_common::SkillTrustLevel::Blocked)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             if updated {
@@ -274,7 +279,7 @@ pub(crate) async fn handle_skill_command(
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
             let updated = store
-                .set_skill_trust_level(&name, "quarantined")
+                .set_skill_trust_level(&name, zeph_common::SkillTrustLevel::Quarantined)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             if updated {
@@ -285,8 +290,6 @@ pub(crate) async fn handle_skill_command(
         }
 
         SkillCommand::Invoke { name, args } => {
-            use std::str::FromStr;
-
             use zeph_common::SkillTrustLevel;
             use zeph_skills::prompt::{sanitize_skill_text, wrap_quarantined};
 
@@ -302,7 +305,7 @@ pub(crate) async fn handle_skill_command(
                     .load_skill_trust(&name)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?
-                    .and_then(|r| SkillTrustLevel::from_str(&r.trust_level).ok())
+                    .map(|r| r.trust_level)
                     .unwrap_or_default()
             };
 

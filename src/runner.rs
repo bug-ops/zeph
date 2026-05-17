@@ -1109,41 +1109,31 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 .await
                 .ok()
                 .flatten();
-            let trust_level_str = if let Some(ref row) = existing {
+            let trust_level = if let Some(ref row) = existing {
                 if row.blake3_hash != *current_hash {
-                    trust_cfg.hash_mismatch_level.to_string()
+                    trust_cfg.hash_mismatch_level
                 } else if row.source_kind != source_kind {
                     // source_kind changed (e.g., hub → bundled on upgrade).
                     // Never override an explicit operator block. For active trust levels,
                     // adopt the source-kind initial level when it grants more trust.
-                    let stored = row
-                        .trust_level
-                        .parse::<zeph_common::SkillTrustLevel>()
-                        .unwrap_or_else(|_| {
-                            tracing::warn!(
-                                skill = %meta.name,
-                                raw = %row.trust_level,
-                                "unrecognised trust_level in DB, treating as quarantined"
-                            );
-                            zeph_common::SkillTrustLevel::Quarantined
-                        });
+                    let stored = row.trust_level;
                     if !stored.is_active() || stored.severity() <= initial_level.severity() {
-                        row.trust_level.clone()
+                        stored
                     } else {
-                        initial_level.to_string()
+                        *initial_level
                     }
                 } else {
-                    row.trust_level.clone()
+                    row.trust_level
                 }
             } else {
-                initial_level.to_string()
+                *initial_level
             };
             let source_path = meta.skill_dir.to_str();
             if let Err(e) = memory
                 .sqlite()
                 .upsert_skill_trust(
                     &meta.name,
-                    &trust_level_str,
+                    trust_level,
                     source_kind,
                     None,
                     source_path,

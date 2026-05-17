@@ -879,7 +879,7 @@ async fn setup_skill_with_outcomes(
     skill_name: &str,
     successes: u32,
     failures: u32,
-    initial_trust: &str,
+    initial_trust: zeph_common::SkillTrustLevel,
 ) {
     use zeph_memory::store::SourceKind;
     memory
@@ -921,7 +921,14 @@ async fn check_trust_transition_auto_promotes_to_trusted() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     // 50 successes, 0 failures → posterior > 0.95 threshold
-    setup_skill_with_outcomes(&memory, "test-skill", 50, 0, "local").await;
+    setup_skill_with_outcomes(
+        &memory,
+        "test-skill",
+        50,
+        0,
+        zeph_common::SkillTrustLevel::Quarantined,
+    )
+    .await;
 
     let mut config = learning_config_enabled();
     config.auto_promote_min_uses = 50;
@@ -941,7 +948,8 @@ async fn check_trust_transition_auto_promotes_to_trusted() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        row.trust_level, "trusted",
+        row.trust_level,
+        zeph_common::SkillTrustLevel::Trusted,
         "should auto-promote to trusted, got: {}",
         row.trust_level
     );
@@ -958,7 +966,14 @@ async fn check_trust_transition_auto_demotes_to_quarantined() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     // 5 successes, 30 failures → posterior < 0.40 threshold, starting as "trusted"
-    setup_skill_with_outcomes(&memory, "test-skill", 5, 30, "trusted").await;
+    setup_skill_with_outcomes(
+        &memory,
+        "test-skill",
+        5,
+        30,
+        zeph_common::SkillTrustLevel::Trusted,
+    )
+    .await;
 
     let mut config = learning_config_enabled();
     config.auto_demote_min_uses = 30;
@@ -978,7 +993,8 @@ async fn check_trust_transition_auto_demotes_to_quarantined() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        row.trust_level, "quarantined",
+        row.trust_level,
+        zeph_common::SkillTrustLevel::Quarantined,
         "should auto-demote to quarantined, got: {}",
         row.trust_level
     );
@@ -995,7 +1011,14 @@ async fn check_trust_transition_does_not_promote_blocked() {
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
     // High success rate but "blocked" — should NOT be promoted
-    setup_skill_with_outcomes(&memory, "test-skill", 100, 0, "blocked").await;
+    setup_skill_with_outcomes(
+        &memory,
+        "test-skill",
+        100,
+        0,
+        zeph_common::SkillTrustLevel::Blocked,
+    )
+    .await;
 
     let mut config = learning_config_enabled();
     config.auto_promote_min_uses = 50;
@@ -1015,7 +1038,8 @@ async fn check_trust_transition_does_not_promote_blocked() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        row.trust_level, "blocked",
+        row.trust_level,
+        zeph_common::SkillTrustLevel::Blocked,
         "blocked skill should never be auto-promoted, got: {}",
         row.trust_level
     );

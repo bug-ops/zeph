@@ -80,6 +80,17 @@ impl SkillTrustLevel {
         }
     }
 
+    /// Returns the string representation used for database storage.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::Verified => "verified",
+            Self::Quarantined => "quarantined",
+            Self::Blocked => "blocked",
+        }
+    }
+
     /// Returns `true` if the level is not `Blocked`.
     ///
     /// # Examples

@@ -42,22 +42,13 @@ impl<C: Channel> Agent<C> {
             }
             Some(name) => {
                 if let Some(level_str) = args.get(1).copied() {
-                    let level = match level_str {
-                        "trusted" => SkillTrustLevel::Trusted,
-                        "verified" => SkillTrustLevel::Verified,
-                        "quarantined" => SkillTrustLevel::Quarantined,
-                        "blocked" => SkillTrustLevel::Blocked,
-                        _ => {
-                            return Ok(
-                                "Invalid trust level. Use: trusted, verified, quarantined, blocked"
-                                    .to_owned(),
-                            );
-                        }
+                    let Ok(level) = level_str.parse::<SkillTrustLevel>() else {
+                        return Ok(
+                            "Invalid trust level. Use: trusted, verified, quarantined, blocked"
+                                .to_owned(),
+                        );
                     };
-                    let updated = memory
-                        .sqlite()
-                        .set_skill_trust_level(name, &level.to_string())
-                        .await?;
+                    let updated = memory.sqlite().set_skill_trust_level(name, level).await?;
                     if updated {
                         Ok(format!("Trust level for \"{name}\" set to {level}."))
                     } else {
@@ -90,7 +81,7 @@ impl<C: Channel> Agent<C> {
         };
         let updated = memory
             .sqlite()
-            .set_skill_trust_level(name, "blocked")
+            .set_skill_trust_level(name, SkillTrustLevel::Blocked)
             .await?;
         if updated {
             Ok(format!("Skill \"{name}\" blocked."))
@@ -112,7 +103,7 @@ impl<C: Channel> Agent<C> {
         };
         let updated = memory
             .sqlite()
-            .set_skill_trust_level(name, "quarantined")
+            .set_skill_trust_level(name, SkillTrustLevel::Quarantined)
             .await?;
         if updated {
             Ok(format!("Skill \"{name}\" unblocked (set to quarantined)."))
@@ -162,22 +153,15 @@ impl<C: Channel> Agent<C> {
             return HashMap::new();
         };
         rows.into_iter()
-            .filter_map(|r| {
-                let trust_level = match r.trust_level.as_str() {
-                    "trusted" => SkillTrustLevel::Trusted,
-                    "verified" => SkillTrustLevel::Verified,
-                    "quarantined" => SkillTrustLevel::Quarantined,
-                    "blocked" => SkillTrustLevel::Blocked,
-                    _ => return None,
-                };
-                Some((
+            .map(|r| {
+                (
                     r.skill_name,
                     SkillTrustSnapshot {
-                        trust_level,
+                        trust_level: r.trust_level,
                         requires_trust_check: r.requires_trust_check,
                         blake3_hash: r.blake3_hash,
                     },
-                ))
+                )
             })
             .collect()
     }

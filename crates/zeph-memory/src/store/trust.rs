@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use serde::{Deserialize, Serialize};
+use zeph_common::SkillTrustLevel;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -53,7 +54,7 @@ impl std::str::FromStr for SourceKind {
 #[derive(Debug, Clone)]
 pub struct SkillTrustRow {
     pub skill_name: String,
-    pub trust_level: String,
+    pub trust_level: SkillTrustLevel,
     pub source_kind: SourceKind,
     pub source_url: Option<String>,
     pub source_path: Option<String>,
@@ -81,9 +82,10 @@ type TrustTuple = (
 
 fn row_from_tuple(t: TrustTuple) -> SkillTrustRow {
     let source_kind = t.2.parse::<SourceKind>().unwrap_or(SourceKind::Local);
+    let trust_level = t.1.parse::<SkillTrustLevel>().unwrap_or_default();
     SkillTrustRow {
         skill_name: t.0,
-        trust_level: t.1,
+        trust_level,
         source_kind,
         source_url: t.3,
         source_path: t.4,
@@ -103,7 +105,7 @@ impl SqliteStore {
     pub async fn upsert_skill_trust(
         &self,
         skill_name: &str,
-        trust_level: &str,
+        trust_level: SkillTrustLevel,
         source_kind: SourceKind,
         source_url: Option<&str>,
         source_path: Option<&str>,
@@ -134,7 +136,7 @@ impl SqliteStore {
     pub async fn upsert_skill_trust_with_git_hash(
         &self,
         skill_name: &str,
-        trust_level: &str,
+        trust_level: SkillTrustLevel,
         source_kind: SourceKind,
         source_url: Option<&str>,
         source_path: Option<&str>,
@@ -155,7 +157,7 @@ impl SqliteStore {
              updated_at = CURRENT_TIMESTAMP"),
         )
         .bind(skill_name)
-        .bind(trust_level)
+        .bind(trust_level.as_str())
         .bind(source_kind.as_str())
         .bind(source_url)
         .bind(source_path)
@@ -210,12 +212,12 @@ impl SqliteStore {
     pub async fn set_skill_trust_level(
         &self,
         skill_name: &str,
-        trust_level: &str,
+        trust_level: SkillTrustLevel,
     ) -> Result<bool, MemoryError> {
         let result = zeph_db::query(
             sql!("UPDATE skill_trust SET trust_level = ?, updated_at = CURRENT_TIMESTAMP WHERE skill_name = ?"),
         )
-        .bind(trust_level)
+        .bind(trust_level.as_str())
         .bind(skill_name)
         .execute(&self.pool)
         .await?;
@@ -293,13 +295,20 @@ mod tests {
         let store = test_store().await;
 
         store
-            .upsert_skill_trust("git", "trusted", SourceKind::Local, None, None, "abc123")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "abc123",
+            )
             .await
             .unwrap();
 
         let row = store.load_skill_trust("git").await.unwrap().unwrap();
         assert_eq!(row.skill_name, "git");
-        assert_eq!(row.trust_level, "trusted");
+        assert_eq!(row.trust_level, SkillTrustLevel::Trusted);
         assert_eq!(row.source_kind, SourceKind::Local);
         assert_eq!(row.blake3_hash, "abc123");
     }
@@ -309,16 +318,30 @@ mod tests {
         let store = test_store().await;
 
         store
-            .upsert_skill_trust("git", "quarantined", SourceKind::Local, None, None, "hash1")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
             .await
             .unwrap();
         store
-            .upsert_skill_trust("git", "trusted", SourceKind::Local, None, None, "hash2")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "hash2",
+            )
             .await
             .unwrap();
 
         let row = store.load_skill_trust("git").await.unwrap().unwrap();
-        assert_eq!(row.trust_level, "trusted");
+        assert_eq!(row.trust_level, SkillTrustLevel::Trusted);
         assert_eq!(row.blake3_hash, "hash2");
     }
 
@@ -334,13 +357,20 @@ mod tests {
         let store = test_store().await;
 
         store
-            .upsert_skill_trust("alpha", "trusted", SourceKind::Local, None, None, "h1")
+            .upsert_skill_trust(
+                "alpha",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "h1",
+            )
             .await
             .unwrap();
         store
             .upsert_skill_trust(
                 "beta",
-                "quarantined",
+                SkillTrustLevel::Quarantined,
                 SourceKind::Hub,
                 Some("https://hub.example.com"),
                 None,
@@ -360,22 +390,32 @@ mod tests {
         let store = test_store().await;
 
         store
-            .upsert_skill_trust("git", "quarantined", SourceKind::Local, None, None, "h1")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                None,
+                "h1",
+            )
             .await
             .unwrap();
 
-        let updated = store.set_skill_trust_level("git", "blocked").await.unwrap();
+        let updated = store
+            .set_skill_trust_level("git", SkillTrustLevel::Blocked)
+            .await
+            .unwrap();
         assert!(updated);
 
         let row = store.load_skill_trust("git").await.unwrap().unwrap();
-        assert_eq!(row.trust_level, "blocked");
+        assert_eq!(row.trust_level, SkillTrustLevel::Blocked);
     }
 
     #[tokio::test]
     async fn set_trust_level_nonexistent() {
         let store = test_store().await;
         let updated = store
-            .set_skill_trust_level("nope", "blocked")
+            .set_skill_trust_level("nope", SkillTrustLevel::Blocked)
             .await
             .unwrap();
         assert!(!updated);
@@ -386,7 +426,14 @@ mod tests {
         let store = test_store().await;
 
         store
-            .upsert_skill_trust("git", "trusted", SourceKind::Local, None, None, "h1")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "h1",
+            )
             .await
             .unwrap();
 
@@ -409,7 +456,14 @@ mod tests {
         let store = test_store().await;
 
         store
-            .upsert_skill_trust("git", "verified", SourceKind::Local, None, None, "old_hash")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Verified,
+                SourceKind::Local,
+                None,
+                None,
+                "old_hash",
+            )
             .await
             .unwrap();
 
@@ -427,7 +481,7 @@ mod tests {
         store
             .upsert_skill_trust(
                 "remote-skill",
-                "quarantined",
+                SkillTrustLevel::Quarantined,
                 SourceKind::Hub,
                 Some("https://hub.example.com/skill"),
                 None,
@@ -455,7 +509,7 @@ mod tests {
         store
             .upsert_skill_trust(
                 "file-skill",
-                "quarantined",
+                SkillTrustLevel::Quarantined,
                 SourceKind::File,
                 None,
                 Some("/tmp/skill.tar.gz"),
@@ -549,7 +603,7 @@ mod tests {
         store
             .upsert_skill_trust_with_git_hash(
                 "versioned-skill",
-                "trusted",
+                SkillTrustLevel::Trusted,
                 SourceKind::Hub,
                 Some("https://hub.example.com/skill"),
                 None,
@@ -573,7 +627,14 @@ mod tests {
         let store = test_store().await;
 
         store
-            .upsert_skill_trust("git", "trusted", SourceKind::Local, None, None, "hash1")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                None,
+                "hash1",
+            )
             .await
             .unwrap();
 
@@ -592,7 +653,14 @@ mod tests {
         ];
         for (name, kind) in &variants {
             store
-                .upsert_skill_trust(name, "trusted", kind.clone(), None, None, "hash")
+                .upsert_skill_trust(
+                    name,
+                    SkillTrustLevel::Trusted,
+                    kind.clone(),
+                    None,
+                    None,
+                    "hash",
+                )
                 .await
                 .unwrap();
             let row = store.load_skill_trust(name).await.unwrap().unwrap();
@@ -640,7 +708,7 @@ mod tests {
         store
             .upsert_skill_trust(
                 "web-search",
-                "trusted",
+                SkillTrustLevel::Trusted,
                 SourceKind::Bundled,
                 None,
                 None,
@@ -653,7 +721,7 @@ mod tests {
         store
             .upsert_skill_trust(
                 "web-search",
-                "trusted",
+                SkillTrustLevel::Trusted,
                 SourceKind::Bundled,
                 None,
                 None,
@@ -664,7 +732,7 @@ mod tests {
 
         let row = store.load_skill_trust("web-search").await.unwrap().unwrap();
         assert_eq!(row.source_kind, SourceKind::Bundled);
-        assert_eq!(row.trust_level, "trusted");
+        assert_eq!(row.trust_level, SkillTrustLevel::Trusted);
     }
 
     // Scenario 3: Migration from hub/quarantined to bundled/trusted when .bundled marker appears.
@@ -675,23 +743,37 @@ mod tests {
 
         // Initial state: existing install has hub/quarantined.
         store
-            .upsert_skill_trust("git", "quarantined", SourceKind::Hub, None, None, "hash1")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Hub,
+                None,
+                None,
+                "hash1",
+            )
             .await
             .unwrap();
 
         let row = store.load_skill_trust("git").await.unwrap().unwrap();
         assert_eq!(row.source_kind, SourceKind::Hub);
-        assert_eq!(row.trust_level, "quarantined");
+        assert_eq!(row.trust_level, SkillTrustLevel::Quarantined);
 
         // After runner detects .bundled marker: upsert with Bundled/trusted (initial_level from bundled_level).
         store
-            .upsert_skill_trust("git", "trusted", SourceKind::Bundled, None, None, "hash1")
+            .upsert_skill_trust(
+                "git",
+                SkillTrustLevel::Trusted,
+                SourceKind::Bundled,
+                None,
+                None,
+                "hash1",
+            )
             .await
             .unwrap();
 
         let row = store.load_skill_trust("git").await.unwrap().unwrap();
         assert_eq!(row.source_kind, SourceKind::Bundled);
-        assert_eq!(row.trust_level, "trusted");
+        assert_eq!(row.trust_level, SkillTrustLevel::Trusted);
     }
 
     // Regression test for C1: operator-blocked bundled skills must not be unblocked by migration.
@@ -704,7 +786,7 @@ mod tests {
         store
             .upsert_skill_trust(
                 "web-search",
-                "blocked",
+                SkillTrustLevel::Blocked,
                 SourceKind::Hub,
                 None,
                 None,
@@ -717,7 +799,7 @@ mod tests {
         store
             .upsert_skill_trust(
                 "web-search",
-                "blocked",
+                SkillTrustLevel::Blocked,
                 SourceKind::Bundled,
                 None,
                 None,
@@ -729,21 +811,22 @@ mod tests {
         let row = store.load_skill_trust("web-search").await.unwrap().unwrap();
         assert_eq!(row.source_kind, SourceKind::Bundled);
         assert_eq!(
-            row.trust_level, "blocked",
+            row.trust_level,
+            SkillTrustLevel::Blocked,
             "operator block must survive source_kind migration"
         );
     }
 
-    // Scenario 4: Configurable bundled_level (e.g., "supervised") is applied during classification.
-    // This tests that the store persists any trust level string correctly for non-default configs.
+    // Scenario 4: Configurable bundled_level (e.g., "quarantined" for strict configs) is applied during classification.
+    // This tests that the store persists any trust level correctly for non-default configs.
     #[tokio::test]
-    async fn bundled_skill_with_configured_supervised_level() {
+    async fn bundled_skill_with_configured_quarantined_level() {
         let store = test_store().await;
 
         store
             .upsert_skill_trust(
                 "git",
-                "supervised",
+                SkillTrustLevel::Quarantined,
                 SourceKind::Bundled,
                 None,
                 None,
@@ -754,6 +837,6 @@ mod tests {
 
         let row = store.load_skill_trust("git").await.unwrap().unwrap();
         assert_eq!(row.source_kind, SourceKind::Bundled);
-        assert_eq!(row.trust_level, "supervised");
+        assert_eq!(row.trust_level, SkillTrustLevel::Quarantined);
     }
 }

@@ -3865,6 +3865,7 @@ mod self_learning {
 mod trust_commands {
     use std::sync::{Arc, Mutex};
 
+    use zeph_common::SkillTrustLevel;
     use zeph_core::agent::Agent;
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
@@ -3931,7 +3932,7 @@ mod trust_commands {
             .sqlite()
             .upsert_skill_trust(
                 "my-skill",
-                "trusted",
+                SkillTrustLevel::Trusted,
                 SourceKind::Local,
                 None,
                 None,
@@ -3969,7 +3970,7 @@ mod trust_commands {
             .sqlite()
             .upsert_skill_trust(
                 "my-skill",
-                "trusted",
+                SkillTrustLevel::Trusted,
                 SourceKind::Local,
                 None,
                 None,
@@ -4007,7 +4008,7 @@ mod trust_commands {
             .sqlite()
             .upsert_skill_trust(
                 "my-skill",
-                "trusted",
+                SkillTrustLevel::Trusted,
                 SourceKind::Local,
                 None,
                 None,

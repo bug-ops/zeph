@@ -118,7 +118,9 @@ async fn try_auto_promote(
         .flatten()
         .map(|r| r.trust_level);
     // Skip promotion only if explicitly blocked; promote even if no record exists.
-    if trust_level.as_deref() != Some("trusted") && trust_level.as_deref() != Some("blocked") {
+    if trust_level != Some(zeph_common::SkillTrustLevel::Trusted)
+        && trust_level != Some(zeph_common::SkillTrustLevel::Blocked)
+    {
         tracing::info!(
             skill = skill_name,
             posterior = format!("{posterior:.3}"),
@@ -131,7 +133,7 @@ async fn try_auto_promote(
                 .sqlite()
                 .upsert_skill_trust(
                     skill_name,
-                    "trusted",
+                    zeph_common::SkillTrustLevel::Trusted,
                     zeph_memory::store::SourceKind::Local,
                     None,
                     None,
@@ -141,7 +143,7 @@ async fn try_auto_promote(
         } else {
             let _ = memory
                 .sqlite()
-                .set_skill_trust_level(skill_name, "trusted")
+                .set_skill_trust_level(skill_name, zeph_common::SkillTrustLevel::Trusted)
                 .await;
         }
     }
@@ -157,7 +159,9 @@ async fn try_auto_demote(
     let Ok(Some(trust_row)) = memory.sqlite().load_skill_trust(skill_name).await else {
         return;
     };
-    if trust_row.trust_level == "trusted" || trust_row.trust_level == "verified" {
+    if trust_row.trust_level == zeph_common::SkillTrustLevel::Trusted
+        || trust_row.trust_level == zeph_common::SkillTrustLevel::Verified
+    {
         tracing::warn!(
             skill = skill_name,
             posterior = format!("{posterior:.3}"),
@@ -166,7 +170,7 @@ async fn try_auto_demote(
         );
         let _ = memory
             .sqlite()
-            .set_skill_trust_level(skill_name, "quarantined")
+            .set_skill_trust_level(skill_name, zeph_common::SkillTrustLevel::Quarantined)
             .await;
     }
 }

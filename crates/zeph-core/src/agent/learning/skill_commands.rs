@@ -233,7 +233,10 @@ impl<C: Channel> Agent<C> {
                 if let Some(ref memory) = memory {
                     let _ = memory
                         .sqlite()
-                        .set_skill_trust_level(&generated.name, "quarantined")
+                        .set_skill_trust_level(
+                            &generated.name,
+                            zeph_common::SkillTrustLevel::Quarantined,
+                        )
                         .await;
                 }
                 let _ = write!(

@@ -37,7 +37,10 @@ impl<C: Channel> Agent<C> {
         let Ok(Some(row)) = memory.sqlite().load_skill_trust(skill_name).await else {
             return true; // no trust record = local skill = trusted
         };
-        matches!(row.trust_level.as_str(), "trusted" | "verified")
+        matches!(
+            row.trust_level,
+            zeph_common::SkillTrustLevel::Trusted | zeph_common::SkillTrustLevel::Verified
+        )
     }
 
     pub(crate) async fn record_skill_outcomes(

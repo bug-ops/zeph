@@ -186,12 +186,15 @@ impl ToolExecutor for SkillInvokeExecutor {
         }]
     }
 
+    #[tracing::instrument(name = "core.skill_invoke.execute", skip_all, fields(skill = tracing::field::Empty))]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != "invoke_skill" {
             return Ok(None);
         }
         let params: InvokeSkillParams = deserialize_params(&call.params)?;
         let skill_name: String = params.skill_name.chars().take(128).collect();
+
+        tracing::Span::current().record("skill", skill_name.as_str());
 
         let snapshot = self.resolve_snapshot(&skill_name);
         let trust = snapshot.as_ref().map(|s| s.trust_level).unwrap_or_default();
