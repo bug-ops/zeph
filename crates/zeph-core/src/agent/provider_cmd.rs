@@ -12,6 +12,8 @@ use super::agent_supervisor::TaskClass;
 use crate::channel::Channel;
 use zeph_llm::provider::LlmProvider as _;
 
+const INSTRUCTIONS_RELOAD_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl<C: Channel> Agent<C> {
     /// Restore the last-used provider for the active channel from `SQLite` (#3308).
     ///
@@ -146,13 +148,17 @@ impl<C: Channel> Agent<C> {
         let provider_kinds = reload_state.provider_kinds.clone();
         let explicit_files = reload_state.explicit_files.clone();
         let auto_detect = reload_state.auto_detect;
-        let new_blocks = crate::instructions::load_instructions_async(
+        let load_fut = crate::instructions::load_instructions_async(
             base_dir,
             provider_kinds,
             explicit_files,
             auto_detect,
-        )
-        .await;
+        );
+        let Ok(new_blocks) = tokio::time::timeout(INSTRUCTIONS_RELOAD_TIMEOUT, load_fut).await
+        else {
+            tracing::warn!("instructions reload timed out, keeping previous instructions");
+            return;
+        };
         tracing::info!(
             count = new_blocks.len(),
             provider = ?entry.provider_type,

@@ -176,14 +176,23 @@ impl SkillMiner {
     /// Pre-compute embeddings for existing skill descriptions.
     async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(String, SkillEmbedding)> {
         let mut embeddings = Vec::with_capacity(skills.len());
+        let timeout = Duration::from_millis(self.config.generation_timeout_ms);
         for skill in skills {
-            match self.embed_provider.embed(&skill.description).await {
-                Ok(emb) => embeddings.push((skill.name.clone(), SkillEmbedding::from_raw(emb))),
-                Err(e) => {
+            let embed_fut = self.embed_provider.embed(&skill.description);
+            match tokio::time::timeout(timeout, embed_fut).await {
+                Ok(Ok(emb)) => embeddings.push((skill.name.clone(), SkillEmbedding::from_raw(emb))),
+                Ok(Err(e)) => {
                     tracing::warn!(
                         skill = %skill.name,
                         error = %e,
                         "failed to embed existing skill for dedup"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        skill = %skill.name,
+                        timeout_ms = self.config.generation_timeout_ms,
+                        "embed timed out, skipping skill for dedup"
                     );
                 }
             }
@@ -703,5 +712,41 @@ mod tests {
         };
         // rpm=0 → max(1) → delay = 60_000ms (1 per minute)
         assert_eq!(miner.request_delay(), Duration::from_mins(1));
+    }
+
+    #[tokio::test]
+    async fn embed_existing_skips_skills_on_timeout() {
+        // MockProvider delays embed by 200ms; generation_timeout_ms=1ms forces a timeout.
+        // embed_existing must return an empty vec (all skills skipped) without panicking.
+        let slow_mock = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embed_delay(200),
+        );
+        let config = MiningConfig {
+            queries: vec![],
+            max_repos_per_query: 20,
+            dedup_threshold: 0.85,
+            output_dir: PathBuf::from("/tmp"),
+            rate_limit_rpm: 25,
+            dry_run: false,
+            generation_timeout_ms: 1,
+        };
+        let miner = SkillMiner {
+            generator: SkillGenerator::new(
+                zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+                PathBuf::from("/tmp"),
+            ),
+            embed_provider: slow_mock,
+            github_token: Secret::new(String::new()),
+            config,
+            http: reqwest::Client::new(),
+        };
+        use crate::loader::load_skill_meta_from_str;
+        let content = "---\nname: slow-skill\ndescription: Slow skill.\n---\n\n## Usage\n\nSlow.\n";
+        let (meta, _) = load_skill_meta_from_str(content).unwrap();
+        let result = miner.embed_existing(&[meta]).await;
+        assert!(
+            result.is_empty(),
+            "timed-out embeds must be skipped; got {result:?}"
+        );
     }
 }

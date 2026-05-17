@@ -971,7 +971,7 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             tick_interval_secs: default_scheduler_tick_interval(),
             max_tasks: default_scheduler_max_tasks(),
             tasks: Vec::new(),
@@ -1114,6 +1114,15 @@ mod tests {
             ..GatewayConfig::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn scheduler_config_default_is_disabled() {
+        let cfg = SchedulerConfig::default();
+        assert!(
+            !cfg.enabled,
+            "scheduler must be opt-in (enabled = false by default)"
+        );
     }
 }
 
