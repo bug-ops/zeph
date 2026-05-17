@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Tests for PreToolUse hook fail_closed blocking and hook_block_cap enforcement (#3995).
+//! Tests for `PreToolUse` hook `fail_closed` blocking and `hook_block_cap` enforcement (#3995).
 
 use zeph_config::{HookAction, HookDef, HookMatcher};
-use zeph_llm::provider::{Message, Role, ToolUseRequest};
+use zeph_llm::provider::{Message, MessagePart, Role, ToolUseRequest};
 
 use crate::agent::Agent;
 use crate::agent::agent_tests::{
@@ -60,8 +60,8 @@ fn make_agent_with_pre_hook(hook: HookDef, cap: usize) -> Agent<MockChannel> {
     agent
 }
 
-/// Fix 1: fail_closed PreToolUse hook that errors must block tool execution
-/// and increment hook_block_count.
+/// Fix 1: `fail_closed` `PreToolUse` hook that errors must block tool execution
+/// and increment `hook_block_count`.
 #[tokio::test]
 async fn fail_closed_hook_blocks_tool_and_increments_counter() {
     let mut agent = make_agent_with_pre_hook(fail_closed_hook(), 8);
@@ -79,7 +79,6 @@ async fn fail_closed_hook_blocks_tool_and_increments_counter() {
     );
 
     // The ToolResult must contain "[blocked]" indicating the tool was NOT executed.
-    use zeph_llm::provider::MessagePart;
     let blocked = agent.msg.messages.iter().any(|m| {
         m.parts.iter().any(|p| {
             if let MessagePart::ToolResult { content, .. } = p {
@@ -95,7 +94,7 @@ async fn fail_closed_hook_blocks_tool_and_increments_counter() {
     );
 }
 
-/// Regression guard: fail_open hook must NOT block the tool despite erroring.
+/// Regression guard: `fail_open` hook must NOT block the tool despite erroring.
 #[tokio::test]
 async fn fail_open_hook_does_not_block_tool() {
     let mut agent = make_agent_with_pre_hook(fail_open_hook(), 8);
@@ -113,7 +112,7 @@ async fn fail_open_hook_does_not_block_tool() {
     );
 }
 
-/// Fix 2: when hook_block_count reaches hook_block_cap, the turn must end
+/// Fix 2: when `hook_block_count` reaches `hook_block_cap`, the turn must end
 /// and a warning must be sent to the channel.
 #[tokio::test]
 async fn hook_block_cap_ends_turn_and_sends_warning() {
@@ -136,7 +135,7 @@ async fn hook_block_cap_ends_turn_and_sends_warning() {
     );
 }
 
-/// hook_block_cap = 0 means no cap — turn should NOT end due to hook blocks alone.
+/// `hook_block_cap = 0` means no cap — turn should NOT end due to hook blocks alone.
 #[tokio::test]
 async fn hook_block_cap_zero_means_no_cap() {
     let mut agent = make_agent_with_pre_hook(fail_closed_hook(), 0);
