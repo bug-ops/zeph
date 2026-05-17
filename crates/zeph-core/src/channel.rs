@@ -305,6 +305,20 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Send the projected context token count to the channel after context assembly.
+    ///
+    /// The value is an approximation; non-TUI channels may ignore it. No-op by default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_context_estimate(
+        &mut self,
+        _tokens: usize,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Send token usage after an LLM call. No-op by default.
     ///
     /// # Errors

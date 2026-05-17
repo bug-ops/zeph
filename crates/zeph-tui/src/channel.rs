@@ -202,6 +202,14 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    async fn send_context_estimate(&mut self, tokens: usize) -> Result<(), ChannelError> {
+        // Non-critical: informational estimate shown in the input block title.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::ContextEstimate(tokens));
+        Ok(())
+    }
+
     async fn send_diff(
         &mut self,
         diff: zeph_core::DiffData,

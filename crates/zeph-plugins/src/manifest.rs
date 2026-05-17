@@ -60,6 +60,13 @@ pub struct PluginMeta {
     /// Defaults to `false` — updates are opt-in to avoid unintended breaking changes.
     #[serde(default)]
     pub auto_update: bool,
+    /// Names of other plugins this plugin depends on.
+    ///
+    /// The plugin manager ensures all listed plugins are enabled before enabling this one.
+    /// Removing or disabling a plugin that other enabled plugins depend on is refused with
+    /// a clear error listing the dependents.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
     // zeph-version field intentionally omitted: version-gating is deferred to a future release
     // when the semver crate is added as a workspace dependency.
 }

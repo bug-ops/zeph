@@ -14,6 +14,12 @@ use zeph_skills::scanner::scan_skill_body;
 use crate::PluginError;
 use crate::manifest::{PluginManifest, PluginMcpServer};
 
+/// Maximum number of entries allowed in `plugin.dependencies`.
+///
+/// Prevents a malicious manifest from triggering a fan-out `DoS` via recursive `enable()` calls
+/// across an unbounded dependency graph.
+const MAX_DEPENDENCIES: usize = 64;
+
 /// The tighten-only config overlay safelist. Any key outside this list causes
 /// [`PluginError::UnsafeOverlay`] at install time.
 const CONFIG_SAFELIST: &[&str] = &[
@@ -233,6 +239,17 @@ impl PluginManager {
 
         // Validate plugin name.
         validate_plugin_name(&manifest.plugin.name)?;
+
+        // Validate dependency list: enforce count limit and name format.
+        if manifest.plugin.dependencies.len() > MAX_DEPENDENCIES {
+            return Err(PluginError::InvalidManifest(format!(
+                "plugin declares {} dependencies; maximum allowed is {MAX_DEPENDENCIES}",
+                manifest.plugin.dependencies.len()
+            )));
+        }
+        for dep in &manifest.plugin.dependencies {
+            validate_plugin_name(dep)?;
+        }
 
         // Validate each [[skills]] entry: path must stay within source root and SKILL.md must exist.
         for entry in &manifest.skills {
@@ -474,9 +491,20 @@ impl PluginManager {
 
     /// Remove an installed plugin by name.
     ///
+    /// Refuses to remove the plugin if any enabled plugin depends on it. The caller receives a
+    /// [`PluginError::DependencyRequired`] error with a formatted hint listing the dependents.
+    ///
+    /// # Note on TOCTOU
+    ///
+    /// The dependent check and directory removal are not atomic. In a multi-process environment a
+    /// concurrent enable of a dependent could race with this remove. This is acceptable for a
+    /// single-user CLI tool where plugin operations are manual.
+    ///
     /// # Errors
     ///
-    /// Returns [`PluginError::NotFound`] if the plugin is not installed.
+    /// - [`PluginError::NotFound`] — plugin is not installed.
+    /// - [`PluginError::DependencyRequired`] — at least one enabled plugin depends on this one.
+    /// - [`PluginError::Io`] — the plugin directory cannot be removed.
     pub fn remove(&self, name: &str) -> Result<RemoveResult, PluginError> {
         validate_plugin_name(name)?;
         let plugin_dir = self.plugins_dir.join(name);
@@ -485,6 +513,8 @@ impl PluginManager {
                 name: name.to_owned(),
             });
         }
+
+        self.guard_no_dependents(name)?;
 
         let manifest_path = plugin_dir.join(".plugin.toml");
         let (removed_skills, removed_mcp_ids) = if manifest_path.exists() {
@@ -587,6 +617,10 @@ impl PluginManager {
         let mut dirs = Vec::new();
         let plugins = self.list_installed()?;
         for plugin in &plugins {
+            // Skip disabled plugins — their skills must not be loaded.
+            if plugin.path.join(".disabled").exists() {
+                continue;
+            }
             let manifest_path = plugin.path.join(".plugin.toml");
             if let Ok(bytes) = std::fs::read(&manifest_path)
                 && let Ok(text) = String::from_utf8(bytes)
@@ -810,6 +844,182 @@ impl PluginManager {
             .map_err(|e| format!("failed to read body: {e}"))?;
 
         Ok(raw.to_vec())
+    }
+
+    /// Enable an installed plugin by removing its `.disabled` marker file.
+    ///
+    /// Before enabling the target, all plugins listed in `plugin.dependencies` are enabled
+    /// recursively (depth-first). The method detects dependency cycles and returns
+    /// [`PluginError::DependencyCycle`] before touching the filesystem.
+    ///
+    /// A plugin with no `.disabled` marker is considered already enabled; this method is a no-op
+    /// for such plugins (idempotent).
+    ///
+    /// # Errors
+    ///
+    /// - [`PluginError::NotFound`] — plugin is not installed.
+    /// - [`PluginError::MissingDependency`] — a declared dependency is not installed.
+    /// - [`PluginError::DependencyCycle`] — the dependency graph contains a cycle.
+    /// - [`PluginError::Io`] — the `.disabled` marker cannot be removed.
+    pub fn enable(&self, name: &str) -> Result<(), PluginError> {
+        validate_plugin_name(name)?;
+        let mut visiting: Vec<String> = Vec::new();
+        self.enable_recursive(name, &mut visiting)
+    }
+
+    /// Recursive implementation of [`Self::enable`]; `visiting` tracks the DFS path for cycle
+    /// detection.
+    fn enable_recursive(&self, name: &str, visiting: &mut Vec<String>) -> Result<(), PluginError> {
+        if visiting.iter().any(|v| v == name) {
+            // Build a readable cycle description: A → B → A
+            let mut path = visiting.clone();
+            path.push(name.to_owned());
+            return Err(PluginError::DependencyCycle {
+                name: name.to_owned(),
+                cycle: path.join(" → "),
+            });
+        }
+
+        let plugin_dir = self.plugins_dir.join(name);
+        if !plugin_dir.exists() {
+            return Err(PluginError::NotFound {
+                name: name.to_owned(),
+            });
+        }
+
+        // Already enabled — nothing to do.
+        let disabled_marker = plugin_dir.join(".disabled");
+        if !disabled_marker.exists() {
+            return Ok(());
+        }
+
+        // Load manifest to discover dependencies.
+        let manifest = load_installed_manifest(&plugin_dir)?;
+
+        visiting.push(name.to_owned());
+        for dep in &manifest.plugin.dependencies {
+            let dep_dir = self.plugins_dir.join(dep);
+            if !dep_dir.exists() {
+                visiting.pop();
+                return Err(PluginError::MissingDependency {
+                    name: name.to_owned(),
+                    dependency: dep.clone(),
+                });
+            }
+            self.enable_recursive(dep, visiting)?;
+        }
+        visiting.pop();
+
+        // Remove the `.disabled` marker to enable this plugin.
+        std::fs::remove_file(&disabled_marker).map_err(|e| PluginError::Io {
+            path: disabled_marker.clone(),
+            source: e,
+        })?;
+
+        tracing::info!(plugin = %name, "plugin enabled");
+        Ok(())
+    }
+
+    /// Disable an installed plugin by creating a `.disabled` marker file.
+    ///
+    /// Refuses to disable the plugin if any *enabled* plugin depends on it. The caller receives
+    /// a [`PluginError::DependencyRequired`] error with a formatted hint listing the dependents.
+    ///
+    /// Disabling an already-disabled plugin is a no-op (idempotent).
+    ///
+    /// # Note on TOCTOU
+    ///
+    /// The dependent check and marker creation are not atomic. In a multi-process
+    /// environment a concurrent enable of a dependent could race with this disable. This is
+    /// acceptable for a single-user CLI tool where plugin operations are manual.
+    ///
+    /// # Errors
+    ///
+    /// - [`PluginError::NotFound`] — plugin is not installed.
+    /// - [`PluginError::DependencyRequired`] — at least one enabled plugin depends on this one.
+    /// - [`PluginError::Io`] — the `.disabled` marker cannot be written.
+    pub fn disable(&self, name: &str) -> Result<(), PluginError> {
+        validate_plugin_name(name)?;
+        let plugin_dir = self.plugins_dir.join(name);
+        if !plugin_dir.exists() {
+            return Err(PluginError::NotFound {
+                name: name.to_owned(),
+            });
+        }
+
+        self.guard_no_dependents(name)?;
+
+        // Already disabled — nothing to do.
+        let disabled_marker = plugin_dir.join(".disabled");
+        if disabled_marker.exists() {
+            return Ok(());
+        }
+
+        std::fs::write(&disabled_marker, b"").map_err(|e| PluginError::Io {
+            path: disabled_marker.clone(),
+            source: e,
+        })?;
+
+        tracing::info!(plugin = %name, "plugin disabled");
+        Ok(())
+    }
+
+    /// Returns the names of all **enabled** plugins that declare `name` as a dependency.
+    ///
+    /// Scans every installed plugin's manifest; a plugin is considered enabled if it has no
+    /// `.disabled` marker file in its directory. The check is O(N) in the number of installed
+    /// plugins and performs one filesystem read per plugin. For typical plugin counts (<50) this
+    /// is negligible.
+    fn dependents_of(&self, name: &str) -> Vec<String> {
+        if !self.plugins_dir.exists() {
+            return Vec::new();
+        }
+
+        let Ok(entries) = std::fs::read_dir(&self.plugins_dir) else {
+            return Vec::new();
+        };
+
+        let mut dependents = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // Skip disabled plugins.
+            if path.join(".disabled").exists() {
+                continue;
+            }
+            let Ok(manifest) = load_installed_manifest(&path) else {
+                continue;
+            };
+            if manifest.plugin.name == name {
+                continue;
+            }
+            if manifest.plugin.dependencies.iter().any(|d| d == name) {
+                dependents.push(manifest.plugin.name);
+            }
+        }
+        dependents.sort();
+        dependents
+    }
+
+    /// Check that no enabled plugin depends on `name`; return [`PluginError::DependencyRequired`]
+    /// if any do.
+    fn guard_no_dependents(&self, name: &str) -> Result<(), PluginError> {
+        let dependents = self.dependents_of(name);
+        if dependents.is_empty() {
+            return Ok(());
+        }
+        let hints = dependents
+            .iter()
+            .map(|d| format!("  zeph plugin disable {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(PluginError::DependencyRequired {
+            name: name.to_owned(),
+            dependents: dependents.join(", "),
+            hints,
+        })
     }
 
     /// Like [`Self::check_skill_conflicts`] but skips the plugin currently being updated.
@@ -1384,6 +1594,22 @@ fn extract_archive_safe(bytes: &[u8], dest: &Path, url: &str) -> Result<(), Plug
 
 /// Walk the plugin tree and delete every `.bundled` marker file.
 ///
+/// Read the installed manifest (`.plugin.toml`) from `plugin_dir`.
+///
+/// # Errors
+///
+/// Returns [`PluginError`] if the file cannot be read or parsed.
+fn load_installed_manifest(plugin_dir: &Path) -> Result<PluginManifest, PluginError> {
+    let manifest_path = plugin_dir.join(".plugin.toml");
+    let bytes = std::fs::read(&manifest_path).map_err(|e| PluginError::Io {
+        path: manifest_path.clone(),
+        source: e,
+    })?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| PluginError::InvalidManifest(".plugin.toml is not valid UTF-8".to_owned()))?;
+    toml::from_str(&text).map_err(|e| PluginError::InvalidManifest(format!("{e}")))
+}
+
 /// Plugin skills are third-party and must never be treated as bundled by the scanner.
 fn strip_bundled_markers(root: &Path) {
     for entry in WalkDir::new(root).into_iter().flatten() {
@@ -2903,5 +3129,342 @@ path = "skills/my-skill"
             .components()
             .all(|c| c != std::path::Component::ParentDir);
         assert!(safe_ok, "safe relative path must pass traversal check");
+    }
+
+    // --- dependency enforcement tests ---
+
+    fn install_plugin_with_deps(plugins_dir: &Path, managed_dir: &Path, name: &str, deps: &[&str]) {
+        // Use a canonicalized tmp dir so the path-prefix check in collect_skill_dirs works on
+        // macOS where /tmp is a symlink to /private/tmp.
+        let plugin_src_raw = tempfile::tempdir().unwrap();
+        let plugin_src = plugin_src_raw.path().canonicalize().unwrap();
+        let deps_toml = deps
+            .iter()
+            .map(|d| format!("\"{d}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let skill_name = format!("skill-{name}");
+        let manifest = format!(
+            "[plugin]\nname = \"{name}\"\nversion = \"0.1.0\"\ndependencies = [{deps_toml}]\n\n[[skills]]\npath = \"skills/{skill_name}\"\n"
+        );
+        write_plugin(&plugin_src, name, &manifest, &[(&skill_name, "test skill")]);
+        let mgr = PluginManager::new(
+            plugins_dir.to_path_buf(),
+            managed_dir.to_path_buf(),
+            vec![],
+            vec![],
+        );
+        mgr.add(plugin_src.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn dependencies_field_defaults_to_empty() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let installed = mgr.list_installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        // Manifest with no dependencies field must deserialize with empty Vec.
+        let manifest_path = plugins_dir.path().join("base").join(".plugin.toml");
+        let text = std::fs::read_to_string(manifest_path).unwrap();
+        let manifest: crate::manifest::PluginManifest = toml::from_str(&text).unwrap();
+        assert!(manifest.plugin.dependencies.is_empty());
+    }
+
+    #[test]
+    fn remove_refused_when_dependent_enabled() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "ext", &["base"]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let err = mgr.remove("base").unwrap_err();
+        assert!(
+            matches!(err, PluginError::DependencyRequired { ref name, .. } if name == "base"),
+            "expected DependencyRequired, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn remove_succeeds_after_dependent_removed() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "ext", &["base"]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        mgr.remove("ext").unwrap();
+        mgr.remove("base").unwrap();
+        assert!(mgr.list_installed().unwrap().is_empty());
+    }
+
+    #[test]
+    fn disable_refused_when_dependent_enabled() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "ext", &["base"]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let err = mgr.disable("base").unwrap_err();
+        assert!(
+            matches!(err, PluginError::DependencyRequired { ref name, .. } if name == "base"),
+            "expected DependencyRequired, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn disable_and_enable_roundtrip() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        mgr.disable("base").unwrap();
+        assert!(plugins_dir.path().join("base").join(".disabled").exists());
+        mgr.enable("base").unwrap();
+        assert!(!plugins_dir.path().join("base").join(".disabled").exists());
+    }
+
+    #[test]
+    fn disable_idempotent() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        mgr.disable("base").unwrap();
+        // Second disable must be a no-op, not an error.
+        mgr.disable("base").unwrap();
+    }
+
+    #[test]
+    fn enable_idempotent() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        // Plugin is already enabled — second enable is a no-op.
+        mgr.enable("base").unwrap();
+        mgr.enable("base").unwrap();
+    }
+
+    #[test]
+    fn enable_transitively_enables_dependencies() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "ext", &["base"]);
+        // Disable both.
+        std::fs::write(plugins_dir.path().join("base").join(".disabled"), b"").unwrap();
+        std::fs::write(plugins_dir.path().join("ext").join(".disabled"), b"").unwrap();
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        // Enabling ext must also enable base.
+        mgr.enable("ext").unwrap();
+        assert!(
+            !plugins_dir.path().join("base").join(".disabled").exists(),
+            "base must be enabled"
+        );
+        assert!(
+            !plugins_dir.path().join("ext").join(".disabled").exists(),
+            "ext must be enabled"
+        );
+    }
+
+    #[test]
+    fn enable_detects_dependency_cycle() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        // Install alpha → beta, beta → alpha (cycle).
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "alpha", &["beta"]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "beta", &["alpha"]);
+        // Disable both to force the enable path.
+        std::fs::write(plugins_dir.path().join("alpha").join(".disabled"), b"").unwrap();
+        std::fs::write(plugins_dir.path().join("beta").join(".disabled"), b"").unwrap();
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let err = mgr.enable("alpha").unwrap_err();
+        assert!(
+            matches!(err, PluginError::DependencyCycle { .. }),
+            "expected DependencyCycle, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn disable_ignored_by_dependents_of() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "ext", &["base"]);
+        // Disable ext — it should no longer block removing base.
+        std::fs::write(plugins_dir.path().join("ext").join(".disabled"), b"").unwrap();
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        // base has no enabled dependents now.
+        mgr.remove("base").unwrap();
+    }
+
+    #[test]
+    fn enable_returns_missing_dependency_when_dep_not_installed() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(
+            plugins_dir.path(),
+            managed_dir.path(),
+            "needs-ghost",
+            &["nonexistent"],
+        );
+        // Disable the plugin so enable() actually tries to traverse deps.
+        std::fs::write(
+            plugins_dir.path().join("needs-ghost").join(".disabled"),
+            b"",
+        )
+        .unwrap();
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let err = mgr.enable("needs-ghost").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PluginError::MissingDependency {
+                    ref dependency,
+                    ..
+                } if dependency == "nonexistent"
+            ),
+            "expected MissingDependency, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn add_rejects_too_many_dependencies() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        let deps: Vec<String> = (0..=64).map(|i| format!("dep-{i:02}")).collect();
+        let deps_toml = deps
+            .iter()
+            .map(|d| format!("\"{d}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let manifest = format!(
+            "[plugin]\nname = \"bloated\"\nversion = \"0.1.0\"\ndependencies = [{deps_toml}]\n"
+        );
+        let plugin_src = tempfile::tempdir().unwrap();
+        write_plugin(
+            plugin_src.path(),
+            "bloated",
+            &manifest,
+            &[("skill-a", "test")],
+        );
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let err = mgr.add(plugin_src.path().to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidManifest(_)),
+            "expected InvalidManifest for too many dependencies, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn add_rejects_invalid_dependency_name() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        let manifest =
+            "[plugin]\nname = \"myplugin\"\nversion = \"0.1.0\"\ndependencies = [\"../evil\"]\n";
+        let plugin_src = tempfile::tempdir().unwrap();
+        write_plugin(
+            plugin_src.path(),
+            "myplugin",
+            manifest,
+            &[("skill-a", "test")],
+        );
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let err = mgr.add(plugin_src.path().to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidName { .. }),
+            "expected InvalidName for malformed dep name, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn collect_skill_dirs_excludes_disabled_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize so the path-prefix check inside collect_skill_dirs works on macOS.
+        let real = tmp.path().canonicalize().unwrap();
+        let plugins_dir = real.join("plugins");
+        let managed_dir = real.join("managed");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        std::fs::create_dir_all(&managed_dir).unwrap();
+        install_plugin_with_deps(&plugins_dir, &managed_dir, "active", &[]);
+        install_plugin_with_deps(&plugins_dir, &managed_dir, "sleeping", &[]);
+        // Disable sleeping.
+        std::fs::write(plugins_dir.join("sleeping").join(".disabled"), b"").unwrap();
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
+        let dirs = mgr.collect_skill_dirs().unwrap();
+        // Only the active plugin's skill dirs should appear.
+        for dir in &dirs {
+            assert!(
+                !dir.to_string_lossy().contains("sleeping"),
+                "disabled plugin skill dir must not appear: {dir:?}"
+            );
+        }
+        assert!(!dirs.is_empty(), "active plugin skills must be present");
     }
 }

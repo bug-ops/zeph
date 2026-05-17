@@ -230,6 +230,12 @@ pub enum AgentEvent {
         /// `true` if Completed state, `false` if Failed/Canceled.
         success: bool,
     },
+    /// Current context token count estimate, updated after each context assembly.
+    ///
+    /// The value is an approximation based on character-level heuristics and may
+    /// diverge slightly from the actual token count sent to the LLM. Stale between
+    /// turns (the previous turn's estimate remains displayed until the next assembly).
+    ContextEstimate(usize),
 }
 
 /// Blocking event pump that forwards terminal events to the async [`AppEvent`] channel.

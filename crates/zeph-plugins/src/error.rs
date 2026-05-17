@@ -89,4 +89,33 @@ pub enum PluginError {
     /// HTTP download of a remote plugin archive failed.
     #[error("failed to download plugin from {url}: {reason}")]
     DownloadFailed { url: String, reason: String },
+
+    /// Attempted to remove or disable a plugin that other enabled plugins depend on.
+    #[error("Plugin '{name}' is required by: {dependents}. Disable them first:\n{hints}")]
+    DependencyRequired {
+        /// The plugin that was requested to be removed or disabled.
+        name: String,
+        /// Comma-separated list of dependent plugin names.
+        dependents: String,
+        /// Newline-separated disable hints, one per dependent.
+        hints: String,
+    },
+
+    /// A dependency cycle was detected while enabling a plugin.
+    #[error("dependency cycle detected while enabling plugin '{name}': {cycle}")]
+    DependencyCycle {
+        /// The plugin being enabled when the cycle was found.
+        name: String,
+        /// Human-readable description of the cycle path.
+        cycle: String,
+    },
+
+    /// A declared dependency plugin is not installed.
+    #[error("plugin '{name}' requires dependency '{dependency}' which is not installed")]
+    MissingDependency {
+        /// The plugin declaring the dependency.
+        name: String,
+        /// The missing dependency name.
+        dependency: String,
+    },
 }

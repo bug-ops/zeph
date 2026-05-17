@@ -1576,6 +1576,13 @@ impl<C: Channel> Agent<C> {
             ms = turn.metrics_snapshot().timings.prepare_context_ms,
             "turn timing: prepare_context done"
         );
+        // Emit projected token count so TUI can display it before the LLM call.
+        let _ = self
+            .channel
+            .send_context_estimate(
+                usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX),
+            )
+            .await;
 
         let image_parts = std::mem::take(&mut turn.input.image_parts);
         // Prepend any background completion blocks to the user text. All completions and the

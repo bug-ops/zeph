@@ -388,6 +388,8 @@ pub struct App {
     // GLOBAL — single shared agent queue counters (stays global per arch v2 §7)
     queued_count: usize,
     pending_count: usize,
+    /// Projected context token count from the last context assembly, or 0 if not yet known.
+    context_token_estimate: usize,
     editing_queued: bool,
     hyperlinks: Vec<HyperlinkSpan>,
     cancel_signal: Option<Arc<Notify>>,
@@ -458,6 +460,7 @@ impl App {
             agent_event_rx,
             queued_count: 0,
             pending_count: 0,
+            context_token_estimate: 0,
             editing_queued: false,
             hyperlinks: Vec::new(),
             cancel_signal: None,
@@ -1064,6 +1067,26 @@ impl App {
     #[must_use]
     pub fn queued_count(&self) -> usize {
         self.queued_count.max(self.pending_count)
+    }
+
+    /// Return the projected context token count from the last assembly, or 0 if not yet known.
+    ///
+    /// The value is approximate (character-level heuristic) and is updated once per agent turn.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let app = App::new(tx, rx);
+    /// assert_eq!(app.context_token_estimate(), 0);
+    /// ```
+    #[must_use]
+    pub fn context_token_estimate(&self) -> usize {
+        self.context_token_estimate
     }
 
     /// Return `true` when the user is currently editing a queued message.

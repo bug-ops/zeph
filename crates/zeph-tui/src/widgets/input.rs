@@ -21,9 +21,19 @@ pub fn render(
 ) {
     let theme = Theme::default();
 
-    let title = match app.input_mode() {
-        InputMode::Normal => " Press 'i' to type ",
-        InputMode::Insert => " Input (Esc to cancel) ",
+    let base_title = match app.input_mode() {
+        InputMode::Normal => " Press 'i' to type",
+        InputMode::Insert => " Input (Esc to cancel)",
+    };
+    let estimate = app.context_token_estimate();
+    let title_buf;
+    let title = if estimate > 0 {
+        let count_str = format_token_count(estimate);
+        title_buf = format!("{base_title} | {count_str} tokens ");
+        title_buf.as_str()
+    } else {
+        title_buf = format!("{base_title} ");
+        title_buf.as_str()
     };
 
     let mut block = Block::default()
@@ -112,6 +122,21 @@ pub fn render(
     }
 }
 
+/// Format a token count for display in the input block title.
+///
+/// Returns `"~{n}"` for counts below 1000, or `"~{n:.1}k"` for larger values.
+fn format_token_count(tokens: usize) -> String {
+    if tokens < 1000 {
+        format!("~{tokens}")
+    } else {
+        // Integer division keeps precision adequate for display; max representable value
+        // is u64::MAX / 1000 ≈ 1.8 × 10^16, which fits safely in f64 mantissa at this scale.
+        let whole = tokens / 1000;
+        let frac = (tokens % 1000) / 100;
+        format!("~{whole}.{frac}k")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use insta::assert_snapshot;
@@ -193,5 +218,47 @@ mod tests {
             output.contains("Esc to interrupt"),
             "spinner hint must appear on wide terminal"
         );
+    }
+
+    #[test]
+    fn input_shows_token_estimate_when_nonzero() {
+        let mut app = make_app();
+        app.handle_event(crate::event::AppEvent::Agent(
+            crate::event::AgentEvent::ContextEstimate(14_200),
+        ));
+        let output = render_to_string(80, 5, |frame, area| {
+            super::render(&app, frame, area, false, None, 0);
+        });
+        assert!(
+            output.contains("14.2k tokens"),
+            "token estimate must appear in input block title when estimate is nonzero"
+        );
+    }
+
+    #[test]
+    fn input_hides_token_estimate_when_zero() {
+        let app = make_app();
+        let output = render_to_string(80, 5, |frame, area| {
+            super::render(&app, frame, area, false, None, 0);
+        });
+        assert!(
+            !output.contains("tokens"),
+            "token estimate must not appear when estimate is 0"
+        );
+    }
+
+    #[test]
+    fn format_token_count_below_1000() {
+        assert_eq!(super::format_token_count(0), "~0");
+        assert_eq!(super::format_token_count(512), "~512");
+        assert_eq!(super::format_token_count(999), "~999");
+    }
+
+    #[test]
+    fn format_token_count_1000_and_above() {
+        assert_eq!(super::format_token_count(1000), "~1.0k");
+        assert_eq!(super::format_token_count(1500), "~1.5k");
+        assert_eq!(super::format_token_count(14_200), "~14.2k");
+        assert_eq!(super::format_token_count(100_000), "~100.0k");
     }
 }

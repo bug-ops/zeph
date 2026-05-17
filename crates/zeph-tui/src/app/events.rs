@@ -238,6 +238,9 @@ impl App {
                 self.trim_messages();
                 self.auto_scroll();
             }
+            AgentEvent::ContextEstimate(tokens) => {
+                self.context_token_estimate = tokens;
+            }
         }
     }
 
@@ -694,5 +697,25 @@ mod tests {
         });
 
         assert!(app.sessions.current().view_target.is_main());
+    }
+
+    #[test]
+    fn context_estimate_updates_cached_value() {
+        let mut app = make_app();
+        assert_eq!(
+            app.context_token_estimate(),
+            0,
+            "initial estimate must be 0"
+        );
+
+        app.handle_agent_event(AgentEvent::ContextEstimate(14_200));
+        assert_eq!(app.context_token_estimate(), 14_200);
+
+        app.handle_agent_event(AgentEvent::ContextEstimate(512));
+        assert_eq!(
+            app.context_token_estimate(),
+            512,
+            "estimate must update on each event"
+        );
     }
 }
