@@ -152,6 +152,7 @@ async fn create_channel_discord_without_token_falls_through() {
         allowed_role_ids: vec![],
         allowed_channel_ids: vec![],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
+        allowed_tools: None,
     });
     config.telegram = None;
     let channel = create_channel(&config).await.unwrap();
@@ -170,6 +171,7 @@ async fn create_channel_slack_without_token_falls_through() {
         allowed_user_ids: vec![],
         allowed_channel_ids: vec![],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
+        allowed_tools: None,
     });
     config.telegram = None;
     let channel = create_channel(&config).await.unwrap();

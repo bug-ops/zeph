@@ -129,6 +129,7 @@ mod tests {
                 allowed_role_ids: vec![],
                 allowed_channel_ids: vec![],
                 skills: ChannelSkillsConfig::default(),
+                allowed_tools: None,
             }),
             ..Default::default()
         };
@@ -149,6 +150,7 @@ mod tests {
                 allowed_user_ids: vec![],
                 allowed_channel_ids: vec![],
                 skills: ChannelSkillsConfig::default(),
+                allowed_tools: None,
             }),
             ..Default::default()
         };
