@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use zeph_common::memory::EdgeType;
 use zeph_common::secret::Secret;
 
 use crate::defaults::{default_sqlite_path_field, default_true};
@@ -1605,7 +1606,7 @@ pub struct HebbianConfig {
     ///
     /// Accepted values: `"semantic"`, `"temporal"`, `"causal"`, `"entity"`.
     /// Empty = traverse all edge types. Default: `[]`.
-    pub spread_edge_types: Vec<String>,
+    pub spread_edge_types: Vec<EdgeType>,
     /// Per-step circuit-breaker timeout for HL-F5 in milliseconds.
     ///
     /// Any internal step (anchor ANN, edges batch, vectors batch) that exceeds this
@@ -3306,14 +3307,25 @@ impl Default for ReasoningConfig {
 
 // ── Eviction config (moved from zeph-memory) ─────────────────────────────────
 
+/// Eviction policy variant.
+///
+/// Serialises as `"ebbinghaus"` in TOML/JSON so existing configs remain valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EvictionPolicy {
+    /// Ebbinghaus forgetting-curve eviction.
+    #[default]
+    Ebbinghaus,
+}
+
 /// Configuration for the memory eviction policy.
 ///
 /// Controls which policy runs during the periodic sweep and how many entries
 /// are retained. `zeph-memory` re-exports this type from here.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EvictionConfig {
-    /// Policy name. Currently only `"ebbinghaus"` is supported.
-    pub policy: String,
+    /// Eviction policy. Currently only [`EvictionPolicy::Ebbinghaus`] is supported.
+    pub policy: EvictionPolicy,
     /// Maximum number of entries to retain. `0` means unlimited (eviction disabled).
     pub max_entries: usize,
     /// How often to run the eviction sweep, in seconds.
@@ -3323,7 +3335,7 @@ pub struct EvictionConfig {
 impl Default for EvictionConfig {
     fn default() -> Self {
         Self {
-            policy: "ebbinghaus".to_owned(),
+            policy: EvictionPolicy::Ebbinghaus,
             max_entries: 0,
             sweep_interval_secs: 3600,
         }

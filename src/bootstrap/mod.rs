@@ -1746,23 +1746,7 @@ impl AppBuilder {
 
     /// Build the HeLa-Mem spread runtime from config.
     fn build_hela_runtime(&self) -> zeph_memory::HelaSpreadRuntime {
-        let edge_types = self
-            .config
-            .memory
-            .hebbian
-            .spread_edge_types
-            .iter()
-            .filter_map(|raw| {
-                raw.parse::<zeph_memory::graph::EdgeType>()
-                    .map_err(|_| {
-                        tracing::warn!(
-                            value = %raw,
-                            "memory.hebbian.spread_edge_types: unrecognised edge type, ignored"
-                        );
-                    })
-                    .ok()
-            })
-            .collect();
+        let edge_types = self.config.memory.hebbian.spread_edge_types.clone();
         zeph_memory::HelaSpreadRuntime {
             enabled: self.config.memory.hebbian.enabled
                 && self.config.memory.hebbian.spreading_activation,
