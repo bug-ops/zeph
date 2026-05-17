@@ -29,6 +29,21 @@ pub mod airline;
 pub mod retail;
 pub mod tools;
 
+/// Implemented by environments that can serialize their current state to JSON.
+///
+/// Used by [`crate::loaders::tau2_bench::eval::EnvironmentEvaluator`] to snapshot
+/// the final state after an agent run and the gold state after replaying gold actions.
+/// The snapshot must capture all mutable state so that canonical hashing can detect
+/// any divergence between the two.
+pub trait SnapshotableEnv {
+    /// Return a JSON snapshot of the current database state.
+    ///
+    /// The snapshot includes all mutable collections (users, orders, reservations).
+    /// `HashMap` iteration order is non-deterministic, but the evaluator sorts all map
+    /// keys recursively before hashing, so the snapshot does not need to be ordered.
+    fn state_snapshot(&self) -> serde_json::Value;
+}
+
 /// Shared arc-mutex handle to the recorded tool call log.
 ///
 /// Returned alongside the env from `*Env::new_from_seed`. Passed to

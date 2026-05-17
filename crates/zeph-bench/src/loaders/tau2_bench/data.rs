@@ -46,7 +46,7 @@ pub struct Task {
 }
 
 /// Wraps the user instructions for a scenario.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserScenario {
     /// Instructions given to the user simulator (or a plain string prompt).
     pub instructions: UserInstructions,
@@ -59,7 +59,7 @@ pub struct UserScenario {
 ///
 /// The upstream schema uses structured objects for most tasks, but older
 /// or synthetic tasks may provide a plain string.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum UserInstructions {
     /// Structured object with individual fields.
@@ -69,7 +69,7 @@ pub enum UserInstructions {
 }
 
 /// Structured form of the user instructions.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StructuredUserInstructions {
     /// Domain identifier string (e.g. `"retail"`).
     pub domain: String,

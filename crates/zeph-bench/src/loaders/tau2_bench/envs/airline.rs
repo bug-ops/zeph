@@ -11,13 +11,15 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
+use zeph_common::ToolName;
 use zeph_tools::ToolExecutor;
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
 use zeph_tools::registry::ToolDef;
 
 use crate::error::BenchError;
+use crate::loaders::tau2_bench::data::Action;
 
-use super::{ActionTrace, RecordedToolCall};
+use super::{ActionTrace, RecordedToolCall, SnapshotableEnv};
 
 // ─── State types ────────────────────────────────────────────────────────────
 
@@ -62,7 +64,7 @@ struct Reservation {
 }
 
 /// Full in-memory airline database.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct AirlineState {
     /// Flight data: `flight_number → { ... }`.
     flights: serde_json::Map<String, serde_json::Value>,
@@ -148,6 +150,42 @@ impl AirlineEnv {
             trace: trace.clone(),
         };
         Ok((env, trace))
+    }
+}
+
+impl SnapshotableEnv for AirlineEnv {
+    fn state_snapshot(&self) -> serde_json::Value {
+        let state = self.state.lock().expect("state mutex poisoned").clone();
+        serde_json::to_value(&state).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl AirlineEnv {
+    /// Replay `actions` on this env instance to build an expected database state.
+    ///
+    /// The caller must construct a dedicated fresh [`AirlineEnv`] for replay — never call
+    /// this on a post-run env. Actions with `requestor != "assistant"` are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchError`] if a gold action fails to execute in the env.
+    pub async fn replay_actions(&self, actions: &[Action]) -> Result<(), BenchError> {
+        for action in actions {
+            if action.requestor != "assistant" {
+                continue;
+            }
+            let call = ToolCall {
+                tool_id: ToolName::new(action.name.as_str()),
+                params: action.arguments.clone(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+            };
+            self.execute_tool_call(&call).await.map_err(|e| {
+                BenchError::InvalidFormat(format!("replay action '{}': {e}", action.name))
+            })?;
+        }
+        Ok(())
     }
 }
 

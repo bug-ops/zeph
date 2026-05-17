@@ -32,13 +32,16 @@
 //! | `tau2-bench-airline` | Airline flight reservation | [`loader::Tau2BenchLoader::airline`] |
 
 pub mod data;
+pub mod driver;
 pub mod envs;
 pub mod eval;
 pub mod loader;
 
 pub use data::Domain;
+pub use driver::{MultiTurnDriver, MultiTurnResult, Turn};
 pub use envs::ActionTrace;
+pub use envs::SnapshotableEnv;
 pub use envs::airline::AirlineEnv;
 pub use envs::retail::RetailEnv;
-pub use eval::TauBenchEvaluator;
+pub use eval::{CompositeEvaluator, EnvironmentEvaluator, TauBenchEvaluator};
 pub use loader::{Tau2BenchLoader, db_json_path};

@@ -121,6 +121,7 @@ impl DatasetLoader for Tau2BenchLoader {
                 "domain": loader_name,
                 "tau2_task_id": task.id,
                 "evaluation_criteria": task.evaluation_criteria,
+                "user_scenario": task.user_scenario,
             });
             scenarios.push(Scenario::single(id, prompt, "", metadata));
         }
