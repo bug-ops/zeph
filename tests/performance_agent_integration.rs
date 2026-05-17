@@ -316,7 +316,10 @@ async fn shell_executor_default_blocked_patterns() {
     for (cmd, pattern) in dangerous_commands {
         let result = executor.execute(cmd).await;
         assert!(
-            matches!(result, Err(ToolError::Blocked { .. }) | Err(ToolError::BlockedWithFix { .. })),
+            matches!(
+                result,
+                Err(ToolError::Blocked { .. }) | Err(ToolError::BlockedWithFix { .. })
+            ),
             "Command with pattern '{pattern}' should be blocked. Result: {result:?}",
         );
     }
@@ -366,7 +369,10 @@ async fn shell_executor_case_insensitive_blocking() {
     for cmd in variations {
         let result = executor.execute(&format!("```bash\n{cmd}\n```")).await;
         assert!(
-            matches!(result, Err(ToolError::Blocked { .. }) | Err(ToolError::BlockedWithFix { .. })),
+            matches!(
+                result,
+                Err(ToolError::Blocked { .. }) | Err(ToolError::BlockedWithFix { .. })
+            ),
             "Should block case-insensitive: {cmd}",
         );
     }
