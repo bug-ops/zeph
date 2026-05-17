@@ -19,7 +19,7 @@
 //! - [`turn_context`] — [`turn_context::TurnId`], [`turn_context::TurnContext`] per-turn carrier
 //! - [`compression_feedback`] — context-loss detection and failure classification
 //! - [`microcompact`] — low-value tool detection helpers for time-based microcompact
-//! - [`error`] — [`error::ContextError`]
+//! - [`error`] — [`error::AssemblerError`]
 
 pub mod assembler;
 pub mod budget;

@@ -142,7 +142,7 @@ pub trait IndexAccess: Send + Sync {
         budget_tokens: usize,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<Option<String>, crate::error::ContextError>>
+            dyn std::future::Future<Output = Result<Option<String>, crate::error::AssemblerError>>
                 + Send
                 + 'a,
         >,

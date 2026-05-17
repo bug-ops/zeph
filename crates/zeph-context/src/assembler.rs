@@ -22,7 +22,7 @@ use futures::stream::FuturesUnordered;
 use zeph_common::memory::{AsyncMemoryRouter, CompressionLevel, GraphRecallParams, TokenCounting};
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
-use crate::error::ContextError;
+use crate::error::AssemblerError;
 use crate::input::ContextAssemblyInput;
 use crate::slot::ContextSlot;
 
@@ -96,7 +96,7 @@ pub struct PreparedContext {
 /// All logic is in [`ContextAssembler::gather`]. No state is stored on this type.
 pub struct ContextAssembler;
 
-type CtxFuture<'a> = Pin<Box<dyn Future<Output = Result<ContextSlot, ContextError>> + Send + 'a>>;
+type CtxFuture<'a> = Pin<Box<dyn Future<Output = Result<ContextSlot, AssemblerError>> + Send + 'a>>;
 
 fn empty_prepared_context() -> PreparedContext {
     PreparedContext {
@@ -213,7 +213,7 @@ fn schedule_context_fetchers<'r>(
         && let Some(idx) = index
     {
         fetchers.push(Box::pin(async move {
-            let result: Result<Option<String>, ContextError> =
+            let result: Result<Option<String>, AssemblerError> =
                 idx.fetch_code_rag(query, code_context_budget).await;
             result.map(ContextSlot::CodeContext)
         }));
@@ -268,7 +268,7 @@ fn schedule_context_fetchers<'r>(
 async fn drive_fetchers(
     mut fetchers: FuturesUnordered<CtxFuture<'_>>,
     prepared: &mut PreparedContext,
-) -> Result<(), ContextError> {
+) -> Result<(), AssemblerError> {
     while let Some(result) = fetchers.next().await {
         match result {
             Ok(slot) => match slot {
@@ -301,7 +301,9 @@ impl ContextAssembler {
     /// # Errors
     ///
     /// Propagates errors from any async fetch operation.
-    pub async fn gather(input: &ContextAssemblyInput<'_>) -> Result<PreparedContext, ContextError> {
+    pub async fn gather(
+        input: &ContextAssemblyInput<'_>,
+    ) -> Result<PreparedContext, AssemblerError> {
         let Some(ref budget) = input.context_manager.budget else {
             return Ok(empty_prepared_context());
         };
@@ -393,7 +395,7 @@ pub(crate) async fn fetch_graph_facts(
     query: &str,
     budget_tokens: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     use zeph_common::memory::{RecallView, SpreadingActivationParams, classify_graph_subgraph};
 
     if budget_tokens == 0 || !memory.graph_config.enabled {
@@ -537,7 +539,7 @@ pub(crate) async fn fetch_persona_facts(
     memory: &ContextMemoryView,
     budget_tokens: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     if budget_tokens == 0 || !memory.persona_config.enabled {
         return Ok(None);
     }
@@ -549,7 +551,7 @@ pub(crate) async fn fetch_persona_facts(
     let facts = mem
         .load_persona_facts(min_confidence)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
 
     if facts.is_empty() {
         return Ok(None);
@@ -580,7 +582,7 @@ pub(crate) async fn fetch_trajectory_hints(
     memory: &ContextMemoryView,
     budget_tokens: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     if budget_tokens == 0 || !memory.trajectory_config.enabled {
         return Ok(None);
     }
@@ -596,7 +598,7 @@ pub(crate) async fn fetch_trajectory_hints(
     let entries = mem
         .load_trajectory_entries(Some("procedural"), top_k)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
 
     if entries.is_empty() {
         return Ok(None);
@@ -631,7 +633,7 @@ pub(crate) async fn fetch_tree_memory(
     memory: &ContextMemoryView,
     budget_tokens: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     if budget_tokens == 0 || !memory.tree_config.enabled {
         return Ok(None);
     }
@@ -643,7 +645,7 @@ pub(crate) async fn fetch_tree_memory(
     let nodes = mem
         .load_tree_nodes(1, top_k)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
 
     if nodes.is_empty() {
         return Ok(None);
@@ -676,7 +678,7 @@ pub(crate) async fn fetch_reasoning_strategies(
     budget_tokens: usize,
     top_k: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     // S1: enforce the ≤500-token spec cap documented in ReasoningConfig.
     let budget_tokens = budget_tokens.min(500);
     if budget_tokens == 0 {
@@ -689,7 +691,7 @@ pub(crate) async fn fetch_reasoning_strategies(
     let strategies = mem
         .retrieve_reasoning_strategies(query, top_k)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
 
     if strategies.is_empty() {
         return Ok(None);
@@ -738,14 +740,14 @@ pub(crate) async fn fetch_corrections(
     limit: usize,
     min_score: f32,
     scrub: fn(&str) -> std::borrow::Cow<'_, str>,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     let Some(ref mem) = memory.memory else {
         return Ok(None);
     };
     let corrections = mem
         .retrieve_corrections(query, limit, min_score)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
     if corrections.is_empty() {
         return Ok(None);
     }
@@ -765,7 +767,7 @@ pub(crate) async fn fetch_semantic_recall(
     token_budget: usize,
     tc: &dyn TokenCounting,
     router: Option<&dyn AsyncMemoryRouter>,
-) -> Result<(Option<Message>, Option<f32>), ContextError> {
+) -> Result<(Option<Message>, Option<f32>), AssemblerError> {
     let Some(ref mem) = memory.memory else {
         return Ok((None, None));
     };
@@ -776,7 +778,7 @@ pub(crate) async fn fetch_semantic_recall(
     let recalled = mem
         .recall(query, memory.recall_limit, router)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
     if recalled.is_empty() {
         return Ok((None, None));
     }
@@ -819,7 +821,7 @@ pub(crate) async fn fetch_document_rag(
     query: &str,
     token_budget: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     if !memory.document_config.rag_enabled || token_budget == 0 {
         return Ok(None);
     }
@@ -832,7 +834,7 @@ pub(crate) async fn fetch_document_rag(
     let chunks = mem
         .search_document_collection(collection, query, top_k)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
     if chunks.is_empty() {
         return Ok(None);
     }
@@ -870,7 +872,7 @@ pub(crate) async fn fetch_summaries(
     memory: &ContextMemoryView,
     token_budget: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     let (Some(mem), Some(cid)) = (&memory.memory, memory.conversation_id) else {
         return Ok(None);
     };
@@ -881,7 +883,7 @@ pub(crate) async fn fetch_summaries(
     let summaries = mem
         .load_summaries(cid)
         .await
-        .map_err(ContextError::Memory)?;
+        .map_err(AssemblerError::Memory)?;
     if summaries.is_empty() {
         return Ok(None);
     }
@@ -917,7 +919,7 @@ pub(crate) async fn fetch_cross_session(
     query: &str,
     token_budget: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, ContextError> {
+) -> Result<Option<Message>, AssemblerError> {
     let (Some(mem), Some(cid)) = (&memory.memory, memory.conversation_id) else {
         return Ok(None);
     };
@@ -929,7 +931,7 @@ pub(crate) async fn fetch_cross_session(
     let results: Vec<_> = mem
         .search_session_summaries(query, 5, Some(cid))
         .await
-        .map_err(ContextError::Memory)?
+        .map_err(AssemblerError::Memory)?
         .into_iter()
         .filter(|r| r.score >= threshold)
         .collect();
@@ -1813,7 +1815,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_corrections_propagates_error() {
-        // fetch_corrections uses map_err(ContextError::Memory)? so retrieve_corrections
+        // fetch_corrections uses map_err(AssemblerError::Memory)? so retrieve_corrections
         // errors are propagated instead of silently discarded.
         let mock = MockMemoryBackend::with_fail_on("retrieve_corrections");
         let view = mock_view(mock);

@@ -19,7 +19,7 @@ pub enum ContextError {
 
     /// Context assembler in `zeph-context` returned an error.
     #[error("context assembler error: {0}")]
-    Assembler(#[from] zeph_context::error::ContextError),
+    Assembler(#[from] zeph_context::error::AssemblerError),
 
     /// Serialization failed (e.g., building a JSON payload for the LLM).
     #[error("serialization error: {0}")]

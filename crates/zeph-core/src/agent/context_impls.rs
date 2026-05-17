@@ -20,7 +20,7 @@ impl IndexAccess for IndexState {
     ) -> Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<Option<String>, zeph_context::error::ContextError>,
+                    Output = Result<Option<String>, zeph_context::error::AssemblerError>,
                 > + Send
                 + 'a,
         >,
@@ -28,7 +28,7 @@ impl IndexAccess for IndexState {
         Box::pin(async move {
             self.fetch_code_rag(query, budget_tokens)
                 .await
-                .map_err(|e| zeph_context::error::ContextError::Assembly(format!("{e:#}")))
+                .map_err(|e| zeph_context::error::AssemblerError::Assembly(format!("{e:#}")))
         })
     }
 }

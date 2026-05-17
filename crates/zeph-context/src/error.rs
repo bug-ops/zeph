@@ -9,9 +9,9 @@ use thiserror::Error;
 ///
 /// All async fetch operations in [`crate::assembler::ContextAssembler`] propagate
 /// errors through this type. Callers in `zeph-core` convert to `AgentError` at the
-/// boundary using `From<ContextError> for AgentError`.
+/// boundary using `From<AssemblerError> for AgentError`.
 #[derive(Debug, Error)]
-pub enum ContextError {
+pub enum AssemblerError {
     /// A memory subsystem operation failed.
     #[error("memory error: {0}")]
     Memory(Box<dyn std::error::Error + Send + Sync + 'static>),
