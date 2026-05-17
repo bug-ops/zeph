@@ -190,10 +190,7 @@ fn build_rejection_patterns() -> Vec<(Regex, f32)> {
     // 違う is split from the group: require it to be followed by punctuation, whitespace, or EOL
     // so that "違う質問があります" (different question) does not fire.
     // "違う、もう一度やって" still matches because 、 is in the allowed set.
-    p.push((
-        Regex::new(r"^違う(?:[。！!？?、 \t]|$)").unwrap(),
-        0.85,
-    ));
+    p.push((Regex::new(r"^違う(?:[。！!？?、 \t]|$)").unwrap(), 0.85));
     p.push((Regex::new(r"^(間違い|それは違|ダメ)").unwrap(), 0.85));
     // Unanchored: multi-character — 0.75
     p.push((
