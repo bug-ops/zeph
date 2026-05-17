@@ -83,7 +83,7 @@ pub struct SkillTrust {
     pub source: SkillSource,
     /// blake3 hex hash of `SKILL.md` at install time, for tamper detection.
     ///
-    /// Used by per-invocation re-hash when [`requires_trust_check`] is `true`.
+    /// Used by per-invocation re-hash when [`SkillTrust::requires_trust_check`] is `true`.
     /// See the type-level doc for the security model.
     pub blake3_hash: String,
     /// Whether to re-hash `SKILL.md` on every invocation and abort if the digest changed.
