@@ -368,11 +368,13 @@ impl App {
     fn handle_plugin_command(&mut self, cmd: &TuiCommand) -> bool {
         match cmd {
             TuiCommand::PluginList => {
+                self.push_system_message("Loading plugins...".to_owned());
                 let _ = self.user_input_tx.try_send("/plugins list".to_owned());
             }
             TuiCommand::PluginAdd => self.prefill_input("/plugins add "),
             TuiCommand::PluginRemove => self.prefill_input("/plugins remove "),
             TuiCommand::PluginListOverlay => {
+                self.push_system_message("Loading plugin overlay...".to_owned());
                 let _ = self.user_input_tx.try_send("/plugins overlay".to_owned());
             }
             TuiCommand::SessionSwitchNext

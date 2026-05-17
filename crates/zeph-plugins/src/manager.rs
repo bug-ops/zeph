@@ -218,6 +218,7 @@ impl PluginManager {
     /// there are skill name conflicts, MCP commands are not allowlisted, or config
     /// overlay keys are not in the tighten-only safelist.
     pub fn add(&self, source: &str) -> Result<AddResult, PluginError> {
+        let _span = tracing::info_span!("plugins.manager.add", plugin.source = %source).entered();
         let source_path = PathBuf::from(source);
         if !source_path.exists() {
             return Err(PluginError::InvalidSource {
@@ -456,7 +457,30 @@ impl PluginManager {
             source: e,
         })?;
         extract_archive(&bytes, tmp.path(), url)?;
-        let result = self.add(tmp.path().to_str().unwrap_or(url))?;
+
+        let plugins_dir = self.plugins_dir.clone();
+        let managed_skills_dir = self.managed_skills_dir.clone();
+        let mcp_allowed_commands = self.mcp_allowed_commands.clone();
+        let base_allowed_commands = self.base_allowed_commands.clone();
+        let integrity_registry_path = self.integrity_registry_path.clone();
+        let source_str = tmp.path().to_str().unwrap_or(url).to_owned();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let mgr = PluginManager {
+                plugins_dir,
+                managed_skills_dir,
+                mcp_allowed_commands,
+                base_allowed_commands,
+                integrity_registry_path,
+                download_timeout_secs: 0, // add() does not perform network I/O
+            };
+            mgr.add(&source_str)
+        })
+        .await
+        .map_err(|e| PluginError::Io {
+            path: std::path::PathBuf::from(url),
+            source: std::io::Error::other(e),
+        })??;
 
         // Persist source metadata so check_auto_updates can re-fetch this plugin.
         let source = PluginSource {
