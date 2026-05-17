@@ -325,6 +325,9 @@ pub struct RouterProvider {
     quality_gate: Option<f32>,
     /// `CoE` (Collaborative Entropy) router. `None` when `CoE` is disabled.
     coe: Option<Arc<CoeRouter>>,
+    /// Per-call timeout for `embed()` across all non-bandit providers (milliseconds).
+    /// Defaults to 5000 ms. A stalled provider is skipped and the next one is tried.
+    embed_timeout_ms: u64,
 }
 
 impl RouterProvider {
@@ -357,7 +360,25 @@ impl RouterProvider {
             asi_config: None,
             quality_gate: None,
             coe: None,
+            embed_timeout_ms: 5000,
         }
+    }
+
+    /// Set the per-call timeout for [`embed`][Self::embed] across all non-bandit providers.
+    ///
+    /// A stalled provider is skipped and the next candidate is tried. Default is `5000` ms.
+    /// Pass `0` to disable the timeout (not recommended for production).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use zeph_llm::router::RouterProvider;
+    /// let router = RouterProvider::new(vec![]).with_embed_timeout(3000);
+    /// ```
+    #[must_use]
+    pub fn with_embed_timeout(mut self, timeout_ms: u64) -> Self {
+        self.embed_timeout_ms = timeout_ms;
+        self
     }
 
     /// Set the maximum number of concurrent `embed_batch` calls.
@@ -1710,6 +1731,7 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let text = text.to_owned();
         let router = self.clone();
+        let embed_timeout_ms = self.embed_timeout_ms;
         Box::pin(async move {
             for p in &providers {
                 if !p.supports_embeddings() {
@@ -1728,7 +1750,25 @@ impl LlmProvider for RouterProvider {
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     }
                     let start = std::time::Instant::now();
-                    match p.embed(&text).await {
+                    // Apply per-call timeout when configured (embed_timeout_ms > 0).
+                    let embed_result: Result<Vec<f32>, LlmError> = if embed_timeout_ms > 0 {
+                        let timeout = std::time::Duration::from_millis(embed_timeout_ms);
+                        match tokio::time::timeout(timeout, p.embed(&text)).await {
+                            Ok(inner) => inner,
+                            Err(_elapsed) => {
+                                tracing::warn!(
+                                    provider = p.name(),
+                                    timeout_ms = embed_timeout_ms,
+                                    "embed: provider timed out, falling back"
+                                );
+                                last_err = Some(LlmError::Timeout);
+                                break;
+                            }
+                        }
+                    } else {
+                        p.embed(&text).await
+                    };
+                    match embed_result {
                         Ok(r) => {
                             router.record_availability(
                                 p.name(),
@@ -3563,6 +3603,49 @@ mod tests {
             !provider_in_stats,
             "InvalidInput must not update provider reputation; stats: {stats:?}"
         );
+    }
+
+    // ── embed timeout tests ───────────────────────────────────────────────────
+
+    /// When the only provider's `embed()` exceeds `embed_timeout_ms`, the router
+    /// exhausts the fallback list and returns `LlmError::NoProviders`.
+    #[tokio::test]
+    async fn embed_timeout_single_provider_returns_no_providers() {
+        use crate::mock::MockProvider;
+
+        let p = AnyProvider::Mock(
+            MockProvider::default()
+                .with_embed_delay(200)
+                .with_name("slow"),
+        );
+        let r = RouterProvider::new(vec![p]).with_embed_timeout(10);
+        let err = r.embed("hello").await.unwrap_err();
+        assert!(
+            matches!(err, LlmError::NoProviders),
+            "expected NoProviders after timeout, got {err:?}"
+        );
+    }
+
+    /// After a timeout on the first provider, the router falls back to the next
+    /// embed-capable provider and returns its successful result.
+    #[tokio::test]
+    async fn embed_timeout_falls_back_to_next_provider() {
+        use crate::mock::MockProvider;
+
+        let p1 = AnyProvider::Mock(
+            MockProvider::default()
+                .with_embed_delay(200)
+                .with_name("slow"),
+        );
+        let p2 = AnyProvider::Mock({
+            let mut m = MockProvider::default().with_name("fast");
+            m.supports_embeddings = true;
+            m.embedding = vec![1.0, 2.0, 3.0];
+            m
+        });
+        let r = RouterProvider::new(vec![p1, p2]).with_embed_timeout(10);
+        let result = r.embed("hello").await.unwrap();
+        assert_eq!(result, vec![1.0, 2.0, 3.0]);
     }
 
     // ── quality_gate tests ────────────────────────────────────────────────────
