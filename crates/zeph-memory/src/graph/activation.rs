@@ -1337,8 +1337,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(MemoryError::Timeout(_))),
-            "expected Err(MemoryError::Timeout), got {:?}",
-            result
+            "expected Err(MemoryError::Timeout), got {result:?}"
         );
     }
 
@@ -1386,8 +1385,7 @@ mod tests {
         // find no results — the expected outcome is Ok(empty) or a non-Timeout error.
         assert!(
             !matches!(result, Err(crate::error::MemoryError::Timeout(_))),
-            "embed_timeout: None must not produce a Timeout error, got {:?}",
-            result
+            "embed_timeout: None must not produce a Timeout error, got {result:?}"
         );
     }
 
