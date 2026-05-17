@@ -716,6 +716,8 @@ mod tests {
 
     #[tokio::test]
     async fn embed_existing_skips_skills_on_timeout() {
+        use crate::loader::load_skill_meta_from_str;
+
         // MockProvider delays embed by 200ms; generation_timeout_ms=1ms forces a timeout.
         // embed_existing must return an empty vec (all skills skipped) without panicking.
         let slow_mock = zeph_llm::any::AnyProvider::Mock(
@@ -740,7 +742,6 @@ mod tests {
             config,
             http: reqwest::Client::new(),
         };
-        use crate::loader::load_skill_meta_from_str;
         let content = "---\nname: slow-skill\ndescription: Slow skill.\n---\n\n## Usage\n\nSlow.\n";
         let (meta, _) = load_skill_meta_from_str(content).unwrap();
         let result = miner.embed_existing(&[meta]).await;
