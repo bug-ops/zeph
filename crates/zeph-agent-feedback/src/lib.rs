@@ -59,6 +59,7 @@ static PATTERNS: LazyLock<LangPatterns> = LazyLock::new(|| LangPatterns {
     self_correction: build_self_correction_patterns(),
 });
 
+#[allow(clippy::vec_init_then_push)]
 fn build_rejection_patterns() -> Vec<(Regex, f32)> {
     let mut p = Vec::with_capacity(25);
 
@@ -186,8 +187,14 @@ fn build_rejection_patterns() -> Vec<(Regex, f32)> {
     p.push((Regex::new(r"这(不对|是错的|不正确|没用)").unwrap(), 0.75));
 
     // ── Japanese ──
-    // No \b — CJK; anchored short phrases are unambiguous.
-    p.push((Regex::new(r"^(違う|間違い|それは違|ダメ)").unwrap(), 0.85));
+    // 違う is split from the group: require it to be followed by punctuation, whitespace, or EOL
+    // so that "違う質問があります" (different question) does not fire.
+    // "違う、もう一度やって" still matches because 、 is in the allowed set.
+    p.push((
+        Regex::new(r"^違う(?:[。！!？?、 \t]|$)").unwrap(),
+        0.85,
+    ));
+    p.push((Regex::new(r"^(間違い|それは違|ダメ)").unwrap(), 0.85));
     // Unanchored: multi-character — 0.75
     p.push((
         Regex::new(r"(ひどい|悪い|間違った)(回答|答え|結果)").unwrap(),
@@ -197,6 +204,7 @@ fn build_rejection_patterns() -> Vec<(Regex, f32)> {
     p
 }
 
+#[allow(clippy::vec_init_then_push)]
 fn build_alternative_patterns() -> Vec<(Regex, f32)> {
     let mut p = Vec::with_capacity(20);
 
@@ -277,6 +285,7 @@ fn build_alternative_patterns() -> Vec<(Regex, f32)> {
     p
 }
 
+#[allow(clippy::vec_init_then_push)]
 fn build_self_correction_patterns() -> Vec<(Regex, f32)> {
     let mut p = Vec::with_capacity(20);
 
@@ -1853,19 +1862,13 @@ mod tests {
 
     #[test]
     fn ja_rejection_negative_chigau_shitsumon() {
-        // "違う質問があります" (I have a different question) — known false-positive limitation.
-        // The anchored pattern ^違う fires here because "違う" appears at the start of the message.
-        // Architecture spec explicitly accepts this edge case: "違う" is unambiguous as a standalone
-        // rejection, and distinguishing "違う質問" (different question) from "違う！" (wrong!) via
-        // regex alone is not feasible without CJK word segmentation.
-        // This test documents the actual behavior and prevents silent regression.
+        // "違う質問があります" (I have a different question) — must NOT be detected as rejection.
+        // The terminal guard [。！!？?、]*$ prevents ^違う from firing when followed by more text.
         let d = detector();
         let signal = d.detect("違う質問があります", &[]);
-        // Known limitation: anchored ^違う fires on this neutral phrase.
         assert!(
-            signal.is_some(),
-            "known limitation: ^違う anchored pattern fires on '違う質問があります'; \
-             CJK word segmentation is required to fix this (deferred to follow-up issue)"
+            signal.is_none(),
+            "neutral phrase '違う質問があります' must not be detected as rejection"
         );
     }
 

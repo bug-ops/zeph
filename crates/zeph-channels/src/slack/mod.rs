@@ -245,6 +245,20 @@ impl Channel for SlackChannel {
         Ok(())
     }
 
+    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let Some(channel_id) = self.channel_id.as_deref() else {
+            return Ok(());
+        };
+        self.api
+            .post_message(channel_id, text)
+            .await
+            .map_err(ChannelError::other)?;
+        Ok(())
+    }
+
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "channel.slack.confirm", skip_all, fields(prompt_len = %prompt.len()))

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-agent-feedback`: CJK rejection pattern `^違う` now requires a terminal punctuation
+  character, whitespace, or end-of-message so that neutral phrases like "違う質問があります"
+  ("I have a different question") are no longer classified as ExplicitRejection (closes #3826).
+- `zeph-channels`: `DiscordChannel` and `SlackChannel` now implement `Channel::send_status`,
+  forwarding status text as a plain message to the configured channel; previously the default
+  no-op was used, silently dropping all status updates (closes #3825).
 - `zeph-memory`: consolidation LLM timeout is now configurable via `ConsolidationConfig.llm_timeout_secs`
   (default 30s); previously hardcoded to 30s (closes #4168).
 - `zeph-memory`: graph extractor LLM timeout is now configurable via `GraphExtractionConfig.llm_timeout_secs`
