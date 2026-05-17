@@ -2746,6 +2746,7 @@ impl<C: Channel> Agent<C> {
             content_isolation: self.runtime.config.security.content_isolation.clone(),
             orchestrator_name: Some("zeph".to_owned()),
             orchestrator_role: Some("orchestrator".to_owned()),
+            session_mcp_servers: Vec::new(),
         }
     }
 

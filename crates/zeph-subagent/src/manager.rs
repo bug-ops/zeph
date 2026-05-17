@@ -18,7 +18,7 @@ use zeph_tools::FileExecutor;
 use zeph_tools::ToolCall;
 use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
 
-use zeph_config::{ContentIsolationConfig, SubAgentConfig};
+use zeph_config::{ContentIsolationConfig, McpServerConfig, SubAgentConfig};
 
 use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
 
@@ -80,6 +80,12 @@ pub struct SpawnContext {
     /// Injected alongside [`orchestrator_name`][Self::orchestrator_name] when both are set.
     /// Omitted from the identity header when only `orchestrator_name` is provided.
     pub orchestrator_role: Option<String>,
+    /// Per-session MCP servers to inject into this subagent's tool name annotations.
+    ///
+    /// The parent is responsible for connecting these servers and including them in the
+    /// `tool_executor` passed to [`SubAgentManager::spawn`]. This field only carries the
+    /// server metadata so the subagent's system prompt lists the additional tool names.
+    pub session_mcp_servers: Vec<McpServerConfig>,
 }
 
 /// Wraps an executor to allow file operations on the agent's memory directory.
@@ -284,6 +290,8 @@ pub struct SubAgentHandle {
     pub started_at_str: String,
     /// Resolved transcript directory at spawn time; `None` if transcripts were disabled.
     pub transcript_dir: Option<PathBuf>,
+    /// MCP tool names available at spawn time, persisted for transcript meta on collect.
+    pub mcp_tool_names: Vec<String>,
 }
 
 impl SubAgentHandle {
@@ -319,6 +327,7 @@ impl SubAgentHandle {
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
+            mcp_tool_names: Vec::new(),
         }
     }
 }
@@ -850,7 +859,13 @@ impl SubAgentManager {
         let agent_hooks = def.hooks.clone();
         let agent_name_clone = def.name.clone();
         let spawn_depth = ctx.spawn_depth;
-        let mcp_tool_names = ctx.mcp_tool_names;
+        let mut mcp_tool_names = ctx.mcp_tool_names.clone();
+        for srv in &ctx.session_mcp_servers {
+            if !mcp_tool_names.contains(&srv.id) {
+                mcp_tool_names.push(srv.id.clone());
+            }
+        }
+        let handle_mcp_tool_names = mcp_tool_names.clone();
         let parent_messages = ctx.parent_messages;
 
         let executor = build_filtered_executor(tool_executor, permission_mode, &def, memory_dir);
@@ -905,6 +920,7 @@ impl SubAgentManager {
             secret_tx,
             started_at_str: crate::transcript::utc_now_pub(),
             transcript_dir: handle_transcript_dir,
+            mcp_tool_names: handle_mcp_tool_names,
         };
 
         self.agents.insert(task_id.clone(), handle);
@@ -979,6 +995,7 @@ impl SubAgentManager {
                     finished_at: None,
                     resumed_from: resumed_from.map(str::to_owned),
                     turns_used: 0,
+                    mcp_tool_names: Vec::new(),
                 };
                 if let Err(e) = TranscriptWriter::write_meta(&dir, task_id, &meta) {
                     tracing::warn!(error = %e, "failed to write initial transcript meta");
@@ -1204,6 +1221,7 @@ impl SubAgentManager {
                 finished_at: Some(crate::transcript::utc_now_pub()),
                 resumed_from: None,
                 turns_used,
+                mcp_tool_names: handle.mcp_tool_names.clone(),
             };
             if let Err(e) = TranscriptWriter::write_meta(dir, task_id, &meta) {
                 tracing::warn!(error = %e, task_id, "failed to write final transcript meta");
@@ -1338,6 +1356,13 @@ impl SubAgentManager {
         let transcript_writer =
             self.create_transcript_writer(config, &new_task_id, &def.name, Some(&original_id));
 
+        // Filter restored names: reject entries with control characters or excess length
+        // to prevent prompt injection via a tampered transcript sidecar.
+        let resumed_mcp_tool_names: Vec<String> = meta
+            .mcp_tool_names
+            .into_iter()
+            .filter(|s| s.len() <= 256 && s.chars().all(|c| c.is_ascii_graphic() || c == ' '))
+            .collect();
         let new_task_id_for_loop = new_task_id.clone();
         let join_handle: JoinHandle<Result<String, SubAgentError>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
@@ -1359,7 +1384,7 @@ impl SubAgentManager {
                 initial_messages,
                 transcript_writer,
                 spawn_depth: 0,
-                mcp_tool_names: Vec::new(),
+                mcp_tool_names: resumed_mcp_tool_names.clone(),
                 content_isolation: ContentIsolationConfig::default(),
             }));
 
@@ -1382,6 +1407,7 @@ impl SubAgentManager {
             secret_tx,
             started_at_str: crate::transcript::utc_now_pub(),
             transcript_dir: resume_handle_transcript_dir,
+            mcp_tool_names: resumed_mcp_tool_names,
         };
 
         self.agents.insert(new_task_id.clone(), handle);
@@ -2599,6 +2625,7 @@ mod tests {
             finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
             resumed_from: None,
             turns_used: 1,
+            mcp_tool_names: Vec::new(),
         };
         TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
         // Create the empty JSONL so TranscriptReader::load succeeds.
@@ -2699,6 +2726,7 @@ mod tests {
                 secret_tx,
                 started_at_str: "2026-01-01T00:00:00Z".to_owned(),
                 transcript_dir: None,
+                mcp_tool_names: Vec::new(),
             },
         );
         drop(status_tx);
@@ -4124,6 +4152,71 @@ mod tests {
         assert!(
             result.is_char_boundary(result.len()),
             "result must be valid UTF-8"
+        );
+    }
+
+    fn mcp_server_config(id: &str) -> zeph_config::McpServerConfig {
+        serde_json::from_str(&format!(r#"{{"id":"{id}"}}"#)).unwrap()
+    }
+
+    #[test]
+    fn spawn_context_session_mcp_servers_merged() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let ctx = SpawnContext {
+            mcp_tool_names: vec!["existing-server".into()],
+            session_mcp_servers: vec![mcp_server_config("new-server")],
+            ..SpawnContext::default()
+        };
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "go",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                ctx,
+            )
+            .unwrap();
+        let names = &mgr.agents[&task_id].mcp_tool_names;
+        assert!(names.contains(&"existing-server".to_owned()));
+        assert!(names.contains(&"new-server".to_owned()));
+    }
+
+    #[test]
+    fn spawn_context_session_mcp_servers_dedup() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let ctx = SpawnContext {
+            mcp_tool_names: vec!["shared-server".into()],
+            session_mcp_servers: vec![mcp_server_config("shared-server")],
+            ..SpawnContext::default()
+        };
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "go",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                ctx,
+            )
+            .unwrap();
+        let names = &mgr.agents[&task_id].mcp_tool_names;
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| n.as_str() == "shared-server")
+                .count(),
+            1
         );
     }
 }

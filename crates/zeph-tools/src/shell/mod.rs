@@ -63,8 +63,21 @@ use transaction::{TransactionSnapshot, affected_paths, build_scope_matchers, is_
 use crate::risk_chain::RiskChainAccumulator;
 
 const DEFAULT_BLOCKED: &[&str] = &[
-    "rm -rf /", "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown",
-    "reboot", "halt",
+    "rm -rf /",
+    "sudo",
+    "mkfs",
+    "dd if=",
+    "curl",
+    "wget",
+    "nc ",
+    "ncat",
+    "netcat",
+    "shutdown",
+    "reboot",
+    "halt",
+    // Prevent rm -rf/-fr fallback on git worktree directories; use `git worktree remove --force` instead.
+    "rm -rf .git/worktrees",
+    "rm -fr .git/worktrees",
 ];
 
 /// Graceful period between SIGTERM and SIGKILL during process escalation.
@@ -74,7 +87,8 @@ const GRACEFUL_TERM_MS: Duration = Duration::from_millis(250);
 /// The default list of blocked command patterns used by [`ShellExecutor`].
 ///
 /// Includes highly destructive commands (`rm -rf /`, `mkfs`, `dd if=`), privilege
-/// escalation (`sudo`), and network egress tools (`curl`, `wget`, `nc`, `netcat`).
+/// escalation (`sudo`), network egress tools (`curl`, `wget`, `nc`, `netcat`), and
+/// `rm -rf` targeting `.git/worktrees` paths to prevent unsafe worktree teardown fallbacks.
 /// Network commands can be re-enabled via [`ShellConfig::allow_network`].
 ///
 /// Exposed so other executors (e.g. `AcpShellExecutor`) can reuse the same

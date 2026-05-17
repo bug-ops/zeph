@@ -3219,4 +3219,26 @@ mod resolve_context {
             output.summary
         );
     }
+
+    #[test]
+    fn check_blocklist_blocks_rm_rf_git_worktrees_direct() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("rm -rf .git/worktrees")
+                .is_some(),
+            "rm -rf .git/worktrees must be blocked"
+        );
+    }
+
+    #[test]
+    fn check_blocklist_blocks_rm_fr_git_worktrees_direct() {
+        let executor = ShellExecutor::new(&default_config());
+        assert!(
+            executor
+                .find_blocked_command("rm -fr .git/worktrees")
+                .is_some(),
+            "rm -fr .git/worktrees must be blocked"
+        );
+    }
 }

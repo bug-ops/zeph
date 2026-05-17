@@ -646,6 +646,7 @@ async fn test_secret_drain_after_instant_completion() {
             secret_tx,
             started_at_str: "2026-01-01T00:00:00Z".to_owned(),
             transcript_dir: None,
+            mcp_tool_names: Vec::new(),
         },
     );
     agent.services.orchestration.subagent_manager = Some(mgr);

@@ -61,6 +61,12 @@ pub struct TranscriptMeta {
     pub resumed_from: Option<String>,
     /// Number of LLM turns consumed by the session.
     pub turns_used: u32,
+    /// MCP tool names available when this session was spawned.
+    ///
+    /// Persisted so that a resumed session can restore the same tool name annotations
+    /// in its system prompt without re-connecting MCP servers.
+    #[serde(default)]
+    pub mcp_tool_names: Vec<String>,
 }
 
 /// Appends [`TranscriptEntry`] lines to a JSONL transcript file.
@@ -416,6 +422,7 @@ mod tests {
             finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
             resumed_from: None,
             turns_used: 2,
+            mcp_tool_names: Vec::new(),
         }
     }
 
@@ -630,5 +637,16 @@ mod tests {
         let jsonl_path = dir.path().join(format!("{agent_id}.jsonl"));
         let err = TranscriptReader::load(&jsonl_path).unwrap_err();
         assert!(matches!(err, SubAgentError::Transcript(ref m) if m.contains("missing")));
+    }
+
+    #[test]
+    fn meta_roundtrip_preserves_mcp_tool_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_id = "abc-123";
+        let mut meta = test_meta(agent_id);
+        meta.mcp_tool_names = vec!["search".into(), "write_file".into()];
+        TranscriptWriter::write_meta(dir.path(), agent_id, &meta).unwrap();
+        let loaded = TranscriptReader::load_meta(dir.path(), agent_id).unwrap();
+        assert_eq!(loaded.mcp_tool_names, vec!["search", "write_file"]);
     }
 }
