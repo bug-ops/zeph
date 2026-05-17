@@ -813,29 +813,68 @@ pub struct AuthorizationConfig {
     pub rules: Vec<PolicyRuleConfig>,
 }
 
+/// Audit log destination.
+///
+/// Deserializes from a string in TOML: `"stdout"`, `"stderr"`, or a file path.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AuditDestination {
+    /// Write audit entries to standard output.
+    #[default]
+    Stdout,
+    /// Write audit entries to standard error.
+    Stderr,
+    /// Write audit entries to the given file path (appended, mode 0o600).
+    File(std::path::PathBuf),
+}
+
+impl AuditDestination {
+    /// Returns `true` if the destination is `stdout`.
+    #[must_use]
+    pub fn is_stdout(&self) -> bool {
+        matches!(self, Self::Stdout)
+    }
+}
+
+impl serde::Serialize for AuditDestination {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Stdout => s.serialize_str("stdout"),
+            Self::Stderr => s.serialize_str("stderr"),
+            Self::File(p) => s.serialize_str(&p.display().to_string()),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AuditDestination {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.as_str() {
+            "stdout" => Self::Stdout,
+            "stderr" => Self::Stderr,
+            path => Self::File(std::path::PathBuf::from(path)),
+        })
+    }
+}
+
 /// Configuration for audit logging of tool executions.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AuditConfig {
     /// Enable audit logging. Default: `true`.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Log destination: `"stdout"`, `"stderr"`, or a file path. Default: `"stdout"`.
-    #[serde(default = "default_audit_destination")]
-    pub destination: String,
+    /// Log destination. Default: [`AuditDestination::Stdout`].
+    #[serde(default)]
+    pub destination: AuditDestination,
     /// When `true`, log a per-tool risk summary at startup. Default: `false`.
     #[serde(default)]
     pub tool_risk_summary: bool,
-}
-
-fn default_audit_destination() -> String {
-    "stdout".into()
 }
 
 impl Default for AuditConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            destination: default_audit_destination(),
+            destination: AuditDestination::default(),
             tool_risk_summary: false,
         }
     }
@@ -1369,5 +1408,49 @@ mod tests {
         assert_eq!(config.shell.timeout, 30);
         assert!(config.shell.blocked_commands.is_empty());
         assert!(config.audit.enabled);
+    }
+
+    #[test]
+    fn audit_destination_serde_roundtrip() {
+        let cases = [
+            ("\"stdout\"", AuditDestination::Stdout),
+            ("\"stderr\"", AuditDestination::Stderr),
+            (
+                "\"/var/log/audit.log\"",
+                AuditDestination::File("/var/log/audit.log".into()),
+            ),
+        ];
+        for (json_str, expected) in cases {
+            let got: AuditDestination = serde_json::from_str(json_str).unwrap();
+            assert_eq!(got, expected);
+            let serialized = serde_json::to_string(&got).unwrap();
+            let roundtrip: AuditDestination = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(roundtrip, expected);
+        }
+    }
+
+    #[test]
+    fn audit_destination_toml_in_config() {
+        let cases = [
+            (
+                r#"[audit]
+destination = "stdout""#,
+                AuditDestination::Stdout,
+            ),
+            (
+                r#"[audit]
+destination = "stderr""#,
+                AuditDestination::Stderr,
+            ),
+            (
+                r#"[audit]
+destination = "/var/log/zeph-audit.log""#,
+                AuditDestination::File("/var/log/zeph-audit.log".into()),
+            ),
+        ];
+        for (toml_str, expected) in cases {
+            let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+            assert_eq!(config.audit.destination, expected);
+        }
     }
 }

@@ -821,8 +821,11 @@ pub(crate) async fn run_doctor(
     }
 
     // 8. filesystem.audit_log
-    if config.tools.audit.enabled && !config.tools.audit.destination.is_empty() {
-        let audit_path = Path::new(&config.tools.audit.destination);
+    if config.tools.audit.enabled
+        && let zeph_config::AuditDestination::File(ref audit_file_path) =
+            config.tools.audit.destination
+    {
+        let audit_path = audit_file_path.as_path();
         if let Some(parent) = audit_path.parent() {
             let check_dir = if parent.as_os_str().is_empty() {
                 Path::new(".")

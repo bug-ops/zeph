@@ -367,7 +367,11 @@ impl Config {
             self.tools.audit.enabled = enabled;
         }
         if let Ok(v) = std::env::var("ZEPH_TOOLS_AUDIT_DESTINATION") {
-            self.tools.audit.destination = v;
+            self.tools.audit.destination = match v.as_str() {
+                "stdout" => crate::AuditDestination::Stdout,
+                "stderr" => crate::AuditDestination::Stderr,
+                path => crate::AuditDestination::File(std::path::PathBuf::from(path)),
+            };
         }
         if let Ok(v) = std::env::var("ZEPH_SECURITY_REDACT_SECRETS")
             && let Ok(redact) = v.parse::<bool>()

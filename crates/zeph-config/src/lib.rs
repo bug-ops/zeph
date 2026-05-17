@@ -172,7 +172,7 @@ pub use subagent::{
     ToolPolicy,
 };
 pub use telemetry::{TelemetryBackend, TelemetryConfig};
-pub use tools::{SandboxBackend, ToolCompressionConfig};
+pub use tools::{AuditDestination, SandboxBackend, ToolCompressionConfig};
 pub use ui::{
     AcpAuthMethod, AcpConfig, AcpLspConfig, AcpSubagentsConfig, AcpTransport, AdditionalDir,
     AdditionalDirError, SubagentPresetConfig, ToolDensity, TuiConfig,

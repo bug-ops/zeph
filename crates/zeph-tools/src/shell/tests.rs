@@ -183,7 +183,7 @@ async fn timeout_logged_as_audit_timeout_not_error() {
     let log_path = dir.path().join("audit.log");
     let audit_config = AuditConfig {
         enabled: true,
-        destination: log_path.display().to_string(),
+        destination: crate::config::AuditDestination::File(log_path.clone()),
         tool_risk_summary: false,
     };
     let logger = std::sync::Arc::new(
@@ -217,7 +217,7 @@ async fn stderr_output_logged_as_audit_error() {
     let log_path = dir.path().join("audit.log");
     let audit_config = AuditConfig {
         enabled: true,
-        destination: log_path.display().to_string(),
+        destination: crate::config::AuditDestination::File(log_path.clone()),
         tool_risk_summary: false,
     };
     let logger = std::sync::Arc::new(
@@ -938,7 +938,7 @@ async fn with_audit_attaches_logger() {
     let executor = ShellExecutor::new(&config);
     let audit_config = AuditConfig {
         enabled: true,
-        destination: "stdout".into(),
+        destination: crate::config::AuditDestination::Stdout,
         tool_risk_summary: false,
     };
     let logger = std::sync::Arc::new(
@@ -1134,7 +1134,7 @@ async fn blocked_command_logged_to_audit() {
     };
     let audit_config = AuditConfig {
         enabled: true,
-        destination: "stdout".into(),
+        destination: crate::config::AuditDestination::Stdout,
         tool_risk_summary: false,
     };
     let logger = std::sync::Arc::new(

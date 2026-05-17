@@ -6,6 +6,8 @@
 //! Pure-data configuration types are defined in `zeph-config` and re-exported here
 //! so that existing import paths (e.g. `zeph_tools::ShellConfig`) continue to resolve.
 
+#[cfg(test)]
+pub(crate) use zeph_config::tools::AuditDestination;
 pub(crate) use zeph_config::tools::{
     AuditConfig, EgressConfig, FileConfig, SandboxConfig, ScrapeConfig, ShellConfig,
     ToolDependency, ToolsConfig, UtilityScoringConfig,
@@ -140,7 +142,7 @@ mod tests {
         assert_eq!(config.scrape.timeout, 15);
         assert_eq!(config.scrape.max_body_bytes, 4_194_304);
         assert!(config.audit.enabled);
-        assert_eq!(config.audit.destination, "stdout");
+        assert_eq!(config.audit.destination, AuditDestination::Stdout);
         assert!(config.summarize_output);
     }
 
@@ -214,14 +216,17 @@ mod tests {
 
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert!(config.audit.enabled);
-        assert_eq!(config.audit.destination, "/var/log/zeph-audit.log");
+        assert_eq!(
+            config.audit.destination,
+            AuditDestination::File("/var/log/zeph-audit.log".into())
+        );
     }
 
     #[test]
     fn default_audit_config() {
         let config = AuditConfig::default();
         assert!(config.enabled);
-        assert_eq!(config.destination, "stdout");
+        assert_eq!(config.destination, AuditDestination::Stdout);
     }
 
     #[test]

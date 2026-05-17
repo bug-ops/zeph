@@ -167,11 +167,11 @@ pub use verifier::{
 };
 pub use zeph_common::ToolName;
 pub use zeph_config::tools::{
-    AdversarialPolicyConfig, AnomalyConfig, AuditConfig, AuthorizationConfig, DefaultEffect,
-    DependencyConfig, EgressConfig, FileConfig, FilterConfig, OverflowConfig, PolicyConfig,
-    PolicyEffect, PolicyRuleConfig, ResultCacheConfig, RetryConfig, SandboxConfig, SandboxProfile,
-    ScrapeConfig, SecurityFilterConfig, ShellConfig, TafcConfig, ToolDependency, ToolsConfig,
-    UtilityScoringConfig,
+    AdversarialPolicyConfig, AnomalyConfig, AuditConfig, AuditDestination, AuthorizationConfig,
+    DefaultEffect, DependencyConfig, EgressConfig, FileConfig, FilterConfig, OverflowConfig,
+    PolicyConfig, PolicyEffect, PolicyRuleConfig, ResultCacheConfig, RetryConfig, SandboxConfig,
+    SandboxProfile, ScrapeConfig, SecurityFilterConfig, ShellConfig, TafcConfig, ToolDependency,
+    ToolsConfig, UtilityScoringConfig,
 };
 pub use zeph_config::tools::{
     AutonomyLevel, PermissionAction, PermissionRule, PermissionsConfig, SpeculationMode,

@@ -747,3 +747,31 @@ pub trait ContextMemoryBackend: Send + Sync {
         >,
     >;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryRoute;
+
+    #[test]
+    fn memory_route_serde_roundtrip() {
+        let cases = [
+            ("\"keyword\"", MemoryRoute::Keyword),
+            ("\"semantic\"", MemoryRoute::Semantic),
+            ("\"hybrid\"", MemoryRoute::Hybrid),
+            ("\"graph\"", MemoryRoute::Graph),
+            ("\"episodic\"", MemoryRoute::Episodic),
+        ];
+        for (json_str, expected) in cases {
+            let got: MemoryRoute = serde_json::from_str(json_str).unwrap();
+            assert_eq!(got, expected);
+            let serialized = serde_json::to_string(&got).unwrap();
+            let roundtrip: MemoryRoute = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(roundtrip, expected);
+        }
+    }
+
+    #[test]
+    fn memory_route_default_is_hybrid() {
+        assert_eq!(MemoryRoute::default(), MemoryRoute::Hybrid);
+    }
+}

@@ -51,7 +51,7 @@ async fn pre_execution_block_writes_audit_entry() {
     // Create audit logger pointing at the temp file.
     let audit_config = zeph_tools::AuditConfig {
         enabled: true,
-        destination: audit_path.display().to_string(),
+        destination: zeph_tools::AuditDestination::File(audit_path.clone()),
         ..Default::default()
     };
     let logger = Arc::new(

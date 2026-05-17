@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-config`: `AuditConfig.destination` changed from `String` to the typed `AuditDestination`
+  enum (`Stdout`, `Stderr`, `File(PathBuf)`); invalid destination values are now rejected at
+  deserialization time instead of silently opening a file at the mistyped path (closes #4302).
+- `zeph-config`: `StoreRoutingConfig.fallback_route` changed from `String` to `MemoryRoute`
+  enum; invalid route values are now rejected at deserialization time instead of silently
+  falling back to `Hybrid` at runtime (closes #4301).
 - `zeph-acp`: `SessionStatus` enum marked `#[non_exhaustive]` — downstream match arms must
   include a `_ =>` wildcard to remain compatible with future variants (closes #4264).
 - `zeph-sanitizer`: `NliSanitizer::circuit_is_open` renamed to

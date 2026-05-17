@@ -521,7 +521,7 @@ mod tests {
         let log_path = dir.path().join("audit.log");
         let audit_config = crate::config::AuditConfig {
             enabled: true,
-            destination: log_path.display().to_string(),
+            destination: crate::config::AuditDestination::File(log_path.clone()),
             ..Default::default()
         };
         let audit_logger = Arc::new(
@@ -556,7 +556,7 @@ mod tests {
         let log_path = dir.path().join("audit.log");
         let audit_config = crate::config::AuditConfig {
             enabled: true,
-            destination: log_path.display().to_string(),
+            destination: crate::config::AuditDestination::File(log_path.clone()),
             ..Default::default()
         };
         let audit_logger = Arc::new(
@@ -614,7 +614,7 @@ mod tests {
         let log_path = dir.path().join("audit.log");
         let audit_config = crate::config::AuditConfig {
             enabled: true,
-            destination: log_path.display().to_string(),
+            destination: crate::config::AuditDestination::File(log_path.clone()),
             ..Default::default()
         };
         let audit_logger = Arc::new(

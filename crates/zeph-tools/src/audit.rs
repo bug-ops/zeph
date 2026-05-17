@@ -278,19 +278,21 @@ impl AuditLogger {
     /// Returns an error if a file destination cannot be opened.
     #[allow(clippy::unused_async)]
     pub async fn from_config(config: &AuditConfig, tui_mode: bool) -> Result<Self, std::io::Error> {
-        let effective_dest = if tui_mode && config.destination == "stdout" {
-            tracing::warn!("TUI mode: audit stdout redirected to file audit.jsonl");
-            "audit.jsonl".to_owned()
-        } else {
-            config.destination.clone()
-        };
+        use zeph_config::AuditDestination as CfgDest;
 
-        let destination = if effective_dest == "stdout" {
-            AuditDestination::Stdout
-        } else {
-            let std_file = zeph_common::fs_secure::append_private(Path::new(&effective_dest))?;
-            let file = tokio::fs::File::from_std(std_file);
-            AuditDestination::File(tokio::sync::Mutex::new(file))
+        let destination = match &config.destination {
+            CfgDest::Stdout if tui_mode => {
+                tracing::warn!("TUI mode: audit stdout redirected to file audit.jsonl");
+                let std_file = zeph_common::fs_secure::append_private(Path::new("audit.jsonl"))?;
+                let file = tokio::fs::File::from_std(std_file);
+                AuditDestination::File(tokio::sync::Mutex::new(file))
+            }
+            CfgDest::Stdout | CfgDest::Stderr => AuditDestination::Stdout,
+            CfgDest::File(path) => {
+                let std_file = zeph_common::fs_secure::append_private(path)?;
+                let file = tokio::fs::File::from_std(std_file);
+                AuditDestination::File(tokio::sync::Mutex::new(file))
+            }
         };
 
         Ok(Self { destination })
@@ -552,7 +554,7 @@ mod tests {
     async fn audit_logger_stdout() {
         let config = AuditConfig {
             enabled: true,
-            destination: "stdout".into(),
+            destination: crate::config::AuditDestination::Stdout,
             ..Default::default()
         };
         let logger = AuditLogger::from_config(&config, false).await.unwrap();
@@ -591,7 +593,7 @@ mod tests {
         let path = dir.path().join("audit.log");
         let config = AuditConfig {
             enabled: true,
-            destination: path.display().to_string(),
+            destination: crate::config::AuditDestination::File(path.clone()),
             ..Default::default()
         };
         let logger = AuditLogger::from_config(&config, false).await.unwrap();
@@ -631,7 +633,7 @@ mod tests {
     async fn audit_logger_file_write_error_logged() {
         let config = AuditConfig {
             enabled: true,
-            destination: "/nonexistent/dir/audit.log".into(),
+            destination: crate::config::AuditDestination::File("/nonexistent/dir/audit.log".into()),
             ..Default::default()
         };
         let result = AuditLogger::from_config(&config, false).await;
@@ -736,7 +738,7 @@ mod tests {
         let path = dir.path().join("audit.log");
         let config = AuditConfig {
             enabled: true,
-            destination: path.display().to_string(),
+            destination: crate::config::AuditDestination::File(path.clone()),
             ..Default::default()
         };
         let logger = AuditLogger::from_config(&config, false).await.unwrap();

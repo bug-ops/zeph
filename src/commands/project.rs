@@ -432,18 +432,25 @@ impl PurgeEngine<'_> {
 
     fn collect_audit_log(&self) -> PurgeCategory {
         let dest = &self.config.tools.audit.destination;
-        if dest == "stdout" || dest == "stderr" {
-            return PurgeCategory {
-                name: "Audit log",
-                items: vec![PurgeItem {
-                    path_or_desc: format!("(destination is {dest} — nothing to delete)"),
-                    path: None,
-                    bytes: 0,
-                    note: None,
-                }],
-            };
-        }
-        let p = PathBuf::from(dest);
+        let p = match dest {
+            zeph_config::AuditDestination::File(path) => path.clone(),
+            zeph_config::AuditDestination::Stdout | zeph_config::AuditDestination::Stderr => {
+                let label = if matches!(dest, zeph_config::AuditDestination::Stdout) {
+                    "stdout"
+                } else {
+                    "stderr"
+                };
+                return PurgeCategory {
+                    name: "Audit log",
+                    items: vec![PurgeItem {
+                        path_or_desc: format!("(destination is {label} — nothing to delete)"),
+                        path: None,
+                        bytes: 0,
+                        note: None,
+                    }],
+                };
+            }
+        };
         PurgeCategory {
             name: "Audit log",
             items: vec![PurgeItem {

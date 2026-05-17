@@ -2437,7 +2437,7 @@ mod tests {
         let path = dir.path().join("audit.log");
         let config = AuditConfig {
             enabled: true,
-            destination: path.display().to_string(),
+            destination: crate::config::AuditDestination::File(path.clone()),
             ..Default::default()
         };
         let logger = std::sync::Arc::new(AuditLogger::from_config(&config, false).await.unwrap());
