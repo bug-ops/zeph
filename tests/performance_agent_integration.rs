@@ -318,7 +318,7 @@ async fn shell_executor_default_blocked_patterns() {
         assert!(
             matches!(
                 result,
-                Err(ToolError::Blocked { .. }) | Err(ToolError::BlockedWithFix { .. })
+                Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
             ),
             "Command with pattern '{pattern}' should be blocked. Result: {result:?}",
         );
@@ -371,7 +371,7 @@ async fn shell_executor_case_insensitive_blocking() {
         assert!(
             matches!(
                 result,
-                Err(ToolError::Blocked { .. }) | Err(ToolError::BlockedWithFix { .. })
+                Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
             ),
             "Should block case-insensitive: {cmd}",
         );
