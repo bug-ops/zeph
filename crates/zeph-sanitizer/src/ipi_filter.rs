@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn clean_text_score_zero() {
         let v = filter().filter("The weather is nice today.");
-        assert_eq!(v.score, 0.0, "expected score=0 for clean text");
+        assert!(v.score.abs() < f32::EPSILON, "expected score=0 for clean text");
         assert!(v.patterns_found.is_empty());
         assert_eq!(v.sanitized, "The weather is nice today.");
     }
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn empty_text_score_zero() {
         let v = filter().filter("");
-        assert_eq!(v.score, 0.0);
+        assert!(v.score.abs() < f32::EPSILON);
         assert!(v.patterns_found.is_empty());
         assert_eq!(v.sanitized, "");
     }

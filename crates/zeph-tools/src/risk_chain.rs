@@ -344,7 +344,7 @@ mod tests {
         acc.reset();
         let inner = acc.inner.lock();
         assert_eq!(inner.calls.len(), 0);
-        assert_eq!(inner.cumulative_score, 0.0);
+        assert!(inner.cumulative_score.abs() < f32::EPSILON);
     }
 
     #[test]
