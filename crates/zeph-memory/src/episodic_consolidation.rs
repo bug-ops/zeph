@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
+use zeph_common::types::ProviderName;
 use zeph_db::{DbPool, sql};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
@@ -47,6 +48,8 @@ type CandidateRow = (i64, String, String, String, String, i64);
 pub struct EpisodicConsolidationConfig {
     /// Enable the episodic consolidation daemon.
     pub enabled: bool,
+    /// Provider name for fact extraction LLM calls (resolved by the caller).
+    pub consolidation_provider: ProviderName,
     /// How often the sweep runs, in seconds. Default: `1800`.
     pub interval_secs: u64,
     /// Maximum episodic events processed per sweep. Default: `30`.
@@ -714,6 +717,7 @@ mod tests {
         let provider = mock_provider_with_response(&llm_response);
         let config = EpisodicConsolidationConfig {
             enabled: true,
+            consolidation_provider: ProviderName::default(),
             interval_secs: 1800,
             batch_size: 30,
             min_age_secs: 300,
@@ -758,6 +762,7 @@ mod tests {
         let provider = mock_provider_with_response("[]");
         let config = EpisodicConsolidationConfig {
             enabled: true,
+            consolidation_provider: ProviderName::default(),
             interval_secs: 1800,
             batch_size: 30,
             min_age_secs: 300,
@@ -829,6 +834,7 @@ mod tests {
     fn episodic_consolidation_config_default() {
         let cfg = EpisodicConsolidationConfig {
             enabled: false,
+            consolidation_provider: ProviderName::default(),
             interval_secs: 1800,
             batch_size: 30,
             min_age_secs: 300,

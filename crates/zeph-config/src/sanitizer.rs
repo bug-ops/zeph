@@ -173,9 +173,9 @@ pub struct NliConfig {
 
     /// Provider name from `[[llm.providers]]` to use for NLI inference.
     ///
-    /// Empty string means fall back to the default provider. Prefer a fast, cheap model.
+    /// An empty [`ProviderName`] falls back to the default provider. Prefer a fast, cheap model.
     #[serde(default)]
-    pub provider: String,
+    pub provider: ProviderName,
 
     /// Entailment score threshold above which content is flagged (default: 0.75).
     #[serde(default = "default_nli_threshold")]
@@ -206,7 +206,7 @@ impl Default for NliConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            provider: String::new(),
+            provider: ProviderName::default(),
             threshold: default_nli_threshold(),
             timeout_ms: default_nli_timeout_ms(),
             max_content_len: default_nli_max_content_len(),

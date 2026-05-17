@@ -296,8 +296,22 @@ fn default_sandbox_profile() -> SandboxProfile {
     SandboxProfile::Workspace
 }
 
-fn default_sandbox_backend() -> String {
-    "auto".into()
+/// Backend used to enforce OS-level sandboxing.
+///
+/// Serialises with `kebab-case` names so TOML values match the original string convention
+/// (`"auto"`, `"seatbelt"`, `"landlock-bwrap"`, `"noop"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxBackend {
+    /// Automatically select the best available backend for the current OS.
+    #[default]
+    Auto,
+    /// macOS `sandbox-exec` (Seatbelt) profile.
+    Seatbelt,
+    /// Linux Landlock + bubblewrap combination.
+    LandlockBwrap,
+    /// Disable sandboxing (testing / unsupported platforms).
+    Noop,
 }
 
 /// OS-level subprocess sandbox configuration (`[tools.sandbox]` TOML section).
@@ -318,9 +332,11 @@ pub struct SandboxConfig {
     /// When `true`, sandbox initialization failure aborts startup (fail-closed). Default: `true`.
     #[serde(default = "default_true")]
     pub strict: bool,
-    /// OS backend hint: `"auto"` / `"seatbelt"` / `"landlock-bwrap"` / `"noop"`.
-    #[serde(default = "default_sandbox_backend")]
-    pub backend: String,
+    /// OS backend used to enforce sandboxing.
+    ///
+    /// Accepts `"auto"`, `"seatbelt"`, `"landlock-bwrap"`, or `"noop"` in TOML.
+    #[serde(default)]
+    pub backend: SandboxBackend,
     /// Hostnames denied network egress from sandboxed subprocesses.
     #[serde(default)]
     pub denied_domains: Vec<String>,
@@ -337,7 +353,7 @@ impl Default for SandboxConfig {
             allow_read: Vec::new(),
             allow_write: Vec::new(),
             strict: true,
-            backend: default_sandbox_backend(),
+            backend: SandboxBackend::Auto,
             denied_domains: Vec::new(),
             fail_if_unavailable: false,
         }

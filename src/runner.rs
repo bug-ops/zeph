@@ -1691,6 +1691,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         let store = std::sync::Arc::new(memory.sqlite().clone());
         let ep_cfg = zeph_memory::EpisodicConsolidationConfig {
             enabled: config.memory.episodic_consolidation.enabled,
+            consolidation_provider: config
+                .memory
+                .episodic_consolidation
+                .consolidation_provider
+                .clone(),
             interval_secs: config.memory.episodic_consolidation.interval_secs,
             batch_size: config.memory.episodic_consolidation.batch_size,
             min_age_secs: config.memory.episodic_consolidation.min_age_secs,

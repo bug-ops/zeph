@@ -15,13 +15,18 @@ use serde::{Deserialize, Serialize};
 // ── MemoryRoute ───────────────────────────────────────────────────────────────
 
 /// Classification of which memory backend(s) to query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Used in routing configuration and at runtime to dispatch memory operations.
+/// Serialises with `snake_case` names (`keyword`, `semantic`, `hybrid`, `graph`, `episodic`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryRoute {
     /// Full-text search only (`SQLite` FTS5). Fast, good for keyword/exact queries.
     Keyword,
     /// Vector search only (Qdrant). Good for semantic/conceptual queries.
     Semantic,
     /// Both backends, results merged by reciprocal rank fusion.
+    #[default]
     Hybrid,
     /// Graph-based retrieval via BFS traversal.
     Graph,

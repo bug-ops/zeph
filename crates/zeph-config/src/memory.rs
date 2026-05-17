@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use zeph_common::memory::EdgeType;
+use zeph_common::memory::{EdgeType, MemoryRoute};
 use zeph_common::secret::Secret;
 
 use crate::defaults::{default_sqlite_path_field, default_true};
@@ -2700,8 +2700,9 @@ pub struct StoreRoutingConfig {
     /// Falls back to the primary provider when empty. Default: `""`.
     pub routing_classifier_provider: ProviderName,
     /// Route to use when the classifier is uncertain (confidence < threshold).
-    /// Default: `"hybrid"`.
-    pub fallback_route: String,
+    ///
+    /// Defaults to [`MemoryRoute::Hybrid`].
+    pub fallback_route: MemoryRoute,
     /// Confidence threshold below which `HybridRouter` escalates to LLM.
     /// Range: `[0.0, 1.0]`. Default: `0.7`.
     pub confidence_threshold: f32,
@@ -2713,7 +2714,7 @@ impl Default for StoreRoutingConfig {
             enabled: false,
             strategy: StoreRoutingStrategy::Heuristic,
             routing_classifier_provider: ProviderName::default(),
-            fallback_route: "hybrid".into(),
+            fallback_route: MemoryRoute::Hybrid,
             confidence_threshold: 0.7,
         }
     }

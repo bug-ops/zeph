@@ -455,7 +455,7 @@ impl<C: Channel> Agent<C> {
         }];
 
         let provider =
-            self.resolve_background_provider(&self.runtime.config.recap_config.provider.clone());
+            self.resolve_background_provider(self.runtime.config.recap_config.provider.as_str());
 
         let _ = self.channel.send_status("Generating recap...").await;
 

@@ -367,16 +367,12 @@ impl zeph_context::summarization::MessageTokenCounter for TokenCounterAdapter {
 pub fn build_memory_router(
     manager: &zeph_context::manager::ContextManager,
 ) -> Box<dyn zeph_common::memory::AsyncMemoryRouter + Send + Sync> {
-    use zeph_common::memory::parse_route_str;
     use zeph_config::StoreRoutingStrategy;
 
     if !manager.routing.enabled {
         return Box::new(zeph_memory::HeuristicRouter);
     }
-    let fallback = parse_route_str(
-        &manager.routing.fallback_route,
-        zeph_common::memory::MemoryRoute::Hybrid,
-    );
+    let fallback = manager.routing.fallback_route;
     match manager.routing.strategy {
         StoreRoutingStrategy::Heuristic => Box::new(zeph_memory::HeuristicRouter),
         StoreRoutingStrategy::Llm => {

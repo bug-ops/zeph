@@ -19,14 +19,13 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use super::dag;
 use super::error::OrchestrationError;
-use super::graph::TaskGraph;
+use super::graph::{FailureStrategy, TaskGraph};
 use super::planner::{PlannerResponse, convert_response_pub};
 use zeph_subagent::SubAgentDef;
 
 /// Structural skeleton of a single task, stripped of all runtime state.
 ///
-/// Used inside a [`PlanTemplate`]. All fields use owned `String` types so the
-/// template can be serialised independently of the live `TaskGraph`.
+/// Used inside a [`PlanTemplate`]. Serialised as JSON in the `plan_cache` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateTask {
     /// Human-readable task title.
@@ -39,11 +38,9 @@ pub struct TemplateTask {
     /// Kebab-case `task_id` strings of tasks this task depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
-    /// Serialised [`FailureStrategy`] name, if overridden per task.
-    ///
-    /// [`FailureStrategy`]: crate::graph::FailureStrategy
+    /// Failure strategy override for this task, if set by the original planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_strategy: Option<String>,
+    pub failure_strategy: Option<FailureStrategy>,
     /// Stable kebab-case `task_id` assigned during template extraction.
     pub task_id: String,
 }
@@ -106,7 +103,7 @@ impl PlanTemplate {
                     .iter()
                     .map(|dep| id_to_slug[dep.index()].clone())
                     .collect(),
-                failure_strategy: node.failure_strategy.map(|fs| fs.to_string()),
+                failure_strategy: node.failure_strategy,
                 task_id: id_to_slug[i].clone(),
             })
             .collect();

@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::providers::ProviderName;
+
 /// Top-level `[session]` config block.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -64,8 +66,8 @@ pub struct RecapConfig {
 
     /// Provider name from `[[llm.providers]]` for recap LLM calls.
     ///
-    /// An empty string falls back to the primary provider. Default: `""`.
-    pub provider: String,
+    /// An empty [`ProviderName`] falls back to the primary provider. Default: `""`.
+    pub provider: ProviderName,
 
     /// Maximum recent messages included when generating a fresh recap.
     ///
@@ -79,7 +81,7 @@ impl Default for RecapConfig {
         Self {
             on_resume: true,
             max_tokens: 200,
-            provider: String::new(),
+            provider: ProviderName::default(),
             max_input_messages: 20,
         }
     }

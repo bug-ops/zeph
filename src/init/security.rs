@@ -107,7 +107,12 @@ pub(super) fn step_sandbox(state: &mut WizardState) -> anyhow::Result<()> {
         .items(backends)
         .default(0)
         .interact()?;
-    state.sandbox_backend = backend_values[bidx].into();
+    state.sandbox_backend = match backend_values[bidx] {
+        "seatbelt" => zeph_config::SandboxBackend::Seatbelt,
+        "landlock-bwrap" => zeph_config::SandboxBackend::LandlockBwrap,
+        "noop" => zeph_config::SandboxBackend::Noop,
+        _ => zeph_config::SandboxBackend::Auto,
+    };
 
     state.sandbox_strict = Confirm::new()
         .with_prompt(

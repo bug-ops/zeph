@@ -211,7 +211,7 @@ pub(crate) struct WizardState {
     // OS subprocess sandbox (#3070, #3077)
     pub(crate) sandbox_enabled: bool,
     pub(crate) sandbox_profile: String,
-    pub(crate) sandbox_backend: String,
+    pub(crate) sandbox_backend: zeph_config::SandboxBackend,
     pub(crate) sandbox_strict: bool,
     pub(crate) sandbox_allow_read: Vec<String>,
     pub(crate) sandbox_allow_write: Vec<String>,
@@ -398,7 +398,7 @@ impl Default for WizardState {
             file_allow_read: Vec::new(),
             sandbox_enabled: false,
             sandbox_profile: "workspace".to_owned(),
-            sandbox_backend: "auto".to_owned(),
+            sandbox_backend: zeph_config::SandboxBackend::Auto,
             sandbox_strict: true,
             sandbox_allow_read: Vec::new(),
             sandbox_allow_write: Vec::new(),
@@ -944,11 +944,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             zeph_config::tools::SandboxProfile::Workspace
         }
     };
-    config
-        .tools
-        .sandbox
-        .backend
-        .clone_from(&state.sandbox_backend);
+    config.tools.sandbox.backend = state.sandbox_backend.clone();
     config.tools.sandbox.strict = state.sandbox_strict;
     config.tools.sandbox.allow_read = state
         .sandbox_allow_read
@@ -2408,7 +2404,7 @@ mod tests {
         let state = WizardState {
             sandbox_enabled: true,
             sandbox_profile: "workspace".into(),
-            sandbox_backend: "auto".into(),
+            sandbox_backend: zeph_config::SandboxBackend::Auto,
             sandbox_strict: true,
             sandbox_allow_read: vec!["/tmp/read".into()],
             sandbox_allow_write: vec!["/tmp/write".into()],
@@ -2420,7 +2416,10 @@ mod tests {
             config.tools.sandbox.profile,
             zeph_config::tools::SandboxProfile::Workspace
         );
-        assert_eq!(config.tools.sandbox.backend, "auto");
+        assert_eq!(
+            config.tools.sandbox.backend,
+            zeph_config::SandboxBackend::Auto
+        );
         assert_eq!(config.tools.sandbox.allow_read.len(), 1);
         assert_eq!(config.tools.sandbox.allow_write.len(), 1);
     }
