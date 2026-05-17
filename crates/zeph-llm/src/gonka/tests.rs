@@ -33,14 +33,14 @@ fn make_provider(base_url: &str) -> GonkaProvider {
         }])
         .unwrap(),
     );
-    GonkaProvider::new(
+    GonkaProvider::new(super::GonkaConfig {
         signer,
         pool,
-        "gpt-4o",
-        1024,
-        Some("text-embedding-3-small".to_owned()),
-        Duration::from_secs(10),
-    )
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: Some("text-embedding-3-small".to_owned()),
+        timeout: Duration::from_secs(10),
+    })
 }
 
 fn user_message(text: &str) -> Vec<Message> {
@@ -234,7 +234,14 @@ async fn gonka_retry_on_endpoint_failure() {
         ])
         .unwrap(),
     );
-    let provider = GonkaProvider::new(signer, pool, "gpt-4o", 1024, None, Duration::from_secs(10));
+    let provider = GonkaProvider::new(super::GonkaConfig {
+        signer,
+        pool,
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        timeout: Duration::from_secs(10),
+    });
     let messages = user_message("retry test");
     let result = provider.chat(&messages).await.unwrap();
     assert_eq!(result, "hello");
@@ -317,7 +324,14 @@ async fn gonka_fresh_timestamp_on_retry() {
         ])
         .unwrap(),
     );
-    let provider = GonkaProvider::new(signer, pool, "gpt-4o", 1024, None, Duration::from_secs(10));
+    let provider = GonkaProvider::new(super::GonkaConfig {
+        signer,
+        pool,
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        timeout: Duration::from_secs(10),
+    });
     let messages = user_message("timestamp test");
     let result = provider.chat(&messages).await.unwrap();
     assert_eq!(result, "hello");
@@ -395,7 +409,14 @@ async fn gonka_embed_unsupported_without_model() {
         .unwrap(),
     );
     // No embedding model configured.
-    let provider = GonkaProvider::new(signer, pool, "gpt-4o", 1024, None, Duration::from_secs(5));
+    let provider = GonkaProvider::new(super::GonkaConfig {
+        signer,
+        pool,
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        timeout: Duration::from_secs(5),
+    });
     assert!(!provider.supports_embeddings());
 
     let result = provider.embed("test").await;

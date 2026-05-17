@@ -217,14 +217,14 @@ fn build_provider(config: &zeph_config::Config, name: &str) -> anyhow::Result<An
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".into());
             let embedding_model = entry.embedding_model.clone();
-            AnyProvider::OpenAi(OpenAiProvider::new(
+            AnyProvider::OpenAi(OpenAiProvider::new(zeph_llm::OpenAiConfig {
                 api_key,
                 base_url,
                 model,
                 max_tokens,
                 embedding_model,
-                None, // reasoning_effort
-            ))
+                reasoning_effort: None,
+            }))
         }
         zeph_config::ProviderKind::Ollama => {
             let base_url = entry

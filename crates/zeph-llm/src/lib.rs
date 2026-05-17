@@ -109,8 +109,10 @@ pub(crate) mod usage;
 pub mod whisper;
 
 pub use classifier::metrics::{ClassifierMetrics, ClassifierMetricsSnapshot, TaskMetricsSnapshot};
+pub use compatible::CompatibleConfig;
 pub use error::LlmError;
 pub use extractor::Extractor;
+pub use openai::OpenAiConfig;
 pub use provider::{ChatExtras, ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
 pub use provider_dyn::LlmProviderDyn;
 pub use router::aware::RouterAware;

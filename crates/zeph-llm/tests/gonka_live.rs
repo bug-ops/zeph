@@ -44,8 +44,14 @@ mod live {
             .expect("non-empty pool"),
         );
 
-        let provider =
-            GonkaProvider::new(signer, pool, "gpt-4o", 16, None, Duration::from_secs(30));
+        let provider = GonkaProvider::new(zeph_llm::gonka::GonkaConfig {
+            signer,
+            pool,
+            model: "gpt-4o".into(),
+            max_tokens: 16,
+            embedding_model: None,
+            timeout: Duration::from_secs(30),
+        });
 
         let messages = vec![Message::from_legacy(
             Role::User,

@@ -1173,14 +1173,14 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                     reasoning_effort,
                 } if provider_name == "openai" => {
                     return Some(zeph_llm::any::AnyProvider::OpenAi(
-                        zeph_llm::openai::OpenAiProvider::new(
-                            api_key.clone(),
-                            base_url.clone(),
-                            model.clone(),
-                            *max_tokens,
-                            embed.clone(),
-                            reasoning_effort.clone(),
-                        ),
+                        zeph_llm::openai::OpenAiProvider::new(zeph_llm::openai::OpenAiConfig {
+                            api_key: api_key.clone(),
+                            base_url: base_url.clone(),
+                            model: model.clone(),
+                            max_tokens: *max_tokens,
+                            embedding_model: embed.clone(),
+                            reasoning_effort: reasoning_effort.clone(),
+                        }),
                     ));
                 }
                 ProviderSnapshot::Compatible {
@@ -1192,12 +1192,14 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                 } if provider_name == name => {
                     return Some(zeph_llm::any::AnyProvider::Compatible(
                         zeph_llm::compatible::CompatibleProvider::new(
-                            name.clone(),
-                            api_key.clone(),
-                            base_url.clone(),
-                            model.clone(),
-                            *max_tokens,
-                            embed.clone(),
+                            zeph_llm::compatible::CompatibleConfig {
+                                provider_name: name.clone(),
+                                api_key: api_key.clone(),
+                                base_url: base_url.clone(),
+                                model: model.clone(),
+                                max_tokens: *max_tokens,
+                                embedding_model: embed.clone(),
+                            },
                         ),
                     ));
                 }

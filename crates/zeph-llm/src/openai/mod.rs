@@ -34,6 +34,44 @@ use crate::error::LlmError;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
+/// Configuration for [`OpenAiProvider`].
+///
+/// Pass to [`OpenAiProvider::new`] instead of individual positional arguments to avoid
+/// silent parameter transposition.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::openai::{OpenAiConfig, OpenAiProvider};
+///
+/// let cfg = OpenAiConfig {
+///     api_key: "sk-...".into(),
+///     base_url: "https://api.openai.com/v1".into(),
+///     model: "gpt-4o".into(),
+///     max_tokens: 4096,
+///     embedding_model: Some("text-embedding-3-small".into()),
+///     reasoning_effort: None,
+/// };
+/// let provider = OpenAiProvider::new(cfg);
+/// ```
+#[derive(Debug, Clone)]
+pub struct OpenAiConfig {
+    /// Secret API key sent in the `Authorization: Bearer` header.
+    pub api_key: String,
+    /// Base URL of the endpoint, e.g. `"https://api.openai.com/v1"`.
+    /// Trailing slashes are stripped automatically.
+    pub base_url: String,
+    /// Chat model identifier, e.g. `"gpt-4o"`.
+    pub model: String,
+    /// Upper bound on completion tokens returned by the model.
+    pub max_tokens: u32,
+    /// Embedding model identifier. Set to `None` when the endpoint does not support embeddings.
+    pub embedding_model: Option<String>,
+    /// Reasoning effort level for `o*` models (`"low"`, `"medium"`, or `"high"`).
+    /// Leave `None` for standard chat models.
+    pub reasoning_effort: Option<String>,
+}
+
 use crate::provider::{
     ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
     Role, StatusTx, ToolDefinition, ToolUseRequest,
@@ -116,32 +154,21 @@ impl Clone for OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    /// Create a new provider.
-    ///
-    /// Trailing slashes are stripped from `base_url` automatically.
-    /// Set `embedding_model` to `None` when the endpoint does not support embeddings.
-    /// Set `reasoning_effort` to `Some("low" | "medium" | "high")` for `o*` reasoning models;
-    /// leave `None` for standard chat models.
+    /// Create a new provider from an [`OpenAiConfig`].
     #[must_use]
-    pub fn new(
-        api_key: String,
-        mut base_url: String,
-        model: String,
-        max_tokens: u32,
-        embedding_model: Option<String>,
-        reasoning_effort: Option<String>,
-    ) -> Self {
+    pub fn new(cfg: OpenAiConfig) -> Self {
+        let mut base_url = cfg.base_url;
         while base_url.ends_with('/') {
             base_url.pop();
         }
         Self {
             client: crate::http::llm_client(600),
-            api_key,
+            api_key: cfg.api_key,
             base_url,
-            model,
-            max_tokens,
-            embedding_model,
-            reasoning_effort,
+            model: cfg.model,
+            max_tokens: cfg.max_tokens,
+            embedding_model: cfg.embedding_model,
+            reasoning_effort: cfg.reasoning_effort,
             status_tx: None,
             usage: UsageTracker::default(),
             generation_overrides: None,

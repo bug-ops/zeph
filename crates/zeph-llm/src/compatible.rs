@@ -23,11 +23,47 @@
 use std::fmt;
 
 use crate::error::LlmError;
-use crate::openai::OpenAiProvider;
+use crate::openai::{OpenAiConfig, OpenAiProvider};
 use crate::provider::{
     ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx,
     ToolDefinition,
 };
+
+/// Configuration for [`CompatibleProvider`].
+///
+/// Pass to [`CompatibleProvider::new`] instead of individual positional arguments to avoid
+/// silent parameter transposition.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::compatible::{CompatibleConfig, CompatibleProvider};
+///
+/// let cfg = CompatibleConfig {
+///     provider_name: "together-ai".into(),
+///     api_key: "key".into(),
+///     base_url: "https://api.together.xyz/v1".into(),
+///     model: "meta-llama/Llama-3.3-70B-Instruct-Turbo".into(),
+///     max_tokens: 4096,
+///     embedding_model: None,
+/// };
+/// let provider = CompatibleProvider::new(cfg);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CompatibleConfig {
+    /// Human-readable provider name used in logs and [`LlmProvider::name`].
+    pub provider_name: String,
+    /// Secret API key sent in the `Authorization: Bearer` header.
+    pub api_key: String,
+    /// Base URL of the endpoint, e.g. `"https://api.together.xyz/v1"`.
+    pub base_url: String,
+    /// Chat model identifier.
+    pub model: String,
+    /// Upper bound on completion tokens returned by the model.
+    pub max_tokens: u32,
+    /// Embedding model identifier. Set to `None` when the endpoint does not support embeddings.
+    pub embedding_model: Option<String>,
+}
 
 /// [`LlmProvider`] adapter for OpenAI-compatible REST endpoints.
 ///
@@ -40,17 +76,18 @@ pub struct CompatibleProvider {
 }
 
 impl CompatibleProvider {
+    /// Create a new provider from a [`CompatibleConfig`].
     #[must_use]
-    pub fn new(
-        provider_name: String,
-        api_key: String,
-        base_url: String,
-        model: String,
-        max_tokens: u32,
-        embedding_model: Option<String>,
-    ) -> Self {
-        let inner =
-            OpenAiProvider::new(api_key, base_url, model, max_tokens, embedding_model, None);
+    pub fn new(cfg: CompatibleConfig) -> Self {
+        let provider_name = cfg.provider_name;
+        let inner = OpenAiProvider::new(OpenAiConfig {
+            api_key: cfg.api_key,
+            base_url: cfg.base_url,
+            model: cfg.model,
+            max_tokens: cfg.max_tokens,
+            embedding_model: cfg.embedding_model,
+            reasoning_effort: None,
+        });
         Self {
             inner,
             provider_name,
@@ -234,14 +271,14 @@ mod tests {
     use super::*;
 
     fn test_provider() -> CompatibleProvider {
-        CompatibleProvider::new(
-            "groq".into(),
-            "key".into(),
-            "https://api.groq.com/openai/v1".into(),
-            "llama-3.3-70b".into(),
-            4096,
-            None,
-        )
+        CompatibleProvider::new(CompatibleConfig {
+            provider_name: "groq".into(),
+            api_key: "key".into(),
+            base_url: "https://api.groq.com/openai/v1".into(),
+            model: "llama-3.3-70b".into(),
+            max_tokens: 4096,
+            embedding_model: None,
+        })
     }
 
     #[test]
@@ -267,14 +304,14 @@ mod tests {
 
     #[test]
     fn supports_embeddings_with_model() {
-        let p = CompatibleProvider::new(
-            "test".into(),
-            "key".into(),
-            "http://localhost".into(),
-            "m".into(),
-            100,
-            Some("embed-model".into()),
-        );
+        let p = CompatibleProvider::new(CompatibleConfig {
+            provider_name: "test".into(),
+            api_key: "key".into(),
+            base_url: "http://localhost".into(),
+            model: "m".into(),
+            max_tokens: 100,
+            embedding_model: Some("embed-model".into()),
+        });
         assert!(p.supports_embeddings());
     }
 
@@ -294,14 +331,14 @@ mod tests {
 
     #[tokio::test]
     async fn chat_unreachable_errors() {
-        let p = CompatibleProvider::new(
-            "test".into(),
-            "key".into(),
-            "http://127.0.0.1:1".into(),
-            "m".into(),
-            100,
-            None,
-        );
+        let p = CompatibleProvider::new(CompatibleConfig {
+            provider_name: "test".into(),
+            api_key: "key".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            model: "m".into(),
+            max_tokens: 100,
+            embedding_model: None,
+        });
         let msgs = vec![Message::from_legacy(crate::provider::Role::User, "hello")];
         assert!(p.chat(&msgs).await.is_err());
     }

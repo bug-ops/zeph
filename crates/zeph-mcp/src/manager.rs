@@ -583,13 +583,15 @@ impl McpManager {
                         server_tool_metadata.get(&event.server_id).unwrap_or(&empty);
                     ingest_tools(
                         event.tools,
-                        &event.server_id,
-                        trust_level,
-                        allowlist.as_deref(),
-                        &expected_tools,
-                        status_tx.as_ref(),
-                        max_description_bytes,
-                        tool_metadata,
+                        &IngestConfig {
+                            server_id: &event.server_id,
+                            trust_level,
+                            allowlist: allowlist.as_deref(),
+                            expected_tools: &expected_tools,
+                            status_tx: status_tx.as_ref(),
+                            max_description_bytes,
+                            tool_metadata,
+                        },
                     )
                 };
                 apply_injection_penalties(
@@ -1036,13 +1038,15 @@ impl McpManager {
                     let tool_metadata = self.server_tool_metadata.get(&server_id).unwrap_or(&empty);
                     let (tools, sanitize_result) = ingest_tools(
                         raw_tools,
-                        &server_id,
-                        trust_level,
-                        allowlist.as_deref(),
-                        &expected_tools,
-                        self.status_tx.as_ref(),
-                        limits.description_bytes,
-                        tool_metadata,
+                        &IngestConfig {
+                            server_id: &server_id,
+                            trust_level,
+                            allowlist: allowlist.as_deref(),
+                            expected_tools: &expected_tools,
+                            status_tx: self.status_tx.as_ref(),
+                            max_description_bytes: limits.description_bytes,
+                            tool_metadata,
+                        },
                     );
                     apply_injection_penalties(
                         self.trust_store.as_ref(),
@@ -1183,13 +1187,15 @@ impl McpManager {
 
         let (tools, sanitize_result) = ingest_tools(
             raw_tools,
-            &entry.id,
-            entry.trust_level,
-            entry.tool_allowlist.as_deref(),
-            &entry.expected_tools,
-            self.status_tx.as_ref(),
-            self.max_description_bytes,
-            &entry.tool_metadata,
+            &IngestConfig {
+                server_id: &entry.id,
+                trust_level: entry.trust_level,
+                allowlist: entry.tool_allowlist.as_deref(),
+                expected_tools: &entry.expected_tools,
+                status_tx: self.status_tx.as_ref(),
+                max_description_bytes: self.max_description_bytes,
+                tool_metadata: &entry.tool_metadata,
+            },
         );
         apply_injection_penalties(
             self.trust_store.as_ref(),
@@ -1670,31 +1676,71 @@ async fn drain_oauth_results(
 // TODO(critic): ingest_tools has both too_many_arguments and too_many_lines
 // suppressed; not in scope for #3451. File a separate issue to decompose
 // with an IngestParams struct.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
-fn ingest_tools(
-    mut tools: Vec<McpTool>,
-    server_id: &str,
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+/// Configuration bundle passed to [`ingest_tools`].
+///
+/// Consolidates all per-server policy parameters so call sites pass a single
+/// reference instead of eight positional arguments.
+struct IngestConfig<'a> {
+    /// Stable identifier of the MCP server being ingested.
+    server_id: &'a str,
+    /// Trust classification that governs allowlist and attestation enforcement.
     trust_level: McpTrustLevel,
-    allowlist: Option<&[String]>,
-    expected_tools: &[String],
-    status_tx: Option<&StatusTx>,
+    /// Explicit tool allow-list from operator config (`None` = not configured).
+    allowlist: Option<&'a [String]>,
+    /// Operator-declared set of expected tool names used for attestation.
+    expected_tools: &'a [String],
+    /// Channel for surfacing warnings to the user-facing status bar.
+    status_tx: Option<&'a StatusTx>,
+    /// Maximum byte length for tool descriptions; longer descriptions are truncated.
     max_description_bytes: usize,
-    tool_metadata: &HashMap<String, ToolSecurityMeta>,
-) -> (Vec<McpTool>, SanitizeResult) {
-    use crate::attestation::{AttestationResult, attest_tools};
+    /// Per-tool security metadata overrides keyed by tool name.
+    tool_metadata: &'a HashMap<String, ToolSecurityMeta>,
+}
 
+/// Run the full tool-ingest pipeline: sanitize → assign security metadata →
+/// enforce data-flow policy → attest → apply allowlist filtering.
+///
+/// # Security invariant
+///
+/// Sanitization always runs first, before any filtering or storage, to prevent
+/// prompt-injection content from reaching the registry even for trusted servers.
+fn ingest_tools(mut tools: Vec<McpTool>, cfg: &IngestConfig<'_>) -> (Vec<McpTool>, SanitizeResult) {
     // SECURITY INVARIANT: sanitize BEFORE any filtering or storage.
-    let sanitize_result = sanitize_tools(&mut tools, server_id, max_description_bytes);
+    let sanitize_result = sanitize_tools(&mut tools, cfg.server_id, cfg.max_description_bytes);
+    assign_security_metadata(&mut tools, cfg.tool_metadata);
+    filter_data_flow_violations(&mut tools, cfg.server_id, cfg.trust_level);
+    tools = apply_attestation(tools, cfg.server_id, cfg.trust_level, cfg.expected_tools);
+    let filtered = apply_allowlist(
+        tools,
+        cfg.server_id,
+        cfg.trust_level,
+        cfg.allowlist,
+        cfg.status_tx,
+    );
+    (filtered, sanitize_result)
+}
 
-    // Assign per-tool security metadata from operator config or heuristic inference.
-    for tool in &mut tools {
+/// Assign per-tool security metadata from operator config or heuristic inference.
+fn assign_security_metadata(
+    tools: &mut [McpTool],
+    tool_metadata: &HashMap<String, ToolSecurityMeta>,
+) {
+    for tool in tools.iter_mut() {
         tool.security_meta = tool_metadata
             .get(&tool.name)
             .cloned()
             .unwrap_or_else(|| infer_security_meta(&tool.name));
     }
+}
 
-    // Data-flow policy: filter tools that violate sensitivity/trust constraints.
+/// Remove tools that violate data-flow sensitivity/trust constraints.
+fn filter_data_flow_violations(
+    tools: &mut Vec<McpTool>,
+    server_id: &str,
+    trust_level: McpTrustLevel,
+) {
     tools.retain(|tool| match check_data_flow(tool, trust_level) {
         Ok(()) => true,
         Err(e) => {
@@ -1707,11 +1753,21 @@ fn ingest_tools(
             false
         }
     });
+}
 
-    // Attestation: compare tools against operator-declared expectations.
+/// Compare tools against operator-declared expectations and filter unexpected
+/// tools from Untrusted/Sandboxed servers.
+fn apply_attestation(
+    tools: Vec<McpTool>,
+    server_id: &str,
+    trust_level: McpTrustLevel,
+    expected_tools: &[String],
+) -> Vec<McpTool> {
+    use crate::attestation::{AttestationResult, attest_tools};
+
     let attestation =
         attest_tools::<std::collections::hash_map::RandomState>(&tools, expected_tools, None);
-    tools = match attestation {
+    match attestation {
         AttestationResult::Unconfigured => tools,
         AttestationResult::Verified { .. } => {
             tracing::debug!(server_id, "attestation: all tools in expected set");
@@ -1744,9 +1800,18 @@ fn ingest_tools(
                 }
             }
         }
-    };
+    }
+}
 
-    let filtered = match trust_level {
+/// Enforce the trust-level allowlist policy and return the permitted tool set.
+fn apply_allowlist(
+    tools: Vec<McpTool>,
+    server_id: &str,
+    trust_level: McpTrustLevel,
+    allowlist: Option<&[String]>,
+    status_tx: Option<&StatusTx>,
+) -> Vec<McpTool> {
+    match trust_level {
         McpTrustLevel::Trusted => tools,
         McpTrustLevel::Untrusted => match allowlist {
             None => {
@@ -1805,8 +1870,7 @@ fn ingest_tools(
                 filtered
             }
         }
-    };
-    (filtered, sanitize_result)
+    }
 }
 
 /// Compute the sleep duration before retry attempt `attempt + 1`.
@@ -2650,13 +2714,15 @@ mod tests {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Trusted,
-            None,
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Trusted,
+                allowlist: None,
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "tool_a");
@@ -2668,13 +2734,15 @@ mod tests {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Untrusted,
-            None,
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Untrusted,
+                allowlist: None,
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         // None allowlist on Untrusted = no override → all tools pass through (warn-only)
         assert_eq!(result.len(), 2);
@@ -2685,13 +2753,15 @@ mod tests {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Untrusted,
-            Some(&[]),
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Untrusted,
+                allowlist: Some(&[]),
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         // Some(empty) on Untrusted = explicit deny-all (fail-closed)
         assert!(result.is_empty());
@@ -2707,13 +2777,15 @@ mod tests {
         let allowlist = vec!["tool_a".to_owned(), "tool_c".to_owned()];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Untrusted,
-            Some(&allowlist),
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Untrusted,
+                allowlist: Some(&allowlist),
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         assert_eq!(result.len(), 2);
         let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
@@ -2727,13 +2799,15 @@ mod tests {
         let tools = vec![make_tool("srv", "tool_a"), make_tool("srv", "tool_b")];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Sandboxed,
-            Some(&[]),
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Sandboxed,
+                allowlist: Some(&[]),
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         // Sandboxed + empty allowlist = fail-closed: no tools exposed
         assert!(result.is_empty());
@@ -2745,13 +2819,15 @@ mod tests {
         let allowlist = vec!["tool_b".to_owned()];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Sandboxed,
-            Some(&allowlist),
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Sandboxed,
+                allowlist: Some(&allowlist),
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "tool_b");
@@ -2767,13 +2843,15 @@ mod tests {
         let allowlist = vec!["legit_tool".to_owned()];
         let (result, sanitize_result) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Untrusted,
-            Some(&allowlist),
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Untrusted,
+                allowlist: Some(&allowlist),
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         assert_eq!(result.len(), 1);
         // sanitize_tools replaces injected descriptions with a placeholder — not the original text
@@ -2789,13 +2867,15 @@ mod tests {
         let tools = vec![make_tool("srv", "exec_shell")];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Trusted,
-            None,
-            &[],
-            None,
-            2048,
-            &HashMap::new(),
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Trusted,
+                allowlist: None,
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &HashMap::new(),
+            },
         );
         assert_eq!(
             result[0].security_meta.data_sensitivity,
@@ -2818,13 +2898,15 @@ mod tests {
         let tools = vec![make_tool("srv", "my_tool")];
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Trusted,
-            None,
-            &[],
-            None,
-            2048,
-            &meta_map,
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Trusted,
+                allowlist: None,
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &meta_map,
+            },
         );
         assert_eq!(
             result[0].security_meta.data_sensitivity,
@@ -2854,13 +2936,15 @@ mod tests {
         // Untrusted server + High sensitivity → tool must be filtered out
         let (result, _) = ingest_tools(
             tools,
-            "srv",
-            McpTrustLevel::Untrusted,
-            None,
-            &[],
-            None,
-            2048,
-            &meta_map,
+            &IngestConfig {
+                server_id: "srv",
+                trust_level: McpTrustLevel::Untrusted,
+                allowlist: None,
+                expected_tools: &[],
+                status_tx: None,
+                max_description_bytes: 2048,
+                tool_metadata: &meta_map,
+            },
         );
         assert!(
             result.is_empty(),

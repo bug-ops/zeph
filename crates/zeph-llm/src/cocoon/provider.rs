@@ -165,14 +165,14 @@ impl CocoonProvider {
         client: Arc<CocoonClient>,
     ) -> Self {
         let model = model.into();
-        let inner = OpenAiProvider::new(
-            String::new(),
-            String::new(),
+        let inner = OpenAiProvider::new(crate::openai::OpenAiConfig {
+            api_key: String::new(),
+            base_url: String::new(),
             model,
             max_tokens,
-            embedding_model.clone(),
-            None,
-        );
+            embedding_model: embedding_model.clone(),
+            reasoning_effort: None,
+        });
         Self {
             inner,
             client,

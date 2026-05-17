@@ -709,12 +709,14 @@ mod tests {
     #[test]
     fn any_openai_name() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
-            "key".into(),
-            "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
-            1024,
-            None,
-            None,
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o".into(),
+                max_tokens: 1024,
+                embedding_model: None,
+                reasoning_effort: None,
+            },
         ));
         assert_eq!(provider.name(), "openai");
     }
@@ -722,12 +724,14 @@ mod tests {
     #[test]
     fn any_openai_supports_streaming() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
-            "key".into(),
-            "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
-            1024,
-            None,
-            None,
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o".into(),
+                max_tokens: 1024,
+                embedding_model: None,
+                reasoning_effort: None,
+            },
         ));
         assert!(provider.supports_streaming());
     }
@@ -735,22 +739,26 @@ mod tests {
     #[test]
     fn any_openai_supports_embeddings() {
         let with_embed = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
-            "key".into(),
-            "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
-            1024,
-            Some("text-embedding-3-small".into()),
-            None,
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o".into(),
+                max_tokens: 1024,
+                embedding_model: Some("text-embedding-3-small".into()),
+                reasoning_effort: None,
+            },
         ));
         assert!(with_embed.supports_embeddings());
 
         let without_embed = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
-            "key".into(),
-            "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
-            1024,
-            None,
-            None,
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o".into(),
+                max_tokens: 1024,
+                embedding_model: None,
+                reasoning_effort: None,
+            },
         ));
         assert!(!without_embed.supports_embeddings());
     }
@@ -758,12 +766,14 @@ mod tests {
     #[test]
     fn any_openai_debug() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
-            "key".into(),
-            "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
-            1024,
-            None,
-            None,
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o".into(),
+                max_tokens: 1024,
+                embedding_model: None,
+                reasoning_effort: None,
+            },
         ));
         let debug = format!("{provider:?}");
         assert!(debug.contains("OpenAi"));
@@ -792,12 +802,14 @@ mod tests {
     #[test]
     fn any_openai_supports_structured_output() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
-            "key".into(),
-            "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
-            1024,
-            None,
-            None,
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o".into(),
+                max_tokens: 1024,
+                embedding_model: None,
+                reasoning_effort: None,
+            },
         ));
         assert!(provider.supports_structured_output());
     }
@@ -821,12 +833,14 @@ mod tests {
     #[test]
     fn any_openai_supports_vision() {
         let provider = AnyProvider::OpenAi(crate::openai::OpenAiProvider::new(
-            "key".into(),
-            "https://api.openai.com/v1".into(),
-            "gpt-4o".into(),
-            1024,
-            None,
-            None,
+            crate::openai::OpenAiConfig {
+                api_key: "key".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt-4o".into(),
+                max_tokens: 1024,
+                embedding_model: None,
+                reasoning_effort: None,
+            },
         ));
         assert!(provider.supports_vision());
     }
@@ -860,14 +874,14 @@ mod tests {
             }])
             .unwrap(),
         );
-        AnyProvider::Gonka(GonkaProvider::new(
+        AnyProvider::Gonka(GonkaProvider::new(crate::gonka::GonkaConfig {
             signer,
             pool,
-            "gpt-4o",
-            4096,
-            None,
-            std::time::Duration::from_secs(30),
-        ))
+            model: "gpt-4o".into(),
+            max_tokens: 4096,
+            embedding_model: None,
+            timeout: std::time::Duration::from_secs(30),
+        }))
     }
 
     #[cfg(feature = "gonka")]

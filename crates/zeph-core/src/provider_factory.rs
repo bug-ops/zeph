@@ -216,14 +216,14 @@ fn build_openai_provider(
         .unwrap_or_else(|| "gpt-4o-mini".to_owned());
     let max_tokens = entry.max_tokens.unwrap_or(4096);
     Ok(AnyProvider::OpenAi(
-        OpenAiProvider::new(
+        OpenAiProvider::new(zeph_llm::OpenAiConfig {
             api_key,
             base_url,
             model,
             max_tokens,
-            entry.embedding_model.clone(),
-            entry.reasoning_effort.clone(),
-        )
+            embedding_model: entry.embedding_model.clone(),
+            reasoning_effort: entry.reasoning_effort.clone(),
+        })
         .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
         .with_output_schema_forwarding(
             config.mcp.forward_output_schema,
@@ -301,14 +301,14 @@ fn build_compatible_provider(
             .unwrap_or_default()
     });
     let max_tokens = entry.max_tokens.unwrap_or(4096);
-    let provider = CompatibleProvider::new(
-        name.to_owned(),
+    let provider = CompatibleProvider::new(zeph_llm::CompatibleConfig {
+        provider_name: name.to_owned(),
         api_key,
         base_url,
         model,
         max_tokens,
-        entry.embedding_model.clone(),
-    )
+        embedding_model: entry.embedding_model.clone(),
+    })
     .with_output_schema_forwarding(
         config.mcp.forward_output_schema,
         config.mcp.output_schema_hint_bytes,
@@ -386,14 +386,14 @@ fn build_gonka_provider(
     let max_tokens = entry.max_tokens.unwrap_or(4096);
     let timeout = std::time::Duration::from_secs(config.timeouts.llm_request_timeout_secs);
 
-    let provider = GonkaProvider::new(
-        std::sync::Arc::new(signer),
-        std::sync::Arc::new(pool),
+    let provider = GonkaProvider::new(zeph_llm::gonka::GonkaConfig {
+        signer: std::sync::Arc::new(signer),
+        pool: std::sync::Arc::new(pool),
         model,
         max_tokens,
-        entry.embedding_model.clone(),
+        embedding_model: entry.embedding_model.clone(),
         timeout,
-    );
+    });
 
     Ok(AnyProvider::Gonka(provider))
 }

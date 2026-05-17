@@ -7,26 +7,26 @@ use crate::provider::MessageMetadata;
 use tokio_stream::StreamExt;
 
 fn test_provider() -> OpenAiProvider {
-    OpenAiProvider::new(
-        "sk-test-key".into(),
-        "https://api.openai.com/v1".into(),
-        "gpt-5.2".into(),
-        4096,
-        Some("text-embedding-3-small".into()),
-        None,
-    )
+    OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test-key".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 4096,
+        embedding_model: Some("text-embedding-3-small".into()),
+        reasoning_effort: None,
+    })
 }
 
 #[test]
 fn context_window_gpt4o() {
-    let p = OpenAiProvider::new(
-        "k".into(),
-        "https://api.openai.com/v1".into(),
-        "gpt-4o".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert_eq!(p.context_window(), Some(128_000));
 }
 
@@ -37,26 +37,26 @@ fn context_window_gpt5() {
 
 #[test]
 fn context_window_unknown() {
-    let p = OpenAiProvider::new(
-        "k".into(),
-        "https://api.openai.com/v1".into(),
-        "custom-model".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "custom-model".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert!(p.context_window().is_none());
 }
 
 fn test_provider_no_embed() -> OpenAiProvider {
-    OpenAiProvider::new(
-        "sk-test-key".into(),
-        "https://api.openai.com/v1".into(),
-        "gpt-5.2".into(),
-        4096,
-        None,
-        None,
-    )
+    OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test-key".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 4096,
+        embedding_model: None,
+        reasoning_effort: None,
+    })
 }
 
 #[test]
@@ -72,14 +72,14 @@ fn new_stores_fields() {
 
 #[test]
 fn new_with_reasoning_effort() {
-    let p = OpenAiProvider::new(
-        "key".into(),
-        "https://api.openai.com/v1".into(),
-        "gpt-5.2".into(),
-        4096,
-        None,
-        Some("high".into()),
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "key".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 4096,
+        embedding_model: None,
+        reasoning_effort: Some("high".into()),
+    });
     assert_eq!(p.reasoning_effort.as_deref(), Some("high"));
 }
 
@@ -359,14 +359,14 @@ fn convert_messages_maps_roles() {
 
 #[tokio::test]
 async fn chat_unreachable_endpoint_errors() {
-    let p = OpenAiProvider::new(
-        "key".into(),
-        "http://127.0.0.1:1".into(),
-        "model".into(),
-        100,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "key".into(),
+        base_url: "http://127.0.0.1:1".into(),
+        model: "model".into(),
+        max_tokens: 100,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let messages = vec![Message {
         role: Role::User,
         content: "test".into(),
@@ -378,14 +378,14 @@ async fn chat_unreachable_endpoint_errors() {
 
 #[tokio::test]
 async fn stream_unreachable_endpoint_errors() {
-    let p = OpenAiProvider::new(
-        "key".into(),
-        "http://127.0.0.1:1".into(),
-        "model".into(),
-        100,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "key".into(),
+        base_url: "http://127.0.0.1:1".into(),
+        model: "model".into(),
+        max_tokens: 100,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let messages = vec![Message {
         role: Role::User,
         content: "test".into(),
@@ -397,14 +397,14 @@ async fn stream_unreachable_endpoint_errors() {
 
 #[tokio::test]
 async fn embed_unreachable_endpoint_errors() {
-    let p = OpenAiProvider::new(
-        "key".into(),
-        "http://127.0.0.1:1".into(),
-        "model".into(),
-        100,
-        Some("embed-model".into()),
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "key".into(),
+        base_url: "http://127.0.0.1:1".into(),
+        model: "model".into(),
+        max_tokens: 100,
+        embedding_model: Some("embed-model".into()),
+        reasoning_effort: None,
+    });
     assert!(p.embed("test").await.is_err());
 }
 
@@ -423,14 +423,14 @@ async fn embed_without_model_returns_error() {
 
 #[test]
 fn base_url_strips_trailing_slash() {
-    let p = OpenAiProvider::new(
-        "key".into(),
-        "https://api.openai.com/v1/".into(),
-        "m".into(),
-        100,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "key".into(),
+        base_url: "https://api.openai.com/v1/".into(),
+        model: "m".into(),
+        max_tokens: 100,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert_eq!(p.base_url, "https://api.openai.com/v1");
 }
 
@@ -469,14 +469,14 @@ fn embedding_response_empty_data() {
 #[ignore = "requires ZEPH_OPENAI_API_KEY env var"]
 async fn integration_openai_chat() {
     let api_key = std::env::var("ZEPH_OPENAI_API_KEY").expect("ZEPH_OPENAI_API_KEY must be set");
-    let provider = OpenAiProvider::new(
-        api_key,
-        "https://api.openai.com/v1".into(),
-        "gpt-5.2".into(),
-        256,
-        None,
-        None,
-    );
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        api_key: api_key,
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
 
     let messages = vec![Message {
         role: Role::User,
@@ -493,14 +493,14 @@ async fn integration_openai_chat() {
 #[ignore = "requires ZEPH_OPENAI_API_KEY env var"]
 async fn integration_openai_chat_stream() {
     let api_key = std::env::var("ZEPH_OPENAI_API_KEY").expect("ZEPH_OPENAI_API_KEY must be set");
-    let provider = OpenAiProvider::new(
-        api_key,
-        "https://api.openai.com/v1".into(),
-        "gpt-5.2".into(),
-        256,
-        None,
-        None,
-    );
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        api_key: api_key,
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
 
     let messages = vec![Message {
         role: Role::User,
@@ -524,27 +524,27 @@ async fn integration_openai_chat_stream() {
 
 #[test]
 fn context_window_gpt35() {
-    let p = OpenAiProvider::new(
-        "k".into(),
-        "https://api.openai.com/v1".into(),
-        "gpt-3.5-turbo".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-3.5-turbo".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert_eq!(p.context_window(), Some(16_385));
 }
 
 #[test]
 fn context_window_gpt4_turbo() {
-    let p = OpenAiProvider::new(
-        "k".into(),
-        "https://api.openai.com/v1".into(),
-        "gpt-4-turbo".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-4-turbo".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert_eq!(p.context_window(), Some(128_000));
 }
 
@@ -552,14 +552,14 @@ fn context_window_gpt4_turbo() {
 #[ignore = "requires ZEPH_OPENAI_API_KEY env var"]
 async fn integration_openai_embed() {
     let api_key = std::env::var("ZEPH_OPENAI_API_KEY").expect("ZEPH_OPENAI_API_KEY must be set");
-    let provider = OpenAiProvider::new(
-        api_key,
-        "https://api.openai.com/v1".into(),
-        "gpt-5.2".into(),
-        256,
-        Some("text-embedding-3-small".into()),
-        None,
-    );
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        api_key: api_key,
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-5.2".into(),
+        max_tokens: 256,
+        embedding_model: Some("text-embedding-3-small".into()),
+        reasoning_effort: None,
+    });
 
     let embedding = provider.embed("Hello world").await.unwrap();
     assert!(!embedding.is_empty());
@@ -960,40 +960,40 @@ fn convert_messages_vision_image_only_no_text_part() {
 
 #[test]
 fn cache_slug_openai() {
-    let p = OpenAiProvider::new(
-        "k".into(),
-        "https://api.openai.com/v1".into(),
-        "gpt-4o".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert_eq!(p.cache_slug(), "api_openai_com");
 }
 
 #[test]
 fn cache_slug_custom_host() {
-    let p = OpenAiProvider::new(
-        "k".into(),
-        "https://my-llm.example.com/v1".into(),
-        "model".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://my-llm.example.com/v1".into(),
+        model: "model".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert_eq!(p.cache_slug(), "my_llm_example_com");
 }
 
 #[test]
 fn cache_slug_localhost_with_port() {
-    let p = OpenAiProvider::new(
-        "k".into(),
-        "http://localhost:8080/v1".into(),
-        "model".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "http://localhost:8080/v1".into(),
+        model: "model".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert_eq!(p.cache_slug(), "localhost");
 }
 
@@ -1088,14 +1088,14 @@ async fn list_models_remote_http_error_propagates() {
         .mount(&server)
         .await;
 
-    let p = OpenAiProvider::new(
-        "key".into(),
-        server.uri(),
-        "gpt-4o".into(),
-        1024,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "key".into(),
+        base_url: server.uri(),
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let result = p.list_models_remote().await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("500"));
@@ -1119,14 +1119,14 @@ async fn chat_happy_path_wiremock() {
         .mount(&server)
         .await;
 
-    let p = OpenAiProvider::new(
-        "sk-test".into(),
-        server.uri(),
-        "gpt-4o".into(),
-        256,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let messages = vec![Message {
         role: Role::User,
         content: "hi".into(),
@@ -1164,14 +1164,14 @@ async fn chat_with_tools_handles_null_assistant_content() {
         .mount(&server)
         .await;
 
-    let p = OpenAiProvider::new(
-        "sk-test".into(),
-        server.uri(),
-        "gpt-4o".into(),
-        256,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let messages = vec![Message {
         role: Role::User,
         content: "hi".into(),
@@ -1218,14 +1218,14 @@ async fn chat_429_rate_limit_propagates() {
         .mount(&server)
         .await;
 
-    let p = OpenAiProvider::new(
-        "sk-test".into(),
-        server.uri(),
-        "gpt-4o".into(),
-        256,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let messages = vec![Message {
         role: Role::User,
         content: "hi".into(),
@@ -1250,14 +1250,14 @@ async fn chat_401_auth_error_propagates() {
         .mount(&server)
         .await;
 
-    let p = OpenAiProvider::new(
-        "bad-key".into(),
-        server.uri(),
-        "gpt-4o".into(),
-        256,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "bad-key".into(),
+        base_url: server.uri(),
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let messages = vec![Message {
         role: Role::User,
         content: "hi".into(),
@@ -1282,14 +1282,14 @@ async fn chat_500_server_error_propagates() {
         .mount(&server)
         .await;
 
-    let p = OpenAiProvider::new(
-        "sk-test".into(),
-        server.uri(),
-        "gpt-4o".into(),
-        256,
-        None,
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: server.uri(),
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     let messages = vec![Message {
         role: Role::User,
         content: "hi".into(),
@@ -1302,14 +1302,14 @@ async fn chat_500_server_error_propagates() {
 
 #[test]
 fn with_generation_overrides_stores_overrides() {
-    let provider = OpenAiProvider::new(
-        "sk-test".into(),
-        "http://localhost".into(),
-        "gpt-4o".into(),
-        256,
-        None,
-        None,
-    );
+    let provider = OpenAiProvider::new(OpenAiConfig {
+        api_key: "sk-test".into(),
+        base_url: "http://localhost".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 256,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
     assert!(provider.generation_overrides.is_none());
     let overrides = GenerationOverrides {
         temperature: Some(0.7),
@@ -1466,14 +1466,14 @@ async fn embed_batch_no_embedding_model_returns_error() {
 #[tokio::test]
 async fn embed_batch_empty_returns_empty_without_network() {
     // Use provider with an unreachable endpoint — empty input must return immediately.
-    let p = OpenAiProvider::new(
-        "key".into(),
-        "http://127.0.0.1:1".into(),
-        "gpt-4o".into(),
-        4096,
-        Some("text-embedding-3-small".into()),
-        None,
-    );
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "key".into(),
+        base_url: "http://127.0.0.1:1".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 4096,
+        embedding_model: Some("text-embedding-3-small".into()),
+        reasoning_effort: None,
+    });
     let result = p.embed_batch(&[]).await.unwrap();
     assert!(result.is_empty());
 }

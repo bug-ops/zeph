@@ -15,7 +15,7 @@ use crate::embed::truncate_for_embed;
 use crate::error::LlmError;
 use crate::gonka::endpoints::{EndpointPool, now_ns};
 use crate::gonka::signer::RequestSigner;
-use crate::openai::OpenAiProvider;
+use crate::openai::{OpenAiConfig, OpenAiProvider};
 use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
 use crate::sse::openai_sse_to_stream;
 use crate::usage::UsageTracker;
@@ -85,6 +85,56 @@ struct EmbeddingBatchRequest<'a> {
 // GonkaProvider
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Configuration for [`GonkaProvider`].
+///
+/// Pass to [`GonkaProvider::new`] instead of individual positional arguments to avoid
+/// silent parameter transposition.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use std::time::Duration;
+/// use zeph_llm::gonka::endpoints::{EndpointPool, GonkaEndpoint};
+/// use zeph_llm::gonka::{GonkaConfig, GonkaProvider, RequestSigner};
+///
+/// # fn example() -> Result<(), zeph_llm::LlmError> {
+/// let signer = Arc::new(RequestSigner::from_hex(
+///     "0000000000000000000000000000000000000000000000000000000000000001",
+///     "gonka",
+/// )?);
+/// let pool = Arc::new(EndpointPool::new(vec![GonkaEndpoint {
+///     base_url: "https://node1.gonka.ai".into(),
+///     address: "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6".into(),
+/// }])?);
+/// let cfg = GonkaConfig {
+///     signer,
+///     pool,
+///     model: "gpt-4o".into(),
+///     max_tokens: 4096,
+///     embedding_model: Some("text-embedding-3-small".into()),
+///     timeout: Duration::from_secs(30),
+/// };
+/// let provider = GonkaProvider::new(cfg);
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct GonkaConfig {
+    /// ECDSA request signer used to authenticate all outbound HTTP calls.
+    pub signer: Arc<RequestSigner>,
+    /// Pool of Gonka network endpoints; failed nodes are skipped automatically.
+    pub pool: Arc<EndpointPool>,
+    /// Chat model identifier sent in the request body, e.g. `"gpt-4o"`.
+    pub model: String,
+    /// Upper bound on completion tokens returned by the model.
+    pub max_tokens: u32,
+    /// Embedding model identifier. Set to `None` to disable embedding support.
+    pub embedding_model: Option<String>,
+    /// Per-request deadline; wraps every outbound `.await`.
+    pub timeout: Duration,
+}
+
 /// LLM provider that routes requests through the Gonka network via ECDSA-signed transport.
 ///
 /// Request bodies are constructed by an inner [`OpenAiProvider`] (the Gonka gateway
@@ -130,69 +180,26 @@ impl Clone for GonkaProvider {
 }
 
 impl GonkaProvider {
-    /// Construct a new `GonkaProvider`.
-    ///
-    /// - `model` — chat model name sent in the request body (e.g. `"gpt-4o"`).
-    /// - `max_tokens` — upper bound on completion tokens.
-    /// - `embedding_model` — if `Some`, enables embedding support via `/embeddings`.
-    /// - `timeout` — per-request deadline; wraps every outbound `.await`.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use std::sync::Arc;
-    /// use std::time::Duration;
-    /// use zeph_llm::gonka::endpoints::{EndpointPool, GonkaEndpoint};
-    /// use zeph_llm::gonka::RequestSigner;
-    /// use zeph_llm::gonka::GonkaProvider;
-    ///
-    /// # fn example() -> Result<(), zeph_llm::LlmError> {
-    /// let signer = Arc::new(RequestSigner::from_hex(
-    ///     "0000000000000000000000000000000000000000000000000000000000000001",
-    ///     "gonka",
-    /// )?);
-    /// let pool = Arc::new(EndpointPool::new(vec![GonkaEndpoint {
-    ///     base_url: "https://node1.gonka.ai".into(),
-    ///     address: "gonka1w508d6qejxtdg4y5r3zarvary0c5xw7k2gsyg6".into(),
-    /// }])?);
-    /// let provider = GonkaProvider::new(
-    ///     signer,
-    ///     pool,
-    ///     "gpt-4o",
-    ///     4096,
-    ///     Some("text-embedding-3-small".into()),
-    ///     Duration::from_secs(30),
-    /// );
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// Create a new provider from a [`GonkaConfig`].
     #[must_use]
-    pub fn new(
-        signer: Arc<RequestSigner>,
-        pool: Arc<EndpointPool>,
-        model: impl Into<String>,
-        max_tokens: u32,
-        embedding_model: Option<String>,
-        timeout: Duration,
-    ) -> Self {
-        let model = model.into();
-        let inner = OpenAiProvider::new(
-            String::new(),
-            String::new(),
-            model,
-            max_tokens,
-            embedding_model.clone(),
-            None,
-        );
+    pub fn new(cfg: GonkaConfig) -> Self {
+        let inner = OpenAiProvider::new(OpenAiConfig {
+            api_key: String::new(),
+            base_url: String::new(),
+            model: cfg.model,
+            max_tokens: cfg.max_tokens,
+            embedding_model: cfg.embedding_model.clone(),
+            reasoning_effort: None,
+        });
         // HTTP client timeout is generous to avoid double-timeout with tokio::time::timeout.
-        let client = crate::http::llm_client(timeout.as_secs().saturating_add(30));
+        let client = crate::http::llm_client(cfg.timeout.as_secs().saturating_add(30));
         Self {
             inner,
-            signer,
-            pool,
+            signer: cfg.signer,
+            pool: cfg.pool,
             client,
-            timeout,
-            embedding_model,
+            timeout: cfg.timeout,
+            embedding_model: cfg.embedding_model,
             usage: UsageTracker::default(),
             status_tx: None,
         }

@@ -15,6 +15,6 @@ pub mod signer;
 mod tests;
 
 #[cfg(feature = "gonka")]
-pub use provider::GonkaProvider;
+pub use provider::{GonkaConfig, GonkaProvider};
 #[cfg(feature = "gonka")]
 pub use signer::RequestSigner;
