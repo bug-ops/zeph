@@ -1207,7 +1207,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     .map(|s| FleetEntry {
                         goal_id: s.goal_id,
                         goal_text_short: s.goal_text_short,
-                        state: s.state.to_string(),
+                        state: s.state,
                         turns_executed: s.turns_executed,
                         max_turns: s.max_turns,
                         elapsed: s.elapsed,

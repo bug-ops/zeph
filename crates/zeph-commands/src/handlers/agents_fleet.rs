@@ -8,6 +8,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use zeph_config::autonomous::AutonomousState;
+
 use crate::context::CommandContext;
 use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
@@ -21,8 +23,8 @@ pub struct FleetEntry {
     pub goal_id: String,
     /// First 80 characters of goal text (may be followed by `…`).
     pub goal_text_short: String,
-    /// Current autonomous state as a lowercase string (e.g. `"running"`, `"verifying"`).
-    pub state: String,
+    /// Current autonomous state.
+    pub state: AutonomousState,
     /// Number of turns executed so far in this session.
     pub turns_executed: u32,
     /// Maximum turns allowed for this session.
@@ -41,11 +43,12 @@ pub struct FleetEntry {
 /// ```rust
 /// use std::time::Duration;
 /// use zeph_commands::handlers::agents_fleet::{FleetEntry, format_fleet_section};
+/// use zeph_config::autonomous::AutonomousState;
 ///
 /// let entries = vec![FleetEntry {
 ///     goal_id: "a1b2c3d4".to_owned(),
 ///     goal_text_short: "Deploy the new API".to_owned(),
-///     state: "running".to_owned(),
+///     state: AutonomousState::Running,
 ///     turns_executed: 12,
 ///     max_turns: 20,
 ///     elapsed: Duration::from_secs(272),
@@ -78,7 +81,7 @@ pub fn format_fleet_section(entries: &[FleetEntry]) -> String {
             "  {:<8}  {:<30}  {:<10}  {:<8}  {}",
             short_id,
             truncate_display(&e.goal_text_short, 30),
-            e.state,
+            e.state.to_string(),
             format!("{}/{}", e.turns_executed, e.max_turns),
             elapsed,
         );
@@ -156,11 +159,18 @@ impl CommandHandler<CommandContext<'_>> for AgentsFleetCommand {
 mod tests {
     use super::*;
 
-    fn entry(id: &str, text: &str, state: &str, turns: u32, max: u32, secs: u64) -> FleetEntry {
+    fn entry(
+        id: &str,
+        text: &str,
+        state: AutonomousState,
+        turns: u32,
+        max: u32,
+        secs: u64,
+    ) -> FleetEntry {
         FleetEntry {
             goal_id: id.to_owned(),
             goal_text_short: text.to_owned(),
-            state: state.to_owned(),
+            state,
             turns_executed: turns,
             max_turns: max,
             elapsed: Duration::from_secs(secs),
@@ -177,7 +187,7 @@ mod tests {
         let entries = vec![entry(
             "a1b2c3d4e5",
             "Deploy the new API",
-            "running",
+            AutonomousState::Running,
             12,
             20,
             272,
@@ -193,8 +203,22 @@ mod tests {
     #[test]
     fn two_entries_both_appear() {
         let entries = vec![
-            entry("aaaa1111", "First goal", "running", 3, 20, 60),
-            entry("bbbb2222", "Second goal", "verifying", 5, 10, 75),
+            entry(
+                "aaaa1111",
+                "First goal",
+                AutonomousState::Running,
+                3,
+                20,
+                60,
+            ),
+            entry(
+                "bbbb2222",
+                "Second goal",
+                AutonomousState::Verifying,
+                5,
+                10,
+                75,
+            ),
         ];
         let out = format_fleet_section(&entries);
         assert!(out.contains("aaaa1111"), "first id missing");
@@ -207,7 +231,7 @@ mod tests {
         let entries = vec![entry(
             "cccc3333",
             "Long running goal",
-            "running",
+            AutonomousState::Running,
             1,
             5,
             3665,
@@ -219,7 +243,14 @@ mod tests {
 
     #[test]
     fn elapsed_seconds_only() {
-        let entries = vec![entry("dddd4444", "Short goal", "achieved", 1, 5, 45)];
+        let entries = vec![entry(
+            "dddd4444",
+            "Short goal",
+            AutonomousState::Achieved,
+            1,
+            5,
+            45,
+        )];
         let out = format_fleet_section(&entries);
         assert!(out.contains("45s"), "seconds missing");
     }
@@ -227,7 +258,7 @@ mod tests {
     #[test]
     fn long_goal_text_truncated() {
         let long = "a".repeat(80);
-        let entries = vec![entry("eeee5555", &long, "running", 0, 5, 0)];
+        let entries = vec![entry("eeee5555", &long, AutonomousState::Running, 0, 5, 0)];
         let out = format_fleet_section(&entries);
         assert!(out.contains('…'), "truncation indicator missing");
     }

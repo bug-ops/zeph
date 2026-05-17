@@ -96,6 +96,85 @@ fn supervisor_user(
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quality::parser::ChatJsonError;
+    use zeph_llm::LlmError;
+
+    #[test]
+    fn supervisor_user_contains_all_sections() {
+        let msg = supervisor_user(
+            "the build must pass",
+            "agent ran cargo build",
+            &[
+                "ran cargo build".to_owned(),
+                "no errors reported".to_owned(),
+            ],
+        );
+        assert!(msg.contains("Goal condition:"), "goal section missing");
+        assert!(msg.contains("the build must pass"), "goal text missing");
+        assert!(
+            msg.contains("Conversation summary:"),
+            "summary section missing"
+        );
+        assert!(
+            msg.contains("agent ran cargo build"),
+            "summary text missing"
+        );
+        assert!(msg.contains("Recent actions:"), "actions section missing");
+        assert!(msg.contains("- ran cargo build"), "first action missing");
+        assert!(
+            msg.contains("- no errors reported"),
+            "second action missing"
+        );
+    }
+
+    #[test]
+    fn supervisor_user_empty_actions_shows_none() {
+        let msg = supervisor_user("goal", "summary", &[]);
+        assert!(msg.contains("(none)"), "empty actions should show (none)");
+    }
+
+    #[test]
+    fn supervisor_error_from_chat_json_error_llm_preserved() {
+        let llm_err = ChatJsonError::Llm(LlmError::Other("backend failure".into()));
+        let sup_err = SupervisorError::from(llm_err);
+        assert!(
+            matches!(sup_err, SupervisorError::Llm(ref msg) if msg.contains("backend failure")),
+            "Llm variant must preserve the error message"
+        );
+    }
+
+    #[test]
+    fn supervisor_error_from_chat_json_error_llm_429_becomes_rate_limited() {
+        let llm_err = ChatJsonError::Llm(LlmError::Other("HTTP 429 rate limit".into()));
+        let sup_err = SupervisorError::from(llm_err);
+        assert!(
+            matches!(sup_err, SupervisorError::RateLimited),
+            "429 in message must become RateLimited"
+        );
+    }
+
+    #[test]
+    fn supervisor_error_from_chat_json_error_timeout() {
+        let err = SupervisorError::from(ChatJsonError::Timeout(5000));
+        assert!(
+            matches!(err, SupervisorError::Timeout(5000)),
+            "Timeout variant must preserve milliseconds"
+        );
+    }
+
+    #[test]
+    fn supervisor_error_from_chat_json_error_parse() {
+        let err = SupervisorError::from(ChatJsonError::Parse("bad json".to_owned()));
+        assert!(
+            matches!(err, SupervisorError::Parse(ref s) if s == "bad json"),
+            "Parse variant must preserve the raw string"
+        );
+    }
+}
+
 /// Single-call supervisor verifier for autonomous goal sessions.
 ///
 /// Uses a configurable LLM provider (ideally different from the main agent provider to avoid
