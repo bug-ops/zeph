@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-config`: `HooksConfig` — inline `[hooks]` section in `config.toml` for declaring hooks
+  without a separate `settings.json`. Supports all event types: `[[hooks.pre_tool_use]]`,
+  `[[hooks.post_tool_use]]`, `[[hooks.cwd_changed]]`, `[[hooks.permission_denied]]`,
+  `[[hooks.turn_complete]]`, `[hooks.file_changed]`. Both `command` and `mcp_tool` action
+  types are supported (closes #3885).
+- `zeph-acp`: REST CRUD endpoints for session lifecycle — `POST /sessions` (create),
+  `GET /sessions/{id}` (inspect), `PATCH /sessions/{id}` (rename title),
+  `DELETE /sessions/{id}` (remove session and event history). `POST /sessions` validates
+  `working_dir` against the `additional_directories` allowlist and returns `403` for
+  out-of-allowlist paths. `SessionStatus` enum (`running`/`idle`/`stopped`/`error`) reflects
+  live connection state (closes #3902).
+- `zeph-plugins`: `PluginMeta::auto_update` boolean field (default `false`) — opt-in advisory
+  flag for future automatic plugin updates on startup. Existing manifests without the field
+  default to `false` via `#[serde(default)]` (closes #3902).
+
 ### Fixed
 
 - `zeph-agent-feedback`: CJK rejection pattern `^違う` now requires a terminal punctuation

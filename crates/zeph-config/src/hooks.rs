@@ -43,6 +43,29 @@ impl Default for FileChangedConfig {
 ///
 /// Each sub-section corresponds to a lifecycle event. All sections default to
 /// empty (no hooks). Events fire in the order hooks are listed.
+///
+/// Hooks are declared **inline in `config.toml`** under the `[hooks]` table.
+/// No separate `settings.json` or external file is required. Both `command`
+/// and `mcp_tool` action types are supported for every event.
+///
+/// # Examples
+///
+/// ```toml
+/// [[hooks.pre_tool_use]]
+/// matcher = "Edit|Write"
+/// [[hooks.pre_tool_use.hooks]]
+/// type = "command"
+/// command = "echo pre $ZEPH_TOOL_NAME"
+/// timeout_secs = 5
+/// fail_closed = false
+///
+/// [[hooks.turn_complete]]
+/// type = "mcp_tool"
+/// server = "notifier"
+/// tool = "notify"
+/// [hooks.turn_complete.args]
+/// channel = "desktop"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HooksConfig {
@@ -412,5 +435,28 @@ fail_closed = false
         let toml = "hook_block_cap = 0\n";
         let cfg: HooksConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.hook_block_cap, 0);
+    }
+
+    #[test]
+    fn hooks_config_parses_mcp_tool_in_pre_tool_use() {
+        let toml = r#"
+[[pre_tool_use]]
+matcher = "Shell"
+[[pre_tool_use.hooks]]
+type = "mcp_tool"
+server = "policy"
+tool = "audit"
+[pre_tool_use.hooks.args]
+severity = "high"
+"#;
+        let cfg: HooksConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.pre_tool_use.len(), 1);
+        assert_eq!(cfg.pre_tool_use[0].matcher, "Shell");
+        assert_eq!(cfg.pre_tool_use[0].hooks.len(), 1);
+        assert!(matches!(
+            &cfg.pre_tool_use[0].hooks[0].action,
+            HookAction::McpTool { server, tool, .. } if server == "policy" && tool == "audit"
+        ));
+        assert!(!cfg.is_empty());
     }
 }

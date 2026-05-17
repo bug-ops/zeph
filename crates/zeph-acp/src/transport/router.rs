@@ -20,6 +20,10 @@ use tower_http::cors::CorsLayer;
 #[cfg(feature = "acp-http")]
 use crate::transport::auth::BearerAuthLayer;
 #[cfg(feature = "acp-http")]
+use crate::transport::crud::{
+    create_session_handler, delete_session_handler, get_session_handler, update_session_handler,
+};
+#[cfg(feature = "acp-http")]
 use crate::transport::discovery::{agent_json_handler, discovery_handler};
 #[cfg(feature = "acp-http")]
 use crate::transport::http::{
@@ -46,6 +50,12 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 /// | `POST` | `/acp` | JSON-RPC request body (≤ 1 MiB), SSE response stream |
 /// | `GET` | `/acp` | SSE notification reconnect (requires `Acp-Session-Id` header) |
 /// | `GET` | `/acp/ws` | WebSocket upgrade |
+/// | `GET` | `/sessions` | List all persisted sessions |
+/// | `POST` | `/sessions` | Create a new session record |
+/// | `GET` | `/sessions/{id}` | Get full details for a session |
+/// | `PATCH` | `/sessions/{id}` | Update mutable session metadata |
+/// | `DELETE` | `/sessions/{id}` | Delete a session and its history |
+/// | `GET` | `/sessions/{id}/messages` | Get all events for a session |
 /// | `GET` | `/health` | Public readiness probe |
 /// | `GET` | `/.well-known/acp.json` | Discovery manifest (always public, no auth) |
 /// | `GET` | `/agent.json` | Agent identity manifest for ACP Registry (always public) |
@@ -78,7 +88,16 @@ pub fn acp_router(state: AcpHttpState) -> Router {
     let acp_routes = Router::new()
         .route("/acp", post(post_handler).get(get_handler))
         .route("/acp/ws", get(ws_upgrade_handler))
-        .route("/sessions", get(list_sessions_handler))
+        .route(
+            "/sessions",
+            get(list_sessions_handler).post(create_session_handler),
+        )
+        .route(
+            "/sessions/{id}",
+            get(get_session_handler)
+                .patch(update_session_handler)
+                .delete(delete_session_handler),
+        )
         .route("/sessions/{id}/messages", get(session_messages_handler))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(CorsLayer::new());

@@ -18,7 +18,7 @@ fn default_config_table() -> toml::Value {
 /// name = "git-workflows"
 /// version = "0.1.0"
 /// description = "Git workflow skills and MCP git server"
-/// zeph-version = ">=0.19"
+/// auto_update = false
 ///
 /// [[skills]]
 /// path = "skills/git-commit"
@@ -56,6 +56,10 @@ pub struct PluginMeta {
     /// Short description shown in `zeph plugin list`.
     #[serde(default)]
     pub description: String,
+    /// When `true`, the plugin manager may update this plugin automatically on startup.
+    /// Defaults to `false` — updates are opt-in to avoid unintended breaking changes.
+    #[serde(default)]
+    pub auto_update: bool,
     // zeph-version field intentionally omitted: version-gating is deferred to a future release
     // when the semver crate is added as a workspace dependency.
 }
@@ -86,4 +90,44 @@ pub struct PluginMcpServer {
     /// Arguments passed to `command`.
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_update_defaults_to_false_when_absent() {
+        let toml = r#"
+[plugin]
+name = "my-plugin"
+version = "0.1.0"
+"#;
+        let manifest: PluginManifest = toml::from_str(toml).unwrap();
+        assert!(!manifest.plugin.auto_update);
+    }
+
+    #[test]
+    fn auto_update_true_parsed_correctly() {
+        let toml = r#"
+[plugin]
+name = "my-plugin"
+version = "0.1.0"
+auto_update = true
+"#;
+        let manifest: PluginManifest = toml::from_str(toml).unwrap();
+        assert!(manifest.plugin.auto_update);
+    }
+
+    #[test]
+    fn auto_update_false_parsed_correctly() {
+        let toml = r#"
+[plugin]
+name = "my-plugin"
+version = "0.1.0"
+auto_update = false
+"#;
+        let manifest: PluginManifest = toml::from_str(toml).unwrap();
+        assert!(!manifest.plugin.auto_update);
+    }
 }
