@@ -304,7 +304,7 @@ async fn cancel_signal_works_across_multiple_messages() {
     assert!(token2.is_cancelled());
 }
 
-/// Regression test for #4311: context_tokens must be set in MetricsSnapshot before the LLM
+/// Regression test for #4311: `context_tokens` must be set in `MetricsSnapshot` before the LLM
 /// responds, so the TUI gauge reflects the correct context size during the turn.
 ///
 /// The fix adds `update_metrics(|m| m.context_tokens = cached_prompt_tokens)` immediately after
