@@ -76,6 +76,21 @@ use thompson::ThompsonState;
 static ASI_WARN_LAST_SECS: AtomicU64 = AtomicU64::new(0);
 use zeph_common::math::cosine_similarity;
 
+/// Runs `f` without blocking the Tokio executor.
+///
+/// On a multi-thread runtime uses `block_in_place`; on a `current_thread` runtime (unit
+/// tests, single-threaded entry points) falls back to a direct call since there is no
+/// executor thread pool to offload to.
+fn blocking_load<T>(f: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
 /// Simple bounded embedding cache for bandit feature vectors.
 ///
 /// Keyed by `u64` hash of query text (using `std::hash`). Eviction is FIFO on insertion
@@ -451,7 +466,7 @@ impl RouterProvider {
     pub fn with_thompson(mut self, state_path: Option<&Path>) -> Self {
         self.strategy = RouterStrategy::Thompson;
         let path = state_path.map_or_else(ThompsonState::default_path, Path::to_path_buf);
-        let mut state = ThompsonState::load(&path);
+        let mut state = blocking_load(|| ThompsonState::load(&path));
         // CRIT-3: prune orphan entries from previous configs.
         let known: std::collections::HashSet<String> = self
             .state
@@ -467,8 +482,10 @@ impl RouterProvider {
 
     /// Enable PILOT bandit routing strategy (`LinUCB` contextual bandit).
     ///
-    /// Loads existing state from `state_path` (or the default path). Applies session-level
-    /// decay if `config.decay_factor < 1.0`, and prunes arms for removed providers.
+    /// Loads existing state from `state_path` (or the default path) using
+    /// [`tokio::task::block_in_place`] to avoid blocking the async executor.
+    /// Applies session-level decay if `config.decay_factor < 1.0`, and prunes arms for
+    /// removed providers.
     ///
     /// `embedding_provider` is used to obtain feature vectors for each query.
     /// When `None`, the bandit falls back to Thompson/uniform selection whenever an
@@ -490,7 +507,7 @@ impl RouterProvider {
         }
         let cache_size = config.cache_size;
         let path = state_path.map_or_else(BanditState::default_path, Path::to_path_buf);
-        let mut state = BanditState::load(&path);
+        let mut state = blocking_load(|| BanditState::load(&path));
         if state.dim == 0 {
             state = BanditState::new(config.dim);
         } else if state.dim != config.dim {
@@ -576,8 +593,9 @@ impl RouterProvider {
 
     /// Enable Bayesian reputation scoring (RAPS).
     ///
-    /// Loads existing state from `state_path` (or the default path), applies session-level
-    /// decay, and prunes stale provider entries.
+    /// Loads existing state from `state_path` (or the default path) using
+    /// [`tokio::task::block_in_place`] to avoid blocking the async executor.
+    /// Applies session-level decay and prunes stale provider entries.
     ///
     /// No-op for Cascade routing (reputation is not used for cost-tier ordering).
     #[must_use]
@@ -590,7 +608,7 @@ impl RouterProvider {
     ) -> Self {
         let path = state_path.map_or_else(ReputationTracker::default_path, Path::to_path_buf);
         // Load persisted state, apply decay, and prune orphaned providers.
-        let mut tracker = ReputationTracker::load(&path);
+        let mut tracker = blocking_load(|| ReputationTracker::load(&path));
         let known: std::collections::HashSet<String> = self
             .state
             .providers
@@ -3815,5 +3833,13 @@ mod tests {
         // coherence_score returns None when the window has < 2 entries; after one push it's None.
         // We only verify the ASI has the provider in its window (score will be None with 1 entry).
         let _ = coherence; // just verifying no panic
+    }
+
+    /// Regression for #4296: `blocking_load` must not panic on a `current_thread` runtime
+    /// and must actually call the closure, returning its result.
+    #[tokio::test]
+    async fn blocking_load_runs_closure_on_current_thread_runtime() {
+        let result = super::blocking_load(|| 42_u32);
+        assert_eq!(result, 42, "blocking_load must return the closure result");
     }
 }

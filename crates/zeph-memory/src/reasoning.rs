@@ -705,10 +705,19 @@ pub async fn process_turn(
 
     // Embed task_hint + summary for Qdrant retrieval (S2 from architect plan).
     let embed_input = format!("{}\n{}", outcome.task_hint, summary);
-    let embedding = match embed_provider.embed(&embed_input).await {
-        Ok(v) => v,
-        Err(e) => {
+    let embedding = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        embed_provider.embed(&embed_input),
+    )
+    .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
             tracing::warn!(error = %e, "reasoning: embedding failed — strategy not stored");
+            return Ok(());
+        }
+        Err(_) => {
+            tracing::warn!("reasoning: embed timed out — strategy not stored");
             return Ok(());
         }
     };

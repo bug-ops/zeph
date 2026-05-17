@@ -217,9 +217,18 @@ async fn embed_work_items(
 ) -> Vec<(usize, Vec<f32>)> {
     use futures::future;
 
-    let embed_results: Vec<_> =
-        future::join_all(work_items.iter().map(|w| provider.embed(&w.embed_text))).await;
-
+    let Ok(embed_results) = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        future::join_all(work_items.iter().map(|w| provider.embed(&w.embed_text))),
+    )
+    .await
+    else {
+        tracing::warn!(
+            count = work_items.len(),
+            "note_linking: batch embed timed out — skipping all entities"
+        );
+        return Vec::new();
+    };
     embed_results
         .into_iter()
         .enumerate()
@@ -1119,6 +1128,36 @@ mod tests {
         assert_eq!(
             edges[0].relation, "KNOWS",
             "display relation must preserve original casing"
+        );
+    }
+
+    /// Regression for #4297: `embed_work_items` must return an empty Vec (fail-open) when the
+    /// batch `join_all` embed call exceeds the 30 s global timeout.
+    #[tokio::test]
+    async fn embed_work_items_timeout_returns_empty() {
+        use zeph_llm::mock::MockProvider;
+
+        // embed_delay_ms > 30_000 ms would make the test too slow; we rely on tokio::time::pause
+        // to advance virtual time instantly, so the timeout fires without real delay.
+        tokio::time::pause();
+
+        // Delay longer than the 30 s timeout (in virtual time).
+        let mut mock = MockProvider::default();
+        mock.supports_embeddings = true;
+        mock.embed_delay_ms = 31_000;
+        let provider = AnyProvider::Mock(mock);
+
+        let work_items = vec![super::EntityWorkItem {
+            entity_id: 1,
+            canonical_name: "Alice".to_owned(),
+            embed_text: "Alice".to_owned(),
+            self_point_id: None,
+        }];
+
+        let result = super::embed_work_items(&work_items, &provider).await;
+        assert!(
+            result.is_empty(),
+            "embed_work_items must return empty Vec on 30 s timeout (fail-open)"
         );
     }
 }

@@ -98,7 +98,19 @@ impl SemanticMemory {
             return Ok(());
         }
 
-        let vector = self.effective_embed_provider().embed(summary_text).await?;
+        let vector = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.effective_embed_provider().embed(summary_text),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::warn!("store_session_summary: embed timed out — skipping store");
+                return Ok(());
+            }
+        };
         let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
             .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
@@ -148,7 +160,21 @@ impl SemanticMemory {
             return Ok(Vec::new());
         }
 
-        let vector = self.effective_embed_provider().embed(query).await?;
+        let vector = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.effective_embed_provider().embed(query),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::warn!(
+                    "search_session_summaries: embed timed out, returning empty results"
+                );
+                return Ok(Vec::new());
+            }
+        };
         let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
             .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)

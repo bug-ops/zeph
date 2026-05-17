@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm`: `BanditState::load`, `ReputationTracker::load`, and `ThompsonState::load` in
+  `RouterProvider` builder methods were calling `std::fs::read` directly on the Tokio executor
+  thread; wrapped in a `blocking_load()` helper using `tokio::task::block_in_place` to avoid
+  stalling the thread pool during startup (closes #4296).
+- `zeph-memory`: Added `tokio::time::timeout` guards (5 s, fail-open) to all remaining
+  `embed()` call sites in `semantic/recall.rs`, `semantic/mod.rs`, `semantic/summarization.rs`,
+  `semantic/cross_session.rs`, and `reasoning.rs`; the batch `join_all` in `semantic/graph.rs`
+  received a 30 s global timeout — prevents a stalled embedding provider from blocking agent
+  turns indefinitely (closes #4297).
 - `zeph-tools`: `RiskChainAccumulator` is now instantiated at agent startup and wired to
   `ShellExecutor` via `with_risk_chain` and to the agent builder via
   `with_risk_chain_accumulator`. Multi-step shell attack chain detection is active at runtime

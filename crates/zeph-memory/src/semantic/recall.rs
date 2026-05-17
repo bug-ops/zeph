@@ -760,7 +760,19 @@ impl SemanticMemory {
             && self.effective_embed_provider().supports_embeddings()
         {
             let embed_input = self.apply_search_prompt(query);
-            let query_vector = self.effective_embed_provider().embed(&embed_input).await?;
+            let query_vector = match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.effective_embed_provider().embed(&embed_input),
+            )
+            .await
+            {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    tracing::warn!("recall_semantic: embed timed out, returning empty results");
+                    return Ok(Vec::new());
+                }
+            };
             let query_vector = self.apply_query_bias(query, query_vector).await;
             let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
             qdrant.ensure_collection(vector_size).await?;
@@ -809,7 +821,19 @@ impl SemanticMemory {
             return Ok(Vec::new());
         }
         let embed_input = self.apply_search_prompt(query);
-        let query_vector = self.effective_embed_provider().embed(&embed_input).await?;
+        let query_vector = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.effective_embed_provider().embed(&embed_input),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::warn!("recall_vectors_raw: embed timed out, returning empty results");
+                return Ok(Vec::new());
+            }
+        };
         let query_vector = self.apply_query_bias(query, query_vector).await;
         let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
         qdrant.ensure_collection(vector_size).await?;

@@ -145,8 +145,13 @@ impl SemanticMemory {
         if let Some(qdrant) = &self.qdrant
             && self.effective_embed_provider().supports_embeddings()
         {
-            match self.effective_embed_provider().embed(summary_text).await {
-                Ok(vector) => {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.effective_embed_provider().embed(summary_text),
+            )
+            .await
+            {
+                Ok(Ok(vector)) => {
                     let vector_size = u64::try_from(vector.len()).unwrap_or(896);
                     if let Err(e) = qdrant.ensure_collection(vector_size).await {
                         tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
@@ -165,8 +170,11 @@ impl SemanticMemory {
                         tracing::warn!("Failed to embed summary: {e:#}");
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!("Failed to generate summary embedding: {e:#}");
+                }
+                Err(_) => {
+                    tracing::warn!("summarize: embed timed out for summary text — skipping store");
                 }
             }
         }
@@ -254,10 +262,19 @@ impl SemanticMemory {
         let Some(first_fact) = filtered.first().copied() else {
             return;
         };
-        let first_vector = match self.effective_embed_provider().embed(first_fact).await {
-            Ok(v) => v,
-            Err(e) => {
+        let first_vector = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.effective_embed_provider().embed(first_fact),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
                 tracing::warn!("Failed to embed key fact: {e:#}");
+                return;
+            }
+            Err(_) => {
+                tracing::warn!("store_key_facts: embed timed out for first fact — skipping");
                 return;
             }
         };
@@ -282,8 +299,13 @@ impl SemanticMemory {
         .await;
 
         for fact in filtered[1..].iter().copied() {
-            match self.effective_embed_provider().embed(fact).await {
-                Ok(vector) => {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.effective_embed_provider().embed(fact),
+            )
+            .await
+            {
+                Ok(Ok(vector)) => {
                     self.store_key_fact_if_unique(
                         qdrant,
                         conversation_id,
@@ -294,8 +316,11 @@ impl SemanticMemory {
                     )
                     .await;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!("Failed to embed key fact: {e:#}");
+                }
+                Err(_) => {
+                    tracing::warn!("store_key_facts: embed timed out for fact — skipping");
                 }
             }
         }
@@ -360,7 +385,19 @@ impl SemanticMemory {
             return Ok(Vec::new());
         }
 
-        let vector = self.effective_embed_provider().embed(query).await?;
+        let vector = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.effective_embed_provider().embed(query),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::warn!("search_key_facts: embed timed out, returning empty results");
+                return Ok(Vec::new());
+            }
+        };
         let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
             .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
@@ -404,7 +441,21 @@ impl SemanticMemory {
         if !qdrant.collection_exists(collection).await? {
             return Ok(Vec::new());
         }
-        let vector = self.effective_embed_provider().embed(query).await?;
+        let vector = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.effective_embed_provider().embed(query),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::warn!(
+                    "search_document_collection: embed timed out, returning empty results"
+                );
+                return Ok(Vec::new());
+            }
+        };
         let results = qdrant
             .search_collection(collection, &vector, limit, None)
             .await?;

@@ -878,10 +878,15 @@ impl SemanticMemory {
         let texts: Vec<String> = facts.iter().map(|f| f.content.clone()).collect();
         let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
         for text in &texts {
-            match provider.embed(text).await {
-                Ok(v) => embeddings.push(v),
-                Err(e) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), provider.embed(text))
+                .await
+            {
+                Ok(Ok(v)) => embeddings.push(v),
+                Ok(Err(e)) => {
                     tracing::warn!(error = %e, "query-bias: failed to embed persona fact — skipping");
+                }
+                Err(_) => {
+                    tracing::warn!("query-bias: embed timed out for persona fact — skipping");
                 }
             }
         }
@@ -1324,7 +1329,19 @@ impl SemanticMemory {
         if !self.effective_embed_provider().supports_embeddings() {
             return Ok(Vec::new());
         }
-        let embedding = self.effective_embed_provider().embed(query).await?;
+        let embedding = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.effective_embed_provider().embed(query),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::warn!("retrieve_reasoning_strategies: embed timed out, returning empty");
+                return Ok(Vec::new());
+            }
+        };
         reasoning
             .retrieve_by_embedding(&embedding, limit as u64)
             .await
