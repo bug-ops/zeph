@@ -27,7 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   agent mock, and three unit tests cover the backoff boundary conditions (closes #4321).
   `build_conversation_summary` was already a private helper method; no source duplication
   remained (closes #4322).
-
+- `zeph-orchestration`: `OrchestrationConfig.default_failure_strategy` was parsed from TOML but
+  never applied to the produced `TaskGraph`. `LlmPlanner::new` now parses the config string into
+  `FailureStrategy` and sets `graph.default_failure_strategy` on every graph it constructs;
+  unrecognised values fall back to `Abort` with a warning log (closes #4324).
 - `zeph-llm`: `BanditState::load`, `ReputationTracker::load`, and `ThompsonState::load` in
   `RouterProvider` builder methods were calling `std::fs::read` directly on the Tokio executor
   thread; wrapped in a `blocking_load()` helper using `tokio::task::block_in_place` to avoid

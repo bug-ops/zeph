@@ -90,6 +90,9 @@ pub struct LlmPlanner<P: LlmProvider> {
     max_tasks: u32,
     /// Maximum time to wait for a planner LLM call before returning `PlanningFailed`.
     timeout: Duration,
+    /// Default failure strategy applied to every graph produced by this planner,
+    /// unless a per-task `failure_strategy` override is set by the LLM.
+    default_failure_strategy: FailureStrategy,
 }
 
 impl<P: LlmProvider> LlmPlanner<P> {
@@ -98,12 +101,26 @@ impl<P: LlmProvider> LlmPlanner<P> {
     /// The caller resolves `config.planner_provider` to a concrete provider and passes
     /// it here. `LlmPlanner` uses whatever provider it receives without further
     /// provider resolution. The timeout is taken from `config.planner_timeout_secs`.
+    ///
+    /// `config.default_failure_strategy` is parsed once here; an unrecognised value
+    /// falls back to [`FailureStrategy::Abort`] with a warning log.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
+        let default_failure_strategy = config
+            .default_failure_strategy
+            .parse::<FailureStrategy>()
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    value = %config.default_failure_strategy,
+                    "unrecognised orchestration.default_failure_strategy; falling back to 'abort'"
+                );
+                FailureStrategy::Abort
+            });
         Self {
             provider,
             max_tasks: config.max_tasks,
             timeout: Duration::from_secs(config.planner_timeout_secs),
+            default_failure_strategy,
         }
     }
 }
@@ -167,7 +184,8 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
                 .map_err(|_| OrchestrationError::PlanningFailed("planner timed out".into()))?
                 .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
         let usage = self.provider.last_usage();
-        let graph = convert_response(response, goal, available_agents, self.max_tasks)?;
+        let mut graph = convert_response(response, goal, available_agents, self.max_tasks)?;
+        graph.default_failure_strategy = self.default_failure_strategy;
         dag::validate(&graph.tasks, self.max_tasks as usize)?;
         Ok((graph, usage))
     }
@@ -195,7 +213,8 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
         // Capture usage right after the API call, before any fallible post-processing.
         let usage = self.provider.last_usage();
 
-        let graph = convert_response(response, goal, available_agents, self.max_tasks)?;
+        let mut graph = convert_response(response, goal, available_agents, self.max_tasks)?;
+        graph.default_failure_strategy = self.default_failure_strategy;
 
         dag::validate(&graph.tasks, self.max_tasks as usize)?;
 
@@ -642,6 +661,65 @@ mod tests {
         assert_eq!(graph.goal, "my goal");
     }
 
+    // --- LlmPlanner::new default_failure_strategy wiring ---
+
+    #[test]
+    fn test_llm_planner_applies_config_default_failure_strategy() {
+        let mut config = OrchestrationConfig::default();
+        config.default_failure_strategy = "skip".to_string();
+        // Constructing via LlmPlanner::new must parse the string into FailureStrategy::Skip.
+        // We verify this by reading the field that new() stores on the struct.
+        let response = PlannerResponse {
+            tasks: vec![make_planned("t1", "T1", &[], None)],
+        };
+        // convert_response produces Abort by default; the planner must override it.
+        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        assert_eq!(
+            graph.default_failure_strategy,
+            FailureStrategy::Abort,
+            "convert_response itself must not apply the config value"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_llm_planner_wires_default_failure_strategy_to_graph() {
+        use zeph_llm::mock::MockProvider;
+        let json = r#"{"tasks":[
+            {"task_id":"t1","title":"T1","description":"desc","depends_on":[]},
+            {"task_id":"t2","title":"T2","description":"desc","depends_on":[]}
+        ]}"#
+        .to_string();
+        let provider = MockProvider::with_responses(vec![json]);
+        let mut config = OrchestrationConfig::default();
+        config.default_failure_strategy = "skip".to_string();
+        let planner = LlmPlanner::new(provider, &config);
+        let (graph, _) = planner.plan("goal", &agents()).await.unwrap();
+        assert_eq!(
+            graph.default_failure_strategy,
+            FailureStrategy::Skip,
+            "planner must apply OrchestrationConfig.default_failure_strategy to the produced graph"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_llm_planner_unknown_failure_strategy_falls_back_to_abort() {
+        use zeph_llm::mock::MockProvider;
+        let json = r#"{"tasks":[
+            {"task_id":"t1","title":"T1","description":"desc","depends_on":[]}
+        ]}"#
+        .to_string();
+        let provider = MockProvider::with_responses(vec![json]);
+        let mut config = OrchestrationConfig::default();
+        config.default_failure_strategy = "bogus_value".to_string();
+        let planner = LlmPlanner::new(provider, &config);
+        let (graph, _) = planner.plan("goal", &agents()).await.unwrap();
+        assert_eq!(
+            graph.default_failure_strategy,
+            FailureStrategy::Abort,
+            "unrecognised strategy must fall back to Abort"
+        );
+    }
+
     // --- build_prompt tests ---
 
     #[test]
@@ -910,6 +988,7 @@ mod tests {
                 provider: SlowProvider,
                 max_tasks: 20,
                 timeout: Duration::from_millis(50),
+                default_failure_strategy: FailureStrategy::Abort,
             };
             let err = planner.plan("some goal", &agents()).await.unwrap_err();
             assert!(

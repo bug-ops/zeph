@@ -172,7 +172,12 @@ pub struct OrchestrationConfig {
     pub max_tasks: u32,
     /// Maximum number of tasks that can run in parallel.
     pub max_parallel: u32,
-    /// Default failure strategy for all tasks unless overridden per-task.
+    /// Default failure strategy applied to every task graph unless overridden per-task.
+    ///
+    /// Accepted values: `"abort"` (cancel the whole graph), `"retry"` (retry up to
+    /// `default_max_retries` times then abort), `"skip"` (skip the failed task and its
+    /// transitive dependents), `"ask"` (pause and wait for user input).
+    /// Unrecognised values fall back to `"abort"` with a warning log at runtime.
     pub default_failure_strategy: String,
     /// Default number of retries for the `retry` failure strategy.
     pub default_max_retries: u32,
