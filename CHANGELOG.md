@@ -27,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `exfil_wget_post`, `exfil_api_key_send`, `exfil_extract_all`, `exfil_leak`, `exfil_forward_to`,
   `exfil_exfiltrate`, `exfil_send_secret`) for detecting skills that attempt to exfiltrate data
   via shell network tools or social-engineering directives (closes #3959).
+- `zeph-config`: `hooks.hook_block_cap` config option (default: 8) — caps consecutive `PreToolUse`
+  hook blocks per turn; when the cap is reached the turn ends with a warning message. Counter
+  increments per blocked tool call (if a tier has N blocked tools, count jumps by N). Use 0 for no
+  cap. Parity with Claude Code v2.1.143 (closes #3995).
 - `zeph-plugins`: Stage-1 advisory SKILL.md injection scan on `plugin add` — each `SKILL.md` is
   scanned with `scan_skill_body` before files are copied; matches emit `WARN` tracing events but
   never block installation (advisory only, closes #3959).
@@ -35,6 +39,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-config`: `skills.semantic_scan` (bool, default `false`) and
   `skills.semantic_scan_provider` (provider name, default empty) config fields for opt-in
   LLM-backed SKILL.md compliance scan (closes #3959).
+
+### Changed (behavior fix)
+
+- `zeph-core`: `PreToolUse` hooks with `fail_closed = true` now correctly block tool execution when
+  the hook returns an error; previously hook errors were logged but the tool proceeded (fail-open
+  behavior despite `fail_closed` setting). This is a semantic behavior change — tools guarded by
+  `fail_closed` hooks that fail intermittently will no longer execute silently (closes #3995).
 
 ### Changed
 

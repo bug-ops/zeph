@@ -57,6 +57,13 @@ pub(crate) struct ToolOrchestrator {
     pub(super) session_tool_call_count: u32,
     /// Maximum tool calls allowed per session. `None` = unlimited.
     pub(super) max_tool_calls_per_session: Option<u32>,
+    /// Number of `PreToolUse` hook blocks accumulated in the current turn.
+    /// Reset to 0 at the start of each `process_response_native_tools` call.
+    /// Incremented once per blocked tool call (not per iteration).
+    pub(super) hook_block_count: usize,
+    /// Maximum `PreToolUse` hook blocks per turn before the turn is ended with a warning.
+    /// Matches `HooksConfig::hook_block_cap`. 0 = no cap.
+    pub(super) hook_block_cap: usize,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -98,6 +105,8 @@ impl ToolOrchestrator {
             utility_scorer: UtilityScorer::new(UtilityScoringConfig::default()),
             session_tool_call_count: 0,
             max_tool_calls_per_session: None,
+            hook_block_count: 0,
+            hook_block_cap: 8,
         }
     }
 
@@ -196,6 +205,12 @@ impl ToolOrchestrator {
 
     pub(super) fn clear_doom_history(&mut self) {
         self.doom_loop_history.clear();
+    }
+
+    /// Reset the per-turn `PreToolUse` hook block counter. Called at the start of each
+    /// `process_response_native_tools` call.
+    pub(super) fn reset_hook_block_count(&mut self) {
+        self.hook_block_count = 0;
     }
 
     /// Reset the repeat-detection sliding window between user turns.
@@ -586,6 +601,21 @@ mod tests {
         o.max_tool_calls_per_session = Some(10);
         o.session_tool_call_count = 10;
         assert_eq!(o.check_quota(), Some(10));
+    }
+
+    #[test]
+    fn hook_block_cap_defaults() {
+        let o = ToolOrchestrator::new();
+        assert_eq!(o.hook_block_cap, 8);
+        assert_eq!(o.hook_block_count, 0);
+    }
+
+    #[test]
+    fn reset_hook_block_count_clears_counter() {
+        let mut o = ToolOrchestrator::new();
+        o.hook_block_count = 5;
+        o.reset_hook_block_count();
+        assert_eq!(o.hook_block_count, 0);
     }
 
     #[test]

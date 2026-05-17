@@ -1366,6 +1366,10 @@ provider_persistence = true
 #   [[hooks.permission_denied]] — a tool call was blocked by a RuntimeLayer check
 #   [hooks.file_changed]       — watched filesystem paths changed (see watch_paths)
 
+# Maximum number of PreToolUse hook blocks per turn before the turn is ended with a warning.
+# Counter increments once per blocked tool call. Use 0 for no cap.
+# hook_block_cap = 8
+
 # ── hooks.cwd_changed ─────────────────────────────────────────────────────────
 # Fired each time the agent changes its working directory.
 # Env vars set for command hooks: ZEPH_NEW_CWD (new path), ZEPH_OLD_CWD (previous path).

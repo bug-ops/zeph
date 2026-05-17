@@ -948,6 +948,25 @@ impl<C: Channel> Agent<C> {
             if tier_count > 1 {
                 let _ = self.channel.send_status("").await;
             }
+
+            // Check hook block cap after each tier (RF-1: counter is per-turn, not per-tier).
+            // hook_block_cap = 0 means no cap.
+            let cap = self.tool_orchestrator.hook_block_cap;
+            if cap > 0 && self.tool_orchestrator.hook_block_count >= cap {
+                tracing::warn!(
+                    hook_block_count = self.tool_orchestrator.hook_block_count,
+                    hook_block_cap = cap,
+                    "hook block cap reached — ending turn"
+                );
+                let _ = self
+                    .channel
+                    .send(&format!(
+                        "Stopping: PreToolUse hook blocked {}/{} tool calls this turn.",
+                        self.tool_orchestrator.hook_block_count, cap
+                    ))
+                    .await;
+                break;
+            }
         }
 
         // Pad with empty results if needed (defensive; should not happen).
@@ -1424,6 +1443,7 @@ impl<C: Channel> Agent<C> {
                         .map(|id| id.0.to_string());
                     let env =
                         make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
+                    let has_fail_closed = matched.iter().any(|h| h.fail_closed);
                     let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
                     let dispatch = self.mcp_dispatch();
                     let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
@@ -1436,6 +1456,28 @@ impl<C: Channel> Agent<C> {
                         ))
                         .await
                     {
+                        if has_fail_closed {
+                            self.tool_orchestrator.hook_block_count += 1;
+                            tracing::warn!(
+                                error = %e,
+                                tool = %tc.name,
+                                hook_block_count = self.tool_orchestrator.hook_block_count,
+                                hook_block_cap = self.tool_orchestrator.hook_block_cap,
+                                "PreToolUse hook blocked tool (fail_closed)"
+                            );
+                            let msg = format!(
+                                "[blocked] PreToolUse hook blocked tool `{}`: {e}",
+                                tc.name
+                            );
+                            tier_futs.push((
+                                idx,
+                                Box::pin(std::future::ready(Ok(Some(skipped_output(
+                                    tc.name.clone(),
+                                    msg,
+                                ))))),
+                            ));
+                            continue;
+                        }
                         tracing::warn!(
                             error = %e,
                             tool = %tc.name,
@@ -2031,6 +2073,7 @@ impl<C: Channel> Agent<C> {
         self.tool_orchestrator.clear_doom_history();
         self.tool_orchestrator.clear_recent_tool_calls();
         self.tool_orchestrator.clear_utility_state();
+        self.tool_orchestrator.reset_hook_block_count();
 
         // `mut` required when context-compression is enabled to inject focus tool definitions.
         let tafc = &self.tool_orchestrator.tafc;

@@ -11,6 +11,10 @@ fn default_debounce_ms() -> u64 {
     500
 }
 
+fn default_hook_block_cap() -> usize {
+    8
+}
+
 /// Configuration for hooks triggered when watched files change.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -39,7 +43,7 @@ impl Default for FileChangedConfig {
 ///
 /// Each sub-section corresponds to a lifecycle event. All sections default to
 /// empty (no hooks). Events fire in the order hooks are listed.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct HooksConfig {
     /// Hooks fired when the agent's working directory changes via `set_working_directory`.
@@ -69,6 +73,11 @@ pub struct HooksConfig {
     /// - `ZEPH_TURN_LLM_REQUESTS`  — number of completed LLM round-trips this turn.
     #[serde(default)]
     pub turn_complete: Vec<HookDef>,
+    /// Maximum number of `PreToolUse` hook blocks allowed per turn before the turn is ended
+    /// with a warning message. Counts individual tool blocks — if a tier has N blocked tools,
+    /// the counter increments by N. Default: 8. Use `0` for no cap (unlimited blocks).
+    #[serde(default = "default_hook_block_cap")]
+    pub hook_block_cap: usize,
     /// Hooks fired before each tool execution, matched by tool name pattern.
     ///
     /// Uses pipe-separated pattern matching (same as subagent hooks). Hooks fire
@@ -99,6 +108,20 @@ pub struct HooksConfig {
     /// - `ZEPH_TOOL_DURATION_MS` — wall-clock execution time in milliseconds.
     #[serde(default)]
     pub post_tool_use: Vec<HookMatcher>,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            cwd_changed: Vec::new(),
+            file_changed: None,
+            permission_denied: Vec::new(),
+            turn_complete: Vec::new(),
+            hook_block_cap: default_hook_block_cap(),
+            pre_tool_use: Vec::new(),
+            post_tool_use: Vec::new(),
+        }
+    }
 }
 
 impl HooksConfig {
@@ -215,6 +238,7 @@ severity = "high"
             file_changed: None,
             permission_denied: Vec::new(),
             turn_complete: Vec::new(),
+            hook_block_cap: 8,
             pre_tool_use: Vec::new(),
             post_tool_use: Vec::new(),
         };
@@ -228,6 +252,7 @@ severity = "high"
             file_changed: None,
             permission_denied: vec![cmd_hook("echo denied")],
             turn_complete: Vec::new(),
+            hook_block_cap: 8,
             pre_tool_use: Vec::new(),
             post_tool_use: Vec::new(),
         };
@@ -241,6 +266,7 @@ severity = "high"
             file_changed: None,
             permission_denied: Vec::new(),
             turn_complete: vec![cmd_hook("notify-send Zeph done")],
+            hook_block_cap: 8,
             pre_tool_use: Vec::new(),
             post_tool_use: Vec::new(),
         };
@@ -254,6 +280,7 @@ severity = "high"
             file_changed: None,
             permission_denied: Vec::new(),
             turn_complete: Vec::new(),
+            hook_block_cap: 8,
             pre_tool_use: Vec::new(),
             post_tool_use: Vec::new(),
         };
@@ -283,6 +310,7 @@ fail_closed = false
             file_changed: None,
             permission_denied: Vec::new(),
             turn_complete: Vec::new(),
+            hook_block_cap: 8,
             pre_tool_use: vec![HookMatcher {
                 matcher: "Edit|Write".to_owned(),
                 hooks: vec![cmd_hook("echo pre")],
@@ -364,5 +392,25 @@ fail_closed = false
             "expected 1 permission_denied hook"
         );
         assert!(!cfg.is_empty(), "hooks config must not be empty");
+    }
+
+    #[test]
+    fn hook_block_cap_default_is_8() {
+        let cfg = HooksConfig::default();
+        assert_eq!(cfg.hook_block_cap, 8);
+    }
+
+    #[test]
+    fn hook_block_cap_parses_from_toml() {
+        let toml = "hook_block_cap = 4\n";
+        let cfg: HooksConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.hook_block_cap, 4);
+    }
+
+    #[test]
+    fn hook_block_cap_zero_from_toml() {
+        let toml = "hook_block_cap = 0\n";
+        let cfg: HooksConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.hook_block_cap, 0);
     }
 }

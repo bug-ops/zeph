@@ -1466,6 +1466,8 @@ impl<C: Channel> Agent<C> {
             .post_tool_use
             .clone_from(&config.post_tool_use);
 
+        self.tool_orchestrator.hook_block_cap = config.hook_block_cap;
+
         if let Some(ref fc) = config.file_changed {
             self.services
                 .session
