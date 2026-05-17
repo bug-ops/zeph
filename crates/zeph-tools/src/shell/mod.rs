@@ -1033,6 +1033,7 @@ impl ShellExecutor {
     }
 
     /// Check blocklist, permission policy, and confirmation requirements for `block`.
+    #[allow(clippy::too_many_lines)]
     async fn check_permissions(&self, block: &str, skip_confirm: bool) -> Result<(), ToolError> {
         // Deobfuscate before any policy check to prevent bypass via encoding tricks.
         let normalized = deobfuscate::deobfuscate(block);
