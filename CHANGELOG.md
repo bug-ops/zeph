@@ -42,6 +42,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `update_provider_instructions` now wraps `load_instructions_async` in a 5 s
+  timeout; on expiry logs a warning and keeps the previous instruction blocks, preventing an
+  indefinite hang on the provider-switch hot path (closes #4257).
+- `zeph-config`: `SchedulerConfig::default().enabled` changed from `true` to `false`, matching
+  all other subsystem config defaults so the scheduler no longer activates on a freshly created
+  config with no `[scheduler]` section (closes #4255).
+- `zeph-skills`: `SkillMiner::embed_existing` now wraps each `embed_provider.embed()` call in
+  `tokio::time::timeout(generation_timeout_ms)`; on timeout logs a warning and skips the skill
+  instead of blocking the entire mining run (closes #4254).
+
 - `zeph-agent-feedback`: CJK rejection pattern `^違う` now requires a terminal punctuation
   character, whitespace, or end-of-message so that neutral phrases like "違う質問があります"
   ("I have a different question") are no longer classified as ExplicitRejection (closes #3826).
