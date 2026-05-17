@@ -1275,6 +1275,7 @@ fn format_security_report(metrics: &MetricsSnapshot) -> String {
             SecurityEventCategory::CrossBoundaryMcpToAcp => "CROSS_BOUNDARY ",
             SecurityEventCategory::VigilFlag => "VIGIL_FLAG     ",
             SecurityEventCategory::GoalDrift => "GOAL_DRIFT     ",
+            _ => "UNKNOWN        ",
         };
         lines.push(format!("  [{ts}] {cat}  {:<20}  {}", ev.source, ev.detail));
     }

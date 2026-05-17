@@ -95,12 +95,9 @@ impl From<zeph_common::error_taxonomy::ToolErrorCategory> for FailureKind {
             C::PolicyBlocked | C::ConfirmationRequired | C::ToolNotFound => Self::WrongApproach,
             // LLM-supplied parameters were invalid or mistyped.
             C::InvalidParameters | C::TypeMismatch => Self::SyntaxError,
-            // Infrastructure failures and non-quality outcomes are not attributable to the skill.
-            C::RateLimited
-            | C::ServerError
-            | C::NetworkError
-            | C::PermanentFailure
-            | C::Cancelled => Self::Unknown,
+            // Infrastructure failures, non-quality outcomes, and unknown future variants
+            // are not attributable to the skill.
+            _ => Self::Unknown,
         }
     }
 }

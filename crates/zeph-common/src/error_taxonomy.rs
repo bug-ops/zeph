@@ -114,7 +114,8 @@ impl ToolInvocationPhase {
 /// assert!(ToolErrorCategory::RateLimited.is_retryable());
 /// assert!(!ToolErrorCategory::InvalidParameters.is_retryable());
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ToolErrorCategory {
     // ── Initialization failures ──────────────────────────────────────────
     /// Tool name not found in the registry (LLM requested a non-existent tool).

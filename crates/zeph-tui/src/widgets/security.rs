@@ -229,6 +229,7 @@ fn append_event_items<'a>(
             }
             SecurityEventCategory::VigilFlag => ("[vigi] ", block_style),
             SecurityEventCategory::GoalDrift => ("[gdft] ", flag_style),
+            _ => ("[unkn] ", Style::default().fg(Color::DarkGray)),
         };
         let hm = format_hm(ev.timestamp);
         items.push(ListItem::new(Line::from(vec![

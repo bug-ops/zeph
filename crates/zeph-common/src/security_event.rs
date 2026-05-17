@@ -9,6 +9,7 @@
 /// Category of a security event used for TUI display and audit logging.
 ///
 /// Each variant maps to a short string key via [`SecurityEventCategory::as_str`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityEventCategory {
     /// Prompt-injection flag raised by the sanitizer.

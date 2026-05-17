@@ -314,6 +314,8 @@ struct Inner {
     /// Limits the number of concurrently running `spawn_blocking` tasks to prevent
     /// runaway thread-pool growth under burst load.
     blocking_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Notified when `active_count()` reaches zero so `shutdown_all` wakes immediately.
+    shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 // ── Main type ────────────────────────────────────────────────────────────────
@@ -381,6 +383,7 @@ impl TaskSupervisor {
             completion_tx,
             cancel: cancel.clone(),
             blocking_semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         });
 
         // Only start the reap driver when a Tokio runtime is available. In synchronous
@@ -697,35 +700,44 @@ impl TaskSupervisor {
     /// unrelated components.
     pub async fn shutdown_all(&self, timeout: Duration) {
         self.inner.cancel.cancel();
-        let deadline = tokio::time::Instant::now() + timeout;
+        let sleep = tokio::time::sleep(timeout);
+        tokio::pin!(sleep);
         loop {
             let active = self.active_count();
             if active == 0 {
                 break;
             }
-            if tokio::time::Instant::now() >= deadline {
-                let mut remaining_names: Vec<Arc<str>> = Vec::new();
-                {
-                    let mut state = self.inner.state.lock();
-                    for entry in state.tasks.values_mut() {
-                        if matches!(
-                            entry.status,
-                            TaskStatus::Running | TaskStatus::Restarting { .. }
-                        ) {
-                            remaining_names.push(Arc::clone(&entry.name));
-                            entry.abort_handle.abort();
-                            entry.status = TaskStatus::Aborted;
+            // Subscribe before re-checking so we cannot miss a notification that
+            // fires between the active_count() call above and the select below.
+            let notified = self.inner.shutdown_notify.notified();
+            tokio::select! {
+                biased;
+                () = notified => {
+                    // reap driver decremented active count — re-check at top of loop
+                }
+                () = &mut sleep => {
+                    let mut remaining_names: Vec<Arc<str>> = Vec::new();
+                    {
+                        let mut state = self.inner.state.lock();
+                        for entry in state.tasks.values_mut() {
+                            if matches!(
+                                entry.status,
+                                TaskStatus::Running | TaskStatus::Restarting { .. }
+                            ) {
+                                remaining_names.push(Arc::clone(&entry.name));
+                                entry.abort_handle.abort();
+                                entry.status = TaskStatus::Aborted;
+                            }
                         }
                     }
+                    tracing::warn!(
+                        remaining = active,
+                        tasks = ?remaining_names,
+                        "shutdown timeout — aborting remaining tasks"
+                    );
+                    break;
                 }
-                tracing::warn!(
-                    remaining = active,
-                    tasks = ?remaining_names,
-                    "shutdown timeout — aborting remaining tasks"
-                );
-                break;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -886,12 +898,18 @@ impl TaskSupervisor {
         // Without this, Restart-policy tasks re-register as Running, causing
         // has_active_tasks() to stay true and the drain loop to spin until timeout.
         if inner.cancel.is_cancelled() {
-            let mut state = inner.state.lock();
-            state.tasks.remove(&completion.name);
+            {
+                let mut state = inner.state.lock();
+                state.tasks.remove(&completion.name);
+            }
+            inner.shutdown_notify.notify_waiters();
             return;
         }
 
         let Some((attempt, max, delay)) = Self::classify_completion(inner, &completion) else {
+            // Task removed from registry (RunOnce completed or Restart exhausted) —
+            // wake shutdown_all so it can re-check active_count immediately.
+            inner.shutdown_notify.notify_waiters();
             return;
         };
 
