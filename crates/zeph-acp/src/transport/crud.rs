@@ -243,7 +243,8 @@ pub async fn get_session_handler(
 ///
 /// # Errors
 ///
-/// Returns `400 Bad Request` if `{id}` is not a valid UUID.
+/// Returns `400 Bad Request` if `{id}` is not a valid UUID or the title exceeds
+/// `AcpServerConfig::title_max_chars`.
 /// Returns `404 Not Found` if the session does not exist.
 /// Returns `503 Service Unavailable` when no `SQLite` store is configured.
 /// Returns `500 Internal Server Error` if the database write or subsequent query fails.
@@ -262,22 +263,28 @@ pub async fn update_session_handler(
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let exists = store.acp_session_exists(&session_id).await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to check ACP session existence");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    if !exists {
-        return Err(StatusCode::NOT_FOUND);
+    if let Some(ref title) = req.title
+        && title.chars().count() > state.server_config.title_max_chars
+    {
+        return Err(StatusCode::BAD_REQUEST);
     }
 
-    if let Some(title) = req.title {
+    let found = if let Some(title) = req.title {
         store
-            .update_session_title(&session_id, &title)
+            .update_session_title_checked(&session_id, &title)
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, "failed to update ACP session title");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            })?
+    } else {
+        store.acp_session_exists(&session_id).await.map_err(|e| {
+            tracing::warn!(error = %e, "failed to check ACP session existence");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
+    if !found {
+        return Err(StatusCode::NOT_FOUND);
     }
 
     let info = store
@@ -320,18 +327,16 @@ pub async fn delete_session_handler(
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let exists = store.acp_session_exists(&session_id).await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to check ACP session existence");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    if !exists {
+    let deleted = store
+        .delete_acp_session_checked(&session_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to delete ACP session");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !deleted {
         return Err(StatusCode::NOT_FOUND);
     }
-
-    store.delete_acp_session(&session_id).await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to delete ACP session");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
 
     // Drop the active connection if it exists.
     state.connections.remove(&session_id);
@@ -555,5 +560,186 @@ mod tests {
         let state = state_no_store();
         let session_id = uuid::Uuid::new_v4().to_string();
         assert_eq!(resolve_status(&state, &session_id), SessionStatus::Idle);
+    }
+
+    // ── Helpers for store-backed tests ────────────────────────────────────────
+
+    async fn state_with_store() -> AcpHttpState {
+        let store = zeph_memory::store::SqliteStore::new(":memory:")
+            .await
+            .expect("SqliteStore::new");
+        AcpHttpState::new(noop_spawner(), base_config())
+            .with_store(store)
+            .with_ready(true)
+    }
+
+    async fn state_with_store_and_limit(title_max_chars: usize) -> AcpHttpState {
+        let store = zeph_memory::store::SqliteStore::new(":memory:")
+            .await
+            .expect("SqliteStore::new");
+        let mut cfg = base_config();
+        cfg.title_max_chars = title_max_chars;
+        AcpHttpState::new(noop_spawner(), cfg)
+            .with_store(store)
+            .with_ready(true)
+    }
+
+    // ── PATCH title-length validation (#4260) ─────────────────────────────────
+
+    #[tokio::test]
+    async fn patch_title_over_limit_returns_400() {
+        let limit = 10;
+        let state = state_with_store_and_limit(limit).await;
+        let app = build_router(state);
+
+        let id = uuid::Uuid::new_v4();
+        let title = "a".repeat(limit + 1);
+        let body = serde_json::json!({ "title": title });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/sessions/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn patch_title_exactly_at_limit_returns_404_for_missing_session() {
+        // Title length is valid; session does not exist → 404 (not 400 or 500).
+        let limit = 10;
+        let state = state_with_store_and_limit(limit).await;
+        let app = build_router(state);
+
+        let id = uuid::Uuid::new_v4();
+        let title = "a".repeat(limit); // exactly at limit
+        let body = serde_json::json!({ "title": title });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/sessions/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── DELETE / PATCH on non-existent session (#4262) ────────────────────────
+
+    #[tokio::test]
+    async fn delete_nonexistent_session_returns_404() {
+        let state = state_with_store().await;
+        let app = build_router(state);
+
+        let id = uuid::Uuid::new_v4();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/sessions/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn patch_nonexistent_session_returns_404() {
+        let state = state_with_store().await;
+        let app = build_router(state);
+
+        let id = uuid::Uuid::new_v4();
+        let body = serde_json::json!({ "title": "new name" });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/sessions/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Happy paths ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn patch_existing_session_returns_200_with_updated_title() {
+        let state = state_with_store().await;
+        // Create the session directly via the store before routing.
+        let session_id = uuid::Uuid::new_v4().to_string();
+        state
+            .store
+            .as_ref()
+            .unwrap()
+            .create_acp_session(&session_id)
+            .await
+            .unwrap();
+
+        let app = build_router(state);
+
+        let body = serde_json::json!({ "title": "renamed" });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/sessions/{session_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(info["title"], "renamed");
+    }
+
+    #[tokio::test]
+    async fn delete_existing_session_returns_204() {
+        let state = state_with_store().await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        state
+            .store
+            .as_ref()
+            .unwrap()
+            .create_acp_session(&session_id)
+            .await
+            .unwrap();
+
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/sessions/{session_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 }

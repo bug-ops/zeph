@@ -102,6 +102,22 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Delete an ACP session only if it exists; returns `true` when a row was deleted.
+    ///
+    /// Eliminates the separate exists-check + delete TOCTOU race by relying on a
+    /// single DELETE statement and inspecting affected rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn delete_acp_session_checked(&self, session_id: &str) -> Result<bool, MemoryError> {
+        let result = zeph_db::query(sql!("DELETE FROM acp_sessions WHERE id = ?"))
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// List ACP sessions ordered by last activity descending.
     ///
     /// Includes title, `updated_at`, and message count per session.
@@ -218,6 +234,27 @@ impl SqliteStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Update the title of an ACP session; returns `true` when the row was found and updated.
+    ///
+    /// Eliminates the separate exists-check + update TOCTOU race by relying on a
+    /// single UPDATE statement and inspecting affected rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn update_session_title_checked(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<bool, MemoryError> {
+        let result = zeph_db::query(sql!("UPDATE acp_sessions SET title = ? WHERE id = ?"))
+            .bind(title)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Check whether an ACP session record exists.
