@@ -1160,7 +1160,7 @@ mod tests {
         );
     }
 
-    /// embed() timeout in `seed_embedding_fallback` → returns `false` (fail-open, empty seeds).
+    /// `embed()` timeout in `seed_embedding_fallback` → returns `false` (fail-open, empty seeds).
     #[tokio::test]
     async fn seed_embedding_fallback_embed_timeout_returns_false() {
         // Create stores before pausing time — the SQLite pool uses tokio timers internally.
@@ -1184,7 +1184,7 @@ mod tests {
         );
 
         let fut = seed_embedding_fallback(&store, &emb_store, &slow, "query", 5, &mut fts_map);
-        let (result, _) = tokio::join!(fut, async {
+        let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });
 

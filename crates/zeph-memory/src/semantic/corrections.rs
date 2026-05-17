@@ -149,7 +149,7 @@ mod tests {
         .with_embed_provider(slow_embed)
     }
 
-    /// embed() timeout in `store_correction_embedding` → returns `Ok(())` (fail-open, skips write).
+    /// `embed()` timeout in `store_correction_embedding` → returns `Ok(())` (fail-open, skips write).
     #[tokio::test]
     async fn store_correction_embedding_embed_timeout_is_ok() {
         // Build memory before pausing time — SQLite pool uses tokio timers internally.
@@ -158,7 +158,7 @@ mod tests {
         tokio::time::pause();
 
         let fut = mem.store_correction_embedding(42, "I prefer detailed answers");
-        let (result, _) = tokio::join!(fut, async {
+        let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });
 

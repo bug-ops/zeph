@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(source_row.0, 1, "source m2 must be marked consolidated=1");
     }
 
-    /// embed() timeout → candidates are dropped (fail-open), `embed_candidates` returns empty.
+    /// `embed()` timeout → candidates are dropped (fail-open), `embed_candidates` returns empty.
     #[tokio::test]
     async fn embed_candidates_timeout_drops_all_candidates() {
         tokio::time::pause();
@@ -1056,7 +1056,7 @@ mod tests {
         ];
 
         let fut = embed_candidates(&slow, &candidates);
-        let (result, _) = tokio::join!(fut, async {
+        let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });
 

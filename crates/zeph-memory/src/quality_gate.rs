@@ -867,7 +867,7 @@ mod tests {
         );
     }
 
-    /// embed() timeout → fail-open: `compute_information_value` returns 1.0,
+    /// `embed()` timeout → fail-open: `compute_information_value` returns 1.0,
     /// gate admits the write (returns `None`).
     #[tokio::test]
     async fn gate_fail_open_on_embed_timeout() {
@@ -894,7 +894,7 @@ mod tests {
 
         let fut = gate.evaluate("Alice confirmed the meeting at 3pm.", &provider, &recent);
         // Advance time past the 5s embed timeout.
-        let (result, _) = tokio::join!(fut, async {
+        let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });
 

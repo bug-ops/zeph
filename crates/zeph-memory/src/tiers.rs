@@ -429,11 +429,11 @@ mod tests {
         }
     }
 
-    /// embed() timeout during merge validation → fail-open: merge proceeds without rejecting.
+    /// `embed()` timeout during merge validation → fail-open: merge proceeds without rejecting.
     ///
-    /// `merge_cluster_and_promote` must return `Ok(())` even when the embed call for
+    /// `merge_cluster_and_promote` must return `Ok(())` even when the `embed` call for
     /// similarity validation times out.  The LLM merge call itself returns immediately
-    /// (MockProvider default_response), only the embed sleeps.
+    /// (`MockProvider` `default_response`), only the embed sleeps.
     #[tokio::test]
     async fn merge_validation_embed_timeout_is_fail_open() {
         // Create store before pausing time — SQLite pool uses tokio timers internally.
@@ -463,7 +463,7 @@ mod tests {
         ];
 
         let fut = merge_cluster_and_promote(&store, &slow_embed, &cluster, conv_id);
-        let (result, _) = tokio::join!(fut, async {
+        let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });
 
