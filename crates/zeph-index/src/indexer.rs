@@ -299,9 +299,7 @@ impl CodeIndexer {
         root: &Path,
     ) -> Result<(Vec<ignore::DirEntry>, HashSet<String>)> {
         let root_buf = root.to_path_buf();
-        // TODO(#2978-walk): directory walk is left as raw spawn_blocking; routing it
-        // through BlockingSpawner is out of scope (single short-lived operation per run).
-        tokio::task::spawn_blocking(move || {
+        let walk = move || {
             let entries: Vec<_> = ignore::WalkBuilder::new(&root_buf)
                 .hidden(true)
                 .git_ignore(true)
@@ -321,9 +319,24 @@ impl CodeIndexer {
                 current_files.insert(rel_path);
             }
             (entries, current_files)
-        })
-        .await
-        .map_err(|e| IndexError::Other(format!("directory walk panicked: {e:#}")))
+        };
+
+        if let Some(ref spawner) = self.spawner {
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let _join = spawner.spawn_blocking_named(
+                std::sync::Arc::from("walk_project_files"),
+                Box::new(move || {
+                    let _ = result_tx.send(walk());
+                }),
+            );
+            result_rx
+                .await
+                .map_err(|_| IndexError::Other("walk_project_files task dropped result".to_owned()))
+        } else {
+            tokio::task::spawn_blocking(walk)
+                .await
+                .map_err(|e| IndexError::Other(format!("directory walk panicked: {e:#}")))
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
