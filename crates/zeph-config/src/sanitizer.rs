@@ -135,6 +135,14 @@ pub struct ContentIsolationConfig {
     /// responses served to ACP clients (e.g. IDE integrations).
     #[serde(default = "default_true")]
     pub mcp_to_acp_boundary: bool,
+
+    /// NLI entailment check stage configuration.
+    #[serde(default)]
+    pub nli: NliConfig,
+
+    /// PAAC secret placeholder masking configuration.
+    #[serde(default)]
+    pub secret_masking: SecretMaskingConfig,
 }
 
 impl Default for ContentIsolationConfig {
@@ -147,6 +155,92 @@ impl Default for ContentIsolationConfig {
             quarantine: QuarantineConfig::default(),
             embedding_guard: EmbeddingGuardConfig::default(),
             mcp_to_acp_boundary: true,
+            nli: NliConfig::default(),
+            secret_masking: SecretMaskingConfig::default(),
+        }
+    }
+}
+
+/// Configuration for the SONAR NLI entailment check stage, nested under
+/// `[security.content_isolation.nli]` in the agent config file.
+///
+/// When `enabled = false` (the default), the NLI stage is skipped entirely.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NliConfig {
+    /// Enable NLI entailment-based injection detection (default: false — opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Provider name from `[[llm.providers]]` to use for NLI inference.
+    ///
+    /// Empty string means fall back to the default provider. Prefer a fast, cheap model.
+    #[serde(default)]
+    pub provider: String,
+
+    /// Entailment score threshold above which content is flagged (default: 0.75).
+    #[serde(default = "default_nli_threshold")]
+    pub threshold: f32,
+
+    /// Maximum milliseconds to wait for the NLI provider response (default: 5000).
+    #[serde(default = "default_nli_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// Maximum characters of content sent to the NLI provider (default: 2048).
+    #[serde(default = "default_nli_max_content_len")]
+    pub max_content_len: usize,
+}
+
+fn default_nli_threshold() -> f32 {
+    0.75
+}
+
+fn default_nli_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_nli_max_content_len() -> usize {
+    2048
+}
+
+impl Default for NliConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: String::new(),
+            threshold: default_nli_threshold(),
+            timeout_ms: default_nli_timeout_ms(),
+            max_content_len: default_nli_max_content_len(),
+        }
+    }
+}
+
+/// Configuration for PAAC secret placeholder masking, nested under
+/// `[security.secret_masking]` in the agent config file.
+///
+/// When `enabled = false` (the default), vault secrets are not masked.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct SecretMaskingConfig {
+    /// Enable secret placeholder masking (default: false — opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Minimum secret byte length to be eligible for masking (default: 8).
+    ///
+    /// Secrets shorter than this value are not substituted to avoid false matches
+    /// on common short strings.
+    #[serde(default = "default_min_secret_len")]
+    pub min_secret_len: usize,
+}
+
+fn default_min_secret_len() -> usize {
+    8
+}
+
+impl Default for SecretMaskingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_secret_len: default_min_secret_len(),
         }
     }
 }

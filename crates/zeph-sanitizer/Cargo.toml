@@ -13,6 +13,8 @@ description = "Content sanitization, exfiltration guard, PII filtering, and quar
 readme = "README.md"
 
 [dependencies]
+parking_lot.workspace = true
+rand.workspace = true
 regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -27,7 +29,8 @@ zeph-memory.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
+tokio-stream.workspace = true
 toml.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 

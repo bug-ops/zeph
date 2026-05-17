@@ -75,4 +75,18 @@ pub enum PluginError {
     /// (warnings) and never produce this error.
     #[error("skill {skill:?} failed semantic compliance scan: {reason}")]
     SemanticViolation { skill: String, reason: String },
+
+    /// SHA-256 digest of a downloaded archive does not match the expected value.
+    ///
+    /// Returned by [`crate::manager::PluginManager::add_remote`] when the caller
+    /// supplies an `expected_sha256` and the download does not match.
+    /// Do not install or extract the archive — it may have been tampered with.
+    #[error(
+        "plugin archive integrity check failed: expected sha256={expected}, got sha256={actual}"
+    )]
+    IntegrityCheckFailed { expected: String, actual: String },
+
+    /// HTTP download of a remote plugin archive failed.
+    #[error("failed to download plugin from {url}: {reason}")]
+    DownloadFailed { url: String, reason: String },
 }

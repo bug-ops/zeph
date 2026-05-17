@@ -158,8 +158,8 @@ pub use quality::{QualityConfig, TriggerPolicy};
 pub use rate_limit::RateLimitConfig;
 pub use sanitizer::{
     CausalIpiConfig, ContentIsolationConfig, CustomPiiPattern, EmbeddingGuardConfig,
-    ExfiltrationGuardConfig, MemoryWriteValidationConfig, PiiFilterConfig, QuarantineConfig,
-    ResponseVerificationConfig, ShadowMemoryConfig,
+    ExfiltrationGuardConfig, MemoryWriteValidationConfig, NliConfig, PiiFilterConfig,
+    QuarantineConfig, ResponseVerificationConfig, SecretMaskingConfig, ShadowMemoryConfig,
 };
 pub use sanitizer::{GuardrailAction, GuardrailConfig, GuardrailFailStrategy};
 pub use security::{

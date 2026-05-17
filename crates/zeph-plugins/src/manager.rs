@@ -267,6 +267,100 @@ impl PluginManager {
         })
     }
 
+    /// Download and install a plugin from a remote URL with optional SHA-256 integrity pinning.
+    ///
+    /// Downloads the archive at `url`, verifies its SHA-256 digest against `expected_sha256`
+    /// (when provided), extracts it to a temporary directory, and delegates to [`Self::add`].
+    ///
+    /// # Integrity check
+    ///
+    /// When `expected_sha256` is `Some`, the raw archive bytes are hashed with SHA-256 and
+    /// compared against the expected lowercase hex string. If the digests do not match,
+    /// [`PluginError::IntegrityCheckFailed`] is returned and the archive is never extracted.
+    ///
+    /// When `expected_sha256` is `None`, the archive is extracted without verification. Callers
+    /// are encouraged to always supply the expected hash; unverified installs are permitted by
+    /// default for backward compatibility but should be avoided in production.
+    ///
+    /// # Errors
+    ///
+    /// - [`PluginError::DownloadFailed`] — HTTP request failed or returned a non-2xx status.
+    /// - [`PluginError::IntegrityCheckFailed`] — SHA-256 digest mismatch.
+    /// - [`PluginError::InvalidSource`] — archive cannot be extracted.
+    /// - Any error that [`Self::add`] can return.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use zeph_plugins::PluginManager;
+    /// # async fn example() -> Result<(), zeph_plugins::PluginError> {
+    /// let mgr = PluginManager::new(
+    ///     "/tmp/plugins".into(),
+    ///     "/tmp/managed".into(),
+    ///     vec![],
+    ///     vec![],
+    /// );
+    /// let result = mgr.add_remote(
+    ///     "https://example.com/my-plugin.tar.gz",
+    ///     Some("abc123def456..."),
+    /// ).await?;
+    /// println!("installed: {}", result.name);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn add_remote(
+        &self,
+        url: &str,
+        expected_sha256: Option<&str>,
+    ) -> Result<AddResult, PluginError> {
+        let span = tracing::info_span!("plugins.manager.add_remote", %url);
+        let _guard = span.enter();
+
+        let response = reqwest::get(url)
+            .await
+            .map_err(|e| PluginError::DownloadFailed {
+                url: url.to_owned(),
+                reason: e.to_string(),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(PluginError::DownloadFailed {
+                url: url.to_owned(),
+                reason: format!("HTTP {}", response.status()),
+            });
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| PluginError::DownloadFailed {
+                url: url.to_owned(),
+                reason: format!("failed to read response body: {e}"),
+            })?;
+
+        // Verify SHA-256 before extracting anything.
+        if let Some(expected) = expected_sha256 {
+            let actual = crate::integrity::sha256_hex(&bytes);
+            if actual != expected.to_ascii_lowercase() {
+                return Err(PluginError::IntegrityCheckFailed {
+                    expected: expected.to_ascii_lowercase(),
+                    actual,
+                });
+            }
+            tracing::debug!(url, "archive SHA-256 verified");
+        } else {
+            tracing::warn!(url, "installing remote plugin without integrity check");
+        }
+
+        // Extract archive to a temporary directory and delegate to `add`.
+        let tmp = tempfile::tempdir().map_err(|e| PluginError::Io {
+            path: std::path::PathBuf::from(url),
+            source: e,
+        })?;
+        extract_archive(&bytes, tmp.path(), url)?;
+        self.add(tmp.path().to_str().unwrap_or(url))
+    }
+
     /// Remove an installed plugin by name.
     ///
     /// # Errors
@@ -688,6 +782,32 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), PluginError> {
         }
     }
     Ok(())
+}
+
+/// Extract a `.tar.gz` plugin archive into `dest`.
+///
+/// Only gzip-compressed tar archives are supported. The format is detected by the gzip magic
+/// bytes (`0x1f 0x8b`); any other format returns [`PluginError::InvalidSource`].
+///
+/// # Errors
+///
+/// Returns [`PluginError::InvalidSource`] when the archive format is unrecognized or extraction
+/// fails.
+fn extract_archive(bytes: &[u8], dest: &Path, url: &str) -> Result<(), PluginError> {
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Err(PluginError::InvalidSource {
+            path: url.to_owned(),
+            reason: "unsupported archive format: only .tar.gz is supported".to_owned(),
+        });
+    }
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(gz);
+    archive
+        .unpack(dest)
+        .map_err(|e| PluginError::InvalidSource {
+            path: url.to_owned(),
+            reason: format!("tar.gz extraction failed: {e}"),
+        })
 }
 
 /// Walk the plugin tree and delete every `.bundled` marker file.
@@ -1461,6 +1581,47 @@ path = "skills/no-skill-md"
         );
     }
 
+    // --- extract_archive tests ---
+
+    #[test]
+    fn extract_archive_rejects_non_gz_bytes() {
+        let fake_bytes = b"PK\x03\x04not a tar.gz";
+        let tmp = tempfile::tempdir().unwrap();
+        let err =
+            extract_archive(fake_bytes, tmp.path(), "http://example.com/plugin.zip").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { .. }),
+            "non-gz archive must return InvalidSource, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn sha256_integrity_mismatch_returns_correct_error() {
+        // Validate that the sha256_hex function used in add_remote produces a consistent result
+        // and that a mismatch would be detected. (We test the hash function and error variant
+        // since we cannot call add_remote without an HTTP server in unit tests.)
+        let archive_bytes = b"fake archive content";
+        let actual = crate::integrity::sha256_hex(archive_bytes);
+        let wrong_expected = "0000000000000000000000000000000000000000000000000000000000000000";
+        assert_ne!(
+            actual, wrong_expected,
+            "sha256 of non-zero bytes must not match all-zero expected"
+        );
+        // Confirm the error variant is constructable.
+        let err = PluginError::IntegrityCheckFailed {
+            expected: wrong_expected.to_owned(),
+            actual: actual.clone(),
+        };
+        assert!(
+            err.to_string().contains("integrity check failed"),
+            "error message must mention integrity check"
+        );
+        assert!(
+            err.to_string().contains(&actual),
+            "error message must contain actual hash"
+        );
+    }
+
     #[test]
     fn collect_skill_dirs_aggregates_multiple_plugins() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1483,5 +1644,95 @@ path = "skills/no-skill-md"
 
         let dirs = mgr.collect_skill_dirs().unwrap();
         assert_eq!(dirs.len(), 2, "expected two skill dirs from two plugins");
+    }
+
+    // --- add_remote tests ---
+
+    /// Build an in-memory `.tar.gz` archive of the directory at `source`.
+    #[cfg(test)]
+    fn build_tar_gz(source: &std::path::Path) -> Vec<u8> {
+        use std::io::Write as _;
+        let buf = Vec::new();
+        let gz = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
+        let mut tar = tar::Builder::new(gz);
+        tar.append_dir_all(".", source).unwrap();
+        let gz = tar.into_inner().unwrap();
+        gz.finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_remote_correct_hash_installs_plugin() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        write_plugin(
+            &source,
+            "remote-plugin",
+            &simple_manifest("remote-plugin", "my-skill"),
+            &[("my-skill", "Do remote stuff")],
+        );
+
+        let archive = build_tar_gz(&source);
+        let expected_hash = crate::integrity::sha256_hex(&archive);
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        let url = format!("{}/remote-plugin.tar.gz", mock_server.uri());
+        let result = mgr.add_remote(&url, Some(&expected_hash)).await.unwrap();
+        assert_eq!(result.name, "remote-plugin");
+        assert!(result.installed_skills.contains(&"my-skill".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn add_remote_wrong_hash_returns_integrity_error() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        write_plugin(
+            &source,
+            "bad-plugin",
+            &simple_manifest("bad-plugin", "bad-skill"),
+            &[("bad-skill", "Body")],
+        );
+
+        let archive = build_tar_gz(&source);
+        let wrong_hash = "0".repeat(64);
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+
+        let url = format!("{}/bad-plugin.tar.gz", mock_server.uri());
+        let err = mgr.add_remote(&url, Some(&wrong_hash)).await.unwrap_err();
+        assert!(
+            matches!(err, PluginError::IntegrityCheckFailed { .. }),
+            "wrong hash must produce IntegrityCheckFailed, got {err:?}"
+        );
     }
 }

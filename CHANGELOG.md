@@ -29,6 +29,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-skills`: `sanitize_skill_metadata()` — sanitizes untrusted SKILL.md description/trigger
+  fields with UTF-8-safe truncation (`floor_char_boundary`), imperative-prefix stripping, and XML
+  injection marker blocking before prompt injection (closes #4135).
+- `zeph-skills`: `wrap_data_description()` — wraps untrusted skill descriptions in
+  `<data-description>` boundary tags in the `<available_skills>` XML block, signaling to the LLM
+  that the enclosed content is data, not instructions; primary defense against prompt injection via
+  skill metadata (closes #4135).
+- `zeph-skills`: `SkillTrust::requires_trust_check` — boolean field that, when `true`, causes the
+  agent to re-hash `SKILL.md` via blake3 before each invocation and abort if the digest changed;
+  tamper-detection only, not authentication (closes #4135).
+- `zeph-sanitizer`: `NliStageConfig` and `NliVerdict` types for NLI-based content classification;
+  `ContentSanitizer::check_nli_entailment()` async method gated on `classifiers` feature; integrates
+  with `[security.content_isolation.nli]` config section (closes #4075).
+- `zeph-sanitizer`: `SecretMaskRegistry` — per-session registry that replaces vault-resolved secret
+  values with typed placeholder tokens (`<SECRET:{nonce}:{category}:{index}>`) before LLM payload
+  assembly; `unmask()` reverses substitution at tool execution boundary only (closes #4076).
+- `zeph-plugins`: `PluginManager::add_remote(url, expected_sha256)` — downloads a `.tar.gz` plugin
+  archive, verifies its SHA-256 digest before extraction, and delegates to `add()`; returns
+  `PluginError::IntegrityCheckFailed` on digest mismatch (closes #4135).
+- `zeph-plugins`: `PluginError::IntegrityCheckFailed` and `PluginError::DownloadFailed` error
+  variants for remote plugin install failures (closes #4135).
+
 - `zeph-common`: added 8 exfiltration-channel patterns to `RAW_INJECTION_PATTERNS` (`exfil_curl`,
   `exfil_wget_post`, `exfil_api_key_send`, `exfil_extract_all`, `exfil_leak`, `exfil_forward_to`,
   `exfil_exfiltrate`, `exfil_send_secret`) for detecting skills that attempt to exfiltrate data

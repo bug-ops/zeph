@@ -7939,6 +7939,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20f34339676cdcab560c9a82300c4c2581f68b9369aedf0fae86f2ff9565ff3e"
 
 [[package]]
+name = "tar"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
+]
+
+[[package]]
 name = "teloxide"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10933,16 +10944,20 @@ name = "zeph-plugins"
 version = "0.21.1"
 dependencies = [
  "dirs",
+ "flate2",
  "hex",
+ "reqwest 0.13.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "walkdir",
+ "wiremock",
  "zeph-common",
  "zeph-config",
  "zeph-skills",
@@ -10953,13 +10968,16 @@ dependencies = [
 name = "zeph-sanitizer"
 version = "0.21.1"
 dependencies = [
+ "parking_lot",
  "proptest",
+ "rand 0.10.1",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "zeph-common",

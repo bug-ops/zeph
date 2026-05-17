@@ -63,11 +63,13 @@ pub mod causal_ipi;
 pub mod exfiltration;
 pub mod guardrail;
 pub mod memory_validation;
+pub mod nli;
 pub mod pii;
 pub mod pipeline;
 pub mod quarantine;
 pub mod response_verifier;
 mod sanitizer;
+pub mod secret_mask;
 pub mod shadow_memory;
 pub mod types;
 
