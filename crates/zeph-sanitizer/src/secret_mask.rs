@@ -198,14 +198,13 @@ impl SecretMaskRegistry {
         }
         let index = self.counter.fetch_add(1, Ordering::Relaxed);
         let placeholder = format!("<SECRET:{}:{}:{}>", category.as_str(), self.nonce, index);
+        // Acquire sorted_pairs BEFORE inserting into forward so mask() never observes
+        // a state where forward contains the secret but sorted_pairs does not.
+        let mut pairs = self.sorted_pairs.write();
         forward.insert(secret_value.to_owned(), placeholder.clone());
-        drop(forward);
         self.reverse
             .write()
             .insert(placeholder.clone(), secret_value.to_owned());
-
-        // Rebuild the sorted cache: longest secret first to prevent substring collision.
-        let mut pairs = self.sorted_pairs.write();
         pairs.push((secret_value.to_owned(), placeholder));
         pairs.sort_unstable_by_key(|(s, _)| std::cmp::Reverse(s.len()));
     }
@@ -480,6 +479,50 @@ mod tests {
         let r = SecretMaskRegistry::new();
         assert_eq!(r.mask("any text"), "any text");
         assert_eq!(r.unmask("any text"), "any text");
+    }
+
+    // --- TOCTOU regression (#4280): after register() returns, concurrent mask() must never
+    // expose the raw secret — tests the atomic sorted_pairs+forward critical section.
+    #[test]
+    fn concurrent_register_and_mask_never_expose_raw_secret() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let registry = Arc::new(SecretMaskRegistry::new());
+        let secret = "super-secret-value-9999";
+        let text = format!("token={secret} end");
+
+        // Pre-register so the secret is fully committed before concurrent access starts.
+        registry.register("KEY", secret, SecretCategory::ApiKey);
+
+        // Barrier: both threads start simultaneously to stress-test concurrent mask() reads
+        // and the dedup re-registration path (which also touches sorted_pairs).
+        let barrier = Arc::new(Barrier::new(2));
+        let iterations = 2_000;
+
+        let reg_clone = Arc::clone(&registry);
+        let barrier_clone = Arc::clone(&barrier);
+        // Thread 1: repeatedly re-registers the same secret (hits the dedup early-return path,
+        // which still acquires forward.write() and must not corrupt sorted_pairs).
+        let register_thread = thread::spawn(move || {
+            barrier_clone.wait();
+            for _ in 0..iterations {
+                reg_clone.register("KEY", secret, SecretCategory::ApiKey);
+            }
+        });
+
+        // Thread 2: calls mask() — after the pre-registration above, the secret must always
+        // be masked regardless of concurrent dedup calls in thread 1.
+        barrier.wait();
+        for _ in 0..iterations {
+            let masked = registry.mask(&text);
+            assert!(
+                !masked.contains(secret),
+                "raw secret must not appear in masked output: {masked}"
+            );
+        }
+
+        register_thread.join().expect("register thread panicked");
     }
 
     // --- cross-registry isolation: placeholder from r2 is opaque to r1 ---

@@ -452,10 +452,18 @@ impl SkillMiner {
             }
 
             let candidate_emb = SkillEmbedding::from_raw(
-                self.embed_provider
-                    .embed(&candidate.meta.description)
-                    .await
-                    .map_err(|e| SkillError::Other(format!("embed failed: {e}")))?,
+                tokio::time::timeout(
+                    Duration::from_millis(self.config.generation_timeout_ms),
+                    self.embed_provider.embed(&candidate.meta.description),
+                )
+                .await
+                .map_err(|_| {
+                    SkillError::Other(format!(
+                        "embed timed out after {}ms",
+                        self.config.generation_timeout_ms
+                    ))
+                })?
+                .map_err(|e| SkillError::Other(format!("embed failed: {e}")))?,
             );
 
             let max_sim = existing_embeddings
@@ -748,6 +756,49 @@ mod tests {
         assert!(
             result.is_empty(),
             "timed-out embeds must be skipped; got {result:?}"
+        );
+    }
+
+    // Regression test for #4277: is_novel must return Err when embed provider exceeds timeout.
+    #[tokio::test]
+    async fn is_novel_returns_error_on_embed_timeout() {
+        let mut mock = zeph_llm::mock::MockProvider::default();
+        mock.supports_embeddings = true;
+        // Sleep longer than the configured generation_timeout_ms (50 ms).
+        mock.embed_delay_ms = 200;
+        let embed_provider = zeph_llm::any::AnyProvider::Mock(mock.clone());
+        let llm_provider = zeph_llm::any::AnyProvider::Mock(mock);
+        let config = MiningConfig {
+            queries: vec![],
+            max_repos_per_query: 20,
+            dedup_threshold: 0.85,
+            output_dir: PathBuf::from("/tmp"),
+            rate_limit_rpm: 25,
+            dry_run: false,
+            generation_timeout_ms: 50, // much shorter than embed_delay_ms
+        };
+        let miner = SkillMiner {
+            generator: SkillGenerator::new(llm_provider, PathBuf::from("/tmp")),
+            embed_provider,
+            github_token: Secret::new(String::new()),
+            config,
+            http: reqwest::Client::new(),
+        };
+        let skill = make_test_skill();
+        // Provide a non-empty existing list so the embed is actually attempted.
+        let dummy_existing = vec![(
+            "dummy".to_string(),
+            SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]),
+        )];
+        let result = miner.is_novel(&skill, &dummy_existing).await;
+        assert!(
+            result.is_err(),
+            "is_novel must return Err when embed times out, got: {result:?}"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("timed out"),
+            "error message must mention timeout, got: {err}"
         );
     }
 }
