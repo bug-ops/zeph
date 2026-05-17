@@ -1091,12 +1091,21 @@ async fn resolve_and_validate(url: &Url) -> Result<(String, Vec<SocketAddr>), To
         return Ok((String::new(), vec![]));
     };
     let port = url.port_or_known_default().unwrap_or(443);
-    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(format!("{host}:{port}"))
-        .await
-        .map_err(|e| ToolError::Blocked {
-            command: format!("DNS resolution failed: {e}"),
-        })?
-        .collect();
+    let span = tracing::info_span!("scrape.dns.resolve", host = host);
+    let dns_result = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::net::lookup_host(format!("{host}:{port}")),
+    )
+    .await;
+    let addrs: Vec<SocketAddr> = {
+        let _enter = span.enter();
+        dns_result
+            .map_err(|_| ToolError::Timeout { timeout_secs: 10 })?
+            .map_err(|e| ToolError::Blocked {
+                command: format!("DNS resolution failed: {e}"),
+            })?
+            .collect()
+    };
     for addr in &addrs {
         if is_private_ip(addr.ip()) {
             return Err(ToolError::Blocked {
