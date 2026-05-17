@@ -17,6 +17,7 @@ related:
   - "[[001-system-invariants/spec]]"
   - "[[025-classifiers/spec]]"
   - "[[008-mcp/spec]]"
+  - "[[010-7-shadow-memory-guardrail]]"
 ---
 
 # Spec: Security (Parent Index)
@@ -42,6 +43,7 @@ specific areas, refer to the child specs below.
 | [[010-4-audit]] | Audit Trail | Immutable logging, correlation analysis, environment scrubbing |
 | [[010-5-egress-logging]] | Egress Logging | `EgressEvent` per outbound HTTP call, correlation_id, bounded telemetry |
 | [[010-6-vigil-intent-anchoring]] | Verify-Before-Commit | Pre-sanitizer regex tripwire with Block/Sanitize + per-turn intent |
+| [[010-7-shadow-memory-guardrail]] | Multi-Turn Threat Detection | MAGE shadow memory (goal hijacking) + SafeHarbor guardrail tree (adaptive rules) |
 | [[050-security-capability-governance/spec]] | Capability Governance | Tool scoping, trajectory sentinel, CapSeal vault-broker sketch (#3563, #3569, #3570) |
 
 ---
