@@ -905,7 +905,7 @@ pub struct ShellConfig {
     pub background_timeout_secs: u64,
     /// Cumulative risk score threshold for multi-step chain blocking. Default: `0.7`.
     ///
-    /// When the [`RiskChainAccumulator`] exceeds this score within a single turn,
+    /// When the `RiskChainAccumulator` (zeph-tools) exceeds this score within a single turn,
     /// the command is blocked. Set to `None` to use the built-in default of `0.7`.
     #[serde(default)]
     pub risk_chain_threshold: Option<f32>,
