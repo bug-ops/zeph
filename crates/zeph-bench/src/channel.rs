@@ -137,7 +137,7 @@ impl BenchmarkChannel {
     ///
     /// # Note
     ///
-    /// If `turns` contains no [`Role::User`] turns, [`total`][BenchmarkChannel::total] returns
+    /// If `turns` contains no [`crate::scenario::Role::User`] turns, [`total`][BenchmarkChannel::total] returns
     /// `0` and the channel cannot serve as a prompt source. The bench runner rejects this with
     /// [`BenchError::InvalidFormat`][crate::BenchError] — callers must ensure at least one user
     /// turn is present.
