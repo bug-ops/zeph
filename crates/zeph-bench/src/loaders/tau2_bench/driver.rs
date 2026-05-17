@@ -18,7 +18,7 @@
 //!
 //! # Backward compatibility
 //!
-//! The single-turn [`crate::loaders::tau2_bench::loader::build_prompt`] function is retained.
+//! The single-turn `build_prompt` function in the loader module is retained.
 //! Callers that do not need multi-turn simulation continue to use
 //! [`crate::runner::BenchRunner::run_dataset_with_env_factory`] unchanged.
 

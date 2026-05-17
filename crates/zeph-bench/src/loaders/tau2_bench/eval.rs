@@ -713,6 +713,7 @@ mod tests {
 
     // ─── EnvironmentEvaluator unit tests ─────────────────────────────────────
 
+    #[allow(dead_code)]
     fn make_env_evaluator(
         final_snapshot: serde_json::Value,
         db_seed_path: &std::path::Path,
