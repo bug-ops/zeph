@@ -146,6 +146,10 @@ pub(crate) fn spawn_gateway_server(
 ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
     use zeph_gateway::GatewayServer;
 
+    if let Err(e) = config.gateway.validate() {
+        panic!("invalid gateway configuration: {e}");
+    }
+
     let (webhook_tx, mut webhook_rx) = tokio::sync::mpsc::channel::<String>(64);
     let gw = GatewayServer::new(
         &config.gateway.bind,

@@ -27,7 +27,8 @@ pub struct EvolutionSweepStats {
 /// Persistent store for experience memory nodes and edges.
 ///
 /// Wraps the `experience_nodes`, `experience_edges`, and `experience_entity_links`
-/// tables created by migration `076_experience_memory.sql`.
+/// tables created by migration `*_experience_memory.sql`
+/// (`SQLite`: `076_experience_memory.sql`, `PostgreSQL`: `083_experience_memory.sql`).
 pub struct ExperienceStore {
     pool: DbPool,
 }

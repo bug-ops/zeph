@@ -803,6 +803,25 @@ impl Default for GatewayConfig {
     }
 }
 
+impl GatewayConfig {
+    /// Validate gateway configuration values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string when:
+    /// - `webhook_send_timeout_secs` is `0` or exceeds `300`
+    /// - `max_body_size` exceeds `10 MiB` (`10485760` bytes)
+    pub fn validate(&self) -> Result<(), String> {
+        if self.webhook_send_timeout_secs == 0 || self.webhook_send_timeout_secs > 300 {
+            return Err("webhook_send_timeout_secs must be between 1 and 300".to_owned());
+        }
+        if self.max_body_size > 10 * 1024 * 1024 {
+            return Err("max_body_size must be <= 10485760 (10 MiB)".to_owned());
+        }
+        Ok(())
+    }
+}
+
 /// Daemon / process supervisor configuration, nested under `[daemon]` in TOML.
 ///
 /// When `enabled = true`, Zeph runs as a background process with automatic restart
@@ -1050,6 +1069,38 @@ mod tests {
     fn index_config_workspace_root_none_by_default() {
         let cfg: IndexConfig = toml::from_str("enabled = false").unwrap();
         assert!(cfg.workspace_root.is_none());
+    }
+
+    #[test]
+    fn gateway_validate_timeout_zero_is_err() {
+        let cfg = GatewayConfig {
+            webhook_send_timeout_secs: 0,
+            ..GatewayConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn gateway_validate_timeout_over_limit_is_err() {
+        let cfg = GatewayConfig {
+            webhook_send_timeout_secs: 301,
+            ..GatewayConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn gateway_validate_max_body_over_limit_is_err() {
+        let cfg = GatewayConfig {
+            max_body_size: 10 * 1024 * 1024 + 1,
+            ..GatewayConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn gateway_validate_defaults_are_ok() {
+        assert!(GatewayConfig::default().validate().is_ok());
     }
 }
 

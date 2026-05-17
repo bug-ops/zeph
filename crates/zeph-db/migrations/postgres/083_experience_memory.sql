@@ -31,5 +31,5 @@ CREATE TABLE IF NOT EXISTS experience_entity_links (
 CREATE INDEX IF NOT EXISTS idx_experience_nodes_session      ON experience_nodes(session_id, turn);
 CREATE INDEX IF NOT EXISTS idx_experience_nodes_tool         ON experience_nodes(tool_name);
 CREATE INDEX IF NOT EXISTS idx_experience_entity_links       ON experience_entity_links(entity_id);
--- Added by migration 082 (episodic_consolidation uses this for session-time lookups)
+-- Facilitates session-time lookups used by episodic_consolidation
 CREATE INDEX IF NOT EXISTS idx_experience_nodes_session_time ON experience_nodes(session_id, created_at);
