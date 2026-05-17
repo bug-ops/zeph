@@ -1756,6 +1756,13 @@ impl AppBuilder {
             step_budget: Some(std::time::Duration::from_millis(
                 self.config.memory.hebbian.step_budget_ms,
             )),
+            embed_timeout: if self.config.memory.hebbian.embed_timeout_secs == 0 {
+                None
+            } else {
+                Some(std::time::Duration::from_secs(
+                    self.config.memory.hebbian.embed_timeout_secs,
+                ))
+            },
         }
     }
 }

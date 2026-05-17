@@ -250,7 +250,7 @@ pub(crate) enum QueryIntent {
 /// HL-F5 runtime wiring for spreading activation (mirror of `[memory.hebbian]` spread fields).
 ///
 /// Built from config at bootstrap and attached via [`SemanticMemory::with_hebbian_spread`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HelaSpreadRuntime {
     /// `true` when `[memory.hebbian] enabled = true` AND `spreading_activation = true`.
     pub enabled: bool,
@@ -262,6 +262,21 @@ pub struct HelaSpreadRuntime {
     pub edge_types: Vec<crate::graph::EdgeType>,
     /// Per-step circuit-breaker duration.
     pub step_budget: Option<std::time::Duration>,
+    /// Timeout for the initial query embedding call. `None` = no timeout.
+    pub embed_timeout: Option<std::time::Duration>,
+}
+
+impl Default for HelaSpreadRuntime {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            depth: 2,
+            max_visited: 200,
+            edge_types: Vec::new(),
+            step_budget: Some(std::time::Duration::from_millis(8)),
+            embed_timeout: Some(std::time::Duration::from_secs(5)),
+        }
+    }
 }
 
 /// High-level semantic memory orchestrator combining `SQLite` and Qdrant.

@@ -93,6 +93,9 @@ pub struct HelaSpreadParams {
     /// vectors batch) that exceeds this duration triggers an `Ok(Vec::new())`
     /// fallback with a `WARN`. Default: `Some(8 ms)`.
     pub step_budget: Option<std::time::Duration>,
+    /// Timeout for the initial query embedding call. `None` = no timeout.
+    /// Default: `Some(5 s)`.
+    pub embed_timeout: Option<std::time::Duration>,
 }
 
 impl Default for HelaSpreadParams {
@@ -102,6 +105,7 @@ impl Default for HelaSpreadParams {
             edge_types: Vec::new(),
             max_visited: 200,
             step_budget: Some(std::time::Duration::from_millis(8)),
+            embed_timeout: Some(std::time::Duration::from_secs(5)),
         }
     }
 }
@@ -192,7 +196,16 @@ pub async fn hela_spreading_recall(
     }
 
     // ── Step 1: embed query ───────────────────────────────────────────────────
-    let q_vec = provider.embed(query).await?;
+    let q_vec = if let Some(timeout) = params.embed_timeout {
+        tokio::time::timeout(timeout, provider.embed(query))
+            .await
+            .map_err(|_| {
+                tracing::warn!(timeout_ms = timeout.as_millis(), "hela: embed timed out");
+                MemoryError::Timeout("hela embed".into())
+            })??
+    } else {
+        provider.embed(query).await?
+    };
 
     // Dim probe: search with k=1 to catch dimension mismatch at the Qdrant layer.
     let t_anchor = Instant::now();
@@ -1270,6 +1283,112 @@ mod tests {
         assert!(p.step_budget.is_some());
         assert!(p.edge_types.is_empty());
         assert_eq!(p.max_visited, 200);
+    }
+
+    #[test]
+    fn hela_spread_params_default_embed_timeout_is_some() {
+        let p = HelaSpreadParams::default();
+        assert!(
+            p.embed_timeout.is_some(),
+            "default embed_timeout must be Some (5 s)"
+        );
+    }
+
+    // Regression test for #4285: hela_spreading_recall must return
+    // MemoryError::Timeout when the embed provider stalls beyond embed_timeout.
+    #[tokio::test]
+    async fn hela_spreading_recall_embed_timeout_returns_error() {
+        use std::time::Duration;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        use crate::embedding_store::EmbeddingStore;
+        use crate::error::MemoryError;
+        use crate::in_memory_store::InMemoryVectorStore;
+
+        let store = setup_store().await;
+
+        // Provider sleeps 500 ms; timeout is set to 50 ms → must fire.
+        let mock = MockProvider::default().with_embed_delay(500);
+        let provider = AnyProvider::Mock(mock);
+
+        let sqlite = crate::store::SqliteStore::with_pool_size(":memory:", 1)
+            .await
+            .unwrap();
+        let embeddings =
+            EmbeddingStore::with_store(Box::new(InMemoryVectorStore::new()), sqlite.pool().clone());
+
+        let params = HelaSpreadParams {
+            embed_timeout: Some(Duration::from_millis(50)),
+            ..Default::default()
+        };
+
+        let result = hela_spreading_recall(
+            &store,
+            &embeddings,
+            &provider,
+            "test query",
+            5,
+            &params,
+            false,
+            0.0,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(MemoryError::Timeout(_))),
+            "expected Err(MemoryError::Timeout), got {:?}",
+            result
+        );
+    }
+
+    // When embed_timeout is None the embed call is not wrapped; the (fast) mock
+    // returns immediately and the function must succeed.
+    #[tokio::test]
+    async fn hela_spreading_recall_no_timeout_does_not_wrap() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        use crate::embedding_store::EmbeddingStore;
+        use crate::in_memory_store::InMemoryVectorStore;
+
+        let store = setup_store().await;
+
+        let mock = MockProvider::default().with_embed_delay(0);
+        let provider = AnyProvider::Mock(mock);
+
+        let sqlite = crate::store::SqliteStore::with_pool_size(":memory:", 1)
+            .await
+            .unwrap();
+        let embeddings =
+            EmbeddingStore::with_store(Box::new(InMemoryVectorStore::new()), sqlite.pool().clone());
+
+        let params = HelaSpreadParams {
+            embed_timeout: None,
+            ..Default::default()
+        };
+
+        // embed returns a zero-dimension vector (embed not configured for 384-dim),
+        // so Qdrant search finds nothing — the function returns Ok(Vec::new()).
+        let result = hela_spreading_recall(
+            &store,
+            &embeddings,
+            &provider,
+            "test query",
+            5,
+            &params,
+            false,
+            0.0,
+        )
+        .await;
+
+        // The mock embed returns an empty vec by default; the ANN search will
+        // find no results — the expected outcome is Ok(empty) or a non-Timeout error.
+        assert!(
+            !matches!(result, Err(crate::error::MemoryError::Timeout(_))),
+            "embed_timeout: None must not produce a Timeout error, got {:?}",
+            result
+        );
     }
 
     #[test]

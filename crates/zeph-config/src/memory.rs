@@ -1612,6 +1612,10 @@ pub struct HebbianConfig {
     /// Any internal step (anchor ANN, edges batch, vectors batch) that exceeds this
     /// duration triggers an `Ok(Vec::new())` fallback with a `WARN`. Default: `8`.
     pub step_budget_ms: u64,
+    /// Timeout for the initial query embedding call in HL-F5, in seconds.
+    ///
+    /// `0` disables the timeout. Default: `5`.
+    pub embed_timeout_secs: u64,
 }
 
 impl Default for HebbianConfig {
@@ -1630,6 +1634,7 @@ impl Default for HebbianConfig {
             spread_depth: 2,
             spread_edge_types: Vec::new(),
             step_budget_ms: 8,
+            embed_timeout_secs: 5,
         }
     }
 }
