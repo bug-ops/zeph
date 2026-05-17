@@ -470,7 +470,7 @@ fn embedding_response_empty_data() {
 async fn integration_openai_chat() {
     let api_key = std::env::var("ZEPH_OPENAI_API_KEY").expect("ZEPH_OPENAI_API_KEY must be set");
     let provider = OpenAiProvider::new(OpenAiConfig {
-        api_key: api_key,
+        api_key,
         base_url: "https://api.openai.com/v1".into(),
         model: "gpt-5.2".into(),
         max_tokens: 256,
@@ -494,7 +494,7 @@ async fn integration_openai_chat() {
 async fn integration_openai_chat_stream() {
     let api_key = std::env::var("ZEPH_OPENAI_API_KEY").expect("ZEPH_OPENAI_API_KEY must be set");
     let provider = OpenAiProvider::new(OpenAiConfig {
-        api_key: api_key,
+        api_key,
         base_url: "https://api.openai.com/v1".into(),
         model: "gpt-5.2".into(),
         max_tokens: 256,
@@ -553,7 +553,7 @@ fn context_window_gpt4_turbo() {
 async fn integration_openai_embed() {
     let api_key = std::env::var("ZEPH_OPENAI_API_KEY").expect("ZEPH_OPENAI_API_KEY must be set");
     let provider = OpenAiProvider::new(OpenAiConfig {
-        api_key: api_key,
+        api_key,
         base_url: "https://api.openai.com/v1".into(),
         model: "gpt-5.2".into(),
         max_tokens: 256,
