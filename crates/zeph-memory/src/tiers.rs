@@ -274,8 +274,8 @@ async fn merge_cluster_and_promote(
     if provider.supports_embeddings() {
         let embeddings_available = cluster.iter().any(|(_, emb)| !emb.is_empty());
         if embeddings_available {
-            match provider.embed(&merged).await {
-                Ok(merged_vec) => {
+            match tokio::time::timeout(Duration::from_secs(5), provider.embed(&merged)).await {
+                Ok(Ok(merged_vec)) => {
                     let max_sim = cluster
                         .iter()
                         .filter(|(_, emb)| !emb.is_empty())
@@ -288,10 +288,15 @@ async fn merge_cluster_and_promote(
                         )));
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!(
                         error = %e,
                         "tier promotion: failed to embed merged result, skipping similarity validation"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "tier promotion: embed timed out, skipping similarity validation"
                     );
                 }
             }
@@ -422,5 +427,49 @@ mod tests {
             session_count: 3,
             importance_score: 0.5,
         }
+    }
+
+    /// embed() timeout during merge validation → fail-open: merge proceeds without rejecting.
+    ///
+    /// `merge_cluster_and_promote` must return `Ok(())` even when the embed call for
+    /// similarity validation times out.  The LLM merge call itself returns immediately
+    /// (MockProvider default_response), only the embed sleeps.
+    #[tokio::test]
+    async fn merge_validation_embed_timeout_is_fail_open() {
+        // Create store before pausing time — SQLite pool uses tokio timers internally.
+        let store = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let conv_id = store.create_conversation().await.unwrap();
+        let m1 = store
+            .save_message(conv_id, "user", "Alice uses Rust")
+            .await
+            .unwrap();
+        let m2 = store
+            .save_message(conv_id, "user", "Alice loves Rust")
+            .await
+            .unwrap();
+
+        tokio::time::pause();
+
+        // Provider: instant LLM chat reply (default_response), very slow embed (> 5s timeout).
+        let mut mock =
+            zeph_llm::mock::MockProvider::with_responses(vec!["Alice uses and loves Rust".into()]);
+        mock.embed_delay_ms = 10_000;
+        mock.supports_embeddings = true;
+        let slow_embed = zeph_llm::any::AnyProvider::Mock(mock);
+
+        let cluster = vec![
+            (make_candidate(m1.0), vec![1.0_f32, 0.0, 0.0]),
+            (make_candidate(m2.0), vec![1.0_f32, 0.0, 0.0]),
+        ];
+
+        let fut = merge_cluster_and_promote(&store, &slow_embed, &cluster, conv_id);
+        let (result, _) = tokio::join!(fut, async {
+            tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        });
+
+        assert!(
+            result.is_ok(),
+            "embed timeout during merge validation must be fail-open (Ok), got {result:?}"
+        );
     }
 }

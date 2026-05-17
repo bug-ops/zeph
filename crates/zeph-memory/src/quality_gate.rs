@@ -334,10 +334,16 @@ async fn compute_information_value(
     if !provider.supports_embeddings() {
         return 1.0;
     }
-    let candidate = match provider.embed(content).await {
-        Ok(v) => v,
-        Err(e) => {
+    let candidate = match tokio::time::timeout(Duration::from_secs(5), provider.embed(content))
+        .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
             tracing::debug!(error = %e, "quality_gate: embed failed, treating info_val = 1.0 (fail-open)");
+            return 1.0;
+        }
+        Err(_) => {
+            tracing::warn!("quality_gate: embed timed out, treating info_val = 1.0 (fail-open)");
             return 1.0;
         }
     };
@@ -858,6 +864,43 @@ mod tests {
             result,
             Some(QualityRejectionReason::Redundant),
             "identical recent embedding must trigger Redundant rejection"
+        );
+    }
+
+    /// embed() timeout → fail-open: `compute_information_value` returns 1.0,
+    /// gate admits the write (returns `None`).
+    #[tokio::test]
+    async fn gate_fail_open_on_embed_timeout() {
+        tokio::time::pause();
+
+        let config = QualityGateConfig {
+            enabled: true,
+            threshold: 0.5,
+            information_value_weight: 0.9,
+            reference_completeness_weight: 0.05,
+            contradiction_weight: 0.05,
+            ..QualityGateConfig::default()
+        };
+        let gate = QualityGate::new(config);
+
+        // embed_delay_ms >> 5000ms timeout; time is paused so the test is instant.
+        let provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embed_delay(10_000),
+        );
+
+        // Provide a non-empty recent-embeddings window so compute_information_value
+        // actually calls embed() (it returns early on empty).
+        let recent = vec![vec![0.1_f32; 384]];
+
+        let fut = gate.evaluate("Alice confirmed the meeting at 3pm.", &provider, &recent);
+        // Advance time past the 5s embed timeout.
+        let (result, _) = tokio::join!(fut, async {
+            tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        });
+
+        assert!(
+            result.is_none(),
+            "embed timeout must be treated as fail-open (info_val=1.0, admitted), got {result:?}"
         );
     }
 

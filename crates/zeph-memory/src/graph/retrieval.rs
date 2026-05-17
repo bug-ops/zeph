@@ -213,10 +213,19 @@ async fn seed_embedding_fallback(
 ) -> bool {
     use zeph_llm::LlmProvider as _;
     const ENTITY_COLLECTION: &str = "zeph_graph_entities";
-    let embedding = match provider.embed(query).await {
-        Ok(v) => v,
-        Err(e) => {
+    let embedding = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.embed(query),
+    )
+    .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
             tracing::warn!(error = %e, "seed fallback: embed() failed, returning empty seeds");
+            return false;
+        }
+        Err(_) => {
+            tracing::warn!("seed fallback: embed() timed out, returning empty seeds");
             return false;
         }
     };
@@ -1148,6 +1157,44 @@ mod tests {
         assert!(
             (weight_after - 1.0).abs() < 1e-6,
             "weight must remain 1.0 when hebbian is disabled, got {weight_after}"
+        );
+    }
+
+    /// embed() timeout in `seed_embedding_fallback` → returns `false` (fail-open, empty seeds).
+    #[tokio::test]
+    async fn seed_embedding_fallback_embed_timeout_returns_false() {
+        // Create stores before pausing time — the SQLite pool uses tokio timers internally.
+        let store = setup_store().await;
+        let emb_store_pool = store.pool().clone();
+
+        tokio::time::pause();
+        // No EmbeddingStore — pass None; timeout happens before the search anyway.
+
+        let slow = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embed_delay(10_000),
+        );
+
+        let mut fts_map = std::collections::HashMap::new();
+
+        // Build an EmbeddingStore backed by InMemoryVectorStore — the timeout happens
+        // before any store access, so no Qdrant infrastructure is needed.
+        let emb_store = EmbeddingStore::with_store(
+            Box::new(crate::in_memory_store::InMemoryVectorStore::new()),
+            emb_store_pool,
+        );
+
+        let fut = seed_embedding_fallback(&store, &emb_store, &slow, "query", 5, &mut fts_map);
+        let (result, _) = tokio::join!(fut, async {
+            tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        });
+
+        assert!(
+            !result,
+            "seed_embedding_fallback must return false on embed timeout"
+        );
+        assert!(
+            fts_map.is_empty(),
+            "fts_map must remain empty when embed timed out"
         );
     }
 }

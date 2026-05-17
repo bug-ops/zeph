@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::time::Duration;
+
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
@@ -26,11 +28,19 @@ impl SemanticMemory {
         if !self.effective_embed_provider().supports_embeddings() {
             return Ok(());
         }
-        let embedding = self
-            .effective_embed_provider()
-            .embed(correction_text)
-            .await
-            .map_err(MemoryError::Llm)?;
+        let embedding = match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.effective_embed_provider().embed(correction_text),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(MemoryError::Llm(e)),
+            Err(_) => {
+                tracing::warn!("corrections: embed timed out, skipping vector store write");
+                return Ok(());
+            }
+        };
         let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
         store
             .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)
@@ -104,5 +114,57 @@ impl SemanticMemory {
         );
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+
+    use crate::embedding_store::EmbeddingStore;
+    use crate::in_memory_store::InMemoryVectorStore;
+    use crate::semantic::SemanticMemory;
+    use crate::store::SqliteStore;
+    use crate::token_counter::TokenCounter;
+
+    async fn mem_with_slow_embed(embed_delay_ms: u64) -> SemanticMemory {
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let qdrant = EmbeddingStore::with_store(Box::new(InMemoryVectorStore::new()), pool);
+        let base_provider = AnyProvider::Mock(MockProvider::default());
+        let slow_embed =
+            AnyProvider::Mock(MockProvider::default().with_embed_delay(embed_delay_ms));
+        SemanticMemory::from_parts(
+            sqlite,
+            Some(Arc::new(qdrant)),
+            base_provider,
+            "test-model",
+            0.7,
+            0.3,
+            Arc::new(TokenCounter::new()),
+        )
+        .with_embed_provider(slow_embed)
+    }
+
+    /// embed() timeout in `store_correction_embedding` → returns `Ok(())` (fail-open, skips write).
+    #[tokio::test]
+    async fn store_correction_embedding_embed_timeout_is_ok() {
+        // Build memory before pausing time — SQLite pool uses tokio timers internally.
+        let mem = mem_with_slow_embed(10_000).await;
+
+        tokio::time::pause();
+
+        let fut = mem.store_correction_embedding(42, "I prefer detailed answers");
+        let (result, _) = tokio::join!(fut, async {
+            tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        });
+
+        assert!(
+            result.is_ok(),
+            "embed timeout must return Ok(()) (fail-open, skip write), got {result:?}"
+        );
     }
 }

@@ -215,7 +215,20 @@ async fn embed_candidates(
         .map(|(id, content)| {
             let id = id.0;
             let content = content.clone();
-            async move { (id, content.clone(), provider.embed(&content).await) }
+            async move {
+                let timeout_result =
+                    tokio::time::timeout(Duration::from_secs(5), provider.embed(&content)).await;
+                let embed_result = if let Ok(r) = timeout_result {
+                    r
+                } else {
+                    tracing::warn!(
+                        message_id = id,
+                        "consolidation: embed timed out, skipping candidate"
+                    );
+                    Err(zeph_llm::LlmError::Timeout)
+                };
+                (id, content.clone(), embed_result)
+            }
         })
         .collect();
     let results = futures::future::join_all(futures).await;
@@ -1025,5 +1038,32 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(source_row.0, 1, "source m2 must be marked consolidated=1");
+    }
+
+    /// embed() timeout → candidates are dropped (fail-open), `embed_candidates` returns empty.
+    #[tokio::test]
+    async fn embed_candidates_timeout_drops_all_candidates() {
+        tokio::time::pause();
+
+        // Provider with very long embed delay — exceeds the 5s timeout.
+        let slow = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embed_delay(10_000),
+        );
+
+        let candidates = vec![
+            (crate::types::MessageId(1), "Alice uses Rust".to_owned()),
+            (crate::types::MessageId(2), "Alice loves Rust".to_owned()),
+        ];
+
+        let fut = embed_candidates(&slow, &candidates);
+        let (result, _) = tokio::join!(fut, async {
+            tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        });
+
+        assert!(
+            result.is_empty(),
+            "all candidates must be dropped on embed timeout, got {} entries",
+            result.len()
+        );
     }
 }
