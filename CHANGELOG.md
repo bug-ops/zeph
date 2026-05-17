@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-acp`: `SessionStatus` enum marked `#[non_exhaustive]` — downstream match arms must
+  include a `_ =>` wildcard to remain compatible with future variants (closes #4264).
+- `zeph-sanitizer`: `NliSanitizer::circuit_is_open` renamed to
+  `check_and_maybe_reset_circuit` to make the cooldown-reset side effect explicit (closes #4251).
+
+### Performance
+
+- `zeph-sanitizer`: `SecretMaskRegistry` counter replaced with `AtomicUsize` (lock-free
+  increment); `mask()` now uses a pre-sorted `Vec` cache updated on `register()`, reducing
+  per-call complexity from O(n log n) to O(n). Concurrent `register()` correctness preserved
+  by holding `forward.write()` across the full check-and-insert path (closes #4248).
+
 ### Added
 
 - `zeph-config`: `HooksConfig` — inline `[hooks]` section in `config.toml` for declaring hooks

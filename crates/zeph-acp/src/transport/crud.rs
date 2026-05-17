@@ -22,6 +22,7 @@ use crate::transport::http::AcpHttpState;
 // ── Request / response types ──────────────────────────────────────────────────
 
 /// Status of an ACP session.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {

@@ -155,7 +155,7 @@ impl NliSanitizer {
             return None;
         }
         let provider = self.provider.as_ref()?;
-        if self.circuit_is_open() {
+        if self.check_and_maybe_reset_circuit() {
             warn!("NLI stage: circuit breaker open, skipping check");
             return None;
         }
@@ -214,7 +214,9 @@ impl NliSanitizer {
         }
     }
 
-    fn circuit_is_open(&self) -> bool {
+    // Returns true if the circuit is open (inhibit the NLI call). As a side effect,
+    // resets the circuit when the cooldown has elapsed.
+    fn check_and_maybe_reset_circuit(&self) -> bool {
         let open_at = self.circuit_open_at.load(Ordering::Relaxed);
         if open_at == 0 {
             return false;
@@ -378,13 +380,13 @@ mod tests {
         s.consecutive_timeouts
             .store(CIRCUIT_BREAKER_THRESHOLD, Ordering::Relaxed);
         // Before any open_at is set, circuit is not open.
-        assert!(!s.circuit_is_open());
+        assert!(!s.check_and_maybe_reset_circuit());
         // Set open_at to now — circuit should be open.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         s.circuit_open_at.store(now, Ordering::Relaxed);
-        assert!(s.circuit_is_open());
+        assert!(s.check_and_maybe_reset_circuit());
     }
 
     #[test]
@@ -396,7 +398,7 @@ mod tests {
         s.consecutive_timeouts
             .store(CIRCUIT_BREAKER_THRESHOLD, Ordering::Relaxed);
         // After cooldown check, circuit should be reset.
-        assert!(!s.circuit_is_open());
+        assert!(!s.check_and_maybe_reset_circuit());
         assert_eq!(s.consecutive_timeouts.load(Ordering::Relaxed), 0);
     }
 

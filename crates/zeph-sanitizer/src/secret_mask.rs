@@ -32,8 +32,8 @@
 //! assert!(unmasked.contains("sk-supersecretvalue12345678"));
 //! ```
 
-use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::RwLock;
 
@@ -127,10 +127,12 @@ pub struct SecretMaskRegistry {
     forward: RwLock<HashMap<String, String>>,
     /// `placeholder` → `secret_value`  (reverse mapping for unmask)
     reverse: RwLock<HashMap<String, String>>,
+    /// Pre-sorted pairs `(secret, placeholder)` by secret length descending, cached for `mask()`.
+    sorted_pairs: RwLock<Vec<(String, String)>>,
     /// Per-session random nonce (16 hex chars, generated at construction).
     nonce: String,
-    /// Monotonic counter for unique placeholder indexes.
-    counter: RwLock<usize>,
+    /// Monotonic counter for unique placeholder indexes (lock-free).
+    counter: AtomicUsize,
 }
 
 impl std::fmt::Debug for SecretMaskRegistry {
@@ -161,8 +163,9 @@ impl SecretMaskRegistry {
         Self {
             forward: RwLock::new(HashMap::new()),
             reverse: RwLock::new(HashMap::new()),
+            sorted_pairs: RwLock::new(Vec::new()),
             nonce,
-            counter: RwLock::new(0),
+            counter: AtomicUsize::new(0),
         }
     }
 
@@ -186,23 +189,25 @@ impl SecretMaskRegistry {
         if secret_value.len() < MIN_SECRET_LEN {
             return;
         }
-        // Avoid creating duplicate entries for the same secret value.
-        if self.forward.read().contains_key(secret_value) {
+        // Hold the write lock for the entire check-then-insert sequence to prevent a
+        // TOCTOU race where two concurrent callers both pass the contains_key check and
+        // produce duplicate placeholders for the same secret.
+        let mut forward = self.forward.write();
+        if forward.contains_key(secret_value) {
             return;
         }
-        let index = {
-            let mut c = self.counter.write();
-            let idx = *c;
-            *c += 1;
-            idx
-        };
+        let index = self.counter.fetch_add(1, Ordering::Relaxed);
         let placeholder = format!("<SECRET:{}:{}:{}>", category.as_str(), self.nonce, index);
-        self.forward
-            .write()
-            .insert(secret_value.to_owned(), placeholder.clone());
+        forward.insert(secret_value.to_owned(), placeholder.clone());
+        drop(forward);
         self.reverse
             .write()
-            .insert(placeholder, secret_value.to_owned());
+            .insert(placeholder.clone(), secret_value.to_owned());
+
+        // Rebuild the sorted cache: longest secret first to prevent substring collision.
+        let mut pairs = self.sorted_pairs.write();
+        pairs.push((secret_value.to_owned(), placeholder));
+        pairs.sort_unstable_by_key(|(s, _)| std::cmp::Reverse(s.len()));
     }
 
     /// Replace all registered secret values in `text` with their placeholder tokens.
@@ -226,20 +231,13 @@ impl SecretMaskRegistry {
     /// ```
     #[must_use]
     pub fn mask(&self, text: &str) -> String {
-        let forward = self.forward.read();
-        if forward.is_empty() {
+        let pairs = self.sorted_pairs.read();
+        if pairs.is_empty() {
             return text.to_owned();
         }
-        // Sort by value length descending to prevent substring collision.
-        let mut pairs: Vec<(&str, &str)> = forward
-            .iter()
-            .map(|(secret, placeholder)| (secret.as_str(), placeholder.as_str()))
-            .collect();
-        pairs.sort_unstable_by_key(|(secret, _)| Reverse(secret.len()));
-
         let mut result = text.to_owned();
-        for (secret, placeholder) in pairs {
-            result = result.replace(secret, placeholder);
+        for (secret, placeholder) in pairs.iter() {
+            result = result.replace(secret.as_str(), placeholder.as_str());
         }
         result
     }
