@@ -343,19 +343,21 @@ pub async fn delete_session_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
 
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::{delete, get, patch, post};
+    use tokio::sync::{Mutex, broadcast};
     use tower::ServiceExt as _;
     use zeph_core::channel::LoopbackChannel;
 
+    use super::*;
     use crate::agent::{AcpContext, SendAgentSpawner, SessionContext};
-    use crate::transport::http::AcpHttpState;
+    use crate::transport::http::{AcpHttpState, ConnectionHandle};
     use crate::transport::{AcpServerConfig, SharedAvailableModels};
 
     fn shared_models() -> SharedAvailableModels {
@@ -534,10 +536,6 @@ mod tests {
     async fn session_status_running_when_connection_exists() {
         let state = state_no_store();
         // Simulate an active connection by inserting a dummy handle.
-        use crate::transport::http::ConnectionHandle;
-        use std::sync::atomic::AtomicU64;
-        use tokio::sync::{Mutex, broadcast};
-
         let (_, writer) = tokio::io::duplex(64);
         let (tx, _) = broadcast::channel(4);
         let session_id = uuid::Uuid::new_v4().to_string();
