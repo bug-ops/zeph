@@ -1047,36 +1047,51 @@ impl ShellExecutor {
             .or_else(|| self.find_blocked_command(effective));
         if let Some(blocked) = blocked_cmd {
             let fix = safe_fix::suggest_fix(effective);
-            let command_msg = if let Some(ref s) = fix {
-                format!("{blocked} — suggestion: {}", s.alternative)
+            let err = if let Some(suggestion) = fix {
+                let reason = format!("{blocked} — suggestion: {}", suggestion.alternative);
+                self.log_audit(
+                    block,
+                    AuditResult::Blocked {
+                        reason: format!("blocked command: {reason}"),
+                    },
+                    0,
+                    None,
+                    None,
+                    false,
+                )
+                .await;
+                ToolError::BlockedWithFix {
+                    command: blocked,
+                    suggestion: Some(suggestion),
+                }
             } else {
-                blocked.clone()
+                self.log_audit(
+                    block,
+                    AuditResult::Blocked {
+                        reason: format!("blocked command: {blocked}"),
+                    },
+                    0,
+                    None,
+                    None,
+                    false,
+                )
+                .await;
+                ToolError::Blocked { command: blocked }
             };
-            let err = ToolError::BlockedWithFix {
-                command: blocked.clone(),
-                suggestion: fix,
-            };
-            self.log_audit(
-                block,
-                AuditResult::Blocked {
-                    reason: format!("blocked command: {command_msg}"),
-                },
-                0,
-                Some(&err),
-                None,
-                false,
-            )
-            .await;
             return Err(err);
         }
 
         if let Some(ref policy) = self.permission_policy {
             match policy.check("bash", effective) {
                 PermissionAction::Deny => {
-                    let fix = safe_fix::suggest_fix(effective);
-                    let err = ToolError::BlockedWithFix {
-                        command: effective.to_owned(),
-                        suggestion: fix,
+                    let err = match safe_fix::suggest_fix(effective) {
+                        Some(suggestion) => ToolError::BlockedWithFix {
+                            command: effective.to_owned(),
+                            suggestion: Some(suggestion),
+                        },
+                        None => ToolError::Blocked {
+                            command: effective.to_owned(),
+                        },
                     };
                     self.log_audit(
                         block,
@@ -1084,7 +1099,7 @@ impl ShellExecutor {
                             reason: "denied by permission policy".to_owned(),
                         },
                         0,
-                        Some(&err),
+                        None,
                         None,
                         false,
                     )
