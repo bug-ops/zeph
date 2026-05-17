@@ -372,7 +372,6 @@ mod tests {
             ..NliConfig::default()
         };
 
-        struct SlowProvider;
         // We test the circuit breaker logic directly via the AtomicU32 counter.
         let s = NliSanitizer::new(cfg, None);
         // Simulate CIRCUIT_BREAKER_THRESHOLD consecutive timeouts.
@@ -413,14 +412,11 @@ mod tests {
     // --- async integration tests via mock provider ---
 
     mod async_tests {
-        use std::future::Future;
-        use std::pin::Pin;
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::atomic::Ordering;
 
-        use zeph_llm::LlmProviderDyn;
         use zeph_llm::error::LlmError;
-        use zeph_llm::provider::{Message, Role};
+        use zeph_llm::provider::Message;
 
         use super::*;
 

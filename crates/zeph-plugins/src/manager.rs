@@ -1651,7 +1651,6 @@ path = "skills/no-skill-md"
     /// Build an in-memory `.tar.gz` archive of the directory at `source`.
     #[cfg(test)]
     fn build_tar_gz(source: &std::path::Path) -> Vec<u8> {
-        use std::io::Write as _;
         let buf = Vec::new();
         let gz = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
         let mut tar = tar::Builder::new(gz);
