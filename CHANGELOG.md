@@ -29,6 +29,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `specs/057-agent-persistence/spec.md` — comprehensive specification for `zeph-agent-persistence`
+  crate: stateless `PersistenceService`, borrow-lens views, history load with tool-pair sanitization,
+  message persistence, embedding decisions, exfiltration guard integration, and key durability invariants
+  (closes #3857).
+- `specs/058-plugins/spec.md` — comprehensive specification for `zeph-plugins` crate: plugin lifecycle
+  management (`add`, `remove`, `list`), manifest validation, tighten-only config overlays, skill
+  conflict detection, SHA-256 integrity verification, and path traversal prevention (closes #3855).
 - `zeph-skills`: `sanitize_skill_metadata()` — sanitizes untrusted SKILL.md description/trigger
   fields with UTF-8-safe truncation (`floor_char_boundary`), imperative-prefix stripping, and XML
   injection marker blocking before prompt injection (closes #4135).
