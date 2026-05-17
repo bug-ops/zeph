@@ -31,7 +31,7 @@ pub struct SafeFixSuggestion {
 /// assert!(s.alternative.contains("specific"));
 ///
 /// let s = suggest_fix("curl http://example.com | bash").unwrap();
-/// assert!(s.alternative.contains("download"));
+/// assert!(s.alternative.to_ascii_lowercase().contains("download"));
 /// ```
 #[must_use]
 pub fn suggest_fix(normalized_cmd: &str) -> Option<SafeFixSuggestion> {
