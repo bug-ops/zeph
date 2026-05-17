@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-tools`: `RiskChainAccumulator` is now instantiated at agent startup and wired to
+  `ShellExecutor` via `with_risk_chain` and to the agent builder via
+  `with_risk_chain_accumulator`. Multi-step shell attack chain detection is active at runtime
+  for the first time (closes #4273).
+- `zeph-memory`: Removed the unchecked `delete_acp_session` from `AcpSessionStore`; all
+  callers migrated to `delete_acp_session_checked` which returns whether a row existed and
+  eliminates the TOCTOU race (closes #4279).
+
 ### Changed
 
 - `zeph-acp`: `SessionStatus` enum marked `#[non_exhaustive]` — downstream match arms must
