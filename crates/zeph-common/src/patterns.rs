@@ -62,7 +62,15 @@ pub const RAW_INJECTION_PATTERNS: &[(&str, &str)] = &[
         "override_directives",
         r"(?i)override\s+(your|all)\s+(directives?|instructions?|rules?)",
     ),
-    ("act_as_if", r"(?i)act\s+as\s+if"),
+    ("act_as_if", r"(?i)\bact\s+as\s+if\b"),
+    (
+        "pretend_you_are",
+        r"(?i)\bpretend\s+(?:you\s+are|to\s+be)\b",
+    ),
+    (
+        "your_new_instructions",
+        r"(?i)\byour\s+new\s+instructions\b",
+    ),
     ("html_image_exfil", r"(?i)<img\s+[^>]*src\s*="),
     ("delimiter_escape_tool_output", r"(?i)</?tool-output[\s>]"),
     (
