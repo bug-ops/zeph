@@ -2278,7 +2278,7 @@ mod tests {
                 .probe
                 .probe_provider
                 .as_ref()
-                .map(|p| p.as_str()),
+                .map(ProviderName::as_str),
             Some("fast")
         );
     }
