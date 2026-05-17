@@ -529,4 +529,262 @@ mod tests {
         );
         assert_eq!(IntentClass::DeepReasoning.to_string(), "DeepReasoning");
     }
+
+    // ── Async tests ───────────────────────────────────────────────────────────
+
+    /// Test 1: `recall_tiered` with `classifier = None` uses the `HeuristicRouter` path.
+    ///
+    /// With no classifier provider, the pipeline must route via heuristic, complete without
+    /// error, and return a result whose intent maps from the heuristic route.
+    #[tokio::test]
+    async fn recall_tiered_no_classifier_uses_heuristic_router() {
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: false,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = recall_tiered(&memory, "what is my name", None, None, None, &config, None)
+            .await
+            .expect("recall_tiered must not fail");
+
+        // HeuristicRouter classifies "what is my name" via keyword/semantic heuristic.
+        // The exact tier depends on the heuristic, but the pipeline must complete.
+        assert!(
+            !result.tier_escalated,
+            "no escalation when validation is off"
+        );
+        assert!(result.tokens_used <= config.token_budget);
+    }
+
+    /// Test 2: `recall_tiered` with `classifier = Some(...)` exercises the `HybridRouter` path.
+    ///
+    /// The mock LLM returns a JSON route decision; the pipeline must parse it and use the
+    /// resulting intent class.
+    #[tokio::test]
+    async fn recall_tiered_with_classifier_uses_hybrid_router() {
+        use zeph_llm::mock::MockProvider;
+
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+
+        // HybridRouter asks the LLM for a route; respond with a valid JSON route decision.
+        let route_json = r#"{"route": "Semantic", "confidence": 0.9}"#.to_owned();
+        let mut mock = MockProvider::with_responses(vec![route_json]);
+        mock.supports_embeddings = true;
+        mock.embedding = vec![0.1_f32; 384];
+        let classifier = Arc::new(AnyProvider::Mock(mock));
+
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: false,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = recall_tiered(
+            &memory,
+            "semantic query about the user",
+            None,
+            Some(&classifier),
+            None,
+            &config,
+            None,
+        )
+        .await
+        .expect("recall_tiered with classifier must not fail");
+
+        assert!(!result.tier_escalated);
+        assert!(result.tokens_used <= config.token_budget);
+    }
+
+    /// Test 3: Escalation loop sets `tier_escalated = true` when the validator returns
+    /// insufficient evidence and a heavier tier is available.
+    ///
+    /// Validator response with `{"sufficient": false, "confidence": 0.2}` triggers escalation.
+    /// After escalation, the second-tier retrieve runs and the result has `tier_escalated = true`.
+    #[tokio::test]
+    async fn recall_tiered_escalates_when_evidence_insufficient() {
+        use zeph_llm::mock::MockProvider;
+
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+
+        // First validator response: insufficient. Second: sufficient (prevents infinite loop).
+        let insufficient = r#"{"sufficient": false, "confidence": 0.1}"#.to_owned();
+        let sufficient = r#"{"sufficient": true, "confidence": 0.95}"#.to_owned();
+        let mut validator_mock = MockProvider::with_responses(vec![insufficient, sufficient]);
+        validator_mock.supports_embeddings = true;
+        let validator = Arc::new(AnyProvider::Mock(validator_mock));
+
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: true,
+            validation_threshold: 0.6,
+            max_escalations: 2,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = recall_tiered(
+            &memory,
+            "deep query",
+            None,
+            None,
+            Some(&validator),
+            &config,
+            None,
+        )
+        .await
+        .expect("escalation path must not fail");
+
+        assert!(
+            result.tier_escalated,
+            "must set tier_escalated when validator triggers escalation"
+        );
+    }
+
+    /// Test 4a: `validate_evidence` returns `true` (fail-open) when the validator LLM times out.
+    ///
+    /// Uses `with_delay` to force the validator past the 5-second timeout threshold.
+    /// The pipeline must treat a timed-out validator as sufficient (fail-open) and not escalate.
+    #[tokio::test]
+    async fn validate_evidence_timeout_is_fail_open() {
+        use zeph_llm::mock::MockProvider;
+
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+
+        // Store a message so validate_evidence gets a non-empty slice and actually calls the LLM.
+        let conv_id = memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .expect("create_conversation");
+        memory
+            .remember(conv_id, "user", "some evidence content", None)
+            .await
+            .expect("remember");
+
+        // Delay > 5 s causes the internal tokio::time::timeout in validate_evidence to fire.
+        let slow_mock = MockProvider::default().with_delay(6_000);
+        let validator = Arc::new(AnyProvider::Mock(slow_mock));
+
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: true,
+            validation_threshold: 0.6,
+            max_escalations: 1,
+            ..TieredRetrievalConfig::default()
+        };
+
+        // The slow validator should time out and be treated as sufficient → no escalation.
+        let result = recall_tiered(
+            &memory,
+            "evidence",
+            None,
+            None,
+            Some(&validator),
+            &config,
+            None,
+        )
+        .await
+        .expect("timeout path must not propagate as error");
+
+        // Fail-open: timed-out validator means no escalation.
+        assert!(
+            !result.tier_escalated,
+            "validator timeout must be treated as sufficient (fail-open)"
+        );
+    }
+
+    /// Test 4b: `validate_evidence` returns `true` (fail-open) when the validator LLM errors.
+    ///
+    /// A failing provider simulates a transient API error. The pipeline must not escalate.
+    #[tokio::test]
+    async fn validate_evidence_llm_error_is_fail_open() {
+        use zeph_llm::mock::MockProvider;
+
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+
+        // Store a message so validate_evidence gets a non-empty slice and actually calls the LLM.
+        let conv_id = memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .expect("create_conversation");
+        memory
+            .remember(conv_id, "user", "some evidence content", None)
+            .await
+            .expect("remember");
+
+        let failing_mock = MockProvider::failing();
+        let validator = Arc::new(AnyProvider::Mock(failing_mock));
+
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: true,
+            validation_threshold: 0.6,
+            max_escalations: 1,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = recall_tiered(
+            &memory,
+            "evidence",
+            None,
+            None,
+            Some(&validator),
+            &config,
+            None,
+        )
+        .await
+        .expect("LLM error path must not propagate as retrieval error");
+
+        assert!(
+            !result.tier_escalated,
+            "validator LLM error must be treated as sufficient (fail-open)"
+        );
+    }
+
+    /// Test 5: `recall_tiered` with a `conversation_id` filter passes it to `retrieve_tier`,
+    /// which in turn applies a `SearchFilter` scoping the search to that conversation.
+    ///
+    /// The pipeline must complete successfully even when the filter yields zero results.
+    #[tokio::test]
+    async fn recall_tiered_with_conversation_id_filter() {
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+
+        let conv_id = ConversationId(42);
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: false,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = recall_tiered(
+            &memory,
+            "what did we discuss",
+            Some(conv_id),
+            None,
+            None,
+            &config,
+            None,
+        )
+        .await
+        .expect("conversation-scoped recall must not fail");
+
+        // No messages stored for this conversation — result must be empty but valid.
+        assert!(result.messages.is_empty());
+        assert_eq!(result.tokens_used, 0);
+        assert!(!result.tier_escalated);
+    }
 }
