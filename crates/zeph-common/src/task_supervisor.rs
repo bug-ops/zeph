@@ -132,7 +132,7 @@ impl TaskHandle {
 
     /// Return the task's name.
     #[must_use]
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         self.name
     }
 }
@@ -1030,7 +1030,7 @@ impl TaskSupervisor {
             }
         }
 
-        Self::wire_completion_reporter(name.clone(), jh, completion_tx);
+        Self::wire_completion_reporter(name, jh, completion_tx);
     }
 }
 

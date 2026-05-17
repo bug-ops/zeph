@@ -102,7 +102,7 @@ impl CompressionLevel {
     ///
     /// `Episodic = 1.0` (baseline), `Procedural = 0.6`, `Declarative = 0.3`.
     #[must_use]
-    pub fn cost_factor(self) -> f32 {
+    pub const fn cost_factor(self) -> f32 {
         match self {
             Self::Episodic => 1.0,
             Self::Procedural => 0.6,
@@ -284,7 +284,7 @@ impl EdgeType {
     /// assert_eq!(EdgeType::Causal.as_str(), "causal");
     /// ```
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Semantic => "semantic",
             Self::Temporal => "temporal",

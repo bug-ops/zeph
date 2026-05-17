@@ -630,7 +630,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         &'a mut self,
         arg: &'a str,
     ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
-        Box::pin(async move { self.handle_provider_command_as_string(arg) })
+        Box::pin(async move { self.handle_provider_command_as_string(arg).await })
     }
 
     // ----- /policy -----

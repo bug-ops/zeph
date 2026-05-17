@@ -48,19 +48,19 @@ pub enum ErrorDomain {
 impl ErrorDomain {
     /// Whether errors in this domain should trigger automatic retry.
     #[must_use]
-    pub fn is_auto_retryable(self) -> bool {
+    pub const fn is_auto_retryable(self) -> bool {
         matches!(self, Self::System)
     }
 
     /// Whether the LLM should be asked to fix its output.
     #[must_use]
-    pub fn needs_llm_correction(self) -> bool {
+    pub const fn needs_llm_correction(self) -> bool {
         matches!(self, Self::Reflection | Self::Planning)
     }
 
     /// Human-readable label for audit logs.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Planning => "planning",
             Self::Reflection => "reflection",
@@ -91,7 +91,7 @@ pub enum ToolInvocationPhase {
 impl ToolInvocationPhase {
     /// Human-readable label for audit logs.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Setup => "setup",
             Self::ParamHandling => "param_handling",
@@ -152,7 +152,7 @@ pub enum ToolErrorCategory {
 impl ToolErrorCategory {
     /// Whether this error category is eligible for automatic retry with backoff.
     #[must_use]
-    pub fn is_retryable(self) -> bool {
+    pub const fn is_retryable(self) -> bool {
         matches!(
             self,
             Self::RateLimited | Self::ServerError | Self::NetworkError | Self::Timeout
@@ -163,7 +163,7 @@ impl ToolErrorCategory {
     ///
     /// Only `InvalidParameters` and `TypeMismatch` trigger the reformat path.
     #[must_use]
-    pub fn needs_parameter_reformat(self) -> bool {
+    pub const fn needs_parameter_reformat(self) -> bool {
         matches!(self, Self::InvalidParameters | Self::TypeMismatch)
     }
 
@@ -172,7 +172,7 @@ impl ToolErrorCategory {
     /// Infrastructure errors (network, timeout, server, rate limit) are NOT
     /// the model's fault and must never trigger self-reflection.
     #[must_use]
-    pub fn is_quality_failure(self) -> bool {
+    pub const fn is_quality_failure(self) -> bool {
         matches!(
             self,
             Self::InvalidParameters | Self::TypeMismatch | Self::ToolNotFound
@@ -181,7 +181,7 @@ impl ToolErrorCategory {
 
     /// Map to the high-level error domain for recovery dispatch.
     #[must_use]
-    pub fn domain(self) -> ErrorDomain {
+    pub const fn domain(self) -> ErrorDomain {
         match self {
             Self::ToolNotFound => ErrorDomain::Planning,
             Self::InvalidParameters | Self::TypeMismatch => ErrorDomain::Reflection,
@@ -197,7 +197,7 @@ impl ToolErrorCategory {
 
     /// Human-readable label for audit logs, TUI status indicators, and structured feedback.
     #[must_use]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::ToolNotFound => "tool_not_found",
             Self::InvalidParameters => "invalid_parameters",
@@ -215,7 +215,7 @@ impl ToolErrorCategory {
 
     /// Map to the diagnostic invocation phase per arXiv:2601.16280.
     #[must_use]
-    pub fn phase(self) -> ToolInvocationPhase {
+    pub const fn phase(self) -> ToolInvocationPhase {
         match self {
             Self::ToolNotFound => ToolInvocationPhase::Setup,
             Self::InvalidParameters | Self::TypeMismatch => ToolInvocationPhase::ParamHandling,
@@ -232,7 +232,7 @@ impl ToolErrorCategory {
 
     /// Recovery suggestion for the LLM based on error category.
     #[must_use]
-    pub fn suggestion(self) -> &'static str {
+    pub const fn suggestion(self) -> &'static str {
         match self {
             Self::ToolNotFound => {
                 "Check the tool name. Use tool_definitions to see available tools."

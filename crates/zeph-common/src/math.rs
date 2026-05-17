@@ -79,7 +79,7 @@ impl EmbeddingVector<Unnormalized> {
     /// assert_eq!(v.as_slice(), &[1.0_f32, 0.0]);
     /// ```
     #[must_use]
-    pub fn new(inner: Vec<f32>) -> Self {
+    pub const fn new(inner: Vec<f32>) -> Self {
         Self {
             inner,
             _state: PhantomData,
@@ -136,7 +136,7 @@ impl EmbeddingVector<Normalized> {
     /// assert_eq!(v.as_slice(), &[0.6_f32, 0.8]);
     /// ```
     #[must_use]
-    pub fn new_normalized(inner: Vec<f32>) -> Self {
+    pub const fn new_normalized(inner: Vec<f32>) -> Self {
         Self {
             inner,
             _state: PhantomData,
@@ -186,7 +186,7 @@ impl<State> EmbeddingVector<State> {
     /// assert_eq!(v.len(), 3);
     /// ```
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.inner.len()
     }
 
@@ -201,7 +201,7 @@ impl<State> EmbeddingVector<State> {
     /// assert!(v.is_empty());
     /// ```
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 }

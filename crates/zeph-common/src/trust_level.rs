@@ -52,7 +52,7 @@ impl SkillTrustLevel {
     /// assert!(SkillTrustLevel::Trusted.severity() < SkillTrustLevel::Blocked.severity());
     /// ```
     #[must_use]
-    pub fn severity(self) -> u8 {
+    pub const fn severity(self) -> u8 {
         match self {
             Self::Trusted => 0,
             Self::Verified => 1,
@@ -72,7 +72,7 @@ impl SkillTrustLevel {
     /// assert_eq!(result, SkillTrustLevel::Quarantined);
     /// ```
     #[must_use]
-    pub fn min_trust(self, other: Self) -> Self {
+    pub const fn min_trust(self, other: Self) -> Self {
         if self.severity() >= other.severity() {
             self
         } else {
@@ -91,7 +91,7 @@ impl SkillTrustLevel {
     /// assert!(!SkillTrustLevel::Blocked.is_active());
     /// ```
     #[must_use]
-    pub fn is_active(self) -> bool {
+    pub const fn is_active(self) -> bool {
         !matches!(self, Self::Blocked)
     }
 }

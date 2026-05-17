@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Uses the proleptic-Gregorian Hinnant algorithm — O(1), no heap allocation.
 /// Kept `pub(crate)` because the raw 6-tuple is an implementation detail; prefer
 /// the higher-level functions in this module for public use.
-pub(crate) fn secs_to_ymdhms(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+pub(crate) const fn secs_to_ymdhms(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     const SECS_PER_MIN: u64 = 60;
     const DAYS_PER_400Y: u64 = 146_097;
 

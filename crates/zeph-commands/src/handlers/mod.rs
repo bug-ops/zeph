@@ -29,12 +29,8 @@ pub mod plugins;
 pub mod policy;
 pub mod scheduler;
 pub mod session;
-pub mod status;
-// Note: skill, skills, feedback handlers are kept as TODO — they hold non-Send DB references
-// across .await points which prevents implementing AgentAccess::handle_skill as Send future.
-// These commands continue to be dispatched via dispatch_slash_command in zeph-core until
-// SemanticMemory and AnyProvider implement Sync.
 pub mod skill;
+pub mod status;
 #[cfg(test)]
 pub mod test_helpers;
 pub mod trajectory;

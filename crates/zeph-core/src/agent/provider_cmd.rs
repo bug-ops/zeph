@@ -62,7 +62,7 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .any(|e| e.effective_name().eq_ignore_ascii_case(&stored_name));
                 if found {
-                    let result = self.provider_switch_as_string(&stored_name);
+                    let result = self.provider_switch_as_string(&stored_name).await;
                     if result.contains("Switched") {
                         tracing::info!(
                             provider = stored_name,
@@ -126,7 +126,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Update instruction files when the active provider changes (C5).
-    fn update_provider_instructions(&mut self, entry: &zeph_config::ProviderEntry) {
+    async fn update_provider_instructions(&mut self, entry: &zeph_config::ProviderEntry) {
         let Some(ref mut reload_state) = self.runtime.instructions.reload_state else {
             return;
         };
@@ -146,12 +146,13 @@ impl<C: Channel> Agent<C> {
         let provider_kinds = reload_state.provider_kinds.clone();
         let explicit_files = reload_state.explicit_files.clone();
         let auto_detect = reload_state.auto_detect;
-        let new_blocks = crate::instructions::load_instructions(
-            &base_dir,
-            &provider_kinds,
-            &explicit_files,
+        let new_blocks = crate::instructions::load_instructions_async(
+            base_dir,
+            provider_kinds,
+            explicit_files,
             auto_detect,
-        );
+        )
+        .await;
         tracing::info!(
             count = new_blocks.len(),
             provider = ?entry.provider_type,
@@ -189,11 +190,11 @@ impl<C: Channel> Agent<C> {
 
     /// Handle `/provider` command, returning a result string for use via
     /// [`zeph_commands::traits::agent::AgentAccess`].
-    pub(super) fn handle_provider_command_as_string(&mut self, arg: &str) -> String {
+    pub(super) async fn handle_provider_command_as_string(&mut self, arg: &str) -> String {
         match arg {
             "" => self.provider_list_as_string(),
             "status" => self.provider_status_as_string(),
-            name => self.provider_switch_as_string(name),
+            name => self.provider_switch_as_string(name).await,
         }
     }
 
@@ -252,7 +253,7 @@ impl<C: Channel> Agent<C> {
         out.trim_end().to_owned()
     }
 
-    fn provider_switch_as_string(&mut self, name: &str) -> String {
+    async fn provider_switch_as_string(&mut self, name: &str) -> String {
         let entry_clone = self
             .runtime
             .providers
@@ -314,7 +315,7 @@ impl<C: Channel> Agent<C> {
                     *override_slot.write() = None;
                 }
 
-                self.update_provider_instructions(&entry);
+                self.update_provider_instructions(&entry).await;
                 self.apply_provider_switch_metrics(&entry, &configured_name);
                 self.persist_channel_provider(configured_name.clone());
                 // Refresh the TUI context gauge with the new provider's window size.
@@ -382,15 +383,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn provider_list_empty_pool() {
+    #[tokio::test]
+    async fn provider_list_empty_pool() {
         let mut qa = QuickTestAgent::minimal("ok");
-        let out = qa.agent.handle_provider_command_as_string("");
+        let out = qa.agent.handle_provider_command_as_string("").await;
         assert!(out.contains("No providers configured"));
     }
 
-    #[test]
-    fn provider_list_shows_all_with_active_marker() {
+    #[tokio::test]
+    async fn provider_list_shows_all_with_active_marker() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -405,15 +406,15 @@ mod tests {
         );
         agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
 
-        let out = agent.handle_provider_command_as_string("");
+        let out = agent.handle_provider_command_as_string("").await;
         assert!(out.contains("ollama"), "should list ollama");
         assert!(out.contains("claude"), "should list claude");
         // Active provider is MockProvider; neither entry matches — no (active) marker expected.
         assert!(out.contains("Configured providers:"));
     }
 
-    #[test]
-    fn provider_list_marks_active_provider() {
+    #[tokio::test]
+    async fn provider_list_marks_active_provider() {
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
@@ -427,22 +428,25 @@ mod tests {
         agent.runtime.providers.provider_pool = vec![entry];
         agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
-        let out = agent.handle_provider_command_as_string("");
+        let out = agent.handle_provider_command_as_string("").await;
         assert!(out.contains("(active)"), "active entry must be marked");
     }
 
-    #[test]
-    fn provider_switch_unknown_name_returns_error() {
+    #[tokio::test]
+    async fn provider_switch_unknown_name_returns_error() {
         let mut qa = QuickTestAgent::minimal("ok");
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         qa.agent.runtime.providers.provider_pool = vec![entry];
-        let out = qa.agent.handle_provider_command_as_string("nonexistent");
+        let out = qa
+            .agent
+            .handle_provider_command_as_string("nonexistent")
+            .await;
         assert!(out.contains("Unknown provider 'nonexistent'"));
         assert!(out.contains("ollama"));
     }
 
-    #[test]
-    fn provider_switch_already_active_warns() {
+    #[tokio::test]
+    async fn provider_switch_already_active_warns() {
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let snapshot = ollama_snapshot();
         let provider =
@@ -455,22 +459,22 @@ mod tests {
         agent.runtime.providers.provider_pool = vec![entry];
         agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
-        let out = agent.handle_provider_command_as_string("ollama");
+        let out = agent.handle_provider_command_as_string("ollama").await;
         assert!(out.contains("already active"));
     }
 
-    #[test]
-    fn provider_switch_missing_snapshot_returns_error() {
+    #[tokio::test]
+    async fn provider_switch_missing_snapshot_returns_error() {
         let mut qa = QuickTestAgent::minimal("ok");
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         qa.agent.runtime.providers.provider_pool = vec![entry];
         // provider_config_snapshot is None by default
-        let out = qa.agent.handle_provider_command_as_string("ollama");
+        let out = qa.agent.handle_provider_command_as_string("ollama").await;
         assert!(out.contains("config snapshot missing"));
     }
 
-    #[test]
-    fn provider_switch_success_resets_state() {
+    #[tokio::test]
+    async fn provider_switch_success_resets_state() {
         let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
@@ -485,7 +489,7 @@ mod tests {
         agent.runtime.providers.provider_config_snapshot = Some(snapshot);
         agent.runtime.providers.cached_prompt_tokens = 999;
 
-        let out = agent.handle_provider_command_as_string("ollama2");
+        let out = agent.handle_provider_command_as_string("ollama2").await;
         assert!(out.contains("Switched to provider:"), "unexpected: {out}");
         assert!(out.contains("llama3.2"));
         assert_eq!(
@@ -495,11 +499,11 @@ mod tests {
         assert_eq!(agent.runtime.config.model_name, "llama3.2");
     }
 
-    #[test]
-    fn provider_status_no_metrics() {
+    #[tokio::test]
+    async fn provider_status_no_metrics() {
         let mut qa = QuickTestAgent::minimal("ok");
         qa.agent.runtime.config.model_name = "test-model".to_owned();
-        let out = qa.agent.handle_provider_command_as_string("status");
+        let out = qa.agent.handle_provider_command_as_string("status").await;
         assert!(out.contains("Current provider:"));
         assert!(out.contains("test-model"));
     }
@@ -566,8 +570,8 @@ mod tests {
 
     // Verify that build_switch_message includes the embedding notice when embedding provider
     // name differs from the newly active chat provider name.
-    #[test]
-    fn build_switch_message_includes_notice_when_embedding_provider_differs() {
+    #[tokio::test]
+    async fn build_switch_message_includes_notice_when_embedding_provider_differs() {
         let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
@@ -587,7 +591,7 @@ mod tests {
         agent.runtime.providers.provider_pool = vec![entry_a, entry_b];
         agent.runtime.providers.provider_config_snapshot = Some(snapshot);
 
-        let out = agent.handle_provider_command_as_string("ollama2");
+        let out = agent.handle_provider_command_as_string("ollama2").await;
         // embedding_provider.name() == "mock" ≠ "ollama" (the new chat provider) → notice shown.
         assert!(
             out.contains("Embedding operations continue using"),
@@ -600,8 +604,8 @@ mod tests {
     }
 
     // Verify that /provider switch never replaces the embedding_provider field.
-    #[test]
-    fn provider_switch_does_not_change_embedding_provider() {
+    #[tokio::test]
+    async fn provider_switch_does_not_change_embedding_provider() {
         let entry_a = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
@@ -622,7 +626,7 @@ mod tests {
 
         let embed_name_before = agent.embedding_provider.name().to_owned();
 
-        agent.handle_provider_command_as_string("ollama2");
+        agent.handle_provider_command_as_string("ollama2").await;
 
         // Chat provider must have changed.
         assert_eq!(agent.runtime.config.model_name, "llama3.2");

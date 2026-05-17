@@ -46,7 +46,7 @@ impl SecurityEventCategory {
     ///
     /// Used as the `category` column in audit logs and TUI display.
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::InjectionFlag => "injection",
             Self::InjectionBlocked => "injection_blocked",
