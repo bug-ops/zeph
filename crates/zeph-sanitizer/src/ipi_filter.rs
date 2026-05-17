@@ -138,6 +138,10 @@ static SHARED_PATTERNS: LazyLock<Vec<WeightedPattern>> = LazyLock::new(|| {
 /// Compiled regex patterns are initialised via `LazyLock` — first call compiles,
 /// subsequent calls reuse. Thread-safe by construction.
 ///
+/// Use [`IpiFilter::filter`] in synchronous or blocking contexts.
+/// Use [`IpiFilter::filter_async`] when calling from an async context to avoid
+/// blocking the tokio executor thread on CPU-bound regex work.
+///
 /// # Examples
 ///
 /// ```rust
@@ -149,7 +153,7 @@ static SHARED_PATTERNS: LazyLock<Vec<WeightedPattern>> = LazyLock::new(|| {
 /// assert!(verdict.patterns_found.is_empty());
 /// assert_eq!(verdict.sanitized, "Hello, world!");
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IpiFilter {
     threshold: f32,
 }
@@ -235,6 +239,33 @@ impl IpiFilter {
             patterns_found,
             sanitized,
         }
+    }
+
+    /// Async-safe variant of [`IpiFilter::filter`] for use in async contexts.
+    ///
+    /// Runs the CPU-bound regex scan on a blocking thread via
+    /// [`tokio::task::spawn_blocking`] so the tokio executor is not stalled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the blocking task panics (propagated as a
+    /// [`tokio::task::JoinError`]).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use zeph_sanitizer::IpiFilter;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let filter = IpiFilter::new(0.6);
+    /// let verdict = filter.filter_async("Hello, world!".to_owned()).await.unwrap();
+    /// assert_eq!(verdict.score, 0.0);
+    /// # }
+    /// ```
+    pub async fn filter_async(&self, text: String) -> Result<IpiVerdict, tokio::task::JoinError> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.filter(&text)).await
     }
 }
 

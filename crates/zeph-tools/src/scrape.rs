@@ -589,7 +589,7 @@ impl WebScrapeExecutor {
                 caller_id,
             )
             .await?;
-        Ok(self.apply_ipi_filter(&body, &params.url))
+        self.apply_ipi_filter(&body, &params.url).await
     }
 
     async fn scrape_instruction(
@@ -676,7 +676,7 @@ impl WebScrapeExecutor {
         .await
         .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))??;
         // apply_ipi_filter runs on plain extracted text, not raw HTML
-        Ok(self.apply_ipi_filter(&extracted, &instruction.url))
+        self.apply_ipi_filter(&extracted, &instruction.url).await
     }
 
     fn make_blocked_event(
@@ -961,13 +961,21 @@ impl WebScrapeExecutor {
 
     /// Apply IPI filter to a fetched response body.
     ///
-    /// Always returns the sanitized text. When score >= threshold, prepends a warning
-    /// header and emits a `tracing::warn!` log with the detected pattern names.
-    fn apply_ipi_filter(&self, body: &str, url: &str) -> String {
-        let _span =
-            tracing::info_span!("tools.scrape.apply_ipi_filter", url, body_len = body.len())
-                .entered();
-        let verdict = self.ipi_filter.filter(body);
+    /// Runs regex scanning on a blocking thread via `spawn_blocking` to avoid
+    /// stalling the tokio executor on large inputs. When score >= threshold,
+    /// prepends a warning header and emits a `tracing::warn!` log.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ToolError`] if the blocking scan task panics.
+    async fn apply_ipi_filter(&self, body: &str, url: &str) -> Result<String, ToolError> {
+        let span = tracing::info_span!("tools.scrape.apply_ipi_filter", url, body_len = body.len());
+        let verdict = self
+            .ipi_filter
+            .filter_async(body.to_owned())
+            .await
+            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+        let _enter = span.enter();
         if !verdict.patterns_found.is_empty() {
             tracing::warn!(
                 url = url,
@@ -978,14 +986,14 @@ impl WebScrapeExecutor {
         }
         // verdict.sanitized == body only when score < threshold (no redaction)
         if verdict.sanitized == body {
-            verdict.sanitized
+            Ok(verdict.sanitized)
         } else {
-            format!(
+            Ok(format!(
                 "[IPI WARNING: score={:.2}, patterns={}] {}",
                 verdict.score,
                 verdict.patterns_found.join(", "),
                 verdict.sanitized,
-            )
+            ))
         }
     }
 }
