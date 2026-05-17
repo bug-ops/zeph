@@ -805,6 +805,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 token: None,
                 allowed_users: state.telegram_users.clone(),
                 skills: ChannelSkillsConfig::default(),
+                allowed_tools: None,
                 stream_interval_ms: state.telegram_stream_interval_ms,
                 guest_mode: false,
                 bot_to_bot: false,
@@ -820,6 +821,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 allowed_role_ids: vec![],
                 allowed_channel_ids: vec![],
                 skills: ChannelSkillsConfig::default(),
+                allowed_tools: None,
             });
         }
         ChannelChoice::Slack => {
@@ -831,6 +833,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 allowed_user_ids: vec![],
                 allowed_channel_ids: vec![],
                 skills: ChannelSkillsConfig::default(),
+                allowed_tools: None,
             });
         }
     }

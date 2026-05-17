@@ -244,6 +244,9 @@ pub(crate) struct RuntimeConfig {
     /// Per-channel skill allowlist. Skills not matching the allowlist are excluded from the
     /// prompt. An empty `allowed` list means all skills are permitted (default).
     pub(crate) channel_skills: zeph_config::ChannelSkillsConfig,
+    /// Per-channel tool allowlist. `None` = no restriction. `Some` = only listed tools permitted.
+    /// Populated from the active channel's `allowed_tools` config at agent build time.
+    pub(crate) channel_tool_allowlist: Option<Vec<String>>,
     /// Minimum allowed interval for `/loop` ticks (seconds). Sourced from `[cli.loop] min_interval_secs`.
     pub(crate) loop_min_interval_secs: u64,
     /// Runtime middleware layers for LLM calls and tool dispatch (#2286).
@@ -1028,6 +1031,7 @@ impl Default for RuntimeConfig {
             spawn_depth: 0,
             budget_hint_enabled: true,
             channel_skills: zeph_config::ChannelSkillsConfig::default(),
+            channel_tool_allowlist: None,
             loop_min_interval_secs: 5,
             layers: Vec::new(),
             supervisor_config: crate::config::TaskSupervisorConfig::default(),

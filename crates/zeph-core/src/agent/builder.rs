@@ -1925,6 +1925,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the channel-scoped tool allowlist for this session.
+    ///
+    /// `None` means no restriction (all tools permitted). `Some(vec![])` denies all tools.
+    /// The allowlist is snapshotted into each [`TurnContext`] at turn start.
+    #[must_use]
+    pub fn with_channel_tool_allowlist(mut self, allowlist: Option<Vec<String>>) -> Self {
+        self.runtime.config.channel_tool_allowlist = allowlist;
+        self
+    }
+
     // ---- Internal helpers (pub(super)) ----
 
     pub(super) fn summary_or_primary_provider(&self) -> &AnyProvider {

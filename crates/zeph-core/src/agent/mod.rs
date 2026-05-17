@@ -1442,7 +1442,8 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        let context = turn::TurnContext::new(id, cancel_token, self.runtime.config.timeouts);
+        let context = turn::TurnContext::new(id, cancel_token, self.runtime.config.timeouts)
+            .with_tool_allowlist(self.runtime.config.channel_tool_allowlist.clone());
         turn::Turn::new(context, input)
     }
 

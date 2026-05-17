@@ -1380,6 +1380,50 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         _ => zeph_core::config::ChannelSkillsConfig::default(),
     };
 
+    // Derive per-channel tool allowlist from the matching config section.
+    #[cfg(feature = "tui")]
+    let channel_tool_allowlist: Option<Vec<String>> = match &channel {
+        AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Telegram(_)) => app
+            .config()
+            .telegram
+            .as_ref()
+            .and_then(|c| c.allowed_tools.clone()),
+        #[cfg(feature = "discord")]
+        AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Discord(_)) => app
+            .config()
+            .discord
+            .as_ref()
+            .and_then(|c| c.allowed_tools.clone()),
+        #[cfg(feature = "slack")]
+        AppChannel::Standard(c) if matches!(c.as_ref(), AnyChannel::Slack(_)) => app
+            .config()
+            .slack
+            .as_ref()
+            .and_then(|c| c.allowed_tools.clone()),
+        _ => app.config().cli.allowed_tools.clone(),
+    };
+    #[cfg(not(feature = "tui"))]
+    let channel_tool_allowlist: Option<Vec<String>> = match &channel {
+        AnyChannel::Telegram(_) => app
+            .config()
+            .telegram
+            .as_ref()
+            .and_then(|c| c.allowed_tools.clone()),
+        #[cfg(feature = "discord")]
+        AnyChannel::Discord(_) => app
+            .config()
+            .discord
+            .as_ref()
+            .and_then(|c| c.allowed_tools.clone()),
+        #[cfg(feature = "slack")]
+        AnyChannel::Slack(_) => app
+            .config()
+            .slack
+            .as_ref()
+            .and_then(|c| c.allowed_tools.clone()),
+        _ => app.config().cli.allowed_tools.clone(),
+    };
+
     let conversation_id = match memory.sqlite().latest_conversation_id().await? {
         Some(id) => id,
         None => memory.sqlite().create_conversation().await?,
@@ -2507,6 +2551,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent.with_hooks_config(&config.hooks)
     };
     let agent = agent.with_channel_skills(channel_skills_config);
+    let agent = agent.with_channel_tool_allowlist(channel_tool_allowlist);
     let agent = agent.with_learning(config.skills.learning.clone());
 
     // Wire SkillEvaluator — enabled in both normal and bare mode (quality gate only).

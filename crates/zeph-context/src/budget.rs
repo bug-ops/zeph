@@ -320,4 +320,23 @@ mod tests {
         assert!(alloc.summaries > 0);
         assert!(alloc.semantic_recall > 0);
     }
+
+    #[test]
+    fn budget_allocation_memory_first_and_graph_enabled() {
+        let tc = NaiveTc;
+        // 10_000 max, 20% reserve → 8_000 available (empty prompts = 0 tokens).
+        let budget = ContextBudget::new(10_000, 0.20).with_graph_enabled(true);
+        let alloc = budget.allocate_with_opts("", "", &tc, true, 0, true);
+        let available = 8_000_f32;
+        assert_eq!(
+            alloc.recent_history, 0,
+            "memory_first must zero recent_history"
+        );
+        assert_eq!(alloc.summaries, (available * 0.22) as usize);
+        assert_eq!(alloc.semantic_recall, (available * 0.22) as usize);
+        assert_eq!(alloc.cross_session, (available * 0.12) as usize);
+        assert_eq!(alloc.code_context, (available * 0.38) as usize);
+        assert_eq!(alloc.graph_facts, (available * 0.06) as usize);
+        assert_eq!(alloc.response_reserve, 2_000);
+    }
 }

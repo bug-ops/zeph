@@ -78,6 +78,7 @@ async fn age_vault_injects_token_into_existing_telegram_config() {
         token: None,
         allowed_users: vec!["test_user".to_owned()],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
+        allowed_tools: None,
         stream_interval_ms: 3000,
         guest_mode: false,
         bot_to_bot: false,

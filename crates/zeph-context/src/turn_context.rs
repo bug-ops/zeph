@@ -63,10 +63,21 @@ pub struct TurnContext {
     /// Snapshotting (rather than reading from a shared config) ensures the turn's
     /// timeout policy is stable even if the live config is reloaded mid-turn.
     pub timeouts: TimeoutConfig,
+    /// Optional channel-scoped tool allowlist for this turn.
+    ///
+    /// `None` means no channel-level restriction applies (other layers may still gate tool
+    /// access). When `Some`, only tools whose names appear in the list may be dispatched;
+    /// any call to a tool not in the list is rejected before execution.
+    ///
+    /// Populated from the active channel's `allowed_tools` config by the agent runtime
+    /// at turn start via [`TurnContext::with_tool_allowlist`].
+    pub tool_allowlist: Option<Vec<String>>,
 }
 
 impl TurnContext {
-    /// Create a new `TurnContext`.
+    /// Create a new `TurnContext` with no channel-level tool restriction.
+    ///
+    /// Use [`with_tool_allowlist`](Self::with_tool_allowlist) to set a channel-scoped allowlist.
     ///
     /// # Examples
     ///
@@ -77,6 +88,7 @@ impl TurnContext {
     ///
     /// let ctx = TurnContext::new(TurnId(1), CancellationToken::new(), TimeoutConfig::default());
     /// assert_eq!(ctx.id, TurnId(1));
+    /// assert!(ctx.tool_allowlist.is_none());
     /// ```
     #[must_use]
     pub fn new(id: TurnId, cancel_token: CancellationToken, timeouts: TimeoutConfig) -> Self {
@@ -84,6 +96,60 @@ impl TurnContext {
             id,
             cancel_token,
             timeouts,
+            tool_allowlist: None,
+        }
+    }
+
+    /// Set the channel-scoped tool allowlist for this turn.
+    ///
+    /// `None` clears any existing restriction. `Some(vec![])` denies all tools.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_context::turn_context::{TurnContext, TurnId};
+    /// use zeph_config::security::TimeoutConfig;
+    /// use tokio_util::sync::CancellationToken;
+    ///
+    /// let ctx = TurnContext::new(TurnId(0), CancellationToken::new(), TimeoutConfig::default())
+    ///     .with_tool_allowlist(Some(vec!["shell".to_owned(), "grep".to_owned()]));
+    /// assert!(ctx.is_tool_allowed("shell"));
+    /// assert!(!ctx.is_tool_allowed("web_scrape"));
+    /// ```
+    #[must_use]
+    pub fn with_tool_allowlist(mut self, allowlist: Option<Vec<String>>) -> Self {
+        self.tool_allowlist = allowlist;
+        self
+    }
+
+    /// Returns `true` if `tool_name` is permitted by the channel-level allowlist.
+    ///
+    /// When no allowlist is set (`None`), all tools are permitted.
+    /// When the allowlist is `Some`, only tools explicitly listed are permitted.
+    ///
+    /// Comparison is **case-sensitive**: `"Shell"` and `"shell"` are treated as different
+    /// names. Callers must normalize tool names to lowercase before populating the allowlist
+    /// if case-insensitive matching is required.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_context::turn_context::{TurnContext, TurnId};
+    /// use zeph_config::security::TimeoutConfig;
+    /// use tokio_util::sync::CancellationToken;
+    ///
+    /// let unrestricted = TurnContext::new(TurnId(0), CancellationToken::new(), TimeoutConfig::default());
+    /// assert!(unrestricted.is_tool_allowed("anything"));
+    ///
+    /// let restricted = unrestricted.with_tool_allowlist(Some(vec!["shell".to_owned()]));
+    /// assert!(restricted.is_tool_allowed("shell"));
+    /// assert!(!restricted.is_tool_allowed("web_scrape"));
+    /// ```
+    #[must_use]
+    pub fn is_tool_allowed(&self, tool_name: &str) -> bool {
+        match &self.tool_allowlist {
+            None => true,
+            Some(list) => list.iter().any(|t| t == tool_name),
         }
     }
 }
@@ -124,6 +190,54 @@ mod tests {
         let token = CancellationToken::new();
         let ctx = TurnContext::new(TurnId(1), token.clone(), TimeoutConfig::default());
         assert_eq!(ctx.id, TurnId(1));
+        assert!(ctx.tool_allowlist.is_none());
+    }
+
+    #[test]
+    fn turn_context_tool_allowlist_none_permits_all() {
+        let ctx = TurnContext::new(
+            TurnId(0),
+            CancellationToken::new(),
+            TimeoutConfig::default(),
+        );
+        assert!(ctx.is_tool_allowed("shell"));
+        assert!(ctx.is_tool_allowed("anything"));
+    }
+
+    #[test]
+    fn turn_context_tool_allowlist_some_filters() {
+        let ctx = TurnContext::new(
+            TurnId(0),
+            CancellationToken::new(),
+            TimeoutConfig::default(),
+        )
+        .with_tool_allowlist(Some(vec!["shell".to_owned(), "grep".to_owned()]));
+        assert!(ctx.is_tool_allowed("shell"));
+        assert!(ctx.is_tool_allowed("grep"));
+        assert!(!ctx.is_tool_allowed("web_scrape"));
+    }
+
+    #[test]
+    fn turn_context_tool_allowlist_empty_denies_all() {
+        let ctx = TurnContext::new(
+            TurnId(0),
+            CancellationToken::new(),
+            TimeoutConfig::default(),
+        )
+        .with_tool_allowlist(Some(vec![]));
+        assert!(!ctx.is_tool_allowed("shell"));
+    }
+
+    #[test]
+    fn turn_context_with_tool_allowlist_none_clears() {
+        let ctx = TurnContext::new(
+            TurnId(0),
+            CancellationToken::new(),
+            TimeoutConfig::default(),
+        )
+        .with_tool_allowlist(Some(vec!["shell".to_owned()]))
+        .with_tool_allowlist(None);
+        assert!(ctx.is_tool_allowed("anything"));
     }
 
     #[test]

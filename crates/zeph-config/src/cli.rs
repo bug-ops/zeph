@@ -21,6 +21,9 @@ pub struct CliConfig {
     /// Loop command configuration.
     #[serde(rename = "loop")]
     pub loop_: LoopConfig,
+    /// Tool allowlist for CLI/TUI sessions. `None` means all tools are permitted.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// Configuration for the `/loop` command.

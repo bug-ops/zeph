@@ -368,6 +368,34 @@ impl<C: Channel> Agent<C> {
         pre_exec_blocked
     }
 
+    /// Block tool calls whose names are absent from the channel-level allowlist (#3879).
+    ///
+    /// No-op when no allowlist is configured (`None`). Skips already-blocked indices.
+    /// Comparison is case-sensitive; channel configs must use canonical lowercase names.
+    fn apply_channel_tool_allowlist(&mut self, calls: &[ToolCall], pre_exec_blocked: &mut [bool]) {
+        let Some(ref allowlist) = self.runtime.config.channel_tool_allowlist else {
+            return;
+        };
+        for (idx, call) in calls.iter().enumerate() {
+            if pre_exec_blocked[idx] {
+                continue;
+            }
+            if !allowlist.iter().any(|t| t == call.tool_id.as_str()) {
+                tracing::warn!(tool = %call.tool_id, "tool blocked by channel allowlist");
+                self.update_metrics(|m| m.pre_execution_blocks += 1);
+                self.push_security_event(
+                    zeph_common::SecurityEventCategory::PreExecutionBlock,
+                    call.tool_id.as_str(),
+                    format!(
+                        "channel allowlist: '{}' is not permitted on this channel",
+                        call.tool_id
+                    ),
+                );
+                pre_exec_blocked[idx] = true;
+            }
+        }
+    }
+
     fn compute_utility_actions(
         &mut self,
         calls: &[ToolCall],
@@ -660,7 +688,9 @@ impl<C: Channel> Agent<C> {
         // Runs after exfiltration guard (flag-only) and before repeat-detection.
         // Block: return synthetic error result for this call without executing.
         // Warn: log + emit security event + continue execution.
-        let pre_exec_blocked = self.run_pre_execution_verifiers(&calls);
+        let mut pre_exec_blocked = self.run_pre_execution_verifiers(&calls);
+
+        self.apply_channel_tool_allowlist(&calls, &mut pre_exec_blocked);
 
         // Utility gate: score each call and recommend an action (#2477).
         // user_requested is detected from the last user message only — never from LLM content or

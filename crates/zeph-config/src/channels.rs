@@ -336,6 +336,10 @@ pub struct TelegramConfig {
     /// Skill allowlist for this channel.
     #[serde(default)]
     pub skills: ChannelSkillsConfig,
+    /// Tool allowlist for this channel. `None` means all tools are permitted.
+    /// `Some(vec![])` denies all tools. `Some(vec!["shell"])` allows only listed tools.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
     /// Minimum interval in milliseconds between streaming message edits.
     ///
     /// Defaults to 3000 ms (3 seconds) to stay within Telegram's rate limits.
@@ -378,6 +382,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
             .field("allowed_users", &self.allowed_users)
             .field("skills", &self.skills)
+            .field("allowed_tools", &self.allowed_tools)
             .field("stream_interval_ms", &self.stream_interval_ms)
             .field("guest_mode", &self.guest_mode)
             .field("bot_to_bot", &self.bot_to_bot)
@@ -399,6 +404,9 @@ pub struct DiscordConfig {
     pub allowed_channel_ids: Vec<String>,
     #[serde(default)]
     pub skills: ChannelSkillsConfig,
+    /// Tool allowlist for this channel. `None` means all tools are permitted.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -410,6 +418,7 @@ impl std::fmt::Debug for DiscordConfig {
             .field("allowed_role_ids", &self.allowed_role_ids)
             .field("allowed_channel_ids", &self.allowed_channel_ids)
             .field("skills", &self.skills)
+            .field("allowed_tools", &self.allowed_tools)
             .finish()
     }
 }
@@ -428,6 +437,9 @@ pub struct SlackConfig {
     pub allowed_channel_ids: Vec<String>,
     #[serde(default)]
     pub skills: ChannelSkillsConfig,
+    /// Tool allowlist for this channel. `None` means all tools are permitted.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for SlackConfig {
@@ -443,6 +455,7 @@ impl std::fmt::Debug for SlackConfig {
             .field("allowed_user_ids", &self.allowed_user_ids)
             .field("allowed_channel_ids", &self.allowed_channel_ids)
             .field("skills", &self.skills)
+            .field("allowed_tools", &self.allowed_tools)
             .finish()
     }
 }
