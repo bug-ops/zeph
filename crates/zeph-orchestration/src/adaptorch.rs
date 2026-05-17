@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use tracing::Instrument as _;
+
 use parking_lot::Mutex;
 use rand::SeedableRng as _;
 use rand_distr::{Beta, Distribution};
@@ -229,45 +231,51 @@ impl TopologyAdvisor {
     /// Classify the goal and sample the best topology hint for this turn.
     ///
     /// Classification failures fall back to `TaskClass::Unknown` + `TopologyHint::Hybrid`.
-    #[tracing::instrument(name = "orchestration.adaptorch.recommend", skip(self), fields(goal_len = goal.len()))]
     pub async fn recommend(&self, goal: &str) -> AdvisorVerdict {
-        self.metrics.classify_calls.fetch_add(1, Ordering::Relaxed);
+        async move {
+            self.metrics.classify_calls.fetch_add(1, Ordering::Relaxed);
 
-        let class = tokio::time::timeout(self.classify_timeout, self.classify(goal))
-            .await
-            .unwrap_or_else(|_| {
-                self.metrics
-                    .classify_timeouts
-                    .fetch_add(1, Ordering::Relaxed);
-                TaskClass::Unknown
-            });
+            let class = tokio::time::timeout(self.classify_timeout, self.classify(goal))
+                .await
+                .unwrap_or_else(|_| {
+                    self.metrics
+                        .classify_timeouts
+                        .fetch_add(1, Ordering::Relaxed);
+                    TaskClass::Unknown
+                });
 
-        let fallback = class == TaskClass::Unknown;
-        let (hint, exploit) = self.sample_arm(class);
+            let fallback = class == TaskClass::Unknown;
+            let (hint, exploit) = self.sample_arm(class);
 
-        match hint {
-            TopologyHint::Parallel => {
-                self.metrics.hint_parallel.fetch_add(1, Ordering::Relaxed);
+            match hint {
+                TopologyHint::Parallel => {
+                    self.metrics.hint_parallel.fetch_add(1, Ordering::Relaxed);
+                }
+                TopologyHint::Sequential => {
+                    self.metrics.hint_sequential.fetch_add(1, Ordering::Relaxed);
+                }
+                TopologyHint::Hierarchical => {
+                    self.metrics
+                        .hint_hierarchical
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                TopologyHint::Hybrid => {
+                    self.metrics.hint_hybrid.fetch_add(1, Ordering::Relaxed);
+                }
             }
-            TopologyHint::Sequential => {
-                self.metrics.hint_sequential.fetch_add(1, Ordering::Relaxed);
-            }
-            TopologyHint::Hierarchical => {
-                self.metrics
-                    .hint_hierarchical
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            TopologyHint::Hybrid => {
-                self.metrics.hint_hybrid.fetch_add(1, Ordering::Relaxed);
+
+            AdvisorVerdict {
+                class,
+                hint,
+                exploit,
+                fallback,
             }
         }
-
-        AdvisorVerdict {
-            class,
-            hint,
-            exploit,
-            fallback,
-        }
+        .instrument(tracing::info_span!(
+            "orchestration.adaptorch.recommend",
+            goal_len = goal.len(),
+        ))
+        .await
     }
 
     /// Record the binary outcome of a plan guided by `(class, hint)`.
@@ -321,10 +329,10 @@ impl TopologyAdvisor {
 
     // ─── private helpers ─────────────────────────────────────────────────────
 
-    #[tracing::instrument(name = "orchestration.adaptorch.classify", skip(self), fields(goal_len = goal.len()))]
     async fn classify(&self, goal: &str) -> TaskClass {
-        let truncated: String = goal.chars().take(400).collect();
-        let system = "\
+        async move {
+            let truncated: String = goal.chars().take(400).collect();
+            let system = "\
 You classify task decomposition patterns. Read the goal and answer with one of:\n\
 - independent_batch  — fan-out work with no cross-deps (research, comparisons, multi-source queries)\n\
 - sequential_pipeline — strict ordering (build → test → deploy, ETL)\n\
@@ -333,20 +341,26 @@ You classify task decomposition patterns. Read the goal and answer with one of:\
 Respond with a single JSON object:\n\
 {\"class\":\"...\",\"reason\":\"<one sentence>\"}";
 
-        let messages = vec![
-            Message::from_legacy(Role::System, system),
-            Message::from_legacy(Role::User, format!("Goal:\n{truncated}")),
-        ];
+            let messages = vec![
+                Message::from_legacy(Role::System, system),
+                Message::from_legacy(Role::User, format!("Goal:\n{truncated}")),
+            ];
 
-        let raw = match self.classifier.chat(&messages).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "adaptorch: classify call failed");
-                return TaskClass::Unknown;
-            }
-        };
+            let raw = match self.classifier.chat(&messages).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "adaptorch: classify call failed");
+                    return TaskClass::Unknown;
+                }
+            };
 
-        parse_class(&raw)
+            parse_class(&raw)
+        }
+        .instrument(tracing::info_span!(
+            "orchestration.adaptorch.classify",
+            goal_len = goal.len(),
+        ))
+        .await
     }
 
     fn sample_arm(&self, class: TaskClass) -> (TopologyHint, bool) {
