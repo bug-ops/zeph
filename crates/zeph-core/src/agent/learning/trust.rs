@@ -1,51 +1,66 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use tracing::Instrument as _;
+
 use super::super::{Agent, Channel};
 
 impl<C: Channel> Agent<C> {
     pub(crate) async fn check_trust_transition(&self, skill_name: &str) {
-        if let Err(_elapsed) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            self.check_trust_transition_inner(skill_name),
-        )
-        .await
-        {
-            tracing::warn!(
-                skill = skill_name,
-                "check_trust_transition timed out after 2s"
-            );
+        let span = tracing::info_span!("core.learning.check_trust_transition", skill = skill_name);
+        async move {
+            if let Err(_elapsed) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                self.check_trust_transition_inner(skill_name),
+            )
+            .await
+            {
+                tracing::warn!(
+                    skill = skill_name,
+                    "check_trust_transition timed out after 2s"
+                );
+            }
         }
+        .instrument(span)
+        .await;
     }
 
     async fn check_trust_transition_inner(&self, skill_name: &str) {
-        let Some(memory) = &self.services.memory.persistence.memory else {
-            return;
-        };
-        let Some(config) = &self.services.learning_engine.config else {
-            return;
-        };
-        let Ok(Some(metrics)) = memory.sqlite().skill_metrics(skill_name).await else {
-            return;
-        };
-        let successes = u32::try_from(metrics.successes).unwrap_or(0);
-        let failures = u32::try_from(metrics.failures).unwrap_or(0);
-        let total = u32::try_from(metrics.total).unwrap_or(0);
-        let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
-
-        if total >= config.auto_promote_min_uses && posterior > config.auto_promote_threshold {
-            if !cross_session_rollout_ok_for_promote(memory, config, skill_name).await {
+        let span = tracing::info_span!(
+            "core.learning.check_trust_transition_inner",
+            skill = skill_name
+        );
+        async move {
+            let Some(memory) = &self.services.memory.persistence.memory else {
                 return;
-            }
-            try_auto_promote(memory, skill_name, posterior, total).await;
-        }
-
-        if total >= config.auto_demote_min_uses && posterior < config.auto_demote_threshold {
-            if !cross_session_rollout_ok_for_demote(memory, config, skill_name).await {
+            };
+            let Some(config) = &self.services.learning_engine.config else {
                 return;
+            };
+            let Ok(Some(metrics)) = memory.sqlite().skill_metrics(skill_name).await else {
+                return;
+            };
+            let successes = u32::try_from(metrics.successes).unwrap_or(0);
+            let failures = u32::try_from(metrics.failures).unwrap_or(0);
+            let total = u32::try_from(metrics.total).unwrap_or(0);
+            let posterior = zeph_skills::trust_score::posterior_mean(successes, failures);
+
+            if total >= config.auto_promote_min_uses && posterior > config.auto_promote_threshold {
+                if !cross_session_rollout_ok_for_promote(memory, config, skill_name).await {
+                    return;
+                }
+                try_auto_promote(memory, skill_name, posterior, total).await;
             }
-            try_auto_demote(memory, skill_name, posterior, total).await;
+
+            if total >= config.auto_demote_min_uses && posterior < config.auto_demote_threshold {
+                if !cross_session_rollout_ok_for_demote(memory, config, skill_name).await {
+                    return;
+                }
+                try_auto_demote(memory, skill_name, posterior, total).await;
+            }
         }
+        .instrument(span)
+        .await;
     }
 }
 
