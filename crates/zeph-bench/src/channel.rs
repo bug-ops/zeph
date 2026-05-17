@@ -6,8 +6,9 @@
 //! [`BenchmarkChannel`] feeds a pre-loaded prompt queue into the agent loop and captures
 //! each response without requiring a terminal, Telegram bot, or any other real I/O channel.
 //!
-//! Tool output events are intentionally suppressed (see the `send_tool_output` override) so
-//! that tool intermediaries do not pollute the captured response list with non-answer text.
+//! Tool output events are captured via [`BenchmarkChannel::tool_outputs`] for Phase 2 scoring
+//! (see [`ToolOutputEvent`] and #4237). They are not added to [`responses`][BenchmarkChannel::responses]
+//! so that tool intermediaries do not corrupt response metrics.
 
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -58,7 +59,7 @@ pub struct CapturedResponse {
 /// network connection. [`recv`][zeph_core::channel::Channel::recv] drains the prompt
 /// queue; [`send`][zeph_core::channel::Channel::send] and
 /// [`flush_chunks`][zeph_core::channel::Channel::flush_chunks] accumulate responses
-/// into an internal list.
+/// into an internal list. Tool outputs are captured separately via [`tool_outputs()`][BenchmarkChannel::tool_outputs].
 ///
 /// # Usage
 ///
@@ -84,6 +85,7 @@ pub struct CapturedResponse {
 pub struct BenchmarkChannel {
     prompts: VecDeque<String>,
     responses: Vec<CapturedResponse>,
+    tool_outputs: Vec<ToolOutputEvent>,
     current_index: usize,
     total: usize,
     // Streaming chunk accumulation
@@ -116,6 +118,77 @@ impl BenchmarkChannel {
         Self {
             prompts: VecDeque::from(prompts),
             responses: Vec::new(),
+            tool_outputs: Vec::new(),
+            current_index: 0,
+            total,
+            chunk_buffer: String::new(),
+            chunk_start: None,
+            pending_input_tokens: 0,
+            pending_output_tokens: 0,
+            pending_context_window: 0,
+        }
+    }
+
+    /// Create a channel from a multi-turn scenario history.
+    ///
+    /// User turns are fed to the agent in order via [`recv`][zeph_core::channel::Channel::recv].
+    /// Assistant turns are pre-seeded into [`responses`][BenchmarkChannel::responses] so that
+    /// evaluators and Phase 2 scoring have access to the captured prior context.
+    ///
+    /// # Note
+    ///
+    /// If `turns` contains no [`Role::User`] turns, [`total`][BenchmarkChannel::total] returns
+    /// `0` and the channel cannot serve as a prompt source. The bench runner rejects this with
+    /// [`BenchError::InvalidFormat`][crate::BenchError] — callers must ensure at least one user
+    /// turn is present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::BenchmarkChannel;
+    /// use zeph_bench::scenario::{Role, Turn};
+    ///
+    /// let turns = vec![
+    ///     Turn { role: Role::User, content: "Hello".into() },
+    ///     Turn { role: Role::Assistant, content: "Hi there".into() },
+    ///     Turn { role: Role::User, content: "What year?".into() },
+    /// ];
+    /// let ch = BenchmarkChannel::from_turns(turns);
+    /// assert_eq!(ch.total(), 2); // two user turns
+    /// assert_eq!(ch.responses().len(), 1); // one seeded assistant turn
+    /// ```
+    #[must_use]
+    pub fn from_turns(turns: Vec<crate::scenario::Turn>) -> Self {
+        use crate::scenario::Role;
+
+        let mut prompts = VecDeque::new();
+        let mut seeded_responses = Vec::new();
+        let mut prompt_index: usize = 0;
+
+        for turn in turns {
+            match turn.role {
+                Role::User => {
+                    prompts.push_back(turn.content);
+                    prompt_index += 1;
+                }
+                Role::Assistant => {
+                    seeded_responses.push(CapturedResponse {
+                        prompt_index: prompt_index.saturating_sub(1),
+                        text: turn.content,
+                        elapsed: std::time::Duration::ZERO,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        context_window: 0,
+                    });
+                }
+            }
+        }
+
+        let total = prompts.len();
+        Self {
+            prompts,
+            responses: seeded_responses,
+            tool_outputs: Vec::new(),
             current_index: 0,
             total,
             chunk_buffer: String::new(),
@@ -172,6 +245,24 @@ impl BenchmarkChannel {
     #[must_use]
     pub fn responses(&self) -> &[CapturedResponse] {
         &self.responses
+    }
+
+    /// Borrow the tool output events captured during the agent run.
+    ///
+    /// Events are appended by [`send_tool_output`][zeph_core::channel::Channel::send_tool_output]
+    /// and are available for Phase 2 evaluation (#4234) after the agent loop exits.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_bench::BenchmarkChannel;
+    ///
+    /// let ch = BenchmarkChannel::new(vec![]);
+    /// assert!(ch.tool_outputs().is_empty());
+    /// ```
+    #[must_use]
+    pub fn tool_outputs(&self) -> &[zeph_core::channel::ToolOutputEvent] {
+        &self.tool_outputs
     }
 
     fn flush_chunk_buffer(&mut self) {
@@ -256,9 +347,8 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         Ok(())
     }
 
-    // Tool output is intentionally dropped here — pushing it via the default impl would corrupt
-    // benchmark metrics. Phase 2 capture is tracked in #4237.
-    async fn send_tool_output(&mut self, _event: ToolOutputEvent) -> Result<(), ChannelError> {
+    async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
+        self.tool_outputs.push(event);
         Ok(())
     }
 }
@@ -346,7 +436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_tool_output_does_not_add_to_responses() {
+    async fn send_tool_output_captured_separately_from_responses() {
         let mut ch = BenchmarkChannel::new(vec!["p".into()]);
         let _ = ch.recv().await.unwrap();
         ch.send_tool_output(ToolOutputEvent {
@@ -357,7 +447,6 @@ mod tests {
             kept_lines: None,
             locations: None,
             tool_call_id: "tc-1".into(),
-
             terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,
@@ -366,7 +455,47 @@ mod tests {
         })
         .await
         .unwrap();
-        // Tool output must not be captured as a benchmark response.
+        // Tool output must not pollute benchmark responses.
         assert_eq!(ch.responses().len(), 0);
+        // Tool output must be accessible for Phase 2 scoring.
+        assert_eq!(ch.tool_outputs().len(), 1);
+        assert_eq!(ch.tool_outputs()[0].tool_name, "bash");
+    }
+
+    #[test]
+    fn from_turns_splits_user_and_assistant() {
+        use crate::scenario::{Role, Turn};
+
+        let turns = vec![
+            Turn {
+                role: Role::User,
+                content: "Q1".into(),
+            },
+            Turn {
+                role: Role::Assistant,
+                content: "A1".into(),
+            },
+            Turn {
+                role: Role::User,
+                content: "Q2".into(),
+            },
+        ];
+        let ch = BenchmarkChannel::from_turns(turns);
+        assert_eq!(ch.total(), 2);
+        assert_eq!(ch.responses().len(), 1);
+        assert_eq!(ch.responses()[0].text, "A1");
+    }
+
+    #[test]
+    fn from_turns_user_only() {
+        use crate::scenario::{Role, Turn};
+
+        let turns = vec![Turn {
+            role: Role::User,
+            content: "Q".into(),
+        }];
+        let ch = BenchmarkChannel::from_turns(turns);
+        assert_eq!(ch.total(), 1);
+        assert!(ch.responses().is_empty());
     }
 }

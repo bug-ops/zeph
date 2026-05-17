@@ -409,6 +409,7 @@ impl BenchRunner {
     ///
     /// Called by both [`BenchRunner::run_dataset`] (with `NoopExecutor` + `TerseAnswer`) and
     /// [`BenchRunner::run_dataset_with_env_factory`] (with the domain env + `ToolUse`).
+    #[allow(clippy::too_many_lines)] // sequential setup steps; splitting adds indirection without clarity
     async fn run_one_with_executor<X: ToolExecutor + Send + Sync + 'static>(
         &self,
         scenario: &Scenario,
@@ -422,9 +423,13 @@ impl BenchRunner {
             mode = ?mode,
         )
         .entered();
-        let prompt = scenario.primary_prompt()?.to_owned();
-        let channel = BenchmarkChannel::new(vec![prompt]);
-        // Multi-turn history seeding is deferred to #4236.
+        let channel = BenchmarkChannel::from_turns(scenario.turns.clone());
+        if channel.total() == 0 {
+            return Err(BenchError::InvalidFormat(format!(
+                "scenario '{}' has no user turn",
+                scenario.id
+            )));
+        }
         let registry = SkillRegistry::empty();
 
         let system_content = match mode {
@@ -516,7 +521,14 @@ impl BenchRunner {
         // Ignore agent errors — a failed LLM call still yields an empty response that
         // the evaluator scores as 0.0 rather than aborting the entire run.
         let _ = Box::pin(agent.run()).await;
-        let responses = agent.into_channel().into_responses();
+        let channel = agent.into_channel();
+        // tool_outputs available for Phase 2 scoring (#4234); log count so future
+        // implementors have a trace even before the evaluator wires them up.
+        tracing::debug!(
+            count = channel.tool_outputs().len(),
+            "bench: tool outputs captured"
+        );
+        let responses = channel.into_responses();
 
         // Best-effort cleanup: delete per-scenario SQLite file after the run.
         // Failure is intentionally ignored — NFR-001 is hygiene, not correctness.
