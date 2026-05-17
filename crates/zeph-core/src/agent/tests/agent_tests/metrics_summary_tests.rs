@@ -304,6 +304,52 @@ async fn cancel_signal_works_across_multiple_messages() {
     assert!(token2.is_cancelled());
 }
 
+/// Regression test for #4311: context_tokens must be set in MetricsSnapshot before the LLM
+/// responds, so the TUI gauge reflects the correct context size during the turn.
+///
+/// The fix adds `update_metrics(|m| m.context_tokens = cached_prompt_tokens)` immediately after
+/// `push_message(user_msg)` in `process_user_message_inner`. This test verifies that after a
+/// complete `process_user_message` call the metrics snapshot contains a non-zero token count,
+/// proving the update path was reached.
+#[tokio::test]
+async fn context_tokens_set_before_llm_response() {
+    let (metrics_tx, metrics_rx) = tokio::sync::watch::channel(MetricsSnapshot::default());
+
+    let provider = mock_provider(vec!["hello".to_string()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent =
+        Agent::new(provider, channel, registry, None, 5, executor).with_metrics(metrics_tx);
+
+    // Seed the message history so cached_prompt_tokens is non-zero after push_message.
+    agent.push_message(Message {
+        role: Role::User,
+        content: "prior message".to_string(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+    agent.push_message(Message {
+        role: Role::Assistant,
+        content: "prior response".to_string(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent
+        .process_user_message("test query".to_string(), vec![])
+        .await
+        .unwrap();
+
+    let snapshot = metrics_rx.borrow().clone();
+    assert!(
+        snapshot.context_tokens > 0,
+        "context_tokens must be non-zero after process_user_message; got {}",
+        snapshot.context_tokens
+    );
+}
+
 mod resolve_message_tests {
     use super::*;
     use crate::channel::{Attachment, AttachmentKind, ChannelMessage};

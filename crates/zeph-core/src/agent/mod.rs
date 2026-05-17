@@ -1618,6 +1618,10 @@ impl<C: Channel> Agent<C> {
         );
         self.push_message(user_msg);
 
+        // Emit pre-LLM context size so the TUI gauge is non-zero before the provider responds.
+        let context_estimate = self.runtime.providers.cached_prompt_tokens;
+        self.update_metrics(|m| m.context_tokens = context_estimate);
+
         // llm_chat_ms and tool_exec_ms are accumulated inside call_chat_with_tools and
         // handle_native_tool_calls respectively via metrics.pending_timings.
         tracing::debug!("turn timing: process_response start");
