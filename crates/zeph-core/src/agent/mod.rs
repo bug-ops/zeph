@@ -2751,17 +2751,23 @@ impl<C: Channel> Agent<C> {
 
     /// Extract recent parent messages for history propagation (Section 5.7 in spec).
     ///
-    /// Filters system messages, takes last `context_window_turns * 2` messages,
-    /// applies a 25% context window cap using a 4-chars-per-token heuristic, and
-    /// prunes orphaned `ToolUse`/`ToolResult` pairs at the slice boundary.
+    /// Filters system messages, applies `context_window_turns` and `max_parent_messages` caps,
+    /// applies a 25% context window cap using a 4-chars-per-token heuristic, prunes orphaned
+    /// `ToolUse`/`ToolResult` pairs at the slice boundary, and optionally sanitizes text parts
+    /// through the IPI pipeline according to `parent_context_policy`.
     fn extract_parent_messages(
         &self,
         config: &zeph_config::SubAgentConfig,
     ) -> Vec<zeph_llm::provider::Message> {
+        use zeph_config::ParentContextPolicy;
         use zeph_llm::provider::Role;
-        if config.context_window_turns == 0 {
+
+        if config.parent_context_policy == ParentContextPolicy::None
+            || config.context_window_turns == 0
+        {
             return Vec::new();
         }
+
         let non_system: Vec<_> = self
             .msg
             .messages
@@ -2769,7 +2775,11 @@ impl<C: Channel> Agent<C> {
             .filter(|m| m.role != Role::System)
             .cloned()
             .collect();
-        let take_count = config.context_window_turns * 2;
+
+        let take_count = config
+            .context_window_turns
+            .saturating_mul(2)
+            .min(config.max_parent_messages);
         let start = non_system.len().saturating_sub(take_count);
         let mut msgs = non_system[start..].to_vec();
 
@@ -2784,6 +2794,14 @@ impl<C: Channel> Agent<C> {
                 "[subagent] truncated parent history due to token budget or orphan pruning"
             );
         }
+
+        if config.parent_context_policy == ParentContextPolicy::InheritSanitized {
+            use zeph_sanitizer::{ContentSource, ContentSourceKind};
+            let source =
+                ContentSource::new(ContentSourceKind::A2aMessage).with_identifier("parent_history");
+            msgs = sanitize_parent_messages(msgs, &self.services.security.sanitizer, &source);
+        }
+
         msgs
     }
 
@@ -3822,6 +3840,35 @@ pub(crate) fn trim_parent_messages(msgs: &mut Vec<zeph_llm::provider::Message>, 
             "[subagent] pruned orphaned ToolUse/ToolResult parts from parent context boundary"
         );
     }
+}
+
+/// Sanitize text parts of `msgs` through the IPI pipeline.
+///
+/// Only [`MessagePart::Text`] parts are passed through the sanitizer; structured parts
+/// (`ToolUse`, `ToolResult`, `Recall`, `CodeContext`) are left untouched.  After sanitization
+/// the message `content` field is rebuilt to stay consistent with the updated parts.
+fn sanitize_parent_messages(
+    mut msgs: Vec<zeph_llm::provider::Message>,
+    sanitizer: &zeph_sanitizer::ContentSanitizer,
+    source: &zeph_sanitizer::ContentSource,
+) -> Vec<zeph_llm::provider::Message> {
+    use zeph_llm::provider::MessagePart;
+    for msg in &mut msgs {
+        let mut changed = false;
+        for part in &mut msg.parts {
+            if let MessagePart::Text { text } = part {
+                let clean = sanitizer.sanitize(text, source.clone());
+                if clean.body != *text {
+                    *text = clean.body;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            msg.rebuild_content();
+        }
+    }
+    msgs
 }
 
 /// Thin wrapper that implements [`zeph_subagent::McpDispatch`] over an [`Arc<zeph_mcp::McpManager>`].

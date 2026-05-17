@@ -103,8 +103,8 @@ pub mod ui;
 pub mod vigil;
 
 pub use agent::{
-    AgentConfig, ContextInjectionMode, FocusConfig, GoalConfig, ModelSpec, SubAgentConfig,
-    SubAgentLifecycleHooks, TaskSupervisorConfig, ToolFilterConfig,
+    AgentConfig, ContextInjectionMode, FocusConfig, GoalConfig, ModelSpec, ParentContextPolicy,
+    SubAgentConfig, SubAgentLifecycleHooks, TaskSupervisorConfig, ToolFilterConfig,
 };
 pub use channels::{
     A2aServerConfig, ChannelSkillsConfig, DiscordConfig, IbctKeyConfig, McpConfig, McpOAuthConfig,

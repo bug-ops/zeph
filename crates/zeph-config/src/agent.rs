@@ -49,6 +49,31 @@ impl<'de> Deserialize<'de> for ModelSpec {
     }
 }
 
+/// Controls how the parent agent's conversation history is sanitized before passing to a
+/// spawned sub-agent.
+///
+/// Prompt injection is a documented attack vector when the parent history contains untrusted
+/// content from web scrapes, tool results, or A2A messages.  `InheritSanitized` is the safe
+/// default: messages pass through [`zeph_sanitizer::ContentSanitizer`] before injection.
+///
+/// # Examples
+///
+/// ```toml
+/// [subagent]
+/// parent_context_policy = "inherit_sanitized"   # default
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentContextPolicy {
+    /// Pass the parent history verbatim — legacy behaviour, no sanitization.
+    Inherit,
+    /// Sanitize text parts of each message through the IPI pipeline before injection.
+    #[default]
+    InheritSanitized,
+    /// Do not inject any parent history into the sub-agent context.
+    None,
+}
+
 /// Controls how parent agent context is injected into a spawned sub-agent's task prompt.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +85,10 @@ pub enum ContextInjectionMode {
     LastAssistantTurn,
     /// LLM-generated summary of parent context (not yet implemented in Phase 1).
     Summary,
+}
+
+fn default_max_parent_messages() -> usize {
+    20
 }
 
 fn default_max_tool_iterations() -> usize {
@@ -508,6 +537,21 @@ pub struct SubAgentConfig {
     /// How parent context is injected into the sub-agent's task prompt.
     #[serde(default)]
     pub context_injection_mode: ContextInjectionMode,
+    /// Whether to sanitize parent conversation history before passing to a spawned sub-agent.
+    ///
+    /// Defaults to [`ParentContextPolicy::InheritSanitized`] which runs each text message part
+    /// through the IPI sanitizer, stripping prompt-injection payloads that may have entered the
+    /// parent history via tool results, web scrapes, or A2A messages.
+    #[serde(default)]
+    pub parent_context_policy: ParentContextPolicy,
+    /// Maximum number of parent messages to inject, independent of `context_window_turns`.
+    ///
+    /// Acts as a hard upper bound on context propagation volume to limit the blast radius
+    /// of poisoned histories.  When `max_parent_messages < context_window_turns * 2` this cap
+    /// wins and fewer messages are passed; otherwise `context_window_turns * 2` is the binding
+    /// limit.  The tighter of the two limits always applies.
+    #[serde(default = "default_max_parent_messages")]
+    pub max_parent_messages: usize,
 }
 
 impl Default for SubAgentConfig {
@@ -528,6 +572,8 @@ impl Default for SubAgentConfig {
             context_window_turns: default_context_window_turns(),
             max_spawn_depth: default_max_spawn_depth(),
             context_injection_mode: ContextInjectionMode::default(),
+            parent_context_policy: ParentContextPolicy::default(),
+            max_parent_messages: default_max_parent_messages(),
         }
     }
 }
@@ -555,6 +601,11 @@ mod tests {
             cfg.context_injection_mode,
             ContextInjectionMode::LastAssistantTurn
         );
+        assert_eq!(
+            cfg.parent_context_policy,
+            ParentContextPolicy::InheritSanitized
+        );
+        assert_eq!(cfg.max_parent_messages, 20);
     }
 
     #[test]
@@ -569,6 +620,29 @@ mod tests {
         assert_eq!(cfg.context_window_turns, 5);
         assert_eq!(cfg.max_spawn_depth, 2);
         assert_eq!(cfg.context_injection_mode, ContextInjectionMode::None);
+    }
+
+    #[test]
+    fn subagent_config_deserialize_parent_context_policy() {
+        let toml_str = r#"
+            parent_context_policy = "none"
+            max_parent_messages = 10
+        "#;
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.parent_context_policy, ParentContextPolicy::None);
+        assert_eq!(cfg.max_parent_messages, 10);
+    }
+
+    #[test]
+    fn subagent_config_deserialize_parent_context_policy_inherit_sanitized() {
+        let toml_str = r#"
+            parent_context_policy = "inherit_sanitized"
+        "#;
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            cfg.parent_context_policy,
+            ParentContextPolicy::InheritSanitized
+        );
     }
 
     #[test]

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- `zeph-core`, `zeph-config`: Parent messages passed to spawned sub-agents are now sanitized
+  through the IPI pipeline by default (`parent_context_policy = "inherit_sanitized"`), stripping
+  prompt-injection payloads that may have entered the parent history via tool results, web scrapes,
+  or A2A messages (closes #3942, #3936).
+- `zeph-config`: Added `max_parent_messages` config cap (default 20) for sub-agent spawn context
+  to limit the blast radius of poisoned histories (closes #3936).
+- `zeph-config`: Added `ParentContextPolicy` enum (`inherit` / `inherit_sanitized` / `none`)
+  giving operators explicit control over cross-agent context propagation trust (closes #3936).
+
 ### Fixed
 
 - `zeph-core`: `AutonomousRegistry::upsert`, `remove`, and `list` now log a `tracing::error!`
