@@ -111,7 +111,33 @@ impl<C: Channel> Agent<C> {
         // Security Medium: sanitize before injecting into the conversation.
         let safe_goal_text = sanitize_goal_text(&goal_text);
         let synthetic = format!("[autonomous] Continue working toward: {safe_goal_text}");
-        self.process_user_message(synthetic, Vec::new()).await?;
+        let turn_timeout =
+            Duration::from_secs(self.runtime.config.goals.autonomous_turn_timeout_secs);
+        match tokio::time::timeout(
+            turn_timeout,
+            self.process_user_message(synthetic, Vec::new()),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                tracing::warn!(
+                    goal_id,
+                    timeout_secs = turn_timeout.as_secs(),
+                    "autonomous: turn timed out"
+                );
+                self.finish_autonomous_session(
+                    AutonomousState::Stuck,
+                    &format!(
+                        "Turn timed out after {} seconds. \
+                         Use `/goal resume --auto` to retry.",
+                        turn_timeout.as_secs()
+                    ),
+                )
+                .await;
+                return Ok(());
+            }
+        }
 
         // Extract the last assistant message for stuck detection heuristic.
         let response_text = self
@@ -174,6 +200,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Build a [`GoalSupervisor`] from the current config, call it, and apply the verdict.
+    #[tracing::instrument(name = "core.agent.supervisor_check", skip_all, level = "debug")]
     async fn run_supervisor_check(&mut self, goal_id: &str, goal_text: &str) {
         // Clear any pending retry timestamp — we are running the check now.
         if let Some(s) = self.services.autonomous.session.as_mut() {
@@ -249,8 +276,7 @@ impl<C: Channel> Agent<C> {
         goal_text: &str,
         result: Result<SupervisorVerdict, SupervisorError>,
     ) {
-        // F2/M4: read from config, not hardcoded.
-        let max_supervisor_fails = self.runtime.config.goals.max_stuck_count;
+        let max_supervisor_fails = self.runtime.config.goals.max_supervisor_fail_count;
 
         match result {
             Ok(verdict) => {
@@ -528,5 +554,19 @@ mod tests {
     fn backoff_limit_one_fires_immediately() {
         let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
         assert!(apply_supervisor_backoff(&mut s, 1));
+    }
+
+    #[test]
+    fn backoff_limit_zero_fires_immediately() {
+        // limit=0 means every failure should trigger a pause.
+        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        assert!(apply_supervisor_backoff(&mut s, 0));
+    }
+
+    #[test]
+    fn backoff_state_is_running_below_limit() {
+        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        apply_supervisor_backoff(&mut s, 5);
+        assert_eq!(s.state, AutonomousState::Running);
     }
 }

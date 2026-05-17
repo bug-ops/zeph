@@ -336,6 +336,14 @@ fn default_autonomous_turn_delay_ms() -> u64 {
     500
 }
 
+fn default_autonomous_turn_timeout_secs() -> u64 {
+    300
+}
+
+fn default_max_supervisor_fail_count() -> u32 {
+    3
+}
+
 /// Long-horizon goal lifecycle configuration (`[goals]` TOML section).
 ///
 /// When enabled, the agent tracks a single active goal across turns, injecting an
@@ -395,6 +403,14 @@ pub struct GoalConfig {
     /// Delay in milliseconds between autonomous turns to avoid busy-looping. Default: `500`.
     #[serde(default = "default_autonomous_turn_delay_ms")]
     pub autonomous_turn_delay_ms: u64,
+    /// Maximum wall-clock time in seconds for a single autonomous LLM turn before it is
+    /// cancelled and the session transitions to `Stuck`. Default: `300` (5 minutes).
+    #[serde(default = "default_autonomous_turn_timeout_secs")]
+    pub autonomous_turn_timeout_secs: u64,
+    /// Maximum consecutive supervisor verification failures before the session is paused.
+    /// Default: `3`.
+    #[serde(default = "default_max_supervisor_fail_count")]
+    pub max_supervisor_fail_count: u32,
 }
 
 impl Default for GoalConfig {
@@ -412,6 +428,8 @@ impl Default for GoalConfig {
             supervisor_timeout_secs: default_supervisor_timeout_secs(),
             max_stuck_count: default_max_stuck_count(),
             autonomous_turn_delay_ms: default_autonomous_turn_delay_ms(),
+            autonomous_turn_timeout_secs: default_autonomous_turn_timeout_secs(),
+            max_supervisor_fail_count: default_max_supervisor_fail_count(),
         }
     }
 }
@@ -674,5 +692,31 @@ mod tests {
         let toml_str = "auto_consolidate_min_window = 10";
         let cfg: FocusConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.auto_consolidate_min_window, 10);
+    }
+
+    #[test]
+    fn goal_config_new_field_defaults() {
+        let cfg = GoalConfig::default();
+        assert_eq!(cfg.autonomous_turn_timeout_secs, 300);
+        assert_eq!(cfg.max_supervisor_fail_count, 3);
+    }
+
+    #[test]
+    fn goal_config_new_fields_deserialize() {
+        let toml_str = r#"
+            autonomous_turn_timeout_secs = 120
+            max_supervisor_fail_count = 5
+        "#;
+        let cfg: GoalConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.autonomous_turn_timeout_secs, 120);
+        assert_eq!(cfg.max_supervisor_fail_count, 5);
+    }
+
+    #[test]
+    fn goal_config_omitted_new_fields_use_defaults() {
+        let toml_str = "enabled = true";
+        let cfg: GoalConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.autonomous_turn_timeout_secs, 300);
+        assert_eq!(cfg.max_supervisor_fail_count, 3);
     }
 }

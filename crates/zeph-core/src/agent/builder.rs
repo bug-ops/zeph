@@ -2134,6 +2134,8 @@ impl<C: Channel> Agent<C> {
             verify_interval: goal_config.verify_interval,
             supervisor_timeout_secs: goal_config.supervisor_timeout_secs,
             max_stuck_count: goal_config.max_stuck_count,
+            autonomous_turn_timeout_secs: goal_config.autonomous_turn_timeout_secs,
+            max_supervisor_fail_count: goal_config.max_supervisor_fail_count,
         };
         // Reinitialize autonomous driver with the configured inter-turn delay.
         let turn_delay =

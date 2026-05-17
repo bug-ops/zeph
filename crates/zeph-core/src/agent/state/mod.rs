@@ -1018,6 +1018,10 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) supervisor_timeout_secs: u64,
     /// Consecutive stuck-detection threshold before aborting.
     pub(crate) max_stuck_count: u32,
+    /// Wall-clock timeout in seconds for a single autonomous LLM turn.
+    pub(crate) autonomous_turn_timeout_secs: u64,
+    /// Maximum consecutive supervisor verification failures before pausing the session.
+    pub(crate) max_supervisor_fail_count: u32,
 }
 
 impl Default for GoalRuntimeConfig {
@@ -1033,6 +1037,8 @@ impl Default for GoalRuntimeConfig {
             verify_interval: 5,
             supervisor_timeout_secs: 30,
             max_stuck_count: 3,
+            autonomous_turn_timeout_secs: 300,
+            max_supervisor_fail_count: 3,
         }
     }
 }
