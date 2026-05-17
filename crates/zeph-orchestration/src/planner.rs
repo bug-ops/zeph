@@ -125,6 +125,22 @@ impl<P: LlmProvider> LlmPlanner<P> {
     }
 }
 
+/// Serde helper: deserialize `Option<FailureStrategy>` from an optional string, mapping unknown
+/// values to `None` to preserve LLM-output tolerance.
+mod failure_strategy_opt {
+    use serde::{Deserialize, Deserializer};
+
+    use super::FailureStrategy;
+
+    pub fn deserialize<'de, D>(de: D) -> Result<Option<FailureStrategy>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: Option<String> = Option::deserialize(de)?;
+        Ok(s.and_then(|v| v.parse::<FailureStrategy>().ok()))
+    }
+}
+
 /// JSON schema for the LLM planner response. Internal parsing type.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PlannerResponse {
@@ -141,8 +157,8 @@ pub(crate) struct PlannedTask {
     pub agent_hint: Option<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
-    #[serde(default)]
-    pub failure_strategy: Option<String>,
+    #[serde(default, deserialize_with = "failure_strategy_opt::deserialize")]
+    pub failure_strategy: Option<FailureStrategy>,
     /// LLM-annotated execution mode. Absent or `null` defaults to `Parallel`.
     #[serde(default)]
     pub execution_mode: Option<ExecutionMode>,
@@ -401,17 +417,8 @@ fn convert_response(
             }
         }
 
-        if let Some(fs_str) = &pt.failure_strategy {
-            match fs_str.parse::<FailureStrategy>() {
-                Ok(fs) => node.failure_strategy = Some(fs),
-                Err(_) => {
-                    tracing::warn!(
-                        task_id = %pt.task_id,
-                        strategy = %fs_str,
-                        "invalid failure_strategy in planner output, using default"
-                    );
-                }
-            }
+        if let Some(fs) = pt.failure_strategy {
+            node.failure_strategy = Some(fs);
         }
 
         if let Some(mode) = pt.execution_mode {
@@ -636,20 +643,30 @@ mod tests {
 
     #[test]
     fn test_convert_invalid_failure_strategy_uses_none() {
-        let response = PlannerResponse {
-            tasks: vec![PlannedTask {
-                task_id: "task-a".to_string(),
-                title: "A".to_string(),
-                description: "d".to_string(),
-                agent_hint: None,
-                depends_on: vec![],
-                failure_strategy: Some("explode".to_string()),
-                execution_mode: None,
-                verify_criteria: None,
-            }],
-        };
+        // Unknown strategy strings must deserialize to None (LLM-output tolerance).
+        let json = r#"{"tasks":[
+            {"task_id":"task-a","title":"A","description":"d","depends_on":[],
+             "failure_strategy":"explode"}
+        ]}"#;
+        let response: PlannerResponse = serde_json::from_str(json).unwrap();
+        assert!(response.tasks[0].failure_strategy.is_none());
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();
         assert!(graph.tasks[0].failure_strategy.is_none());
+    }
+
+    #[test]
+    fn test_convert_valid_failure_strategy_is_set() {
+        let json = r#"{"tasks":[
+            {"task_id":"task-a","title":"A","description":"d","depends_on":[],
+             "failure_strategy":"skip"}
+        ]}"#;
+        let response: PlannerResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            response.tasks[0].failure_strategy,
+            Some(FailureStrategy::Skip)
+        );
+        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        assert_eq!(graph.tasks[0].failure_strategy, Some(FailureStrategy::Skip));
     }
 
     #[test]

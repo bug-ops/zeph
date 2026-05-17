@@ -222,7 +222,9 @@ impl fmt::Display for GraphStatus {
 /// assert_eq!("skip".parse::<FailureStrategy>().unwrap(), FailureStrategy::Skip);
 /// assert_eq!(FailureStrategy::Retry.to_string(), "retry");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureStrategy {
     /// Abort the entire graph and cancel all running tasks.
