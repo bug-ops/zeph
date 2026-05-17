@@ -256,10 +256,8 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         Ok(())
     }
 
-    // TODO(bench-runner): tool output is intentionally dropped here.
-    // The default trait impl calls self.send(&formatted), which would push tool output
-    // into responses and corrupt benchmark metrics. Override to no-op until Phase 2
-    // when tool calls are captured separately.
+    // Tool output is intentionally dropped here — pushing it via the default impl would corrupt
+    // benchmark metrics. Phase 2 capture is tracked in #4237.
     async fn send_tool_output(&mut self, _event: ToolOutputEvent) -> Result<(), ChannelError> {
         Ok(())
     }

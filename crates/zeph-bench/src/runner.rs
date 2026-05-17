@@ -424,8 +424,7 @@ impl BenchRunner {
         .entered();
         let prompt = scenario.primary_prompt()?.to_owned();
         let channel = BenchmarkChannel::new(vec![prompt]);
-        // TODO(multi-turn-history): when loaders emit multiple user turns, push each in
-        // order and seed assistant turns into the channel as captured-history.
+        // Multi-turn history seeding is deferred to #4236.
         let registry = SkillRegistry::empty();
 
         let system_content = match mode {

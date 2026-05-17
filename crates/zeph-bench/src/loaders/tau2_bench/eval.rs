@@ -14,9 +14,7 @@
 //! Only `requestor = "assistant"` gold actions are evaluated — user-simulator
 //! actions are out of scope for the single-turn MVP.
 //!
-//! # TODO
-//!
-//! TODO(#3417/D1): Phase 2 — implement upstream `EnvironmentEvaluator` (DB hash + `env_assertions`).
+//! Phase 2 `EnvironmentEvaluator` (DB hash + `env_assertions`) is tracked in #4234 (D1 of #3417).
 //! Current scoring is ACTION-only and matches upstream `evaluator_action.py`. To reproduce
 //! published numbers using `evaluation_type=ALL`, we additionally need:
 //!
@@ -120,8 +118,7 @@ impl Evaluator for TauBenchEvaluator {
         }
 
         let passed = matched == total;
-        // TODO(critic): append unmatched gold-action names to details for easier debugging.
-        // See critic-tau-bench-v2.md M4.
+        // Unmatched action names are already included via `unmatched={:?}` (#4235).
         let details = format!(
             "action_reward matched={}/{} recorded_calls={} unmatched={:?}",
             matched,

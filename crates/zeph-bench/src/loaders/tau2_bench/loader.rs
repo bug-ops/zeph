@@ -134,9 +134,7 @@ impl DatasetLoader for Tau2BenchLoader {
 /// This is a deliberate MVP simplification — the full tau2-bench benchmark uses
 /// a multi-turn user simulator. Here we collapse it into one upfront prompt.
 ///
-/// # TODO
-///
-/// TODO(#3417/D4): implement multi-turn user simulator. The current approach
+/// Multi-turn user simulation is deferred to #4233 (D4 of #3417). The current approach
 /// works for ACTION-only scoring because the agent sees all information at once,
 /// but will under-score tasks where the user simulator drives information
 /// exchange across turns.
