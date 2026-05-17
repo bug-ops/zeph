@@ -32,8 +32,21 @@ impl<C: Channel> Agent<C> {
         > = std::sync::Arc::new(
             zeph_agent_context::memory_backend::TokenCounterAdapter::new(token_counter),
         );
+        let compaction_provider = {
+            let name = self
+                .services
+                .memory
+                .compaction
+                .compaction_provider_name
+                .clone();
+            if name.is_empty() {
+                self.summary_or_primary_provider().clone()
+            } else {
+                self.resolve_background_provider(&name)
+            }
+        };
         SummarizationDeps {
-            provider: self.summary_or_primary_provider().clone(),
+            provider: compaction_provider,
             llm_timeout: std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds),
             token_counter: token_counter_adapter,
             structured_summaries: self.services.memory.compaction.structured_summaries,

@@ -47,10 +47,13 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
         let disambiguate =
             self.resolve_background_provider(&self.services.skill.disambiguate_provider_name);
+        let compaction = self
+            .resolve_background_provider(&self.services.memory.compaction.compaction_provider_name);
         zeph_agent_context::state::ProviderHandles {
             primary: self.provider.clone(),
             embedding: self.embedding_provider.clone(),
             disambiguate,
+            compaction,
         }
     }
 

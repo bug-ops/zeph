@@ -24,6 +24,14 @@ pub(crate) struct MemoryCompactionState {
     pub(crate) shutdown_summary_max_messages: usize,
     /// Timeout (in seconds) for the shutdown summary LLM call.
     pub(crate) shutdown_summary_timeout_secs: u64,
+    /// Provider name for shutdown summarization LLM calls.
+    ///
+    /// Empty string → fall back to the primary provider via `resolve_background_provider`.
+    pub(crate) shutdown_summary_provider: String,
+    /// Provider name for deferred tool-pair summarization (context compaction).
+    ///
+    /// Empty string → fall back to the primary provider via `resolve_background_provider`.
+    pub(crate) compaction_provider_name: String,
     /// When `true`, hard compaction uses `AnchoredSummary` (structured JSON) instead of
     /// free-form prose. Falls back to prose on any LLM or validation failure.
     pub(crate) structured_summaries: bool,
@@ -47,6 +55,8 @@ impl Default for MemoryCompactionState {
             shutdown_summary_min_messages: 4,
             shutdown_summary_max_messages: 20,
             shutdown_summary_timeout_secs: 30,
+            shutdown_summary_provider: String::new(),
+            compaction_provider_name: String::new(),
             structured_summaries: false,
             digest_config: crate::config::DigestConfig::default(),
             cached_session_digest: None,

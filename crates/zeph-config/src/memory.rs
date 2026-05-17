@@ -789,6 +789,30 @@ pub struct MemoryConfig {
     /// Default: `10`.
     #[serde(default = "default_shutdown_summary_timeout_secs")]
     pub shutdown_summary_timeout_secs: u64,
+    /// LLM provider used for shutdown summarization calls.
+    ///
+    /// Accepts a provider name from `[[llm.providers]]`. When empty, falls back to the primary
+    /// provider. Use a fast, cost-efficient model (e.g. `"fast"`) to minimise shutdown latency.
+    ///
+    /// Example:
+    /// ```toml
+    /// [memory]
+    /// shutdown_summary_provider = "fast"
+    /// ```
+    #[serde(default)]
+    pub shutdown_summary_provider: ProviderName,
+    /// LLM provider used for deferred tool-pair summarization (context compaction).
+    ///
+    /// Accepts a provider name from `[[llm.providers]]`. When empty, falls back to the primary
+    /// provider. A mid-tier model is usually sufficient for compaction summaries.
+    ///
+    /// Example:
+    /// ```toml
+    /// [memory]
+    /// compaction_provider = "fast"
+    /// ```
+    #[serde(default)]
+    pub compaction_provider: ProviderName,
     /// Use structured anchored summaries for context compaction.
     ///
     /// When enabled, hard compaction requests a JSON schema from the LLM
@@ -3669,5 +3693,53 @@ mod apex_mem_quality_gate_config_tests {
         let cfg: WriteQualityGateConfig = toml::from_str("").unwrap();
         assert!(!cfg.enabled, "empty TOML must produce default (disabled)");
         assert_eq!(cfg.recent_window, 32);
+    }
+
+    #[test]
+    fn memory_config_shutdown_summary_provider_toml_roundtrip() {
+        let toml = r#"
+            history_limit = 50
+            shutdown_summary_provider = "fast"
+        "#;
+        let cfg: MemoryConfig = toml::from_str(toml).expect("must deserialize");
+        assert_eq!(
+            cfg.shutdown_summary_provider.as_str(),
+            "fast",
+            "shutdown_summary_provider must deserialize from TOML"
+        );
+    }
+
+    #[test]
+    fn memory_config_shutdown_summary_provider_default_is_empty() {
+        let cfg: MemoryConfig = toml::from_str("history_limit = 50").expect("must deserialize");
+        assert_eq!(
+            cfg.shutdown_summary_provider.as_str(),
+            "",
+            "shutdown_summary_provider must default to empty string"
+        );
+    }
+
+    #[test]
+    fn memory_config_compaction_provider_toml_roundtrip() {
+        let toml = r#"
+            history_limit = 50
+            compaction_provider = "mid"
+        "#;
+        let cfg: MemoryConfig = toml::from_str(toml).expect("must deserialize");
+        assert_eq!(
+            cfg.compaction_provider.as_str(),
+            "mid",
+            "compaction_provider must deserialize from TOML"
+        );
+    }
+
+    #[test]
+    fn memory_config_compaction_provider_default_is_empty() {
+        let cfg: MemoryConfig = toml::from_str("history_limit = 50").expect("must deserialize");
+        assert_eq!(
+            cfg.compaction_provider.as_str(),
+            "",
+            "compaction_provider must default to empty string"
+        );
     }
 }

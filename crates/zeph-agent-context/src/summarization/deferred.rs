@@ -152,7 +152,7 @@ pub(crate) async fn maybe_summarize_tool_pair(
             metadata: MessageMetadata::default(),
         }];
         status.send_status("summarizing output...").await;
-        let chat_fut = providers.primary.chat(&msgs);
+        let chat_fut = providers.compaction.chat(&msgs);
         let summary = match tokio::time::timeout(llm_timeout, chat_fut).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {

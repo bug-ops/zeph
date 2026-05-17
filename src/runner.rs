@@ -2219,6 +2219,8 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.memory.shutdown_summary_max_messages,
         config.memory.shutdown_summary_timeout_secs,
     )
+    .with_shutdown_summary_provider(config.memory.shutdown_summary_provider.as_str().to_owned())
+    .with_compaction_provider(config.memory.compaction_provider.as_str().to_owned())
     .with_structured_summaries(config.memory.structured_summaries)
     .with_tool_call_cutoff(config.memory.tool_call_cutoff)
     .with_hybrid_search(config.skills.hybrid_search)

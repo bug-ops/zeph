@@ -392,6 +392,9 @@ impl<C: Channel> Agent<C> {
         &self,
         chat_messages: &[Message],
     ) -> Option<zeph_memory::StructuredSummary> {
+        let provider = self.resolve_background_provider(
+            &self.services.memory.compaction.shutdown_summary_provider,
+        );
         let timeout_dur = std::time::Duration::from_secs(
             self.services
                 .memory
@@ -400,8 +403,7 @@ impl<C: Channel> Agent<C> {
         );
         match tokio::time::timeout(
             timeout_dur,
-            self.provider
-                .chat_typed_erased::<zeph_memory::StructuredSummary>(chat_messages),
+            provider.chat_typed_erased::<zeph_memory::StructuredSummary>(chat_messages),
         )
         .await
         {
@@ -410,7 +412,7 @@ impl<C: Channel> Agent<C> {
                 tracing::warn!(
                     "shutdown summary: structured LLM call failed, falling back to plain: {e:#}"
                 );
-                self.plain_text_summary_fallback(chat_messages, timeout_dur)
+                self.plain_text_summary_fallback(&provider, chat_messages, timeout_dur)
                     .await
             }
             Err(_) => {
@@ -421,7 +423,7 @@ impl<C: Channel> Agent<C> {
                         .compaction
                         .shutdown_summary_timeout_secs
                 );
-                self.plain_text_summary_fallback(chat_messages, timeout_dur)
+                self.plain_text_summary_fallback(&provider, chat_messages, timeout_dur)
                     .await
             }
         }
@@ -429,10 +431,11 @@ impl<C: Channel> Agent<C> {
 
     async fn plain_text_summary_fallback(
         &self,
+        provider: &zeph_llm::any::AnyProvider,
         chat_messages: &[Message],
         timeout_dur: std::time::Duration,
     ) -> Option<zeph_memory::StructuredSummary> {
-        match tokio::time::timeout(timeout_dur, self.provider.chat(chat_messages)).await {
+        match tokio::time::timeout(timeout_dur, provider.chat(chat_messages)).await {
             Ok(Ok(plain)) => Some(zeph_memory::StructuredSummary {
                 summary: plain,
                 key_facts: vec![],

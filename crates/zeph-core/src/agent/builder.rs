@@ -161,6 +161,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set the provider name used for deferred tool-pair summarization (context compaction).
+    ///
+    /// Accepts a name from `[[llm.providers]]`. Empty string → fall back to the primary provider.
+    #[must_use]
+    pub fn with_compaction_provider(mut self, provider_name: impl Into<String>) -> Self {
+        self.services.memory.compaction.compaction_provider_name = provider_name.into();
+        self
+    }
+
     // ---- Memory Formatting ----
 
     /// Configure the memory snippet rendering format for context assembly (MM-F5, #3340).
@@ -269,6 +278,15 @@ impl<C: Channel> Agent<C> {
             .memory
             .compaction
             .shutdown_summary_timeout_secs = timeout_secs;
+        self
+    }
+
+    /// Set the provider name used for shutdown summarization LLM calls.
+    ///
+    /// Accepts a name from `[[llm.providers]]`. Empty string → fall back to the primary provider.
+    #[must_use]
+    pub fn with_shutdown_summary_provider(mut self, provider_name: impl Into<String>) -> Self {
+        self.services.memory.compaction.shutdown_summary_provider = provider_name.into();
         self
     }
 

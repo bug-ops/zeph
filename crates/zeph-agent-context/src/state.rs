@@ -370,7 +370,7 @@ impl ContextSummarizationView<'_> {
 /// Each handle is an `Arc`-backed clone, suitable for moving into spawned tasks
 /// or passing across async boundaries.
 pub struct ProviderHandles {
-    /// Primary LLM provider used for completions and compaction.
+    /// Primary LLM provider used for completions.
     pub primary: AnyProvider,
     /// Dedicated embedding provider.
     pub embedding: AnyProvider,
@@ -378,6 +378,10 @@ pub struct ProviderHandles {
     ///
     /// Falls back to `primary` when the `[skills] disambiguate_provider` config field is empty.
     pub disambiguate: AnyProvider,
+    /// Provider used for deferred tool-pair summarization (context compaction).
+    ///
+    /// Falls back to `primary` when the `[memory] compaction_provider` config field is empty.
+    pub compaction: AnyProvider,
 }
 
 /// Abstract status sink for emitting short progress strings to the channel.

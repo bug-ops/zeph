@@ -588,3 +588,104 @@ fn test_scheduled_task_injection_format() {
     assert!(text.starts_with(crate::agent::SCHEDULED_TASK_PREFIX));
     assert!(text.contains(prompt));
 }
+
+#[test]
+fn with_compaction_provider_builder_sets_field() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let agent =
+        Agent::new(provider, channel, registry, None, 5, executor).with_compaction_provider("fast");
+
+    assert_eq!(
+        agent.services.memory.compaction.compaction_provider_name, "fast",
+        "with_compaction_provider must store the provider name"
+    );
+}
+
+#[test]
+fn with_compaction_provider_empty_string_stores_empty() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let agent =
+        Agent::new(provider, channel, registry, None, 5, executor).with_compaction_provider("");
+
+    assert_eq!(
+        agent.services.memory.compaction.compaction_provider_name, "",
+        "empty compaction_provider_name must be stored as-is (triggers primary fallback)"
+    );
+}
+
+#[test]
+fn compaction_provider_name_default_is_empty() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    assert_eq!(
+        agent.services.memory.compaction.compaction_provider_name, "",
+        "compaction_provider_name must default to empty string"
+    );
+}
+
+#[test]
+fn with_shutdown_summary_provider_builder_sets_field() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let agent = Agent::new(provider, channel, registry, None, 5, executor)
+        .with_shutdown_summary_provider("quality");
+
+    assert_eq!(
+        agent.services.memory.compaction.shutdown_summary_provider, "quality",
+        "with_shutdown_summary_provider must store the provider name"
+    );
+}
+
+#[test]
+fn shutdown_summary_provider_default_is_empty() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    assert_eq!(
+        agent.services.memory.compaction.shutdown_summary_provider, "",
+        "shutdown_summary_provider must default to empty string"
+    );
+}
+
+#[test]
+fn providers_compaction_falls_back_to_primary_when_name_empty() {
+    use zeph_llm::LlmProvider as _;
+    use zeph_llm::mock::MockProvider;
+
+    let mut mock = MockProvider::default();
+    mock.name_override = Some("primary-mock".into());
+    let primary = AnyProvider::Mock(mock);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    // No with_compaction_provider call → name stays empty → falls back to primary.
+    let agent = Agent::new(primary, channel, registry, None, 5, executor);
+    let handles = agent.providers();
+
+    assert_eq!(
+        handles.compaction.name(),
+        "primary-mock",
+        "compaction must fall back to primary when compaction_provider_name is empty"
+    );
+}

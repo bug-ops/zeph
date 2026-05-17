@@ -256,6 +256,8 @@ impl Default for Config {
                 shutdown_summary_min_messages: 4,
                 shutdown_summary_max_messages: 20,
                 shutdown_summary_timeout_secs: 30,
+                shutdown_summary_provider: crate::providers::ProviderName::default(),
+                compaction_provider: crate::providers::ProviderName::default(),
                 structured_summaries: false,
                 tiers: TierConfig::default(),
                 admission: crate::memory::AdmissionConfig::default(),
