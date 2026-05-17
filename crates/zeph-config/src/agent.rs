@@ -703,10 +703,10 @@ mod tests {
 
     #[test]
     fn goal_config_new_fields_deserialize() {
-        let toml_str = r#"
+        let toml_str = r"
             autonomous_turn_timeout_secs = 120
             max_supervisor_fail_count = 5
-        "#;
+        ";
         let cfg: GoalConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.autonomous_turn_timeout_secs, 120);
         assert_eq!(cfg.max_supervisor_fail_count, 5);
