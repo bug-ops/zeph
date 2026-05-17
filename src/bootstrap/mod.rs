@@ -182,6 +182,8 @@ impl AppBuilder {
 
         config.resolve_secrets(vault.as_ref()).await?;
 
+        run_plugin_auto_updates(&config).await;
+
         let resolved_overlay =
             zeph_plugins::apply_plugin_config_overlays(&mut config, &plugins_dir())
                 .map_err(|e| BootstrapError::Provider(format!("plugin overlay merge: {e}")))?;
@@ -1792,6 +1794,61 @@ pub fn build_vault_provider(args: &VaultArgs) -> Option<Box<dyn VaultProvider>> 
             Some(Box::new(zeph_core::vault::ArcAgeVaultProvider(arc)))
         }
         _ => None,
+    }
+}
+
+/// Run `check_auto_updates` for all installed plugins with `auto_update = true`.
+///
+/// Called during [`AppBuilder::new`] before the plugin overlay and skill registry are built,
+/// so that any updated skills are available in the current session.
+///
+/// All failures are logged as warnings — this function never aborts startup.
+async fn run_plugin_auto_updates(config: &zeph_core::config::Config) {
+    use tracing::Instrument as _;
+    use zeph_plugins::{AutoUpdateStatus, PluginManager};
+
+    let mgr = PluginManager::new(
+        plugins_dir(),
+        managed_skills_dir(),
+        config.mcp.allowed_commands.clone(),
+        config.tools.shell.allowed_commands.clone(),
+    );
+
+    let results = tokio::time::timeout(
+        std::time::Duration::from_mins(2),
+        mgr.check_auto_updates()
+            .instrument(tracing::info_span!("bootstrap.auto_update_plugins")),
+    )
+    .await;
+
+    let Ok(results) = results else {
+        tracing::warn!("plugin auto-update check timed out after 120s");
+        return;
+    };
+
+    for result in &results {
+        match &result.status {
+            AutoUpdateStatus::Updated {
+                old_version,
+                new_version,
+            } => {
+                tracing::info!(
+                    plugin = %result.name,
+                    %old_version,
+                    %new_version,
+                    "plugin auto-updated"
+                );
+            }
+            AutoUpdateStatus::UpToDate => {
+                tracing::debug!(plugin = %result.name, "plugin auto-update: already up to date");
+            }
+            AutoUpdateStatus::NoSource => {
+                tracing::debug!(plugin = %result.name, "plugin auto-update: no source URL, skipping");
+            }
+            AutoUpdateStatus::Failed(reason) => {
+                tracing::warn!(plugin = %result.name, %reason, "plugin auto-update failed");
+            }
+        }
     }
 }
 

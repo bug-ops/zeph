@@ -70,6 +70,59 @@ pub struct InstalledPlugin {
     pub path: PathBuf,
     /// Skill names provided by this plugin (collected at list time to avoid re-reading manifests).
     pub skill_names: Vec<String>,
+    /// Whether automatic updates are enabled for this plugin.
+    ///
+    /// Mirrors `plugin.auto_update` from the installed manifest. Populated at list time so
+    /// [`PluginManager::check_auto_updates`] can filter candidates without re-reading manifests.
+    pub auto_update: bool,
+}
+
+/// Install-time source metadata persisted as `.plugin-source.toml` alongside `.plugin.toml`.
+///
+/// Separating this from [`crate::manifest::PluginMeta`] keeps the author-facing `plugin.toml`
+/// schema clean: plugin authors never set these fields; they are written exclusively by
+/// [`PluginManager::add_remote`] and read by [`PluginManager::check_auto_updates`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginSource {
+    /// URL from which the plugin archive was originally downloaded.
+    ///
+    /// `None` for plugins installed from local paths via [`PluginManager::add`].
+    pub url: Option<String>,
+    /// Lowercase hex SHA-256 of the installed archive bytes.
+    ///
+    /// Used by [`PluginManager::check_auto_updates`] to skip reinstalls when the remote
+    /// archive has not changed.
+    pub sha256: Option<String>,
+}
+
+/// Outcome of a single auto-update attempt.
+///
+/// One `AutoUpdateResult` is returned per plugin that had `auto_update = true`
+/// when [`PluginManager::check_auto_updates`] ran.
+#[derive(Debug)]
+pub struct AutoUpdateResult {
+    /// Plugin name.
+    pub name: String,
+    /// Specific outcome for this plugin.
+    pub status: AutoUpdateStatus,
+}
+
+/// Status of an individual auto-update attempt.
+#[derive(Debug)]
+pub enum AutoUpdateStatus {
+    /// Plugin was successfully updated.
+    Updated {
+        /// Version before the update.
+        old_version: String,
+        /// Version after the update.
+        new_version: String,
+    },
+    /// Remote archive SHA-256 matches the installed copy — no action taken.
+    UpToDate,
+    /// Plugin has no persisted source URL (installed from a local path).
+    NoSource,
+    /// Update failed; plugin remains at its current version.
+    Failed(String),
 }
 
 /// Manages plugin lifecycle: install, remove, list.
@@ -329,6 +382,9 @@ impl PluginManager {
         let span = tracing::info_span!("plugins.manager.add_remote", %url);
         let _guard = span.enter();
 
+        // Reject non-HTTP(S) schemes to prevent SSRF via file:// or other transports.
+        validate_url_scheme(url)?;
+
         let timeout = std::time::Duration::from_secs(self.download_timeout_secs);
 
         let response = tokio::time::timeout(timeout, reqwest::get(url))
@@ -374,13 +430,46 @@ impl PluginManager {
             tracing::warn!(url, "installing remote plugin without integrity check");
         }
 
+        // Compute the actual SHA-256 for source persistence (even when expected_sha256 is None).
+        let actual_sha256 = crate::integrity::sha256_hex(&bytes);
+
         // Extract archive to a temporary directory and delegate to `add`.
         let tmp = tempfile::tempdir().map_err(|e| PluginError::Io {
             path: std::path::PathBuf::from(url),
             source: e,
         })?;
         extract_archive(&bytes, tmp.path(), url)?;
-        self.add(tmp.path().to_str().unwrap_or(url))
+        let result = self.add(tmp.path().to_str().unwrap_or(url))?;
+
+        // Persist source metadata so check_auto_updates can re-fetch this plugin.
+        let source = PluginSource {
+            url: Some(url.to_owned()),
+            sha256: Some(actual_sha256),
+        };
+        let source_path = self
+            .plugins_dir
+            .join(&result.name)
+            .join(".plugin-source.toml");
+        match toml::to_string(&source) {
+            Ok(toml_str) => {
+                if let Err(e) = std::fs::write(&source_path, toml_str) {
+                    tracing::warn!(
+                        plugin = %result.name,
+                        error = %e,
+                        "failed to persist plugin source metadata; auto_update will be skipped"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    plugin = %result.name,
+                    error = %e,
+                    "failed to serialize plugin source metadata; auto_update will be skipped"
+                );
+            }
+        }
+
+        Ok(result)
     }
 
     /// Remove an installed plugin by name.
@@ -470,12 +559,14 @@ impl PluginManager {
                 continue;
             };
             let skill_names = collect_skill_names(&path, &manifest);
+            let auto_update = manifest.plugin.auto_update;
             plugins.push(InstalledPlugin {
                 name: manifest.plugin.name,
                 version: manifest.plugin.version,
                 description: manifest.plugin.description,
                 path,
                 skill_names,
+                auto_update,
             });
         }
 
@@ -520,6 +611,217 @@ impl PluginManager {
             }
         }
         Ok(dirs)
+    }
+
+    /// Check and apply updates for all installed plugins with `auto_update = true`.
+    ///
+    /// For each eligible plugin the method:
+    /// 1. Reads `.plugin-source.toml` to retrieve the original download URL and SHA-256.
+    /// 2. Downloads the archive from that URL.
+    /// 3. Compares the downloaded archive's SHA-256 with the stored value.
+    /// 4. If the hashes differ, stages the new version in a temporary directory adjacent to the
+    ///    plugin root, then atomically swaps via `rename` — an interrupted update leaves the
+    ///    plugin intact rather than half-deleted.
+    /// 5. Returns a result per plugin; failures are warnings and never abort startup.
+    ///
+    /// Plugins installed from local paths (no `.plugin-source.toml` or no URL) are skipped
+    /// with [`AutoUpdateStatus::NoSource`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use zeph_plugins::PluginManager;
+    /// # async fn run() {
+    /// let mgr = PluginManager::new(
+    ///     "/tmp/plugins".into(),
+    ///     "/tmp/managed".into(),
+    ///     vec![],
+    ///     vec![],
+    /// );
+    /// let results = mgr.check_auto_updates().await;
+    /// for r in &results {
+    ///     println!("{}: {:?}", r.name, r.status);
+    /// }
+    /// # }
+    /// ```
+    pub async fn check_auto_updates(&self) -> Vec<AutoUpdateResult> {
+        use futures::stream::{self, StreamExt as _};
+        use tracing::Instrument as _;
+
+        async {
+            let candidates = match self.list_installed() {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::warn!(error = %e, "check_auto_updates: failed to list installed plugins");
+                    return Vec::new();
+                }
+            };
+
+            stream::iter(candidates.into_iter().filter(|p| p.auto_update))
+                .map(|plugin| async move {
+                    let status = self.update_one_plugin(&plugin).await;
+                    AutoUpdateResult {
+                        name: plugin.name,
+                        status,
+                    }
+                })
+                .buffer_unordered(4)
+                .collect()
+                .await
+        }
+        .instrument(tracing::info_span!("plugins.manager.check_auto_updates"))
+        .await
+    }
+
+    /// Attempt to update a single plugin. Returns the update status without aborting on error.
+    async fn update_one_plugin(&self, plugin: &InstalledPlugin) -> AutoUpdateStatus {
+        let source_path = plugin.path.join(".plugin-source.toml");
+        let Some(source) = read_plugin_source(&source_path) else {
+            return AutoUpdateStatus::NoSource;
+        };
+
+        let (Some(url), Some(stored_sha256)) = (source.url, source.sha256) else {
+            return AutoUpdateStatus::NoSource;
+        };
+
+        // Reject non-HTTP(S) schemes to prevent SSRF via file:// or other transports.
+        if let Err(e) = validate_url_scheme(&url) {
+            tracing::warn!(plugin = %plugin.name, %url, error = %e, "auto-update: invalid URL scheme");
+            return AutoUpdateStatus::Failed(format!("invalid URL scheme: {e}"));
+        }
+
+        tracing::debug!(plugin = %plugin.name, %url, "checking for updates");
+
+        let timeout = std::time::Duration::from_secs(self.download_timeout_secs);
+
+        let bytes = match self.download_archive(&url, timeout).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(plugin = %plugin.name, %url, error = %e, "auto-update download failed");
+                return AutoUpdateStatus::Failed(e);
+            }
+        };
+
+        let new_sha256 = crate::integrity::sha256_hex(&bytes);
+        if new_sha256 == stored_sha256 {
+            tracing::debug!(plugin = %plugin.name, "auto-update: archive unchanged (SHA-256 match)");
+            return AutoUpdateStatus::UpToDate;
+        }
+
+        tracing::info!(
+            plugin = %plugin.name,
+            old_sha256 = %stored_sha256,
+            new_sha256 = %new_sha256,
+            "auto-update: new archive detected, applying update"
+        );
+
+        let old_version = plugin.version.clone();
+
+        // Extract to a staging directory adjacent to the plugin root.
+        let staging = self.plugins_dir.join(format!(".staging-{}", plugin.name));
+        let backup = self.plugins_dir.join(format!(".backup-{}", plugin.name));
+        let dest = plugin.path.clone();
+        let plugin_name = plugin.name.clone();
+
+        // Offload all blocking filesystem operations to a dedicated thread.
+        let mcp_allowed = self.mcp_allowed_commands.clone();
+        let managed_skills_dir = self.managed_skills_dir.clone();
+        let plugins_dir = self.plugins_dir.clone();
+        let integrity_registry_path = self.integrity_registry_path.clone();
+        let url_clone = url.clone();
+        let base_allowed_commands = self.base_allowed_commands.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            apply_staged_update(
+                &bytes,
+                &url_clone,
+                &dest,
+                &staging,
+                &backup,
+                &plugin_name,
+                &mcp_allowed,
+                &managed_skills_dir,
+                &plugins_dir,
+                &integrity_registry_path,
+                &base_allowed_commands,
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(plugin = %plugin.name, error = %e, "auto-update: staged swap failed, original preserved");
+                return AutoUpdateStatus::Failed(e);
+            }
+            Err(e) => {
+                tracing::warn!(plugin = %plugin.name, error = %e, "auto-update: blocking task panicked");
+                return AutoUpdateStatus::Failed(format!("update task panicked: {e}"));
+            }
+        }
+
+        // Persist updated source metadata (new SHA-256).
+        let new_source = PluginSource {
+            url: Some(url),
+            sha256: Some(new_sha256),
+        };
+        let source_dest = plugin.path.join(".plugin-source.toml");
+        if let Ok(toml_str) = toml::to_string(&new_source) {
+            let _ = std::fs::write(&source_dest, toml_str);
+        }
+
+        // Read the new version from the updated manifest.
+        let new_version = std::fs::read_to_string(plugin.path.join(".plugin.toml"))
+            .ok()
+            .and_then(|s| toml::from_str::<crate::manifest::PluginManifest>(&s).ok())
+            .map_or_else(|| old_version.clone(), |m| m.plugin.version);
+
+        tracing::info!(
+            plugin = %plugin.name,
+            %old_version,
+            %new_version,
+            "auto-update: plugin updated successfully"
+        );
+
+        AutoUpdateStatus::Updated {
+            old_version,
+            new_version,
+        }
+    }
+
+    /// Download an archive from `url` respecting the per-phase timeout.
+    async fn download_archive(
+        &self,
+        url: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<u8>, String> {
+        let response = tokio::time::timeout(timeout, reqwest::get(url))
+            .await
+            .map_err(|_| format!("download timed out after {}s", timeout.as_secs()))?
+            .map_err(|e| e.to_string())?;
+
+        if !response.status().is_success() {
+            return Err(format!("HTTP {}", response.status()));
+        }
+
+        let raw = tokio::time::timeout(timeout, response.bytes())
+            .await
+            .map_err(|_| format!("body read timed out after {}s", timeout.as_secs()))?
+            .map_err(|e| format!("failed to read body: {e}"))?;
+
+        Ok(raw.to_vec())
+    }
+
+    /// Like [`Self::check_skill_conflicts`] but skips the plugin currently being updated.
+    ///
+    /// Used by the auto-update path to validate the staged replacement without false conflicts
+    /// with the plugin's own currently-installed skills (which are about to be replaced).
+    pub(crate) fn check_skill_conflicts_for_update(
+        &self,
+        skill_names: &[String],
+        this_plugin: &str,
+    ) -> Result<(), PluginError> {
+        self.check_skill_conflicts(skill_names, this_plugin)
     }
 
     fn check_skill_conflicts(
@@ -573,6 +875,176 @@ impl PluginManager {
         }
         Ok(())
     }
+}
+
+/// Read `.plugin-source.toml` from `path` and return it, or `None` on any failure.
+///
+/// Failures are logged as debug — missing sidecar is normal for local-install plugins.
+fn read_plugin_source(path: &std::path::Path) -> Option<PluginSource> {
+    let text = std::fs::read_to_string(path).ok()?;
+    match toml::from_str::<PluginSource>(&text) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::debug!(path = %path.display(), error = %e, "cannot parse .plugin-source.toml");
+            None
+        }
+    }
+}
+
+/// Validate that `url` uses an `http` or `https` scheme.
+///
+/// Rejects `file://`, `data:`, and any other scheme that could be used for SSRF
+/// or local filesystem exfiltration when fetching plugin archives.
+///
+/// # Errors
+///
+/// Returns [`PluginError::InvalidSource`] when the URL is unparseable or uses a
+/// disallowed scheme.
+pub(crate) fn validate_url_scheme(url: &str) -> Result<(), PluginError> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| PluginError::InvalidSource {
+        path: url.to_owned(),
+        reason: "URL is not valid".to_owned(),
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(PluginError::InvalidSource {
+            path: url.to_owned(),
+            reason: format!(
+                "URL scheme {:?} is not allowed; only http and https are permitted",
+                parsed.scheme()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Extract archive to `staging`, run all security validations, then swap `staging` with `dest`.
+///
+/// Strategy: extract → staging, validate, rename dest → backup, rename staging → dest, delete
+/// backup. If any step after the extract fails, staging is removed and backup (if present) is
+/// restored so the installed plugin is never left in a partial state.
+///
+/// Note: `rename(2)` is atomic only within the same filesystem. Across different mounts this
+/// returns `EXDEV`; the backup is restored in that case. For most deployments `plugins_dir` and
+/// the temp path share the same mount, so `EXDEV` is unlikely in practice.
+///
+/// # Errors
+///
+/// Returns a human-readable error string on any failure. The caller logs this as a warning.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_staged_update(
+    bytes: &[u8],
+    url: &str,
+    dest: &std::path::Path,
+    staging: &std::path::Path,
+    backup: &std::path::Path,
+    installed_plugin_name: &str,
+    mcp_allowed_commands: &[String],
+    managed_skills_dir: &std::path::Path,
+    plugins_dir: &std::path::Path,
+    integrity_registry_path: &std::path::Path,
+    base_allowed_commands: &[String],
+) -> Result<(), String> {
+    // Clean up any leftover staging/backup dirs from a previous interrupted attempt.
+    let _ = std::fs::remove_dir_all(staging);
+    let _ = std::fs::remove_dir_all(backup);
+
+    std::fs::create_dir_all(staging).map_err(|e| format!("failed to create staging dir: {e}"))?;
+
+    // Extract archive into staging directory (with tar-slip protection).
+    extract_archive_safe(bytes, staging, url).map_err(|e| e.to_string())?;
+
+    // Parse and validate the staged manifest before touching the installed plugin.
+    let staging_manifest = staging.join("plugin.toml");
+    if !staging_manifest.exists() {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err("extracted archive does not contain plugin.toml".into());
+    }
+    let manifest_str = std::fs::read_to_string(&staging_manifest)
+        .map_err(|e| format!("cannot read staged plugin.toml: {e}"))?;
+    let manifest: crate::manifest::PluginManifest =
+        toml::from_str(&manifest_str).map_err(|e| format!("staged plugin.toml invalid: {e}"))?;
+
+    // Reject name changes: an update must not rename the plugin.
+    if let Err(e) = validate_plugin_name(&manifest.plugin.name) {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(format!("staged manifest has invalid plugin name: {e}"));
+    }
+    if manifest.plugin.name != installed_plugin_name {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(format!(
+            "staged manifest changes plugin name from {:?} to {:?}; update rejected",
+            installed_plugin_name, manifest.plugin.name
+        ));
+    }
+
+    // Run the full validation pipeline — same checks as `add()`.
+    if let Err(e) = validate_overlay_keys(&manifest.config) {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(format!(
+            "staged manifest failed config overlay validation: {e}"
+        ));
+    }
+    if let Err(e) = validate_mcp_commands(&manifest.mcp.servers, mcp_allowed_commands) {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(format!(
+            "staged manifest failed MCP command validation: {e}"
+        ));
+    }
+
+    // Skill conflict check: build a temporary manager against the staging tree.
+    let tmp_mgr = crate::manager::PluginManager::new(
+        plugins_dir.to_path_buf(),
+        managed_skills_dir.to_path_buf(),
+        mcp_allowed_commands.to_vec(),
+        base_allowed_commands.to_vec(),
+    );
+    let staged_skill_names = collect_skill_names(staging, &manifest);
+    if let Err(e) =
+        tmp_mgr.check_skill_conflicts_for_update(&staged_skill_names, installed_plugin_name)
+    {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(format!("staged manifest failed skill conflict check: {e}"));
+    }
+
+    // Advisory SKILL.md scan (non-blocking — logs warnings only).
+    scan_skill_entries(staging, &manifest.skills, &manifest.plugin.name);
+
+    // Write the normalised .plugin.toml and strip bundled markers.
+    let installed_manifest_toml =
+        toml::to_string(&manifest).map_err(|e| format!("cannot serialize staged manifest: {e}"))?;
+    std::fs::write(staging.join(".plugin.toml"), &installed_manifest_toml)
+        .map_err(|e| format!("cannot write staged .plugin.toml: {e}"))?;
+    strip_bundled_markers(staging);
+
+    // Atomic swap: rename dest → backup, rename staging → dest.
+    if dest.exists() {
+        std::fs::rename(dest, backup)
+            .map_err(|e| format!("failed to rename plugin dir to backup: {e}"))?;
+    }
+    if let Err(e) = std::fs::rename(staging, dest) {
+        // Restore from backup.
+        if backup.exists() {
+            let _ = std::fs::rename(backup, dest);
+        }
+        return Err(format!("failed to rename staging dir to dest: {e}"));
+    }
+
+    // Update integrity registry for the new manifest.
+    let installed_manifest_path = dest.join(".plugin.toml");
+    let mut registry = crate::integrity::IntegrityRegistry::load(integrity_registry_path);
+    if let Err(e) = registry
+        .record(&manifest.plugin.name, &installed_manifest_path)
+        .and_then(|()| registry.save(integrity_registry_path))
+    {
+        tracing::warn!(
+            plugin = %manifest.plugin.name,
+            error = %e,
+            "auto-update: failed to update integrity registry after swap"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(backup);
+    Ok(())
 }
 
 /// Validate that a plugin name is a safe identifier: `[a-z][a-z0-9-]*`, max 64 chars.
@@ -830,6 +1302,84 @@ fn extract_archive(bytes: &[u8], dest: &Path, url: &str) -> Result<(), PluginErr
             path: url.to_owned(),
             reason: format!("tar.gz extraction failed: {e}"),
         })
+}
+
+/// Extract a `.tar.gz` archive with tar-slip protection.
+///
+/// Unlike [`extract_archive`], this function rejects:
+/// - Absolute paths inside the archive.
+/// - Entries with `..` path components.
+/// - Symbolic link entries (prevent symlink-based traversal).
+///
+/// # Errors
+///
+/// Returns [`PluginError::InvalidSource`] when the archive format is unrecognised, extraction
+/// fails, or a dangerous entry is found.
+fn extract_archive_safe(bytes: &[u8], dest: &Path, url: &str) -> Result<(), PluginError> {
+    if !bytes.starts_with(&[0x1f, 0x8b]) {
+        return Err(PluginError::InvalidSource {
+            path: url.to_owned(),
+            reason: "unsupported archive format: only .tar.gz is supported".to_owned(),
+        });
+    }
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(gz);
+    let entries = archive.entries().map_err(|e| PluginError::InvalidSource {
+        path: url.to_owned(),
+        reason: format!("cannot read tar entries: {e}"),
+    })?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| PluginError::InvalidSource {
+            path: url.to_owned(),
+            reason: format!("tar entry error: {e}"),
+        })?;
+        // Clone path display string early to avoid borrow conflicts with unpack_in.
+        let entry_path_display = entry
+            .path()
+            .map_or_else(|_| "<invalid path>".to_owned(), |p| p.display().to_string());
+        {
+            let entry_path = entry.path().map_err(|e| PluginError::InvalidSource {
+                path: url.to_owned(),
+                reason: format!("invalid entry path: {e}"),
+            })?;
+            // Reject absolute paths.
+            if entry_path.is_absolute() {
+                return Err(PluginError::InvalidSource {
+                    path: url.to_owned(),
+                    reason: format!("archive contains absolute path: {}", entry_path.display()),
+                });
+            }
+            // Reject path traversal via `..`.
+            if entry_path
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+            {
+                return Err(PluginError::InvalidSource {
+                    path: url.to_owned(),
+                    reason: format!(
+                        "archive contains path traversal component: {}",
+                        entry_path.display()
+                    ),
+                });
+            }
+        }
+        // Reject symbolic links to prevent symlink-based traversal.
+        if entry.header().entry_type().is_symlink() {
+            return Err(PluginError::InvalidSource {
+                path: url.to_owned(),
+                reason: format!(
+                    "archive contains a symlink entry: {entry_path_display}; symlinks are not permitted"
+                ),
+            });
+        }
+        entry
+            .unpack_in(dest)
+            .map_err(|e| PluginError::InvalidSource {
+                path: url.to_owned(),
+                reason: format!("tar extraction failed for {entry_path_display}: {e}"),
+            })?;
+    }
+    Ok(())
 }
 
 /// Walk the plugin tree and delete every `.bundled` marker file.
@@ -1797,5 +2347,561 @@ path = "skills/no-skill-md"
             matches!(err, PluginError::IntegrityCheckFailed { .. }),
             "wrong hash must produce IntegrityCheckFailed, got {err:?}"
         );
+    }
+
+    // --- auto_update and PluginSource tests ---
+
+    #[tokio::test]
+    async fn add_remote_persists_plugin_source_sidecar() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        write_plugin(
+            &source,
+            "src-plugin",
+            &simple_manifest("src-plugin", "src-skill"),
+            &[("src-skill", "body")],
+        );
+        let archive = build_tar_gz(&source);
+        let expected_hash = crate::integrity::sha256_hex(&archive);
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
+        let url = format!("{}/src-plugin.tar.gz", mock_server.uri());
+        mgr.add_remote(&url, Some(&expected_hash)).await.unwrap();
+
+        let sidecar = plugins_dir.join("src-plugin").join(".plugin-source.toml");
+        assert!(
+            sidecar.exists(),
+            ".plugin-source.toml must be written after add_remote"
+        );
+
+        let parsed: PluginSource =
+            toml::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(parsed.url.as_deref(), Some(url.as_str()));
+        assert_eq!(parsed.sha256.as_deref(), Some(expected_hash.as_str()));
+    }
+
+    #[test]
+    fn list_installed_exposes_auto_update_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "auto-update-plugin"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(
+            &source,
+            "auto-update-plugin",
+            manifest,
+            &[("my-skill", "body")],
+        );
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        mgr.add(source.to_str().unwrap()).unwrap();
+
+        let installed = mgr.list_installed().unwrap();
+        assert_eq!(installed.len(), 1);
+        assert!(
+            installed[0].auto_update,
+            "InstalledPlugin.auto_update must reflect manifest auto_update = true"
+        );
+    }
+
+    #[test]
+    fn list_installed_auto_update_defaults_to_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        write_plugin(
+            &source,
+            "no-update-plugin",
+            &simple_manifest("no-update-plugin", "skill-a"),
+            &[("skill-a", "body")],
+        );
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        mgr.add(source.to_str().unwrap()).unwrap();
+
+        let installed = mgr.list_installed().unwrap();
+        assert!(
+            !installed[0].auto_update,
+            "auto_update must default to false"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_auto_updates_skips_local_installs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "local-autoupdate"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(
+            &source,
+            "local-autoupdate",
+            manifest,
+            &[("my-skill", "body")],
+        );
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        mgr.add(source.to_str().unwrap()).unwrap();
+
+        // No .plugin-source.toml is written by `add()` — only by `add_remote()`.
+        let results = mgr.check_auto_updates().await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(results[0].status, AutoUpdateStatus::NoSource),
+            "local-installed plugin must return NoSource, got {:?}",
+            results[0].status
+        );
+    }
+
+    #[tokio::test]
+    async fn check_auto_updates_up_to_date_when_sha256_unchanged() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "up-to-date-plugin"
+version = "0.2.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(
+            &source,
+            "up-to-date-plugin",
+            manifest,
+            &[("my-skill", "body")],
+        );
+        let archive = build_tar_gz(&source);
+        let hash = crate::integrity::sha256_hex(&archive);
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive.clone())
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .expect(2) // once for install, once for check
+            .mount(&mock_server)
+            .await;
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        let url = format!("{}/plugin.tar.gz", mock_server.uri());
+        mgr.add_remote(&url, Some(&hash)).await.unwrap();
+
+        let results = mgr.check_auto_updates().await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(results[0].status, AutoUpdateStatus::UpToDate),
+            "identical archive must yield UpToDate, got {:?}",
+            results[0].status
+        );
+    }
+
+    #[tokio::test]
+    async fn check_auto_updates_applies_update_when_archive_changed() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+
+        // Build v0.1.0 archive.
+        let src_v1 = tmp.path().join("src-v1");
+        let manifest_v1 = r#"[plugin]
+name = "update-test"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(
+            &src_v1,
+            "update-test",
+            manifest_v1,
+            &[("my-skill", "v1 body")],
+        );
+        let archive_v1 = build_tar_gz(&src_v1);
+        let hash_v1 = crate::integrity::sha256_hex(&archive_v1);
+
+        // Build v0.2.0 archive.
+        let src_v2 = tmp.path().join("src-v2");
+        let manifest_v2 = r#"[plugin]
+name = "update-test"
+version = "0.2.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(
+            &src_v2,
+            "update-test",
+            manifest_v2,
+            &[("my-skill", "v2 body")],
+        );
+        let archive_v2 = build_tar_gz(&src_v2);
+
+        let mock_server = MockServer::start().await;
+        // First call: install (serves v1).
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive_v1)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        // Second call: auto-update check (serves v2).
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive_v2)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let url = format!("{}/plugin.tar.gz", mock_server.uri());
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
+        mgr.add_remote(&url, Some(&hash_v1)).await.unwrap();
+
+        let results = mgr.check_auto_updates().await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(
+                &results[0].status,
+                AutoUpdateStatus::Updated { old_version, new_version }
+                if old_version == "0.1.0" && new_version == "0.2.0"
+            ),
+            "changed archive must yield Updated(0.1.0 → 0.2.0), got {:?}",
+            results[0].status
+        );
+
+        // Installed version must reflect v0.2.0.
+        let installed = mgr.list_installed().unwrap();
+        assert_eq!(installed[0].version, "0.2.0");
+    }
+
+    #[tokio::test]
+    async fn check_auto_updates_returns_failed_on_http_error() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "fail-update"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(&source, "fail-update", manifest, &[("my-skill", "body")]);
+        let archive = build_tar_gz(&source);
+        let hash = crate::integrity::sha256_hex(&archive);
+
+        let mock_server = MockServer::start().await;
+        // Install succeeds.
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        // Auto-update check returns 404.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        let url = format!("{}/fail-update.tar.gz", mock_server.uri());
+        mgr.add_remote(&url, Some(&hash)).await.unwrap();
+
+        let results = mgr.check_auto_updates().await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(results[0].status, AutoUpdateStatus::Failed(_)),
+            "HTTP 404 must yield Failed, got {:?}",
+            results[0].status
+        );
+
+        // Plugin must still be installed at the old version.
+        let installed = mgr.list_installed().unwrap();
+        assert_eq!(installed[0].version, "0.1.0");
+    }
+
+    #[tokio::test]
+    async fn check_auto_updates_skips_plugins_with_auto_update_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        write_plugin(
+            &source,
+            "no-autoupdate",
+            &simple_manifest("no-autoupdate", "skill-b"),
+            &[("skill-b", "body")],
+        );
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        mgr.add(source.to_str().unwrap()).unwrap();
+
+        // auto_update = false (default) — check_auto_updates must return an empty list.
+        let results = mgr.check_auto_updates().await;
+        assert!(
+            results.is_empty(),
+            "auto_update=false plugin must be excluded from results"
+        );
+    }
+
+    // --- Security tests ---
+
+    #[test]
+    fn validate_url_scheme_rejects_file_url() {
+        let err = validate_url_scheme("file:///etc/passwd").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { ref reason, .. } if reason.contains("file")),
+            "file:// URL must be rejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_url_scheme_rejects_data_url() {
+        let err = validate_url_scheme("data:text/plain,hello").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { .. }),
+            "data: URL must be rejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_url_scheme_accepts_https() {
+        assert!(validate_url_scheme("https://example.com/plugin.tar.gz").is_ok());
+    }
+
+    #[test]
+    fn validate_url_scheme_accepts_http() {
+        assert!(validate_url_scheme("http://example.com/plugin.tar.gz").is_ok());
+    }
+
+    #[test]
+    fn validate_url_scheme_rejects_invalid_url() {
+        let err = validate_url_scheme("not a url at all").unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { .. }),
+            "invalid URL must return InvalidSource, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_remote_rejects_file_scheme_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
+        let err = mgr
+            .add_remote("file:///etc/passwd", None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { .. }),
+            "add_remote must reject file:// URL, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_auto_updates_rejects_file_scheme_in_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let manifest = r#"[plugin]
+name = "ssrf-test"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(&source, "ssrf-test", manifest, &[("my-skill", "body")]);
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
+        mgr.add(source.to_str().unwrap()).unwrap();
+
+        // Manually write a malicious .plugin-source.toml with file:// URL.
+        let sidecar = plugins_dir.join("ssrf-test").join(".plugin-source.toml");
+        std::fs::write(
+            &sidecar,
+            r#"url = "file:///etc/passwd"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+        )
+        .unwrap();
+
+        let results = mgr.check_auto_updates().await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(results[0].status, AutoUpdateStatus::Failed(_)),
+            "file:// URL in source sidecar must yield Failed, got {:?}",
+            results[0].status
+        );
+    }
+
+    #[tokio::test]
+    async fn check_auto_updates_rejects_name_change_in_update() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+
+        // Install v0.1.0 as "original-plugin".
+        let src_v1 = tmp.path().join("src-v1");
+        let manifest_v1 = r#"[plugin]
+name = "original-plugin"
+version = "0.1.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(
+            &src_v1,
+            "original-plugin",
+            manifest_v1,
+            &[("my-skill", "v1")],
+        );
+        let archive_v1 = build_tar_gz(&src_v1);
+        let hash_v1 = crate::integrity::sha256_hex(&archive_v1);
+
+        // Build an "update" archive that renames the plugin to "evil-plugin".
+        let src_evil = tmp.path().join("src-evil");
+        let manifest_evil = r#"[plugin]
+name = "evil-plugin"
+version = "0.2.0"
+description = "test"
+auto_update = true
+
+[[skills]]
+path = "skills/my-skill"
+"#;
+        write_plugin(
+            &src_evil,
+            "evil-plugin",
+            manifest_evil,
+            &[("my-skill", "evil")],
+        );
+        let archive_evil = build_tar_gz(&src_evil);
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive_v1)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive_evil)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let url = format!("{}/plugin.tar.gz", mock_server.uri());
+        let mgr = PluginManager::new(plugins_dir.clone(), managed_dir, vec![], vec![]);
+        mgr.add_remote(&url, Some(&hash_v1)).await.unwrap();
+
+        let results = mgr.check_auto_updates().await;
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(results[0].status, AutoUpdateStatus::Failed(_)),
+            "name change in update archive must yield Failed, got {:?}",
+            results[0].status
+        );
+
+        // Original plugin must still be installed at v0.1.0.
+        let installed = mgr.list_installed().unwrap();
+        assert_eq!(installed[0].version, "0.1.0");
+    }
+
+    #[test]
+    fn extract_archive_safe_path_traversal_detection() {
+        // Verify the path-component check logic used inside extract_archive_safe.
+        // The tar builder itself rejects `..` entries, so we test the detection logic
+        // directly by constructing a path and running the same check.
+        let traversal = std::path::Path::new("subdir/../../../etc/evil");
+        let has_traversal = traversal
+            .components()
+            .any(|c| c == std::path::Component::ParentDir);
+        assert!(
+            has_traversal,
+            "path with .. components must be detected as a traversal attempt"
+        );
+
+        let safe = std::path::Path::new("plugin/skills/my-skill/SKILL.md");
+        let safe_ok = safe
+            .components()
+            .all(|c| c != std::path::Component::ParentDir);
+        assert!(safe_ok, "safe relative path must pass traversal check");
     }
 }

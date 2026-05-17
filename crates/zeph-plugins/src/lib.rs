@@ -25,6 +25,9 @@ pub mod manifest;
 pub mod overlay;
 
 pub use error::PluginError;
-pub use manager::{AddResult, InstalledPlugin, PluginManager, RemoveResult};
+pub use manager::{
+    AddResult, AutoUpdateResult, AutoUpdateStatus, InstalledPlugin, PluginManager, PluginSource,
+    RemoveResult,
+};
 pub use manifest::PluginManifest;
 pub use overlay::{ResolvedOverlay, apply_plugin_config_overlays};

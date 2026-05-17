@@ -46,6 +46,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-plugins`: `PluginMeta::auto_update` boolean field (default `false`) — opt-in advisory
   flag for future automatic plugin updates on startup. Existing manifests without the field
   default to `false` via `#[serde(default)]` (closes #3902).
+- `zeph-plugins`: enforce `auto_update = true` in `PluginManager` — plugins with `auto_update =
+  true` are re-fetched at startup, SHA-256 compared against the stored digest, and atomically
+  swapped (staged rename + rollback) when the content has changed. All security validations
+  (`validate_overlay_keys`, `validate_mcp_commands`, `check_skill_conflicts`, `scan_skill_entries`,
+  URL scheme check, symlink-safe archive extraction) are applied to every update before install.
+  Update failures are non-fatal warnings; startup proceeds with the current version (closes #4261).
 - `zeph-tools`: `ShellDeobfuscator` normalizes obfuscated shell commands (hex/octal/unicode
   escapes, subshell syntax, variable placeholders) before PolicyGate evaluation, closing the
   obfuscation bypass gap described in #2417 (closes #3887).
