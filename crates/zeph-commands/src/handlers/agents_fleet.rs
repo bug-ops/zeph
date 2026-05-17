@@ -13,10 +13,8 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
 /// Snapshot of a single autonomous goal session for the fleet view.
 ///
-/// Constructed by querying the [`AutonomousRegistry`] and forwarded to
+/// Constructed by querying `AutonomousRegistry` (`zeph-core`) and forwarded to
 /// [`format_fleet_section`] for display.
-///
-/// [`AutonomousRegistry`]: zeph_core::goal::AutonomousRegistry
 #[derive(Debug, Clone)]
 pub struct FleetEntry {
     /// UUID string of the goal.
@@ -253,6 +251,6 @@ mod tests {
 
     #[test]
     fn format_elapsed_one_hour() {
-        assert_eq!(format_elapsed(Duration::from_secs(3600)), "1h 0m 0s");
+        assert_eq!(format_elapsed(Duration::from_hours(1)), "1h 0m 0s");
     }
 }
