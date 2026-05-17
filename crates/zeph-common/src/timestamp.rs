@@ -134,6 +134,31 @@ mod tests {
     }
 
     #[test]
+    fn secs_to_ymdhms_y2k_boundary() {
+        assert_eq!(secs_to_ymdhms(946_684_800), (2000, 1, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn secs_to_ymdhms_feb29_century_leap_year() {
+        assert_eq!(secs_to_ymdhms(951_782_400), (2000, 2, 29, 0, 0, 0));
+    }
+
+    #[test]
+    fn secs_to_ymdhms_feb29_regular_leap_year() {
+        assert_eq!(secs_to_ymdhms(1_709_164_800), (2024, 2, 29, 0, 0, 0));
+    }
+
+    #[test]
+    fn secs_to_ymdhms_year_end_boundary() {
+        assert_eq!(secs_to_ymdhms(1_704_067_199), (2023, 12, 31, 23, 59, 59));
+    }
+
+    #[test]
+    fn secs_to_ymdhms_nontrivial_hhmmss() {
+        assert_eq!(secs_to_ymdhms(1_718_458_245), (2024, 6, 15, 13, 30, 45));
+    }
+
+    #[test]
     fn datetime_fields_are_in_range() {
         let (y, mo, d, h, mi, s) = utc_now_datetime();
         assert!(y >= 2024);
