@@ -54,7 +54,7 @@ impl<'de> Deserialize<'de> for ModelSpec {
 ///
 /// Prompt injection is a documented attack vector when the parent history contains untrusted
 /// content from web scrapes, tool results, or A2A messages.  `InheritSanitized` is the safe
-/// default: messages pass through [`zeph_sanitizer::ContentSanitizer`] before injection.
+/// default: messages pass through `ContentSanitizer` (in `zeph-sanitizer`) before injection.
 ///
 /// # Examples
 ///
