@@ -841,12 +841,12 @@ mod shadow_memory_config_tests {
 
     #[test]
     fn shadow_memory_full_deserialization() {
-        let toml = r#"
+        let toml = r"
             enabled = true
             window_size = 4
             max_events = 32
             drift_threshold = 0.8
-        "#;
+        ";
         let cfg: ShadowMemoryConfig = toml::from_str(toml).unwrap();
         assert!(cfg.enabled);
         assert_eq!(cfg.window_size, 4);
