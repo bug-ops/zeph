@@ -10,6 +10,7 @@ mod acp_commands;
 mod agent_access_impl;
 pub(crate) mod agent_supervisor;
 mod autodream;
+mod autonomous_turn;
 mod builder;
 pub(crate) mod channel_impl;
 #[cfg(feature = "cocoon")]
@@ -288,6 +289,8 @@ impl<C: Channel> Agent<C> {
             promotion_engine: None,
             taco_compressor: None,
             speculation_engine: None,
+            autonomous: crate::goal::AutonomousDriver::new(tokio::time::Duration::from_millis(500)),
+            autonomous_registry: crate::goal::AutonomousRegistry::new(),
         };
 
         let runtime = AgentRuntime {
@@ -925,6 +928,12 @@ impl<C: Channel> Agent<C> {
                         self.handle_file_changed(event).await;
                         continue;
                     }
+                    Some(LoopEvent::AutonomousTick) => {
+                        if let Err(e) = self.run_autonomous_turn().await {
+                            tracing::warn!(error = %e, "autonomous turn error");
+                        }
+                        continue;
+                    }
                     Some(LoopEvent::Message(msg)) => {
                         self.services.session.is_guest_context = msg.is_guest_context;
                         self.drain_channel();
@@ -1045,6 +1054,7 @@ impl<C: Channel> Agent<C> {
                 use zeph_commands::handlers::{
                     acp::AcpCommand,
                     agent_cmd::AgentCommand,
+                    agents_fleet::AgentsFleetCommand,
                     compaction::{CompactCommand, NewConversationCommand, RecapCommand},
                     experiment::ExperimentCommand,
                     goal::GoalCommand,
@@ -1086,6 +1096,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(FocusCommand);
                 agent_reg.register(SideQuestCommand);
                 agent_reg.register(AgentCommand);
+                agent_reg.register(AgentsFleetCommand);
                 // Phase 5 migrations (Send-compatible):
                 agent_reg.register(CompactCommand);
                 agent_reg.register(NewConversationCommand);
@@ -1114,6 +1125,21 @@ impl<C: Channel> Agent<C> {
                 None
             };
             // self.channel is available again here (ctx borrow dropped above).
+
+            // S1 fix: drain any pending autonomous session start queued by handle_goal.
+            // handle_goal runs inside Box::pin(async move) and cannot borrow &mut self directly,
+            // so it writes to pending_start_arc. We consume it here where &mut self is free.
+            if let Some((cancelled_id, new_id)) = self.services.autonomous.flush_pending_start() {
+                if let Some(cid) = cancelled_id {
+                    tracing::info!(
+                        goal_id = cid,
+                        "autonomous: previous session cancelled for new goal"
+                    );
+                }
+                self.sync_registry_entry();
+                tracing::info!(goal_id = new_id, "autonomous: session started");
+            }
+
             // Post-dispatch learning hook for `/skill reject` / `/feedback` is triggered
             // inside apply_dispatch_result when with_learning = true.
             match self
@@ -1260,6 +1286,11 @@ impl<C: Channel> Agent<C> {
             }
             Some(event) = recv_optional(&mut self.runtime.lifecycle.file_changed_rx) => {
                 LoopEvent::FileChanged(event)
+            }
+            // Autonomous goal tick: fires when a running session is active.
+            () = self.services.autonomous.next_tick(),
+                if self.services.autonomous.should_tick() => {
+                LoopEvent::AutonomousTick
             }
         };
         Ok(Some(event))
@@ -2452,6 +2483,80 @@ impl<C: Channel> Agent<C> {
             AgentCommand::Approve { id } => self.handle_agent_approve(&id),
             AgentCommand::Deny { id } => self.handle_agent_deny(&id),
             AgentCommand::Resume { id, prompt } => self.handle_agent_resume(&id, &prompt).await,
+        }
+    }
+
+    /// Return the sub-agent definitions section formatted for the `/agents` fleet view.
+    ///
+    /// Produces a "Sub-agents:" header followed by one line per definition.
+    /// Returns an empty string when no sub-agent manager is configured.
+    pub(crate) fn handle_agents_definitions_list(&self) -> String {
+        use std::fmt::Write as _;
+
+        let Some(mgr) = self.services.orchestration.subagent_manager.as_ref() else {
+            return String::new();
+        };
+        let defs = mgr.definitions();
+        if defs.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("Sub-agents:\n");
+        for d in defs {
+            let memory_label = match d.memory {
+                Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
+                Some(zeph_subagent::MemoryScope::Project) => " [memory:project]",
+                Some(zeph_subagent::MemoryScope::Local) => " [memory:local]",
+                None => "",
+            };
+            if let Some(ref src) = d.source {
+                let _ = writeln!(
+                    out,
+                    "  {}{} — {} ({})",
+                    d.name, memory_label, d.description, src
+                );
+            } else {
+                let _ = writeln!(out, "  {}{} — {}", d.name, memory_label, d.description);
+            }
+        }
+        out
+    }
+
+    /// Execute an `/agents` CRUD subcommand and return a formatted string.
+    ///
+    /// Handles `show`, `create`, `edit`, `delete` (the `list` case is handled by
+    /// [`handle_agents_definitions_list`] and never reaches this method).
+    pub(crate) fn handle_agents_crud(&mut self, cmd: zeph_subagent::AgentsCommand) -> String {
+        use zeph_subagent::AgentsCommand;
+
+        let Some(mgr) = self.services.orchestration.subagent_manager.as_ref() else {
+            return "Sub-agent manager is not available.".to_owned();
+        };
+
+        match cmd {
+            AgentsCommand::List => self.handle_agents_definitions_list(),
+            AgentsCommand::Show { name } => {
+                match mgr.definitions().iter().find(|d| d.name == name) {
+                    Some(d) => format!(
+                        "Agent: {}\nDescription: {}\nSource: {}\n",
+                        d.name,
+                        d.description,
+                        d.source.as_deref().unwrap_or("unknown"),
+                    ),
+                    None => format!("No sub-agent definition named '{name}'."),
+                }
+            }
+            AgentsCommand::Create { name } => {
+                format!(
+                    "To create a sub-agent definition, create a file at `.zeph/agents/{name}.md`.\n\
+                     See the sub-agent documentation for the required frontmatter."
+                )
+            }
+            AgentsCommand::Edit { name } => {
+                format!("To edit '{name}', open its definition file in `.zeph/agents/{name}.md`.")
+            }
+            AgentsCommand::Delete { name } => {
+                format!("To delete '{name}', remove the file `.zeph/agents/{name}.md`.")
+            }
         }
     }
 

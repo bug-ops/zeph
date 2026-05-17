@@ -46,4 +46,7 @@ pub(crate) enum LoopEvent {
 
     /// A watched file changed and the agent should react accordingly.
     FileChanged(FileChangedEvent),
+
+    /// The autonomous goal driver tick fired; the agent should execute one autonomous turn.
+    AutonomousTick,
 }

@@ -483,6 +483,23 @@ pub trait AgentAccess: Send {
     fn active_goal_snapshot(&self) -> Option<crate::GoalSnapshot> {
         None
     }
+
+    // ----- /agents -----
+
+    /// Handle `/agents [subcommand] [args]` and return a formatted response string.
+    ///
+    /// When called with no arguments or with `fleet`, returns the autonomous goal fleet
+    /// view followed by the sub-agent definition list. When called with a CRUD subcommand
+    /// (`list`, `show`, `create`, `edit`, `delete`), delegates to the sub-agent manager.
+    ///
+    /// The default implementation returns an empty string (no output).
+    fn handle_agents<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = args;
+        Box::pin(async move { Ok(String::new()) })
+    }
 }
 
 /// A no-op [`AgentAccess`] implementation.
@@ -732,5 +749,12 @@ impl AgentAccess for NullAgent {
 
     fn handle_scope(&self, _args: &str) -> String {
         String::new()
+    }
+
+    fn handle_agents<'a>(
+        &'a mut self,
+        _args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
     }
 }

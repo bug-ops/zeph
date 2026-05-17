@@ -61,4 +61,12 @@ pub(crate) struct Services {
     /// `Some` when `config.tools.speculative.mode != Off` and not in bare mode.
     pub(crate) speculation_engine:
         Option<std::sync::Arc<crate::agent::speculative::SpeculationEngine>>,
+
+    /// Autonomous goal execution driver.
+    ///
+    /// Drives cooperative multi-turn goal sessions from within the `Agent::run` select loop.
+    pub(crate) autonomous: crate::goal::AutonomousDriver,
+
+    /// Shared registry of autonomous session snapshots for the `/agents` fleet view.
+    pub(crate) autonomous_registry: crate::goal::AutonomousRegistry,
 }

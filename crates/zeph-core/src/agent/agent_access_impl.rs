@@ -1122,10 +1122,20 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             );
         let max_chars = self.runtime.config.goals.max_text_chars;
         let default_budget = self.runtime.config.goals.default_token_budget;
+        let autonomous_enabled = self.runtime.config.goals.autonomous_enabled;
+        let autonomous_max_turns = self.runtime.config.goals.autonomous_max_turns;
+        let args_owned = args.to_owned();
+
+        // S1: `goal_create` may need to arm `AutonomousDriver` with a new session.
+        // We capture a clone of the pending_start Arc that lives on the driver.
+        // The async block fills it; the main agent loop (which has `&mut self`) drains it
+        // via `AutonomousDriver::flush_pending_start()` after each command handler returns.
+        let pending_start_arc = std::sync::Arc::clone(&self.services.autonomous.pending_start_arc);
 
         Box::pin(async move {
             let _ = accounting.refresh().await;
             let store = accounting.get_store();
+            let args = args_owned.as_str();
 
             match args {
                 "" | "status" => goal_status(&accounting).await,
@@ -1135,7 +1145,20 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                 "clear" => goal_clear(&accounting, &store).await,
                 "list" => goal_list(&store).await,
                 _ if args.starts_with("create") => {
-                    goal_create(args, &accounting, &store, max_chars, default_budget).await
+                    let (msg, auto_req) = goal_create(
+                        args,
+                        &accounting,
+                        &store,
+                        max_chars,
+                        default_budget,
+                        autonomous_enabled,
+                        autonomous_max_turns,
+                    )
+                    .await?;
+                    if let Some(req) = auto_req {
+                        *pending_start_arc.lock() = Some(req);
+                    }
+                    Ok(msg)
                 }
                 _ => Ok(
                     "Unknown /goal subcommand. Try: create, pause, resume, complete, clear, status, list."
@@ -1162,10 +1185,73 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             token_budget: snap.token_budget,
         })
     }
+
+    // ----- /agents -----
+
+    fn handle_agents<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        use zeph_commands::handlers::agents_fleet::{FleetEntry, format_fleet_section};
+        use zeph_subagent::AgentsCommand;
+
+        let args_owned = args.trim().to_owned();
+        Box::pin(async move {
+            // Fleet view: bare `/agents` or `/agents fleet` shows autonomous sessions + definitions.
+            let show_fleet = args_owned.is_empty() || args_owned == "fleet";
+
+            let fleet_section = if show_fleet {
+                let snapshots = self.services.autonomous_registry.list();
+                let entries: Vec<FleetEntry> = snapshots
+                    .into_iter()
+                    .map(|s| FleetEntry {
+                        goal_id: s.goal_id,
+                        goal_text_short: s.goal_text_short,
+                        state: s.state.to_string(),
+                        turns_executed: s.turns_executed,
+                        max_turns: s.max_turns,
+                        elapsed: s.elapsed,
+                    })
+                    .collect();
+                format_fleet_section(&entries)
+            } else {
+                String::new()
+            };
+
+            // Sub-agent definitions section.
+            let definitions_section = if show_fleet || args_owned == "list" {
+                self.handle_agents_definitions_list()
+            } else {
+                // CRUD subcommands: show, create, edit, delete.
+                match AgentsCommand::parse(&format!("/agents {args_owned}")) {
+                    Ok(cmd) => self.handle_agents_crud(cmd),
+                    Err(e) => e.to_string(),
+                }
+            };
+
+            let mut out = fleet_section;
+            if !definitions_section.is_empty() {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&definitions_section);
+            }
+
+            if out.is_empty() {
+                "No active autonomous sessions or sub-agent definitions found."
+                    .clone_into(&mut out);
+            }
+
+            Ok(out)
+        })
+    }
 }
 
 type GoalStore = crate::goal::GoalStore;
 type GoalAccounting = crate::goal::GoalAccounting;
+
+/// Hard cap on `--turns` to prevent runaway autonomous loops (Security Low).
+const AUTONOMOUS_MAX_TURNS_CAP: u32 = 1000;
 
 async fn goal_status(accounting: &GoalAccounting) -> Result<String, CommandError> {
     match accounting.get_active().await {
@@ -1188,32 +1274,75 @@ async fn goal_status(accounting: &GoalAccounting) -> Result<String, CommandError
     }
 }
 
+/// Returns `(display_message, auto_start_request)`.
+///
+/// `auto_start_request` is `Some((goal_id, goal_text, max_turns))` when `--auto` was passed and
+/// the goal was successfully created. The caller must relay this to `AutonomousDriver` via the
+/// `pending_start_arc` side-channel before the future resolves.
 async fn goal_create(
     args: &str,
     accounting: &GoalAccounting,
     store: &GoalStore,
     max_chars: usize,
-    default_budget: u64,
-) -> Result<String, CommandError> {
+    default_budget: Option<u64>,
+    autonomous_enabled: bool,
+    autonomous_max_turns: u32,
+) -> Result<(String, Option<(String, String, u32)>), CommandError> {
     let rest = args.strip_prefix("create").unwrap_or("").trim();
-    let (text, explicit_budget) = parse_goal_create_args(rest);
+
+    // Strip --auto / --turns before passing text to the budget parser.
+    let (stripped, is_auto, explicit_turns) = parse_auto_flags(rest);
+    let (text, explicit_budget) = parse_goal_create_args(&stripped);
+
     if text.is_empty() {
-        return Ok("Usage: /goal create <text> [--budget N]".to_owned());
+        return Ok((
+            "Usage: /goal create <text> [--budget N] [--auto [--turns N]]".to_owned(),
+            None,
+        ));
     }
-    let budget = explicit_budget.or(if default_budget > 0 {
-        Some(default_budget)
-    } else {
-        None
-    });
+    if is_auto && !autonomous_enabled {
+        return Ok((
+            "Autonomous mode is disabled. Set `[goals] autonomous_enabled = true` in config."
+                .to_owned(),
+            None,
+        ));
+    }
+    let budget = explicit_budget.or(default_budget.filter(|&b| b > 0));
+
+    let max_turns = explicit_turns
+        .unwrap_or(autonomous_max_turns)
+        .min(AUTONOMOUS_MAX_TURNS_CAP);
+    if explicit_turns.is_some_and(|t| t > AUTONOMOUS_MAX_TURNS_CAP) {
+        tracing::warn!(
+            requested = explicit_turns,
+            capped = AUTONOMOUS_MAX_TURNS_CAP,
+            "autonomous max_turns capped to {AUTONOMOUS_MAX_TURNS_CAP}"
+        );
+    }
+
     match store.create(text, budget, max_chars).await {
         Ok(g) => {
             let _ = accounting.refresh().await;
-            Ok(format!("Goal created [{}]: {}", &g.id[..8], g.text))
+            let auto_start = if is_auto {
+                Some((g.id.clone(), g.text.clone(), max_turns))
+            } else {
+                None
+            };
+            let auto_note = if is_auto {
+                " Autonomous mode enabled — use `/goal clear` to stop."
+            } else {
+                ""
+            };
+            Ok((
+                format!("Goal created [{}]: {}{auto_note}", &g.id[..8], g.text),
+                auto_start,
+            ))
         }
-        Err(crate::goal::store::GoalError::TextTooLong { max }) => Ok(format!(
-            "Goal text exceeds {max} characters. Please shorten it."
+        Err(crate::goal::store::GoalError::TextTooLong { max }) => Ok((
+            format!("Goal text exceeds {max} characters. Please shorten it."),
+            None,
         )),
-        Err(e) => Ok(format!("Failed to create goal: {e}")),
+        Err(e) => Ok((format!("Failed to create goal: {e}"), None)),
     }
 }
 
@@ -1354,6 +1483,28 @@ fn parse_goal_create_args(args: &str) -> (&str, Option<u64>) {
     } else {
         (args, None)
     }
+}
+
+/// Parse `--auto` and `--turns N` flags from the remainder of a `/goal create` argument string.
+///
+/// Returns `(text_without_auto_flags, is_auto, explicit_turns)`.
+fn parse_auto_flags(args: &str) -> (String, bool, Option<u32>) {
+    let mut is_auto = false;
+    let mut turns: Option<u32> = None;
+    let mut text_words: Vec<&str> = Vec::new();
+    let mut words = args.split_whitespace();
+
+    while let Some(w) = words.next() {
+        if w == "--auto" {
+            is_auto = true;
+        } else if w == "--turns" {
+            turns = words.next().and_then(|n| n.parse::<u32>().ok());
+        } else {
+            text_words.push(w);
+        }
+    }
+
+    (text_words.join(" "), is_auto, turns)
 }
 
 /// Convert `AgentError` to `CommandError` for the trait boundary.

@@ -212,6 +212,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/agents",
+        args: "[list|show|create|edit|delete <name>]",
+        description: "Fleet view: active autonomous goals and sub-agent definitions",
+        category: SlashCategory::Integration,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/subagent",
         args: "spawn <command>",
         description: "Spawn an external ACP sub-agent process",

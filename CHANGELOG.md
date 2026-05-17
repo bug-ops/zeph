@@ -47,6 +47,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `/goal create ... --auto [--turns N]` — autonomous multi-turn goal execution: agent runs
+  without user input until goal condition is met or turn limit reached (`AutonomousDriver`,
+  cooperative scheduling in agent select loop).
+- Supervisor verification: independent LLM call verifies goal achievement after each
+  `verify_interval` turns (`GoalSupervisor`) — closes #3883.
+- `AutonomousRegistry` — in-memory session tracking with orphan detection on restart.
+- `/agents` — fleet view showing all autonomous goal sessions by state
+  (running/verifying/achieved/stuck/aborted).
+- `GoalConfig` extended with `autonomous_enabled`, `autonomous_max_turns`,
+  `supervisor_provider`, `verify_interval`, `supervisor_timeout_secs`, `max_stuck_count`,
+  `autonomous_turn_delay_ms`.
+
 - `zeph-config`: `HooksConfig` — inline `[hooks]` section in `config.toml` for declaring hooks
   without a separate `settings.json`. Supports all event types: `[[hooks.pre_tool_use]]`,
   `[[hooks.post_tool_use]]`, `[[hooks.cwd_changed]]`, `[[hooks.permission_denied]]`,

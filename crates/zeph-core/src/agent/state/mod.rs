@@ -1002,10 +1002,22 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) enabled: bool,
     /// Maximum allowed length (in Unicode chars) of goal text at creation.
     pub(crate) max_text_chars: usize,
-    /// Default token budget for new goals (0 = unlimited).
-    pub(crate) default_token_budget: u64,
+    /// Default token budget for new goals (`None` = unlimited).
+    pub(crate) default_token_budget: Option<u64>,
     /// Whether to inject the active goal block into the volatile system prompt region.
     pub(crate) inject_into_system_prompt: bool,
+    /// Whether autonomous multi-turn execution is permitted.
+    pub(crate) autonomous_enabled: bool,
+    /// Maximum turns per autonomous session.
+    pub(crate) autonomous_max_turns: u32,
+    /// Provider name for the supervisor LLM call (`None` = use main provider).
+    pub(crate) supervisor_provider: Option<String>,
+    /// Turns between supervisor verification checks.
+    pub(crate) verify_interval: u32,
+    /// Timeout for a single supervisor call in seconds.
+    pub(crate) supervisor_timeout_secs: u64,
+    /// Consecutive stuck-detection threshold before aborting.
+    pub(crate) max_stuck_count: u32,
 }
 
 impl Default for GoalRuntimeConfig {
@@ -1013,8 +1025,14 @@ impl Default for GoalRuntimeConfig {
         Self {
             enabled: false,
             max_text_chars: 2000,
-            default_token_budget: 0,
+            default_token_budget: None,
             inject_into_system_prompt: true,
+            autonomous_enabled: false,
+            autonomous_max_turns: 20,
+            supervisor_provider: None,
+            verify_interval: 5,
+            supervisor_timeout_secs: 30,
+            max_stuck_count: 3,
         }
     }
 }

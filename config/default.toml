@@ -1335,6 +1335,37 @@ sweep_batch_size = 100
 # system_metrics_interval_secs = 5
 
 # [session] — session-scoped user experience settings
+# ── Goals ─────────────────────────────────────────────────────────────────────
+# Long-horizon goal tracking and autonomous multi-turn execution.
+[goals]
+# Enable the goal lifecycle subsystem.
+enabled = false
+# Inject <active_goal> block into the volatile system-prompt region.
+inject_into_system_prompt = true
+# Maximum characters allowed for goal text at creation time.
+max_text_chars = 2000
+# Maximum number of goals to return in /goal list.
+max_history = 50
+# Default token budget for new goals (null = unlimited).
+# default_token_budget = 100000
+
+# ── Autonomous mode ───────────────────────────────────────────────────────────
+# Enable /goal create ... --auto for multi-turn autonomous execution.
+autonomous_enabled = false
+# Maximum turns the agent may run without user input per session.
+autonomous_max_turns = 20
+# Provider name from [[llm.providers]] for supervisor verification calls.
+# Uses the main provider when absent.
+# supervisor_provider = "fast"
+# Number of turns between supervisor verification checks.
+verify_interval = 5
+# Timeout in seconds for a single supervisor LLM call.
+supervisor_timeout_secs = 30
+# Consecutive stuck-detection count before aborting the session.
+max_stuck_count = 3
+# Delay in milliseconds between autonomous turns.
+autonomous_turn_delay_ms = 500
+
 [session]
 # Persist the last-used provider per channel across restarts (#3308).
 # When true (default), the agent saves the active provider name to SQLite after each

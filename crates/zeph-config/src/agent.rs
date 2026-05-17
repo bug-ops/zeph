@@ -287,17 +287,48 @@ fn default_goal_max_history() -> usize {
     50
 }
 
+fn default_autonomous_max_turns() -> u32 {
+    20
+}
+
+fn default_verify_interval() -> u32 {
+    5
+}
+
+fn default_supervisor_timeout_secs() -> u64 {
+    30
+}
+
+fn default_max_stuck_count() -> u32 {
+    3
+}
+
+fn default_autonomous_turn_delay_ms() -> u64 {
+    500
+}
+
 /// Long-horizon goal lifecycle configuration (`[goals]` TOML section).
 ///
 /// When enabled, the agent tracks a single active goal across turns, injecting an
 /// `<active_goal>` block into the volatile system-prompt region and accounting for
 /// token consumption per turn.
 ///
+/// Set `autonomous_enabled = true` to allow the agent to run multi-turn goal execution
+/// without waiting for user input between turns. A supervisor LLM call periodically checks
+/// whether the goal condition has been satisfied.
+///
 /// # Example (TOML)
 ///
 /// ```toml
 /// [goals]
 /// enabled = true
+/// autonomous_enabled = true
+/// autonomous_max_turns = 20
+/// supervisor_provider = "fast"
+/// verify_interval = 5
+/// supervisor_timeout_secs = 30
+/// max_stuck_count = 3
+/// autonomous_turn_delay_ms = 500
 /// default_token_budget = 50000
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -315,6 +346,26 @@ pub struct GoalConfig {
     /// Maximum number of goals to return in `/goal list`. Default: `50`.
     #[serde(default = "default_goal_max_history")]
     pub max_history: usize,
+    /// Enable autonomous multi-turn execution mode (`/goal create ... --auto`). Default: `false`.
+    pub autonomous_enabled: bool,
+    /// Maximum number of turns the agent may run without user input per session. Default: `20`.
+    #[serde(default = "default_autonomous_max_turns")]
+    pub autonomous_max_turns: u32,
+    /// Provider name for the supervisor verifier LLM call (references `[[llm.providers]] name`).
+    /// Falls back to the main provider when `None`.
+    pub supervisor_provider: Option<String>,
+    /// How many turns to execute between supervisor verification checks. Default: `5`.
+    #[serde(default = "default_verify_interval")]
+    pub verify_interval: u32,
+    /// Timeout in seconds for a single supervisor verification LLM call. Default: `30`.
+    #[serde(default = "default_supervisor_timeout_secs")]
+    pub supervisor_timeout_secs: u64,
+    /// Maximum consecutive stuck-turn detections before the session is aborted. Default: `3`.
+    #[serde(default = "default_max_stuck_count")]
+    pub max_stuck_count: u32,
+    /// Delay in milliseconds between autonomous turns to avoid busy-looping. Default: `500`.
+    #[serde(default = "default_autonomous_turn_delay_ms")]
+    pub autonomous_turn_delay_ms: u64,
 }
 
 impl Default for GoalConfig {
@@ -325,6 +376,13 @@ impl Default for GoalConfig {
             max_text_chars: default_goal_max_text_chars(),
             default_token_budget: None,
             max_history: default_goal_max_history(),
+            autonomous_enabled: false,
+            autonomous_max_turns: default_autonomous_max_turns(),
+            supervisor_provider: None,
+            verify_interval: default_verify_interval(),
+            supervisor_timeout_secs: default_supervisor_timeout_secs(),
+            max_stuck_count: default_max_stuck_count(),
+            autonomous_turn_delay_ms: default_autonomous_turn_delay_ms(),
         }
     }
 }

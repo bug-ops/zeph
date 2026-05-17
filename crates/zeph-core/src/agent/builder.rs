@@ -2126,9 +2126,19 @@ impl<C: Channel> Agent<C> {
         self.runtime.config.goals = crate::agent::state::GoalRuntimeConfig {
             enabled: goal_config.enabled,
             max_text_chars: goal_config.max_text_chars,
-            default_token_budget: goal_config.default_token_budget.unwrap_or(0),
+            default_token_budget: goal_config.default_token_budget,
             inject_into_system_prompt: goal_config.inject_into_system_prompt,
+            autonomous_enabled: goal_config.autonomous_enabled,
+            autonomous_max_turns: goal_config.autonomous_max_turns,
+            supervisor_provider: goal_config.supervisor_provider.clone(),
+            verify_interval: goal_config.verify_interval,
+            supervisor_timeout_secs: goal_config.supervisor_timeout_secs,
+            max_stuck_count: goal_config.max_stuck_count,
         };
+        // Reinitialize autonomous driver with the configured inter-turn delay.
+        let turn_delay =
+            tokio::time::Duration::from_millis(goal_config.autonomous_turn_delay_ms.max(1));
+        self.services.autonomous = crate::goal::AutonomousDriver::new(turn_delay);
 
         self.runtime.debug.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {

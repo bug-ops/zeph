@@ -11,6 +11,7 @@
 
 pub mod acp;
 pub mod agent_cmd;
+pub mod agents_fleet;
 #[cfg(feature = "cocoon")]
 pub mod cocoon;
 pub mod compaction;

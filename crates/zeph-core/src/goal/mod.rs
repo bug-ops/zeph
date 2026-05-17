@@ -25,12 +25,18 @@
 //!   log a `WARN` and never abort the turn.
 
 mod accounting;
+pub mod autonomous;
+pub mod registry;
 mod state;
 pub mod store;
+pub mod supervisor;
 
 pub use accounting::GoalAccounting;
+pub use autonomous::{AutonomousDriver, AutonomousSession, AutonomousState, SupervisorVerdict};
+pub use registry::AutonomousRegistry;
 pub use state::GoalStatus;
 pub use store::{GoalError, GoalStore};
+pub use supervisor::GoalSupervisor;
 
 use chrono::{DateTime, Utc};
 
