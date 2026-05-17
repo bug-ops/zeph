@@ -474,7 +474,7 @@ mod tests {
     /// KNOWN LIMITATION: Base64-encoded injection imperatives are not detected.
     ///
     /// The filter operates on plaintext. Encoding injection text as Base64 bypasses
-    /// all pattern matches. The `base64_payload` pattern in RAW_INJECTION_PATTERNS
+    /// all pattern matches. The `base64_payload` pattern in `RAW_INJECTION_PATTERNS`
     /// detects `decode/eval/execute ... base64` directives, not encoded payloads themselves.
     #[test]
     fn known_limitation_base64_encoded_injection_not_detected() {
