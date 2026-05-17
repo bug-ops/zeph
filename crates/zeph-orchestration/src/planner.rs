@@ -664,22 +664,18 @@ mod tests {
     // --- LlmPlanner::new default_failure_strategy wiring ---
 
     #[test]
-    fn test_llm_planner_applies_config_default_failure_strategy() {
-        let _config = OrchestrationConfig {
-            default_failure_strategy: "skip".to_string(),
-            ..Default::default()
-        };
-        // Constructing via LlmPlanner::new must parse the string into FailureStrategy::Skip.
-        // We verify this by reading the field that new() stores on the struct.
+    fn test_convert_response_does_not_apply_config_default_failure_strategy() {
+        // convert_response is a pure transformation of PlannerResponse → TaskGraph.
+        // It must NOT apply OrchestrationConfig.default_failure_strategy; that is
+        // LlmPlanner's responsibility after calling convert_response.
         let response = PlannerResponse {
             tasks: vec![make_planned("t1", "T1", &[], None)],
         };
-        // convert_response produces Abort by default; the planner must override it.
         let graph = convert_response(response, "goal", &agents(), 20).unwrap();
         assert_eq!(
             graph.default_failure_strategy,
             FailureStrategy::Abort,
-            "convert_response itself must not apply the config value"
+            "convert_response must leave default_failure_strategy at the TaskGraph default"
         );
     }
 
@@ -723,6 +719,31 @@ mod tests {
             graph.default_failure_strategy,
             FailureStrategy::Abort,
             "unrecognised strategy must fall back to Abort"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_hint_wires_default_failure_strategy() {
+        use zeph_llm::mock::MockProvider;
+        let json = r#"{"tasks":[
+            {"task_id":"t1","title":"T1","description":"desc","depends_on":[]},
+            {"task_id":"t2","title":"T2","description":"desc","depends_on":[]}
+        ]}"#
+        .to_string();
+        let provider = MockProvider::with_responses(vec![json]);
+        let config = OrchestrationConfig {
+            default_failure_strategy: "retry".to_string(),
+            ..Default::default()
+        };
+        let planner = LlmPlanner::new(provider, &config);
+        let (graph, _) = planner
+            .plan_with_hint("goal", &agents(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            graph.default_failure_strategy,
+            FailureStrategy::Retry,
+            "plan_with_hint must apply OrchestrationConfig.default_failure_strategy to the graph"
         );
     }
 
