@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use zeph_skills::loader::Skill;
 use zeph_skills::trust::SkillTrustLevel;
 
+use crate::skill_invoker::SkillTrustSnapshot;
+
 use super::SkillState;
 
 impl SkillState {
@@ -21,10 +23,14 @@ impl SkillState {
     /// the caller is responsible for storing the result.
     pub(crate) fn rebuild_prompt(
         all_skills: &[Skill],
-        trust_map: &HashMap<String, SkillTrustLevel>,
+        trust_map: &HashMap<String, SkillTrustSnapshot>,
         health_map: &HashMap<String, (f64, u32)>,
     ) -> String {
-        zeph_skills::prompt::format_skills_prompt(all_skills, trust_map, health_map)
+        let trust_levels: HashMap<String, SkillTrustLevel> = trust_map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.trust_level))
+            .collect();
+        zeph_skills::prompt::format_skills_prompt(all_skills, &trust_levels, health_map)
     }
 
     /// Rebuild the BM25 index from current registry metadata, if hybrid search is enabled.

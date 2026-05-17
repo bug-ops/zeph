@@ -26,10 +26,27 @@ use serde::Deserialize;
 use zeph_common::SkillTrustLevel;
 use zeph_skills::prompt::{sanitize_skill_text, wrap_quarantined};
 use zeph_skills::registry::SkillRegistry;
+use zeph_skills::trust::compute_skill_hash;
 use zeph_tools::executor::{
     ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params, truncate_tool_output,
 };
 use zeph_tools::registry::{InvocationHint, ToolDef};
+
+/// Per-invocation trust metadata snapshot for a single skill.
+///
+/// Populated once per turn from the trust DB by `build_skill_trust_map` and shared
+/// with `SkillInvokeExecutor` so it can resolve trust without hitting `SQLite` on each
+/// tool call. When `requires_trust_check` is `true`, `execute_tool_call` re-hashes
+/// the skill's `SKILL.md` before dispatch (tamper detection per #4293).
+#[derive(Clone, Debug)]
+pub struct SkillTrustSnapshot {
+    /// Access level governing which tools the skill may invoke.
+    pub trust_level: SkillTrustLevel,
+    /// Whether to re-hash `SKILL.md` on every invocation and abort if the digest changed.
+    pub requires_trust_check: bool,
+    /// blake3 hex hash of `SKILL.md` recorded at trust-grant time.
+    pub blake3_hash: String,
+}
 
 /// Parameters for the `invoke_skill` tool call.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -52,7 +69,7 @@ pub struct SkillInvokeExecutor {
     /// Per-skill trust snapshot refreshed once per turn by the agent.
     /// Absence of an entry means no trust row exists — treat as Quarantined
     /// (see `SkillTrustLevel::default`).
-    trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustLevel>>>,
+    trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustSnapshot>>>,
 }
 
 impl SkillInvokeExecutor {
@@ -63,7 +80,7 @@ impl SkillInvokeExecutor {
     #[must_use]
     pub fn new(
         registry: Arc<RwLock<SkillRegistry>>,
-        trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustLevel>>>,
+        trust_snapshot: Arc<RwLock<HashMap<String, SkillTrustSnapshot>>>,
     ) -> Self {
         Self {
             registry,
@@ -71,15 +88,80 @@ impl SkillInvokeExecutor {
         }
     }
 
-    /// Resolve the trust level for a skill from the snapshot.
+    /// Resolve the trust snapshot entry for a skill.
     ///
-    /// Returns `SkillTrustLevel::default()` (Quarantined) when no row exists — fail-closed.
-    fn resolve_trust(&self, skill_name: &str) -> SkillTrustLevel {
-        self.trust_snapshot
-            .read()
-            .get(skill_name)
-            .copied()
-            .unwrap_or_default()
+    /// Returns `None` when no row exists — callers treat absence as Quarantined (fail-closed).
+    fn resolve_snapshot(&self, skill_name: &str) -> Option<SkillTrustSnapshot> {
+        self.trust_snapshot.read().get(skill_name).cloned()
+    }
+
+    /// Run the per-invocation blake3 integrity check.
+    ///
+    /// Returns `Some(output)` when the invocation must be aborted (hash mismatch, empty stored
+    /// hash, missing skill dir, or IO error). Returns `None` when the check passes and dispatch
+    /// should proceed.
+    async fn check_integrity(
+        &self,
+        skill_name: &str,
+        skill_name_safe: &str,
+        entry: &SkillTrustSnapshot,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        if entry.blake3_hash.is_empty() {
+            tracing::warn!(
+                skill = %skill_name,
+                "requires_trust_check is set but no stored hash found, aborting invocation"
+            );
+            return Ok(Some(make_output(format!(
+                "skill integrity check failed: {skill_name_safe} \
+                 — requires_trust_check is set but no stored hash found"
+            ))));
+        }
+        let stored_hash = entry.blake3_hash.clone();
+        let skill_dir = {
+            let guard = self.registry.read();
+            guard.skill_dir(skill_name)
+        };
+        let Some(dir) = skill_dir else {
+            tracing::warn!(
+                skill = %skill_name,
+                "requires_trust_check: skill_dir not found, aborting invocation"
+            );
+            return Ok(Some(make_output(format!(
+                "skill integrity check failed: {skill_name_safe} — skill directory not found"
+            ))));
+        };
+        let current_hash = tokio::task::spawn_blocking(move || compute_skill_hash(&dir))
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("spawn_blocking join error: {e}"),
+            })?;
+        match current_hash {
+            Ok(hash) if hash != stored_hash => {
+                tracing::warn!(
+                    skill = %skill_name,
+                    "hash mismatch on per-invocation check, demoting to Quarantined"
+                );
+                self.trust_snapshot
+                    .write()
+                    .entry(skill_name.to_owned())
+                    .and_modify(|e| e.trust_level = SkillTrustLevel::Quarantined);
+                // TODO: persist demotion to trust store (#4293 follow-up)
+                Ok(Some(make_output(format!(
+                    "skill integrity check failed: {skill_name_safe} — demoted to Quarantined"
+                ))))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    skill = %skill_name,
+                    err = %e,
+                    "failed to re-hash skill, aborting invocation"
+                );
+                Ok(Some(make_output(format!(
+                    "skill integrity check failed: {skill_name_safe} — cannot read SKILL.md"
+                ))))
+            }
+            Ok(_) => Ok(None), // hash matches, proceed
+        }
     }
 }
 
@@ -111,7 +193,8 @@ impl ToolExecutor for SkillInvokeExecutor {
         let params: InvokeSkillParams = deserialize_params(&call.params)?;
         let skill_name: String = params.skill_name.chars().take(128).collect();
 
-        let trust = self.resolve_trust(&skill_name);
+        let snapshot = self.resolve_snapshot(&skill_name);
+        let trust = snapshot.as_ref().map(|s| s.trust_level).unwrap_or_default();
         // Sanitize skill_name before it appears in any tool output: it originates from the LLM
         // and could carry injection markers (e.g. `<|im_start|>`).
         let skill_name_safe = sanitize_skill_text(&skill_name);
@@ -121,6 +204,16 @@ impl ToolExecutor for SkillInvokeExecutor {
             return Ok(Some(make_output(format!(
                 "skill is blocked by policy: {skill_name_safe}"
             ))));
+        }
+
+        // Per-invocation integrity check: re-hash SKILL.md when requires_trust_check is set.
+        if let Some(entry) = snapshot.as_ref().filter(|s| s.requires_trust_check) {
+            let abort = self
+                .check_integrity(&skill_name, &skill_name_safe, entry)
+                .await?;
+            if let Some(output) = abort {
+                return Ok(Some(output));
+            }
         }
 
         // Clone body out of the read guard before any .await — never hold lock across await.
@@ -192,13 +285,35 @@ mod tests {
         SkillRegistry::load(&[dir.to_path_buf()])
     }
 
+    fn make_snapshot(level: SkillTrustLevel) -> SkillTrustSnapshot {
+        SkillTrustSnapshot {
+            trust_level: level,
+            requires_trust_check: false,
+            blake3_hash: String::new(),
+        }
+    }
+
     fn make_executor(
         registry: SkillRegistry,
         trust_map: HashMap<String, SkillTrustLevel>,
     ) -> SkillInvokeExecutor {
+        let snapshot_map: HashMap<String, SkillTrustSnapshot> = trust_map
+            .into_iter()
+            .map(|(k, v)| (k, make_snapshot(v)))
+            .collect();
         SkillInvokeExecutor::new(
             Arc::new(RwLock::new(registry)),
-            Arc::new(RwLock::new(trust_map)),
+            Arc::new(RwLock::new(snapshot_map)),
+        )
+    }
+
+    fn make_executor_with_snapshots(
+        registry: SkillRegistry,
+        snapshots: HashMap<String, SkillTrustSnapshot>,
+    ) -> SkillInvokeExecutor {
+        SkillInvokeExecutor::new(
+            Arc::new(RwLock::new(registry)),
+            Arc::new(RwLock::new(snapshots)),
         )
     }
 
@@ -401,5 +516,165 @@ mod tests {
         let defs = executor.tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].id.as_ref(), "invoke_skill");
+    }
+
+    // ── Per-invocation trust check tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn hash_match_passes_normally() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "## Trusted body";
+        let registry = make_registry_with_skill(dir.path(), "checked-skill", body);
+        let skill_dir = dir.path().join("checked-skill");
+        let stored_hash = zeph_skills::trust::compute_skill_hash(&skill_dir).unwrap();
+        let snapshots = HashMap::from([(
+            "checked-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Trusted,
+                requires_trust_check: true,
+                blake3_hash: stored_hash,
+            },
+        )]);
+        let executor = make_executor_with_snapshots(registry, snapshots);
+        let result = executor
+            .execute_tool_call(&make_call("checked-skill"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.summary.contains("Trusted body"),
+            "body returned on hash match"
+        );
+    }
+
+    #[tokio::test]
+    async fn hash_mismatch_demotes_to_quarantined_and_aborts() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "## Original body";
+        let registry = make_registry_with_skill(dir.path(), "tampered-skill", body);
+        let snapshots = HashMap::from([(
+            "tampered-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Trusted,
+                requires_trust_check: true,
+                blake3_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_owned(),
+            },
+        )]);
+        let snapshot_arc = Arc::new(RwLock::new(snapshots));
+        let executor =
+            SkillInvokeExecutor::new(Arc::new(RwLock::new(registry)), Arc::clone(&snapshot_arc));
+        let result = executor
+            .execute_tool_call(&make_call("tampered-skill"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.summary.contains("demoted to Quarantined"),
+            "output must mention demotion: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("Original body"),
+            "body must not be returned on hash mismatch"
+        );
+        // Snapshot entry must be demoted in memory.
+        let level = snapshot_arc
+            .read()
+            .get("tampered-skill")
+            .map(|s| s.trust_level);
+        assert_eq!(level, Some(SkillTrustLevel::Quarantined));
+    }
+
+    #[tokio::test]
+    async fn requires_trust_check_false_skips_hash() {
+        // When requires_trust_check=false, even a deliberately wrong hash must NOT block.
+        let dir = tempfile::tempdir().unwrap();
+        let body = "## Body without check";
+        let registry = make_registry_with_skill(dir.path(), "no-check-skill", body);
+        let snapshots = HashMap::from([(
+            "no-check-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Trusted,
+                requires_trust_check: false,
+                blake3_hash: "wrong_hash_that_would_fail_if_checked".to_owned(),
+            },
+        )]);
+        let executor = make_executor_with_snapshots(registry, snapshots);
+        let result = executor
+            .execute_tool_call(&make_call("no-check-skill"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.summary.contains("Body without check"),
+            "body must be returned when check disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn requires_trust_check_true_empty_hash_aborts_with_distinct_error() {
+        // Legacy DB row or misconfiguration: requires_trust_check=true but blake3_hash is empty.
+        // Must abort with a distinct diagnostic, not "hash mismatch".
+        let dir = tempfile::tempdir().unwrap();
+        let body = "## Some body";
+        let registry = make_registry_with_skill(dir.path(), "legacy-skill", body);
+        let snapshots = HashMap::from([(
+            "legacy-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Trusted,
+                requires_trust_check: true,
+                blake3_hash: String::new(), // empty — legacy row
+            },
+        )]);
+        let executor = make_executor_with_snapshots(registry, snapshots);
+        let result = executor
+            .execute_tool_call(&make_call("legacy-skill"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.summary.contains("no stored hash found"),
+            "must emit distinct error for missing hash: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("demoted to Quarantined"),
+            "must not emit mismatch message for missing hash: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.contains("Some body"),
+            "body must not be returned: {}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_dir_none_aborts_invocation() {
+        // Skill is in the snapshot with requires_trust_check=true but not in registry.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        let snapshots = HashMap::from([(
+            "ghost-skill".to_owned(),
+            SkillTrustSnapshot {
+                trust_level: SkillTrustLevel::Trusted,
+                requires_trust_check: true,
+                blake3_hash: "deadbeef".to_owned(),
+            },
+        )]);
+        let executor = make_executor_with_snapshots(registry, snapshots);
+        let result = executor
+            .execute_tool_call(&make_call("ghost-skill"))
+            .await
+            .unwrap()
+            .unwrap();
+        // Fail-closed: skill_dir not found → abort.
+        assert!(
+            result.summary.contains("skill directory not found")
+                || result.summary.contains("skill not found"),
+            "must abort when skill_dir is missing: {}",
+            result.summary
+        );
     }
 }

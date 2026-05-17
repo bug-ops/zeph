@@ -1762,7 +1762,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // Pre-allocate trust snapshot Arc shared between the agent's SkillState and
     // SkillInvokeExecutor — written once per turn by prepare_context, read by the executor.
     let trust_snapshot: std::sync::Arc<
-        parking_lot::RwLock<std::collections::HashMap<String, zeph_common::SkillTrustLevel>>,
+        parking_lot::RwLock<
+            std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
+        >,
     > = std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
     let skill_invoke_executor = zeph_core::SkillInvokeExecutor::new(
         std::sync::Arc::clone(&registry),

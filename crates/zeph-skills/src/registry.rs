@@ -220,6 +220,19 @@ impl SkillRegistry {
         self.entries.iter().map(|e| &e.meta).collect()
     }
 
+    /// Return the directory path for a skill by name.
+    ///
+    /// Returns `None` if no skill with that name is registered. Used by
+    /// `SkillInvokeExecutor` to locate `SKILL.md` for per-invocation blake3 re-hash
+    /// when `requires_trust_check` is `true`.
+    #[must_use]
+    pub fn skill_dir(&self, name: &str) -> Option<std::path::PathBuf> {
+        self.entries
+            .iter()
+            .find(|e| e.meta.name == name)
+            .map(|e| e.meta.skill_dir.clone())
+    }
+
     /// Get the body for a skill by name, loading from disk on first access.
     ///
     /// # Errors

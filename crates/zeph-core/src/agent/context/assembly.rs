@@ -801,7 +801,7 @@ impl<C: Channel> Agent<C> {
                     .contains(&s.name().to_string())
             })
             .filter(|s| match trust_map.get(s.name()) {
-                Some(zeph_common::SkillTrustLevel::Blocked) => {
+                Some(snap) if snap.trust_level == zeph_common::SkillTrustLevel::Blocked => {
                     tracing::debug!(skill = s.name(), "excluded from catalog: trust=blocked");
                     false
                 }
@@ -818,7 +818,7 @@ impl<C: Channel> Agent<C> {
                 .skill
                 .active_skill_names
                 .iter()
-                .filter_map(|name| trust_map.get(name).copied())
+                .filter_map(|name| trust_map.get(name).map(|s| s.trust_level))
                 .fold(zeph_common::SkillTrustLevel::Trusted, |acc, lvl| {
                     acc.min_trust(lvl)
                 })
@@ -869,7 +869,12 @@ impl<C: Channel> Agent<C> {
         let mut skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact {
             format_skills_prompt_compact(&active_skills)
         } else {
-            format_skills_prompt(&active_skills, &trust_map, &health_map)
+            let trust_levels: std::collections::HashMap<String, zeph_common::SkillTrustLevel> =
+                trust_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.trust_level))
+                    .collect();
+            format_skills_prompt(&active_skills, &trust_levels, &health_map)
         };
         // ERL: append learned heuristics for active skills (no-op when erl_enabled = false).
         let erl_suffix = self.build_erl_heuristics_prompt().await;
@@ -1256,7 +1261,7 @@ impl<C: Channel> Agent<C> {
     async fn run_paste_skill_activation(
         &mut self,
         active_skills: &[zeph_skills::loader::Skill],
-        trust_map: &std::collections::HashMap<String, zeph_common::SkillTrustLevel>,
+        trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
     ) {
         use zeph_config::tools::SpeculationMode;
 
@@ -1300,8 +1305,7 @@ impl<C: Channel> Agent<C> {
             let skill_hash = skill.meta.skill_dir.to_string_lossy();
             let skill_trust = trust_map
                 .get(skill_name.as_str())
-                .copied()
-                .unwrap_or(zeph_common::SkillTrustLevel::Trusted);
+                .map_or(zeph_common::SkillTrustLevel::Trusted, |s| s.trust_level);
 
             let predictions = match tokio::time::timeout(
                 std::time::Duration::from_millis(500),

@@ -84,7 +84,10 @@ pub(crate) struct SkillState {
     /// Per-turn trust snapshot written by `prepare_context` after `build_skill_trust_map`.
     /// Shared with `SkillInvokeExecutor` so it can resolve trust without hitting `SQLite`
     /// on every tool call. Refreshed once per turn — stale by at most one turn.
-    pub(crate) trust_snapshot: Arc<RwLock<HashMap<String, zeph_common::SkillTrustLevel>>>,
+    /// Carries full `SkillTrustSnapshot` (level + `requires_trust_check` + `blake3_hash`) so
+    /// `SkillInvokeExecutor` can perform per-invocation re-hash when the flag is set.
+    pub(crate) trust_snapshot:
+        Arc<RwLock<HashMap<String, crate::skill_invoker::SkillTrustSnapshot>>>,
     pub(crate) skill_paths: Vec<PathBuf>,
     pub(crate) managed_dir: Option<PathBuf>,
     pub(crate) trust_config: crate::config::TrustConfig,

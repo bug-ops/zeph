@@ -342,7 +342,9 @@ impl<C: Channel> Agent<C> {
     pub fn with_trust_snapshot(
         mut self,
         snapshot: std::sync::Arc<
-            parking_lot::RwLock<std::collections::HashMap<String, zeph_common::SkillTrustLevel>>,
+            parking_lot::RwLock<
+                std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
+            >,
         >,
     ) -> Self {
         self.services.skill.trust_snapshot = snapshot;

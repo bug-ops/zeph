@@ -61,6 +61,10 @@ pub struct SkillTrustRow {
     pub updated_at: String,
     /// Upstream git commit hash at install time (from `x-git-hash` frontmatter field).
     pub git_hash: Option<String>,
+    /// Whether to re-hash `SKILL.md` on every invocation and abort if the digest changed.
+    ///
+    /// Set via `skill trust --require-check <name>` or the trust management CLI.
+    pub requires_trust_check: bool,
 }
 
 type TrustTuple = (
@@ -72,6 +76,7 @@ type TrustTuple = (
     String,
     String,
     Option<String>,
+    i64,
 );
 
 fn row_from_tuple(t: TrustTuple) -> SkillTrustRow {
@@ -85,6 +90,7 @@ fn row_from_tuple(t: TrustTuple) -> SkillTrustRow {
         blake3_hash: t.5,
         updated_at: t.6,
         git_hash: t.7,
+        requires_trust_check: t.8 != 0,
     }
 }
 
@@ -171,7 +177,7 @@ impl SqliteStore {
     ) -> Result<Option<SkillTrustRow>, MemoryError> {
         let row: Option<TrustTuple> = zeph_db::query_as(sql!(
             "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
-             blake3_hash, updated_at, git_hash \
+             blake3_hash, updated_at, git_hash, requires_trust_check \
              FROM skill_trust WHERE skill_name = ?"
         ))
         .bind(skill_name)
@@ -188,7 +194,7 @@ impl SqliteStore {
     pub async fn load_all_skill_trust(&self) -> Result<Vec<SkillTrustRow>, MemoryError> {
         let rows: Vec<TrustTuple> = zeph_db::query_as(sql!(
             "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
-             blake3_hash, updated_at, git_hash \
+             blake3_hash, updated_at, git_hash, requires_trust_check \
              FROM skill_trust ORDER BY skill_name"
         ))
         .fetch_all(&self.pool)
@@ -226,6 +232,30 @@ impl SqliteStore {
             .bind(skill_name)
             .execute(&self.pool)
             .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Set the `requires_trust_check` flag for a skill.
+    ///
+    /// When `true`, the agent re-hashes `SKILL.md` before each invocation and aborts
+    /// if the blake3 digest changed (tamper detection per #4293).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the update fails.
+    pub async fn set_requires_trust_check(
+        &self,
+        skill_name: &str,
+        enabled: bool,
+    ) -> Result<bool, MemoryError> {
+        let flag = i64::from(enabled);
+        let result = zeph_db::query(
+            sql!("UPDATE skill_trust SET requires_trust_check = ?, updated_at = CURRENT_TIMESTAMP WHERE skill_name = ?"),
+        )
+        .bind(flag)
+        .bind(skill_name)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 

@@ -6,6 +6,8 @@ use std::fmt::Write;
 
 use zeph_skills::SkillTrustLevel;
 
+use crate::skill_invoker::SkillTrustSnapshot;
+
 use super::{Agent, Channel};
 
 impl<C: Channel> Agent<C> {
@@ -150,7 +152,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    pub(super) async fn build_skill_trust_map(&mut self) -> HashMap<String, SkillTrustLevel> {
+    pub(super) async fn build_skill_trust_map(&mut self) -> HashMap<String, SkillTrustSnapshot> {
         // Clone Arc before .await so no &self fields are held across suspension points.
         let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
@@ -161,14 +163,21 @@ impl<C: Channel> Agent<C> {
         };
         rows.into_iter()
             .filter_map(|r| {
-                let level = match r.trust_level.as_str() {
+                let trust_level = match r.trust_level.as_str() {
                     "trusted" => SkillTrustLevel::Trusted,
                     "verified" => SkillTrustLevel::Verified,
                     "quarantined" => SkillTrustLevel::Quarantined,
                     "blocked" => SkillTrustLevel::Blocked,
                     _ => return None,
                 };
-                Some((r.skill_name, level))
+                Some((
+                    r.skill_name,
+                    SkillTrustSnapshot {
+                        trust_level,
+                        requires_trust_check: r.requires_trust_check,
+                        blake3_hash: r.blake3_hash,
+                    },
+                ))
             })
             .collect()
     }
