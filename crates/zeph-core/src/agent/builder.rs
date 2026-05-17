@@ -831,6 +831,19 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach a per-turn risk chain accumulator for multi-step attack detection.
+    ///
+    /// Pass the same `Arc` to `ShellExecutor::with_risk_chain` so the executor records
+    /// calls into the same accumulator that `begin_turn()` resets at turn boundaries.
+    #[must_use]
+    pub fn with_risk_chain_accumulator(
+        mut self,
+        acc: std::sync::Arc<zeph_tools::RiskChainAccumulator>,
+    ) -> Self {
+        self.services.security.risk_chain_accumulator = Some(acc);
+        self
+    }
+
     /// Attach a temporal causal IPI analyzer.
     ///
     /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.

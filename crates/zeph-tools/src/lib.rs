@@ -77,6 +77,7 @@ pub mod permissions;
 pub mod policy;
 pub mod policy_gate;
 pub mod registry;
+pub mod risk_chain;
 pub mod sandbox;
 pub mod schema_filter;
 pub mod scope;
@@ -132,6 +133,7 @@ pub use permissions::PermissionPolicy;
 pub use policy::{PolicyCompileError, PolicyContext, PolicyDecision, PolicyEnforcer};
 pub use policy_gate::{PolicyGateExecutor, RiskSignalQueue, TrajectoryRiskSlot};
 pub use registry::ToolRegistry;
+pub use risk_chain::{RiskChainAccumulator, RiskChainVerdict, RiskTag};
 #[cfg(target_os = "macos")]
 pub use sandbox::MacosSandbox;
 pub use sandbox::{
@@ -149,8 +151,9 @@ pub use search_code::{
 pub use shadow_probe::{ProbeGate, ProbeOutcome, ShadowProbeExecutor};
 pub use shell::background::{BackgroundCompletion, BackgroundRunSnapshot, RunId};
 pub use shell::{
-    DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, ShellExecutor, ShellOutputEnvelope,
-    ShellPolicyHandle, check_blocklist, effective_shell_command,
+    DEFAULT_BLOCKED_COMMANDS, SHELL_INTERPRETERS, SafeFixSuggestion, ShellExecutor,
+    ShellOutputEnvelope, ShellPolicyHandle, check_blocklist, deobfuscate_command,
+    effective_shell_command,
 };
 pub use tool_filter::ToolFilter;
 pub use trust_gate::TrustGateExecutor;

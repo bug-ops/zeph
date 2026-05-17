@@ -22,6 +22,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-plugins`: `PluginMeta::auto_update` boolean field (default `false`) — opt-in advisory
   flag for future automatic plugin updates on startup. Existing manifests without the field
   default to `false` via `#[serde(default)]` (closes #3902).
+- `zeph-tools`: `ShellDeobfuscator` normalizes obfuscated shell commands (hex/octal/unicode
+  escapes, subshell syntax, variable placeholders) before PolicyGate evaluation, closing the
+  obfuscation bypass gap described in #2417 (closes #3887).
+- `zeph-tools`: `RiskChainAccumulator` detects multi-step attack chains across a single agent
+  turn (exfiltration read-then-send, credential-then-egress patterns) and pushes signal codes
+  into `RiskSignalQueue` on detection; per-turn state is reset via `begin_turn()` in
+  `AgentBuilder` (closes #3887).
+- `zeph-tools`: `SafeFix` suggests safer command alternatives when a shell command is blocked,
+  surfaced via new `ToolError::BlockedWithFix` variant (zero blast-radius on existing `Blocked`
+  match sites) (closes #3887).
+- `zeph-sanitizer`: `IpiFilter` detects indirect prompt injection patterns in text (injection
+  imperatives, zero-width chars, delimiter overrides); score threshold 0.6, sanitized output
+  replaces matched patterns with `[FILTERED]` (closes #3943).
+- `zeph-tools`: `WebScrapeExecutor` now applies `IpiFilter` on extracted plain text; when score
+  >= threshold a warning header is prepended and a `tracing::warn!` is emitted (closes #3943).
+- `zeph-config`: `ScrapeConfig.ipi_filter_threshold` field (default 0.6) allows per-deployment
+  tuning of the IPI detection threshold.
 
 ### Fixed
 

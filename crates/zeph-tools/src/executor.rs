@@ -379,6 +379,17 @@ pub enum ToolError {
     #[error("command blocked by policy: {command}")]
     Blocked { command: String },
 
+    /// Command was blocked and a safer alternative is available.
+    ///
+    /// Emitted by [`ShellExecutor`](crate::ShellExecutor) when `suggest_fix` returns a
+    /// suggestion. The agent receives both the block reason and the alternative so it can
+    /// self-correct without additional prompting.
+    #[error("command blocked by policy: {command}")]
+    BlockedWithFix {
+        command: String,
+        suggestion: Option<crate::shell::SafeFixSuggestion>,
+    },
+
     #[error("path not allowed by sandbox: {path}")]
     SandboxViolation { path: String },
 
@@ -453,7 +464,7 @@ impl ToolError {
     pub fn category(&self) -> crate::error_taxonomy::ToolErrorCategory {
         use crate::error_taxonomy::{ToolErrorCategory, classify_http_status, classify_io_error};
         match self {
-            Self::Blocked { .. } | Self::SandboxViolation { .. } => {
+            Self::Blocked { .. } | Self::BlockedWithFix { .. } | Self::SandboxViolation { .. } => {
                 ToolErrorCategory::PolicyBlocked
             }
             Self::ConfirmationRequired { .. } => ToolErrorCategory::ConfirmationRequired,

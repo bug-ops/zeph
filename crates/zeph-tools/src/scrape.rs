@@ -27,6 +27,8 @@ use url::Url;
 
 use zeph_common::ToolName;
 
+use zeph_sanitizer::IpiFilter;
+
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, EgressEvent, chrono_now};
 use crate::config::{EgressConfig, ScrapeConfig};
 use crate::executor::{
@@ -162,6 +164,8 @@ pub struct WebScrapeExecutor {
     egress_config: EgressConfig,
     egress_tx: Option<tokio::sync::mpsc::Sender<EgressEvent>>,
     egress_dropped: Arc<AtomicU64>,
+    /// IPI filter applied to every fetched response body before returning to callers.
+    ipi_filter: IpiFilter,
 }
 
 impl WebScrapeExecutor {
@@ -179,6 +183,7 @@ impl WebScrapeExecutor {
             egress_config: EgressConfig::default(),
             egress_tx: None,
             egress_dropped: Arc::new(AtomicU64::new(0)),
+            ipi_filter: IpiFilter::new(config.ipi_filter_threshold),
         }
     }
 
@@ -574,15 +579,17 @@ impl WebScrapeExecutor {
             }
         };
 
-        self.fetch_html(
-            &params.url,
-            &host,
-            &addrs,
-            "fetch",
-            correlation_id,
-            caller_id,
-        )
-        .await
+        let body = self
+            .fetch_html(
+                &params.url,
+                &host,
+                &addrs,
+                "fetch",
+                correlation_id,
+                caller_id,
+            )
+            .await?;
+        Ok(self.apply_ipi_filter(&body, &params.url))
     }
 
     async fn scrape_instruction(
@@ -663,9 +670,13 @@ impl WebScrapeExecutor {
         let selector = instruction.select.clone();
         let extract = ExtractMode::parse(&instruction.extract);
         let limit = instruction.limit.unwrap_or(10);
-        tokio::task::spawn_blocking(move || parse_and_extract(&html, &selector, &extract, limit))
-            .await
-            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?
+        let extracted = tokio::task::spawn_blocking(move || {
+            parse_and_extract(&html, &selector, &extract, limit)
+        })
+        .await
+        .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))??;
+        // apply_ipi_filter runs on plain extracted text, not raw HTML
+        Ok(self.apply_ipi_filter(&extracted, &instruction.url))
     }
 
     fn make_blocked_event(
@@ -946,6 +957,36 @@ impl WebScrapeExecutor {
         Err(ToolError::Execution(std::io::Error::other(
             "too many redirects",
         )))
+    }
+
+    /// Apply IPI filter to a fetched response body.
+    ///
+    /// Always returns the sanitized text. When score >= threshold, prepends a warning
+    /// header and emits a `tracing::warn!` log with the detected pattern names.
+    fn apply_ipi_filter(&self, body: &str, url: &str) -> String {
+        let _span =
+            tracing::info_span!("tools.scrape.apply_ipi_filter", url, body_len = body.len())
+                .entered();
+        let verdict = self.ipi_filter.filter(body);
+        if !verdict.patterns_found.is_empty() {
+            tracing::warn!(
+                url = url,
+                score = verdict.score,
+                patterns = ?verdict.patterns_found,
+                "IPI patterns detected in fetched content"
+            );
+        }
+        // verdict.sanitized == body only when score < threshold (no redaction)
+        if verdict.sanitized == body {
+            verdict.sanitized
+        } else {
+            format!(
+                "[IPI WARNING: score={:.2}, patterns={}] {}",
+                verdict.score,
+                verdict.patterns_found.join(", "),
+                verdict.sanitized,
+            )
+        }
     }
 }
 
@@ -1571,6 +1612,7 @@ mod tests {
             egress_config: EgressConfig::default(),
             egress_tx: None,
             egress_dropped: Arc::new(AtomicU64::new(0)),
+            ipi_filter: IpiFilter::new(0.6),
         };
         (executor, server)
     }
@@ -1871,6 +1913,7 @@ mod tests {
             egress_config: EgressConfig::default(),
             egress_tx: None,
             egress_dropped: Arc::new(AtomicU64::new(0)),
+            ipi_filter: IpiFilter::new(0.6),
         };
         let server = wiremock::MockServer::start().await;
         Mock::given(method("GET"))

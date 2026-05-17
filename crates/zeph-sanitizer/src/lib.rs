@@ -62,6 +62,7 @@
 pub mod causal_ipi;
 pub mod exfiltration;
 pub mod guardrail;
+pub mod ipi_filter;
 pub mod memory_validation;
 pub mod nli;
 pub mod pii;
@@ -73,6 +74,7 @@ pub mod secret_mask;
 pub mod shadow_memory;
 pub mod types;
 
+pub use ipi_filter::{IpiFilter, IpiVerdict};
 pub use sanitizer::ContentSanitizer;
 pub use shadow_memory::{GoalDriftResult, ShadowEvent, ShadowMemory, classify_tool_permission};
 pub use types::{

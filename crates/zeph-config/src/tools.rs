@@ -903,6 +903,12 @@ pub struct ShellConfig {
     /// Timeout in seconds for each background shell run. Default: `1800`.
     #[serde(default = "default_background_timeout_secs")]
     pub background_timeout_secs: u64,
+    /// Cumulative risk score threshold for multi-step chain blocking. Default: `0.7`.
+    ///
+    /// When the [`RiskChainAccumulator`] exceeds this score within a single turn,
+    /// the command is blocked. Set to `None` to use the built-in default of `0.7`.
+    #[serde(default)]
+    pub risk_chain_threshold: Option<f32>,
 }
 
 impl Default for ShellConfig {
@@ -923,6 +929,7 @@ impl Default for ShellConfig {
             max_snapshot_bytes: 0,
             max_background_runs: default_max_background_runs(),
             background_timeout_secs: default_background_timeout_secs(),
+            risk_chain_threshold: None,
         }
     }
 }
@@ -953,6 +960,10 @@ fn default_max_body_bytes() -> usize {
     4_194_304
 }
 
+fn default_ipi_filter_threshold() -> f32 {
+    0.6
+}
+
 /// Configuration for the web scrape tool.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ScrapeConfig {
@@ -968,6 +979,10 @@ pub struct ScrapeConfig {
     /// Domain denylist. Always enforced, regardless of allowlist state.
     #[serde(default)]
     pub denied_domains: Vec<String>,
+    /// IPI filter score threshold. Responses with score >= this value get a warning
+    /// prepended and injection fragments replaced with `[FILTERED]`. Default: `0.6`.
+    #[serde(default = "default_ipi_filter_threshold")]
+    pub ipi_filter_threshold: f32,
 }
 
 impl Default for ScrapeConfig {
@@ -977,6 +992,7 @@ impl Default for ScrapeConfig {
             max_body_bytes: default_max_body_bytes(),
             allowed_domains: Vec::new(),
             denied_domains: Vec::new(),
+            ipi_filter_threshold: default_ipi_filter_threshold(),
         }
     }
 }

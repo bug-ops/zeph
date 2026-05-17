@@ -368,6 +368,11 @@ pub(crate) struct SecurityState {
     /// When `Some`, `begin_turn()` calls `advance_turn()` to reset the per-turn probe counter.
     pub(crate) shadow_sentinel:
         Option<std::sync::Arc<crate::agent::shadow_sentinel::ShadowSentinel>>,
+    /// Per-turn multi-step attack chain accumulator.
+    ///
+    /// `None` by default. When `Some`, `begin_turn()` calls `reset()` to clear per-turn state.
+    /// The same `Arc` must be passed to `ShellExecutor::with_risk_chain` at build time.
+    pub(crate) risk_chain_accumulator: Option<std::sync::Arc<zeph_tools::RiskChainAccumulator>>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).

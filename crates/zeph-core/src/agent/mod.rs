@@ -1426,6 +1426,10 @@ impl<C: Channel> Agent<C> {
         if let Some(ref sentinel) = self.services.security.shadow_sentinel {
             sentinel.advance_turn();
         }
+        // Reset per-turn risk chain state so scores don't bleed across turns.
+        if let Some(ref acc) = self.services.security.risk_chain_accumulator {
+            acc.reset();
+        }
         // Publish updated risk level to the shared slot so PolicyGateExecutor can read it.
         let risk_level = self.services.security.trajectory.current_risk();
         *self.services.security.trajectory_risk_slot.write() = u8::from(risk_level);

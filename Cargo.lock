@@ -11114,6 +11114,7 @@ dependencies = [
  "zeph-common",
  "zeph-config",
  "zeph-db",
+ "zeph-sanitizer",
 ]
 
 [[package]]
