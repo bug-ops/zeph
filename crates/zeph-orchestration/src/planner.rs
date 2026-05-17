@@ -665,8 +665,10 @@ mod tests {
 
     #[test]
     fn test_llm_planner_applies_config_default_failure_strategy() {
-        let mut config = OrchestrationConfig::default();
-        config.default_failure_strategy = "skip".to_string();
+        let _config = OrchestrationConfig {
+            default_failure_strategy: "skip".to_string(),
+            ..Default::default()
+        };
         // Constructing via LlmPlanner::new must parse the string into FailureStrategy::Skip.
         // We verify this by reading the field that new() stores on the struct.
         let response = PlannerResponse {
@@ -690,8 +692,10 @@ mod tests {
         ]}"#
         .to_string();
         let provider = MockProvider::with_responses(vec![json]);
-        let mut config = OrchestrationConfig::default();
-        config.default_failure_strategy = "skip".to_string();
+        let config = OrchestrationConfig {
+            default_failure_strategy: "skip".to_string(),
+            ..Default::default()
+        };
         let planner = LlmPlanner::new(provider, &config);
         let (graph, _) = planner.plan("goal", &agents()).await.unwrap();
         assert_eq!(
@@ -709,8 +713,10 @@ mod tests {
         ]}"#
         .to_string();
         let provider = MockProvider::with_responses(vec![json]);
-        let mut config = OrchestrationConfig::default();
-        config.default_failure_strategy = "bogus_value".to_string();
+        let config = OrchestrationConfig {
+            default_failure_strategy: "bogus_value".to_string(),
+            ..Default::default()
+        };
         let planner = LlmPlanner::new(provider, &config);
         let (graph, _) = planner.plan("goal", &agents()).await.unwrap();
         assert_eq!(
