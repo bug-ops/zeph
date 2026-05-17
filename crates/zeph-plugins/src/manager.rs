@@ -89,6 +89,8 @@ pub struct PluginManager {
     base_allowed_commands: Vec<String>,
     /// Path to the integrity registry file. Injected so tests can use isolated paths.
     integrity_registry_path: PathBuf,
+    /// Timeout in seconds for each HTTP phase of [`Self::add_remote`] (connect + body read).
+    download_timeout_secs: u64,
 }
 
 impl PluginManager {
@@ -127,7 +129,18 @@ impl PluginManager {
             mcp_allowed_commands,
             base_allowed_commands,
             integrity_registry_path,
+            download_timeout_secs: 30,
         }
+    }
+
+    /// Override the HTTP download timeout used by [`Self::add_remote`].
+    ///
+    /// Each phase (connect and body read) is independently bounded by this value.
+    /// The default is 30 seconds.
+    #[must_use]
+    pub fn with_download_timeout_secs(mut self, secs: u64) -> Self {
+        self.download_timeout_secs = secs;
+        self
     }
 
     /// Override the integrity registry path. Intended for tests only.
@@ -316,8 +329,14 @@ impl PluginManager {
         let span = tracing::info_span!("plugins.manager.add_remote", %url);
         let _guard = span.enter();
 
-        let response = reqwest::get(url)
+        let timeout = std::time::Duration::from_secs(self.download_timeout_secs);
+
+        let response = tokio::time::timeout(timeout, reqwest::get(url))
             .await
+            .map_err(|_| PluginError::DownloadFailed {
+                url: url.to_owned(),
+                reason: format!("download timed out after {}s", self.download_timeout_secs),
+            })?
             .map_err(|e| PluginError::DownloadFailed {
                 url: url.to_owned(),
                 reason: e.to_string(),
@@ -330,9 +349,12 @@ impl PluginManager {
             });
         }
 
-        let bytes = response
-            .bytes()
+        let bytes = tokio::time::timeout(timeout, response.bytes())
             .await
+            .map_err(|_| PluginError::DownloadFailed {
+                url: url.to_owned(),
+                reason: format!("download timed out after {}s", self.download_timeout_secs),
+            })?
             .map_err(|e| PluginError::DownloadFailed {
                 url: url.to_owned(),
                 reason: format!("failed to read response body: {e}"),
@@ -1694,6 +1716,48 @@ path = "skills/no-skill-md"
         let result = mgr.add_remote(&url, Some(&expected_hash)).await.unwrap();
         assert_eq!(result.name, "remote-plugin");
         assert!(result.installed_skills.contains(&"my-skill".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn add_remote_connect_timeout_returns_download_failed() {
+        use std::time::Duration;
+
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        write_plugin(
+            &source,
+            "timeout-plugin",
+            &simple_manifest("timeout-plugin", "t-skill"),
+            &[("t-skill", "body")],
+        );
+
+        let archive = build_tar_gz(&source);
+
+        let mock_server = MockServer::start().await;
+        // Delay > download_timeout_secs (1s) triggers the tokio::time::timeout guard.
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive)
+                    .set_delay(Duration::from_secs(3)),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let plugins_dir = tmp.path().join("plugins");
+        let managed_dir = tmp.path().join("managed");
+        let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![])
+            .with_download_timeout_secs(1);
+
+        let url = format!("{}/timeout-plugin.tar.gz", mock_server.uri());
+        let err = mgr.add_remote(&url, None).await.unwrap_err();
+        assert!(
+            matches!(err, PluginError::DownloadFailed { ref reason, .. } if reason.contains("timed out")),
+            "slow response must produce DownloadFailed with timeout message, got {err:?}"
+        );
     }
 
     #[tokio::test]

@@ -151,7 +151,7 @@ pub async fn recall_tiered(
             0.7,
         );
         let decision = if let Ok(d) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(config.classifier_timeout_secs),
             hybrid.classify_async(query),
         )
         .await
@@ -220,6 +220,7 @@ async fn escalation_loop(
                 query,
                 &messages,
                 config.validation_threshold,
+                config.validator_timeout_secs,
             )
             .instrument(tracing::debug_span!("memory.tiered.validate"))
             .await;
@@ -299,6 +300,7 @@ async fn validate_evidence(
     query: &str,
     messages: &[RecalledMessage],
     threshold: f32,
+    timeout_secs: u64,
 ) -> bool {
     use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
@@ -344,7 +346,12 @@ async fn validate_evidence(
         },
     ];
 
-    match tokio::time::timeout(std::time::Duration::from_secs(5), provider.chat(&msgs)).await {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        provider.chat(&msgs),
+    )
+    .await
+    {
         Ok(Ok(raw)) => parse_validation_response(&raw, threshold),
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "tiered: validator LLM call failed, treating as sufficient");
@@ -493,6 +500,26 @@ mod tests {
         assert_eq!(cfg.token_budget, 4096);
         assert!(!cfg.validation_enabled);
         assert_eq!(cfg.max_escalations, 1);
+        // Verify config-driven timeout defaults (fix #4250).
+        assert_eq!(cfg.classifier_timeout_secs, 5);
+        assert_eq!(cfg.validator_timeout_secs, 5);
+    }
+
+    #[test]
+    fn tiered_retrieval_config_timeout_fields_propagate() {
+        // Verify that custom timeout values survive a round-trip through the struct.
+        let cfg = TieredRetrievalConfig {
+            classifier_timeout_secs: 10,
+            validator_timeout_secs: 15,
+            ..TieredRetrievalConfig::default()
+        };
+        assert_eq!(cfg.classifier_timeout_secs, 10);
+        assert_eq!(cfg.validator_timeout_secs, 15);
+        // Confirm the durations would be built correctly from the fields.
+        let classifier_dur = std::time::Duration::from_secs(cfg.classifier_timeout_secs);
+        let validator_dur = std::time::Duration::from_secs(cfg.validator_timeout_secs);
+        assert_eq!(classifier_dur.as_secs(), 10);
+        assert_eq!(validator_dur.as_secs(), 15);
     }
 
     #[test]
@@ -649,7 +676,7 @@ mod tests {
 
     /// Test 4a: `validate_evidence` returns `true` (fail-open) when the validator LLM times out.
     ///
-    /// Uses `with_delay` to force the validator past the 5-second timeout threshold.
+    /// Uses `with_delay` to force the validator past the configured timeout threshold.
     /// The pipeline must treat a timed-out validator as sufficient (fail-open) and not escalate.
     #[tokio::test]
     async fn validate_evidence_timeout_is_fail_open() {
@@ -670,7 +697,7 @@ mod tests {
             .await
             .expect("remember");
 
-        // Delay > 5 s causes the internal tokio::time::timeout in validate_evidence to fire.
+        // Delay > validator_timeout_secs causes the internal tokio::time::timeout to fire.
         let slow_mock = MockProvider::default().with_delay(6_000);
         let validator = Arc::new(AnyProvider::Mock(slow_mock));
 
@@ -679,6 +706,7 @@ mod tests {
             validation_enabled: true,
             validation_threshold: 0.6,
             max_escalations: 1,
+            validator_timeout_secs: 5,
             ..TieredRetrievalConfig::default()
         };
 

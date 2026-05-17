@@ -1008,6 +1008,8 @@ pub struct MemoryConfig {
 /// validation_enabled = false
 /// validation_threshold = 0.6
 /// max_escalations = 1
+/// classifier_timeout_secs = 5
+/// validator_timeout_secs = 5
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -1031,6 +1033,14 @@ pub struct TieredRetrievalConfig {
     pub validation_threshold: f32,
     /// Maximum tier escalations per query. Default: `1`.
     pub max_escalations: u8,
+    /// Timeout in seconds for the classifier LLM call. Default: `5`.
+    ///
+    /// On timeout the pipeline falls back to the `HeuristicRouter` (fail-open).
+    pub classifier_timeout_secs: u64,
+    /// Timeout in seconds for the validator LLM call. Default: `5`.
+    ///
+    /// On timeout the validator is treated as sufficient (fail-open).
+    pub validator_timeout_secs: u64,
 }
 
 impl Default for TieredRetrievalConfig {
@@ -1043,6 +1053,8 @@ impl Default for TieredRetrievalConfig {
             validation_enabled: false,
             validation_threshold: 0.6,
             max_escalations: 1,
+            classifier_timeout_secs: 5,
+            validator_timeout_secs: 5,
         }
     }
 }
