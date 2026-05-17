@@ -59,6 +59,12 @@ fn is_qdrant_localhost(url: &str) -> bool {
     )
 }
 
+/// Top-level builder that owns all runtime dependencies resolved at startup.
+///
+/// Call [`AppBuilder::new`] to load config, resolve secrets, and connect Qdrant.
+/// Then call the individual `build_*` methods to construct subsystems. This staged
+/// construction lets binaries (CLI, TUI, daemon, bare mode) share bootstrap logic
+/// while selecting only the subsystems they need.
 pub struct AppBuilder {
     config: Config,
     config_path: PathBuf,
@@ -73,16 +79,34 @@ pub struct AppBuilder {
     resolved_overlay: zeph_plugins::ResolvedOverlay,
 }
 
+/// CLI-level vault arguments parsed from flags and config before the vault provider is constructed.
+///
+/// Collects the three knobs an operator can override: which backend to use, the path to the
+/// age identity key, and the path to the age vault file. All three are optional because sensible
+/// defaults exist (env backend, no key/vault path required).
 pub struct VaultArgs {
+    /// Which secret backend to instantiate. Defaults to [`VaultBackend::Env`].
     pub backend: VaultBackend,
+    /// Path to the age identity key file (`--vault-key`). Required when `backend = age`.
     pub key_path: Option<String>,
+    /// Path to the age-encrypted vault file (`--vault-path`). Required when `backend = age`.
     pub vault_path: Option<String>,
 }
 
+/// Filesystem watchers and their associated reload receivers.
+///
+/// Produced by [`AppBuilder::build_watchers`]. Each receiver delivers [`SkillEvent`] or
+/// [`ConfigEvent`] messages when the watcher detects changes on disk. Pass the bundle to the
+/// agent or runner that needs hot-reload; use [`WatcherBundle::empty`] in bare/test mode to
+/// skip all filesystem monitoring.
 pub struct WatcherBundle {
+    /// Watches skill directories for additions/changes/deletions. `None` when unavailable.
     pub skill_watcher: Option<SkillWatcher>,
+    /// Receives skill change events from the watcher (or a dead channel in bare mode).
     pub skill_reload_rx: zeph_core::instrumented_channel::InstrumentedReceiver<SkillEvent>,
+    /// Watches the config file for in-place edits. `None` when unavailable.
     pub config_watcher: Option<ConfigWatcher>,
+    /// Receives config change events from the watcher (or a dead channel in bare mode).
     pub config_reload_rx: zeph_core::instrumented_channel::InstrumentedReceiver<ConfigEvent>,
 }
 
@@ -195,18 +219,29 @@ impl AppBuilder {
         })
     }
 
+    /// Return the `QdrantOps` client if the vector backend is Qdrant.
+    ///
+    /// `None` when the config selects the `sqlite` vector backend.
     pub fn qdrant_ops(&self) -> Option<&QdrantOps> {
         self.qdrant_ops.as_ref()
     }
 
+    /// Return an immutable reference to the fully-resolved runtime config.
     pub fn config(&self) -> &Config {
         &self.config
     }
 
+    /// Return a mutable reference to the runtime config.
+    ///
+    /// Use sparingly — most callers should read config immutably. Mutation is intended for
+    /// one-time pre-build overrides (e.g. injecting test values or CLI flag overrides).
     pub fn config_mut(&mut self) -> &mut Config {
         &mut self.config
     }
 
+    /// Return the path from which the config was loaded.
+    ///
+    /// Useful for status output and for setting up the config-file watcher.
     pub fn config_path(&self) -> &Path {
         &self.config_path
     }
@@ -272,6 +307,12 @@ impl AppBuilder {
         Ok((provider, status_tx_clone, status_rx))
     }
 
+    /// Compute the effective context-budget token count for the given provider.
+    ///
+    /// When `memory.auto_budget = true` and `context_budget_tokens = 0`, the provider's
+    /// reported context window is used directly. Falls back to `128 000` tokens when the
+    /// window cannot be determined, to guarantee that compaction fires rather than being
+    /// silently skipped.
     pub fn auto_budget_tokens(&self, provider: &AnyProvider) -> usize {
         let tokens =
             if self.config.memory.auto_budget && self.config.memory.context_budget_tokens == 0 {
@@ -816,6 +857,12 @@ impl AppBuilder {
         .await
     }
 
+    /// Provision bundled skills and load all skill directories into a [`SkillRegistry`].
+    ///
+    /// Bundled skills are written to the managed skills directory if missing or outdated.
+    /// All paths from `skills.paths`, the managed dir, and installed plugins are scanned.
+    /// When `skills.trust.scan_on_load = true`, a content scan for injection patterns runs
+    /// immediately after loading.
     pub fn build_registry(&self) -> SkillRegistry {
         let managed = managed_skills_dir();
         {
@@ -964,11 +1011,20 @@ impl AppBuilder {
         }
     }
 
+    /// Return the managed skills directory path.
+    ///
+    /// This is the directory where bundled and plugin-installed skills are written by Zeph
+    /// itself. It is always included in the skill watcher and registry paths.
     #[allow(dead_code)]
     pub fn managed_skills_dir() -> PathBuf {
         managed_skills_dir()
     }
 
+    /// Start filesystem watchers for skill directories and the config file.
+    ///
+    /// Returns a [`WatcherBundle`] containing the watchers and their reload receivers.
+    /// On failure to start a watcher (e.g. inotify limit exceeded), it is omitted and a
+    /// warning is logged — the agent continues without hot-reload for that subsystem.
     pub fn build_watchers(&self) -> WatcherBundle {
         use zeph_core::instrumented_channel::instrumented_channel;
 
@@ -1005,10 +1061,18 @@ impl AppBuilder {
         }
     }
 
+    /// Create a shutdown signal pair.
+    ///
+    /// The sender is held by the signal handler; the receiver is distributed to every
+    /// subsystem that should exit cleanly when the agent shuts down.
     pub fn build_shutdown() -> (watch::Sender<bool>, watch::Receiver<bool>) {
         watch::channel(false)
     }
 
+    /// Return the effective embedding model name for this config.
+    ///
+    /// Delegates to [`effective_embedding_model`] and is the canonical source for the
+    /// model name passed to skill matchers, memory backends, and the embed backfill task.
     pub fn embedding_model(&self) -> String {
         effective_embedding_model(&self.config)
     }
