@@ -273,6 +273,67 @@ without pinning.
 
 ---
 
+## 7.1 Cost-Aware Memory Tier Routing
+
+When routing memory retrieval queries, the same `ComplexityTier` classification is used for memory tier selection. Per [[004-14-memory-tiering-rfc-decision]]:
+
+**Tier Selection Rules**:
+- Simple complexity → search working + episodic tiers only (SQLite, fast)
+- Medium complexity → search episodic + semantic tiers (SQLite + Qdrant)
+- Complex/Expert → all three tiers (working + episodic + semantic, full retrieval)
+
+**Budget Tracking**: Each tier has a token budget; if memory retrieval exhausts `N%` of tier budget, escalate to next tier:
+
+```toml
+[memory.tier_routing]
+low_budget = 500
+mid_budget = 2000
+high_budget = 10000
+adaptive_escalation = true
+escalation_threshold_pct = 80
+```
+
+**Escalation**: when `memory_tokens_used > escalation_threshold_pct × tier_budget`, escalate one tier up.
+
+This ensures cost-aware memory retrieval without repeating full semantic search for simple queries.
+
+---
+
+## 7.2 Feedback-Driven Parameter Tuning (RFC #4218)
+
+When retrieval success rate diverges from baseline, adaptive escalation adjusts tier routing to recover performance. Per [[004-15-memory-skill-coevolution-rfc-decision]]:
+
+**Success Rate Tracking**:
+- Measure success (via [[016-agent-feedback]]) on last N retrieval queries (sliding window, default 20)
+- Per-tier tracking: `success_rate[tier] = successes / total_queries`
+
+**Escalation Policy**:
+- Threshold: `success_threshold = 0.6` (60% of queries must succeed)
+- If `success_rate[tier] < threshold` for 3+ consecutive turns:
+  1. Log anomaly: `tier_degradation{tier, success_rate, consecutive_turns}`
+  2. Escalate one tier up; if already at highest, retain current
+  3. Mark as `preferred_tier` in session state
+
+- If success rate improves after escalation (measured on next 5 queries):
+  1. Retain new tier (do not revert)
+  2. Emit `tier_escalation{from_tier, to_tier}` metric
+
+**Cooldown**: defer re-evaluation for N turns (default 5) to avoid thrashing.
+
+**Configuration** (`[memory.routing_feedback]`):
+
+```toml
+feedback_enabled = true
+success_threshold = 0.6
+sliding_window_size = 20
+escalation_cooldown_turns = 5
+consecutive_degradation_threshold = 3
+```
+
+**Integration**: FeedbackDetector signals (from [[016-agent-feedback]]) feed into tier escalation logic. On turn completion, emit `memory.routing.escalation{from, to}` metric if escalation fires.
+
+---
+
 ## 8. Edge Cases and Error Handling
 
 | Scenario | Behavior |

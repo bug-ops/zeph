@@ -20,7 +20,7 @@ related:
 # Spec: Memory Admission Control (A-MAC & Importance Scoring)
 
 > [!info]
-> Adaptive Memory Admission Control (A-MAC): five-factor importance scoring,
+> Adaptive Memory Admission Control (A-MAC): six-factor importance scoring,
 > admission gates, and graceful degradation.
 
 ## Overview
@@ -40,7 +40,7 @@ Implement adaptive admission control that filters noise while preserving critica
 |----|------------|----------|
 | FR-001 | WHEN remember() called, THE SYSTEM SHALL score message importance | must |
 | FR-002 | WHEN score < admission_threshold, message rejected (returns None) | must |
-| FR-003 | Scoring SHALL consider 5 factors: recency, relevance, tool_use, unique_entities, length | must |
+| FR-003 | Scoring SHALL consider 6 factors: recency, relevance, tool_use, unique_entities, length, frequency | must |
 
 ---
 
@@ -60,17 +60,26 @@ Implement adaptive admission control that filters noise while preserving critica
 
 ---
 
-## Five-Factor Scoring Model
+## Six-Factor Scoring Model
 
 | Factor | Weight | Calculation |
 |--------|--------|-------------|
-| Recency | 0.2 | exponential decay from now |
-| Relevance | 0.2 | embedding similarity to context |
-| Tool Use | 0.2 | 1.0 if contains tool output, 0.0 else |
-| Entity Density | 0.2 | unique named entities / message length |
-| Message Length | 0.2 | normalized (longer = higher, cap at threshold) |
+| Recency | 0.1667 | exponential decay from now |
+| Relevance | 0.1667 | embedding similarity to context |
+| Tool Use | 0.1667 | 1.0 if contains tool output, 0.0 else |
+| Entity Density | 0.1667 | unique named entities / message length |
+| Message Length | 0.1667 | normalized (longer = higher, cap at threshold) |
+| Frequency | 0.1667 | entity mention count with exponential decay |
 
 Final score = sum of weighted factors, range [0.0, 1.0].
+
+### Frequency Factor
+
+The frequency factor tracks how often entities mentioned in the message have been referenced in recent sessions. Calculation:
+- Query entity graph for each unique entity in the message
+- Count mentions in last N sessions (configurable, default: 10 sessions)
+- Apply exponential decay: `count × exp(-λ × days_since_last_mention)` where λ = 0.01
+- Normalize to [0, 1] by dividing by threshold (default: 5 mentions)
 
 ---
 
@@ -80,7 +89,13 @@ Final score = sum of weighted factors, range [0.0, 1.0].
 [memory.admission]
 enabled = true
 threshold = 0.5
-weights = { recency = 0.2, relevance = 0.2, tool = 0.2, entities = 0.2, length = 0.2 }
+weights = { recency = 0.1667, relevance = 0.1667, tool = 0.1667, entities = 0.1667, length = 0.1667, frequency = 0.1667 }
+
+[memory.admission.frequency]
+# Frequency factor configuration
+mention_lookback_sessions = 10
+mention_decay_rate = 0.01
+mention_normalization_cap = 5.0
 ```
 
 ---

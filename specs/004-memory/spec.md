@@ -68,7 +68,8 @@ SemanticMemory (Arc)
 
 ### Admission Control
 - Not all messages admitted to memory (noise filtering via A-MAC)
-- Five-factor scoring: recency, relevance, tool-use, entity-density, length
+- Six-factor scoring: recency, relevance, tool-use, entity-density, length, frequency
+- Frequency factor: entity mention count with temporal decay (ref. [[004-3-admission-control]])
 - Threshold-based gate: score < threshold → rejected (returns None)
 - Fail-open: admission error → admit message anyway
 
@@ -89,6 +90,55 @@ SemanticMemory (Arc)
 - Boosted by access frequency (messages accessed more often decay slower)
 - Scores [0.0, 1.0]: 1.0 fresh+accessed, 0.0 old+never-accessed
 - Drives eviction and (optionally) admission decisions
+
+### Tier-Aware Retrieval Gating
+
+Memory is organized in three tiers; retrieval strategy adapts to query complexity:
+
+**Shallow queries** (simple entity lookup, single-turn context, dependency depth < 2 hops)
+- Search: SQLite working + episodic stores only
+- Outcome: fast, low token cost, reduced latency p95
+
+**Medium queries** (multi-turn reasoning, tool-output dependencies)
+- Search: episodic (SQLite) + semantic vectors (Qdrant with MMR reranking)
+- Outcome: balanced accuracy and cost
+
+**Deep queries** (complex reasoning, cross-session patterns, causal inference)
+- Search: all three tiers (working + episodic + semantic), aggregate by relevance
+- Outcome: highest recall, higher token cost
+
+Complexity classification via [[024-complexity-triage-routing]]; same signal applied to memory tier selection.
+See [[004-14-memory-tiering-rfc-decision]] for design rationale.
+
+---
+
+## Skill Promotion Pathways
+
+Memory clusters and dense graph regions can be automatically promoted to the skills layer via multiple pathways (see [[004-15-memory-skill-coevolution-rfc-decision]]):
+
+### HeLa-Mem Consolidation Path (Implemented)
+Periodic daemon identifies high-weight clusters in the episodic memory graph:
+- Query: `SELECT node_id, degree, AVG(weight) FROM ... GROUP BY node_id HAVING degree * AVG(weight) > consolidation_threshold`
+- Collect neighboring node summaries; pass to `consolidate_provider` LLM
+- LLM output → stored as `PersistentRule` or enqueued as skill draft
+- See [[004-11-memory-hela-mem]] §3.4 for implementation details
+
+### Cognitive Folding Path (RFC #4218, P2)
+Idle-time memory reorganization via clustering on co-occurrence patterns:
+- Triggers when agent idle > `idle_window_ms` (default 5s)
+- Extract dense subgraphs via community detection (edge weight > `clustering_threshold`)
+- Diversity check: skip homogeneous clusters (entropy threshold)
+- Candidates → skill drafts or new episodic entities
+- See [[004-11-memory-hela-mem]] §3.6 for details
+
+### Future: MemQ Value Learning Path (RFC #4218, P3)
+When [[042-experiments]] framework matures:
+- Track `(memory_fact_id, retrieval_context) → outcome` tuples
+- Compute Q-values via temporal difference learning
+- High-Q facts promoted based on retrieval-context utility
+- Tracked in issue #4042
+
+All promotion pathways terminate in the skill registry (see [[005-skills/spec]]) via the `draft_skill()` pathway. No new skill storage infrastructure is required.
 
 ---
 

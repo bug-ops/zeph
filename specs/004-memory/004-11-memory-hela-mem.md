@@ -169,6 +169,40 @@ When `spreading_activation = true`:
 
 Falls back to pure ANN when graph has no edges from anchor node.
 
+### 3.6 Idle-Time Cognitive Folding (HL-F6, RFC #4218)
+
+Extends consolidation daemon with proactive memory reorganization during agent idle periods. When no new user messages arrive for `idle_window_ms` (default 5 seconds):
+
+1. **Cluster extraction**: identify dense subgraphs via community detection
+   - Nodes are co-active if edge weight > `clustering_threshold` (default 0.7)
+   - Extract connected components using label propagation or BLPA
+   - Filter clusters by minimum size (default 3 nodes)
+
+2. **Diversity check**: skip clusters that represent single topics
+   - Compute cluster embedding as centroid of member entity vectors
+   - Diversity = entropy of entity type distribution; threshold 0.5
+   - Skip homogeneous clusters (e.g., single-type entity clusters)
+
+3. **Candidate surfacing**: clusters above thresholds are candidates for
+   - Skill promotion (via existing skill draft pathway)
+   - New episodic memory entities (compound facts)
+   - Explicit pattern extraction for user-facing insights
+
+4. **No-op consolidation**: mark folded nodes with `cogfolded_at` timestamp; defer re-clustering for `folding_cooldown_turns` (default 10)
+
+**Configuration** (`[memory.hebbian]`):
+
+```toml
+idle_folding_enabled = true
+idle_window_ms = 5000
+clustering_threshold = 0.7
+min_cluster_size = 3
+diversity_threshold = 0.5
+folding_cooldown_turns = 10
+```
+
+**Trigger**: background scheduler checks agent idle time after each turn. Folding runs off the hot path via `TaskClass::Background` spawn.
+
 ---
 
 ## 4. Key Invariants
