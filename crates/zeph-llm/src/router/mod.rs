@@ -38,12 +38,6 @@
 //! Thompson and Bandit state files are loaded from user-controlled paths at startup.
 //! Files are validated (finite floats, clamped range) and written with `0o600` permissions
 //! on Unix. Do not store state files in world-writable directories.
-//!
-//! # Security
-//!
-//! Thompson and Bandit state are loaded from user-controlled paths at startup. Files are
-//! validated (finite floats, clamped range) and written with `0o600` permissions
-//! on Unix. Do not store state files in world-writable directories.
 
 pub mod asi;
 pub mod aware;

@@ -47,8 +47,6 @@ type CandidateRow = (i64, String, String, String, String, i64);
 pub struct EpisodicConsolidationConfig {
     /// Enable the episodic consolidation daemon.
     pub enabled: bool,
-    /// Provider name for fact extraction LLM calls (resolved by the caller).
-    pub consolidation_provider: String,
     /// How often the sweep runs, in seconds. Default: `1800`.
     pub interval_secs: u64,
     /// Maximum episodic events processed per sweep. Default: `30`.
@@ -166,7 +164,7 @@ pub async fn start_episodic_consolidation_loop(
 ///
 /// Returns [`MemoryError`] on database or LLM errors.
 #[allow(clippy::too_many_lines)] // complex sweep pipeline; decomposition deferred to future refactor
-#[tracing::instrument(skip_all, name = "memory.episodic_consolidation.sweep")]
+#[tracing::instrument(skip_all, name = "memory.episodic.sweep")]
 pub async fn run_episodic_consolidation_sweep(
     pool: DbPool,
     provider: &AnyProvider,
@@ -240,7 +238,7 @@ pub async fn run_episodic_consolidation_sweep(
 
         for fact in extracted {
             let is_dup = {
-                let _span = tracing::info_span!("memory.episodic_consolidation.dedup").entered();
+                let _span = tracing::info_span!("memory.episodic.dedup").entered();
                 is_jaccard_duplicate(&fact.fact, &existing_facts, config.dedup_jaccard_threshold)
             };
 
@@ -351,7 +349,7 @@ pub async fn run_episodic_consolidation_sweep(
 ///
 /// Excludes `SummaryOnly` messages (too degraded) and prefers `compressed_content`
 /// when available (`ScrapMem` fidelity levels: `Full`, `Compressed`, `SummaryOnly`).
-#[tracing::instrument(skip_all, name = "memory.episodic_consolidation.fetch_candidates")]
+#[tracing::instrument(skip_all, name = "memory.episodic.fetch_candidates")]
 async fn fetch_candidates(
     pool: &DbPool,
     config: &EpisodicConsolidationConfig,
@@ -384,7 +382,7 @@ async fn fetch_candidates(
 ///
 /// Joins `experience_nodes` within a ±30 s window around the event's `created_at`.
 /// Returns 0.0 when no experience data is available.
-#[tracing::instrument(skip(pool), name = "memory.episodic_consolidation.cognitive_weight")]
+#[tracing::instrument(skip(pool), name = "memory.episodic.cognitive_weight")]
 async fn compute_cognitive_weight(
     pool: &DbPool,
     session_id: &str,
@@ -413,7 +411,7 @@ async fn compute_cognitive_weight(
 ///
 /// Returns an empty vec when the LLM signals no extractable facts.
 /// Returns `Err` on timeout or malformed JSON.
-#[tracing::instrument(skip_all, name = "memory.episodic_consolidation.extract_facts")]
+#[tracing::instrument(skip_all, name = "memory.episodic.extract_facts")]
 async fn extract_facts_via_llm(
     provider: &AnyProvider,
     candidates: &[ConsolidationCandidate],
@@ -716,7 +714,6 @@ mod tests {
         let provider = mock_provider_with_response(&llm_response);
         let config = EpisodicConsolidationConfig {
             enabled: true,
-            consolidation_provider: String::new(),
             interval_secs: 1800,
             batch_size: 30,
             min_age_secs: 300,
@@ -761,7 +758,6 @@ mod tests {
         let provider = mock_provider_with_response("[]");
         let config = EpisodicConsolidationConfig {
             enabled: true,
-            consolidation_provider: String::new(),
             interval_secs: 1800,
             batch_size: 30,
             min_age_secs: 300,
@@ -833,7 +829,6 @@ mod tests {
     fn episodic_consolidation_config_default() {
         let cfg = EpisodicConsolidationConfig {
             enabled: false,
-            consolidation_provider: String::new(),
             interval_secs: 1800,
             batch_size: 30,
             min_age_secs: 300,
