@@ -3322,7 +3322,8 @@ use steps::{
     MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
     MigrateSchedulerDaemon, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
     MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
-    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateVigilConfig,
+    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
+    MigrateVigilConfig,
 };
 
 /// Step 45: add an advisory comment above `GonkaGate` provider entries pointing users to
@@ -3410,7 +3411,47 @@ pub fn migrate_cocoon_provider_notice(toml_src: &str) -> Result<MigrationResult,
     })
 }
 
-/// Ordered registry of all sequential migration steps (steps 1–46).
+/// Adds a commented-out `[telemetry.trace_metadata]` example to configs that have a
+/// `[telemetry]` section but no `trace_metadata` key (#4160).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML source cannot be parsed.
+pub fn migrate_trace_metadata(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("trace_metadata") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if !doc.contains_key("telemetry") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Custom key/value pairs attached as OpenTelemetry resource attributes (#4160).\n\
+        # Appear on every exported span. Values are plaintext — do not store secrets here.\n\
+        # [telemetry.trace_metadata]\n\
+        # \"deployment.environment\" = \"production\"\n\
+        # \"vcs.revision\" = \"abc1234\"\n";
+    let raw = doc.to_string();
+    let output = insert_after_section(&raw, "telemetry", comment);
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["telemetry.trace_metadata".to_owned()],
+    })
+}
+
+/// Ordered registry of all sequential migration steps (steps 1–47).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -3485,6 +3526,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateGonkagateToGonka),
             // Step 46 — advisory notice for Cocoon decentralized inference provider (#3671)
             Box::new(MigrateCocoonProviderNotice),
+            // Step 47 — telemetry.trace_metadata OTEL resource attributes (#4160)
+            Box::new(MigrateTraceMetadata),
         ]
     });
 
@@ -3503,8 +3546,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            46,
-            "MIGRATIONS registry must contain all 46 sequential steps"
+            47,
+            "MIGRATIONS registry must contain all 47 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5090,8 +5133,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_forty_six_entries() {
-        assert_eq!(MIGRATIONS.len(), 46);
+    fn registry_has_forty_seven_entries() {
+        assert_eq!(MIGRATIONS.len(), 47);
     }
 
     #[test]
@@ -5178,9 +5221,44 @@ prompt_cache_ttl = "1h"
             "migrate_provider_max_concurrent",
             "migrate_gonkagate_to_gonka",
             "migrate_cocoon_provider_notice",
+            "migrate_trace_metadata",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
+    }
+
+    // ── migrate_trace_metadata tests (#4160) ─────────────────────────────────
+
+    #[test]
+    fn migrate_trace_metadata_noop_when_already_present() {
+        let src = "[telemetry]\nenabled = true\n\n[telemetry.trace_metadata]\n\"env\" = \"prod\"\n";
+        let result = migrate_trace_metadata(src).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_trace_metadata_noop_when_no_telemetry_section() {
+        let src = "[agent]\nmax_turns = 10\n";
+        let result = migrate_trace_metadata(src).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_trace_metadata_injects_comment_when_telemetry_present() {
+        let src = "[telemetry]\nenabled = true\nservice_name = \"zeph\"\n";
+        let result = migrate_trace_metadata(src).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("trace_metadata"));
+        assert!(
+            result
+                .sections_changed
+                .contains(&"telemetry.trace_metadata".to_owned())
+        );
+        // Idempotent: running again is a no-op.
+        let result2 = migrate_trace_metadata(&result.output).unwrap();
+        assert_eq!(result2.changed_count, 0);
     }
 
     // ── migrate_qdrant_api_key tests (#3543) ─────────────────────────────────

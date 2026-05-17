@@ -1298,10 +1298,12 @@ impl<C: Channel> Agent<C> {
         mut self,
         dump_dir: std::path::PathBuf,
         service_name: impl Into<String>,
+        trace_metadata: std::collections::HashMap<String, String>,
         redact: bool,
     ) -> Self {
         self.runtime.debug.dump_dir = Some(dump_dir);
         self.runtime.debug.trace_service_name = service_name.into();
+        self.runtime.debug.trace_metadata = trace_metadata;
         self.runtime.debug.trace_redact = redact;
         self
     }

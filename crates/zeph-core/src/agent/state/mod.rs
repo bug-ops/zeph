@@ -397,6 +397,8 @@ pub(crate) struct DebugState {
     pub(crate) trace_service_name: String,
     /// Whether to redact in `TracingCollector` created via runtime format switch (CR-04).
     pub(crate) trace_redact: bool,
+    /// User-defined resource attributes forwarded to `TracingCollector` (from `telemetry.trace_metadata`).
+    pub(crate) trace_metadata: std::collections::HashMap<String, String>,
     /// Span ID of the currently executing iteration — used by LLM/tool span wiring (CR-01).
     /// Set to `Some` at the start of `process_user_message`, cleared at end.
     pub(crate) current_iteration_span_id: Option<[u8; 8]>,
@@ -876,9 +878,11 @@ impl DebugState {
         {
             let service_name = self.trace_service_name.clone();
             let redact = self.trace_redact;
+            let trace_metadata = self.trace_metadata.clone();
             match crate::debug_dump::trace::TracingCollector::new(
                 dump_dir.as_path(),
                 &service_name,
+                trace_metadata,
                 redact,
                 None,
             ) {
@@ -980,6 +984,7 @@ impl Default for DebugState {
             dump_dir: None,
             trace_service_name: String::new(),
             trace_redact: true,
+            trace_metadata: std::collections::HashMap::new(),
             current_iteration_span_id: None,
         }
     }

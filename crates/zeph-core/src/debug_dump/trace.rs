@@ -160,6 +160,9 @@ pub struct TracingCollector {
     session_span_id: [u8; 8],
     session_start: u64,
     service_name: String,
+    /// User-defined resource attributes from `telemetry.trace_metadata`, included in
+    /// `resourceSpans[].resource.attributes` when serializing to OTLP JSON.
+    trace_metadata: HashMap<String, String>,
     output_dir: PathBuf,
     /// Active (open) iterations keyed by iteration index (I-03).
     active_iterations: HashMap<usize, IterationEntry>,
@@ -178,12 +181,16 @@ pub struct TracingCollector {
 impl TracingCollector {
     /// Create a new collector.
     ///
+    /// `trace_metadata` is included as additional resource attributes in the OTLP JSON output.
+    /// The reserved key `service.name` in `trace_metadata` is silently skipped.
+    ///
     /// # Errors
     ///
     /// Returns an error if `output_dir` cannot be created.
     pub fn new(
         output_dir: &Path,
         service_name: impl Into<String>,
+        trace_metadata: HashMap<String, String>,
         redact: bool,
         trace_tx: Option<tokio::sync::mpsc::UnboundedSender<TraceEvent>>,
     ) -> std::io::Result<Self> {
@@ -193,6 +200,7 @@ impl TracingCollector {
             session_span_id: new_span_id(),
             session_start: now_unix_nanos(),
             service_name: service_name.into(),
+            trace_metadata,
             output_dir: output_dir.to_owned(),
             active_iterations: HashMap::new(),
             completed_spans: Vec::new(),
@@ -497,7 +505,7 @@ impl TracingCollector {
         let mut all_spans = vec![session_span];
         all_spans.append(&mut self.completed_spans);
 
-        let json = serialize_otlp_json(&all_spans, &self.service_name);
+        let json = serialize_otlp_json(&all_spans, &self.service_name, &self.trace_metadata);
         let path = self.output_dir.join("trace.json");
         if let Err(e) = write_trace_file(&path, json.as_bytes()) {
             tracing::warn!(path = %path.display(), error = %e, "trace.json write failed");
@@ -537,9 +545,16 @@ fn span_status_code(status: &SpanStatus) -> u8 {
 
 /// Serialize spans to OTLP JSON Protobuf encoding.
 ///
+/// `trace_metadata` entries are appended as additional resource attributes after `service.name`.
+/// The reserved key `service.name` in `trace_metadata` is skipped to avoid duplication.
+///
 /// Format: <https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding>
 #[must_use]
-pub fn serialize_otlp_json(spans: &[SpanData], service_name: &str) -> String {
+pub fn serialize_otlp_json<S: std::hash::BuildHasher>(
+    spans: &[SpanData],
+    service_name: &str,
+    trace_metadata: &HashMap<String, String, S>,
+) -> String {
     let otlp_spans: Vec<serde_json::Value> = spans
         .iter()
         .map(|s| {
@@ -579,13 +594,24 @@ pub fn serialize_otlp_json(spans: &[SpanData], service_name: &str) -> String {
         })
         .collect();
 
+    let mut resource_attrs = vec![serde_json::json!({
+        "key": "service.name",
+        "value": { "stringValue": service_name }
+    })];
+    for (k, v) in trace_metadata {
+        if k == "service.name" {
+            continue;
+        }
+        resource_attrs.push(serde_json::json!({
+            "key": k,
+            "value": { "stringValue": v }
+        }));
+    }
+
     let payload = serde_json::json!({
         "resourceSpans": [{
             "resource": {
-                "attributes": [{
-                    "key": "service.name",
-                    "value": { "stringValue": service_name }
-                }]
+                "attributes": resource_attrs
             },
             "scopeSpans": [{
                 "scope": {
@@ -644,7 +670,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_collector(dir: &Path) -> TracingCollector {
-        TracingCollector::new(dir, "zeph-test", false, None).unwrap()
+        TracingCollector::new(dir, "zeph-test", HashMap::new(), false, None).unwrap()
     }
 
     #[test]
@@ -735,7 +761,7 @@ mod tests {
     #[test]
     fn redaction_applied_to_text_attributes() {
         let tmp = tempdir().unwrap();
-        let mut c = TracingCollector::new(tmp.path(), "test", true, None).unwrap();
+        let mut c = TracingCollector::new(tmp.path(), "test", HashMap::new(), true, None).unwrap();
         let iter_id = c.session_span_id();
         let guard = c.begin_memory_search(iter_id);
         c.end_memory_search(
@@ -770,7 +796,7 @@ mod tests {
             status: SpanStatus::Ok,
         }];
 
-        let json = serialize_otlp_json(&spans, "zeph");
+        let json = serialize_otlp_json(&spans, "zeph", &HashMap::new());
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         let span = &v["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
@@ -797,6 +823,37 @@ mod tests {
             tmp.path().join("trace.json").exists(),
             "Drop must flush trace.json"
         );
+    }
+
+    #[test]
+    fn trace_metadata_included_in_resource_attributes() {
+        let tmp = tempdir().unwrap();
+        let mut meta = HashMap::new();
+        meta.insert("deployment.environment".to_owned(), "staging".to_owned());
+        meta.insert("service.name".to_owned(), "should-be-skipped".to_owned());
+        let mut c = TracingCollector::new(tmp.path(), "zeph-test", meta, false, None).unwrap();
+        c.finish();
+
+        let content = std::fs::read_to_string(tmp.path().join("trace.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let attrs = v["resourceSpans"][0]["resource"]["attributes"]
+            .as_array()
+            .unwrap();
+
+        // service.name must appear with the collector's service_name, not the skipped value.
+        let svc = attrs
+            .iter()
+            .find(|a| a["key"] == "service.name")
+            .expect("service.name must be in resource attributes");
+        assert_eq!(svc["value"]["stringValue"], "zeph-test");
+
+        // Custom metadata attribute must be present.
+        let env_attr = attrs.iter().find(|a| a["key"] == "deployment.environment");
+        assert!(
+            env_attr.is_some(),
+            "deployment.environment must be in resource attributes"
+        );
+        assert_eq!(env_attr.unwrap()["value"]["stringValue"], "staging");
     }
 
     #[test]

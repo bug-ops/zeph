@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -146,6 +147,30 @@ pub struct TelemetryConfig {
     /// Interval in seconds between system-metrics snapshots (Phase 3). Default: `5`.
     #[serde(default = "default_system_metrics_interval_secs")]
     pub system_metrics_interval_secs: u64,
+    /// User-defined key/value pairs attached as OpenTelemetry resource attributes.
+    ///
+    /// These appear on every span exported via OTLP and in Chrome JSON trace
+    /// `resourceSpans[].resource.attributes`. Useful for tagging traces with deployment
+    /// environment, team, git revision, etc.
+    ///
+    /// Keys follow the [OpenTelemetry attribute naming convention](https://opentelemetry.io/docs/specs/semconv/general/attribute-naming/)
+    /// (dot-separated, lowercase). The reserved key `service.name` is silently ignored —
+    /// the `service_name` config field takes precedence.
+    ///
+    /// Values appear in plaintext in exported traces. The `RedactingSpanProcessor` does
+    /// **not** scrub resource attributes (they are set once at init, not per-span). Do not
+    /// store secrets here.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [telemetry.trace_metadata]
+    /// "deployment.environment" = "staging"
+    /// "team.name" = "platform"
+    /// "vcs.revision" = "abc1234"
+    /// ```
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub trace_metadata: HashMap<String, String>,
 }
 
 impl Default for TelemetryConfig {
@@ -162,6 +187,7 @@ impl Default for TelemetryConfig {
             sample_rate: default_sample_rate(),
             otel_filter: None,
             system_metrics_interval_secs: default_system_metrics_interval_secs(),
+            trace_metadata: HashMap::new(),
         }
     }
 }
@@ -212,5 +238,50 @@ mod tests {
         let cfg: TelemetryConfig = toml::from_str("").unwrap();
         assert!(!cfg.enabled);
         assert_eq!(cfg.backend, TelemetryBackend::Local);
+    }
+
+    #[test]
+    fn trace_metadata_parses_and_roundtrips() {
+        let toml = r#"
+            enabled = true
+            backend = "otlp"
+            service_name = "my-agent"
+
+            [trace_metadata]
+            "deployment.environment" = "staging"
+            "team.name" = "platform"
+        "#;
+        let cfg: TelemetryConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.trace_metadata
+                .get("deployment.environment")
+                .map(String::as_str),
+            Some("staging")
+        );
+        assert_eq!(
+            cfg.trace_metadata.get("team.name").map(String::as_str),
+            Some("platform")
+        );
+
+        // Roundtrip: serialize then deserialize preserves values.
+        let serialized = toml::to_string(&cfg).unwrap();
+        let cfg2: TelemetryConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(cfg2.trace_metadata, cfg.trace_metadata);
+    }
+
+    #[test]
+    fn trace_metadata_empty_by_default() {
+        let cfg = TelemetryConfig::default();
+        assert!(cfg.trace_metadata.is_empty());
+    }
+
+    #[test]
+    fn trace_metadata_omitted_when_empty_on_serialize() {
+        let cfg = TelemetryConfig::default();
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(
+            !serialized.contains("trace_metadata"),
+            "empty trace_metadata must be omitted from serialized TOML"
+        );
     }
 }

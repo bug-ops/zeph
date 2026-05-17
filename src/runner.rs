@@ -2795,6 +2795,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let agent = agent.with_trace_config(
                 dir.clone(),
                 config.debug.traces.service_name.clone(),
+                config.telemetry.trace_metadata.clone(),
                 config.debug.traces.redact,
             );
             // When format=Trace, also wire a TracingCollector (C-03: independent of legacy dumper).
@@ -2803,6 +2804,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 match zeph_core::debug_dump::trace::TracingCollector::new(
                     &session_dir,
                     &config.debug.traces.service_name,
+                    config.telemetry.trace_metadata.clone(),
                     config.debug.traces.redact,
                     None,
                 ) {

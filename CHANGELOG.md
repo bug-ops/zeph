@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-config`: Added `telemetry.trace_metadata` config field (`HashMap<String, String>`)
+  that propagates user-defined key/value pairs as OpenTelemetry resource attributes. Attributes
+  appear on every exported OTLP span and in Chrome JSON `resourceSpans[].resource.attributes`.
+  The reserved key `service.name` is silently ignored — `service_name` takes precedence.
+  Values are stored in plaintext; do not use for secrets (closes #4160).
+- `zeph-config`: Added migration step 47 (`migrate_trace_metadata`) that injects a
+  commented-out `[telemetry.trace_metadata]` example into existing configs that have a
+  `[telemetry]` section (closes #4160).
+
 ### Security
 
 - `zeph-core`, `zeph-config`: Parent messages passed to spawned sub-agents are now sanitized

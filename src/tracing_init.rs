@@ -347,10 +347,41 @@ fn build_chrome_layer(
 /// The `redact_secrets` parameter controls whether a `RedactingSpanProcessor` wrapper is
 /// inserted between the BSP and the exporter to scrub string attribute values before export.
 ///
+// RESERVED_KEYS lists resource attribute keys managed by the builder itself.
+// Only "service.name" is listed because Resource::builder_empty() (not builder()) does not
+// attach SDK-detected attributes. If the project later switches to Resource::builder(),
+// this list must be extended with "service.version", "telemetry.sdk.*", etc.
+#[cfg(feature = "otel")]
+const RESERVED_KEYS: &[&str] = &["service.name"];
+
+/// Returns the subset of `metadata` whose keys are not in `RESERVED_KEYS`.
+///
+/// Keys in `RESERVED_KEYS` are printed via `eprintln!` and excluded.
+/// Used by `build_otlp_layer` to build OTLP resource attributes.
+#[cfg(feature = "otel")]
+fn filter_trace_metadata(
+    metadata: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String)> {
+    metadata
+        .iter()
+        .filter_map(|(k, v)| {
+            if RESERVED_KEYS.contains(&k.as_str()) {
+                eprintln!(
+                    "[zeph] warning: telemetry.trace_metadata key '{k}' is reserved and will be ignored"
+                );
+                None
+            } else {
+                Some((k.clone(), v.clone()))
+            }
+        })
+        .collect()
+}
+
 /// # Panics
 ///
 /// Does not panic. OTLP pipeline errors are logged via `tracing::warn!` and `None` is returned.
 #[cfg(feature = "otel")]
+#[allow(clippy::too_many_lines)]
 fn build_otlp_layer(
     telemetry: &TelemetryConfig,
     layers: &mut Vec<
@@ -432,9 +463,12 @@ fn build_otlp_layer(
 
     // "service.name" is the canonical OTel semconv key (opentelemetry_semantic_conventions::resource::SERVICE_NAME).
     // We inline the string to avoid a new dependency on that crate.
-    let resource = opentelemetry_sdk::Resource::builder_empty()
-        .with_service_name(telemetry.service_name.clone())
-        .build();
+    let mut resource_builder = opentelemetry_sdk::Resource::builder_empty()
+        .with_service_name(telemetry.service_name.clone());
+    for (k, v) in filter_trace_metadata(&telemetry.trace_metadata) {
+        resource_builder = resource_builder.with_attribute(opentelemetry::KeyValue::new(k, v));
+    }
+    let resource = resource_builder.build();
 
     // #2998: raise BSP queue size from the default 2048 to 4096 to absorb bursts during
     // high-throughput agent turns without dropping spans. This directly addresses the
@@ -822,5 +856,52 @@ mod tests {
             !json_files.is_empty(),
             "expected at least one .json trace file"
         );
+    }
+
+    /// Verify that `filter_trace_metadata` excludes reserved keys and passes through valid ones.
+    ///
+    /// Tests the filtering logic used in `build_otlp_layer` without requiring a live OTLP
+    /// collector. Confirms that `service.name` is dropped and that other keys are preserved.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn filter_trace_metadata_excludes_reserved_keys() {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("service.name".to_owned(), "should-be-dropped".to_owned());
+        meta.insert("deployment.environment".to_owned(), "staging".to_owned());
+        meta.insert("team.name".to_owned(), "platform".to_owned());
+
+        let result = filter_trace_metadata(&meta);
+
+        // Reserved key must not appear in result.
+        assert!(
+            result.iter().all(|(k, _)| *k != "service.name"),
+            "service.name must be excluded from filtered metadata"
+        );
+        // Valid keys must be present.
+        assert!(
+            result
+                .iter()
+                .any(|(k, v)| *k == "deployment.environment" && *v == "staging"),
+            "deployment.environment must be preserved"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|(k, v)| *k == "team.name" && *v == "platform"),
+            "team.name must be preserved"
+        );
+        // Total: 2 valid keys, 1 reserved → 2 entries.
+        assert_eq!(result.len(), 2);
+    }
+
+    /// Verify that `filter_trace_metadata` returns all entries when no reserved keys are present.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn filter_trace_metadata_passes_all_non_reserved() {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("vcs.revision".to_owned(), "abc1234".to_owned());
+        let result = filter_trace_metadata(&meta);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ("vcs.revision".to_owned(), "abc1234".to_owned()));
     }
 }

@@ -1333,6 +1333,11 @@ sweep_batch_size = 100
 # sample_rate = 1.0
 # # Interval between system-metrics snapshots in seconds (Phase 3)
 # system_metrics_interval_secs = 5
+# # Custom key/value pairs attached as OpenTelemetry resource attributes.
+# # Appear on every exported span. Values are plaintext — do not store secrets here.
+# [telemetry.trace_metadata]
+# "deployment.environment" = "production"
+# "vcs.revision" = "abc1234"
 
 # [session] — session-scoped user experience settings
 # ── Goals ─────────────────────────────────────────────────────────────────────
