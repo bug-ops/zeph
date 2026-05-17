@@ -1989,7 +1989,7 @@ impl ZephAcpAgentState {
                     let sid = session_id.to_string();
                     let store = store.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = store.delete_acp_session(&sid).await {
+                        if let Err(e) = store.delete_acp_session_checked(&sid).await {
                             tracing::warn!(error = %e, "failed to clear session history");
                         }
                         if let Err(e) = store.create_acp_session(&sid).await {

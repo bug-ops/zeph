@@ -2317,6 +2317,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .with_signal_queue(trajectory_signal_queue)
         .with_trajectory_config(config.security.trajectory.clone())
         .0;
+    let agent = agent.with_risk_chain_accumulator(tool_setup.risk_chain_accumulator);
     // Spec 050 Phase 2: wire ShadowSentinel into agent so begin_turn() calls advance_turn().
     let agent = if let Some(sentinel) = shadow_sentinel_arc {
         agent.with_shadow_sentinel(sentinel)

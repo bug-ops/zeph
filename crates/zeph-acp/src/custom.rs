@@ -320,8 +320,8 @@ async fn handle_session_delete(
     }
 
     let removed_store = if let Some(ref store) = agent.store {
-        match store.delete_acp_session(&params.session_id).await {
-            Ok(()) => true,
+        match store.delete_acp_session_checked(&params.session_id).await {
+            Ok(existed) => existed,
             Err(e) => {
                 tracing::warn!(error = %e, session_id = %params.session_id, "failed to delete ACP session from store");
                 false

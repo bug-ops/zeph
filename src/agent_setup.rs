@@ -39,6 +39,11 @@ pub(crate) struct ToolSetup {
         Option<tokio::sync::mpsc::Receiver<zeph_tools::BackgroundCompletion>>,
     /// Shared reference to the `ShellExecutor` for background-run TUI metrics.
     pub(crate) shell_executor_handle: Option<Arc<zeph_tools::ShellExecutor>>,
+    /// Per-session risk chain accumulator wired to `ShellExecutor`.
+    ///
+    /// Pass the same `Arc` to `AgentBuilder::with_risk_chain_accumulator` so
+    /// `begin_turn()` resets the per-turn score at each turn boundary.
+    pub(crate) risk_chain_accumulator: Arc<zeph_tools::RiskChainAccumulator>,
 }
 
 #[derive(Clone)]
@@ -527,6 +532,9 @@ pub(crate) async fn build_tool_setup(
     let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(None));
+    shell_executor = shell_executor.with_risk_chain(Arc::clone(&risk_chain_accumulator));
+    tracing::info!("security.risk_chain: RiskChainAccumulator wired to ShellExecutor");
     let shell_policy_handle = shell_executor.policy_handle();
     let shell_executor = Arc::new(shell_executor);
     let shell_executor_handle = Some(Arc::clone(&shell_executor));
@@ -557,6 +565,7 @@ pub(crate) async fn build_tool_setup(
         shell_policy_handle,
         background_completion_rx: Some(bg_completion_rx),
         shell_executor_handle,
+        risk_chain_accumulator,
     }
 }
 

@@ -89,19 +89,6 @@ impl SqliteStore {
             .collect())
     }
 
-    /// Delete an ACP session and its events (cascade).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the database write fails.
-    pub async fn delete_acp_session(&self, session_id: &str) -> Result<(), MemoryError> {
-        zeph_db::query(sql!("DELETE FROM acp_sessions WHERE id = ?"))
-            .bind(session_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
     /// Delete an ACP session only if it exists; returns `true` when a row was deleted.
     ///
     /// Eliminates the separate exists-check + delete TOCTOU race by relying on a
@@ -423,7 +410,7 @@ mod tests {
             .save_acp_event("sess-1", "user_message", "hello")
             .await
             .unwrap();
-        store.delete_acp_session("sess-1").await.unwrap();
+        store.delete_acp_session_checked("sess-1").await.unwrap();
 
         assert!(!store.acp_session_exists("sess-1").await.unwrap());
         let events = store.load_acp_events("sess-1").await.unwrap();

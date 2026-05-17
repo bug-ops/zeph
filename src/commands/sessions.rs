@@ -80,7 +80,7 @@ pub(crate) async fn handle_sessions_command(
             }
 
             store
-                .delete_acp_session(&id)
+                .delete_acp_session_checked(&id)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to delete session: {e}"))?;
 
