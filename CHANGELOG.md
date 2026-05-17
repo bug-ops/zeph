@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `AutonomousRegistry::upsert`, `remove`, and `list` now log a `tracing::error!`
+  and recover the guard via `into_inner()` instead of silently discarding poisoned-mutex errors
+  (closes #4323).
+- `zeph-core`: Extracted `apply_supervisor_backoff` as a pure free function operating on
+  `&mut AutonomousSession`; `increment_supervisor_fail_count` is now testable without a full
+  agent mock, and three unit tests cover the backoff boundary conditions (closes #4321).
+  `build_conversation_summary` was already a private helper method; no source duplication
+  remained (closes #4322).
+
 - `zeph-llm`: `BanditState::load`, `ReputationTracker::load`, and `ThompsonState::load` in
   `RouterProvider` builder methods were calling `std::fs::read` directly on the Tokio executor
   thread; wrapped in a `blocking_load()` helper using `tokio::task::block_in_place` to avoid

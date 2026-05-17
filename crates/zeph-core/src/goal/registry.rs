@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use tracing::error;
+
 use super::autonomous::{AutonomousState, SupervisorVerdict};
 
 /// Snapshot of one autonomous session suitable for cross-crate display.
@@ -95,16 +97,20 @@ impl AutonomousRegistry {
             started_at,
             last_verdict,
         };
-        if let Ok(mut map) = self.inner.lock() {
-            map.insert(goal_id, entry);
-        }
+        let mut map = self.inner.lock().unwrap_or_else(|e| {
+            error!("AutonomousRegistry::upsert: mutex poisoned, recovering guard");
+            e.into_inner()
+        });
+        map.insert(goal_id, entry);
     }
 
     /// Remove a session entry.
     pub fn remove(&self, goal_id: &str) {
-        if let Ok(mut map) = self.inner.lock() {
-            map.remove(goal_id);
-        }
+        let mut map = self.inner.lock().unwrap_or_else(|e| {
+            error!("AutonomousRegistry::remove: mutex poisoned, recovering guard");
+            e.into_inner()
+        });
+        map.remove(goal_id);
     }
 
     /// Return snapshots for all sessions currently in the registry.
@@ -112,9 +118,10 @@ impl AutonomousRegistry {
     /// In practice this is 0 or 1 entries (invariant A1).
     #[must_use]
     pub fn list(&self) -> Vec<SessionSnapshot> {
-        let Ok(map) = self.inner.lock() else {
-            return Vec::new();
-        };
+        let map = self.inner.lock().unwrap_or_else(|e| {
+            error!("AutonomousRegistry::list: mutex poisoned, recovering guard");
+            e.into_inner()
+        });
         map.iter()
             .map(|(id, e)| {
                 let short = if e.goal_text.len() > 80 {

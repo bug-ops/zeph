@@ -310,20 +310,14 @@ impl<C: Channel> Agent<C> {
 
     /// Increment the supervisor failure counter; pause the session after reaching the limit.
     async fn increment_supervisor_fail_count(&mut self, goal_id: &str, limit: u32) {
-        let fail_count = {
+        let reached_limit = {
             let Some(s) = self.services.autonomous.session.as_mut() else {
                 return;
             };
-            s.supervisor_fail_count += 1;
-            let count = s.supervisor_fail_count;
-            // Return to Running if not yet at limit.
-            if count < limit {
-                s.state = AutonomousState::Running;
-            }
-            count
+            apply_supervisor_backoff(s, limit)
         };
 
-        if fail_count >= limit {
+        if reached_limit {
             let msg = format!(
                 "Supervisor verification unavailable after {limit} consecutive failures (goal {goal_id}). \
                  Session paused. Use `/goal resume --auto` to retry."
@@ -373,6 +367,26 @@ impl<C: Channel> Agent<C> {
             s.started_at,
             s.last_verdict.clone(),
         );
+    }
+}
+
+/// Increment the supervisor failure counter on `session` and update its FSM state.
+///
+/// Returns `true` when `limit` is reached and the caller should pause/terminate the session.
+/// Returns `false` when the counter is below `limit`; `session.state` is reset to `Running`.
+///
+/// Pure function — does not touch the channel or the registry; those are handled by the caller.
+pub(super) fn apply_supervisor_backoff(
+    session: &mut crate::goal::autonomous::AutonomousSession,
+    limit: u32,
+) -> bool {
+    session.supervisor_fail_count += 1;
+    let count = session.supervisor_fail_count;
+    if count < limit {
+        session.state = AutonomousState::Running;
+        false
+    } else {
+        true
     }
 }
 
@@ -485,5 +499,34 @@ mod tests {
     #[test]
     fn sanitize_goal_text_empty() {
         assert_eq!(sanitize_goal_text(""), "");
+    }
+
+    #[test]
+    fn backoff_increments_and_returns_false_below_limit() {
+        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        let limit = 3;
+        assert!(!apply_supervisor_backoff(&mut s, limit));
+        assert_eq!(s.supervisor_fail_count, 1);
+        assert_eq!(s.state, AutonomousState::Running);
+
+        assert!(!apply_supervisor_backoff(&mut s, limit));
+        assert_eq!(s.supervisor_fail_count, 2);
+        assert_eq!(s.state, AutonomousState::Running);
+    }
+
+    #[test]
+    fn backoff_returns_true_at_limit() {
+        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        let limit = 2;
+        apply_supervisor_backoff(&mut s, limit);
+        let reached = apply_supervisor_backoff(&mut s, limit);
+        assert!(reached);
+        assert_eq!(s.supervisor_fail_count, 2);
+    }
+
+    #[test]
+    fn backoff_limit_one_fires_immediately() {
+        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        assert!(apply_supervisor_backoff(&mut s, 1));
     }
 }
