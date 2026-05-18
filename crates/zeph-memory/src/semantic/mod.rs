@@ -370,6 +370,11 @@ pub struct SemanticMemory {
     pub(crate) retrieval_failure_logger: Option<RetrievalFailureLogger>,
     /// LLM call timeout for summarization, in seconds. Default: `60`.
     pub(crate) summarization_llm_timeout_secs: u64,
+    /// PRISM: enable query-sensitive edge costing in A* graph recall.
+    ///
+    /// When `true`, A* edge cost is modulated by cosine similarity between the query
+    /// embedding and the target entity embedding.  Mirrors [`GraphConfig::query_sensitive_cost`].
+    pub(crate) query_sensitive_cost: bool,
 }
 
 impl SemanticMemory {
@@ -502,6 +507,7 @@ impl SemanticMemory {
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
+            query_sensitive_cost: false,
         })
     }
 
@@ -566,6 +572,7 @@ impl SemanticMemory {
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
+            query_sensitive_cost: false,
         })
     }
 
@@ -760,6 +767,16 @@ impl SemanticMemory {
         }
         self.hebbian_reinforcement = reinforcement;
         self.hebbian_lr = lr;
+        self
+    }
+
+    /// Enable PRISM query-sensitive edge costing in A* graph recall (#4079).
+    ///
+    /// When enabled, edge cost is modulated by cosine similarity between the query embedding
+    /// and the target entity embedding, guiding A* toward semantically relevant paths.
+    #[must_use]
+    pub fn with_query_sensitive_cost(mut self, enabled: bool) -> Self {
+        self.query_sensitive_cost = enabled;
         self
     }
 
@@ -1072,6 +1089,7 @@ impl SemanticMemory {
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
+            query_sensitive_cost: false,
         }
     }
 
@@ -1155,6 +1173,7 @@ impl SemanticMemory {
             hebbian_spread: HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
+            query_sensitive_cost: false,
         })
     }
 

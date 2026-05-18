@@ -16,6 +16,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-config`: Added migration step 47 (`migrate_trace_metadata`) that injects a
   commented-out `[telemetry.trace_metadata]` example into existing configs that have a
   `[telemetry]` section (closes #4160).
+- `zeph-memory`, `zeph-config`: PRISM query-sensitive edge costing in A* graph recall (#4079).
+  When `memory.graph.query_sensitive_cost = true`, A* edge cost is modulated by cosine similarity
+  between the query embedding and the target entity embedding
+  (`cost = (1.0 - confidence) * (1.0 - target_cosine).max(0.01)`), guiding traversal toward
+  semantically relevant paths. Defaults to `false`; requires an embedding store. Falls back to
+  `1.0 - confidence` when embeddings are unavailable.
+- `zeph-subagent`, `zeph-config`: DACS `ContextInjectionMode::Summary` fully implemented (#4080).
+  Replaces the previous stub (which fell back to `LastAssistantTurn` with a warning). The summary
+  is extracted deterministically without LLM calls: goal from the last user message (80 chars) +
+  snippets from the last 3 assistant messages (60 chars each), truncated to `summary_max_chars`
+  (default 600) at a UTF-8 char boundary. An empty summary skips the preamble entirely and returns
+  the task prompt unchanged.
+- `zeph-config`: Added `SubAgentConfig::summary_max_chars` (default 600) controlling the maximum
+  character length of the `Summary` context injection preamble.
+- ACC (#4081): `MemCotConfig::max_state_chars` enforcement was already present in
+  `zeph-core/src/agent/memcot/accumulator.rs`. No code changes required; closes #4081.
 
 ### Security
 

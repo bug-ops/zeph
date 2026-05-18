@@ -69,6 +69,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
+        query_sensitive_cost: false,
     }
 }
 
@@ -170,6 +171,7 @@ async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
+        query_sensitive_cost: false,
     };
 
     assert!(
@@ -581,6 +583,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
+        query_sensitive_cost: false,
     };
 
     memory
@@ -702,6 +705,7 @@ async fn load_promotion_window_populates_embeddings_from_qdrant() {
         hebbian_spread: crate::HelaSpreadRuntime::default(),
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
+        query_sensitive_cost: false,
     };
 
     let window = memory.load_promotion_window(10).await.unwrap();

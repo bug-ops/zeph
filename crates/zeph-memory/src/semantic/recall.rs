@@ -1660,6 +1660,7 @@ impl SemanticMemory {
             temporal_decay_rate,
             self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
+            self.query_sensitive_cost,
         )
         .await
     }
@@ -2004,6 +2005,7 @@ mod tests {
             hebbian_spread: crate::HelaSpreadRuntime::default(),
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
+            query_sensitive_cost: false,
         }
     }
 

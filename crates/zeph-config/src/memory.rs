@@ -2184,6 +2184,21 @@ pub struct GraphConfig {
     /// LLM call timeout per extraction request, in seconds. Default: `30`.
     #[serde(default = "default_graph_llm_timeout_secs")]
     pub llm_timeout_secs: u64,
+    /// PRISM query-sensitive edge costing in A* graph recall.
+    ///
+    /// When `true`, edge cost in [`graph_recall_astar`] is modulated by the cosine similarity
+    /// between the query embedding and the target entity embedding:
+    /// `cost = (1.0 - confidence) * (1.0 - target_cosine).max(0.01)`.
+    /// Edges toward semantically relevant entities receive lower cost and are therefore
+    /// preferred by A*, producing query-aligned recall paths.
+    ///
+    /// Requires an embedding store (`qdrant` or `sqlite` vector backend). When the embedding
+    /// store is unavailable or a target entity has no stored embedding, falls back to the
+    /// baseline cost `1.0 - confidence`.
+    ///
+    /// Default: `false` (preserves existing A* behaviour).
+    #[serde(default)]
+    pub query_sensitive_cost: bool,
 }
 
 fn default_graph_pool_size() -> u32 {
@@ -2350,6 +2365,7 @@ impl Default for GraphConfig {
             pool_size: default_graph_pool_size(),
             apex_mem: ApexMemConfig::default(),
             llm_timeout_secs: default_graph_llm_timeout_secs(),
+            query_sensitive_cost: false,
         }
     }
 }

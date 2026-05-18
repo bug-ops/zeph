@@ -8,7 +8,7 @@
 //! each seed to all reachable nodes within `max_hops`.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use petgraph::algo::astar;
 use petgraph::graph::{NodeIndex, UnGraph};
@@ -19,8 +19,22 @@ use crate::graph::retrieval::find_seed_entities;
 use crate::graph::store::GraphStore;
 use crate::graph::types::{EdgeType, GraphFact};
 
+const ENTITY_COLLECTION: &str = "zeph_graph_entities";
+
+/// Cosine similarity of two equal-length slices. Returns `0.0` when either norm is zero.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let denom = (norm_a * norm_b).max(f32::EPSILON);
+    dot / denom
+}
+
 const DEFAULT_STRUCTURAL_WEIGHT: f32 = 0.4;
 const DEFAULT_COMMUNITY_CAP: usize = 3;
+
+/// Query embedding paired with per-entity embedding map, produced by the PRISM path.
+type PrismEmbeddings = Option<(Vec<f32>, HashMap<i64, Vec<f32>>)>;
 
 /// Retrieve graph facts using A* shortest-path traversal.
 ///
@@ -32,7 +46,15 @@ const DEFAULT_COMMUNITY_CAP: usize = 3;
 /// 5. Convert to [`GraphFact`], dedup, sort by score, truncate to `limit`.
 ///
 /// The A* heuristic is always `0.0` (admissible, degrades to Dijkstra when
-/// embedding distances are unavailable). Edge cost = `1.0 - confidence`.
+/// embedding distances are unavailable).
+///
+/// When `query_sensitive_cost = false` (default): edge cost = `1.0 - confidence`.
+/// When `query_sensitive_cost = true` (PRISM): edge cost =
+/// `(1.0 - confidence) * (1.0 - target_cosine).max(0.01)`, where `target_cosine`
+/// is the cosine similarity between the query embedding and the target entity embedding.
+/// Edges toward semantically relevant entities receive lower cost, guiding A* toward
+/// query-aligned paths. Falls back to `1.0 - confidence` when the embedding store is
+/// unavailable or a target entity has no stored embedding.
 ///
 /// # Errors
 ///
@@ -49,6 +71,7 @@ pub async fn graph_recall_astar(
     temporal_decay_rate: f64,
     hebbian_enabled: bool,
     hebbian_lr: f32,
+    query_sensitive_cost: bool,
 ) -> Result<Vec<GraphFact>, MemoryError> {
     let _span = tracing::info_span!("memory.graph.astar", query_len = query.len()).entered();
 
@@ -97,6 +120,90 @@ pub async fn graph_recall_astar(
         return Ok(Vec::new());
     }
 
+    // PRISM: compute query embedding once and batch-fetch target entity embeddings.
+    // When query_sensitive_cost is disabled or embedding store unavailable, entity_vec_map
+    // is empty and edge costs fall back to `1.0 - confidence`.
+    let query_vec_and_entity_embeddings: PrismEmbeddings = if query_sensitive_cost {
+        match embeddings {
+            Some(emb_store) => {
+                const PRISM_EMBED_TIMEOUT: Duration = Duration::from_secs(10);
+                let _embed_span = tracing::info_span!("memory.graph.astar.prism_embed").entered();
+                match tokio::time::timeout(
+                    PRISM_EMBED_TIMEOUT,
+                    zeph_llm::LlmProvider::embed(provider, query),
+                )
+                .await
+                {
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            "prism: query embed timed out after {}s, falling back to \
+                                 confidence-only cost",
+                            PRISM_EMBED_TIMEOUT.as_secs()
+                        );
+                        None
+                    }
+                    Ok(Ok(q_vec)) => {
+                        let entity_ids: Vec<i64> = all_db_edges
+                            .iter()
+                            .flat_map(|e| [e.source_entity_id, e.target_entity_id])
+                            .collect::<HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        match store.qdrant_point_ids_for_entities(&entity_ids).await {
+                            Ok(point_id_map) => {
+                                let point_ids: Vec<String> =
+                                    point_id_map.values().cloned().collect();
+                                match emb_store
+                                    .get_vectors_from_collection(ENTITY_COLLECTION, &point_ids)
+                                    .await
+                                {
+                                    Ok(vec_map) => {
+                                        // Invert: entity_id → embedding vector.
+                                        let entity_vecs: HashMap<i64, Vec<f32>> = entity_ids
+                                            .iter()
+                                            .filter_map(|&eid| {
+                                                let pid = point_id_map.get(&eid)?;
+                                                let v = vec_map.get(pid)?.clone();
+                                                Some((eid, v))
+                                            })
+                                            .collect();
+                                        Some((q_vec, entity_vecs))
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "prism: failed to fetch entity vectors, \
+                                             falling back to confidence-only cost"
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "prism: failed to fetch qdrant point ids, \
+                                     falling back to confidence-only cost"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            error = %e,
+                            "prism: query embed failed, falling back to confidence-only cost"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
     // Build petgraph: node index ↔ entity_id mapping.
     let mut node_map: HashMap<i64, NodeIndex> = HashMap::new();
     let mut id_map: Vec<i64> = Vec::new();
@@ -127,8 +234,20 @@ pub async fn graph_recall_astar(
             &mut id_map,
             edge.target_entity_id,
         );
-        // Cost: low-confidence edges are more expensive.
-        let cost = 1.0 - edge.confidence.clamp(0.0, 1.0);
+        // PRISM: when query_sensitive_cost is enabled and embeddings are available,
+        // modulate cost by cosine similarity to the target entity, biasing A* toward
+        // semantically relevant paths. Floor of 0.01 prevents zero-cost paths.
+        let cost = if let Some((ref q_vec, ref entity_vecs)) = query_vec_and_entity_embeddings {
+            let base = 1.0_f32 - edge.confidence.clamp(0.0, 1.0);
+            if let Some(tgt_vec) = entity_vecs.get(&edge.target_entity_id) {
+                let sim = cosine_similarity(q_vec, tgt_vec).clamp(0.0, 1.0);
+                (base * (1.0 - sim)).max(0.01)
+            } else {
+                base
+            }
+        } else {
+            1.0_f32 - edge.confidence.clamp(0.0, 1.0)
+        };
         graph.add_edge(src, tgt, cost);
     }
 
@@ -267,6 +386,7 @@ mod tests {
             0.0,
             false,
             0.0,
+            false,
         )
         .await
         .unwrap();
@@ -288,6 +408,7 @@ mod tests {
             0.0,
             false,
             0.0,
+            false,
         )
         .await
         .unwrap();
@@ -324,9 +445,108 @@ mod tests {
             0.0,
             false,
             0.0,
+            false,
         )
         .await
         .unwrap();
         assert!(!result.is_empty());
+    }
+
+    // PRISM: query_sensitive_cost=true with no embedding store → fallback to confidence-only.
+    // Verifies that enabling PRISM without an embedding store does not error and returns results
+    // identical to the baseline (no panic, no empty result when edges exist).
+    #[tokio::test]
+    async fn astar_query_sensitive_cost_without_embeddings_falls_back() {
+        let store = setup_store().await;
+        let a = store
+            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .await
+            .unwrap()
+            .0;
+        let b = store
+            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .await
+            .unwrap()
+            .0;
+        store
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None)
+            .await
+            .unwrap();
+
+        let provider = mock_provider();
+        // embeddings = None → PRISM falls back to confidence-only cost.
+        let result = graph_recall_astar(
+            &store,
+            None,
+            &provider,
+            "Alice",
+            10,
+            2,
+            &[],
+            0.0,
+            false,
+            0.0,
+            true, // query_sensitive_cost enabled but no embedding store
+        )
+        .await
+        .unwrap();
+        // Should return the same edge as without PRISM — no panic, no empty result.
+        assert!(
+            !result.is_empty(),
+            "fallback to confidence-only must still return results"
+        );
+        assert_eq!(result[0].entity_name, "alice");
+    }
+
+    // PRISM: query_sensitive_cost=true with embedding store that has no vectors for graph entities
+    // → falls back to confidence-only cost per entity. This exercises the per-entity fallback
+    // branch when `entity_vecs.get(&edge.target_entity_id)` returns None.
+    #[tokio::test]
+    async fn astar_query_sensitive_cost_entity_missing_embedding_uses_confidence_fallback() {
+        use crate::embedding_store::EmbeddingStore;
+        use crate::store::SqliteStore;
+
+        let store = setup_store().await;
+        let a = store
+            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .await
+            .unwrap()
+            .0;
+        let b = store
+            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .await
+            .unwrap()
+            .0;
+        store
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.8, None)
+            .await
+            .unwrap();
+
+        let provider = mock_provider();
+
+        // Build a SQLite-backed EmbeddingStore with no stored vectors.
+        // qdrant_point_ids_for_entities will return an empty map, so entity_vecs will be empty,
+        // and every edge will use the `1.0 - confidence` fallback cost.
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let emb_store = EmbeddingStore::new_sqlite(sqlite.pool().clone());
+
+        let result = graph_recall_astar(
+            &store,
+            Some(&emb_store),
+            &provider,
+            "Alice",
+            10,
+            2,
+            &[],
+            0.0,
+            false,
+            0.0,
+            true,
+        )
+        .await
+        .unwrap();
+        // Entity embeddings missing → fallback to confidence-only → same results as baseline.
+        assert!(!result.is_empty());
+        assert_eq!(result[0].entity_name, "alice");
     }
 }

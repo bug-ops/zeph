@@ -431,6 +431,10 @@ impl AppBuilder {
 
         memory = memory.with_hebbian_spread(self.build_hela_runtime());
 
+        if self.config.memory.graph.query_sensitive_cost {
+            memory = memory.with_query_sensitive_cost(true);
+        }
+
         if self.config.memory.semantic.enabled && memory.is_vector_store_connected().await {
             tracing::info!("semantic memory enabled, vector store connected");
         }
