@@ -11,7 +11,7 @@ use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 use zeph_subagent::error::SubAgentError;
 use zeph_subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name, resolve_agent_paths};
 
-use crate::cli::AgentsCommand;
+use crate::cli::{AgentsCommand, FleetStatus};
 
 pub(crate) async fn handle_agents_command(
     cmd: AgentsCommand,
@@ -28,9 +28,7 @@ pub(crate) async fn handle_agents_command(
         } => handle_create(&name, &description, dir.as_path(), model.as_deref()),
         AgentsCommand::Edit { name } => handle_edit(&name, config_path),
         AgentsCommand::Delete { name, yes } => handle_delete(&name, yes, config_path),
-        AgentsCommand::Fleet { status, limit } => {
-            handle_fleet(status.as_deref(), limit, config_path).await
-        }
+        AgentsCommand::Fleet { status, limit } => handle_fleet(status, limit, config_path).await,
     }
 }
 
@@ -229,7 +227,7 @@ fn handle_delete(name: &str, yes: bool, config_path: Option<&Path>) -> anyhow::R
 }
 
 async fn handle_fleet(
-    status_filter: Option<&str>,
+    status_filter: Option<FleetStatus>,
     limit: u32,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
@@ -240,9 +238,7 @@ async fn handle_fleet(
         .await
         .context("failed to open database")?;
 
-    let sf: Option<SessionStatus> = status_filter
-        .map(|s| s.parse().map_err(|e: String| anyhow::anyhow!("{e}")))
-        .transpose()?;
+    let sf: Option<SessionStatus> = status_filter.map(SessionStatus::from);
 
     let sessions = store
         .list_agent_sessions(limit, sf)

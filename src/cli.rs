@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use zeph_memory::store::agent_sessions::SessionStatus;
 
 #[derive(Parser)]
 #[command(
@@ -488,6 +489,28 @@ pub(crate) enum DbCommand {
     Migrate,
 }
 
+/// Typed session status filter for the `agents fleet` sub-command.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum FleetStatus {
+    Active,
+    Completed,
+    Failed,
+    Cancelled,
+    Unknown,
+}
+
+impl From<FleetStatus> for SessionStatus {
+    fn from(s: FleetStatus) -> Self {
+        match s {
+            FleetStatus::Active => SessionStatus::Active,
+            FleetStatus::Completed => SessionStatus::Completed,
+            FleetStatus::Failed => SessionStatus::Failed,
+            FleetStatus::Cancelled => SessionStatus::Cancelled,
+            FleetStatus::Unknown => SessionStatus::Unknown,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub(crate) enum AgentsCommand {
     /// List all available sub-agent definitions
@@ -526,9 +549,9 @@ pub(crate) enum AgentsCommand {
     },
     /// List agent sessions recorded in the fleet database
     Fleet {
-        /// Filter by session status (active, completed, failed, cancelled, unknown)
+        /// Filter by session status
         #[arg(long, short)]
-        status: Option<String>,
+        status: Option<FleetStatus>,
         /// Maximum number of sessions to show
         #[arg(long, default_value = "20")]
         limit: u32,

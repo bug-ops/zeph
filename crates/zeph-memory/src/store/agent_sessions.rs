@@ -232,6 +232,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database write fails.
+    #[tracing::instrument(name = "memory.fleet.update_status", skip_all, level = "debug", err)]
     pub async fn update_agent_session_status(
         &self,
         id: &str,
