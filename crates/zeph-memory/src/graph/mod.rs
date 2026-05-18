@@ -12,6 +12,7 @@ pub mod conflict;
 pub mod entity_lock;
 pub mod experience;
 pub mod extractor;
+pub mod implicit_conflict;
 pub mod ontology;
 pub mod resolver;
 pub mod retrieval;

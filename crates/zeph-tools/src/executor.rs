@@ -453,6 +453,18 @@ pub enum ToolError {
         /// Human-readable explanation from the LLM safety probe.
         reason: String,
     },
+
+    /// Tool call blocked by the MAGE `TrajectoryRiskAccumulator` (spec 004-16).
+    ///
+    /// Cumulative session risk exceeded `risk_threshold`. The agent loop receives the
+    /// score and the top contributing signals so it can explain the denial to the user.
+    #[error("tool call blocked: trajectory risk {score:.3} exceeds threshold")]
+    TrajectoryRiskExceeded {
+        /// Current `trajectory_risk` value at the time of the block.
+        score: f64,
+        /// Human-readable labels for the top contributing signals (up to 3).
+        top_signals: Vec<String>,
+    },
 }
 
 impl ToolError {
@@ -475,7 +487,9 @@ impl ToolError {
             Self::Execution(io_err) => classify_io_error(io_err),
             Self::Shell { category, .. } => *category,
             Self::SnapshotFailed { .. } => ToolErrorCategory::PermanentFailure,
-            Self::OutOfScope { .. } | Self::SafetyDenied { .. } => ToolErrorCategory::PolicyBlocked,
+            Self::OutOfScope { .. }
+            | Self::SafetyDenied { .. }
+            | Self::TrajectoryRiskExceeded { .. } => ToolErrorCategory::PolicyBlocked,
         }
     }
 

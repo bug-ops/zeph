@@ -42,6 +42,10 @@ pub struct ActivatedFact {
     pub edge: Edge,
     /// Activation score of the source or target entity at time of traversal.
     pub activation_score: f32,
+    /// `true` when this edge has a pending implicit conflict candidate (spec 004-17).
+    pub is_implicit_conflict: bool,
+    /// ID of the `implicit_conflict_candidates` row, if any.
+    pub conflict_candidate_id: Option<i64>,
 }
 
 pub use zeph_common::memory::SpreadingActivationParams;
@@ -678,6 +682,8 @@ impl SpreadingActivation {
                 activated_facts.push(ActivatedFact {
                     edge: edge.clone(),
                     activation_score,
+                    is_implicit_conflict: false,
+                    conflict_candidate_id: None,
                 });
             }
         }

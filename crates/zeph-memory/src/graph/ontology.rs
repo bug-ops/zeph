@@ -79,6 +79,9 @@ impl OntologyState {
     }
 }
 
+/// Type alias kept for compatibility with code that refers to `Ontology` directly.
+pub type Ontology = OntologyTable;
+
 /// The loaded APEX-MEM ontology table plus bounded LRU cache for resolved mappings.
 ///
 /// Designed for read-heavy workloads: the static table and cardinality map are behind

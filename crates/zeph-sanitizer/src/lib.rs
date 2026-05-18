@@ -59,6 +59,7 @@
 //!   `ContentSanitizer::detect_pii`]. Requires an attached classifier backend.
 //!   See `ContentSanitizer::with_classifier`] and `ContentSanitizer::with_pii_detector`].
 
+pub mod audit;
 pub mod causal_ipi;
 pub mod exfiltration;
 pub mod guardrail;

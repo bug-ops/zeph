@@ -97,6 +97,7 @@ pub mod quality_gate;
 pub mod response_cache;
 pub mod router;
 pub mod semantic;
+pub mod shadow;
 pub mod snapshot;
 pub mod store;
 #[cfg(any(test, feature = "testing"))]

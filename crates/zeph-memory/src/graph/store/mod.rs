@@ -2504,6 +2504,131 @@ impl GraphStore {
         .await
     }
 
+    /// Insert or supersede an edge, then run implicit conflict detection if a detector is provided.
+    ///
+    /// Calls [`Self::insert_or_supersede_with_metrics`] first, then — when `detector` is `Some` and
+    /// the ontology confirms the predicate is cardinality-1 — queries active edges on the same source
+    /// entity, detects conflict candidates, and stages them in `implicit_conflict_candidates`.
+    ///
+    /// Conflict detection failures are logged and swallowed so they never block the write path.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from [`Self::insert_or_supersede_with_metrics`].
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    pub async fn insert_or_supersede_with_conflict_detection(
+        &self,
+        source_entity_id: i64,
+        target_entity_id: i64,
+        relation: &str,
+        canonical_relation: &str,
+        fact: &str,
+        confidence: f32,
+        episode_id: Option<MessageId>,
+        edge_type: EdgeType,
+        set_supersedes: bool,
+        metrics: Option<&ApexMetrics>,
+        detector: Option<&crate::graph::implicit_conflict::ImplicitConflictDetector>,
+        ontology: Option<&crate::graph::ontology::OntologyTable>,
+    ) -> Result<i64, MemoryError> {
+        let new_id = self
+            .insert_or_supersede_with_metrics(
+                source_entity_id,
+                target_entity_id,
+                relation,
+                canonical_relation,
+                fact,
+                confidence,
+                episode_id,
+                edge_type,
+                set_supersedes,
+                metrics,
+            )
+            .await?;
+
+        if let (Some(det), Some(onto)) = (detector, ontology)
+            && det.is_enabled()
+        {
+            let is_cardinality_n =
+                onto.cardinality(canonical_relation) == crate::graph::ontology::Cardinality::Many;
+
+            // Query existing active edges for the same source entity (excluding the new one).
+            let existing_raw = sqlx::query(
+                "SELECT id, canonical_relation FROM graph_edges
+                     WHERE source_entity_id = ?
+                       AND id != ?
+                       AND expired_at IS NULL",
+            )
+            .bind(source_entity_id)
+            .bind(new_id)
+            .fetch_all(&self.pool)
+            .await;
+
+            match existing_raw {
+                Ok(rows) => {
+                    use sqlx::Row as _;
+                    let existing: Vec<(i64, String)> = rows
+                        .into_iter()
+                        .map(|r| {
+                            let id: i64 = r.try_get("id").unwrap_or(0);
+                            let rel: String = r.try_get("canonical_relation").unwrap_or_default();
+                            (id, rel)
+                        })
+                        .collect();
+                    let existing_refs: Vec<(i64, &str)> = existing
+                        .iter()
+                        .map(|(id, rel)| (*id, rel.as_str()))
+                        .collect();
+
+                    let candidates = det.detect_candidates(
+                        new_id,
+                        canonical_relation,
+                        &existing_refs,
+                        is_cardinality_n,
+                    );
+
+                    if !candidates.is_empty() {
+                        let ttl = det.candidate_ttl_days();
+                        match zeph_db::begin(&self.pool).await {
+                            Ok(mut tx) => {
+                                match det.stage_candidates(&candidates, &mut tx, ttl).await {
+                                    Ok(()) => {
+                                        if let Err(e) = tx.commit().await {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "implicit conflict tx commit failed (non-fatal)"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "implicit conflict staging failed (non-fatal)"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "implicit conflict: tx begin failed (non-fatal)"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "implicit conflict: failed to query existing edges (non-fatal)"
+                    );
+                }
+            }
+        }
+
+        Ok(new_id)
+    }
+
     /// Walk the `supersedes` chain from `head_id` using a single recursive CTE and return its depth.
     ///
     /// Returns `0` when the edge has no `supersedes` pointer (it is the root).

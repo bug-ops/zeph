@@ -14,6 +14,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-subagent`: `FleetRegistry` trait and `SqliteFleetRegistry` adapter; sub-agents spawned by
   `SubAgentManager` are now registered in the fleet `agent_sessions` table and visible in the fleet
   dashboard. `cancel_all` marks all active sub-agent sessions as cancelled on shutdown (closes #4370).
+- `zeph-memory`: `TrajectoryRiskAccumulator` — exponential-decay risk scoring over tool-call
+  signals (policy violation, prompt injection, tool-chain anomaly, confidence drop) with
+  configurable half-life and escalation threshold. Raises `ToolError::TrajectoryRiskExceeded`
+  when the clamped score exceeds the configured limit. Resolves #4372.
+- `zeph-memory`: `ImplicitConflictDetector` — write-time fuzzy predicate similarity detection
+  for APEX-MEM graph edges using normalised Levenshtein distance. Detected pairs are staged in
+  the new `implicit_conflict_candidates` table (migration 090) and annotated on SYNAPSE recall
+  via `annotate_conflicts`. Resolves #4373.
+- `zeph-db`: migration `090_implicit_conflict_candidates.sql` — staging table for implicit
+  conflict candidate pairs with status/resolution lifecycle columns and three supporting indexes.
+- `zeph-config`: `ImplicitConflictConfig` and supporting types (`SimilarityMethod`,
+  `ConflictResolutionStrategy`, `ConsolidationDaemonConfig`) under `[memory.graph.implicit_conflict]`.
 
 ## [0.21.2] - 2026-05-18
 

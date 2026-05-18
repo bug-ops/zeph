@@ -138,13 +138,16 @@ pub use logging::{LogRotation, LoggingConfig};
 pub use mcp_security::{CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta};
 pub use memory::{
     AdmissionConfig, AdmissionStrategy, AdmissionWeights, AutoDreamConfig, BeliefRevisionConfig,
-    CategoryConfig, CompressionConfig, CompressionStrategy, ContextFormat, ContextStrategy,
-    DigestConfig, DocumentConfig, EmGraphConfig, ForgettingConfig, GraphConfig, HebbianConfig,
+    CategoryConfig, CompressionConfig, CompressionStrategy, ConflictResolutionStrategy,
+    ConsolidationDaemonConfig, ContextFormat, ContextStrategy, DigestConfig, DocumentConfig,
+    EmGraphConfig, ForgettingConfig, GraphConfig, HebbianConfig, ImplicitConflictConfig,
     MagicDocsConfig, MemCotConfig, MemoryConfig, MicrocompactConfig, NoteLinkingConfig,
     OpticalForgettingConfig, PersonaConfig, PruningStrategy, ReasoningConfig, RecallViewConfig,
     RetrievalConfig, RetrievalFailuresConfig, RpeConfig, SemanticConfig, SessionsConfig,
-    SidequestConfig, StoreRoutingConfig, StoreRoutingStrategy, TierConfig, TieredRetrievalConfig,
-    TrajectoryConfig, TreeConfig, TypedPagesConfig, TypedPagesEnforcement, VectorBackend,
+    SidequestConfig, SimilarityMethod, StoreRoutingConfig, StoreRoutingStrategy, TierConfig,
+    TieredRetrievalConfig, TrajectoryConfig, TrajectoryRiskAccumulatorConfig,
+    TrajectorySeverityMultipliers, TrajectorySignalWeights, TreeConfig, TypedPagesConfig,
+    TypedPagesEnforcement, VectorBackend,
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;

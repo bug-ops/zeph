@@ -286,6 +286,7 @@ impl Default for Config {
                 optical_forgetting: crate::memory::OpticalForgettingConfig::default(),
                 em_graph: crate::memory::EmGraphConfig::default(),
                 episodic_consolidation: crate::memory::EpisodicConsolidationConfig::default(),
+                shadow_memory: crate::memory::TrajectoryRiskAccumulatorConfig::default(),
             },
             telegram: None,
             discord: None,

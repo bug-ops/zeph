@@ -1012,6 +1012,23 @@ pub struct MemoryConfig {
     /// key facts, and promotes them to the semantic tier in `zeph_key_facts`.
     #[serde(default)]
     pub episodic_consolidation: EpisodicConsolidationConfig,
+    /// MAGE shadow memory trajectory risk accumulator (spec 004-16).
+    ///
+    /// Maintains a per-session rolling risk score fed by sanitizer audit signals.
+    /// When `shadow_memory.enabled = true`, tool execution is gated if cumulative
+    /// trajectory risk exceeds `risk_threshold`. When `false`, all code paths are
+    /// zero-cost no-ops.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [memory.shadow_memory]
+    /// enabled = true
+    /// risk_threshold = 0.75
+    /// risk_halflife_turns = 10
+    /// ```
+    #[serde(default)]
+    pub shadow_memory: TrajectoryRiskAccumulatorConfig,
 }
 
 // ── MemFlow tiered retrieval config (issue #3712) ──────────────────────────────
@@ -2199,6 +2216,174 @@ pub struct GraphConfig {
     /// Default: `false` (preserves existing A* behaviour).
     #[serde(default)]
     pub query_sensitive_cost: bool,
+
+    /// Implicit conflict detection for SYNAPSE recall (spec 004-17, STALE/CUPMem).
+    ///
+    /// When enabled, write-time fuzzy predicate matching detects implicit conflicts
+    /// between graph edges and annotates SYNAPSE recall results accordingly.
+    #[serde(default)]
+    pub implicit_conflict: ImplicitConflictConfig,
+}
+
+/// Similarity method for implicit conflict detection.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SimilarityMethod {
+    /// Normalized Levenshtein edit distance.
+    #[default]
+    Levenshtein,
+    /// Cosine similarity over pre-computed predicate embeddings.
+    Embedding,
+    /// Either method triggers detection.
+    Both,
+}
+
+/// Resolution strategy when an implicit conflict is detected.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictResolutionStrategy {
+    /// Mark the pair as a candidate but do not supersede either edge.
+    #[default]
+    FlagOnly,
+    /// Supersede the older edge via APEX-MEM `insert_or_supersede`.
+    Recency,
+    /// Supersede the lower-confidence edge.
+    Confidence,
+    /// Delegate resolution to an LLM provider; fall back to `flag_only` on timeout.
+    Llm,
+}
+
+/// Configuration for the optional background consolidation daemon (spec 004-17).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct ConsolidationDaemonConfig {
+    /// Enable the background consolidation daemon.
+    pub enabled: bool,
+    /// How often the daemon runs, in seconds. Default: 7200 (2 hours).
+    #[serde(default = "default_ic_daemon_interval_secs")]
+    pub interval_seconds: u64,
+    /// Maximum number of candidates processed per daemon run. Default: 100.
+    #[serde(default = "default_ic_daemon_batch_size")]
+    pub batch_size: usize,
+}
+
+impl Default for ConsolidationDaemonConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_seconds: default_ic_daemon_interval_secs(),
+            batch_size: default_ic_daemon_batch_size(),
+        }
+    }
+}
+
+fn default_ic_daemon_interval_secs() -> u64 {
+    7200
+}
+
+fn default_ic_daemon_batch_size() -> usize {
+    100
+}
+
+/// Configuration for implicit conflict detection (spec 004-17, STALE/CUPMem).
+///
+/// Controls write-time fuzzy predicate matching and SYNAPSE recall annotation.
+/// All detection is gated behind `enabled = false` by default — no overhead when disabled.
+///
+/// TOML path: `[memory.graph.implicit_conflict]`
+///
+/// # Examples
+///
+/// ```toml
+/// [memory.graph.implicit_conflict]
+/// enabled = true
+/// similarity_method = "levenshtein"
+/// conflict_similarity_threshold = 0.80
+/// resolution_strategy = "flag_only"
+/// candidate_ttl_days = 30
+/// propagation_depth = 2
+/// ```
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ImplicitConflictConfig {
+    /// Enable implicit conflict detection. Default: `false`.
+    pub enabled: bool,
+    /// Similarity method used to detect candidate pairs.
+    #[serde(default)]
+    pub similarity_method: SimilarityMethod,
+    /// Minimum similarity score to flag a pair as a conflict candidate. Default: 0.80.
+    #[serde(default = "default_ic_similarity_threshold")]
+    pub conflict_similarity_threshold: f64,
+    /// How to resolve detected conflicts. Default: `flag_only`.
+    #[serde(default)]
+    pub resolution_strategy: ConflictResolutionStrategy,
+    /// Provider name (from `[[llm.providers]]`) for LLM-mediated resolution.
+    #[serde(default)]
+    pub implicit_conflict_provider: crate::providers::ProviderName,
+    /// LLM resolution timeout in milliseconds. Default: 800.
+    #[serde(default = "default_ic_llm_timeout_ms")]
+    pub conflict_llm_timeout_ms: u64,
+    /// Days before an unresolved candidate entry expires. Default: 30.
+    #[serde(default = "default_ic_candidate_ttl_days")]
+    pub candidate_ttl_days: u32,
+    /// SYNAPSE propagation depth for surfacing superseding facts. Default: 2.
+    #[serde(default = "default_ic_propagation_depth")]
+    pub propagation_depth: u32,
+    /// Background consolidation daemon configuration.
+    #[serde(default)]
+    pub consolidation_daemon: ConsolidationDaemonConfig,
+}
+
+impl Default for ImplicitConflictConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            similarity_method: SimilarityMethod::default(),
+            conflict_similarity_threshold: default_ic_similarity_threshold(),
+            resolution_strategy: ConflictResolutionStrategy::default(),
+            implicit_conflict_provider: crate::providers::ProviderName::default(),
+            conflict_llm_timeout_ms: default_ic_llm_timeout_ms(),
+            candidate_ttl_days: default_ic_candidate_ttl_days(),
+            propagation_depth: default_ic_propagation_depth(),
+            consolidation_daemon: ConsolidationDaemonConfig::default(),
+        }
+    }
+}
+
+fn default_ic_similarity_threshold() -> f64 {
+    0.80
+}
+
+fn default_ic_llm_timeout_ms() -> u64 {
+    800
+}
+
+fn default_ic_candidate_ttl_days() -> u32 {
+    30
+}
+
+fn default_ic_propagation_depth() -> u32 {
+    2
 }
 
 fn default_graph_pool_size() -> u32 {
@@ -2366,6 +2551,7 @@ impl Default for GraphConfig {
             apex_mem: ApexMemConfig::default(),
             llm_timeout_secs: default_graph_llm_timeout_secs(),
             query_sensitive_cost: false,
+            implicit_conflict: ImplicitConflictConfig::default(),
         }
     }
 }
@@ -3610,6 +3796,212 @@ impl Default for RetrievalFailuresConfig {
             channel_capacity: default_retrieval_failures_channel_capacity(),
             batch_size: default_retrieval_failures_batch_size(),
             flush_interval_ms: default_retrieval_failures_flush_interval_ms(),
+        }
+    }
+}
+
+// ── TrajectoryRiskAccumulator config (spec 004-16) ─────────────────────────────
+
+fn validate_tra_nonneg_weight<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
+    if value.is_nan() || value.is_infinite() || value < 0.0 {
+        return Err(serde::de::Error::custom(
+            "signal weight and severity multiplier values must be finite and non-negative",
+        ));
+    }
+    Ok(value)
+}
+
+/// Per-signal-type base weights for the trajectory risk accumulator.
+///
+/// Each weight is in `(0.0, 1.0]` and is multiplied by the severity multiplier
+/// before being added to `trajectory_risk`.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.shadow_memory.signal_weights]
+/// prompt_injection = 0.6
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectorySignalWeights {
+    /// Weight for `PolicyViolation` signals. Default: `0.30`.
+    #[serde(
+        default = "default_sw_policy_violation",
+        deserialize_with = "validate_tra_nonneg_weight"
+    )]
+    pub policy_violation: f64,
+    /// Weight for `PromptInjectionPattern` signals. Default: `0.50`.
+    #[serde(
+        default = "default_sw_prompt_injection",
+        deserialize_with = "validate_tra_nonneg_weight"
+    )]
+    pub prompt_injection: f64,
+    /// Weight for `ToolChainAnomaly` signals. Default: `0.25`.
+    #[serde(
+        default = "default_sw_tool_chain_anomaly",
+        deserialize_with = "validate_tra_nonneg_weight"
+    )]
+    pub tool_chain_anomaly: f64,
+    /// Weight for `ConfidenceDrop` signals. Default: `0.15`.
+    #[serde(
+        default = "default_sw_confidence_drop",
+        deserialize_with = "validate_tra_nonneg_weight"
+    )]
+    pub confidence_drop: f64,
+}
+
+fn default_sw_policy_violation() -> f64 {
+    0.30
+}
+fn default_sw_prompt_injection() -> f64 {
+    0.50
+}
+fn default_sw_tool_chain_anomaly() -> f64 {
+    0.25
+}
+fn default_sw_confidence_drop() -> f64 {
+    0.15
+}
+
+impl Default for TrajectorySignalWeights {
+    fn default() -> Self {
+        Self {
+            policy_violation: default_sw_policy_violation(),
+            prompt_injection: default_sw_prompt_injection(),
+            tool_chain_anomaly: default_sw_tool_chain_anomaly(),
+            confidence_drop: default_sw_confidence_drop(),
+        }
+    }
+}
+
+/// Per-severity multipliers applied on top of signal base weights.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.shadow_memory.severity_multipliers]
+/// high = 3.0
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectorySeverityMultipliers {
+    /// Multiplier for low-severity signals. Default: `0.5`.
+    #[serde(
+        default = "default_sev_low",
+        deserialize_with = "validate_tra_nonneg_weight"
+    )]
+    pub low: f64,
+    /// Multiplier for medium-severity signals. Default: `1.0`.
+    #[serde(
+        default = "default_sev_medium",
+        deserialize_with = "validate_tra_nonneg_weight"
+    )]
+    pub medium: f64,
+    /// Multiplier for high-severity signals. Default: `2.0`.
+    #[serde(
+        default = "default_sev_high",
+        deserialize_with = "validate_tra_nonneg_weight"
+    )]
+    pub high: f64,
+}
+
+fn default_sev_low() -> f64 {
+    0.5
+}
+fn default_sev_medium() -> f64 {
+    1.0
+}
+fn default_sev_high() -> f64 {
+    2.0
+}
+
+impl Default for TrajectorySeverityMultipliers {
+    fn default() -> Self {
+        Self {
+            low: default_sev_low(),
+            medium: default_sev_medium(),
+            high: default_sev_high(),
+        }
+    }
+}
+
+/// Configuration for the MAGE trajectory risk accumulator (spec 004-16).
+///
+/// Controls how per-turn safety signals accumulate into a session-level risk score
+/// and when tool execution is blocked or escalated.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.shadow_memory]
+/// enabled = true
+/// risk_threshold = 0.75
+/// escalation_threshold = 0.50
+/// risk_halflife_turns = 10
+/// signal_history_cap = 200
+/// tui_show_risk_gauge = true
+/// reset_on_compaction = false
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrajectoryRiskAccumulatorConfig {
+    /// Enable shadow memory. When `false`, `TrajectoryRiskAccumulator` is a zero-cost noop.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Block tool execution when `trajectory_risk >= risk_threshold`. Default: `0.75`.
+    #[serde(default = "default_tra_risk_threshold")]
+    pub risk_threshold: f64,
+    /// Escalate to human confirmation when risk is in `[escalation_threshold, risk_threshold)`.
+    /// Default: `0.50`.
+    #[serde(default = "default_tra_escalation_threshold")]
+    pub escalation_threshold: f64,
+    /// Number of turns after which accumulated risk halves (exponential decay). Default: `10`.
+    #[serde(default = "default_tra_risk_halflife_turns")]
+    pub risk_halflife_turns: u32,
+    /// Maximum number of signal events kept in the ring buffer. Default: `200`.
+    #[serde(default = "default_tra_signal_history_cap")]
+    pub signal_history_cap: usize,
+    /// Show a risk gauge in the TUI security panel when the TUI is enabled. Default: `true`.
+    #[serde(default = "default_true")]
+    pub tui_show_risk_gauge: bool,
+    /// Reset `trajectory_risk` to zero when a context compaction occurs. Default: `false`.
+    #[serde(default)]
+    pub reset_on_compaction: bool,
+    /// Per-signal-type base weights.
+    #[serde(default)]
+    pub signal_weights: TrajectorySignalWeights,
+    /// Per-severity multipliers applied on top of signal weights.
+    #[serde(default)]
+    pub severity_multipliers: TrajectorySeverityMultipliers,
+}
+
+fn default_tra_risk_threshold() -> f64 {
+    0.75
+}
+fn default_tra_escalation_threshold() -> f64 {
+    0.50
+}
+fn default_tra_risk_halflife_turns() -> u32 {
+    10
+}
+fn default_tra_signal_history_cap() -> usize {
+    200
+}
+
+impl Default for TrajectoryRiskAccumulatorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            risk_threshold: default_tra_risk_threshold(),
+            escalation_threshold: default_tra_escalation_threshold(),
+            risk_halflife_turns: default_tra_risk_halflife_turns(),
+            signal_history_cap: default_tra_signal_history_cap(),
+            tui_show_risk_gauge: true,
+            reset_on_compaction: false,
+            signal_weights: TrajectorySignalWeights::default(),
+            severity_multipliers: TrajectorySeverityMultipliers::default(),
         }
     }
 }
