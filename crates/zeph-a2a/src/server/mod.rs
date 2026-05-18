@@ -154,9 +154,9 @@ impl A2aServer {
     /// string is not retained. Passing `None` disables bearer auth. A `WARN` log is emitted
     /// if no token is set, as a reminder that the server is open to unauthenticated requests.
     #[must_use]
-    pub fn with_auth(mut self, token: Option<String>) -> Self {
+    pub fn with_auth(mut self, token: Option<impl Into<String>>) -> Self {
         let require_auth = self.auth_cfg.require_auth;
-        self.auth_cfg = AuthConfig::new(token.as_deref(), require_auth);
+        self.auth_cfg = AuthConfig::new(token.map(Into::into).as_deref(), require_auth);
         self
     }
 
