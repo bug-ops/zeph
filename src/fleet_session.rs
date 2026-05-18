@@ -15,10 +15,10 @@ use zeph_memory::store::agent_sessions::{
 };
 use zeph_subagent::fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus};
 
-/// Adapts [`SqliteStore`] to the [`FleetRegistry`] trait used by [`SubAgentManager`].
+/// Adapts [`SqliteStore`] to the [`FleetRegistry`] trait used by `SubAgentManager`.
 ///
 /// Wrap a `SqliteStore` with this adapter and inject it via
-/// [`SubAgentManager::set_fleet_registry`] so spawned sub-agents appear in the
+/// `SubAgentManager::set_fleet_registry` so spawned sub-agents appear in the
 /// fleet dashboard.
 pub(crate) struct SqliteFleetRegistry(Arc<SqliteStore>);
 
