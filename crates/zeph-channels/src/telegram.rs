@@ -1265,7 +1265,9 @@ impl Channel for TelegramChannel {
     ///
     /// Sends `prompt` followed by instructions to reply `yes`.  Waits up to
     /// [`CONFIRM_TIMEOUT`] (30 s) for a response.  Returns `true` only when
-    /// the user replies with the string `yes` (case-insensitive).
+    /// the initiating user (identified by `chat_id`) replies with `yes`
+    /// (case-insensitive).  Messages from other chats are skipped, matching
+    /// the authorization loop pattern used by the Discord and Slack adapters.
     ///
     /// Returns `Ok(false)` on timeout or channel close, never `Err` for those
     /// conditions.
@@ -1281,15 +1283,39 @@ impl Channel for TelegramChannel {
             crate::CONFIRM_TIMEOUT.as_secs()
         ))
         .await?;
-        match tokio::time::timeout(crate::CONFIRM_TIMEOUT, self.rx.recv()).await {
-            Ok(Some(incoming)) => Ok(incoming.text.trim().eq_ignore_ascii_case("yes")),
-            Ok(None) => {
-                tracing::warn!("confirm channel closed — denying secret request");
-                Ok(false)
+        let initiator_chat_id = self.chat_id;
+        let deadline = tokio::time::Instant::now() + crate::CONFIRM_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    "telegram confirm timed out after {}s — denied",
+                    crate::CONFIRM_TIMEOUT.as_secs()
+                );
+                return Ok(false);
             }
-            Err(_) => {
-                tracing::warn!("confirm timed out after 30s — denied");
-                Ok(false)
+            match tokio::time::timeout(remaining, self.rx.recv()).await {
+                Ok(Some(incoming)) => {
+                    if initiator_chat_id.is_some_and(|id| id != incoming.chat_id) {
+                        tracing::debug!(
+                            chat_id = %incoming.chat_id,
+                            "telegram confirm: ignoring message from non-initiating chat"
+                        );
+                        continue;
+                    }
+                    return Ok(incoming.text.trim().eq_ignore_ascii_case("yes"));
+                }
+                Ok(None) => {
+                    tracing::warn!("telegram confirm channel closed — denying");
+                    return Ok(false);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "telegram confirm timed out after {}s — denied",
+                        crate::CONFIRM_TIMEOUT.as_secs()
+                    );
+                    return Ok(false);
+                }
             }
         }
     }
@@ -1818,6 +1844,52 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!result.text.trim().eq_ignore_ascii_case("yes"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // confirm() — authorization loop (chat_id check)
+    // ---------------------------------------------------------------------------
+
+    fn message_from_chat(text: &str, chat_id: i64) -> IncomingMessage {
+        IncomingMessage {
+            chat_id: ChatId(chat_id),
+            text: text.to_string(),
+            attachments: vec![],
+            guest_query_id: None,
+            is_from_bot: false,
+        }
+    }
+
+    /// Messages from a different chat must be skipped; the reply from the
+    /// initiating chat is accepted.
+    #[tokio::test]
+    async fn confirm_skips_message_from_different_chat_and_accepts_initiator() {
+        let server = MockServer::start().await;
+        // make_mocked_channel sets chat_id = Some(ChatId(1))
+        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+
+        // Message from a different user (chat 2) arrives first.
+        tx.send(message_from_chat("yes", 2)).await.unwrap();
+        // Then the initiating user (chat 1) confirms.
+        tx.send(message_from_chat("yes", 1)).await.unwrap();
+
+        let result = channel.confirm("delete everything?").await.unwrap();
+        assert!(
+            result,
+            "confirm() should return true once the initiator replies yes"
+        );
+    }
+
+    /// A non-yes reply from the initiating chat is accepted (and returns false).
+    #[tokio::test]
+    async fn confirm_accepts_initiator_non_yes_reply() {
+        let server = MockServer::start().await;
+        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+
+        tx.send(message_from_chat("no", 1)).await.unwrap();
+
+        let result = channel.confirm("delete everything?").await.unwrap();
+        assert!(!result, "confirm() should return false for non-yes reply");
     }
 
     // ---------------------------------------------------------------------------
