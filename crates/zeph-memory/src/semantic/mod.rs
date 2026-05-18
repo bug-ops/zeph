@@ -809,7 +809,7 @@ impl SemanticMemory {
         self
     }
 
-    /// Return the five-signal runtime, if one was attached via [`with_five_signal`].
+    /// Return the five-signal runtime, if one was attached via [`Self::with_five_signal`].
     #[must_use]
     pub fn five_signal_runtime(&self) -> Option<Arc<crate::five_signal::FiveSignalRuntime>> {
         self.five_signal.clone()
