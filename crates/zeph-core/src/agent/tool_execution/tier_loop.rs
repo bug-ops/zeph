@@ -2818,7 +2818,11 @@ mod tests {
                 agent.record_shadow_event(&low, "read files".into());
             }
             // Introduce high-privilege divergent batch to spike drift.
-            let high = vec![make_tool_req("shell"), make_tool_req("fetch"), make_tool_req("write")];
+            let high = vec![
+                make_tool_req("shell"),
+                make_tool_req("fetch"),
+                make_tool_req("write"),
+            ];
             for _ in 0..5 {
                 agent.record_shadow_event(&high, "exfiltrate everything".into());
             }

@@ -5,7 +5,9 @@
 
 use zeph_config::ShadowMemoryConfig;
 
-use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry, mock_provider};
+use crate::agent::agent_tests::{
+    MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+};
 
 #[test]
 fn shadow_memory_disabled_config_leaves_none() {
@@ -13,16 +15,15 @@ fn shadow_memory_disabled_config_leaves_none() {
         enabled: false,
         ..Default::default()
     };
-    let agent =
-        crate::agent::Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        )
-        .with_shadow_memory_config(&cfg);
+    let agent = crate::agent::Agent::new(
+        mock_provider(vec![]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    )
+    .with_shadow_memory_config(&cfg);
     assert!(
         agent.services.security.shadow_memory.is_none(),
         "shadow_memory must be None when config.enabled = false"
@@ -35,16 +36,15 @@ fn shadow_memory_enabled_config_sets_some() {
         enabled: true,
         ..Default::default()
     };
-    let agent =
-        crate::agent::Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        )
-        .with_shadow_memory_config(&cfg);
+    let agent = crate::agent::Agent::new(
+        mock_provider(vec![]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    )
+    .with_shadow_memory_config(&cfg);
     assert!(
         agent.services.security.shadow_memory.is_some(),
         "shadow_memory must be Some when config.enabled = true"
@@ -57,16 +57,15 @@ fn shadow_memory_starts_empty_after_enable() {
         enabled: true,
         ..Default::default()
     };
-    let agent =
-        crate::agent::Agent::new(
-            mock_provider(vec![]),
-            MockChannel::new(vec![]),
-            create_test_registry(),
-            None,
-            5,
-            MockToolExecutor::no_tools(),
-        )
-        .with_shadow_memory_config(&cfg);
+    let agent = crate::agent::Agent::new(
+        mock_provider(vec![]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    )
+    .with_shadow_memory_config(&cfg);
     let mem = agent.services.security.shadow_memory.as_ref().unwrap();
     assert_eq!(
         mem.len(),
