@@ -759,7 +759,7 @@ impl PrometheusMetrics {
             .set(i64::try_from(current.total_skills).unwrap_or(i64::MAX));
     }
 
-    /// Synchronise five-signal counter values from the given [`FiveSignalMetrics`] snapshot.
+    /// Synchronise five-signal counter values from the given `FiveSignalMetrics` snapshot.
     ///
     /// Reads atomic snapshot values and increments Prometheus counters by the delta since
     /// `prev`. Call periodically from the same sync loop as [`PrometheusMetrics::sync`].
@@ -850,7 +850,7 @@ impl zeph_core::metrics::HistogramRecorder for PrometheusMetrics {
 // ---------------------------------------------------------------------------
 
 /// Spawn a background task that periodically syncs [`MetricsSnapshot`] and optionally
-/// [`FiveSignalMetrics`] into the Prometheus registry.
+/// `FiveSignalMetrics` into the Prometheus registry.
 ///
 /// `interval_secs` is clamped to a minimum of 1 second. The task uses
 /// [`tokio::time::MissedTickBehavior::Skip`] so slow syncs do not accumulate ticks.
