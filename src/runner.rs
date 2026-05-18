@@ -3956,7 +3956,7 @@ mod tests {
         verdict: zeph_core::agent::shadow_sentinel::ProbeVerdict,
     ) -> ShadowSentinelProbeGateAdapter {
         use zeph_core::agent::shadow_sentinel::{
-            ProbeVerdict, SafetyProbe, ShadowEvent, ShadowEventStore, ShadowSentinel,
+            ProbeVerdict, SafetyProbe, SentinelEvent, ShadowEventStore, ShadowSentinel,
         };
 
         struct FixedProbe(ProbeVerdict);
@@ -3965,7 +3965,7 @@ mod tests {
                 &'a self,
                 _: &'a str,
                 _: &'a serde_json::Value,
-                _: &'a [ShadowEvent],
+                _: &'a [SentinelEvent],
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
             {
                 let v = self.0.clone();
@@ -4024,7 +4024,7 @@ mod tests {
     #[tokio::test]
     async fn probe_gate_adapter_maps_skip_when_disabled() {
         use zeph_core::agent::shadow_sentinel::{
-            ProbeVerdict, SafetyProbe, ShadowEvent, ShadowEventStore, ShadowSentinel,
+            ProbeVerdict, SafetyProbe, SentinelEvent, ShadowEventStore, ShadowSentinel,
         };
         use zeph_tools::{ProbeGate, ProbeOutcome};
 
@@ -4034,7 +4034,7 @@ mod tests {
                 &'a self,
                 _: &'a str,
                 _: &'a serde_json::Value,
-                _: &'a [ShadowEvent],
+                _: &'a [SentinelEvent],
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
             {
                 Box::pin(async { panic!("probe must not be called when disabled") })

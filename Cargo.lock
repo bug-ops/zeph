@@ -10364,7 +10364,6 @@ version = "0.21.2"
 dependencies = [
  "axum 0.8.9",
  "base64 0.22.1",
- "blake3",
  "eventsource-stream",
  "futures",
  "futures-core",
@@ -10375,7 +10374,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -10571,6 +10569,7 @@ dependencies = [
 name = "zeph-common"
 version = "0.21.2"
 dependencies = [
+ "axum 0.8.9",
  "blake3",
  "cpu-time",
  "metrics",
@@ -10580,6 +10579,7 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -10746,12 +10746,10 @@ name = "zeph-gateway"
 version = "0.21.2"
 dependencies = [
  "axum 0.8.9",
- "blake3",
  "http-body-util",
  "prometheus-client",
  "serde",
  "serde_json",
- "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tower 0.5.3",

@@ -50,8 +50,8 @@ use crate::jsonrpc::{
 };
 use crate::types::{TaskArtifactUpdateEvent, TaskState, TaskStatusUpdateEvent};
 
-use super::router::AuthIdentity;
 use super::state::{AppState, CancelError, ProcessorEvent, now_rfc3339};
+use zeph_common::http_middleware::AuthIdentity;
 
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INVALID_PARAMS: i32 = -32602;

@@ -2895,7 +2895,7 @@ mod tests {
     #[tokio::test]
     async fn with_shadow_sentinel_sets_field() {
         use crate::agent::shadow_sentinel::{
-            SafetyProbe, ShadowEvent, ShadowEventStore, ShadowSentinel,
+            SafetyProbe, SentinelEvent, ShadowEventStore, ShadowSentinel,
         };
 
         struct NoopProbe;
@@ -2904,7 +2904,7 @@ mod tests {
                 &'a self,
                 _: &'a str,
                 _: &'a serde_json::Value,
-                _: &'a [ShadowEvent],
+                _: &'a [SentinelEvent],
             ) -> std::pin::Pin<
                 Box<
                     dyn std::future::Future<Output = crate::agent::shadow_sentinel::ProbeVerdict>

@@ -17,17 +17,15 @@ prometheus = ["dep:prometheus-client"]
 
 [dependencies]
 axum.workspace = true
-blake3.workspace = true
 prometheus-client = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 tower.workspace = true
 tower-http = { workspace = true, features = ["limit", "trace"] }
 tracing.workspace = true
-zeph-common.workspace = true
+zeph-common = { workspace = true, features = ["http-middleware"] }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]

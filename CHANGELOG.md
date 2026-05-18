@@ -6,8 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-core`: rename `ShadowEvent` → `SentinelEvent` in `shadow_sentinel` module to eliminate
+  naming collision with `zeph_sanitizer::ShadowMemory`; `ShadowEventStore` and `ShadowEventRow`
+  retain their names (closes #4379).
+
 ### Added
 
+- `zeph-common`: new `http_middleware` module (feature `http-middleware`) — shared bearer-token
+  auth and per-IP rate-limit axum middleware extracted from `zeph-gateway` and `zeph-a2a`;
+  eliminates duplicated `AuthConfig`, `RateLimitState`, `Cidr`, `auth_middleware`,
+  `rate_limit_middleware` implementations; gateway's pre-hashing + `subtle::ConstantTimeEq`
+  approach is canonical (closes #4387).
 - `zeph-memory`: `MAX_GRAPH_NODES` constant (500) added to A* graph retrieval; `node_map` is
   truncated to the highest-scored 500 nodes before the inner loop, bounding worst-case complexity
   from O(n²) per seed to O(n log n) (closes #4368).

@@ -101,6 +101,9 @@ pub struct GoalDriftResult {
 /// Create via [`ShadowMemory::new`] with a [`ShadowMemoryConfig`]. Returns `None` when
 /// the config has `enabled = false`, so callers can wrap it in `Option<ShadowMemory>`.
 ///
+/// Note: this component is not currently wired into the agent tool executor; it is a
+/// standalone goal-drift analysis component intended for future integration.
+///
 /// # Examples
 ///
 /// ```rust

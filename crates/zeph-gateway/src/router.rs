@@ -1,102 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
 use axum::Router;
-use axum::body::Body;
-use axum::extract::ConnectInfo;
-use axum::http::{Request, StatusCode};
-use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::middleware;
 use axum::routing::{get, post};
-use subtle::ConstantTimeEq;
-use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
+use zeph_common::http_middleware::{
+    AuthConfig, RateLimitState, auth_middleware, rate_limit_middleware,
+};
 
 use super::handlers::{health_handler, webhook_handler};
 use super::server::AppState;
-
-/// Pre-computed authentication configuration for the bearer-token middleware.
-///
-/// The expected token is hashed once at startup so that the per-request
-/// comparison always operates on two 32-byte BLAKE3 digests, keeping the
-/// comparison both O(1) and constant-time.
-#[derive(Clone)]
-struct AuthConfig {
-    /// BLAKE3 hash of the configured bearer token, or `None` when auth is disabled.
-    token_hash: Option<blake3::Hash>,
-}
-
-/// Maximum number of IP entries retained in the rate-limit map before a GC pass.
-///
-/// When the map reaches this size and a new, unseen IP arrives, expired entries
-/// (older than [`RATE_WINDOW`]) are evicted before inserting the new one.  This
-/// bounds memory usage to roughly `MAX_RATE_LIMIT_ENTRIES * ~56 bytes`.
-const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
-
-/// Fixed window duration for the per-IP request counter.
-const RATE_WINDOW: Duration = Duration::from_mins(1);
-
-/// A parsed CIDR block used for trusted-proxy matching.
-#[derive(Clone, Debug)]
-struct Cidr {
-    addr: IpAddr,
-    prefix_len: u8,
-}
-
-impl Cidr {
-    /// Parse `"a.b.c.d/n"` or `"addr/n"`.  Returns `None` on any parse error.
-    fn parse(s: &str) -> Option<Self> {
-        let (addr_str, prefix_str) = s.split_once('/')?;
-        let addr: IpAddr = addr_str.parse().ok()?;
-        let prefix_len: u8 = prefix_str.parse().ok()?;
-        let max = match addr {
-            IpAddr::V4(_) => 32,
-            IpAddr::V6(_) => 128,
-        };
-        if prefix_len > max {
-            return None;
-        }
-        Some(Self { addr, prefix_len })
-    }
-
-    /// Returns `true` when `ip` falls within this CIDR block.
-    fn contains(&self, ip: IpAddr) -> bool {
-        match (self.addr, ip) {
-            (IpAddr::V4(net), IpAddr::V4(candidate)) => {
-                if self.prefix_len == 0 {
-                    return true;
-                }
-                let shift = 32 - u32::from(self.prefix_len);
-                u32::from(net) >> shift == u32::from(candidate) >> shift
-            }
-            (IpAddr::V6(net), IpAddr::V6(candidate)) => {
-                if self.prefix_len == 0 {
-                    return true;
-                }
-                let shift = 128 - u32::from(self.prefix_len);
-                u128::from(net) >> shift == u128::from(candidate) >> shift
-            }
-            _ => false,
-        }
-    }
-}
-
-/// Shared state threaded through the rate-limiting middleware.
-#[derive(Clone)]
-struct RateLimitState {
-    /// Maximum number of requests allowed per IP in one [`RATE_WINDOW`].
-    /// `0` means rate limiting is disabled.
-    limit: u32,
-    /// Map from remote IP to `(request_count, window_start)`.
-    counters: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
-    /// Parsed CIDR blocks for trusted reverse proxies.
-    trusted_cidrs: Arc<Vec<Cidr>>,
-}
 
 /// Build the complete axum [`Router`] for the gateway.
 ///
@@ -116,24 +30,8 @@ pub(crate) fn build_router(
     max_body_size: usize,
     trusted_proxy_cidrs: &[String],
 ) -> Router {
-    let auth_cfg = AuthConfig {
-        token_hash: auth_token.map(|t| blake3::hash(t.as_bytes())),
-    };
-    let parsed_cidrs: Vec<Cidr> = trusted_proxy_cidrs
-        .iter()
-        .filter_map(|s| {
-            let c = Cidr::parse(s);
-            if c.is_none() {
-                tracing::warn!(cidr = %s, "gateway: invalid trusted_proxy_cidr, ignoring");
-            }
-            c
-        })
-        .collect();
-    let rate_state = RateLimitState {
-        limit: rate_limit,
-        counters: Arc::new(Mutex::new(HashMap::new())),
-        trusted_cidrs: Arc::new(parsed_cidrs),
-    };
+    let auth_cfg = AuthConfig::new(auth_token, false);
+    let rate_state = RateLimitState::new(rate_limit, trusted_proxy_cidrs);
 
     let protected = Router::new()
         .route("/webhook", post(webhook_handler))
@@ -150,115 +48,12 @@ pub(crate) fn build_router(
         .with_state(state)
 }
 
-/// Axum middleware that enforces bearer-token authentication.
-///
-/// When [`AuthConfig::token_hash`] is `Some`, the request must contain an
-/// `Authorization: Bearer <token>` header whose value, when hashed with BLAKE3,
-/// matches the pre-computed digest.  Comparison uses [`ConstantTimeEq`] on the
-/// two fixed-length 32-byte arrays so that the comparison time is independent
-/// of the token content, preventing timing-oracle attacks.
-///
-/// Requests without a valid token receive `401 Unauthorized`.
-/// When auth is not configured (`token_hash` is `None`) all requests pass through.
-async fn auth_middleware(
-    axum::extract::State(cfg): axum::extract::State<AuthConfig>,
-    req: Request<Body>,
-    next: Next,
-) -> Response {
-    if let Some(expected_hash) = cfg.token_hash {
-        let auth_header = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok());
-
-        let token = auth_header
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("");
-
-        // Hash the submitted token to a fixed-length digest before comparing.
-        // Expected token hash is pre-computed at startup (stored in AuthConfig).
-        // ct_eq operates on two 32-byte arrays — constant time regardless of content.
-        let token_hash = blake3::hash(token.as_bytes());
-        if !bool::from(token_hash.as_bytes().ct_eq(expected_hash.as_bytes())) {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-    }
-
-    next.run(req).await
-}
-
-/// Axum middleware that enforces a per-IP fixed-window rate limit.
-///
-/// Each remote IP is tracked independently.  A counter is incremented on every
-/// request within the current window.  When the counter exceeds
-/// [`RateLimitState::limit`] the request receives `429 Too Many Requests`.
-///
-/// The window resets when [`RATE_WINDOW`] has elapsed since the first request in
-/// the current window.  When [`RateLimitState::limit`] is `0` the middleware
-/// passes all requests through without tracking.
-///
-/// To prevent unbounded memory growth, expired entries are evicted when the
-/// counters map reaches [`MAX_RATE_LIMIT_ENTRIES`] and a new IP is encountered.
-async fn rate_limit_middleware(
-    axum::extract::State(state): axum::extract::State<RateLimitState>,
-    req: Request<Body>,
-    next: Next,
-) -> Response {
-    if state.limit == 0 {
-        return next.run(req).await;
-    }
-
-    let peer_ip = req
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), |ci| ci.0.ip());
-
-    // When trusted proxy CIDRs are configured and the TCP peer falls within one of them,
-    // apply the rightmost-untrusted algorithm on X-Forwarded-For: walk the header values
-    // from right to left and pick the first IP that is not in any trusted CIDR.
-    let ip = if !state.trusted_cidrs.is_empty()
-        && state.trusted_cidrs.iter().any(|c| c.contains(peer_ip))
-    {
-        let xff_ip = req
-            .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| {
-                v.split(',')
-                    .map(str::trim)
-                    .filter_map(|s| s.parse::<IpAddr>().ok())
-                    .rev()
-                    .find(|ip| !state.trusted_cidrs.iter().any(|c| c.contains(*ip)))
-            });
-        xff_ip.unwrap_or(peer_ip)
-    } else {
-        peer_ip
-    };
-
-    let now = Instant::now();
-    let mut counters = state.counters.lock().await;
-
-    if counters.len() >= MAX_RATE_LIMIT_ENTRIES && !counters.contains_key(&ip) {
-        counters.retain(|_, (_, ts)| now.duration_since(*ts) < RATE_WINDOW);
-    }
-
-    let entry = counters.entry(ip).or_insert((0, now));
-    if now.duration_since(entry.1) >= RATE_WINDOW {
-        *entry = (1, now);
-    } else {
-        entry.0 += 1;
-        if entry.0 > state.limit {
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-    }
-    drop(counters);
-
-    next.run(req).await
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use axum::body::Body;
+    use axum::http::Request;
     use http_body_util::BodyExt;
     use tower::{Service, ServiceExt};
 
@@ -529,94 +324,8 @@ mod tests {
         assert_eq!(resp.status(), 413);
     }
 
-    /// Statistical timing test for SEC-M22-001.
-    ///
-    /// Verifies that `ct_eq` comparison time is constant regardless of token length.
-    /// Both inputs are hashed to 32-byte BLAKE3 digests before comparison, so
-    /// `ct_eq` always operates on identically-sized arrays — timing must not vary.
-    #[test]
-    fn bearer_ct_eq_is_constant_time() {
-        use std::time::Instant;
-
-        const ITERS: u32 = 100_000;
-        // Max allowed ratio between slowest and fastest measurement (10× is very conservative;
-        // in practice the ratio is < 2× on any machine, but CI can be noisy).
-        const MAX_RATIO: u128 = 10;
-
-        let expected_hash = blake3::hash(b"super-secret-gateway-token");
-
-        // Tokens of vastly different lengths whose hashes are all wrong (→ ct_eq returns false).
-        let candidates: &[&[u8]] = &[b"x", b"wrong_token_123", &[b'z'; 512]];
-        let mut times_ns: Vec<u128> = Vec::with_capacity(candidates.len());
-
-        for candidate in candidates {
-            let h = blake3::hash(candidate);
-            // Warm up to avoid first-call JIT / cache effects.
-            for _ in 0..1_000 {
-                let _ = h.as_bytes().ct_eq(expected_hash.as_bytes());
-            }
-            let start = Instant::now();
-            for _ in 0..ITERS {
-                let _ = h.as_bytes().ct_eq(expected_hash.as_bytes());
-            }
-            times_ns.push(start.elapsed().as_nanos() / u128::from(ITERS));
-        }
-
-        let min = *times_ns.iter().min().unwrap();
-        let max = *times_ns.iter().max().unwrap();
-        assert!(
-            min > 0 && max / min < MAX_RATIO,
-            "ct_eq timing ratio {max}/{min} exceeds {MAX_RATIO}×; times per iter: {times_ns:?} ns"
-        );
-    }
-
-    // ── Cidr unit tests (#3909 regression) ──────────────────────────────────
-
-    #[test]
-    fn cidr_ipv4_contains_in_range() {
-        let cidr = Cidr::parse("10.0.0.0/8").unwrap();
-        assert!(cidr.contains("10.1.2.3".parse().unwrap()));
-        assert!(cidr.contains("10.255.255.255".parse().unwrap()));
-        assert!(!cidr.contains("11.0.0.0".parse().unwrap()));
-        assert!(!cidr.contains("9.255.255.255".parse().unwrap()));
-    }
-
-    #[test]
-    fn cidr_ipv4_slash32_exact_host() {
-        let cidr = Cidr::parse("192.168.1.100/32").unwrap();
-        assert!(cidr.contains("192.168.1.100".parse().unwrap()));
-        assert!(!cidr.contains("192.168.1.101".parse().unwrap()));
-    }
-
-    #[test]
-    fn cidr_ipv4_slash0_matches_all() {
-        let cidr = Cidr::parse("0.0.0.0/0").unwrap();
-        assert!(cidr.contains("1.2.3.4".parse().unwrap()));
-        assert!(cidr.contains("255.255.255.255".parse().unwrap()));
-    }
-
-    #[test]
-    fn cidr_ipv6_contains_in_range() {
-        let cidr = Cidr::parse("::1/128").unwrap();
-        assert!(cidr.contains("::1".parse().unwrap()));
-        assert!(!cidr.contains("::2".parse().unwrap()));
-    }
-
-    #[test]
-    fn cidr_ipv4_v6_mismatch_returns_false() {
-        let cidr = Cidr::parse("10.0.0.0/8").unwrap();
-        assert!(!cidr.contains("::1".parse().unwrap()));
-    }
-
-    #[test]
-    fn cidr_parse_rejects_invalid() {
-        assert!(Cidr::parse("not-a-cidr").is_none());
-        assert!(Cidr::parse("10.0.0.0/33").is_none());
-        assert!(Cidr::parse("::1/129").is_none());
-        assert!(Cidr::parse("10.0.0.0/").is_none());
-    }
-
     // ── XFF rightmost-untrusted tests (#3909 regression) ────────────────────
+    // CIDR and ct_eq unit tests live in zeph-common::http_middleware::tests.
 
     #[tokio::test]
     async fn xff_rightmost_untrusted_selected() {

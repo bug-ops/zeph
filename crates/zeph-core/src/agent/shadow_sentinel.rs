@@ -79,13 +79,13 @@ pub enum ProbeVerdict {
     Skip,
 }
 
-// ── Shadow event ─────────────────────────────────────────────────────────────
+// ── Sentinel event ───────────────────────────────────────────────────────────
 
-/// A single event in the persistent safety shadow stream.
+/// A single probe trajectory record in the persistent safety sentinel stream.
 ///
 /// Stored in `safety_shadow_events` and retrieved for cross-session probe context.
 #[derive(Debug, Clone)]
-pub struct ShadowEvent {
+pub struct SentinelEvent {
     /// Database row id (0 for unsaved records).
     pub id: i64,
     /// Agent session identifier.
@@ -135,7 +135,7 @@ pub trait SafetyProbe: Send + Sync {
         &'a self,
         tool_id: &'a str,
         tool_args: &'a JsonValue,
-        trajectory: &'a [ShadowEvent],
+        trajectory: &'a [SentinelEvent],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>;
 }
 
@@ -172,7 +172,7 @@ impl LlmSafetyProbe {
     fn build_prompt(
         tool_id: &str,
         tool_args: &JsonValue,
-        trajectory: &[ShadowEvent],
+        trajectory: &[SentinelEvent],
     ) -> Vec<Message> {
         let context = if trajectory.is_empty() {
             "No prior events in this session.".to_owned()
@@ -247,7 +247,7 @@ impl SafetyProbe for LlmSafetyProbe {
         &'a self,
         tool_id: &'a str,
         tool_args: &'a JsonValue,
-        trajectory: &'a [ShadowEvent],
+        trajectory: &'a [SentinelEvent],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>> {
         let span = info_span!("security.shadow.probe", tool_id = %tool_id);
         Box::pin(
@@ -313,7 +313,7 @@ impl ShadowEventStore {
     ///
     /// Returns `AgentError` on database failure.
     #[tracing::instrument(name = "security.shadow.record", skip_all, fields(event_type = %event.event_type))]
-    pub async fn record(&self, event: &ShadowEvent) -> Result<(), AgentError> {
+    pub async fn record(&self, event: &SentinelEvent) -> Result<(), AgentError> {
         sqlx::query(
             "INSERT INTO safety_shadow_events \
              (session_id, turn_number, event_type, tool_id, risk_signal, risk_level, \
@@ -348,7 +348,7 @@ impl ShadowEventStore {
         &self,
         session_id: &str,
         limit: usize,
-    ) -> Result<Vec<ShadowEvent>, AgentError> {
+    ) -> Result<Vec<SentinelEvent>, AgentError> {
         let rows = sqlx::query_as::<_, ShadowEventRow>(
             "SELECT id, session_id, turn_number, event_type, tool_id, risk_signal, \
              risk_level, probe_verdict, context_summary, created_at \
@@ -364,7 +364,7 @@ impl ShadowEventStore {
         .map_err(|e| AgentError::Db(e.to_string()))?;
 
         // DB returns DESC (newest first); reverse once to get ASC (oldest first) for LLM context.
-        let mut events: Vec<ShadowEvent> = rows.into_iter().map(ShadowEvent::from).collect();
+        let mut events: Vec<SentinelEvent> = rows.into_iter().map(SentinelEvent::from).collect();
         events.reverse();
         Ok(events)
     }
@@ -381,7 +381,7 @@ impl ShadowEventStore {
         &self,
         tool_id: &str,
         limit: usize,
-    ) -> Result<Vec<ShadowEvent>, AgentError> {
+    ) -> Result<Vec<SentinelEvent>, AgentError> {
         let rows = sqlx::query_as::<_, ShadowEventRow>(
             "SELECT id, session_id, turn_number, event_type, tool_id, risk_signal, \
              risk_level, probe_verdict, context_summary, created_at \
@@ -396,7 +396,7 @@ impl ShadowEventStore {
         .await
         .map_err(|e| AgentError::Db(e.to_string()))?;
 
-        Ok(rows.into_iter().map(ShadowEvent::from).collect())
+        Ok(rows.into_iter().map(SentinelEvent::from).collect())
     }
 }
 
@@ -415,7 +415,7 @@ struct ShadowEventRow {
     created_at: i64,
 }
 
-impl From<ShadowEventRow> for ShadowEvent {
+impl From<ShadowEventRow> for SentinelEvent {
     fn from(r: ShadowEventRow) -> Self {
         Self {
             id: r.id,
@@ -612,7 +612,7 @@ impl ShadowSentinel {
             ProbeVerdict::Allow => format!("probe allowed {qualified_tool_id}"),
             ProbeVerdict::Skip => format!("probe skipped {qualified_tool_id}"),
         };
-        let event = ShadowEvent {
+        let event = SentinelEvent {
             id: 0,
             session_id: self.session_id.clone(),
             turn_number,
@@ -647,7 +647,7 @@ impl ShadowSentinel {
         if !self.config.enabled {
             return;
         }
-        let event = ShadowEvent {
+        let event = SentinelEvent {
             id: 0,
             session_id: self.session_id.clone(),
             turn_number,
@@ -896,7 +896,7 @@ mod tests {
                 &'a self,
                 _: &'a str,
                 _: &'a JsonValue,
-                _: &'a [ShadowEvent],
+                _: &'a [SentinelEvent],
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
             {
                 Box::pin(async { ProbeVerdict::Allow })

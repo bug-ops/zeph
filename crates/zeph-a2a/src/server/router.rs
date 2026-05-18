@@ -7,21 +7,13 @@
 //! The test-only [`build_router_with_config`] omits `require_auth` and `max_body_size`
 //! for convenience.
 
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
 use axum::Router;
-use axum::body::Body;
-use axum::extract::ConnectInfo;
-use axum::http::{Request, StatusCode};
-use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::middleware;
 use axum::routing::{get, post};
-use subtle::ConstantTimeEq;
-use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
+use zeph_common::http_middleware::{
+    AuthConfig, RateLimitState, auth_middleware, rate_limit_middleware,
+};
 
 use super::handlers::{agent_card_handler, jsonrpc_handler, stream_handler};
 use super::state::AppState;
@@ -29,76 +21,24 @@ use super::state::AppState;
 #[cfg(test)]
 const DEFAULT_MAX_BODY_SIZE: usize = 1024 * 1024; // 1 MiB
 
-/// Identity extracted from a validated bearer token.
-/// Inserted into request extensions by `auth_middleware` for every request.
-#[derive(Clone, Debug)]
-pub struct AuthIdentity {
-    /// Whether the request was authenticated via a valid bearer token.
-    pub authenticated: bool,
-}
-
-#[derive(Clone)]
-struct AuthConfig {
-    token: Option<String>,
-    require_auth: bool,
-}
-
-const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
-const EVICTION_INTERVAL: Duration = Duration::from_mins(1);
-const RATE_WINDOW: Duration = Duration::from_mins(1);
-
-#[derive(Clone)]
-struct RateLimitState {
-    limit: u32,
-    counters: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
-}
-
-fn spawn_eviction_task(
-    counters: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(EVICTION_INTERVAL);
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            let now = Instant::now();
-            let mut map = counters.lock().await;
-            map.retain(|_, (_, ts)| now.duration_since(*ts) < RATE_WINDOW);
-        }
-    })
-}
-
 #[cfg(test)]
 pub fn build_router_with_config(
     state: AppState,
-    auth_token: Option<String>,
+    auth_token: Option<&str>,
     rate_limit: u32,
 ) -> Router {
     build_router_with_full_config(state, auth_token, false, rate_limit, DEFAULT_MAX_BODY_SIZE)
 }
 
 pub fn build_router_with_full_config(
-    mut state: AppState,
-    auth_token: Option<String>,
+    state: AppState,
+    auth_token: Option<&str>,
     require_auth: bool,
     rate_limit: u32,
     max_body_size: usize,
 ) -> Router {
-    let auth_cfg = AuthConfig {
-        token: auth_token,
-        require_auth,
-    };
-    let counters = Arc::new(Mutex::new(HashMap::new()));
-    let eviction_handle = if rate_limit > 0 {
-        Some(Arc::new(spawn_eviction_task(Arc::clone(&counters))))
-    } else {
-        None
-    };
-    state.eviction_task = eviction_handle;
-    let rate_state = RateLimitState {
-        limit: rate_limit,
-        counters,
-    };
+    let auth_cfg = AuthConfig::new(auth_token, require_auth);
+    let rate_state = RateLimitState::new(rate_limit, &[]);
 
     let protected = Router::new()
         .route("/a2a", post(jsonrpc_handler))
@@ -116,111 +56,24 @@ pub fn build_router_with_full_config(
         .with_state(state)
 }
 
-async fn auth_middleware(
-    axum::extract::State(cfg): axum::extract::State<AuthConfig>,
-    mut req: Request<Body>,
-    next: Next,
-) -> Response {
-    if let Some(ref expected) = cfg.token {
-        let auth_header = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok());
-
-        let token = auth_header
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("");
-
-        // Hash both sides so ct_eq compares fixed-length digests, avoiding the
-        // length side-channel that an explicit len() check or direct ct_eq would expose.
-        let h_token = blake3::hash(token.as_bytes());
-        let h_expected = blake3::hash(expected.as_bytes());
-        if !bool::from(h_token.as_bytes().ct_eq(h_expected.as_bytes())) {
-            req.extensions_mut().insert(AuthIdentity {
-                authenticated: false,
-            });
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-        req.extensions_mut().insert(AuthIdentity {
-            authenticated: true,
-        });
-    } else {
-        if cfg.require_auth {
-            tracing::warn!("a2a require_auth=true but no auth_token configured, rejecting request");
-            req.extensions_mut().insert(AuthIdentity {
-                authenticated: false,
-            });
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-        req.extensions_mut().insert(AuthIdentity {
-            authenticated: false,
-        });
-    }
-
-    next.run(req).await
-}
-
-async fn rate_limit_middleware(
-    axum::extract::State(state): axum::extract::State<RateLimitState>,
-    req: Request<Body>,
-    next: Next,
-) -> Response {
-    if state.limit == 0 {
-        return next.run(req).await;
-    }
-
-    // Extract IP from ConnectInfo if available, fall back to 0.0.0.0
-    let ip = req
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), |ci| ci.0.ip());
-
-    let now = Instant::now();
-
-    let mut counters = state.counters.lock().await;
-
-    if counters.len() >= MAX_RATE_LIMIT_ENTRIES && !counters.contains_key(&ip) {
-        let before_eviction = counters.len();
-        counters.retain(|_, (_, ts)| now.duration_since(*ts) < RATE_WINDOW);
-        let after_eviction = counters.len();
-
-        if after_eviction >= MAX_RATE_LIMIT_ENTRIES {
-            tracing::warn!(
-                before = before_eviction,
-                after = after_eviction,
-                limit = MAX_RATE_LIMIT_ENTRIES,
-                "rate limiter at capacity after stale entry eviction, rejecting new IP"
-            );
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-    }
-
-    let entry = counters.entry(ip).or_insert((0, now));
-
-    if now.duration_since(entry.1) >= RATE_WINDOW {
-        *entry = (1, now);
-    } else {
-        entry.0 += 1;
-        if entry.0 > state.limit {
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-    }
-    drop(counters);
-
-    next.run(req).await
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
     use axum::body::Body;
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
+    use zeph_common::http_middleware::{MAX_RATE_LIMIT_ENTRIES, RATE_WINDOW};
 
     use super::*;
     use crate::server::testing::test_state;
 
     #[tokio::test]
     async fn auth_allows_valid_token() {
-        let app = build_router_with_config(test_state(), Some("secret-token".into()), 0);
+        let app = build_router_with_config(test_state(), Some("secret-token"), 0);
 
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -243,7 +96,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_rejects_missing_token() {
-        let app = build_router_with_config(test_state(), Some("secret-token".into()), 0);
+        let app = build_router_with_config(test_state(), Some("secret-token"), 0);
 
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -265,7 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_rejects_wrong_token() {
-        let app = build_router_with_config(test_state(), Some("secret-token".into()), 0);
+        let app = build_router_with_config(test_state(), Some("secret-token"), 0);
 
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -288,7 +141,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_card_skips_auth() {
-        let app = build_router_with_config(test_state(), Some("secret-token".into()), 0);
+        let app = build_router_with_config(test_state(), Some("secret-token"), 0);
 
         let req = axum::http::Request::builder()
             .uri("/.well-known/agent.json")
@@ -339,7 +192,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_rejects_bearer_prefix_only() {
-        let app = build_router_with_config(test_state(), Some("secret".into()), 0);
+        let app = build_router_with_config(test_state(), Some("secret"), 0);
 
         let body = serde_json::json!({
             "jsonrpc": "2.0", "id": "1",
@@ -360,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_rejects_non_bearer_scheme() {
-        let app = build_router_with_config(test_state(), Some("secret".into()), 0);
+        let app = build_router_with_config(test_state(), Some("secret"), 0);
 
         let body = serde_json::json!({
             "jsonrpc": "2.0", "id": "1",
@@ -520,57 +373,12 @@ mod tests {
         assert_eq!(resp.status(), 401);
     }
 
-    // --- Regression: #4044 — eviction JoinHandle stored in AppState ---
-
-    /// When `rate_limit` > 0, `build_router_with_full_config` must store the eviction
-    /// task handle in `AppState.eviction_task`.  Before #4044 the handle was dropped
-    /// immediately, making it impossible to abort the task on server shutdown.
+    /// Verify that `build_router_with_full_config` with `rate_limit` > 0 constructs a valid
+    /// router using inline GC eviction (shared middleware, no background task required).
     #[tokio::test]
-    async fn eviction_task_stored_in_state_when_rate_limit_enabled() {
-        // build_router_with_full_config takes AppState by value and sets eviction_task
-        // on it, so we can't inspect the state after the call.  Instead we verify the
-        // field via the router builder for the test-only helper which passes rate_limit.
-        //
-        // We construct AppState directly with rate_limit > 0 by calling the internal
-        // spawn_eviction_task path through build_router_with_full_config, then verify
-        // the handle lifecycle by checking the tokio runtime still has an active task.
-        //
-        // Since AppState is moved into the router we inspect the precondition: a state
-        // built without rate_limit has eviction_task = None.
-        let state_no_rl = test_state();
-        assert!(
-            state_no_rl.eviction_task.is_none(),
-            "eviction_task must be None when rate_limit = 0 (base state)"
-        );
-
-        // For rate_limit > 0 we cannot inspect AppState after build_router_with_config
-        // consumes it.  Instead verify that build_router_with_full_config accepts the
-        // call and produces a valid router (implying eviction_task was set without
-        // panicking).
+    async fn build_router_with_rate_limit_succeeds() {
         let _router = build_router_with_full_config(test_state(), None, false, 5, 1024 * 1024);
-        // Reaching here means spawn_eviction_task ran and the handle was stored.
-    }
-
-    /// Verifies that `AppState.eviction_task` is `None` when `rate_limit` is 0, and that
-    /// `build_router_with_full_config` sets it to `Some` when `rate_limit` > 0 by checking
-    /// that the spawned task is still running shortly after construction.
-    #[tokio::test]
-    async fn eviction_task_is_alive_after_build_with_rate_limit() {
-        // build_router_with_full_config stores the JoinHandle via Arc — the task must
-        // still be running immediately after construction (not yet finished).
-        // We cannot extract AppState after it is moved into the router, so we verify
-        // indirectly: spawn a task, hold an Arc to its handle via the same pattern
-        // used in spawn_eviction_task, and confirm it is not yet finished.
-        let counters: Arc<
-            Mutex<std::collections::HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
-        > = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let handle = Arc::new(spawn_eviction_task(Arc::clone(&counters)));
-        // Immediately after spawning the eviction loop should still be running.
-        assert!(
-            !handle.is_finished(),
-            "#4044 regression: eviction task must be alive after spawn"
-        );
-        handle.abort();
+        // Reaching here confirms inline-GC-based router builds without panic.
     }
 
     #[tokio::test]

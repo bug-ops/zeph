@@ -221,7 +221,7 @@ impl A2aServer {
 
         let router = build_router_with_full_config(
             self.state,
-            self.auth_token,
+            self.auth_token.as_deref(),
             self.require_auth,
             self.rate_limit,
             self.max_body_size,
