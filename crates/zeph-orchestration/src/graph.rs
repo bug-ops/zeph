@@ -512,6 +512,7 @@ impl<S: RawGraphStore> GraphPersistence<S> {
     /// # Errors
     ///
     /// Returns `OrchestrationError::Persistence` on serialization or database failure.
+    #[tracing::instrument(name = "orchestration.graph_store.save", skip(self, graph), fields(graph.id = %graph.id))]
     pub async fn save(&self, graph: &TaskGraph) -> Result<(), OrchestrationError> {
         if graph.goal.len() > MAX_GOAL_LEN {
             return Err(OrchestrationError::InvalidGraph(format!(
@@ -541,6 +542,7 @@ impl<S: RawGraphStore> GraphPersistence<S> {
     /// # Errors
     ///
     /// Returns `OrchestrationError::Persistence` on database or deserialization failure.
+    #[tracing::instrument(name = "orchestration.graph_store.load", skip(self), fields(graph.id = %id))]
     pub async fn load(&self, id: &GraphId) -> Result<Option<TaskGraph>, OrchestrationError> {
         match self
             .store
@@ -562,6 +564,7 @@ impl<S: RawGraphStore> GraphPersistence<S> {
     /// # Errors
     ///
     /// Returns `OrchestrationError::Persistence` on database failure.
+    #[tracing::instrument(name = "orchestration.graph_store.list", skip(self), fields(limit))]
     pub async fn list(&self, limit: u32) -> Result<Vec<GraphSummary>, OrchestrationError> {
         self.store
             .list_graphs(limit)
@@ -576,6 +579,7 @@ impl<S: RawGraphStore> GraphPersistence<S> {
     /// # Errors
     ///
     /// Returns `OrchestrationError::Persistence` on database failure.
+    #[tracing::instrument(name = "orchestration.graph_store.delete", skip(self), fields(graph.id = %id))]
     pub async fn delete(&self, id: &GraphId) -> Result<bool, OrchestrationError> {
         self.store
             .delete_graph(&id.to_string())

@@ -377,13 +377,21 @@ pub(crate) async fn init_scheduler(
 
     if let Some(five_signal_runtime) = five_signal {
         let consolidation_cfg = config.memory.five_signal.consolidation_daemon.clone();
+        let interval_secs = consolidation_cfg.interval_seconds;
+        let cron_expr = if interval_secs < 60 {
+            format!("*/{} * * * * *", interval_secs.max(1))
+        } else if interval_secs < 3600 {
+            format!("0 */{} * * * *", interval_secs / 60)
+        } else {
+            format!("0 0 */{} * * *", (interval_secs / 3600).max(1))
+        };
         let handler = zeph_memory::five_signal::consolidation::ConsolidationHandler::new(
             five_signal_runtime,
             consolidation_cfg,
         );
         match ScheduledTask::new(
             "five_signal_consolidation",
-            "0 0 * * * *",
+            &cron_expr,
             TaskKind::Custom("five_signal_consolidation".into()),
             serde_json::Value::Null,
         ) {
@@ -393,7 +401,11 @@ pub(crate) async fn init_scheduler(
                     &TaskKind::Custom("five_signal_consolidation".into()),
                     Box::new(handler),
                 );
-                tracing::info!("five_signal consolidation daemon registered (hourly)");
+                tracing::info!(
+                    cron = %cron_expr,
+                    interval_secs,
+                    "five_signal consolidation daemon registered"
+                );
             }
             Err(e) => tracing::warn!("scheduler: invalid five_signal consolidation cron: {e}"),
         }

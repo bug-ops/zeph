@@ -151,6 +151,10 @@ impl<P: LlmProvider> PredicateEvaluator<P> {
     /// On LLM or parse error, returns a permissive outcome (`passed = true,
     /// confidence = 0.0`) and logs a warning — fail-open per the orchestration
     /// error policy.
+    #[tracing::instrument(
+        name = "orchestration.verify_predicate.evaluate",
+        skip(self, predicate, output, prior_failure_reason)
+    )]
     pub async fn evaluate(
         &self,
         predicate: &VerifyPredicate,

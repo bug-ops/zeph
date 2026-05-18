@@ -149,6 +149,7 @@ impl<P: LlmProvider> PlanVerifier<P> {
     ///
     /// The task stays `Completed` regardless of verification outcome. Downstream tasks
     /// are unblocked immediately on completion — verification does not gate dispatch.
+    #[tracing::instrument(name = "orchestration.verifier.verify", skip(self, output), fields(task.id = %task.id, task.title = %task.title))]
     pub async fn verify(&mut self, task: &TaskNode, output: &str) -> VerificationResult {
         let messages = build_verify_prompt(task, output, &self.sanitizer);
 
@@ -211,6 +212,7 @@ impl<P: LlmProvider> PlanVerifier<P> {
     /// Returns `OrchestrationError::VerificationFailed` only for hard invariant
     /// violations (e.g. too many tasks would exceed the graph limit). LLM errors
     /// are fail-open and never returned.
+    #[tracing::instrument(name = "orchestration.verifier.replan", skip(self, gaps, graph), fields(task.id = %task.id, gaps.len = gaps.len()))]
     pub async fn replan(
         &mut self,
         task: &TaskNode,
@@ -298,6 +300,10 @@ impl<P: LlmProvider> PlanVerifier<P> {
     ///
     /// The aggregated output is expected to be pre-truncated by the caller to stay
     /// within the token budget before calling this method.
+    #[tracing::instrument(
+        name = "orchestration.verifier.verify_plan",
+        skip(self, goal, aggregated_output)
+    )]
     pub async fn verify_plan(&mut self, goal: &str, aggregated_output: &str) -> VerificationResult {
         let messages = build_verify_plan_prompt(goal, aggregated_output, &self.sanitizer);
 
@@ -357,6 +363,7 @@ impl<P: LlmProvider> PlanVerifier<P> {
     ///
     /// Returns `OrchestrationError::VerificationFailed` only for hard invariant
     /// violations (e.g. IDs would overflow u32). LLM errors are fail-open.
+    #[tracing::instrument(name = "orchestration.verifier.replan_from_plan", skip(self, goal, gaps), fields(gaps.len = gaps.len(), next_id))]
     pub async fn replan_from_plan(
         &mut self,
         goal: &str,
