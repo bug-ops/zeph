@@ -672,13 +672,26 @@ pub(crate) async fn fleet_poll_task(
     loop {
         ticker.tick().await;
 
+        if tx
+            .send(zeph_tui::AgentEvent::Status(
+                "Refreshing fleet...".to_owned(),
+            ))
+            .await
+            .is_err()
+        {
+            break;
+        }
+
         let sessions = match store.list_agent_sessions(limit, None).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::debug!(error = %e, "fleet poll: list_agent_sessions failed");
+                let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
                 continue;
             }
         };
+
+        let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
 
         let snapshot = zeph_tui::widgets::fleet::FleetSnapshot { sessions };
         if tx

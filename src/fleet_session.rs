@@ -21,6 +21,7 @@ use zeph_memory::store::agent_sessions::{
 ///
 /// Returns an error if the database writes fail. Non-fatal: callers should log
 /// and continue — the fleet panel will simply lack data for this session.
+#[tracing::instrument(name = "fleet.session.start", skip_all, fields(session_id, channel = channel_name, model))]
 pub(crate) async fn start_session(
     sqlite: &SqliteStore,
     session_id: &str,
@@ -67,6 +68,7 @@ pub(crate) async fn start_session(
 ///
 /// Call this after `agent.run()` returns, passing the result to derive the
 /// appropriate terminal status.
+#[tracing::instrument(name = "fleet.session.end", skip_all, fields(session_id))]
 pub(crate) async fn end_session(
     sqlite: &SqliteStore,
     session_id: &str,
