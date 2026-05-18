@@ -137,6 +137,98 @@ impl AccessFrequencyCache {
 mod tests {
     use super::*;
 
+    async fn test_pool() -> DbPool {
+        crate::store::SqliteStore::with_pool_size(":memory:", 1)
+            .await
+            .expect("in-memory SQLite failed")
+            .pool()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn load_for_candidates_empty_returns_empty() {
+        let pool = test_pool().await;
+        let cache = AccessFrequencyCache::new(pool);
+        let result = cache.load_for_candidates("s1", &[]).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_for_candidates_no_rows_gives_zero_score() {
+        let pool = test_pool().await;
+        let cache = AccessFrequencyCache::new(pool);
+        let ids = vec![MessageId(1), MessageId(2)];
+        let scores = cache.load_for_candidates("s1", &ids).await.unwrap();
+        assert_eq!(scores.len(), 2);
+        assert!(scores[&MessageId(1)] < f64::EPSILON);
+        assert!(scores[&MessageId(2)] < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn load_for_candidates_higher_count_gives_higher_score() {
+        let pool = test_pool().await;
+        let cache = AccessFrequencyCache::new(pool.clone());
+        let session = "test-session";
+
+        // Insert 1 access for fact 10 and 5 accesses for fact 20.
+        sqlx::query(
+            "INSERT INTO fact_access_log (fact_id, fact_type, session_id, accessed_at) \
+             VALUES (?1, 'episodic', ?2, 0)",
+        )
+        .bind(10_i64)
+        .bind(session)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for _ in 0..5_u8 {
+            sqlx::query(
+                "INSERT INTO fact_access_log (fact_id, fact_type, session_id, accessed_at) \
+                 VALUES (?1, 'episodic', ?2, 0)",
+            )
+            .bind(20_i64)
+            .bind(session)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let ids = vec![MessageId(10), MessageId(20)];
+        let scores = cache.load_for_candidates(session, &ids).await.unwrap();
+
+        let s10 = scores[&MessageId(10)];
+        let s20 = scores[&MessageId(20)];
+        assert!(
+            s20 > s10,
+            "higher access count must yield higher score: {s20} vs {s10}"
+        );
+        assert!(s10 > 0.0, "score for fact with 1 access must be > 0");
+        assert!(s20 <= 1.0, "score must be capped at 1.0");
+    }
+
+    #[tokio::test]
+    async fn load_for_candidates_ignores_other_sessions() {
+        let pool = test_pool().await;
+        let cache = AccessFrequencyCache::new(pool.clone());
+
+        sqlx::query(
+            "INSERT INTO fact_access_log (fact_id, fact_type, session_id, accessed_at) \
+             VALUES (?1, 'episodic', ?2, 0)",
+        )
+        .bind(99_i64)
+        .bind("other-session")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let ids = vec![MessageId(99)];
+        let scores = cache.load_for_candidates("my-session", &ids).await.unwrap();
+        assert!(
+            scores[&MessageId(99)] < f64::EPSILON,
+            "score must be 0 for different session"
+        );
+    }
+
     #[test]
     fn normalization_zero_count() {
         let raw = 0.0_f64;

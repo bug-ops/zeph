@@ -846,6 +846,20 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Wire the MAGE trajectory risk accumulator from config.
+    ///
+    /// Replaces the noop accumulator installed by `SecurityState::default()` with a live
+    /// instance when `config.enabled = true`. When disabled, the field remains a noop.
+    #[must_use]
+    pub fn with_mage_accumulator_config(
+        mut self,
+        config: zeph_config::TrajectoryRiskAccumulatorConfig,
+    ) -> Self {
+        self.services.security.mage_accumulator =
+            zeph_memory::shadow::TrajectoryRiskAccumulator::new(config);
+        self
+    }
+
     /// Attach a temporal causal IPI analyzer.
     ///
     /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.
