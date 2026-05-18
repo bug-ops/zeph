@@ -4331,7 +4331,7 @@ mod apex_mem_quality_gate_config_tests {
 
     #[test]
     fn five_signal_config_toml_roundtrip() {
-        let toml = r#"
+        let toml = r"
             history_limit = 50
             [five_signal]
             enabled = true
@@ -4340,7 +4340,7 @@ mod apex_mem_quality_gate_config_tests {
             w_frequency = 0.15
             w_causal = 0.10
             w_novelty = 0.05
-        "#;
+        ";
         let cfg: MemoryConfig = toml::from_str(toml).expect("must deserialize");
         assert!(cfg.five_signal.enabled);
         assert!((cfg.five_signal.w_frequency - 0.15).abs() < 1e-9);
