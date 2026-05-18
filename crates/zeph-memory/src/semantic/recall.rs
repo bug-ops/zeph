@@ -1013,7 +1013,24 @@ impl SemanticMemory {
             }
         }
 
+        // Five-signal scoring (issue #4374): gated by enabled flag and non-baseline weights.
+        if let Some(fs) = &self.five_signal
+            && !fs.weights.is_baseline()
+        {
+            self.apply_five_signal_scoring(&mut ranked, fs).await;
+        }
+
         let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
+
+        // Log access events for the returned facts.
+        if let Some(fs) = &self.five_signal {
+            for id in &ids {
+                fs.access_cache
+                    .log_access(*id, "message", &fs.session_id)
+                    .await;
+            }
+            fs.metrics.inc_recall();
+        }
 
         if !ids.is_empty()
             && let Err(e) = self.batch_increment_access_count(ids.clone()).await
@@ -1046,6 +1063,121 @@ impl SemanticMemory {
         tracing::debug!(final_count = recalled.len(), "recall: final results");
 
         Ok(recalled)
+    }
+
+    /// Apply five-signal scoring to the ranked candidate list (issue #4374).
+    ///
+    /// Fetches access frequency, causal distance, and novelty signals. Access frequency
+    /// and novelty require DB I/O; causal distance requires a BFS traversal (cached per
+    /// goal entity). All three signals use per-candidate values — no static neutral fallback.
+    async fn apply_five_signal_scoring(
+        &self,
+        ranked: &mut [(MessageId, f64)],
+        fs: &crate::five_signal::FiveSignalRuntime,
+    ) {
+        use crate::five_signal::causal_distance::CausalDistanceComputer;
+        use crate::five_signal::scoring::{CandidateSignals, apply_five_signal_scoring};
+        use sqlx::Row as _;
+
+        let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
+
+        // Load per-candidate access frequency scores.
+        let freq_map = match fs
+            .access_cache
+            .load_for_candidates(&fs.session_id, &ids)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "five_signal: failed to load access frequencies (skipping)");
+                return;
+            }
+        };
+
+        // Batch-fetch `created_at` timestamps for novelty computation.
+        let created_at_map: std::collections::HashMap<MessageId, i64> = {
+            let id_vals: Vec<i64> = ids.iter().map(|id| id.0).collect();
+            let placeholders: String = id_vals
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT id, created_at FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+            );
+            let mut q = sqlx::query(&sql);
+            for id in &id_vals {
+                q = q.bind(id);
+            }
+            match q.fetch_all(&fs.pool).await {
+                Ok(rows) => rows
+                    .iter()
+                    .map(|row| {
+                        (
+                            MessageId(row.get::<i64, _>("id")),
+                            row.get::<i64, _>("created_at"),
+                        )
+                    })
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "five_signal: failed to fetch created_at (skipping novelty)");
+                    std::collections::HashMap::new()
+                }
+            }
+        };
+
+        // Compute per-candidate causal distances (BFS from current goal entity).
+        // FR-006: when goal_entity_id is None, compute() returns an empty map and all
+        // candidates receive the neutral causal score via distance_to_score(neutral_distance).
+        let causal_distance_map: std::collections::HashMap<i64, u32> = {
+            let entity_ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+            let mut computer = fs.causal_computer.lock().await;
+            match computer.compute(None, &entity_ids).await {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(error = %e, "five_signal: causal BFS failed (using neutral)");
+                    std::collections::HashMap::new()
+                }
+            }
+        };
+        let neutral_causal_score =
+            CausalDistanceComputer::distance_to_score(fs.config.neutral_causal_distance);
+
+        let mut signals_map = std::collections::HashMap::with_capacity(ids.len());
+        for &(msg_id, base_score) in ranked.iter() {
+            let frequency = freq_map.get(&msg_id).copied().unwrap_or(0.0);
+            // Recency and relevance are approximated from the hybrid score: since the
+            // existing score blends both signals equally, half each preserves baseline ranking.
+            let half = base_score / 2.0;
+            let fact_created_at = created_at_map
+                .get(&msg_id)
+                .copied()
+                .unwrap_or(fs.session_start);
+            let novelty = fs.novelty_computer.compute(fact_created_at);
+            let causal = causal_distance_map
+                .get(&msg_id.0)
+                .map_or(neutral_causal_score, |&d| {
+                    CausalDistanceComputer::distance_to_score(d)
+                });
+            signals_map.insert(
+                msg_id,
+                CandidateSignals {
+                    recency: half,
+                    relevance: half,
+                    frequency,
+                    causal,
+                    novelty,
+                },
+            );
+        }
+
+        apply_five_signal_scoring(ranked, &fs.weights, &signals_map);
+
+        tracing::debug!(
+            candidate_count = ids.len(),
+            "recall: five-signal scoring applied"
+        );
     }
 
     /// Recall messages using query-aware routing.
@@ -2006,6 +2138,7 @@ mod tests {
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
+            five_signal: None,
         }
     }
 

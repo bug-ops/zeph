@@ -70,6 +70,7 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
+        five_signal: None,
     }
 }
 
@@ -172,6 +173,7 @@ async fn effective_embed_provider_routes_to_dedicated_embed_provider() {
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
+        five_signal: None,
     };
 
     assert!(
@@ -584,6 +586,7 @@ async fn store_correction_embedding_sqlite_clean_db_roundtrip() {
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
+        five_signal: None,
     };
 
     memory
@@ -706,6 +709,7 @@ async fn load_promotion_window_populates_embeddings_from_qdrant() {
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
+        five_signal: None,
     };
 
     let window = memory.load_promotion_window(10).await.unwrap();

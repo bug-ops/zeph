@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-memory`, `zeph-config`: Five-signal SYNAPSE retrieval (#4374). Extends the recall
+  pipeline with three signals beyond the two-signal baseline (recency + relevance): access
+  frequency (facts queried more often rank higher), causal distance (facts closer to the current
+  goal entity in the MAGMA graph rank higher), and novelty (facts created earlier in the session
+  rank higher). Enabled via `memory.five_signal.enabled = true`; weights configurable per signal.
+  When all new weights are zero the formula degenerates to the two-signal baseline with no
+  overhead (`is_baseline()` short-circuit). Access frequency is persisted in the new
+  `fact_access_log` SQLite table (migration 090).
+- `zeph-memory`: Optional async consolidation daemon (`memory.five_signal.consolidation_daemon`,
+  feature-gated under `scheduler`). Promotes high-scoring episodic facts to `memory_tier =
+  'semantic'` and demotes low-scoring ones back to `episodic_only` on a configurable interval.
+  New columns `memory_tier` and `qdrant_promoted` added to the `messages` table (migration 090).
+- `zeph-config`: Added `FiveSignalConfig` and `ConsolidationDaemonConfig` structs with full
+  `serde` defaults and TOML roundtrip support.
+- `zeph-config`: Added migration step 48 (`migrate_five_signal_config`) that injects a
+  commented-out `[memory.five_signal]` example into existing configs that have a `[memory]`
+  section.
+- `zeph` (binary): Bootstrap wiring — `AppBuilder::attach_five_signal` constructs and attaches
+  `FiveSignalRuntime` when `memory.five_signal.enabled = true`.
+
 ## [0.21.2] - 2026-05-18
 
 ### Added

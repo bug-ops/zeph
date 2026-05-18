@@ -379,6 +379,7 @@ async fn memory_with_in_memory_vector_store() -> (
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
+        five_signal: None,
     };
 
     (memory, embedding_store)

@@ -375,6 +375,11 @@ pub struct SemanticMemory {
     /// When `true`, A* edge cost is modulated by cosine similarity between the query
     /// embedding and the target entity embedding.  Mirrors [`GraphConfig::query_sensitive_cost`].
     pub(crate) query_sensitive_cost: bool,
+    /// Five-signal SYNAPSE retrieval runtime (issue #4374).
+    ///
+    /// `Some` when `memory.five_signal.enabled = true` at bootstrap.
+    /// `None` guarantees zero overhead per NFR-005.
+    pub(crate) five_signal: Option<Arc<crate::five_signal::FiveSignalRuntime>>,
 }
 
 impl SemanticMemory {
@@ -508,6 +513,7 @@ impl SemanticMemory {
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
+            five_signal: None,
         })
     }
 
@@ -573,6 +579,7 @@ impl SemanticMemory {
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
+            five_signal: None,
         })
     }
 
@@ -777,6 +784,28 @@ impl SemanticMemory {
     #[must_use]
     pub fn with_query_sensitive_cost(mut self, enabled: bool) -> Self {
         self.query_sensitive_cost = enabled;
+        self
+    }
+
+    /// Attach the five-signal retrieval runtime (issue #4374).
+    ///
+    /// When attached, `recall_merge_and_rank` applies five-signal scoring after the
+    /// existing pipeline, gated by `!weights.is_baseline()`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use zeph_memory::semantic::SemanticMemory;
+    /// use zeph_memory::five_signal::FiveSignalRuntime;
+    ///
+    /// # async fn example(mem: SemanticMemory, runtime: FiveSignalRuntime) {
+    /// let mem = mem.with_five_signal(Arc::new(runtime));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_five_signal(mut self, runtime: Arc<crate::five_signal::FiveSignalRuntime>) -> Self {
+        self.five_signal = Some(runtime);
         self
     }
 
@@ -1090,6 +1119,7 @@ impl SemanticMemory {
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
+            five_signal: None,
         }
     }
 
@@ -1174,6 +1204,7 @@ impl SemanticMemory {
             retrieval_failure_logger: None,
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
+            five_signal: None,
         })
     }
 

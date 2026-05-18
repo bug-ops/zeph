@@ -3310,20 +3310,20 @@ mod steps;
 use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateEgressConfig, MigrateFocusAutoConsolidateMinWindow,
-    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpTrustLevels,
-    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
-    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
-    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
-    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
-    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateProviderMaxConcurrent,
-    MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
-    MigrateSchedulerDaemon, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
-    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
-    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
-    MigrateVigilConfig,
+    MigrateDatabaseUrl, MigrateEgressConfig, MigrateFiveSignalConfig,
+    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
+    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
+    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
+    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
+    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
+    MigrateTraceMetadata, MigrateVigilConfig,
 };
 
 /// Step 45: add an advisory comment above `GonkaGate` provider entries pointing users to
@@ -3528,8 +3528,65 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateCocoonProviderNotice),
             // Step 47 — telemetry.trace_metadata OTEL resource attributes (#4160)
             Box::new(MigrateTraceMetadata),
+            // Step 48 — five-signal SYNAPSE retrieval advisory (#4374)
+            Box::new(MigrateFiveSignalConfig),
         ]
     });
+
+/// Add a commented-out `[memory.five_signal]` section if absent (#4374).
+///
+/// All five-signal fields have `#[serde(default)]` so existing configs parse without changes.
+/// This step surfaces the new section for users upgrading from older configs.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_five_signal_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[memory.five_signal]") || toml_src.contains("# [memory.five_signal]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Five-signal SYNAPSE retrieval (#4374). Disabled by default.\n\
+         # [memory.five_signal]\n\
+         # enabled = false\n\
+         # w_recency = 0.35\n\
+         # w_relevance = 0.35\n\
+         # w_frequency = 0.15\n\
+         # w_causal = 0.10\n\
+         # w_novelty = 0.05\n\
+         # causal_bfs_max_depth = 10\n\
+         # neutral_causal_distance = 5\n\
+         # novelty_decay_rate = 0.1\n\
+         #\n\
+         # [memory.five_signal.consolidation_daemon]\n\
+         # enabled = false\n\
+         # interval_seconds = 7200\n\
+         # batch_size = 500\n\
+         # promotion_score_threshold = 0.70\n\
+         # demotion_score_threshold = 0.20\n\
+         # top_k_per_run = 500\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.five_signal".to_owned()],
+    })
+}
 
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
@@ -3546,8 +3603,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            47,
-            "MIGRATIONS registry must contain all 47 sequential steps"
+            48,
+            "MIGRATIONS registry must contain all 48 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5133,8 +5190,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_forty_seven_entries() {
-        assert_eq!(MIGRATIONS.len(), 47);
+    fn registry_has_forty_eight_entries() {
+        assert_eq!(MIGRATIONS.len(), 48);
     }
 
     #[test]
@@ -5222,6 +5279,7 @@ prompt_cache_ttl = "1h"
             "migrate_gonkagate_to_gonka",
             "migrate_cocoon_provider_notice",
             "migrate_trace_metadata",
+            "migrate_five_signal_config",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5453,6 +5511,46 @@ prompt_cache_ttl = "1h"
         let src = "[[llm.providers]]\ntype = \"cocoon\"\nname = \"tee\"\n";
         let first = migrate_cocoon_provider_notice(src).unwrap();
         let second = migrate_cocoon_provider_notice(&first.output).unwrap();
+        assert_eq!(second.output, first.output);
+        assert_eq!(second.changed_count, 0);
+    }
+
+    // ── migrate_five_signal_config tests (#4374) ─────────────────────────────
+
+    #[test]
+    fn migrate_five_signal_config_noop_when_already_present() {
+        let src = "[memory]\nenabled = true\n\n[memory.five_signal]\nenabled = false\n";
+        let result = migrate_five_signal_config(src).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_five_signal_config_noop_when_no_memory_section() {
+        let src = "[agent]\nmax_turns = 10\n";
+        let result = migrate_five_signal_config(src).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_five_signal_config_injects_comment_when_memory_present() {
+        let src = "[memory]\nenabled = true\n";
+        let result = migrate_five_signal_config(src).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("five_signal"));
+        assert!(
+            result
+                .sections_changed
+                .contains(&"memory.five_signal".to_owned())
+        );
+    }
+
+    #[test]
+    fn migrate_five_signal_config_idempotent_on_commented_output() {
+        let base = "[memory]\nenabled = true\n";
+        let first = migrate_five_signal_config(base).unwrap();
+        let second = migrate_five_signal_config(&first.output).unwrap();
         assert_eq!(second.output, first.output);
         assert_eq!(second.changed_count, 0);
     }
