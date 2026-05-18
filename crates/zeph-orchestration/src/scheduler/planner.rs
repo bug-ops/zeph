@@ -7,7 +7,9 @@
 use super::{DagScheduler, SchedulerAction};
 use crate::dag;
 use crate::graph::{GraphStatus, TaskStatus};
-use crate::topology::{DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier};
+use crate::topology::{
+    DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier, build_rev_adj,
+};
 
 impl DagScheduler {
     /// Re-analyze topology when marked dirty by `inject_tasks`.
@@ -24,6 +26,7 @@ impl DagScheduler {
                     max_parallel: self.config_max_parallel,
                     depth: 0,
                     depths: std::collections::HashMap::new(),
+                    rev_adj: Vec::new(),
                 }
             } else {
                 let (depth, depths) = crate::topology::compute_depths_for_scheduler(&self.graph);
@@ -36,12 +39,14 @@ impl DagScheduler {
                 let strategy = TopologyClassifier::strategy(topo, &strategy_config);
                 let max_parallel =
                     TopologyClassifier::compute_max_parallel(topo, self.config_max_parallel);
+                let rev_adj = build_rev_adj(&self.graph.tasks);
                 TopologyAnalysis {
                     topology: topo,
                     strategy,
                     max_parallel,
                     depth,
                     depths,
+                    rev_adj,
                 }
             }
         };

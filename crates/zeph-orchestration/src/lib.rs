@@ -103,6 +103,8 @@ pub use plan_cache::{
 pub use planner::{LlmPlanner, Planner};
 pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};
-pub use topology::{DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier};
+pub use topology::{
+    DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier, build_rev_adj,
+};
 pub use verifier::{Gap, GapSeverity, PlanVerifier, VerificationResult};
 pub use verify_predicate::{PredicateEvaluator, PredicateOutcome, VerifyPredicate};

@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode};
 use crate::theme::Theme;
+use zeph_common::text::format_tokens;
 
 pub fn render(
     app: &App,
@@ -28,7 +29,7 @@ pub fn render(
     let estimate = app.context_token_estimate();
     let title_buf;
     let title = if estimate > 0 {
-        let count_str = format_token_count(estimate);
+        let count_str = format!("~{}", format_tokens(estimate as u64));
         title_buf = format!("{base_title} | {count_str} tokens ");
         title_buf.as_str()
     } else {
@@ -119,21 +120,6 @@ pub fn render(
         #[allow(clippy::cast_possible_truncation)]
         let cursor_y = area.y + 1 + line_count.saturating_sub(scroll);
         frame.set_cursor_position((cursor_x, cursor_y));
-    }
-}
-
-/// Format a token count for display in the input block title.
-///
-/// Returns `"~{n}"` for counts below 1000, or `"~{n:.1}k"` for larger values.
-fn format_token_count(tokens: usize) -> String {
-    if tokens < 1000 {
-        format!("~{tokens}")
-    } else {
-        // Integer division keeps precision adequate for display; max representable value
-        // is u64::MAX / 1000 ≈ 1.8 × 10^16, which fits safely in f64 mantissa at this scale.
-        let whole = tokens / 1000;
-        let frac = (tokens % 1000) / 100;
-        format!("~{whole}.{frac}k")
     }
 }
 
@@ -249,16 +235,34 @@ mod tests {
 
     #[test]
     fn format_token_count_below_1000() {
-        assert_eq!(super::format_token_count(0), "~0");
-        assert_eq!(super::format_token_count(512), "~512");
-        assert_eq!(super::format_token_count(999), "~999");
+        assert_eq!(format!("~{}", zeph_common::text::format_tokens(0)), "~0");
+        assert_eq!(
+            format!("~{}", zeph_common::text::format_tokens(512)),
+            "~512"
+        );
+        assert_eq!(
+            format!("~{}", zeph_common::text::format_tokens(999)),
+            "~999"
+        );
     }
 
     #[test]
     fn format_token_count_1000_and_above() {
-        assert_eq!(super::format_token_count(1000), "~1.0k");
-        assert_eq!(super::format_token_count(1500), "~1.5k");
-        assert_eq!(super::format_token_count(14_200), "~14.2k");
-        assert_eq!(super::format_token_count(100_000), "~100.0k");
+        assert_eq!(
+            format!("~{}", zeph_common::text::format_tokens(1000)),
+            "~1.0k"
+        );
+        assert_eq!(
+            format!("~{}", zeph_common::text::format_tokens(1500)),
+            "~1.5k"
+        );
+        assert_eq!(
+            format!("~{}", zeph_common::text::format_tokens(14_200)),
+            "~14.2k"
+        );
+        assert_eq!(
+            format!("~{}", zeph_common::text::format_tokens(100_000)),
+            "~100.0k"
+        );
     }
 }

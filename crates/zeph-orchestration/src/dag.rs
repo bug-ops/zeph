@@ -214,9 +214,14 @@ pub fn ready_tasks(graph: &TaskGraph) -> Vec<TaskId> {
 /// - `Retry`: if `retry_count < max_retries`, increments counter and resets task to `Ready`.
 ///   Otherwise falls through to `Abort`.
 /// - `Ask`: sets `graph.status = Paused`.
-pub fn propagate_failure(graph: &mut TaskGraph, failed_id: TaskId) -> Vec<TaskId> {
-    let task_count = graph.tasks.len();
-
+///
+/// `rev_adj[i]` must contain the IDs of all tasks that depend on task `i` (pre-built by the
+/// caller from `TopologyAnalysis::rev_adj` to avoid repeated allocation on the hot path).
+pub fn propagate_failure(
+    graph: &mut TaskGraph,
+    failed_id: TaskId,
+    rev_adj: &[Vec<TaskId>],
+) -> Vec<TaskId> {
     // If the task is already terminal (not Failed), this is a no-op
     if graph.tasks[failed_id.index()].status != TaskStatus::Failed {
         return Vec::new();
@@ -247,14 +252,6 @@ pub fn propagate_failure(graph: &mut TaskGraph, failed_id: TaskId) -> Vec<TaskId
             // Mark the failed task as Skipped
             graph.tasks[failed_id.index()].status = TaskStatus::Skipped;
 
-            // Build reverse adjacency list
-            let mut dependents: Vec<Vec<TaskId>> = vec![Vec::new(); task_count];
-            for task in &graph.tasks {
-                for dep in &task.depends_on {
-                    dependents[dep.index()].push(task.id);
-                }
-            }
-
             // BFS to transitively skip all non-terminal dependents.
             // Collect Running tasks that are being skipped — the caller must cancel them,
             // because marking a task Skipped in the data structure does not stop execution.
@@ -263,7 +260,8 @@ pub fn propagate_failure(graph: &mut TaskGraph, failed_id: TaskId) -> Vec<TaskId
             queue.push_back(failed_id);
 
             while let Some(current) = queue.pop_front() {
-                for &dep_id in &dependents[current.index()] {
+                let dependents = rev_adj.get(current.index()).map_or(&[] as &[TaskId], |v| v);
+                for &dep_id in dependents {
                     if !graph.tasks[dep_id.index()].status.is_terminal() {
                         if graph.tasks[dep_id.index()].status == TaskStatus::Running {
                             to_cancel.push(dep_id);
@@ -311,11 +309,17 @@ pub fn propagate_failure(graph: &mut TaskGraph, failed_id: TaskId) -> Vec<TaskId
 ///   `Pending`, allowing `ready_tasks()` to re-evaluate them on the next tick.
 /// - Sets `graph.status = Running` so the scheduler can continue.
 ///
+/// `rev_adj[i]` must contain the IDs of all tasks that depend on task `i` (pre-built by the
+/// caller from `TopologyAnalysis::rev_adj` to avoid repeated allocation on the hot path).
+///
 /// # Errors
 ///
 /// Returns `OrchestrationError::InvalidGraph` if the graph is not in `Failed`
 /// or `Paused` status (the only states that make sense to retry from).
-pub fn reset_for_retry(graph: &mut TaskGraph) -> Result<(), OrchestrationError> {
+pub fn reset_for_retry(
+    graph: &mut TaskGraph,
+    rev_adj: &[Vec<TaskId>],
+) -> Result<(), OrchestrationError> {
     use super::graph::GraphStatus;
 
     if graph.status != GraphStatus::Failed && graph.status != GraphStatus::Paused {
@@ -324,8 +328,6 @@ pub fn reset_for_retry(graph: &mut TaskGraph) -> Result<(), OrchestrationError> 
             graph.status
         )));
     }
-
-    let task_count = graph.tasks.len();
 
     // First pass: reset Failed -> Ready and collect their IDs as BFS seeds.
     let mut seeds: Vec<TaskId> = Vec::new();
@@ -352,18 +354,11 @@ pub fn reset_for_retry(graph: &mut TaskGraph) -> Result<(), OrchestrationError> 
         return Ok(());
     }
 
-    // Build reverse adjacency: dependents[i] = tasks that depend on task i.
-    let mut dependents: Vec<Vec<TaskId>> = vec![Vec::new(); task_count];
-    for task in &graph.tasks {
-        for dep in &task.depends_on {
-            dependents[dep.index()].push(task.id);
-        }
-    }
-
     // BFS from seeds: reset Skipped dependents back to Pending.
     let mut queue: std::collections::VecDeque<TaskId> = seeds.into_iter().collect();
     while let Some(current) = queue.pop_front() {
-        for &dep_id in &dependents[current.index()] {
+        let dependents = rev_adj.get(current.index()).map_or(&[] as &[TaskId], |v| v);
+        for &dep_id in dependents {
             if graph.tasks[dep_id.index()].status == TaskStatus::Skipped {
                 graph.tasks[dep_id.index()].status = TaskStatus::Pending;
                 queue.push_back(dep_id);
@@ -379,6 +374,7 @@ pub fn reset_for_retry(graph: &mut TaskGraph) -> Result<(), OrchestrationError> 
 mod tests {
     use super::*;
     use crate::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus};
+    use crate::topology::build_rev_adj;
 
     fn make_node(id: u32, deps: &[u32]) -> TaskNode {
         let mut n = TaskNode::new(id, format!("task-{id}"), "desc");
@@ -390,6 +386,10 @@ mod tests {
         let mut g = TaskGraph::new("test");
         g.tasks = nodes;
         g
+    }
+
+    fn make_rev_adj(graph: &TaskGraph) -> Vec<Vec<TaskId>> {
+        build_rev_adj(&graph.tasks)
     }
 
     // --- validate tests ---
@@ -667,7 +667,9 @@ mod tests {
         graph.tasks[2].status = TaskStatus::Pending;
         graph.default_failure_strategy = FailureStrategy::Abort;
 
-        let to_cancel = propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
         assert_eq!(graph.status, GraphStatus::Failed);
         assert!(to_cancel.contains(&TaskId(1)));
         assert!(!to_cancel.contains(&TaskId(2)));
@@ -680,7 +682,9 @@ mod tests {
         graph.tasks[0].failure_strategy = Some(FailureStrategy::Skip);
         graph.tasks[1].status = TaskStatus::Pending;
 
-        let to_cancel = propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
         assert!(to_cancel.is_empty());
         assert_eq!(graph.tasks[0].status, TaskStatus::Skipped);
         assert_eq!(graph.tasks[1].status, TaskStatus::Skipped);
@@ -699,7 +703,9 @@ mod tests {
         graph.tasks[1].status = TaskStatus::Pending;
         graph.tasks[2].status = TaskStatus::Pending;
 
-        propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
         assert_eq!(graph.tasks[0].status, TaskStatus::Skipped);
         assert_eq!(graph.tasks[1].status, TaskStatus::Skipped);
         assert_eq!(graph.tasks[2].status, TaskStatus::Skipped);
@@ -714,7 +720,9 @@ mod tests {
         graph.tasks[0].failure_strategy = Some(FailureStrategy::Skip);
         graph.tasks[1].status = TaskStatus::Running;
 
-        let to_cancel = propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
         assert!(
             to_cancel.contains(&TaskId(1)),
             "Running dependent must be returned for cancellation"
@@ -730,7 +738,9 @@ mod tests {
         graph.tasks[0].max_retries = Some(3);
         graph.tasks[0].retry_count = 1;
 
-        let to_cancel = propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
         assert!(to_cancel.is_empty());
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(graph.tasks[0].retry_count, 2);
@@ -744,7 +754,9 @@ mod tests {
         graph.tasks[0].max_retries = Some(3);
         graph.tasks[0].retry_count = 3; // at max
 
-        propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
         assert_eq!(graph.status, GraphStatus::Failed);
     }
 
@@ -754,7 +766,9 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Failed;
         graph.tasks[0].failure_strategy = Some(FailureStrategy::Ask);
 
-        let to_cancel = propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
         assert!(to_cancel.is_empty());
         assert_eq!(graph.status, GraphStatus::Paused);
     }
@@ -768,7 +782,9 @@ mod tests {
         graph.tasks[0].failure_strategy = Some(FailureStrategy::Skip);
         graph.tasks[1].status = TaskStatus::Pending;
 
-        propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        propagate_failure(&mut graph, TaskId(0), &__ra);
         // Should use Skip, not Abort
         assert_eq!(graph.tasks[0].status, TaskStatus::Skipped);
         assert_ne!(graph.status, GraphStatus::Failed);
@@ -780,7 +796,9 @@ mod tests {
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.tasks[0].status = TaskStatus::Completed;
 
-        let to_cancel = propagate_failure(&mut graph, TaskId(0));
+        let __ra = make_rev_adj(&graph);
+
+        let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
         assert!(to_cancel.is_empty());
         assert_eq!(graph.status, GraphStatus::Created);
     }
@@ -793,7 +811,9 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Failed;
         graph.status = GraphStatus::Failed;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(graph.status, GraphStatus::Running);
     }
@@ -806,7 +826,9 @@ mod tests {
         graph.tasks[1].status = TaskStatus::Skipped;
         graph.status = GraphStatus::Failed;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(graph.tasks[1].status, TaskStatus::Pending);
     }
@@ -824,7 +846,9 @@ mod tests {
         graph.tasks[2].status = TaskStatus::Skipped;
         graph.status = GraphStatus::Failed;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(graph.tasks[1].status, TaskStatus::Pending);
         assert_eq!(graph.tasks[2].status, TaskStatus::Pending);
@@ -838,7 +862,9 @@ mod tests {
         graph.tasks[1].status = TaskStatus::Failed;
         graph.status = GraphStatus::Failed;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
         assert_eq!(graph.tasks[1].status, TaskStatus::Ready);
     }
@@ -849,7 +875,9 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Running;
         graph.status = GraphStatus::Running;
 
-        let err = reset_for_retry(&mut graph).unwrap_err();
+        let __ra = make_rev_adj(&graph);
+
+        let err = reset_for_retry(&mut graph, &__ra).unwrap_err();
         assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
     }
 
@@ -860,7 +888,9 @@ mod tests {
         graph.tasks[1].status = TaskStatus::Skipped;
         graph.status = GraphStatus::Paused;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.status, GraphStatus::Running);
     }
 
@@ -871,7 +901,9 @@ mod tests {
         graph.tasks[0].retry_count = 5;
         graph.status = GraphStatus::Failed;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].retry_count, 0);
     }
 
@@ -882,7 +914,9 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Completed;
         graph.status = GraphStatus::Paused;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.status, GraphStatus::Running);
         assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
     }
@@ -901,7 +935,9 @@ mod tests {
         graph.tasks[2].status = TaskStatus::Pending;
         graph.status = GraphStatus::Failed;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(
             graph.tasks[1].status,
@@ -920,7 +956,9 @@ mod tests {
         graph.tasks[1].status = TaskStatus::Canceled;
         graph.status = GraphStatus::Failed;
 
-        reset_for_retry(&mut graph).unwrap();
+        let __ra = make_rev_adj(&graph);
+
+        reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(graph.tasks[1].status, TaskStatus::Pending);
     }

@@ -93,6 +93,12 @@ pub struct TopologyAnalysis {
     /// Uses `HashMap` so new tasks injected via `inject_tasks()` can be
     /// added without index-out-of-bounds on `Vec` access (critic S3).
     pub depths: HashMap<TaskId, usize>,
+    /// Reverse adjacency list: `rev_adj[i]` = IDs of tasks that depend on task `i`.
+    ///
+    /// Built once from the static graph topology and cached here so that
+    /// `propagate_failure` and `reset_for_retry` can avoid rebuilding it on
+    /// every call. Invalidated and rebuilt by `inject_tasks()` via `topology_dirty`.
+    pub rev_adj: Vec<Vec<TaskId>>,
 }
 
 /// Stateless DAG topology classifier.
@@ -267,6 +273,7 @@ impl TopologyClassifier {
                 max_parallel: config.max_parallel as usize,
                 depth: 0,
                 depths: HashMap::new(),
+                rev_adj: build_rev_adj(tasks),
             };
         }
 
@@ -275,6 +282,7 @@ impl TopologyClassifier {
         let strategy = Self::strategy(topology, config);
         let base = config.max_parallel as usize;
         let max_parallel = Self::compute_max_parallel(topology, base);
+        let rev_adj = build_rev_adj(tasks);
 
         TopologyAnalysis {
             topology,
@@ -282,6 +290,7 @@ impl TopologyClassifier {
             max_parallel,
             depth: longest,
             depths,
+            rev_adj,
         }
     }
 }
@@ -294,6 +303,21 @@ pub(crate) fn compute_depths_for_scheduler(
     graph: &TaskGraph,
 ) -> (usize, std::collections::HashMap<TaskId, usize>) {
     compute_longest_path_and_depths(&graph.tasks)
+}
+
+/// Build a reverse-adjacency list from a task slice.
+///
+/// `rev_adj[i]` contains the IDs of all tasks that list task `i` in their
+/// `depends_on`. Assumes tasks are validated (no out-of-bounds deps).
+#[must_use]
+pub fn build_rev_adj(tasks: &[TaskNode]) -> Vec<Vec<TaskId>> {
+    let mut rev_adj = vec![Vec::new(); tasks.len()];
+    for task in tasks {
+        for dep in &task.depends_on {
+            rev_adj[dep.index()].push(task.id);
+        }
+    }
+    rev_adj
 }
 
 /// Compute the longest path and per-task depth map using Kahn's toposort.

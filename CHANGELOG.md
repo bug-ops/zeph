@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-orchestration`: cache reverse-adjacency list in `TopologyAnalysis.rev_adj`; `propagate_failure`
+  and `reset_for_retry` now accept `rev_adj: &[Vec<TaskId>]` and no longer allocate on every failure
+  event (closes #4384).
+- `zeph-scheduler`: extract private `run_loop(interval, grace_secs)` from three near-identical public
+  run-loop methods (`run`, `run_with_interval`, `run_with_interval_and_grace`); public methods are now
+  thin wrappers (closes #4382).
+- `zeph-tui`: remove duplicate `format_token_count` helper in `widgets/input.rs`; call site delegates
+  to `zeph_common::text::format_tokens` (closes #4378).
+
 - `zeph-core`: rename `ShadowEvent` → `SentinelEvent` in `shadow_sentinel` module to eliminate
   naming collision with `zeph_sanitizer::ShadowMemory`; `ShadowEventStore` and `ShadowEventRow`
   retain their names (closes #4379).

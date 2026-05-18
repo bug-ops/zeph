@@ -1064,7 +1064,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         &mut self,
         graph_id: Option<&str>,
     ) -> Result<String, error::AgentError> {
-        use zeph_orchestration::{GraphStatus, dag};
+        use zeph_orchestration::{GraphStatus, dag, topology::build_rev_adj};
 
         let Some(ref graph) = self.services.orchestration.pending_graph else {
             return Ok(
@@ -1105,7 +1105,8 @@ impl<C: crate::channel::Channel> Agent<C> {
             .filter(|t| t.status == zeph_orchestration::TaskStatus::Failed)
             .count();
 
-        dag::reset_for_retry(&mut graph)
+        let rev_adj = build_rev_adj(&graph.tasks);
+        dag::reset_for_retry(&mut graph, &rev_adj)
             .map_err(|e| error::OrchestrationFailure::RetryReset(e.to_string()))?;
 
         for task in &mut graph.tasks {

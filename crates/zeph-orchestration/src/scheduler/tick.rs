@@ -367,7 +367,7 @@ impl DagScheduler {
             "spawn failed, marking task failed"
         );
         self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
-        let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
+        let cancel_ids = dag::propagate_failure(&mut self.graph, task_id, &self.topology.rev_adj);
         let mut actions = Vec::new();
         for cancel_task_id in cancel_ids {
             if let Some(running) = self.running.remove(&cancel_task_id) {
@@ -657,7 +657,7 @@ impl DagScheduler {
             return self.abort_dag_with_lineage(root_id, chain.entries());
         }
 
-        let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
+        let cancel_ids = dag::propagate_failure(&mut self.graph, task_id, &self.topology.rev_adj);
         let mut actions = Vec::new();
 
         for cancel_task_id in cancel_ids {
@@ -740,7 +740,8 @@ impl DagScheduler {
 
             actions.push(SchedulerAction::Cancel { agent_handle_id });
 
-            let cancel_ids = dag::propagate_failure(&mut self.graph, task_id);
+            let cancel_ids =
+                dag::propagate_failure(&mut self.graph, task_id, &self.topology.rev_adj);
             for cancel_task_id in cancel_ids {
                 if let Some(running) = self.running.remove(&cancel_task_id) {
                     actions.push(SchedulerAction::Cancel {

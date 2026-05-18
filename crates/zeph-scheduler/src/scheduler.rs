@@ -433,13 +433,48 @@ impl Scheduler {
     /// The `grace_secs` parameter corresponds to `scheduler.daemon.shutdown_grace_secs`
     /// in config (default 30). Pass 0 for immediate exit after shutdown signal.
     pub async fn run_with_interval_and_grace(&mut self, tick_secs: u64, grace_secs: u64) {
-        let secs = tick_secs.clamp(5, 3600);
-        let mut interval = tokio::time::interval(Duration::from_secs(secs));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        self.run_loop(
+            Duration::from_secs(tick_secs.clamp(5, 3600)),
+            Some(grace_secs),
+        )
+        .await;
+    }
+
+    /// Run the scheduler loop with a configurable tick interval.
+    ///
+    /// The interval is clamped to a minimum of 1 second. Missed ticks (caused by a
+    /// slow `tick()` call) are skipped instead of burst-replayed, preventing runaway
+    /// execution storms on slow hosts.
+    ///
+    /// This method runs until `true` is sent on the shutdown channel.
+    pub async fn run_with_interval(&mut self, tick_secs: u64) {
+        self.run_loop(Duration::from_secs(tick_secs.max(1)), None)
+            .await;
+    }
+
+    /// Run the scheduler loop, checking for due tasks every 60 seconds.
+    ///
+    /// This is a convenience wrapper around [`Scheduler::run_with_interval`] with a
+    /// 60-second tick. It runs until `true` is sent on the shutdown channel.
+    pub async fn run(&mut self) {
+        self.run_loop(Duration::from_mins(1), None).await;
+    }
+
+    /// Core scheduler event loop.
+    ///
+    /// Ticks on `interval`, processes the shutdown signal, and optionally waits for
+    /// in-flight handlers during the grace window before returning. `grace_secs = None`
+    /// means exit immediately on shutdown with no grace wait.
+    async fn run_loop(&mut self, interval: Duration, grace_secs: Option<u64>) {
+        let mut ticker = tokio::time::interval(interval);
+        // Skip missed ticks instead of bursting to catch up. Without this, a slow `tick()`
+        // call causes tokio to fire the interval in a tight loop to "catch up", producing
+        // hundreds of executions per second (#2737 leak 4).
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
-                _ = interval.tick() => {
+                _ = ticker.tick() => {
                     {
                         use tracing::Instrument as _;
                         let span = tracing::info_span!(
@@ -456,10 +491,11 @@ impl Scheduler {
                 }
                 _ = self.shutdown_rx.changed() => {
                     if *self.shutdown_rx.borrow() {
-                        tracing::info!("scheduler shutting down (grace {}s)", grace_secs);
-                        if grace_secs > 0 {
+                        let grace = grace_secs.unwrap_or(0);
+                        tracing::info!("scheduler shutting down (grace {}s)", grace);
+                        if grace > 0 {
                             let deadline = tokio::time::Instant::now()
-                                + Duration::from_secs(grace_secs.min(60));
+                                + Duration::from_secs(grace.min(60));
                             loop {
                                 if self.in_flight.lock().await.is_empty() {
                                     tracing::debug!("scheduler: no in-flight tasks, exiting immediately");
@@ -472,81 +508,6 @@ impl Scheduler {
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                             }
                         }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Run the scheduler loop with a configurable tick interval.
-    ///
-    /// The interval is clamped to a minimum of 1 second. Missed ticks (caused by a
-    /// slow `tick()` call) are skipped instead of burst-replayed, preventing runaway
-    /// execution storms on slow hosts.
-    ///
-    /// This method runs until `true` is sent on the shutdown channel.
-    pub async fn run_with_interval(&mut self, tick_secs: u64) {
-        let secs = tick_secs.max(1);
-        let mut interval = tokio::time::interval(Duration::from_secs(secs));
-        // Skip missed ticks instead of bursting to catch up. Without this, a slow `tick()`
-        // call causes tokio to fire the interval in a tight loop to "catch up", producing
-        // hundreds of executions per second (#2737 leak 4).
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    {
-                        use tracing::Instrument as _;
-                        let span = tracing::info_span!(
-                            "scheduler.daemon.tick",
-                            tasks = self.tasks.len()
-                        );
-                        async {
-                            self.drain_channel().await;
-                            self.tick().await;
-                        }
-                        .instrument(span)
-                        .await;
-                    }
-                }
-                _ = self.shutdown_rx.changed() => {
-                    if *self.shutdown_rx.borrow() {
-                        tracing::info!("scheduler shutting down");
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Run the scheduler loop, checking for due tasks every 60 seconds.
-    ///
-    /// This is a convenience wrapper around [`Scheduler::run_with_interval`] with a
-    /// 60-second tick. It runs until `true` is sent on the shutdown channel.
-    pub async fn run(&mut self) {
-        let mut interval = tokio::time::interval(Duration::from_mins(1));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    {
-                        use tracing::Instrument as _;
-                        let span = tracing::info_span!(
-                            "scheduler.daemon.tick",
-                            tasks = self.tasks.len()
-                        );
-                        async {
-                            self.drain_channel().await;
-                            self.tick().await;
-                        }
-                        .instrument(span)
-                        .await;
-                    }
-                }
-                _ = self.shutdown_rx.changed() => {
-                    if *self.shutdown_rx.borrow() {
-                        tracing::info!("scheduler shutting down");
                         break;
                     }
                 }
