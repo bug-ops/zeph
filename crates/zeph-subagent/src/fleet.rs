@@ -5,7 +5,7 @@
 //!
 //! [`FleetRegistry`] is a narrow trait that decouples `zeph-subagent` from the
 //! `zeph-memory` `SqliteStore`. The concrete implementation lives in `zeph-core`
-//! and is injected via [`SubAgentManager::set_fleet_registry`].
+//! and is injected via `SubAgentManager::set_fleet_registry`.
 
 use std::future::Future;
 use std::pin::Pin;
