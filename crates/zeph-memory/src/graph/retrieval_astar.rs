@@ -596,9 +596,10 @@ mod tests {
         let mut node_map: HashMap<i64, NodeIndex> = (0..600i64)
             .map(|id| (id, NodeIndex::new(usize::try_from(id).unwrap())))
             .collect();
-        // Assign scores: entity 599 gets 1.0, 598 gets 0.999, ..., 0 gets ~0.0.
+        // Assign scores: entity 599 gets highest, 0 gets lowest.
+        // i16 covers 0..600 exactly; the i16→f32 cast is lossless (f32 has 23 mantissa bits).
         let entity_scores: HashMap<i64, f32> = (0..600i64)
-            .map(|id| (id, id as f64 as f32 / 599.0))
+            .map(|id| (id, f32::from(i16::try_from(id).unwrap()) / 599.0))
             .collect();
 
         cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
