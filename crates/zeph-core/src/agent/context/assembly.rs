@@ -2037,10 +2037,10 @@ mod tests {
     // ── GoSkills channel-allowlist index rebuild (#4432) ─────────────────────
 
     /// Validates that after a channel-allowlist filter removes a skill, the indices passed
-    /// to group_skills() are rebuilt to stay 1:1 with the surviving active_skills slice.
+    /// to `group_skills()` are rebuilt to stay 1:1 with the surviving `active_skills` slice.
     ///
-    /// Without the fix, matched_indices still references the removed skill's store position,
-    /// so group_skills() looks up the wrong embedding and produces incorrect support groups.
+    /// Without the fix, `matched_indices` still references the removed skill's store position,
+    /// so `group_skills()` looks up the wrong embedding and produces incorrect support groups.
     #[test]
     fn channel_allowlist_filter_rebuilds_matched_indices() {
         use std::path::PathBuf;
@@ -2082,7 +2082,7 @@ mod tests {
         // all_meta name appears in active_skills (i.e. [1, 2]).
         let stale_indices = vec![0usize, 1, 2]; // before fix — would include filtered-out
         let allowed_names: std::collections::HashSet<&str> =
-            active_skills.iter().map(|s| s.name()).collect();
+            active_skills.iter().map(Skill::name).collect();
         // all_meta names at positions [0,1,2]:
         let all_meta_names = ["filtered-out", "entry", "support"];
         let fixed_indices: Vec<usize> = stale_indices
