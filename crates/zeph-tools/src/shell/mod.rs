@@ -1861,6 +1861,8 @@ impl ShellExecutor {
             if let Some(pid) = pid_opt {
                 send_signal_with_escalation(*pid).await;
             }
+            #[cfg(not(unix))]
+            let _ = pid_opt;
 
             if let Some(ref tx) = self.tool_event_tx {
                 let _ = tx
