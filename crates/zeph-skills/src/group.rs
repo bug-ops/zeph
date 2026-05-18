@@ -232,7 +232,7 @@ mod tests {
             panic!("expected Grouped");
         };
         assert_eq!(g.support.len(), 2);
-        let support_names: Vec<&str> = g.support.iter().map(|s| s.name()).collect();
+        let support_names: Vec<&str> = g.support.iter().map(Skill::name).collect();
         assert!(support_names.contains(&"b"));
         assert!(support_names.contains(&"d"));
         assert!(!support_names.contains(&"c"));
@@ -289,6 +289,6 @@ mod tests {
     #[test]
     fn context_role_variant_exists() {
         // Ensure Context variant is present for forward-compat (not assigned by MVP)
-        let _role = SkillRole::Context;
+        assert!(matches!(SkillRole::Context, SkillRole::Context));
     }
 }
