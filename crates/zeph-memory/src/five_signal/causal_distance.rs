@@ -55,6 +55,12 @@ impl CausalDistanceComputer {
         goal_entity_id: Option<i64>,
         entity_ids: &[i64],
     ) -> Result<HashMap<i64, u32>, crate::error::MemoryError> {
+        let _span = tracing::info_span!(
+            "memory.five_signal.causal_distance.compute",
+            goal_entity_id,
+            candidate_count = entity_ids.len()
+        )
+        .entered();
         tracing::debug!("five_signal: computing causal distances");
 
         let Some(goal_id) = goal_entity_id else {

@@ -85,6 +85,7 @@ impl ConsolidationHandler {
     async fn run_once(&self) -> Result<(), MemoryError> {
         use sqlx::Row as _;
 
+        let _span = tracing::info_span!("memory.five_signal.consolidation.run_once").entered();
         tracing::info!("five_signal: consolidation daemon run started");
 
         let start = std::time::Instant::now();
@@ -109,30 +110,37 @@ impl ConsolidationHandler {
         .await
         .map_err(|e| MemoryError::Db(e.into()))?;
 
+        let batch: Vec<_> = rows.iter().take(self.config.batch_size).collect();
+
+        let candidate_ids: Vec<MessageId> = batch
+            .iter()
+            .map(|row| MessageId(row.get::<i64, _>("id")))
+            .collect();
+
+        let freq_scores = rt
+            .access_cache
+            .load_for_candidates(&rt.session_id, &candidate_ids)
+            .await
+            .unwrap_or_default();
+
+        let neutral_causal =
+            crate::five_signal::causal_distance::CausalDistanceComputer::distance_to_score(
+                rt.config.neutral_causal_distance,
+            );
+
         let mut promote_ids: Vec<i64> = Vec::new();
         let mut demote_ids: Vec<MessageId> = Vec::new();
-        let mut processed: usize = 0;
+        let processed = batch.len();
 
-        for row in &rows {
-            if processed >= self.config.batch_size {
-                break;
-            }
-            processed += 1;
-
+        for row in &batch {
             let fact_id: i64 = row.get("id");
             let created_at: i64 = row.get("created_at");
             let qdrant_promoted: i64 = row.get("qdrant_promoted");
             let memory_tier: Option<String> = row.try_get("memory_tier").ok().flatten();
 
             let novelty = rt.novelty_computer.compute(created_at);
-            // Frequency and causal signals require per-fact async I/O. The daemon uses
-            // neutral values (0.5) to keep runtime bounded (NFR-004). A future
-            // enhancement can hydrate signals with a batched pre-fetch.
-            let frequency = 0.5_f64;
-            let causal =
-                crate::five_signal::causal_distance::CausalDistanceComputer::distance_to_score(
-                    rt.config.neutral_causal_distance,
-                );
+            let frequency = freq_scores.get(&MessageId(fact_id)).copied().unwrap_or(0.0);
+            let causal = neutral_causal;
             let recency = novelty;
 
             let w = &rt.weights;
