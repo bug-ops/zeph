@@ -1,0 +1,19 @@
+-- Agent session lifecycle tracking for fleet dashboard (#3884).
+-- Records every interactive/autonomous/acp session with token usage and cost.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'interactive',
+    status TEXT NOT NULL DEFAULT 'active',
+    channel TEXT NOT NULL DEFAULT 'cli',
+    model TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_active_at TEXT NOT NULL DEFAULT (datetime('now')),
+    turns INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_cents REAL NOT NULL DEFAULT 0.0,
+    goal_text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active ON agent_sessions(last_active_at);

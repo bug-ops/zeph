@@ -836,6 +836,14 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
+    /// Return reasoning tokens from the last API call, if the provider reports them.
+    ///
+    /// Reasoning tokens are a **subset** of completion tokens (`OpenAI` o-series only).
+    /// Returns `None` for providers that do not expose reasoning token counts.
+    fn last_reasoning_tokens(&self) -> Option<u64> {
+        None
+    }
+
     /// Return the compaction summary from the most recent API call, if a server-side
     /// compaction occurred (Claude compact-2026-01-12 beta). Clears the stored value.
     fn take_compaction_summary(&self) -> Option<String> {

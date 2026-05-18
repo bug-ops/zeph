@@ -28,6 +28,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-config`: Added `ParentContextPolicy` enum (`inherit` / `inherit_sanitized` / `none`)
   giving operators explicit control over cross-agent context propagation trust (closes #3936).
 
+### Added
+
+- `zeph-memory`: New `agent_sessions` table (SQLite migration 089 / PostgreSQL 090) with
+  `upsert_agent_session`, `update_agent_session_status`, `reconcile_stale_sessions`, and
+  `list_agent_sessions` methods on `SqliteStore`. Session kind/status/channel are typed enums
+  (`SessionKind`, `SessionStatus`, `SessionChannel`) (closes #3884).
+- `zeph-tui`: Fleet dashboard panel (`[f]` shortcut) showing a live table of all agent sessions
+  with ID, kind, status, channel, model, turns, token counts, and cost; integrated into the Tab
+  cycle and command palette (closes #3884).
+- `src/commands/agents`: New `zeph agents fleet [--status <status>] [--limit N]` CLI subcommand
+  that prints a formatted table of recent agent sessions from the database (closes #3884).
+- `zeph-llm`: `UsageTracker::record_reasoning` / `last_reasoning` tracks reasoning tokens from
+  `OpenAI` `completion_tokens_details.reasoning_tokens`; `LlmProvider` and `DynLlmProvider`
+  expose `last_reasoning_tokens() -> Option<u64>` (closes #3904).
+- `zeph-core`: `MetricsSnapshot` gained `reasoning_tokens: u64` (subset of `completion_tokens`);
+  the `/status` slash command and TUI status widget display it when non-zero (closes #3904).
+- `zeph-channels`: New `terminal_title` module with `set_action_required` / `clear_action_required`
+  that update the terminal window title via OSC 2; control characters are stripped before writing
+  to prevent ANSI injection; the CLI channel calls these around blocking user-input prompts
+  (closes #3904).
+- `zeph-config`: `CliConfig.set_terminal_title: bool` (default `true`) controls whether terminal
+  title updates are emitted; `TuiConfig.fleet: FleetConfig` exposes `refresh_interval_secs`
+  (default 5) and `max_sessions` (default 50) for the fleet panel.
+
 ### Fixed
 
 - `zeph-core`: `AutonomousRegistry::upsert`, `remove`, and `list` now log a `tracing::error!`

@@ -43,6 +43,7 @@ pub mod slack;
 pub mod telegram;
 pub mod telegram_api_ext;
 pub mod telegram_moderation;
+pub mod terminal_title;
 
 pub use any::AnyChannel;
 pub use cli::CliChannel;

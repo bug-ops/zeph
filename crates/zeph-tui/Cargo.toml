@@ -41,6 +41,7 @@ unicode-width.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-core.workspace = true
+zeph-memory.workspace = true
 zeph-subagent.workspace = true
 
 [dev-dependencies]

@@ -56,6 +56,8 @@ pub enum Panel {
     SubAgents,
     /// The supervised task registry panel (side column).
     Tasks,
+    /// The fleet session overview panel (side column).
+    Fleet,
 }
 
 /// Discriminates what the main chat area is currently displaying.
@@ -407,6 +409,10 @@ pub struct App {
     cached_task_snapshots: Vec<zeph_common::task_supervisor::TaskSnapshot>,
     /// Clipboard handle for `/copy` and `Ctrl+O` (#3685).
     pub(crate) clipboard: crate::clipboard::ClipboardHandle,
+    /// Cached fleet session data for the fleet panel (#3884).
+    pub(crate) fleet_snapshot: crate::widgets::fleet::FleetSnapshot,
+    /// List scroll state for the fleet panel.
+    pub(crate) fleet_list_state: ratatui::widgets::ListState,
 }
 
 impl App {
@@ -470,6 +476,8 @@ impl App {
             show_task_panel: false,
             cached_task_snapshots: Vec::new(),
             clipboard: crate::clipboard::ClipboardHandle::new(),
+            fleet_snapshot: crate::widgets::fleet::FleetSnapshot::default(),
+            fleet_list_state: ratatui::widgets::ListState::default(),
         }
     }
 
@@ -1549,6 +1557,9 @@ mod tests {
 
         app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::SubAgents);
+
+        app.handle_event(AppEvent::Key(tab));
+        assert_eq!(app.active_panel, Panel::Fleet);
 
         app.handle_event(AppEvent::Key(tab));
         assert_eq!(app.active_panel, Panel::Chat);

@@ -311,6 +311,28 @@ pub struct TuiConfig {
     /// Default: `inline`.
     #[serde(default)]
     pub tool_density: ToolDensity,
+    /// Fleet panel configuration (auto-refresh interval and max sessions displayed).
+    #[serde(default)]
+    pub fleet: FleetConfig,
+}
+
+/// Configuration for the TUI fleet panel (#3884).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(default)]
+pub struct FleetConfig {
+    /// How often the fleet panel polls the database for updated session data (seconds).
+    pub refresh_interval_secs: u64,
+    /// Maximum number of sessions to display in the fleet panel.
+    pub max_sessions: u32,
+}
+
+impl Default for FleetConfig {
+    fn default() -> Self {
+        Self {
+            refresh_interval_secs: 5,
+            max_sessions: 50,
+        }
+    }
 }
 
 /// ACP server transport mode.

@@ -196,6 +196,7 @@ pub use semantic::{
     start_tree_consolidation_loop,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
+pub use store::agent_sessions::{AgentSessionRow, SessionChannel, SessionKind, SessionStatus};
 pub use store::compression_guidelines::CompressionFailurePair;
 pub use store::corrections::UserCorrectionRow;
 pub use store::experiments::{ExperimentResultRow, NewExperimentResult, SessionSummaryRow};

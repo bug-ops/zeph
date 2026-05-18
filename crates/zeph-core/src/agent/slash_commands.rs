@@ -187,11 +187,19 @@ impl<C: crate::channel::Channel> Agent<C> {
         let _ = writeln!(out, "Uptime:    {uptime}s");
         let _ = writeln!(out, "Turns:     {msg_count}");
         let _ = writeln!(out, "API calls: {}", metrics.api_calls);
-        let _ = writeln!(
-            out,
-            "Tokens:    {} prompt / {} completion",
-            metrics.prompt_tokens, metrics.completion_tokens
-        );
+        if metrics.reasoning_tokens > 0 {
+            let _ = writeln!(
+                out,
+                "Tokens:    {} prompt / {} completion ({} reasoning, subset of completion)",
+                metrics.prompt_tokens, metrics.completion_tokens, metrics.reasoning_tokens
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "Tokens:    {} prompt / {} completion",
+                metrics.prompt_tokens, metrics.completion_tokens
+            );
+        }
         let _ = writeln!(out, "Skills:    {skill_count}");
         let _ = writeln!(out, "MCP:       {} server(s)", metrics.mcp_servers);
         if let Some(ref tf) = self.services.tool_state.tool_schema_filter {
@@ -607,6 +615,7 @@ struct StatusMetrics {
     api_calls: u64,
     prompt_tokens: u64,
     completion_tokens: u64,
+    reasoning_tokens: u64,
     cost_cents: f64,
     mcp_servers: usize,
     orch_plans: u64,
@@ -626,6 +635,7 @@ fn collect_status_metrics(
             api_calls: m.api_calls,
             prompt_tokens: m.prompt_tokens,
             completion_tokens: m.completion_tokens,
+            reasoning_tokens: m.reasoning_tokens,
             cost_cents: m.cost_spent_cents,
             mcp_servers: m.mcp_server_count,
             orch_plans: m.orchestration.plans_total,
@@ -640,6 +650,7 @@ fn collect_status_metrics(
             api_calls: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            reasoning_tokens: 0,
             cost_cents: 0.0,
             mcp_servers: 0,
             orch_plans: 0,

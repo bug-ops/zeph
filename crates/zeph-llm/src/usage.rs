@@ -5,10 +5,15 @@
 ///
 /// Note: `last_cache` is only populated by Claude and `OpenAI` providers.
 /// Ollama and Gemini only use `last_usage`.
+///
+/// `last_reasoning` stores reasoning tokens, which are a **subset** of completion tokens
+/// (`OpenAI` o-series only). Never add reasoning tokens to cost separately.
 #[derive(Debug, Default)]
+#[allow(clippy::struct_field_names)] // all fields are `last_*` by design — they track the last seen value
 pub(crate) struct UsageTracker {
     last_usage: std::sync::Mutex<Option<(u64, u64)>>,
     last_cache: std::sync::Mutex<Option<(u64, u64)>>,
+    last_reasoning: std::sync::Mutex<Option<u64>>,
 }
 
 impl UsageTracker {
@@ -24,12 +29,28 @@ impl UsageTracker {
         }
     }
 
+    /// Record reasoning tokens from the last response.
+    ///
+    /// Reasoning tokens are a **subset** of completion tokens; callers must not add them
+    /// to cost calculations.
+    pub(crate) fn record_reasoning(&self, tokens: u64) {
+        if let Ok(mut g) = self.last_reasoning.lock() {
+            *g = Some(tokens);
+        }
+    }
+
     pub(crate) fn last_usage(&self) -> Option<(u64, u64)> {
         self.last_usage.lock().ok().and_then(|g| *g)
     }
 
     pub(crate) fn last_cache_usage(&self) -> Option<(u64, u64)> {
         self.last_cache.lock().ok().and_then(|g| *g)
+    }
+
+    /// Returns reasoning tokens from the last response, or `None` if the provider
+    /// does not report them.
+    pub(crate) fn last_reasoning(&self) -> Option<u64> {
+        self.last_reasoning.lock().ok().and_then(|g| *g)
     }
 }
 

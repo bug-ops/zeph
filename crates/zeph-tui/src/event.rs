@@ -236,6 +236,8 @@ pub enum AgentEvent {
     /// diverge slightly from the actual token count sent to the LLM. Stale between
     /// turns (the previous turn's estimate remains displayed until the next assembly).
     ContextEstimate(usize),
+    /// Updated fleet snapshot from the background DB poll task (#3884).
+    FleetSnapshot(crate::widgets::fleet::FleetSnapshot),
 }
 
 /// Blocking event pump that forwards terminal events to the async [`AppEvent`] channel.

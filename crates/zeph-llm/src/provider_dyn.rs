@@ -145,6 +145,14 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
     /// Returns `(input_tokens, output_tokens)`.
     fn last_usage(&self) -> Option<(u64, u64)>;
 
+    /// Return reasoning tokens from the last API call, if the provider reports them.
+    ///
+    /// Reasoning tokens are a **subset** of completion tokens (`OpenAI` o-series only).
+    /// Returns `None` for providers that do not expose reasoning token counts.
+    fn last_reasoning_tokens(&self) -> Option<u64> {
+        None
+    }
+
     /// Return the compaction summary from the most recent API call, if available.
     fn take_compaction_summary(&self) -> Option<String>;
 

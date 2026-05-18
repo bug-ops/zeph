@@ -524,6 +524,15 @@ pub(crate) enum AgentsCommand {
         #[arg(long, short)]
         yes: bool,
     },
+    /// List agent sessions recorded in the fleet database
+    Fleet {
+        /// Filter by session status (active, completed, failed, cancelled, unknown)
+        #[arg(long, short)]
+        status: Option<String>,
+        /// Maximum number of sessions to show
+        #[arg(long, default_value = "20")]
+        limit: u32,
+    },
 }
 
 #[derive(Subcommand)]

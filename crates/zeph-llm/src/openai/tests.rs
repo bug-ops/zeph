@@ -812,6 +812,7 @@ fn store_cache_usage_stores_token_counts() {
         prompt_tokens: 1000,
         completion_tokens: 200,
         prompt_tokens_details: None,
+        completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
     let (prompt, completion) = p.last_usage().unwrap();
@@ -826,6 +827,7 @@ fn clone_resets_last_usage() {
         prompt_tokens: 500,
         completion_tokens: 100,
         prompt_tokens_details: None,
+        completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
     assert!(p.last_usage().is_some());
@@ -840,6 +842,7 @@ fn store_and_retrieve_cache_usage() {
         prompt_tokens: 1000,
         completion_tokens: 200,
         prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 800 }),
+        completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
     let (creation, read) = p.last_cache_usage().unwrap();
@@ -854,6 +857,7 @@ fn store_cache_usage_zero_cached_tokens_not_stored() {
         prompt_tokens: 100,
         completion_tokens: 50,
         prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 0 }),
+        completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
     assert!(p.last_cache_usage().is_none());
@@ -866,6 +870,7 @@ fn clone_resets_last_cache() {
         prompt_tokens: 500,
         completion_tokens: 100,
         prompt_tokens_details: Some(PromptTokensDetails { cached_tokens: 400 }),
+        completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
     assert!(p.last_cache_usage().is_some());

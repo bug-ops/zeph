@@ -305,10 +305,18 @@ impl OpenAiProvider {
         if cached > 0 {
             self.usage.record_cache(0, cached);
         }
+        let reasoning = usage
+            .completion_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.reasoning_tokens);
+        if reasoning > 0 {
+            self.usage.record_reasoning(reasoning);
+        }
         tracing::debug!(
             prompt_tokens = usage.prompt_tokens,
             cached_tokens = cached,
             completion_tokens = usage.completion_tokens,
+            reasoning_tokens = reasoning,
             "OpenAI API usage"
         );
     }
@@ -666,6 +674,10 @@ impl LlmProvider for OpenAiProvider {
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         self.usage.last_usage()
+    }
+
+    fn last_reasoning_tokens(&self) -> Option<u64> {
+        self.usage.last_reasoning()
     }
 
     fn debug_request_json(
@@ -1210,12 +1222,21 @@ struct OpenAiUsage {
     completion_tokens: u64,
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
 #[derive(Deserialize)]
 struct PromptTokensDetails {
     #[serde(default)]
     cached_tokens: u64,
+}
+
+#[derive(Deserialize)]
+struct CompletionTokensDetails {
+    /// Reasoning tokens are a subset of `completion_tokens`; do not add to cost.
+    #[serde(default)]
+    reasoning_tokens: u64,
 }
 
 #[derive(Deserialize)]

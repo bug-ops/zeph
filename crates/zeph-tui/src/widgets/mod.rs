@@ -9,6 +9,7 @@ pub mod context_gauge;
 pub mod diff;
 pub mod elicitation;
 pub mod file_picker;
+pub mod fleet;
 pub mod help;
 pub mod input;
 pub mod memory;

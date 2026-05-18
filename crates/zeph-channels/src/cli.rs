@@ -153,6 +153,7 @@ async fn run_tty_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<Chan
             .map(|h| h.entries().iter().cloned().collect())
             .unwrap_or_default();
 
+        crate::terminal_title::set_action_required("zeph");
         // NOTE: raw spawn_blocking is correct here — this is interactive terminal I/O (crossterm
         // raw mode), not a CPU-bound agent task. Routing through task_supervisor's semaphore
         // would starve the UI when 8 agent tasks are in-flight.
@@ -161,6 +162,7 @@ async fn run_tty_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<Chan
         else {
             break;
         };
+        crate::terminal_title::clear_action_required("zeph");
 
         let line = match result {
             ReadLineResult::Interrupted | ReadLineResult::Eof => break,

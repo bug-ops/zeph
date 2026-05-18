@@ -11156,6 +11156,7 @@ dependencies = [
  "zeph-common",
  "zeph-config",
  "zeph-core",
+ "zeph-memory",
  "zeph-subagent",
 ]
 

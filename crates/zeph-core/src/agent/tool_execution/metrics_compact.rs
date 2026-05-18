@@ -62,6 +62,7 @@ impl<C: Channel> Agent<C> {
             .provider
             .last_usage()
             .unwrap_or((prompt_estimate, completion_heuristic));
+        let reasoning = self.provider.last_reasoning_tokens().unwrap_or(0);
         let router_stats = self.provider.router_thompson_stats();
         self.update_metrics(|m| {
             m.api_calls += 1;
@@ -70,6 +71,7 @@ impl<C: Channel> Agent<C> {
             m.prompt_tokens += final_prompt;
             m.completion_tokens += final_completion;
             m.total_tokens = m.prompt_tokens + m.completion_tokens;
+            m.reasoning_tokens += reasoning;
             if !router_stats.is_empty() {
                 m.router_thompson_stats = router_stats;
             }

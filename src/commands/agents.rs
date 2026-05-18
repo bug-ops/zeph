@@ -7,6 +7,7 @@ use std::process::Command;
 
 use crate::bootstrap::resolve_config_path;
 use anyhow::{Context as _, bail};
+use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 use zeph_subagent::error::SubAgentError;
 use zeph_subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name, resolve_agent_paths};
 
@@ -27,6 +28,9 @@ pub(crate) async fn handle_agents_command(
         } => handle_create(&name, &description, dir.as_path(), model.as_deref()),
         AgentsCommand::Edit { name } => handle_edit(&name, config_path),
         AgentsCommand::Delete { name, yes } => handle_delete(&name, yes, config_path),
+        AgentsCommand::Fleet { status, limit } => {
+            handle_fleet(status.as_deref(), limit, config_path).await
+        }
     }
 }
 
@@ -222,6 +226,93 @@ fn handle_delete(name: &str, yes: bool, config_path: Option<&Path>) -> anyhow::R
     SubAgentDef::delete_file(path).map_err(|e: SubAgentError| anyhow::anyhow!("{e}"))?;
     println!("Deleted {name}");
     Ok(())
+}
+
+async fn handle_fleet(
+    status_filter: Option<&str>,
+    limit: u32,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let config_file = resolve_config_path(config_path);
+    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let db_path = &config.memory.sqlite_path;
+    let store = zeph_memory::store::DbStore::new(db_path)
+        .await
+        .context("failed to open database")?;
+
+    let sf: Option<SessionStatus> = status_filter
+        .map(|s| s.parse().map_err(|e: String| anyhow::anyhow!("{e}")))
+        .transpose()?;
+
+    let sessions = store
+        .list_agent_sessions(limit, sf)
+        .await
+        .context("failed to list agent sessions")?;
+
+    if sessions.is_empty() {
+        println!("No agent sessions found.");
+        return Ok(());
+    }
+
+    print_fleet_table(&sessions);
+    Ok(())
+}
+
+fn print_fleet_table(sessions: &[AgentSessionRow]) {
+    let w_id = 8;
+    let w_kind = 12;
+    let w_status = 11;
+    let w_channel = 5;
+    let w_model = 22;
+    let w_turns = 5;
+    let w_tokens = 15;
+
+    println!(
+        "{:<w_id$}  {:<w_kind$}{:<w_status$}{:<w_channel$}{:<w_model$}{:>w_turns$}  {:<w_tokens$}COST",
+        "ID", "KIND", "STATUS", "CH", "MODEL", "TURNS", "P/C TOKENS"
+    );
+    println!("{}", "-".repeat(100));
+
+    for s in sessions {
+        let id = if s.id.len() > w_id {
+            &s.id[..w_id]
+        } else {
+            &s.id
+        };
+        let model = truncate(&s.model, w_model);
+        let tokens = format!(
+            "{}/{}",
+            fmt_tokens(s.prompt_tokens),
+            fmt_tokens(s.completion_tokens)
+        );
+        let cost = if s.cost_cents > 0.0 {
+            format!("${:.4}", s.cost_cents / 100.0)
+        } else {
+            "—".to_owned()
+        };
+        println!(
+            "{:<w_id$}  {:<w_kind$}{:<w_status$}{:<w_channel$}{:<w_model$}{:>w_turns$}  {:<w_tokens$}{}",
+            id,
+            s.kind.to_string(),
+            s.status.to_string(),
+            s.channel.to_string(),
+            model,
+            s.turns,
+            tokens,
+            cost,
+        );
+    }
+}
+
+fn fmt_tokens(n: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

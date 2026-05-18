@@ -119,6 +119,8 @@ pub enum TuiCommand {
     CocoonModels,
     // Clipboard (#3685)
     CopyLastAssistant,
+    // Fleet session overview (#3884)
+    FleetPanel,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -228,6 +230,13 @@ fn build_view_commands() -> Vec<CommandEntry> {
             category: "view",
             shortcut: None,
             command: TuiCommand::TaskPanel,
+        },
+        CommandEntry {
+            id: "fleet",
+            label: "Fleet: show agent sessions",
+            category: "view",
+            shortcut: Some("f"),
+            command: TuiCommand::FleetPanel,
         },
     ]
 }
@@ -851,7 +860,7 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 20);
+        assert_eq!(command_registry().len(), 21);
     }
 
     #[test]

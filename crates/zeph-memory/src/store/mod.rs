@@ -26,9 +26,11 @@
 //! | `compression_guidelines` | LLM compression policy guidelines |
 //! | `admission_training` | A-MAC admission training data |
 //! | `channel_preferences` | Per-channel UX preferences (e.g. last active provider) |
+//! | `agent_sessions` | Fleet session lifecycle records ([`AgentSessionRow`]) |
 
 mod acp_sessions;
 pub mod admission_training;
+pub mod agent_sessions;
 pub mod channel_preferences;
 pub mod compression_guidelines;
 pub mod corrections;
@@ -55,6 +57,7 @@ use zeph_db::{DbConfig, DbPool};
 use crate::error::MemoryError;
 
 pub use acp_sessions::{AcpSessionEvent, AcpSessionInfo};
+pub use agent_sessions::{AgentSessionRow, SessionChannel, SessionKind, SessionStatus};
 pub use memory_tree::MemoryTreeRow;
 pub use messages::role_str;
 pub use persona::PersonaFactRow;

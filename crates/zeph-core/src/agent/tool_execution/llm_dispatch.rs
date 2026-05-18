@@ -469,6 +469,7 @@ impl<C: Channel> Agent<C> {
                     .provider
                     .last_usage()
                     .unwrap_or((prompt_estimate, completion_heuristic));
+                let reasoning = self.provider.last_reasoning_tokens().unwrap_or(0);
                 self.update_metrics(|m| {
                     m.api_calls += 1;
                     m.last_llm_latency_ms = latency;
@@ -476,6 +477,7 @@ impl<C: Channel> Agent<C> {
                     m.prompt_tokens += final_prompt;
                     m.completion_tokens += final_completion;
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
+                    m.reasoning_tokens += reasoning;
                 });
                 self.record_cost_and_cache(final_prompt, final_completion);
                 self.record_successful_task();

@@ -144,6 +144,16 @@ impl App {
             widgets::subagents::render(&self.metrics, frame, layout.subagents);
         }
 
+        // Overlay fleet panel over the subagents slot when `f` key is active (#3884).
+        if self.active_panel == Panel::Fleet {
+            widgets::fleet::render(
+                &self.fleet_snapshot,
+                frame,
+                layout.subagents,
+                &mut self.fleet_list_state,
+            );
+        }
+
         // Overlay task registry over the subagents slot when `/tasks` is toggled.
         if self.show_task_panel {
             if self.task_supervisor.is_some() {

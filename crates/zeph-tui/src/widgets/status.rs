@@ -224,12 +224,18 @@ fn push_medium_segments(
 
 #[allow(clippy::too_many_lines)]
 fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapshot, theme: &Theme) {
+    let token_str = if metrics.reasoning_tokens > 0 {
+        format!(
+            " | Tokens: {} (R: {})",
+            format_tokens(metrics.total_tokens),
+            format_tokens(metrics.reasoning_tokens)
+        )
+    } else {
+        format!(" | Tokens: {}", format_tokens(metrics.total_tokens))
+    };
     list.push(
         Priority::Low,
-        vec![Span::styled(
-            format!(" | Tokens: {}", format_tokens(metrics.total_tokens)),
-            theme.status_bar,
-        )],
+        vec![Span::styled(token_str, theme.status_bar)],
     );
     if metrics.cost_spent_cents > 0.0 {
         list.push(

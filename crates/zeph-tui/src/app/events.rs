@@ -241,6 +241,9 @@ impl App {
             AgentEvent::ContextEstimate(tokens) => {
                 self.context_token_estimate = tokens;
             }
+            AgentEvent::FleetSnapshot(snapshot) => {
+                self.fleet_snapshot = snapshot;
+            }
         }
     }
 
