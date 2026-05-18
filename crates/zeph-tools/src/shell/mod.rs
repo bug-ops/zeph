@@ -63,22 +63,65 @@ use transaction::{TransactionSnapshot, affected_paths, build_scope_matchers, is_
 use crate::risk_chain::RiskChainAccumulator;
 
 const DEFAULT_BLOCKED: &[&str] = &[
-    "rm -rf /",
-    "sudo",
-    "mkfs",
-    "dd if=",
-    "curl",
-    "wget",
-    "nc ",
-    "ncat",
-    "netcat",
-    "shutdown",
-    "reboot",
-    "halt",
-    // Prevent rm -rf/-fr fallback on git worktree directories; use `git worktree remove --force` instead.
-    "rm -rf .git/worktrees",
-    "rm -fr .git/worktrees",
+    "rm -rf /", "sudo", "mkfs", "dd if=", "curl", "wget", "nc ", "ncat", "netcat", "shutdown",
+    "reboot", "halt",
 ];
+
+/// Returns `true` if `cmd` is an `rm` invocation with both recursive and force flags
+/// that targets `.git/worktrees`, regardless of flag ordering or bundling style.
+///
+/// Blocks variants like `-rf`, `-fr`, `-rfd`, `-rfv`, `--recursive --force`, etc.
+/// A plain `rm -r .git/worktrees` (no force) is intentionally allowed.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_tools::shell::is_blocked_rm_worktrees;
+/// assert!(is_blocked_rm_worktrees("rm -rf .git/worktrees"));
+/// assert!(is_blocked_rm_worktrees("rm -fr .git/worktrees"));
+/// assert!(is_blocked_rm_worktrees("rm -rfd .git/worktrees"));
+/// assert!(is_blocked_rm_worktrees("rm --recursive --force .git/worktrees"));
+/// assert!(!is_blocked_rm_worktrees("rm -r .git/worktrees")); // no force
+/// assert!(!is_blocked_rm_worktrees("rm -rf /tmp/other")); // no worktrees path
+/// ```
+#[must_use]
+pub fn is_blocked_rm_worktrees(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+
+    // First token must be `rm` (or path-qualified, e.g. `/usr/bin/rm`).
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if first.rsplit('/').next().unwrap_or(first) != "rm" {
+        return false;
+    }
+
+    if !lower.contains(".git/worktrees") {
+        return false;
+    }
+
+    let mut has_recursive = false;
+    let mut has_force = false;
+
+    for token in &tokens[1..] {
+        if *token == "--recursive" {
+            has_recursive = true;
+        } else if *token == "--force" {
+            has_force = true;
+        } else if let Some(flags) = token.strip_prefix('-').filter(|f| !f.starts_with('-')) {
+            // Short flag bundle like `-rfd` or `-fr`.
+            if flags.contains('r') || flags.contains('R') {
+                has_recursive = true;
+            }
+            if flags.contains('f') {
+                has_force = true;
+            }
+        }
+    }
+
+    has_recursive && has_force
+}
 
 /// Graceful period between SIGTERM and SIGKILL during process escalation.
 #[cfg(unix)]
@@ -87,9 +130,12 @@ const GRACEFUL_TERM_MS: Duration = Duration::from_millis(250);
 /// The default list of blocked command patterns used by [`ShellExecutor`].
 ///
 /// Includes highly destructive commands (`rm -rf /`, `mkfs`, `dd if=`), privilege
-/// escalation (`sudo`), network egress tools (`curl`, `wget`, `nc`, `netcat`), and
-/// `rm -rf` targeting `.git/worktrees` paths to prevent unsafe worktree teardown fallbacks.
+/// escalation (`sudo`), and network egress tools (`curl`, `wget`, `nc`, `netcat`).
 /// Network commands can be re-enabled via [`ShellConfig::allow_network`].
+///
+/// `rm` commands targeting `.git/worktrees` with recursive+force flags are blocked
+/// semantically via [`is_blocked_rm_worktrees`] regardless of flag ordering or bundling,
+/// so they do not appear as literal entries in this list.
 ///
 /// Exposed so other executors (e.g. `AcpShellExecutor`) can reuse the same
 /// blocklist without duplicating it.
@@ -126,6 +172,12 @@ pub fn check_blocklist(command: &str, blocklist: &[String]) -> Option<String> {
     }
     let cleaned = strip_shell_escapes(&lower);
     let commands = tokenize_commands(&cleaned);
+    for cmd_tokens in &commands {
+        let joined = cmd_tokens.join(" ");
+        if is_blocked_rm_worktrees(&joined) {
+            return Some("rm --recursive --force .git/worktrees".to_owned());
+        }
+    }
     for blocked in blocklist {
         for cmd_tokens in &commands {
             if tokens_match_pattern(cmd_tokens, blocked) {
@@ -1405,6 +1457,12 @@ impl ShellExecutor {
         let snapshot = self.policy.load_full();
         let cleaned = strip_shell_escapes(&code.to_lowercase());
         let commands = tokenize_commands(&cleaned);
+        for cmd_tokens in &commands {
+            let joined = cmd_tokens.join(" ");
+            if is_blocked_rm_worktrees(&joined) {
+                return Some("rm --recursive --force .git/worktrees".to_owned());
+            }
+        }
         for blocked in &snapshot.blocked_commands {
             for cmd_tokens in &commands {
                 if tokens_match_pattern(cmd_tokens, blocked) {
@@ -1415,6 +1473,12 @@ impl ShellExecutor {
         // Also check commands embedded inside subshell constructs.
         for inner in extract_subshell_contents(&cleaned) {
             let inner_commands = tokenize_commands(&inner);
+            for cmd_tokens in &inner_commands {
+                let joined = cmd_tokens.join(" ");
+                if is_blocked_rm_worktrees(&joined) {
+                    return Some("rm --recursive --force .git/worktrees".to_owned());
+                }
+            }
             for blocked in &snapshot.blocked_commands {
                 for cmd_tokens in &inner_commands {
                     if tokens_match_pattern(cmd_tokens, blocked) {

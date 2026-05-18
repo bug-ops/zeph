@@ -1507,6 +1507,94 @@ fn check_blocklist_blocks_shutdown() {
     assert!(check_blocklist("shutdown -h now", &bl).is_some());
 }
 
+// --- is_blocked_rm_worktrees tests ---
+
+#[test]
+fn rm_worktrees_blocked_rf() {
+    assert!(is_blocked_rm_worktrees("rm -rf .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_blocked_fr() {
+    assert!(is_blocked_rm_worktrees("rm -fr .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_blocked_rfd() {
+    assert!(is_blocked_rm_worktrees("rm -rfd .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_blocked_frd() {
+    assert!(is_blocked_rm_worktrees("rm -frd .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_blocked_rfv() {
+    assert!(is_blocked_rm_worktrees("rm -rfv .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_blocked_long_flags() {
+    assert!(is_blocked_rm_worktrees(
+        "rm --recursive --force .git/worktrees"
+    ));
+}
+
+#[test]
+fn rm_worktrees_blocked_long_flags_reversed() {
+    assert!(is_blocked_rm_worktrees(
+        "rm --force --recursive .git/worktrees"
+    ));
+}
+
+#[test]
+fn rm_worktrees_blocked_uppercase_r() {
+    assert!(is_blocked_rm_worktrees("rm -Rf .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_not_blocked_without_force() {
+    // recursive but no force — should NOT be blocked
+    assert!(!is_blocked_rm_worktrees("rm -r .git/worktrees"));
+    assert!(!is_blocked_rm_worktrees("rm --recursive .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_not_blocked_without_recursive() {
+    // force but no recursive — should NOT be blocked
+    assert!(!is_blocked_rm_worktrees("rm -f .git/worktrees"));
+}
+
+#[test]
+fn rm_worktrees_not_blocked_other_path() {
+    // recursive+force but target is not .git/worktrees
+    assert!(!is_blocked_rm_worktrees("rm -rf /tmp/something"));
+    assert!(!is_blocked_rm_worktrees("rm -rf .git/config"));
+}
+
+#[test]
+fn rm_worktrees_not_blocked_non_rm_command() {
+    assert!(!is_blocked_rm_worktrees(
+        "git worktree remove --force .git/worktrees/foo"
+    ));
+}
+
+#[test]
+fn check_blocklist_blocks_rm_worktrees_extra_flags() {
+    let bl = default_blocklist();
+    assert!(check_blocklist("rm -rfd .git/worktrees", &bl).is_some());
+    assert!(check_blocklist("rm -frd .git/worktrees", &bl).is_some());
+    assert!(check_blocklist("rm -rfv .git/worktrees", &bl).is_some());
+    assert!(check_blocklist("rm --recursive --force .git/worktrees", &bl).is_some());
+}
+
+#[test]
+fn check_blocklist_allows_rm_worktrees_no_force() {
+    let bl = default_blocklist();
+    assert!(check_blocklist("rm -r .git/worktrees", &bl).is_none());
+}
+
 // --- effective_shell_command tests ---
 
 #[test]
