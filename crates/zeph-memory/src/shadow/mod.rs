@@ -399,7 +399,10 @@ mod tests {
         for _ in 0..50 {
             acc.advance_turn();
         }
-        assert!(acc.current_risk() < f64::EPSILON, "no signals → risk must stay 0.0");
+        assert!(
+            acc.current_risk() < f64::EPSILON,
+            "no signals → risk must stay 0.0"
+        );
         assert!(!acc.is_blocked());
     }
 }
