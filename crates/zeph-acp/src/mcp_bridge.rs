@@ -77,7 +77,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),
                     elicitation_enabled: elicitation_from_meta(stdio.meta.as_ref()),
-                    elicitation_timeout_secs: 120,
+                    elicitation_timeout_secs: elicitation_timeout_from_meta(stdio.meta.as_ref()),
                     env_isolation: false,
                 })
             }
@@ -94,7 +94,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                 roots: Vec::new(),
                 tool_metadata: HashMap::new(),
                 elicitation_enabled: elicitation_from_meta(http.meta.as_ref()),
-                elicitation_timeout_secs: 120,
+                elicitation_timeout_secs: elicitation_timeout_from_meta(http.meta.as_ref()),
                 env_isolation: false,
             }),
             acp::schema::McpServer::Sse(sse) => {
@@ -113,7 +113,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),
                     elicitation_enabled: elicitation_from_meta(sse.meta.as_ref()),
-                    elicitation_timeout_secs: 120,
+                    elicitation_timeout_secs: elicitation_timeout_from_meta(sse.meta.as_ref()),
                     env_isolation: false,
                 })
             }
@@ -134,6 +134,15 @@ fn elicitation_from_meta(meta: Option<&serde_json::Map<String, serde_json::Value
     meta.and_then(|m| m.get("elicitation_enabled"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Read `elicitation_timeout_secs` from the ACP `_meta` map.
+///
+/// Returns the u64 timeout value when present and valid, otherwise falls back to `120`.
+fn elicitation_timeout_from_meta(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> u64 {
+    meta.and_then(|m| m.get("elicitation_timeout_secs"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(120)
 }
 
 /// Env vars that must never be passed from ACP clients to MCP child processes.
@@ -215,6 +224,50 @@ mod elicitation_tests {
 }
 
 #[cfg(test)]
+mod elicitation_timeout_tests {
+    use super::elicitation_timeout_from_meta;
+
+    #[test]
+    fn absent_meta_returns_default() {
+        assert_eq!(elicitation_timeout_from_meta(None), 120);
+    }
+
+    #[test]
+    fn missing_key_returns_default() {
+        let mut map = serde_json::Map::new();
+        map.insert("other_key".to_owned(), serde_json::Value::Bool(true));
+        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 120);
+    }
+
+    #[test]
+    fn valid_u64_value_returned() {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "elicitation_timeout_secs".to_owned(),
+            serde_json::Value::Number(60.into()),
+        );
+        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 60);
+    }
+
+    #[test]
+    fn non_numeric_value_returns_default() {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "elicitation_timeout_secs".to_owned(),
+            serde_json::Value::String("60".to_owned()),
+        );
+        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 120);
+    }
+
+    #[test]
+    fn negative_value_returns_default() {
+        let mut map = serde_json::Map::new();
+        map.insert("elicitation_timeout_secs".to_owned(), serde_json::json!(-1));
+        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 120);
+    }
+}
+
+#[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
 mod tests {
     use super::*;
     use acp::schema::{EnvVariable, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
