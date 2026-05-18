@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn new_noop_returns_zero_risk() {
         let acc = TrajectoryRiskAccumulator::new_noop();
-        assert_eq!(acc.current_risk(), 0.0);
+        assert!(acc.current_risk() < f64::EPSILON);
         assert!(!acc.is_blocked());
         assert!(!acc.is_enabled());
     }
@@ -353,9 +353,7 @@ mod tests {
         // After decay, risk should be strictly less than risk_t1 (no new signals yet)
         assert!(
             risk_after_decay < risk_t1,
-            "decay should reduce risk before new ingest: {} vs {}",
-            risk_after_decay,
-            risk_t1
+            "decay should reduce risk before new ingest: {risk_after_decay} vs {risk_t1}"
         );
 
         acc.ingest(AuditSignalType::PolicyViolation, Severity::High);
@@ -401,7 +399,7 @@ mod tests {
         for _ in 0..50 {
             acc.advance_turn();
         }
-        assert_eq!(acc.current_risk(), 0.0, "no signals → risk must stay 0.0");
+        assert!(acc.current_risk() < f64::EPSILON, "no signals → risk must stay 0.0");
         assert!(!acc.is_blocked());
     }
 }
