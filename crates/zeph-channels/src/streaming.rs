@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 
 /// Accumulates streaming LLM chunks and throttles edit-in-place updates.
 ///
-/// Each channel adapter holds one instance. Chunks are pushed via [`push`];
-/// the adapter checks [`should_flush`] to decide whether to issue an API edit.
-/// Adapters that drain the buffer on flush call [`take`]; adapters that read
+/// Each channel adapter holds one instance. Chunks are pushed via [`Self::push`];
+/// the adapter checks [`Self::should_flush`] to decide whether to issue an API edit.
+/// Adapters that drain the buffer on flush call [`Self::take`]; adapters that read
 /// without draining (e.g. Telegram, which clones `accumulated`) call
-/// [`mark_flushed`] to record the edit timestamp without clearing text.
+/// [`Self::mark_flushed`] to record the edit timestamp without clearing text.
 ///
 /// # Examples
 ///
