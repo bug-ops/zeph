@@ -1016,7 +1016,7 @@ pub(crate) struct GoalRuntimeConfig {
     /// Maximum turns per autonomous session.
     pub(crate) autonomous_max_turns: u32,
     /// Provider name for the supervisor LLM call (`None` = use main provider).
-    pub(crate) supervisor_provider: Option<String>,
+    pub(crate) supervisor_provider: Option<zeph_config::ProviderName>,
     /// Turns between supervisor verification checks.
     pub(crate) verify_interval: u32,
     /// Timeout for a single supervisor call in seconds.

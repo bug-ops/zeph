@@ -890,7 +890,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         max_tasks: state.orchestration_max_tasks,
         max_parallel: state.orchestration_max_parallel,
         confirm_before_execute: state.orchestration_confirm_before_execute,
-        default_failure_strategy: state.orchestration_failure_strategy.clone(),
+        default_failure_strategy: state
+            .orchestration_failure_strategy
+            .parse::<zeph_config::FailureStrategy>()
+            .unwrap_or_default(),
         planner_provider: ProviderName::new(
             state
                 .orchestration_planner_provider

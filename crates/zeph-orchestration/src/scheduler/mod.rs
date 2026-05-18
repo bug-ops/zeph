@@ -743,7 +743,7 @@ mod tests {
             enabled: true,
             max_tasks: 20,
             max_parallel: 4,
-            default_failure_strategy: "abort".to_string(),
+            default_failure_strategy: zeph_config::FailureStrategy::Abort,
             default_max_retries: 3,
             task_timeout_secs: 300,
             planner_provider: Default::default(),

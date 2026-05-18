@@ -123,7 +123,8 @@ pub use defaults::{
 pub use dump_format::DumpFormat;
 pub use execution::{EnvironmentConfig, ExecutionConfig};
 pub use experiment::{
-    AdaptOrchConfig, ExperimentConfig, ExperimentSchedule, OrchestrationConfig, PlanCacheConfig,
+    AdaptOrchConfig, ExperimentConfig, ExperimentSchedule, FailureStrategy, OrchestrationConfig,
+    PlanCacheConfig,
 };
 pub use features::{
     CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig,

@@ -102,25 +102,13 @@ impl<P: LlmProvider> LlmPlanner<P> {
     /// it here. `LlmPlanner` uses whatever provider it receives without further
     /// provider resolution. The timeout is taken from `config.planner_timeout_secs`.
     ///
-    /// `config.default_failure_strategy` is parsed once here; an unrecognised value
-    /// falls back to [`FailureStrategy::Abort`] with a warning log.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
-        let default_failure_strategy = config
-            .default_failure_strategy
-            .parse::<FailureStrategy>()
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    value = %config.default_failure_strategy,
-                    "unrecognised orchestration.default_failure_strategy; falling back to 'abort'"
-                );
-                FailureStrategy::Abort
-            });
         Self {
             provider,
             max_tasks: config.max_tasks,
             timeout: Duration::from_secs(config.planner_timeout_secs),
-            default_failure_strategy,
+            default_failure_strategy: config.default_failure_strategy,
         }
     }
 }
@@ -706,7 +694,7 @@ mod tests {
         .to_string();
         let provider = MockProvider::with_responses(vec![json]);
         let config = OrchestrationConfig {
-            default_failure_strategy: "skip".to_string(),
+            default_failure_strategy: FailureStrategy::Skip,
             ..Default::default()
         };
         let planner = LlmPlanner::new(provider, &config);
@@ -715,27 +703,6 @@ mod tests {
             graph.default_failure_strategy,
             FailureStrategy::Skip,
             "planner must apply OrchestrationConfig.default_failure_strategy to the produced graph"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_llm_planner_unknown_failure_strategy_falls_back_to_abort() {
-        use zeph_llm::mock::MockProvider;
-        let json = r#"{"tasks":[
-            {"task_id":"t1","title":"T1","description":"desc","depends_on":[]}
-        ]}"#
-        .to_string();
-        let provider = MockProvider::with_responses(vec![json]);
-        let config = OrchestrationConfig {
-            default_failure_strategy: "bogus_value".to_string(),
-            ..Default::default()
-        };
-        let planner = LlmPlanner::new(provider, &config);
-        let (graph, _) = planner.plan("goal", &agents()).await.unwrap();
-        assert_eq!(
-            graph.default_failure_strategy,
-            FailureStrategy::Abort,
-            "unrecognised strategy must fall back to Abort"
         );
     }
 
@@ -749,7 +716,7 @@ mod tests {
         .to_string();
         let provider = MockProvider::with_responses(vec![json]);
         let config = OrchestrationConfig {
-            default_failure_strategy: "retry".to_string(),
+            default_failure_strategy: FailureStrategy::Retry,
             ..Default::default()
         };
         let planner = LlmPlanner::new(provider, &config);

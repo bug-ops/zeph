@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::providers::ProviderName;
 use crate::subagent::{HookDef, MemoryScope, PermissionMode};
 
 /// Specifies which LLM provider a sub-agent should use.
@@ -390,7 +391,7 @@ pub struct GoalConfig {
     pub autonomous_max_turns: u32,
     /// Provider name for the supervisor verifier LLM call (references `[[llm.providers]] name`).
     /// Falls back to the main provider when `None`.
-    pub supervisor_provider: Option<String>,
+    pub supervisor_provider: Option<ProviderName>,
     /// How many turns to execute between supervisor verification checks. Default: `5`.
     #[serde(default = "default_verify_interval")]
     pub verify_interval: u32,

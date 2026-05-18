@@ -1,8 +1,69 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::fmt;
+use std::str::FromStr;
+
 use crate::providers::ProviderName;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+/// Strategy applied when a task in the orchestration graph fails.
+///
+/// Set at the graph level via [`OrchestrationConfig::default_failure_strategy`] and overridden
+/// per-task in the task node. Variants map directly to the `serde` lowercase string form used in
+/// TOML config and LLM-produced JSON plans.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_config::FailureStrategy;
+///
+/// assert_eq!(FailureStrategy::default(), FailureStrategy::Abort);
+///
+/// let s: FailureStrategy = serde_json::from_str("\"skip\"").unwrap();
+/// assert_eq!(s, FailureStrategy::Skip);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureStrategy {
+    /// Abort the entire graph and cancel all running tasks.
+    #[default]
+    Abort,
+    /// Retry the task up to the configured `max_retries` limit, then abort.
+    Retry,
+    /// Skip the failed task and transitively skip all its dependents.
+    Skip,
+    /// Pause the graph and wait for user intervention.
+    Ask,
+}
+
+impl fmt::Display for FailureStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Abort => write!(f, "abort"),
+            Self::Retry => write!(f, "retry"),
+            Self::Skip => write!(f, "skip"),
+            Self::Ask => write!(f, "ask"),
+        }
+    }
+}
+
+impl FromStr for FailureStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "abort" => Ok(Self::Abort),
+            "retry" => Ok(Self::Retry),
+            "skip" => Ok(Self::Skip),
+            "ask" => Ok(Self::Ask),
+            other => Err(format!(
+                "unknown failure strategy '{other}': expected one of abort, retry, skip, ask"
+            )),
+        }
+    }
+}
 
 fn default_planner_max_tokens() -> u32 {
     4096
@@ -173,12 +234,8 @@ pub struct OrchestrationConfig {
     /// Maximum number of tasks that can run in parallel.
     pub max_parallel: u32,
     /// Default failure strategy applied to every task graph unless overridden per-task.
-    ///
-    /// Accepted values: `"abort"` (cancel the whole graph), `"retry"` (retry up to
-    /// `default_max_retries` times then abort), `"skip"` (skip the failed task and its
-    /// transitive dependents), `"ask"` (pause and wait for user input).
-    /// Unrecognised values fall back to `"abort"` with a warning log at runtime.
-    pub default_failure_strategy: String,
+    #[serde(default)]
+    pub default_failure_strategy: FailureStrategy,
     /// Default number of retries for the `retry` failure strategy.
     pub default_max_retries: u32,
     /// Timeout in seconds for a single task. `0` means no timeout.
@@ -364,7 +421,7 @@ impl Default for OrchestrationConfig {
             enabled: false,
             max_tasks: 20,
             max_parallel: 4,
-            default_failure_strategy: "abort".to_string(),
+            default_failure_strategy: FailureStrategy::default(),
             default_max_retries: 3,
             task_timeout_secs: 300,
             planner_provider: ProviderName::default(),

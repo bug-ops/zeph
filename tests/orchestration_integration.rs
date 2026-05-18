@@ -44,7 +44,7 @@ mod orchestration_integration {
             max_parallel: 4,
             // task_timeout_secs = 0 uses the internal 600s fallback; fine for unit tests.
             task_timeout_secs: 0,
-            default_failure_strategy: "abort".to_string(),
+            default_failure_strategy: FailureStrategy::Abort,
             default_max_retries: 3,
             planner_provider: ProviderName::default(),
             planner_max_tokens: 4096,

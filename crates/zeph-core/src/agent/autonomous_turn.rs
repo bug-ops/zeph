@@ -229,7 +229,13 @@ impl<C: Channel> Agent<C> {
     /// Resolve the configured supervisor provider and build a [`GoalSupervisor`].
     fn build_supervisor(&self) -> GoalSupervisor {
         let provider = {
-            let name = self.runtime.config.goals.supervisor_provider.as_deref();
+            let name = self
+                .runtime
+                .config
+                .goals
+                .supervisor_provider
+                .as_ref()
+                .map(zeph_config::ProviderName::as_str);
             let snapshot = self.runtime.providers.provider_config_snapshot.as_ref();
             match (name, snapshot) {
                 (Some(n), Some(snap)) => self

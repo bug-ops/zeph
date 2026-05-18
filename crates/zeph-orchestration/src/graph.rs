@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub use zeph_config::FailureStrategy;
 use zeph_memory::store::graph_store::{GraphSummary, RawGraphStore};
 
 use super::error::OrchestrationError;
@@ -203,64 +204,6 @@ impl fmt::Display for GraphStatus {
             GraphStatus::Failed => write!(f, "failed"),
             GraphStatus::Canceled => write!(f, "canceled"),
             GraphStatus::Paused => write!(f, "paused"),
-        }
-    }
-}
-
-/// What to do when a task fails.
-///
-/// Set at the graph level via [`TaskGraph::default_failure_strategy`] and
-/// optionally overridden per task via [`TaskNode::failure_strategy`].
-///
-/// # Examples
-///
-/// ```rust
-/// use std::str::FromStr;
-/// use zeph_orchestration::FailureStrategy;
-///
-/// assert_eq!(FailureStrategy::default(), FailureStrategy::Abort);
-/// assert_eq!("skip".parse::<FailureStrategy>().unwrap(), FailureStrategy::Skip);
-/// assert_eq!(FailureStrategy::Retry.to_string(), "retry");
-/// ```
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum FailureStrategy {
-    /// Abort the entire graph and cancel all running tasks.
-    #[default]
-    Abort,
-    /// Retry the task up to [`TaskNode::max_retries`] times, then abort.
-    Retry,
-    /// Skip the failed task and transitively skip all its dependents.
-    Skip,
-    /// Pause the graph ([`GraphStatus::Paused`]) and wait for user intervention.
-    Ask,
-}
-
-impl fmt::Display for FailureStrategy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FailureStrategy::Abort => write!(f, "abort"),
-            FailureStrategy::Retry => write!(f, "retry"),
-            FailureStrategy::Skip => write!(f, "skip"),
-            FailureStrategy::Ask => write!(f, "ask"),
-        }
-    }
-}
-
-impl FromStr for FailureStrategy {
-    type Err = OrchestrationError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "abort" => Ok(FailureStrategy::Abort),
-            "retry" => Ok(FailureStrategy::Retry),
-            "skip" => Ok(FailureStrategy::Skip),
-            "ask" => Ok(FailureStrategy::Ask),
-            other => Err(OrchestrationError::InvalidGraph(format!(
-                "unknown failure strategy '{other}': expected one of abort, retry, skip, ask"
-            ))),
         }
     }
 }
