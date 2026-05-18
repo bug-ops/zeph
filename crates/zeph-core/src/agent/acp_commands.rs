@@ -121,11 +121,16 @@ mod tests {
 
     #[test]
     fn dirs_populated() {
-        let tmp = std::env::temp_dir();
-        let tmp_str = tmp.to_string_lossy();
-        let cfg = cfg_with_dirs(&[tmp_str.as_ref()]);
+        // Use a real directory so canonicalize succeeds on all platforms.
+        // Compare against the canonical form to handle macOS /tmp→/private/tmp
+        // and Windows \\?\ extended-length prefix transparently.
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+        let canonical =
+            std::fs::canonicalize(tmp_dir.path()).unwrap_or_else(|_| tmp_dir.path().to_owned());
+        let canonical_str = canonical.to_string_lossy();
+        let cfg = cfg_with_dirs(&[canonical_str.as_ref()]);
         let out = format_acp_dirs(&cfg);
-        assert!(out.contains(tmp_str.as_ref()), "got: {out}");
+        assert!(out.contains(canonical_str.as_ref()), "got: {out}");
         assert!(!out.contains("(none configured)"), "got: {out}");
     }
 
