@@ -27,17 +27,20 @@ pub fn build_router_with_config(
     auth_token: Option<&str>,
     rate_limit: u32,
 ) -> Router {
-    build_router_with_full_config(state, auth_token, false, rate_limit, DEFAULT_MAX_BODY_SIZE)
+    build_router_with_full_config(
+        state,
+        AuthConfig::new(auth_token, false),
+        rate_limit,
+        DEFAULT_MAX_BODY_SIZE,
+    )
 }
 
 pub fn build_router_with_full_config(
     state: AppState,
-    auth_token: Option<&str>,
-    require_auth: bool,
+    auth_cfg: AuthConfig,
     rate_limit: u32,
     max_body_size: usize,
 ) -> Router {
-    let auth_cfg = AuthConfig::new(auth_token, require_auth);
     let rate_state = RateLimitState::new(rate_limit, &[]);
 
     let protected = Router::new()
@@ -355,7 +358,12 @@ mod tests {
 
     #[tokio::test]
     async fn require_auth_rejects_when_no_token_configured() {
-        let app = build_router_with_full_config(test_state(), None, true, 0, DEFAULT_MAX_BODY_SIZE);
+        let app = build_router_with_full_config(
+            test_state(),
+            AuthConfig::new(None, true),
+            0,
+            DEFAULT_MAX_BODY_SIZE,
+        );
 
         let body = serde_json::json!({
             "jsonrpc": "2.0", "id": "1",
@@ -377,14 +385,23 @@ mod tests {
     /// router using inline GC eviction (shared middleware, no background task required).
     #[tokio::test]
     async fn build_router_with_rate_limit_succeeds() {
-        let _router = build_router_with_full_config(test_state(), None, false, 5, 1024 * 1024);
+        let _router = build_router_with_full_config(
+            test_state(),
+            AuthConfig::new(None, false),
+            5,
+            1024 * 1024,
+        );
         // Reaching here confirms inline-GC-based router builds without panic.
     }
 
     #[tokio::test]
     async fn require_auth_false_allows_unauthenticated() {
-        let app =
-            build_router_with_full_config(test_state(), None, false, 0, DEFAULT_MAX_BODY_SIZE);
+        let app = build_router_with_full_config(
+            test_state(),
+            AuthConfig::new(None, false),
+            0,
+            DEFAULT_MAX_BODY_SIZE,
+        );
 
         let body = serde_json::json!({
             "jsonrpc": "2.0", "id": "1",

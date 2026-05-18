@@ -75,6 +75,47 @@ pub struct ChunkInsert<'a> {
     pub content_hash: &'a str,
 }
 
+/// Tree-sitter node kind stored in Qdrant payload (e.g. `"function_item"`, `"struct_item"`).
+///
+/// A thin newtype over `String` that provides `Display`, `AsRef<str>`, `From<String>`,
+/// and `From<&str>` for ergonomic use in format strings and comparisons.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_index::store::NodeKind;
+///
+/// let kind = NodeKind::from("function_item");
+/// assert_eq!(kind.as_ref(), "function_item");
+/// assert_eq!(kind.to_string(), "function_item");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeKind(pub String);
+
+impl std::fmt::Display for NodeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for NodeKind {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for NodeKind {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for NodeKind {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
 /// A single search result returned by [`CodeStore::search`].
 ///
 /// Decoded from the Qdrant vector point payload by `SearchHit::from_payload`.
@@ -90,7 +131,9 @@ pub struct SearchHit {
     /// Cosine similarity score returned by Qdrant (higher is more similar).
     pub score: f32,
     /// Tree-sitter node kind of the primary AST node.
-    pub node_type: String,
+    pub node_type: NodeKind,
+    /// Programming language of the chunk.
+    pub language: crate::languages::Lang,
     /// Symbol name, if available.
     pub entity_name: Option<String>,
     /// `">"` separated scope chain.
@@ -451,12 +494,15 @@ impl SearchHit {
                 .and_then(|v| usize::try_from(v).ok())
         };
 
+        let language_str = get_str("language")?;
+        let language = crate::languages::Lang::from_id(&language_str)?;
         Some(Self {
             code: get_str("code")?,
             file_path: get_str("file_path")?,
             line_range: (get_usize("line_start")?, get_usize("line_end")?),
             score: point.score,
-            node_type: get_str("node_type")?,
+            node_type: NodeKind::from(get_str("node_type")?),
+            language,
             entity_name: get_str("entity_name"),
             scope_chain: get_str("scope_chain").unwrap_or_default(),
         })
@@ -488,6 +534,7 @@ mod tests {
                 "file_path": "src/lib.rs",
                 "line_start": 10,
                 "line_end": 12,
+                "language": "rust",
                 "node_type": "function_item",
                 "entity_name": "foo",
                 "scope_chain": "mod::foo"
@@ -499,7 +546,8 @@ mod tests {
         assert_eq!(hit.file_path, "src/lib.rs");
         assert_eq!(hit.line_range, (10, 12));
         assert!((hit.score - 0.9).abs() < f32::EPSILON);
-        assert_eq!(hit.node_type, "function_item");
+        assert_eq!(hit.node_type.as_ref(), "function_item");
+        assert_eq!(hit.language, crate::languages::Lang::Rust);
         assert_eq!(hit.entity_name, Some("foo".to_string()));
         assert_eq!(hit.scope_chain, "mod::foo");
     }
@@ -512,6 +560,7 @@ mod tests {
                 "file_path": "src/bar.rs",
                 "line_start": 1,
                 "line_end": 3,
+                "language": "rust",
                 "node_type": "struct_item",
                 "scope_chain": ""
             }),
@@ -519,7 +568,7 @@ mod tests {
         );
         let hit = SearchHit::from_payload(&point).unwrap();
         assert!(hit.entity_name.is_none());
-        assert_eq!(hit.node_type, "struct_item");
+        assert_eq!(hit.node_type.as_ref(), "struct_item");
     }
 
     #[test]
@@ -530,6 +579,7 @@ mod tests {
                 "file_path": "src/lib.rs",
                 "line_start": 1,
                 "line_end": 2,
+                "language": "rust",
                 "node_type": "function_item"
             }),
             0.5,

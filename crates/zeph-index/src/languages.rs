@@ -83,6 +83,35 @@ pub enum Lang {
 }
 
 impl Lang {
+    /// Parse a [`Lang`] from the short lowercase identifier used in Qdrant payloads.
+    ///
+    /// Returns `None` when the string does not match any known language id.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_index::languages::Lang;
+    ///
+    /// assert_eq!(Lang::from_id("rust"), Some(Lang::Rust));
+    /// assert_eq!(Lang::from_id("typescript"), Some(Lang::TypeScript));
+    /// assert_eq!(Lang::from_id("unknown"), None);
+    /// ```
+    #[must_use]
+    pub fn from_id(s: &str) -> Option<Self> {
+        match s {
+            "rust" => Some(Self::Rust),
+            "python" => Some(Self::Python),
+            "javascript" => Some(Self::JavaScript),
+            "typescript" => Some(Self::TypeScript),
+            "go" => Some(Self::Go),
+            "bash" => Some(Self::Bash),
+            "toml" => Some(Self::Toml),
+            "json" => Some(Self::Json),
+            "markdown" => Some(Self::Markdown),
+            _ => None,
+        }
+    }
+
     /// Short lowercase identifier stored in Qdrant payload and config fields.
     ///
     /// # Examples

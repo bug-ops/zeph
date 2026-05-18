@@ -37,6 +37,8 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
+use zeph_common::http_middleware::AuthConfig;
+
 use crate::error::A2aError;
 use crate::types::AgentCard;
 use router::build_router_with_full_config;
@@ -97,8 +99,7 @@ pub struct A2aServer {
     state: AppState,
     addr: SocketAddr,
     shutdown_rx: watch::Receiver<bool>,
-    auth_token: Option<String>,
-    require_auth: bool,
+    auth_cfg: AuthConfig,
     rate_limit: u32,
     max_body_size: usize,
 }
@@ -137,8 +138,7 @@ impl A2aServer {
             state,
             addr,
             shutdown_rx,
-            auth_token: None,
-            require_auth: false,
+            auth_cfg: AuthConfig::new(None, false),
             rate_limit: 0,
             max_body_size: 1_048_576,
         }
@@ -150,11 +150,13 @@ impl A2aServer {
     /// include an `Authorization: Bearer <token>` header. The comparison is constant-time
     /// (blake3 hash of both sides) to prevent timing attacks.
     ///
-    /// Passing `None` disables bearer auth. A `WARN` log is emitted if no token is set,
-    /// as a reminder that the server is open to unauthenticated requests.
+    /// The token is hashed once here at construction time via `AuthConfig::new`; the raw
+    /// string is not retained. Passing `None` disables bearer auth. A `WARN` log is emitted
+    /// if no token is set, as a reminder that the server is open to unauthenticated requests.
     #[must_use]
     pub fn with_auth(mut self, token: Option<String>) -> Self {
-        self.auth_token = token;
+        let require_auth = self.auth_cfg.require_auth;
+        self.auth_cfg = AuthConfig::new(token.as_deref(), require_auth);
         self
     }
 
@@ -164,7 +166,7 @@ impl A2aServer {
     /// [`with_auth`](Self::with_auth), every request returns `401 Unauthorized`.
     #[must_use]
     pub fn with_require_auth(mut self, require: bool) -> Self {
-        self.require_auth = require;
+        self.auth_cfg.require_auth = require;
         self
     }
 
@@ -213,7 +215,7 @@ impl A2aServer {
     /// Returns [`A2aError::Server`] if the TCP listener fails to
     /// bind or if the axum server encounters a fatal I/O error during operation.
     pub async fn serve(self) -> Result<(), A2aError> {
-        if self.auth_token.is_none() {
+        if self.auth_cfg.token_hash.is_none() {
             tracing::warn!(
                 "A2A server running without bearer auth — ensure this is a trusted-network-only deployment"
             );
@@ -221,8 +223,7 @@ impl A2aServer {
 
         let router = build_router_with_full_config(
             self.state,
-            self.auth_token.as_deref(),
-            self.require_auth,
+            self.auth_cfg,
             self.rate_limit,
             self.max_body_size,
         );

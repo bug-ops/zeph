@@ -307,7 +307,8 @@ impl CodeRetriever {
 ///         file_path: "src/lib.rs".to_string(),
 ///         line_range: (1, 1),
 ///         score: 0.9,
-///         node_type: "function_item".to_string(),
+///         node_type: zeph_index::store::NodeKind::from("function_item"),
+///         language: zeph_index::languages::Lang::Rust,
 ///         entity_name: Some("hello".to_string()),
 ///         scope_chain: String::new(),
 ///     }],
@@ -329,7 +330,10 @@ pub fn format_as_context(result: &RetrievedCode) -> String {
     let mut out = String::from("<code_context>\n");
 
     for chunk in &result.chunks {
-        let name = chunk.entity_name.as_deref().unwrap_or(&chunk.node_type);
+        let name = chunk
+            .entity_name
+            .as_deref()
+            .unwrap_or(chunk.node_type.as_ref());
         let _ = writeln!(
             out,
             "  <chunk file=\"{}\" lines=\"{}-{}\" name=\"{}\" score=\"{:.2}\">",
@@ -422,7 +426,7 @@ fn budget_tokens(available: usize, ratio: f32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::SearchHit;
+    use crate::store::{NodeKind, SearchHit};
 
     #[test]
     fn classify_symbol_query_rust() {
@@ -493,7 +497,8 @@ mod tests {
                 file_path: "src/lib.rs".to_string(),
                 line_range: (1, 3),
                 score: 0.85,
-                node_type: "function_item".to_string(),
+                node_type: NodeKind::from("function_item"),
+                language: crate::languages::Lang::Rust,
                 entity_name: Some("hello".to_string()),
                 scope_chain: String::new(),
             }],
@@ -542,7 +547,8 @@ mod tests {
                 file_path: "src/foo.rs".to_string(),
                 line_range: (1, 2),
                 score: 0.75,
-                node_type: "struct_item".to_string(),
+                node_type: NodeKind::from("struct_item"),
+                language: crate::languages::Lang::Rust,
                 entity_name: None,
                 scope_chain: String::new(),
             }],
