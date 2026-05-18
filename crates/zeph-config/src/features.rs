@@ -358,10 +358,33 @@ pub struct SkillsConfig {
     /// is configured at all, the semantic scan is skipped with a warning.
     #[serde(default)]
     pub semantic_scan_provider: ProviderName,
+
+    /// Enable `GoSkills` group-structured skill injection.
+    ///
+    /// When `true`, the top-N matched skills are presented to the LLM as an
+    /// entry-point + support structure, improving multi-skill task execution.
+    /// Falls back to flat injection when no pair exceeds `support_similarity_threshold`.
+    ///
+    /// Default: `false`.
+    #[serde(default)]
+    pub group_structured: bool,
+
+    /// Inter-skill cosine similarity threshold for `GoSkills` grouping.
+    ///
+    /// A candidate skill becomes a support skill when its cosine similarity to the
+    /// entry point exceeds this value (strict `>`). Valid range: `[0.0, 1.0]`.
+    ///
+    /// Default: `0.50`.
+    #[serde(default = "default_support_similarity_threshold")]
+    pub support_similarity_threshold: f32,
 }
 
 fn default_generation_timeout_ms() -> u64 {
     60_000
+}
+
+fn default_support_similarity_threshold() -> f32 {
+    0.50
 }
 
 // --- SkillEvaluationConfig defaults ---

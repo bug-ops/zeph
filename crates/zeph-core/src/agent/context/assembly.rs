@@ -7,8 +7,11 @@ use std::sync::Arc;
 use zeph_agent_context::helpers::BudgetHint;
 use zeph_llm::provider::LlmProvider;
 use zeph_skills::ScoredMatch;
+use zeph_skills::group::{GroupResult, group_skills};
 use zeph_skills::loader::SkillMeta;
-use zeph_skills::prompt::{format_skills_catalog, format_skills_prompt_compact};
+use zeph_skills::prompt::{
+    format_grouped_skills_prompt, format_skills_catalog, format_skills_prompt_compact,
+};
 
 use super::super::{Agent, Skill, format_skills_prompt};
 use crate::channel::Channel;
@@ -874,7 +877,46 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.trust_level))
                     .collect();
-            format_skills_prompt(&active_skills, &trust_levels, &health_map)
+
+            // GoSkills: experiment engine applies config overrides before context assembly,
+            // so checking services.skill.group_structured here reflects any active A/B variation.
+            if self.services.skill.group_structured
+                && let Some(matcher) = &self.services.skill.matcher
+            {
+                let threshold = self.services.skill.support_similarity_threshold;
+                if !(0.0..=1.0).contains(&threshold) {
+                    tracing::warn!(
+                        threshold,
+                        "support_similarity_threshold is outside [0.0, 1.0]; GoSkills grouping may behave unexpectedly"
+                    );
+                }
+                let group_result = group_skills(
+                    &active_skills,
+                    &matched_indices,
+                    |idx| matcher.skill_embedding(idx),
+                    threshold,
+                );
+                match group_result {
+                    GroupResult::Grouped(ref g) => {
+                        tracing::debug!(
+                            entry_point = g.entry_point.name(),
+                            support_count = g.support.len(),
+                            threshold,
+                            "GoSkills: grouped skill injection"
+                        );
+                        format_grouped_skills_prompt(g, &trust_levels, &health_map)
+                    }
+                    GroupResult::Flat(_) => {
+                        tracing::debug!(
+                            threshold,
+                            "GoSkills: flat fallback (no pair above threshold)"
+                        );
+                        format_skills_prompt(&active_skills, &trust_levels, &health_map)
+                    }
+                }
+            } else {
+                format_skills_prompt(&active_skills, &trust_levels, &health_map)
+            }
         };
         // ERL: append learned heuristics for active skills (no-op when erl_enabled = false).
         let erl_suffix = self.build_erl_heuristics_prompt().await;
@@ -1800,6 +1842,136 @@ mod tests {
     }
 
     // ── Blocked-skill catalog filter (GAP-1) ────────────────────────────────
+
+    // ── GoSkills group-structured injection branch tests ─────────────────────
+
+    #[test]
+    fn group_structured_branch_produces_active_skill_tags_when_above_threshold() {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use zeph_common::SkillTrustLevel;
+        use zeph_skills::group::{GroupResult, group_skills};
+        use zeph_skills::loader::{Skill, SkillMeta};
+        use zeph_skills::prompt::format_grouped_skills_prompt;
+
+        fn make_skill(name: &str) -> Skill {
+            Skill {
+                meta: SkillMeta {
+                    name: name.into(),
+                    description: "desc".into(),
+                    compatibility: None,
+                    license: None,
+                    metadata: vec![],
+                    allowed_tools: vec![],
+                    requires_secrets: vec![],
+                    skill_dir: PathBuf::new(),
+                    source_url: None,
+                    git_hash: None,
+                    category: None,
+                },
+                body: "body".into(),
+            }
+        }
+
+        static EMBED_A: &[f32] = &[1.0, 0.0, 0.0];
+        static EMBED_B: &[f32] = &[0.9, 0.1, 0.0]; // cosine ≈ 0.994 — above 0.50
+
+        let skills = vec![make_skill("entry"), make_skill("support-a")];
+        let indices = [0usize, 1usize];
+        let threshold = 0.50_f32;
+
+        // Simulate the assembly branch: group_skills → matched → format_grouped_skills_prompt
+        let group_result = group_skills(
+            &skills,
+            &indices,
+            |idx: usize| match idx {
+                0 => Some(EMBED_A),
+                1 => Some(EMBED_B),
+                _ => None,
+            },
+            threshold,
+        );
+
+        // The branch should produce Grouped (similarity ≈ 0.994 > 0.50)
+        assert!(
+            matches!(group_result, GroupResult::Grouped(_)),
+            "expected Grouped when pair exceeds threshold"
+        );
+
+        // Format as the grouped branch does
+        let mut trust: HashMap<String, SkillTrustLevel> = HashMap::new();
+        trust.insert("entry".into(), SkillTrustLevel::Trusted);
+        trust.insert("support-a".into(), SkillTrustLevel::Trusted);
+        let prompt = match &group_result {
+            GroupResult::Grouped(g) => format_grouped_skills_prompt(g, &trust, &HashMap::new()),
+            GroupResult::Flat(_) => panic!("expected Grouped"),
+        };
+
+        assert!(
+            prompt.contains("role=\"entry_point\""),
+            "grouped path must emit entry_point role"
+        );
+        assert!(
+            prompt.contains("role=\"support\""),
+            "grouped path must emit support role"
+        );
+        assert!(prompt.contains("name=\"entry\""));
+        assert!(prompt.contains("name=\"support-a\""));
+        // Must NOT use flat <skill> tags
+        assert!(
+            !prompt.contains("<skill name="),
+            "grouped path must not emit flat <skill> tags"
+        );
+    }
+
+    #[test]
+    fn group_structured_branch_falls_back_to_flat_when_below_threshold() {
+        use std::path::PathBuf;
+        use zeph_skills::group::{GroupResult, group_skills};
+        use zeph_skills::loader::{Skill, SkillMeta};
+
+        fn make_skill(name: &str) -> Skill {
+            Skill {
+                meta: SkillMeta {
+                    name: name.into(),
+                    description: "desc".into(),
+                    compatibility: None,
+                    license: None,
+                    metadata: vec![],
+                    allowed_tools: vec![],
+                    requires_secrets: vec![],
+                    skill_dir: PathBuf::new(),
+                    source_url: None,
+                    git_hash: None,
+                    category: None,
+                },
+                body: "body".into(),
+            }
+        }
+
+        static EMBED_A: &[f32] = &[1.0, 0.0, 0.0];
+        static EMBED_C: &[f32] = &[0.0, 0.0, 1.0]; // cosine = 0.0 — below 0.50
+
+        let skills = vec![make_skill("entry"), make_skill("unrelated")];
+        let indices = [0usize, 1usize];
+        let threshold = 0.50_f32;
+
+        let result = group_skills(
+            &skills,
+            &indices,
+            |idx: usize| match idx {
+                0 => Some(EMBED_A),
+                1 => Some(EMBED_C),
+                _ => None,
+            },
+            threshold,
+        );
+
+        assert!(
+            matches!(result, GroupResult::Flat(_)),
+            "below-threshold pair must produce flat fallback"
+        );
+    }
 
     #[test]
     fn blocked_skill_excluded_from_catalog_filter() {

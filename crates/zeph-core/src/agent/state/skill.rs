@@ -21,6 +21,11 @@ impl SkillState {
     ///
     /// Returns the formatted prompt string. Does NOT update `last_skills_prompt` —
     /// the caller is responsible for storing the result.
+    ///
+    /// `GoSkills` group-structured formatting is intentionally NOT applied here: this
+    /// path is used during skill hot-reload without a per-turn query or embeddings,
+    /// so cosine similarity grouping cannot be computed. Grouping is only applied in
+    /// the per-turn context assembly path (`assembly.rs`).
     pub(crate) fn rebuild_prompt(
         all_skills: &[Skill],
         trust_map: &HashMap<String, SkillTrustSnapshot>,

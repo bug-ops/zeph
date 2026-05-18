@@ -3138,6 +3138,9 @@ impl<C: Channel> Agent<C> {
         self.services.skill.two_stage_matching = config.skills.two_stage_matching;
         self.services.skill.confusability_threshold =
             config.skills.confusability_threshold.clamp(0.0, 1.0);
+        self.services.skill.group_structured = config.skills.group_structured;
+        self.services.skill.support_similarity_threshold =
+            config.skills.support_similarity_threshold;
         config
             .skills
             .generation_provider

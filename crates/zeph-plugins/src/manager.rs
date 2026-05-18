@@ -633,6 +633,7 @@ impl PluginManager {
     /// # Errors
     ///
     /// Returns [`PluginError`] if the plugins directory cannot be read.
+    #[tracing::instrument(name = "plugins.manager.collect_skill_dirs", skip_all)]
     pub fn collect_skill_dirs(&self) -> Result<Vec<PathBuf>, PluginError> {
         if !self.plugins_dir.exists() {
             return Ok(Vec::new());
@@ -732,6 +733,7 @@ impl PluginManager {
     }
 
     /// Attempt to update a single plugin. Returns the update status without aborting on error.
+    #[tracing::instrument(name = "plugins.manager.update_one", skip_all, fields(plugin = %plugin.name))]
     async fn update_one_plugin(&self, plugin: &InstalledPlugin) -> AutoUpdateStatus {
         let source_path = plugin.path.join(".plugin-source.toml");
         let Some(source) = read_plugin_source(&source_path) else {
@@ -848,6 +850,7 @@ impl PluginManager {
     }
 
     /// Download an archive from `url` respecting the per-phase timeout.
+    #[tracing::instrument(name = "plugins.manager.download_archive", skip_all, fields(url = %url))]
     async fn download_archive(
         &self,
         url: &str,

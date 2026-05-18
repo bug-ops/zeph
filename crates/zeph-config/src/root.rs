@@ -221,6 +221,8 @@ impl Default for Config {
                 disambiguate_provider: crate::providers::ProviderName::default(),
                 semantic_scan: false,
                 semantic_scan_provider: crate::providers::ProviderName::default(),
+                group_structured: false,
+                support_similarity_threshold: 0.50,
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),

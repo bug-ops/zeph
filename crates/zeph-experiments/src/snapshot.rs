@@ -61,6 +61,8 @@ pub struct ConfigSnapshot {
     pub similarity_threshold: f64,
     /// Half-life in days for temporal memory decay.
     pub temporal_decay: f64,
+    /// GoSkills group-structured injection toggle (0.0 = disabled, 1.0 = enabled).
+    pub group_structured: f64,
 }
 
 impl Default for ConfigSnapshot {
@@ -74,6 +76,7 @@ impl Default for ConfigSnapshot {
             retrieval_top_k: 5.0,
             similarity_threshold: 0.35,
             temporal_decay: 30.0,
+            group_structured: 0.0,
         }
     }
 }
@@ -116,6 +119,11 @@ impl ConfigSnapshot {
             retrieval_top_k: config.memory.semantic.recall_limit as f64,
             similarity_threshold: f64::from(config.memory.cross_session_score_threshold),
             temporal_decay: f64::from(config.memory.semantic.temporal_decay_half_life_days),
+            group_structured: if config.skills.group_structured {
+                1.0
+            } else {
+                0.0
+            },
         }
     }
 
@@ -142,6 +150,7 @@ impl ConfigSnapshot {
             ParameterKind::RetrievalTopK,
             ParameterKind::SimilarityThreshold,
             ParameterKind::TemporalDecay,
+            ParameterKind::GroupStructured,
         ];
         let mut result = None;
         for kind in kinds {
@@ -191,6 +200,7 @@ impl ConfigSnapshot {
             ParameterKind::RetrievalTopK => self.retrieval_top_k,
             ParameterKind::SimilarityThreshold => self.similarity_threshold,
             ParameterKind::TemporalDecay => self.temporal_decay,
+            ParameterKind::GroupStructured => self.group_structured,
             _ => 0.0,
         }
     }
@@ -219,6 +229,7 @@ impl ConfigSnapshot {
             ParameterKind::RetrievalTopK => self.retrieval_top_k = value,
             ParameterKind::SimilarityThreshold => self.similarity_threshold = value,
             ParameterKind::TemporalDecay => self.temporal_decay = value,
+            ParameterKind::GroupStructured => self.group_structured = value,
             _ => {}
         }
     }
@@ -325,6 +336,7 @@ mod tests {
             retrieval_top_k: 6.0,
             similarity_threshold: 0.7,
             temporal_decay: 8.0,
+            group_structured: 0.0,
         };
         assert!((s.get(ParameterKind::Temperature) - 0.1).abs() < f64::EPSILON);
         assert!((s.get(ParameterKind::TopP) - 0.2).abs() < f64::EPSILON);
@@ -334,6 +346,7 @@ mod tests {
         assert!((s.get(ParameterKind::RetrievalTopK) - 6.0).abs() < f64::EPSILON);
         assert!((s.get(ParameterKind::SimilarityThreshold) - 0.7).abs() < f64::EPSILON);
         assert!((s.get(ParameterKind::TemporalDecay) - 8.0).abs() < f64::EPSILON);
+        assert!((s.get(ParameterKind::GroupStructured) - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -347,6 +360,7 @@ mod tests {
         s.set(ParameterKind::RetrievalTopK, 10.0);
         s.set(ParameterKind::SimilarityThreshold, 0.5);
         s.set(ParameterKind::TemporalDecay, 60.0);
+        s.set(ParameterKind::GroupStructured, 1.0);
         assert!((s.temperature - 1.1).abs() < f64::EPSILON);
         assert!((s.top_p - 0.8).abs() < f64::EPSILON);
         assert!((s.top_k - 20.0).abs() < f64::EPSILON);
@@ -355,6 +369,7 @@ mod tests {
         assert!((s.retrieval_top_k - 10.0).abs() < f64::EPSILON);
         assert!((s.similarity_threshold - 0.5).abs() < f64::EPSILON);
         assert!((s.temporal_decay - 60.0).abs() < f64::EPSILON);
+        assert!((s.group_structured - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -402,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_all_eight_kinds() {
+    fn diff_all_nine_kinds() {
         let fields: &[(ParameterKind, fn(&mut ConfigSnapshot))] = &[
             (ParameterKind::Temperature, |s| s.temperature = 1.5),
             (ParameterKind::TopP, |s| s.top_p = 0.5),
@@ -416,6 +431,7 @@ mod tests {
                 s.similarity_threshold = 0.8;
             }),
             (ParameterKind::TemporalDecay, |s| s.temporal_decay = 60.0),
+            (ParameterKind::GroupStructured, |s| s.group_structured = 1.0),
         ];
         for (kind, mutate) in fields {
             let a = ConfigSnapshot::default();
@@ -439,6 +455,7 @@ mod tests {
             retrieval_top_k: 7.0,
             similarity_threshold: 0.4,
             temporal_decay: 45.0,
+            group_structured: 0.0,
         };
         let json = serde_json::to_string(&s).unwrap();
         let s2: ConfigSnapshot = serde_json::from_str(&json).unwrap();

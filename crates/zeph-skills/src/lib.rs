@@ -59,6 +59,7 @@ pub mod error;
 pub mod evaluator;
 pub mod evolution;
 pub mod generator;
+pub mod group;
 pub mod loader;
 pub mod manager;
 pub mod matcher;
@@ -83,6 +84,7 @@ pub use evaluator::{
     EvaluationWeights, SkillEvaluationRequest, SkillEvaluator, SkillQualityScore, SkillVerdict,
 };
 pub use generator::{GeneratedSkill, SkillGenerationRequest, SkillGenerator};
+pub use group::{GroupResult, SkillGroup, SkillRole, group_skills};
 pub use matcher::{IntentClassification, MatchResult, ScoredMatch};
 pub use proactive::{DomainLabel, ProactiveExplorer};
 pub use trust::{SkillSource, SkillTrust, SkillTrustLevel, compute_skill_hash};

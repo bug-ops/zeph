@@ -38,6 +38,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-skills`: GoSkills group-structured skill retrieval (#4411). New `group` module with
+  `SkillGroup`, `SkillRole` (EntryPoint / Support / Context), `GroupResult`, and `group_skills()`
+  that computes inter-skill cosine similarity (reusing `zeph_common::math::cosine_similarity`) and
+  groups top-N matched skills into an entry-point + support structure. New
+  `format_grouped_skills_prompt()` in `prompt.rs` emits role-labelled `<active_skill>` XML with
+  the same per-skill trust sanitization, quarantine wrapping, and health attributes as the flat
+  path. Quarantined skills are excluded from support roles. Empty `requirements` and
+  `failure_notes` blocks are omitted from output. Flat fallback is used when no pair exceeds the
+  configured threshold.
+- `zeph-config`: `skills.group_structured` (bool, default `false`) and
+  `skills.support_similarity_threshold` (f32, default `0.50`) config fields for GoSkills (#4411).
+  Threshold outside `[0.0, 1.0]` emits a runtime warning.
+- `zeph-experiments`: `ParameterKind::GroupStructured` variant for A/B experiment gating of
+  GoSkills grouped injection (#4411). Added to `ConfigSnapshot` and wired through `get`/`set`/
+  `diff`/`from_config`.
+- `zeph-plugins`: tracing spans on `collect_skill_dirs`, `update_one_plugin`, and
+  `download_archive` in `PluginManager` (#4385), following the `plugins.manager.*` naming
+  convention.
+
 - `zeph-common`: new `http_middleware` module (feature `http-middleware`) — shared bearer-token
   auth and per-IP rate-limit axum middleware extracted from `zeph-gateway` and `zeph-a2a`;
   eliminates duplicated `AuthConfig`, `RateLimitState`, `Cidr`, `auth_middleware`,

@@ -138,6 +138,10 @@ pub(crate) struct SkillState {
     pub(crate) eval_weights: zeph_skills::evaluator::EvaluationWeights,
     /// Minimum composite score required to accept a generated skill (forwarded to the generator).
     pub(crate) eval_threshold: f32,
+    /// Enable `GoSkills` group-structured skill injection.
+    pub(crate) group_structured: bool,
+    /// Inter-skill cosine similarity threshold for `GoSkills` grouping.
+    pub(crate) support_similarity_threshold: f32,
 }
 
 pub(crate) struct McpState {
@@ -1147,6 +1151,8 @@ impl SkillState {
             skill_evaluator: None,
             eval_weights: zeph_skills::evaluator::EvaluationWeights::default(),
             eval_threshold: 0.60,
+            group_structured: false,
+            support_similarity_threshold: 0.50,
         }
     }
 }

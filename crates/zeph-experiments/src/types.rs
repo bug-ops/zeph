@@ -72,6 +72,11 @@ pub enum ParameterKind {
     SimilarityThreshold,
     /// Half-life in days for temporal memory decay (float).
     TemporalDecay,
+    /// GoSkills group-structured skill injection toggle (boolean: 0.0 = off, 1.0 = on).
+    ///
+    /// When active, this parameter overrides `skills.group_structured` in config,
+    /// bidirectionally (experiment can both enable and disable the feature).
+    GroupStructured,
 }
 
 impl ParameterKind {
@@ -100,6 +105,7 @@ impl ParameterKind {
             Self::RetrievalTopK => "retrieval_top_k",
             Self::SimilarityThreshold => "similarity_threshold",
             Self::TemporalDecay => "temporal_decay",
+            Self::GroupStructured => "group_structured",
             _ => "unknown",
         }
     }
@@ -296,6 +302,7 @@ mod tests {
             (ParameterKind::RetrievalTopK, "retrieval_top_k"),
             (ParameterKind::SimilarityThreshold, "similarity_threshold"),
             (ParameterKind::TemporalDecay, "temporal_decay"),
+            (ParameterKind::GroupStructured, "group_structured"),
         ];
         for (kind, expected) in cases {
             assert_eq!(kind.as_str(), expected);
@@ -313,6 +320,7 @@ mod tests {
         assert!(!ParameterKind::PresencePenalty.is_integer());
         assert!(!ParameterKind::SimilarityThreshold.is_integer());
         assert!(!ParameterKind::TemporalDecay.is_integer());
+        assert!(!ParameterKind::GroupStructured.is_integer());
     }
 
     #[test]

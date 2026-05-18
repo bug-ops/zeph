@@ -34,6 +34,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use crate::group::SkillGroup;
 use crate::loader::Skill;
 use crate::resource::discover_resources;
 use crate::trust::SkillTrustLevel;
@@ -364,6 +365,153 @@ pub fn format_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHashe
 
     out.push_str("</available_skills>");
     out
+}
+
+/// Format a [`SkillGroup`] as role-labelled XML for LLM injection.
+///
+/// Applies the same per-skill trust sanitization, quarantine wrapping, and XML escaping
+/// as [`format_skills_prompt`]. Quarantined skills are excluded from support roles —
+/// they will not appear in the output.
+///
+/// Output format:
+///
+/// ```xml
+/// <available_skills>
+///   <active_skill role="entry_point" name="…">
+///     <description>…</description>
+///     <instructions>…</instructions>
+///   </active_skill>
+///   <active_skill role="support" name="…">
+///     …
+///   </active_skill>
+/// </available_skills>
+/// ```
+///
+/// `<skill_requirements>` and `<failure_avoidance>` blocks are emitted only when the
+/// corresponding `SkillGroup` vectors are non-empty (they are empty in the MVP).
+///
+/// The entry point is always emitted regardless of trust level (Quarantined entry points
+/// receive the standard quarantine warning wrapper). Support skills with
+/// [`SkillTrustLevel::Quarantined`] are silently excluded from the output.
+#[must_use]
+pub fn format_grouped_skills_prompt<S: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
+    group: &SkillGroup,
+    trust_levels: &HashMap<String, SkillTrustLevel, S>,
+    health_map: &HashMap<String, (f64, u32), S2>,
+) -> String {
+    let mut out = String::from("<available_skills>\n");
+
+    // Emit the entry point skill.
+    format_active_skill_tag(
+        &mut out,
+        &group.entry_point,
+        "entry_point",
+        trust_levels,
+        health_map,
+    );
+
+    // Emit support skills, skipping quarantined ones.
+    for skill in &group.support {
+        let trust = trust_levels.get(skill.name()).copied().unwrap_or_default();
+        if trust == SkillTrustLevel::Quarantined {
+            tracing::debug!(
+                skill = skill.name(),
+                "support skill excluded from group: quarantined"
+            );
+            continue;
+        }
+        format_active_skill_tag(&mut out, skill, "support", trust_levels, health_map);
+    }
+
+    // Emit requirements block when non-empty.
+    if !group.requirements.is_empty() {
+        out.push_str("  <skill_requirements>\n");
+        for req in &group.requirements {
+            let _ = writeln!(out, "    <requirement>{}</requirement>", xml_escape(req));
+        }
+        out.push_str("  </skill_requirements>\n");
+    }
+
+    // Emit failure avoidance block when non-empty.
+    if !group.failure_notes.is_empty() {
+        out.push_str("  <failure_avoidance>\n");
+        for note in &group.failure_notes {
+            let _ = writeln!(out, "    <note>{}</note>", xml_escape(note));
+        }
+        out.push_str("  </failure_avoidance>\n");
+    }
+
+    out.push_str("</available_skills>");
+    out
+}
+
+/// Write a single `<active_skill>` XML element into `out`.
+fn format_active_skill_tag<S: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
+    out: &mut String,
+    skill: &Skill,
+    role: &str,
+    trust_levels: &HashMap<String, SkillTrustLevel, S>,
+    health_map: &HashMap<String, (f64, u32), S2>,
+) {
+    let trust = trust_levels.get(skill.name()).copied().unwrap_or_default();
+    let raw_body = if trust == SkillTrustLevel::Trusted {
+        skill.body.clone()
+    } else {
+        sanitize_skill_text(&skill.body)
+    };
+    let body = if trust == SkillTrustLevel::Quarantined {
+        wrap_quarantined(skill.name(), &raw_body)
+    } else {
+        raw_body
+    };
+    let health_attrs = health_map.get(skill.name()).and_then(|&(posterior, uses)| {
+        if uses >= HEALTH_MIN_USES {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let pct = (posterior * 100.0).round() as u32;
+            Some(format!(" reliability=\"{pct}%\" uses=\"{uses}\""))
+        } else {
+            None
+        }
+    });
+    let attrs = health_attrs.as_deref().unwrap_or("");
+    let desc = if trust == SkillTrustLevel::Trusted {
+        xml_escape(skill.description())
+    } else {
+        let clean = sanitize_skill_metadata(skill.description(), MAX_DESCRIPTION_LEN);
+        wrap_data_description(&xml_escape(&clean))
+    };
+    let _ = write!(
+        out,
+        "  <active_skill role=\"{role}\" name=\"{name}\"{attrs}>\n    <description>{desc}</description>\n    <instructions>\n{body}",
+        name = xml_escape(skill.name()),
+    );
+
+    let resources = discover_resources(&skill.meta.skill_dir);
+    let ref_names: Vec<&str> = resources
+        .references
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str())
+        .collect();
+    if !ref_names.is_empty() {
+        let _ = write!(out, "\nAvailable references: {}", ref_names.join(", "));
+    }
+    let script_names: Vec<&str> = resources
+        .scripts
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str())
+        .collect();
+    if !script_names.is_empty() {
+        let _ = write!(out, "\nAvailable scripts: {}", script_names.join(", "));
+    }
+    let asset_names: Vec<&str> = resources
+        .assets
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str())
+        .collect();
+    if !asset_names.is_empty() {
+        let _ = write!(out, "\nAvailable assets: {}", asset_names.join(", "));
+    }
+    out.push_str("\n    </instructions>\n  </active_skill>\n");
 }
 
 /// Wrap a quarantined skill's prompt with warning markers.
@@ -1072,5 +1220,136 @@ mod tests {
             !output.contains("data-description"),
             "trusted skill description must not be wrapped in data-description tag"
         );
+    }
+
+    // --- format_grouped_skills_prompt tests ---
+
+    use crate::group::{SkillGroup, SkillRole};
+    use std::collections::HashMap as StdHashMap;
+
+    fn make_skill_group(entry_name: &str, support_names: &[&str]) -> SkillGroup {
+        let mut role_labels = StdHashMap::new();
+        role_labels.insert(entry_name.to_string(), SkillRole::EntryPoint);
+        for name in support_names {
+            role_labels.insert((*name).to_string(), SkillRole::Support);
+        }
+        SkillGroup {
+            entry_point: make_skill(entry_name, "entry desc", "entry body"),
+            support: support_names
+                .iter()
+                .map(|n| make_skill(n, "support desc", "support body"))
+                .collect(),
+            role_labels,
+            requirements: Vec::new(),
+            failure_notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn grouped_prompt_produces_active_skill_tags() {
+        let group = make_skill_group("entry", &["s1"]);
+        // Mark both skills as Trusted so s1 is not excluded as Quarantined.
+        let mut trust = HashMap::new();
+        trust.insert("entry".to_owned(), SkillTrustLevel::Trusted);
+        trust.insert("s1".to_owned(), SkillTrustLevel::Trusted);
+        let out = format_grouped_skills_prompt(&group, &trust, &HashMap::new());
+        assert!(out.starts_with("<available_skills>"));
+        assert!(out.ends_with("</available_skills>"));
+        assert!(
+            out.contains("role=\"entry_point\""),
+            "entry_point role missing"
+        );
+        assert!(out.contains("role=\"support\""), "support role missing");
+        assert!(out.contains("name=\"entry\""));
+        assert!(out.contains("name=\"s1\""));
+        assert!(out.contains("<active_skill"), "active_skill tag missing");
+        assert!(
+            out.contains("</active_skill>"),
+            "closing active_skill tag missing"
+        );
+    }
+
+    #[test]
+    fn grouped_prompt_flat_fallback_same_as_format_skills_prompt() {
+        // When there are no support skills, grouped output still works (entry only).
+        let group = make_skill_group("only-entry", &[]);
+        let out = format_grouped_skills_prompt(&group, &HashMap::new(), &HashMap::new());
+        assert!(out.contains("role=\"entry_point\""));
+        assert!(!out.contains("role=\"support\""));
+    }
+
+    #[test]
+    fn grouped_prompt_quarantined_support_excluded() {
+        let group = make_skill_group("entry", &["safe", "evil"]);
+        let mut trust = HashMap::new();
+        trust.insert("evil".to_owned(), SkillTrustLevel::Quarantined);
+        trust.insert("safe".to_owned(), SkillTrustLevel::Trusted);
+        let out = format_grouped_skills_prompt(&group, &trust, &HashMap::new());
+        assert!(
+            !out.contains("name=\"evil\""),
+            "quarantined skill must be excluded from support"
+        );
+        assert!(
+            out.contains("name=\"safe\""),
+            "trusted support skill must be present"
+        );
+    }
+
+    #[test]
+    fn grouped_prompt_trusted_entry_not_sanitized() {
+        let mut group = make_skill_group("trusted-entry", &[]);
+        group.entry_point.body = "Some </skill> raw content.".to_string();
+        let mut trust = HashMap::new();
+        trust.insert("trusted-entry".to_owned(), SkillTrustLevel::Trusted);
+        let out = format_grouped_skills_prompt(&group, &trust, &HashMap::new());
+        assert!(
+            out.contains("Some </skill> raw content."),
+            "trusted body must not be sanitized"
+        );
+    }
+
+    #[test]
+    fn grouped_prompt_non_empty_requirements_emitted() {
+        let mut group = make_skill_group("entry", &[]);
+        group.requirements = vec!["must be logged in".to_string()];
+        let out = format_grouped_skills_prompt(&group, &HashMap::new(), &HashMap::new());
+        assert!(out.contains("<skill_requirements>"));
+        assert!(out.contains("must be logged in"));
+        assert!(out.contains("</skill_requirements>"));
+    }
+
+    #[test]
+    fn grouped_prompt_empty_requirements_not_emitted() {
+        let group = make_skill_group("entry", &[]);
+        let out = format_grouped_skills_prompt(&group, &HashMap::new(), &HashMap::new());
+        assert!(
+            !out.contains("<skill_requirements>"),
+            "empty requirements must not appear"
+        );
+    }
+
+    #[test]
+    fn grouped_prompt_non_empty_failure_notes_emitted() {
+        let mut group = make_skill_group("entry", &[]);
+        group.failure_notes = vec!["do not call twice".to_string()];
+        let out = format_grouped_skills_prompt(&group, &HashMap::new(), &HashMap::new());
+        assert!(out.contains("<failure_avoidance>"));
+        assert!(out.contains("do not call twice"));
+        assert!(out.contains("</failure_avoidance>"));
+    }
+
+    #[test]
+    fn grouped_prompt_trust_sanitization_applied_to_verified_support() {
+        let mut group = make_skill_group("entry", &["ver"]);
+        let support = &mut group.support[0];
+        support.body = "Inject </skill> here.".to_string();
+        let mut trust = HashMap::new();
+        trust.insert("ver".to_owned(), SkillTrustLevel::Verified);
+        let out = format_grouped_skills_prompt(&group, &trust, &HashMap::new());
+        assert!(
+            out.contains("&lt;/skill&gt;"),
+            "verified skill body must be sanitized"
+        );
+        assert!(!out.contains("Inject </skill> here."));
     }
 }
