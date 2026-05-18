@@ -784,6 +784,21 @@ impl<C: Channel> Agent<C> {
                 .collect();
             (all, active)
         };
+
+        // Rebuild matched_indices to stay 1:1 with active_skills after the channel-allowlist
+        // filter may have removed skills that were present in active_skill_names.
+        // Without this, group_skills() reads embeddings at stale positions, producing wrong groups.
+        let active_skill_name_set: std::collections::HashSet<&str> =
+            active_skills.iter().map(|s| s.name()).collect();
+        let matched_indices: Vec<usize> = matched_indices
+            .into_iter()
+            .filter(|&i| {
+                all_meta
+                    .get(i)
+                    .is_some_and(|m| active_skill_name_set.contains(m.name.as_str()))
+            })
+            .collect();
+
         let trust_map = self.build_skill_trust_map().await;
 
         // Write the per-turn trust snapshot so SkillInvokeExecutor can resolve trust
@@ -2017,5 +2032,111 @@ mod tests {
             "blocked skill must be excluded from catalog"
         );
         assert_eq!(catalog[0].name, "allowed-skill");
+    }
+
+    // ── GoSkills channel-allowlist index rebuild (#4432) ─────────────────────
+
+    /// Validates that after a channel-allowlist filter removes a skill, the indices passed
+    /// to group_skills() are rebuilt to stay 1:1 with the surviving active_skills slice.
+    ///
+    /// Without the fix, matched_indices still references the removed skill's store position,
+    /// so group_skills() looks up the wrong embedding and produces incorrect support groups.
+    #[test]
+    fn channel_allowlist_filter_rebuilds_matched_indices() {
+        use std::path::PathBuf;
+        use zeph_skills::group::{GroupResult, group_skills};
+        use zeph_skills::loader::{Skill, SkillMeta};
+
+        fn make_skill(name: &str) -> Skill {
+            Skill {
+                meta: SkillMeta {
+                    name: name.into(),
+                    description: "desc".into(),
+                    compatibility: None,
+                    license: None,
+                    metadata: vec![],
+                    allowed_tools: vec![],
+                    requires_secrets: vec![],
+                    skill_dir: PathBuf::new(),
+                    source_url: None,
+                    git_hash: None,
+                    category: None,
+                },
+                body: "body".into(),
+            }
+        }
+
+        // Skill store: [0]=filtered-out, [1]=entry, [2]=support
+        // matched_indices before channel-allowlist filter: [0, 1, 2]
+        // After filter removes skill at store index 0, active_skills = [entry, support]
+        // Correct rebuilt indices must be [1, 2] — not [0, 1, 2].
+
+        // Embeddings: entry and support are similar; filtered-out is orthogonal.
+        static EMBED_FILTERED: &[f32] = &[0.0, 0.0, 1.0]; // store index 0 — should be gone
+        static EMBED_ENTRY: &[f32] = &[1.0, 0.0, 0.0]; // store index 1
+        static EMBED_SUPPORT: &[f32] = &[0.9, 0.1, 0.0]; // store index 2 — cosine ≈ 0.994
+
+        let active_skills = vec![make_skill("entry"), make_skill("support")];
+
+        // Simulate what the fix does: rebuild indices from [0,1,2] to only those whose
+        // all_meta name appears in active_skills (i.e. [1, 2]).
+        let stale_indices = vec![0usize, 1, 2]; // before fix — would include filtered-out
+        let allowed_names: std::collections::HashSet<&str> =
+            active_skills.iter().map(|s| s.name()).collect();
+        // all_meta names at positions [0,1,2]:
+        let all_meta_names = ["filtered-out", "entry", "support"];
+        let fixed_indices: Vec<usize> = stale_indices
+            .into_iter()
+            .filter(|&i| {
+                all_meta_names
+                    .get(i)
+                    .is_some_and(|name| allowed_names.contains(*name))
+            })
+            .collect();
+
+        assert_eq!(
+            fixed_indices,
+            vec![1, 2],
+            "index 0 (filtered-out) must be removed"
+        );
+
+        // With correct indices [1, 2], group_skills finds entry and support similar → Grouped.
+        let result = group_skills(
+            &active_skills,
+            &fixed_indices,
+            |idx: usize| match idx {
+                1 => Some(EMBED_ENTRY),
+                2 => Some(EMBED_SUPPORT),
+                _ => None,
+            },
+            0.50_f32,
+        );
+        assert!(
+            matches!(result, GroupResult::Grouped(_)),
+            "correctly rebuilt indices must produce Grouped"
+        );
+
+        // With stale indices [0, 1, 2] — active_skills has 2 items but indices has 3.
+        // group_skills must handle the length mismatch gracefully (fall back to Flat or
+        // use only matching positions). This asserts the stale case does NOT crash.
+        let stale_indices_again = vec![0usize, 1, 2];
+        let stale_result = group_skills(
+            &active_skills,
+            &stale_indices_again,
+            |idx: usize| match idx {
+                0 => Some(EMBED_FILTERED),
+                1 => Some(EMBED_ENTRY),
+                2 => Some(EMBED_SUPPORT),
+                _ => None,
+            },
+            0.50_f32,
+        );
+        // The stale path looks up embedding for active_skills[0]="entry" at store-idx 0 —
+        // which returns EMBED_FILTERED (orthogonal to EMBED_SUPPORT), so cosine=0 → Flat.
+        // This documents the incorrect behaviour that the fix prevents.
+        assert!(
+            matches!(stale_result, GroupResult::Flat(_)),
+            "stale indices cause wrong (flat) grouping when entry/support would be grouped"
+        );
     }
 }

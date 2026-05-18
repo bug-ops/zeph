@@ -76,6 +76,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: GoSkills grouping now rebuilds `matched_indices` after the channel-allowlist
+  filter so the index slice stays 1:1 with `active_skills`; previously, skills removed by the
+  allowlist left stale store-indices in place, causing `group_skills()` to look up the wrong
+  embedding and produce incorrect support groupings (closes #4432).
 - `zeph-memory`: Remove `info_span!` from `TrajectoryRiskAccumulator::current_risk()` (#4397).
   The method is a pure getter with no I/O; creating a span on every call added ~1 µs overhead
   and polluted traces with noise. Spans remain on `advance_turn()` and `ingest()`.
