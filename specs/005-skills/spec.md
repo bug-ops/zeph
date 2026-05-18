@@ -583,3 +583,178 @@ and emits an advisory `SecurityEvent::SkillAdvisory` with severity and matched p
 - Blake3 re-hash only applies to skills with `requires_trust_check = true`; normal skills use load-time trust only
 - Advisory scan result MUST NOT block skill invocation in v1 — advisory only
 - NEVER store the raw unsanitized description in the system prompt
+
+---
+
+## Group-Structured Retrieval (GoSkills)
+
+RFC #4219. Closes #4000, #4064, #4065, #4090, #4091, #4125, #4166, #4195.
+
+### Motivation
+
+The current skill injection pipeline produces a flat ranked list of skills injected as peer `<skill>` elements into Block 3. When a turn activates two or more related skills, the LLM receives no signal about which skill is primary and which are auxiliary, what inter-skill dependencies exist, or which failure modes to avoid. GoSkills addresses this presentation gap by adding a post-selection grouping step that structures the injection around an entry-point skill and its support skills, without changing any upstream matching, trust, or governance logic.
+
+### Approach
+
+After the existing BM25 + embedding hybrid matching and RRF fusion produce a ranked candidate list, a new `group_skills()` post-processing step reformats the injection payload:
+
+1. **Compute inter-skill cosine similarity** between the top-1 candidate (entry point) and each remaining candidate using their already-cached embeddings. This is a dot-product operation on vectors that are already in memory — no additional embedding calls.
+2. **Group decision**:
+   - If any candidate's cosine similarity to the entry point exceeds `support_similarity_threshold` → form a `SkillGroup`: entry point + qualifying support skills.
+   - If no candidate clears the threshold (all top-N skills are dissimilar to each other) → fall back to flat injection (existing behaviour, all skills as peers).
+3. **Structured injection**: when a group is formed, replace the flat `<skill>` element list with a role-labelled format (see Injection Format below).
+
+The grouping step is purely a presentation-layer transform. All upstream selection (SkillMatcher, SkillOrchestra, Wilson scoring, trust governance, `max_active_skills` cap) continues to operate on individual skills, unchanged.
+
+### Data Structures
+
+```
+SkillGroup {
+    entry_point: Skill,             // primary skill for the turn
+    support: Vec<Skill>,            // helper skills (capped at max_active_skills - 1)
+    requirements: Vec<String>,      // extracted from frontmatter: tools, env, channels
+    failure_notes: Vec<String>,     // ERL heuristics + D2Skill corrections for entry_point
+    role_labels: HashMap<String, SkillRole>,  // entry_point | support | context
+}
+
+enum SkillRole {
+    EntryPoint,
+    Support,
+    Context,
+}
+```
+
+### Injection Format
+
+When `group_structured = true` and a group is formed, Block 3 uses role-labelled sections instead of flat `<skill>` elements:
+
+```xml
+<active_skill role="entry_point" name="{name}">
+{sanitized skill body}
+</active_skill>
+
+<active_skill role="support" name="{name}">
+{sanitized skill body}
+</active_skill>
+
+<skill_requirements>
+- tool: shell (required by entry_point)
+- env: API_KEY (required by support)
+</skill_requirements>
+
+<failure_avoidance>
+- {ERL heuristic 1}
+- {D2Skill correction note}
+</failure_avoidance>
+```
+
+When `group_structured = false` (default) or when the fallback condition is triggered (all top-N inter-similarity < threshold), the existing flat format is used unchanged.
+
+### Trust and Sanitization Invariants Within Groups
+
+`format_skills_prompt()` currently applies per-skill trust-based sanitization, health attributes, quarantine wrapping, and XML escaping. When group-structured output is enabled, this function must be refactored to accept a `SkillGroup` (or `Vec<SkillGroup>`) rather than a flat `&[Skill]`, while preserving all per-skill invariants:
+
+- Trust-based sanitization runs independently for each skill in the group (entry point and each support skill).
+- Quarantine wrapping applies per-skill — a quarantined skill cannot become a support skill in a group, just as it cannot be injected flat.
+- XML escaping and `sanitize_skill_metadata()` apply per-skill within the group, not to the group framing.
+- `max_skill_body_bytes` limit applies per-skill, not to the combined group body.
+- The framing overhead (~50–100 tokens for role labels, requirements, failure notes) is within the existing per-turn budget and does not require a new budget parameter.
+
+### SkillOrchestra Interaction
+
+SkillOrchestra's LinUCB bandit head selects individual skills (one arm per skill). The bandit action space must not change when `group_structured = true`. Grouping is applied **after** bandit selection as a presentation transform:
+
+1. Bandit selects top-N individual skills (unchanged).
+2. `group_skills()` receives the bandit-selected list and applies the grouping/fallback logic.
+3. Rewards are attributed to individual skills (unchanged) — the bandit never observes a group as a unit.
+
+This preserves exploration/exploitation convergence: adding grouping does not expand the bandit action space from N to O(N²).
+
+### Multi-Entry Fallback
+
+When the user query requires genuinely independent skills (e.g., "deploy to staging and notify Slack"), the top-N selected skills will have low inter-similarity. In this case, forcing single-entry grouping would mislead the LLM by demoting an independent skill to "support" role. The fallback rule handles this correctly:
+
+- Compute pairwise cosine similarity between all top-N candidates.
+- If no pair exceeds `support_similarity_threshold` → flat injection (all skills as peers, existing behaviour).
+- If at least one pair exceeds the threshold → form a group with the highest-similarity pair as entry_point + first support skill; remaining candidates that also clear the threshold are added as additional support.
+
+### Threshold Semantics
+
+The `support_similarity_threshold` is defined as **inter-skill cosine similarity** between skill embedding vectors — not as a reuse of RRF-fused matcher scores. The rationale: RRF scores reflect relevance to the query, not semantic relatedness between skills. Two skills can both be highly relevant to a query without being semantically related to each other.
+
+Implementation: after matching produces the top-N list, `group_skills()` computes dot products between the entry-point embedding and each candidate embedding (embeddings are already cached in `SkillMatcher` state). Default threshold `0.50` corresponds to a moderate semantic overlap (≈30° angle).
+
+### Config
+
+```toml
+[skills]
+group_structured = false                # opt-in; default off
+support_similarity_threshold = 0.50    # inter-skill cosine similarity; range [0.0, 1.0]
+```
+
+Both parameters are additive — no existing parameters are removed or renamed.
+
+### A/B Validation Requirement
+
+Enabling `group_structured = true` changes the LLM prompt format in Block 3. This is not a code-level breaking change (existing behaviour is preserved when disabled), but it IS a prompt regression surface. Before `group_structured` is changed to `true` as the default:
+
+- Run an A/B experiment via `zeph-experiments` comparing flat vs. group-structured injection.
+- Measure: task completion rate, user correction frequency, and token efficiency.
+- A/B results must show no regression on flat-injection baselines before the default is changed.
+
+### Migration Notes
+
+- Default `group_structured = false` preserves existing behaviour for all existing configs — no migration required.
+- No new database tables or storage migrations are needed — grouping is stateless and computed per-turn.
+- `format_skills_prompt()` in `crates/zeph-skills/src/prompt.rs` requires a signature change to accept `SkillGroup` input. The existing flat-list overload must be retained (or a compatibility wrapper provided) for the `group_structured = false` path.
+- `SkillState::rebuild_prompt` in `crates/zeph-core/src/agent/state/skill.rs` must route to the new group-aware formatter when `group_structured = true`.
+
+### Future Consideration: Toward Explicit Skill Dependencies
+
+GoSkills groups are a stepping stone toward an explicit skill dependency graph (RFC #4125). If multi-step skill composition becomes a validated user need, the `requirements` field in `SkillGroup` can be extended to carry typed dependency edges rather than plain strings. This extension is deferred until composition is a confirmed bottleneck.
+
+### Key Invariants
+
+- `group_structured = false` MUST produce output identical to the current flat injection — no behaviour change on the default path
+- Trust-based sanitization, quarantine wrapping, and XML escaping MUST apply per-skill within a group, not to the group as a whole
+- NEVER include a `Quarantined` skill as a support skill in a group
+- SkillOrchestra bandit MUST select individual skills; grouping is post-selection only — NEVER change the bandit action space to groups
+- When no pair of top-N skills exceeds `support_similarity_threshold`, MUST fall back to flat injection — NEVER force a group when skills are semantically independent
+- Inter-skill cosine similarity threshold is computed on skill embeddings, NOT on RRF-fused matcher scores
+- `max_active_skills` cap applies before grouping — NEVER inject more skills in a group than the cap allows
+- `group_structured = true` MUST NOT become the default until A/B validation via `zeph-experiments` shows no regression
+
+---
+
+## Appendix: RFC #4219 Comparison Matrix
+
+Eight approaches were evaluated against the current skill system baseline before GoSkills was selected. This matrix provides traceability for the decision to close issues #4000, #4064, #4065, #4090, #4091, #4125, #4166, #4195.
+
+### Current System Baseline Summary
+
+At time of evaluation, Zeph's skill system already provided: BM25 + embedding hybrid matching with RRF fusion and Wilson score re-ranking; trust governance (Untrusted → Provisional → Trusted) with capability escalation detection and injection sanitization; self-learning via ARISE, STEM, ERL, and D2Skill; SkillOrchestra LinUCB bandit routing; SkillEvaluator critic LLM scoring; and two-stage category-first matching. Any addition must clear a high bar against this baseline.
+
+### Comparison Matrix
+
+| # | Issue | Approach | Discovery Quality | Composition Support | Maintenance Cost | Implementation Complexity | Redundancy with Existing Spec | Decision |
+|---|-------|----------|------------------|--------------------|-----------------|--------------------------|-----------------------------|----------|
+| 1 | #4000 | SkillMaster | +1: counterfactual probe eval | 0: no composition model | Low | Medium | **High**: ARISE + SkillEvaluator already cover trajectory-informed review | Rejected |
+| 2 | #4064 | Corpus2Skill | +1: tree navigation at 100+ skills | +1: tree implies hierarchy | **High**: tree rebuilt on changes | **High**: offline compilation, tree-nav LLM call per turn | Medium: two_stage_matching already does coarse→fine | Rejected |
+| 3 | #4065 | Bilevel MCTS | 0: structure search only | 0: single-skill optimization | **High**: MCTS rollouts | **Very High**: MCTS + LLM inner loop | Medium: overlaps ARISE + SkillEvaluator | Rejected |
+| 4 | #4090 | MIND-Skill | +1: reconstruction loss quality signal | 0: single-skill induction | Medium: dual-agent loop | High: TextGrad optimization | High: SkillEvaluator 3-dim scoring already equivalent | Rejected |
+| 5 | **#4091** | **GoSkills** | **+2: role-labeled groups** | **+2: entry-point + support skills** | **Low: presentation-layer only** | **Low–Medium: no new infra** | **Low: genuine gap in flat injection** | **Selected** |
+| 6 | #4125 | SkillGraph | +1: prerequisite edges | +2: DAG enables multi-step planning | **High**: edges must be maintained | High: graph storage + path-finding | Medium: overlaps category system | Rejected (deferred) |
+| 7 | #4166 | SkillOS | 0: curation only | 0: merging reduces library | Medium | Medium | High: Wilson score + dedup_threshold already handle this | Rejected |
+| 8 | #4195 | 4-stage loop | +1: data selection filter | 0: meta-framework | Low | Low–Medium | **Very High**: maps 1:1 onto ARISE/SkillEvaluator/STEM/SkillOrchestra | Rejected |
+
+**Scoring**: 0 = no improvement over baseline, +1 = modest improvement, +2 = significant improvement.
+
+### Rejection Rationale Summary
+
+**Rejected for high redundancy** (#4000, #4090, #4195, #4166): counterfactual probe eval, TextGrad dual-agent induction, 4-stage meta-framework, and skill curation/merging all map closely onto capabilities already in ARISE, SkillEvaluator, D2Skill, Wilson score, and dedup_threshold. The incremental value does not justify the added complexity.
+
+**Rejected for complexity vs. scale mismatch** (#4064, #4065): hierarchical tree navigation and Bilevel MCTS are research-grade techniques suited to skill libraries of 100+. Zeph's practical library (26 bundled + user-generated) does not justify offline tree compilation or MCTS rollouts.
+
+**Deferred, not rejected** (#4125 SkillGraph): prerequisite edges and DAG path-finding are architecturally appealing for multi-step composition, but require graph maintenance burden (edge discovery, weighting, pruning) without validated demand. GoSkills `requirements` field is a stepping stone; revisit when multi-step composition is a confirmed user need.
+
+**Selected** (#4091 GoSkills): the only approach addressing a genuine gap (how matched skills are presented to the LLM) at low implementation cost and with zero breaking changes to the default path.
