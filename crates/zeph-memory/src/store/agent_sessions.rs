@@ -232,6 +232,12 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database write fails.
+    #[tracing::instrument(
+        name = "memory.fleet.update_agent_session_status",
+        skip_all,
+        level = "debug",
+        err
+    )]
     pub async fn update_agent_session_status(
         &self,
         id: &str,
@@ -255,6 +261,12 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database write fails.
+    #[tracing::instrument(
+        name = "memory.fleet.reconcile_stale_sessions",
+        skip_all,
+        level = "debug",
+        err
+    )]
     pub async fn reconcile_stale_sessions(
         &self,
         current_session_id: &str,

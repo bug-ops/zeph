@@ -7,6 +7,7 @@ use std::process::Command;
 
 use crate::bootstrap::resolve_config_path;
 use anyhow::{Context as _, bail};
+use zeph_common::format_tokens;
 use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 use zeph_subagent::error::SubAgentError;
 use zeph_subagent::{SubAgentDef, ToolPolicy, is_valid_agent_name, resolve_agent_paths};
@@ -282,8 +283,8 @@ fn print_fleet_table(sessions: &[AgentSessionRow]) {
         let model = truncate(&s.model, w_model);
         let tokens = format!(
             "{}/{}",
-            fmt_tokens(s.prompt_tokens),
-            fmt_tokens(s.completion_tokens)
+            format_tokens(s.prompt_tokens),
+            format_tokens(s.completion_tokens)
         );
         let cost = if s.cost_cents > 0.0 {
             format!("${:.4}", s.cost_cents / 100.0)
@@ -301,17 +302,6 @@ fn print_fleet_table(sessions: &[AgentSessionRow]) {
             tokens,
             cost,
         );
-    }
-}
-
-fn fmt_tokens(n: u64) -> String {
-    #[allow(clippy::cast_precision_loss)]
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
     }
 }
 

@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use zeph_common::format_tokens;
 
 use crate::app::{App, InputMode};
 use crate::metrics::MetricsSnapshot;
@@ -444,17 +445,6 @@ fn build_filter_text(metrics: &MetricsSnapshot) -> String {
         " | Filters: {}/{} ({savings:.0}% saved)",
         metrics.filter_filtered_commands, metrics.filter_total_commands,
     )
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn format_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
 }
 
 fn format_uptime(secs: u64) -> String {

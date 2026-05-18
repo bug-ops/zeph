@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use zeph_common::format_tokens;
 use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 
 use crate::theme::Theme;
@@ -29,17 +30,6 @@ fn status_color(status: SessionStatus) -> Color {
     }
 }
 
-fn format_tokens_short(n: u64) -> String {
-    #[allow(clippy::cast_precision_loss)]
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
 fn build_session_item(row: &AgentSessionRow, selected: bool) -> ListItem<'static> {
     let color = status_color(row.status);
     let base = if selected {
@@ -58,8 +48,8 @@ fn build_session_item(row: &AgentSessionRow, selected: bool) -> ListItem<'static
 
     let tokens = format!(
         "{}/{}",
-        format_tokens_short(row.prompt_tokens),
-        format_tokens_short(row.completion_tokens)
+        format_tokens(row.prompt_tokens),
+        format_tokens(row.completion_tokens)
     );
     let cost = if row.cost_cents > 0.0 {
         format!("${:.4}", row.cost_cents / 100.0)
@@ -125,30 +115,30 @@ pub fn render(snapshot: &FleetSnapshot, frame: &mut Frame, area: Rect, list_stat
 
 #[cfg(test)]
 mod tests {
-    use super::format_tokens_short;
+    use super::format_tokens;
 
     #[test]
-    fn format_tokens_short_zero() {
-        assert_eq!(format_tokens_short(0), "0");
+    fn format_tokens_zero() {
+        assert_eq!(format_tokens(0), "0");
     }
 
     #[test]
-    fn format_tokens_short_below_1k() {
-        assert_eq!(format_tokens_short(999), "999");
+    fn format_tokens_below_1k() {
+        assert_eq!(format_tokens(999), "999");
     }
 
     #[test]
-    fn format_tokens_short_exactly_1k() {
-        assert_eq!(format_tokens_short(1_000), "1.0k");
+    fn format_tokens_exactly_1k() {
+        assert_eq!(format_tokens(1_000), "1.0k");
     }
 
     #[test]
-    fn format_tokens_short_below_1m() {
-        assert_eq!(format_tokens_short(999_999), "1000.0k");
+    fn format_tokens_below_1m() {
+        assert_eq!(format_tokens(999_999), "1000.0k");
     }
 
     #[test]
-    fn format_tokens_short_exactly_1m() {
-        assert_eq!(format_tokens_short(1_000_000), "1.0M");
+    fn format_tokens_exactly_1m() {
+        assert_eq!(format_tokens(1_000_000), "1.0M");
     }
 }
