@@ -214,13 +214,14 @@ mod elicitation_tests {
     }
 }
 
-#[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
+#[cfg(test)]
 mod tests {
     use super::*;
+    use acp::schema::{EnvVariable, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
 
     #[test]
     fn converts_stdio_server() {
-        let servers = vec![acp::schema::McpServer::Stdio(acp::McpServerStdio::new(
+        let servers = vec![McpServer::Stdio(McpServerStdio::new(
             "my-mcp",
             "/usr/bin/my-mcp",
         ))];
@@ -232,7 +233,7 @@ mod tests {
 
     #[test]
     fn converts_http_server() {
-        let servers = vec![acp::schema::McpServer::Http(acp::McpServerHttp::new(
+        let servers = vec![McpServer::Http(McpServerHttp::new(
             "http-mcp",
             "http://localhost",
         ))];
@@ -244,7 +245,7 @@ mod tests {
 
     #[test]
     fn converts_http_server_url() {
-        let servers = vec![acp::schema::McpServer::Http(acp::McpServerHttp::new(
+        let servers = vec![McpServer::Http(McpServerHttp::new(
             "http-mcp",
             "http://example.com:8080/mcp",
         ))];
@@ -258,11 +259,11 @@ mod tests {
 
     #[test]
     fn converts_env_variables() {
-        let stdio = acp::McpServerStdio::new("env-mcp", "/bin/mcp").env(vec![
-            acp::EnvVariable::new("FOO", "bar"),
-            acp::EnvVariable::new("BAZ", "qux"),
+        let stdio = McpServerStdio::new("env-mcp", "/bin/mcp").env(vec![
+            EnvVariable::new("FOO", "bar"),
+            EnvVariable::new("BAZ", "qux"),
         ]);
-        let entries = acp_mcp_servers_to_entries(&[acp::schema::McpServer::Stdio(stdio)]);
+        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)]);
         if let McpTransport::Stdio { env, .. } = &entries[0].transport {
             assert_eq!(env.get("FOO"), Some(&"bar".to_owned()));
             assert_eq!(env.get("BAZ"), Some(&"qux".to_owned()));
@@ -278,7 +279,7 @@ mod tests {
 
     #[test]
     fn converts_sse_server() {
-        let servers = vec![acp::schema::McpServer::Sse(acp::McpServerSse::new(
+        let servers = vec![McpServer::Sse(McpServerSse::new(
             "sse-mcp",
             "http://localhost/sse",
         ))];
@@ -290,7 +291,7 @@ mod tests {
 
     #[test]
     fn converts_sse_server_url() {
-        let servers = vec![acp::schema::McpServer::Sse(acp::McpServerSse::new(
+        let servers = vec![McpServer::Sse(McpServerSse::new(
             "sse-mcp",
             "http://example.com/sse",
         ))];
@@ -305,10 +306,10 @@ mod tests {
     #[test]
     fn mixed_list_returns_all() {
         let servers = vec![
-            acp::schema::McpServer::Stdio(acp::McpServerStdio::new("stdio-1", "/bin/mcp1")),
-            acp::schema::McpServer::Http(acp::McpServerHttp::new("http-1", "http://localhost")),
-            acp::schema::McpServer::Stdio(acp::McpServerStdio::new("stdio-2", "/bin/mcp2")),
-            acp::schema::McpServer::Sse(acp::McpServerSse::new("sse-1", "http://localhost/sse")),
+            McpServer::Stdio(McpServerStdio::new("stdio-1", "/bin/mcp1")),
+            McpServer::Http(McpServerHttp::new("http-1", "http://localhost")),
+            McpServer::Stdio(McpServerStdio::new("stdio-2", "/bin/mcp2")),
+            McpServer::Sse(McpServerSse::new("sse-1", "http://localhost/sse")),
         ];
         let entries = acp_mcp_servers_to_entries(&servers);
         assert_eq!(entries.len(), 4);
@@ -320,23 +321,23 @@ mod tests {
 
     #[test]
     fn dangerous_env_vars_stripped() {
-        let stdio = acp::McpServerStdio::new("env-mcp", "/bin/mcp").env(vec![
-            acp::EnvVariable::new("SAFE_VAR", "ok"),
-            acp::EnvVariable::new("LD_PRELOAD", "/tmp/evil.so"),
-            acp::EnvVariable::new("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
-            acp::EnvVariable::new("LD_LIBRARY_PATH", "/tmp"),
-            acp::EnvVariable::new("PATH", "/tmp/evil/bin:/bin"),
-            acp::EnvVariable::new("HTTP_PROXY", "http://evil.proxy:8080"),
-            acp::EnvVariable::new("HTTPS_PROXY", "http://evil.proxy:8080"),
-            acp::EnvVariable::new("ALL_PROXY", "http://evil.proxy:8080"),
-            acp::EnvVariable::new("NO_PROXY", ""),
-            acp::EnvVariable::new("BASH_ENV", "/tmp/evil.sh"),
-            acp::EnvVariable::new("ENV", "/tmp/evil.sh"),
-            acp::EnvVariable::new("PYTHONPATH", "/tmp/evil"),
-            acp::EnvVariable::new("NODE_PATH", "/tmp/evil"),
-            acp::EnvVariable::new("RUBYLIB", "/tmp/evil"),
+        let stdio = McpServerStdio::new("env-mcp", "/bin/mcp").env(vec![
+            EnvVariable::new("SAFE_VAR", "ok"),
+            EnvVariable::new("LD_PRELOAD", "/tmp/evil.so"),
+            EnvVariable::new("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
+            EnvVariable::new("LD_LIBRARY_PATH", "/tmp"),
+            EnvVariable::new("PATH", "/tmp/evil/bin:/bin"),
+            EnvVariable::new("HTTP_PROXY", "http://evil.proxy:8080"),
+            EnvVariable::new("HTTPS_PROXY", "http://evil.proxy:8080"),
+            EnvVariable::new("ALL_PROXY", "http://evil.proxy:8080"),
+            EnvVariable::new("NO_PROXY", ""),
+            EnvVariable::new("BASH_ENV", "/tmp/evil.sh"),
+            EnvVariable::new("ENV", "/tmp/evil.sh"),
+            EnvVariable::new("PYTHONPATH", "/tmp/evil"),
+            EnvVariable::new("NODE_PATH", "/tmp/evil"),
+            EnvVariable::new("RUBYLIB", "/tmp/evil"),
         ]);
-        let entries = acp_mcp_servers_to_entries(&[acp::schema::McpServer::Stdio(stdio)]);
+        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)]);
         if let McpTransport::Stdio { env, .. } = &entries[0].transport {
             assert_eq!(env.get("SAFE_VAR"), Some(&"ok".to_owned()));
             assert!(env.get("LD_PRELOAD").is_none());
@@ -360,9 +361,9 @@ mod tests {
     #[test]
     fn acp_servers_have_none_allowlist() {
         let servers = vec![
-            acp::schema::McpServer::Stdio(acp::McpServerStdio::new("s", "/bin/s")),
-            acp::schema::McpServer::Http(acp::McpServerHttp::new("h", "http://localhost")),
-            acp::schema::McpServer::Sse(acp::McpServerSse::new("e", "http://localhost/sse")),
+            McpServer::Stdio(McpServerStdio::new("s", "/bin/s")),
+            McpServer::Http(McpServerHttp::new("h", "http://localhost")),
+            McpServer::Sse(McpServerSse::new("e", "http://localhost/sse")),
         ];
         let entries = acp_mcp_servers_to_entries(&servers);
         for entry in &entries {

@@ -37,6 +37,7 @@ use zeph_tools::is_private_ip;
 
 use crate::fs::AcpFileExecutor;
 use crate::lsp::DiagnosticsCache;
+use crate::mcp_bridge::acp_mcp_servers_to_entries;
 use crate::permission::AcpPermissionGate;
 use crate::terminal::AcpShellExecutor;
 use crate::transport::SharedAvailableModels;
@@ -1170,6 +1171,16 @@ impl ZephAcpAgentState {
 
         Self::spawn_notify_drainer(&entry, cx)?;
         self.sessions.lock().insert(session_id.clone(), entry);
+
+        if let Some(ref manager) = self.mcp_manager {
+            let entries = acp_mcp_servers_to_entries(&args.mcp_servers);
+            for server_entry in entries {
+                let id = server_entry.id.clone();
+                if let Err(e) = manager.add_server(&server_entry).await {
+                    tracing::warn!(server_id = %id, error = %e, "failed to register IDE MCP server");
+                }
+            }
+        }
 
         let conversation_id = self.create_session_conversation(&session_id).await;
         let session_ctx = SessionContext {
