@@ -28,6 +28,23 @@ use zeph_config::TrajectoryRiskAccumulatorConfig;
 
 pub use zeph_common::audit::{AuditSignalType, Severity};
 
+fn signal_type_label(t: AuditSignalType) -> &'static str {
+    match t {
+        AuditSignalType::PolicyViolation => "policy_violation",
+        AuditSignalType::PromptInjectionPattern => "prompt_injection",
+        AuditSignalType::ToolChainAnomaly => "tool_chain_anomaly",
+        AuditSignalType::ConfidenceDrop => "confidence_drop",
+    }
+}
+
+fn severity_label(s: Severity) -> &'static str {
+    match s {
+        Severity::Low => "low",
+        Severity::Medium => "medium",
+        Severity::High => "high",
+    }
+}
+
 /// A recorded safety signal ingested during a specific turn.
 #[derive(Debug, Clone)]
 pub struct SignalEvent {
@@ -121,6 +138,8 @@ impl TrajectoryRiskAccumulator {
     /// appended to the signal history ring buffer; the oldest entry is evicted when
     /// the buffer is full.
     ///
+    /// Emits `shadow_memory_signals_total{type, severity}` counter (NFR-007).
+    ///
     /// No-op when disabled.
     pub fn ingest(&mut self, signal_type: AuditSignalType, severity: Severity) {
         let _span = info_span!("memory.shadow.ingest").entered();
@@ -151,6 +170,28 @@ impl TrajectoryRiskAccumulator {
             severity,
             raw_score,
         });
+
+        metrics::counter!(
+            "shadow_memory_signals_total",
+            "type" => signal_type_label(signal_type),
+            "severity" => severity_label(severity),
+        )
+        .increment(1);
+    }
+
+    /// Increment `shadow_memory_blocks_total` counter (NFR-007).
+    ///
+    /// Call this once when a tool execution is actually blocked due to trajectory risk.
+    /// Do **not** call on every `is_blocked()` query — only when a block action fires.
+    pub fn record_block(&self) {
+        metrics::counter!("shadow_memory_blocks_total").increment(1);
+    }
+
+    /// Increment `shadow_memory_escalations_total` counter (NFR-007).
+    ///
+    /// Call this once when an escalation-to-human-confirmation is triggered.
+    pub fn record_escalation(&self) {
+        metrics::counter!("shadow_memory_escalations_total").increment(1);
     }
 
     /// Returns the current accumulated risk score in `[0.0, 1.0]`.
@@ -158,7 +199,6 @@ impl TrajectoryRiskAccumulator {
     /// Always returns `0.0` when disabled.
     #[must_use]
     pub fn current_risk(&self) -> f64 {
-        let _span = info_span!("memory.shadow.current_risk").entered();
         if self.config.is_none() {
             return 0.0;
         }

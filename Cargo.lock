@@ -10885,6 +10885,7 @@ dependencies = [
  "futures",
  "insta",
  "lru 0.18.0",
+ "metrics",
  "parking_lot",
  "pdf-extract",
  "petgraph 0.8.3",

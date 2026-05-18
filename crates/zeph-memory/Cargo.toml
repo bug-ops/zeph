@@ -19,6 +19,7 @@ chrono = { workspace = true, features = ["std", "clock"] }
 dashmap.workspace = true
 futures.workspace = true
 lru.workspace = true
+metrics.workspace = true
 parking_lot.workspace = true
 pdf-extract = { workspace = true, optional = true }
 petgraph.workspace = true

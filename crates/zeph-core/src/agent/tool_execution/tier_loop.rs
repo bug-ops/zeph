@@ -510,6 +510,7 @@ impl<C: Channel> Agent<C> {
             args_hashes,
             repeat_blocked,
             cache_hits,
+            mage_blocked,
         } = self.prepare_tool_dispatch(tool_calls);
 
         let max_retries = self.tool_orchestrator.max_tool_retries;
@@ -523,8 +524,24 @@ impl<C: Channel> Agent<C> {
         // Phase 1: Tiered parallel execution bounded by a shared semaphore.
         // Extracted to run_tier_execution_loop to satisfy the line-count limit.
         // Returns None when the user cancelled (caller must return Ok(())).
-        let tier_data = self
-            .run_tier_execution_loop(
+        // MAGE override: if trajectory risk is exceeded, bypass the tier loop and build
+        // blocked results directly so process_tool_result_batch renders them normally.
+        let tier_data: TierLoopOutput = if let Some((score, top_signals)) = mage_blocked {
+            Some(TierLoopData {
+                tool_results: calls
+                    .iter()
+                    .map(|_| {
+                        Err(zeph_tools::ToolError::TrajectoryRiskExceeded {
+                            score,
+                            top_signals: top_signals.clone(),
+                        })
+                    })
+                    .collect(),
+                pending_focus_checkpoint: None,
+                pending_system_hints: Vec::new(),
+            })
+        } else {
+            self.run_tier_execution_loop(
                 tool_calls,
                 &calls,
                 &pre_exec_blocked,
@@ -538,7 +555,8 @@ impl<C: Channel> Agent<C> {
                 &tool_call_ids,
                 &mut tool_started_ats,
             )
-            .await?;
+            .await?
+        };
 
         // Unpack tier execution output. None means the user cancelled — return early.
         let Some(TierLoopData {
@@ -759,6 +777,10 @@ impl<C: Channel> Agent<C> {
         // Inject active skill secrets before tool execution.
         self.inject_active_skill_env();
 
+        // MAGE trajectory risk gate (spec 004-16 FR-004, FR-005).
+        // Extracted to keep prepare_tool_dispatch under the line limit.
+        let mage_blocked = self.check_mage_block();
+
         ToolDispatchContext {
             calls,
             tool_call_ids,
@@ -769,7 +791,40 @@ impl<C: Channel> Agent<C> {
             args_hashes,
             repeat_blocked,
             cache_hits,
+            mage_blocked,
         }
+    }
+
+    /// Check MAGE trajectory risk gate (spec 004-16 FR-004, FR-005).
+    ///
+    /// Returns `Some((score, top_signals))` when the accumulator is blocked. Emits a security
+    /// event, increments `pre_execution_blocks`, and calls `record_block()` on the accumulator.
+    fn check_mage_block(&mut self) -> Option<(f64, Vec<String>)> {
+        if !self.services.security.mage_accumulator.is_blocked() {
+            return None;
+        }
+        let score = self.services.security.mage_accumulator.current_risk();
+        let top: Vec<String> = self
+            .services
+            .security
+            .mage_accumulator
+            .top_signals(3)
+            .iter()
+            .map(|s| format!("{:?}({:?})", s.signal_type, s.severity))
+            .collect();
+        tracing::warn!(
+            score,
+            signals = ?top,
+            "MAGE trajectory risk accumulator blocked tool dispatch"
+        );
+        self.update_metrics(|m| m.pre_execution_blocks += 1);
+        self.push_security_event(
+            zeph_common::SecurityEventCategory::PreExecutionBlock,
+            "<mage>",
+            format!("trajectory risk {score:.3} exceeds threshold"),
+        );
+        self.services.security.mage_accumulator.record_block();
+        Some((score, top))
     }
 
     fn check_exfiltration_urls(&mut self, tool_calls: &[zeph_llm::provider::ToolUseRequest]) {

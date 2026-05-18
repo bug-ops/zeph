@@ -50,6 +50,11 @@ struct ToolDispatchContext {
     args_hashes: Vec<u64>,
     repeat_blocked: Vec<bool>,
     cache_hits: Vec<Option<zeph_tools::ToolOutput>>,
+    /// MAGE trajectory risk gate (spec 004-16 FR-005).
+    ///
+    /// When `Some((score, top_signals))`, all tool calls in this batch are blocked with
+    /// `ToolError::TrajectoryRiskExceeded`. Set when `mage_accumulator.is_blocked()` at dispatch time.
+    mage_blocked: Option<(f64, Vec<String>)>,
 }
 
 /// Output of `Agent::classify_tool_result`: all fields derived from the raw `ToolResult`.

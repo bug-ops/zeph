@@ -56,6 +56,7 @@ impl Default for SecurityState {
             trajectory_signal_queue: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
             shadow_sentinel: None,
             risk_chain_accumulator: None,
+            mage_accumulator: zeph_memory::shadow::TrajectoryRiskAccumulator::new_noop(),
         }
     }
 }

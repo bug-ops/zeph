@@ -28,7 +28,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   auth and per-IP rate-limit axum middleware extracted from `zeph-gateway` and `zeph-a2a`;
   eliminates duplicated `AuthConfig`, `RateLimitState`, `Cidr`, `auth_middleware`,
   `rate_limit_middleware` implementations; gateway's pre-hashing + `subtle::ConstantTimeEq`
-  approach is canonical (closes #4387).- `zeph-memory`, `zeph-config`: Five-signal SYNAPSE retrieval (#4374). Extends the recall
+  approach is canonical (closes #4387).
+- `zeph-core`, `zeph-memory`: Wire `TrajectoryRiskAccumulator` (MAGE spec 004-16) into the
+  tool execution gate (#4380). When `memory.shadow_memory.enabled = true` and the accumulated
+  trajectory risk reaches `risk_threshold`, all tool calls in the current turn are blocked with
+  `ToolError::TrajectoryRiskExceeded`. Signal ingestion bridges the existing `trajectory_signal_queue`
+  codes (PolicyDeny, VigilMedium/High, ExfiltrationRedaction) to MAGE `AuditSignalType` variants;
+  exponential temporal decay is applied once per turn via `advance_turn()` in `begin_turn()`.
+  Blocked dispatches bypass the tier-execution loop and produce structured error results.
+- `zeph-memory`: Prometheus counters for shadow memory (spec 004-16 NFR-007, #4396).
+  `shadow_memory_signals_total{type,severity}` increments on every `ingest()` call;
+  `shadow_memory_blocks_total` and `shadow_memory_escalations_total` are incremented via new
+  `record_block()` / `record_escalation()` methods called from the gate.
+
+### Fixed
+
+- `zeph-memory`: Remove `info_span!` from `TrajectoryRiskAccumulator::current_risk()` (#4397).
+  The method is a pure getter with no I/O; creating a span on every call added ~1 µs overhead
+  and polluted traces with noise. Spans remain on `advance_turn()` and `ingest()`.
+
+- `zeph-memory`, `zeph-config`: Five-signal SYNAPSE retrieval (#4374). Extends the recall
   pipeline with three signals beyond the two-signal baseline (recency + relevance): access
   frequency (facts queried more often rank higher), causal distance (facts closer to the current
   goal entity in the MAGMA graph rank higher), and novelty (facts created earlier in the session
