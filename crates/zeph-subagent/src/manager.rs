@@ -860,11 +860,18 @@ impl SubAgentManager {
         let agent_name_clone = def.name.clone();
         let spawn_depth = ctx.spawn_depth;
         let mut mcp_tool_names = ctx.mcp_tool_names.clone();
+        let before_merge = mcp_tool_names.len();
         for srv in &ctx.session_mcp_servers {
             if !mcp_tool_names.contains(&srv.id) {
                 mcp_tool_names.push(srv.id.clone());
             }
         }
+        let added = mcp_tool_names.len() - before_merge;
+        tracing::debug!(
+            added,
+            total = mcp_tool_names.len(),
+            "mcp_tool_names merged session_mcp_servers"
+        );
         let handle_mcp_tool_names = mcp_tool_names.clone();
         let parent_messages = ctx.parent_messages;
 
@@ -1358,11 +1365,20 @@ impl SubAgentManager {
 
         // Filter restored names: reject entries with control characters or excess length
         // to prevent prompt injection via a tampered transcript sidecar.
+        let original_tool_count = meta.mcp_tool_names.len();
         let resumed_mcp_tool_names: Vec<String> = meta
             .mcp_tool_names
             .into_iter()
             .filter(|s| s.len() <= 256 && s.chars().all(|c| c.is_ascii_graphic() || c == ' '))
             .collect();
+        let dropped = original_tool_count - resumed_mcp_tool_names.len();
+        if dropped > 0 {
+            tracing::warn!(
+                agent_id = %original_id,
+                dropped,
+                "mcp_tool_names sanitization dropped entries on resume"
+            );
+        }
         let new_task_id_for_loop = new_task_id.clone();
         let join_handle: JoinHandle<Result<String, SubAgentError>> =
             tokio::spawn(run_agent_loop(AgentLoopArgs {
@@ -2615,6 +2631,15 @@ mod tests {
 
     /// Write a minimal completed meta file and empty JSONL so `resume()` has something to load.
     fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
+        write_completed_meta_with_tool_names(dir, agent_id, def_name, Vec::new());
+    }
+
+    fn write_completed_meta_with_tool_names(
+        dir: &std::path::Path,
+        agent_id: &str,
+        def_name: &str,
+        mcp_tool_names: Vec<String>,
+    ) {
         use crate::transcript::{TranscriptMeta, TranscriptWriter};
         let meta = TranscriptMeta {
             agent_id: agent_id.to_owned(),
@@ -2625,7 +2650,7 @@ mod tests {
             finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
             resumed_from: None,
             turns_used: 1,
-            mcp_tool_names: Vec::new(),
+            mcp_tool_names,
         };
         TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
         // Create the empty JSONL so TranscriptReader::load succeeds.
@@ -4218,5 +4243,98 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    // ── resume sanitization tests ─────────────────────────────────────────────
+
+    #[test]
+    fn resume_sanitization_drops_invalid_mcp_tool_names() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "11110000-0000-0000-0000-000000000001";
+        let tool_names = vec![
+            "valid-tool".to_owned(),
+            "a".repeat(257),          // too long
+            "bad\x01tool".to_owned(), // control character
+            "another-valid".to_owned(),
+        ];
+        write_completed_meta_with_tool_names(tmp.path(), agent_id, "bot", tool_names);
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let (new_id, _) = mgr
+            .resume(
+                "11110000",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
+
+        let names = &mgr.agents[&new_id].mcp_tool_names;
+        assert!(
+            !names.iter().any(|n| n.len() > 256),
+            "oversized entry must be dropped"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.chars().any(|c| c.is_ascii_control())),
+            "control-char entry must be dropped"
+        );
+        assert_eq!(names.len(), 2, "only two valid entries must survive");
+
+        mgr.cancel(&new_id).unwrap();
+    }
+
+    #[test]
+    fn resume_sanitization_preserves_valid_mcp_tool_names() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "22220000-0000-0000-0000-000000000002";
+        let tool_names = vec![
+            "tool-alpha".to_owned(),
+            "tool-beta".to_owned(),
+            "a".repeat(256), // exactly at limit — valid
+        ];
+        write_completed_meta_with_tool_names(tmp.path(), agent_id, "bot", tool_names.clone());
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let (new_id, _) = mgr
+            .resume(
+                "22220000",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+            )
+            .unwrap();
+
+        let names = &mgr.agents[&new_id].mcp_tool_names;
+        assert_eq!(
+            names.len(),
+            tool_names.len(),
+            "all valid entries must survive the filter"
+        );
+        for expected in &tool_names {
+            assert!(
+                names.contains(expected),
+                "entry {expected:?} must be present"
+            );
+        }
+
+        mgr.cancel(&new_id).unwrap();
     }
 }
