@@ -9,13 +9,13 @@
 //! It has no `zeph-*` dependencies. The optional `treesitter` feature adds tree-sitter
 //! query constants and helpers.
 
-#[cfg(feature = "http-middleware")]
-pub mod http_middleware;
-
+pub mod audit;
 pub mod config;
 pub mod error_taxonomy;
 pub mod fs_secure;
 pub mod hash;
+#[cfg(feature = "http-middleware")]
+pub mod http_middleware;
 pub mod math;
 pub mod memory;
 pub mod net;

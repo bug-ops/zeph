@@ -26,35 +26,7 @@ use std::collections::VecDeque;
 use tracing::info_span;
 use zeph_config::TrajectoryRiskAccumulatorConfig;
 
-/// Signal type for a safety event ingested by [`TrajectoryRiskAccumulator`].
-///
-/// Maps to the four signal classes defined in spec 004-16, FR-007.
-/// Callers in `zeph-core` convert from `zeph_sanitizer::audit::AuditSignalType` to this type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AuditSignalType {
-    /// A policy gate denied or flagged an operation.
-    PolicyViolation,
-    /// A prompt-injection pattern was detected in untrusted content.
-    PromptInjectionPattern,
-    /// An anomalous tool-call chain was observed.
-    ToolChainAnomaly,
-    /// LLM response confidence dropped significantly between turns.
-    ConfidenceDrop,
-}
-
-/// Severity level for an [`AuditSignalType`] ingested by [`TrajectoryRiskAccumulator`].
-///
-/// Mapped to a numeric multiplier by `TrajectorySeverityMultipliers`:
-/// `Low → 0.5`, `Medium → 1.0`, `High → 2.0` (defaults).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Severity {
-    /// Minor or likely-benign signal.
-    Low,
-    /// Moderate concern; warrants accumulation.
-    Medium,
-    /// Strong indicator; highest multiplier.
-    High,
-}
+pub use zeph_common::audit::{AuditSignalType, Severity};
 
 /// A recorded safety signal ingested during a specific turn.
 #[derive(Debug, Clone)]

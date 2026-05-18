@@ -10,7 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `zeph-core`: rename `ShadowEvent` → `SentinelEvent` in `shadow_sentinel` module to eliminate
   naming collision with `zeph_sanitizer::ShadowMemory`; `ShadowEventStore` and `ShadowEventRow`
-  retain their names (closes #4379).
+  retain their names (closes #4379).### Fixed
+
+- `zeph-core`: `memory_save` tool now returns "Saved to session memory (ephemeral — not
+  available after session ends)." in `--bare` mode instead of the persistent-mode message that
+  incorrectly implied data would survive the session (closes #4394).
+
+### Changed
+
+- `zeph-common`: canonical `AuditSignalType`, `Severity`, and `AuditSignal` types moved here
+  from `zeph-sanitizer` and `zeph-memory`; both crates re-export from `zeph_common::audit` for
+  backward compatibility (closes #4395).
 
 ### Added
 
