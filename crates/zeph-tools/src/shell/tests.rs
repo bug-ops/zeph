@@ -2841,6 +2841,7 @@ async fn shutdown_terminates_long_running_background() {
 }
 
 #[tokio::test]
+#[cfg(not(target_os = "windows"))]
 async fn background_runs_snapshot_returns_active_run() {
     use std::time::Duration;
 
