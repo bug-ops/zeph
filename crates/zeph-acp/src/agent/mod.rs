@@ -944,14 +944,14 @@ impl ZephAcpAgentState {
             caps = caps.mcp_capabilities(acp::schema::McpCapabilities::new().http(true).sse(false));
         }
         #[cfg(any(
-            feature = "unstable-session-close",
+            feature = "unstable-session-delete",
             feature = "unstable-session-fork",
             feature = "unstable-session-resume",
         ))]
         let caps = {
             let mut session_caps = acp::schema::SessionCapabilities::new();
             session_caps = session_caps.list(acp::schema::SessionListCapabilities::default());
-            #[cfg(feature = "unstable-session-close")]
+            #[cfg(feature = "unstable-session-delete")]
             {
                 session_caps = session_caps.close(acp::schema::SessionCloseCapabilities::default());
             }
@@ -1349,7 +1349,7 @@ impl ZephAcpAgentState {
         Ok(())
     }
 
-    #[cfg(feature = "unstable-session-close")]
+    #[cfg(feature = "unstable-session-delete")]
     #[allow(clippy::unused_async, dead_code)]
     #[tracing::instrument(skip_all, name = "acp.handler.close_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_close_session(
@@ -1361,6 +1361,20 @@ impl ZephAcpAgentState {
             entry.cancel_signal.notify_one();
         }
         Ok(acp::schema::CloseSessionResponse::default())
+    }
+
+    #[cfg(feature = "unstable-session-delete")]
+    #[allow(clippy::unused_async, dead_code)]
+    #[tracing::instrument(skip_all, name = "acp.handler.delete_session", fields(session_id = %args.session_id))]
+    pub(crate) async fn do_delete_session(
+        &self,
+        args: acp::schema::DeleteSessionRequest,
+    ) -> acp::Result<acp::schema::DeleteSessionResponse> {
+        tracing::debug!(session_id = %args.session_id, "ACP session deleted");
+        if let Some(entry) = self.sessions.lock().remove(&args.session_id) {
+            entry.cancel_signal.notify_one();
+        }
+        Ok(acp::schema::DeleteSessionResponse::default())
     }
 
     #[tracing::instrument(skip_all, name = "acp.handler.load_session", fields(session_id = %args.session_id))]
@@ -2768,12 +2782,15 @@ macro_rules! notif_handler {
 /// ).await
 /// # }
 /// ```
+#[allow(clippy::too_many_lines)]
 pub async fn run_agent(
     state: Arc<ZephAcpAgentState>,
     transport: impl acp::ConnectTo<acp::Agent>,
 ) -> acp::Result<()> {
-    #[cfg(feature = "unstable-session-close")]
+    #[cfg(feature = "unstable-session-delete")]
     use handlers::close_session;
+    #[cfg(feature = "unstable-session-delete")]
+    use handlers::delete_session;
     #[cfg(feature = "unstable-session-fork")]
     use handlers::fork_session;
     #[cfg(feature = "unstable-logout")]
@@ -2829,9 +2846,14 @@ pub async fn run_agent(
             acp::on_receive_notification!(),
         );
 
-    #[cfg(feature = "unstable-session-close")]
+    #[cfg(feature = "unstable-session-delete")]
     let builder = builder.on_receive_request(
         req_handler!(state, close_session::handle_close_session),
+        acp::on_receive_request!(),
+    );
+    #[cfg(feature = "unstable-session-delete")]
+    let builder = builder.on_receive_request(
+        req_handler!(state, delete_session::handle_delete_session),
         acp::on_receive_request!(),
     );
     #[cfg(feature = "unstable-session-fork")]

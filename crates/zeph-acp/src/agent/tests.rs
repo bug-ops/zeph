@@ -1468,7 +1468,7 @@ async fn initialize_advertises_session_capabilities() {
                 session_caps.resume.is_some(),
                 "resume capability must be advertised"
             );
-            #[cfg(feature = "unstable-session-close")]
+            #[cfg(feature = "unstable-session-delete")]
             assert!(
                 session_caps.close.is_some(),
                 "close capability must be advertised"
@@ -3786,7 +3786,7 @@ async fn non_llm_slash_commands_all_complete_without_hanging() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-close")]
+#[cfg(feature = "unstable-session-delete")]
 #[tokio::test]
 async fn close_session_removes_entry() {
     let local = tokio::task::LocalSet::new();
@@ -3816,7 +3816,7 @@ async fn close_session_removes_entry() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-close")]
+#[cfg(feature = "unstable-session-delete")]
 #[tokio::test]
 async fn close_session_unknown_id_is_ok() {
     let local = tokio::task::LocalSet::new();
@@ -3945,7 +3945,7 @@ async fn set_config_option_model_emits_session_info_update() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-close")]
+#[cfg(feature = "unstable-session-delete")]
 #[tokio::test]
 async fn close_session_signals_cancel() {
     let local = tokio::task::LocalSet::new();

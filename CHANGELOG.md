@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-acp`: upgrade agent-client-protocol SDK to 0.12.1; migrate feature gate
+  `unstable-session-close` → `unstable-session-delete`; `session/resume` is now stable in SDK
+  0.12.1 and no longer requires a feature gate (closes #4454).
+- `zeph-acp`: add standard `session/delete` handler; deprecate `_session/delete` ext method
+  (closes #4458).
 - `zeph-orchestration`: cache reverse-adjacency list in `TopologyAnalysis.rev_adj`; `propagate_failure`
   and `reset_for_retry` now accept `rev_adj: &[Vec<TaskId>]` and no longer allocate on every failure
   event (closes #4384).

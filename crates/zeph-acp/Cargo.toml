@@ -14,17 +14,18 @@ readme = "README.md"
 
 [features]
 default = [
-    "unstable-session-close",
+    "unstable-session-delete",
     "unstable-session-fork",
-    "unstable-session-resume",
     "unstable-session-usage",
     "unstable-session-model",
     "unstable-logout",
 ]
 acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
-unstable-session-close = ["agent-client-protocol/unstable_session_close"]
+# session/close is now exposed as session/delete in acp 0.12.1
+unstable-session-delete = ["agent-client-protocol/unstable_session_delete"]
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
-unstable-session-resume = ["agent-client-protocol/unstable_session_resume"]
+# session/resume is stable in acp 0.12.1; no feature gate needed
+unstable-session-resume = []
 unstable-session-usage = ["agent-client-protocol/unstable_session_usage"]
 unstable-session-model = ["agent-client-protocol/unstable_session_model"]
 # Elicitation types are part of the stable schema in acp 0.11; no feature gate needed.

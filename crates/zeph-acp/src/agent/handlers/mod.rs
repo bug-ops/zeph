@@ -6,8 +6,10 @@
 
 pub(crate) mod authenticate;
 pub(crate) mod cancel;
-#[cfg(feature = "unstable-session-close")]
+#[cfg(feature = "unstable-session-delete")]
 pub(crate) mod close_session;
+#[cfg(feature = "unstable-session-delete")]
+pub(crate) mod delete_session;
 pub(crate) mod dispatch;
 #[cfg(feature = "unstable-session-fork")]
 pub(crate) mod fork_session;

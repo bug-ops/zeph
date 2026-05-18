@@ -309,6 +309,7 @@ async fn handle_session_delete(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
 ) -> acp::Result<acp::schema::ExtResponse> {
+    tracing::warn!("_session/delete is deprecated, use session/delete instead");
     let params: SessionDeleteParams = parse_params(raw)?;
     validate_session_id(&params.session_id)?;
 

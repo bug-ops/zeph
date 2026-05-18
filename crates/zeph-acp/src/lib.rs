@@ -34,9 +34,9 @@
 //! | Flag | Description |
 //! |------|-------------|
 //! | `acp-http` | HTTP/SSE and WebSocket transports via axum |
-//! | `unstable-session-close` | ACP session close extension |
+//! | `unstable-session-delete` | ACP `session/close` and `session/delete` handlers |
 //! | `unstable-session-fork` | ACP session fork extension |
-//! | `unstable-session-resume` | ACP session resume extension |
+//! | `unstable-session-resume` | ACP session resume (stable since acp 0.12.1; no SDK gate needed) |
 //! | `unstable-session-usage` | ACP session token-usage extension |
 //! | `unstable-session-model` | ACP session model-switching extension |
 //! | `unstable-elicitation` | ACP elicitation schema types |
