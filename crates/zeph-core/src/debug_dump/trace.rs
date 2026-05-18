@@ -15,7 +15,7 @@
 //! - When the `otel` feature is enabled an `mpsc` channel forwards completed spans to
 //!   the OTLP exporter in `tracing_init.rs` (C-05).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -166,7 +166,7 @@ pub struct TracingCollector {
     output_dir: PathBuf,
     /// Active (open) iterations keyed by iteration index (I-03).
     active_iterations: HashMap<usize, IterationEntry>,
-    completed_spans: Vec<SpanData>,
+    completed_spans: VecDeque<SpanData>,
     /// Hard cap on `completed_spans` length. Oldest span dropped when exceeded (SEC-02).
     max_spans: usize,
     /// Whether to redact text attributes. Defaults to `true` (C-01).
@@ -203,7 +203,7 @@ impl TracingCollector {
             trace_metadata,
             output_dir: output_dir.to_owned(),
             active_iterations: HashMap::new(),
-            completed_spans: Vec::new(),
+            completed_spans: VecDeque::new(),
             max_spans: DEFAULT_MAX_SPANS,
             redact,
             flushed: false,
@@ -226,9 +226,9 @@ impl TracingCollector {
                 max_spans = self.max_spans,
                 "trace span cap reached, dropping oldest span"
             );
-            self.completed_spans.remove(0); // lgtm[rust/cleartext-logging]
+            self.completed_spans.pop_front();
         }
-        self.completed_spans.push(span);
+        self.completed_spans.push_back(span);
     }
 
     // ── Iteration spans ───────────────────────────────────────────────────────
@@ -503,7 +503,7 @@ impl TracingCollector {
         };
 
         let mut all_spans = vec![session_span];
-        all_spans.append(&mut self.completed_spans);
+        all_spans.extend(self.completed_spans.drain(..));
 
         let json = serialize_otlp_json(&all_spans, &self.service_name, &self.trace_metadata);
         let path = self.output_dir.join("trace.json");
