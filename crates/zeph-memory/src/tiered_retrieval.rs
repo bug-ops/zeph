@@ -702,7 +702,7 @@ mod tests {
         let candidates = vec![make_message("hello world")];
         let scores = compute_tfidf_scores("", &candidates);
         assert_eq!(scores.len(), 1);
-        assert_eq!(scores[0], 0.0);
+        assert!(scores[0].abs() < f64::EPSILON);
     }
 
     #[test]
@@ -722,7 +722,7 @@ mod tests {
         let candidates = vec![make_message("apple banana cherry")];
         let scores = compute_tfidf_scores("zzz xyz", &candidates);
         assert_eq!(scores.len(), 1);
-        assert_eq!(scores[0], 0.0);
+        assert!(scores[0].abs() < f64::EPSILON);
     }
 
     #[test]
@@ -733,7 +733,7 @@ mod tests {
             make_message("java is a drink"),
         ];
         let scores = compute_tfidf_scores("rust programming", &candidates);
-        let max = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         assert!((max - 1.0).abs() < 1e-9, "max score must be 1.0, got {max}");
     }
 
@@ -845,21 +845,21 @@ mod tests {
                 .await
                 .expect("score_candidates must not fail");
             // Original order preserved because all-zero weights triggers early return.
-            assert_eq!(result[0].score, 0.9);
-            assert_eq!(result[1].score, 0.1);
+            assert!((f64::from(result[0].score) - 0.9).abs() < 1e-6);
+            assert!((f64::from(result[1].score) - 0.1).abs() < 1e-6);
         });
     }
 
     #[test]
     fn tiered_retrieval_config_signal_weight_defaults() {
         let cfg = TieredRetrievalConfig::default();
-        assert_eq!(cfg.similarity_weight, 1.0);
-        assert_eq!(cfg.recency_weight, 0.0);
+        assert!((cfg.similarity_weight - 1.0).abs() < f64::EPSILON);
+        assert!(cfg.recency_weight.abs() < f64::EPSILON);
         assert_eq!(cfg.recency_half_life_days, 7);
-        assert_eq!(cfg.tfidf_weight, 0.0);
-        assert_eq!(cfg.cognitive_signal_weight, 0.0);
-        assert_eq!(cfg.tier_boost_weight, 0.0);
-        assert_eq!(cfg.semantic_tier_boost, 1.0);
+        assert!(cfg.tfidf_weight.abs() < f64::EPSILON);
+        assert!(cfg.cognitive_signal_weight.abs() < f64::EPSILON);
+        assert!(cfg.tier_boost_weight.abs() < f64::EPSILON);
+        assert!((cfg.semantic_tier_boost - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
