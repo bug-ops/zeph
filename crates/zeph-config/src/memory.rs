@@ -1059,6 +1059,15 @@ pub struct MemoryConfig {
 /// max_escalations = 1
 /// classifier_timeout_secs = 5
 /// validator_timeout_secs = 5
+///
+/// # Signal weights (all default to 0.0; set to activate each signal)
+/// similarity_weight = 1.0
+/// recency_weight = 0.0
+/// recency_half_life_days = 7
+/// tfidf_weight = 0.0
+/// cognitive_signal_weight = 0.0
+/// tier_boost_weight = 0.0
+/// semantic_tier_boost = 1.0
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -1090,6 +1099,30 @@ pub struct TieredRetrievalConfig {
     ///
     /// On timeout the validator is treated as sufficient (fail-open).
     pub validator_timeout_secs: u64,
+
+    // ── Signal weights ────────────────────────────────────────────────────────
+    /// Weight applied to the raw similarity score from vector/keyword recall. Default: `1.0`.
+    ///
+    /// Set to `1.0` and all other weights to `0.0` to reproduce pre-signal behaviour.
+    pub similarity_weight: f64,
+    /// Weight applied to the recency decay signal. Default: `0.0` (disabled).
+    pub recency_weight: f64,
+    /// Half-life for recency decay in days. Default: `7`.
+    ///
+    /// A message that is `recency_half_life_days` old receives a recency score of `0.5`.
+    /// Set `recency_weight = 0.0` to disable recency scoring entirely.
+    pub recency_half_life_days: u32,
+    /// Weight applied to the TF-IDF signal. Default: `0.0` (disabled).
+    pub tfidf_weight: f64,
+    /// Weight applied to the cognitive signal (message access frequency). Default: `0.0` (disabled).
+    pub cognitive_signal_weight: f64,
+    /// Weight applied to the tier boost signal for consolidated/semantic entries. Default: `0.0` (disabled).
+    pub tier_boost_weight: f64,
+    /// Additive score awarded to entries in the `semantic` tier when `tier_boost_weight > 0`. Default: `1.0`.
+    ///
+    /// The final contribution is `tier_boost_weight * semantic_tier_boost` for semantic entries
+    /// and `0.0` for episodic entries.
+    pub semantic_tier_boost: f64,
 }
 
 impl Default for TieredRetrievalConfig {
@@ -1104,6 +1137,13 @@ impl Default for TieredRetrievalConfig {
             max_escalations: 1,
             classifier_timeout_secs: 5,
             validator_timeout_secs: 5,
+            similarity_weight: 1.0,
+            recency_weight: 0.0,
+            recency_half_life_days: 7,
+            tfidf_weight: 0.0,
+            cognitive_signal_weight: 0.0,
+            tier_boost_weight: 0.0,
+            semantic_tier_boost: 1.0,
         }
     }
 }

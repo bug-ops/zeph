@@ -28,6 +28,7 @@
 //! asks a lightweight LLM whether the gathered evidence is sufficient; on low confidence,
 //! the pipeline escalates to the next heavier tier (up to `max_escalations`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tracing::Instrument as _;
@@ -39,7 +40,7 @@ use crate::error::MemoryError;
 use crate::router::{HeuristicRouter, HybridRouter, MemoryRoute, MemoryRouter};
 use crate::semantic::RecalledMessage;
 use crate::semantic::SemanticMemory;
-use crate::types::ConversationId;
+use crate::types::{ConversationId, MessageId};
 
 // ── Intent classification ─────────────────────────────────────────────────────
 
@@ -200,8 +201,12 @@ async fn escalation_loop(
     let mut tier_escalated = false;
 
     loop {
-        let candidates = retrieve_tier(memory, query, conversation_id, intent)
+        let raw_candidates = retrieve_tier(memory, query, conversation_id, intent)
             .instrument(tracing::debug_span!("memory.tiered.retrieve_tier", tier = %intent))
+            .await?;
+
+        let candidates = score_candidates(memory, query, raw_candidates, config)
+            .instrument(tracing::debug_span!("memory.tiered.score_candidates", tier = %intent))
             .await?;
 
         let (messages, tokens_used) = {
@@ -268,6 +273,247 @@ async fn retrieve_tier(
     memory
         .recall_routed(query, top_k, filter, &heuristic, None)
         .await
+}
+
+// ── Five-signal retrieval scoring ─────────────────────────────────────────────
+
+/// Intermediate struct for multi-signal scoring of a single candidate.
+struct ScoredCandidate {
+    recalled: RecalledMessage,
+}
+
+/// Re-score `candidates` using up to five signals and return them sorted by final score.
+///
+/// Overwrites `RecalledMessage::score` with the combined weighted score.
+/// When all signal weights are zero (mis-configuration), logs a debug warning and
+/// returns candidates in original order with scores unchanged.
+///
+/// # Errors
+///
+/// Propagates store errors from timestamp or tier lookups.
+#[allow(clippy::too_many_lines)]
+#[tracing::instrument(name = "memory.tiered.score_candidates", skip_all)]
+async fn score_candidates(
+    memory: &SemanticMemory,
+    query: &str,
+    candidates: Vec<RecalledMessage>,
+    config: &TieredRetrievalConfig,
+) -> Result<Vec<RecalledMessage>, MemoryError> {
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+
+    let total_weight = config.similarity_weight
+        + config.recency_weight
+        + config.tfidf_weight
+        + config.cognitive_signal_weight
+        + config.tier_boost_weight;
+
+    if total_weight < f64::EPSILON {
+        tracing::debug!("score_candidates: all signal weights are zero, returning original order");
+        return Ok(candidates);
+    }
+
+    let ids: Vec<MessageId> = candidates
+        .iter()
+        .map(|c| MessageId(c.message.metadata.db_id.unwrap_or(0)))
+        .collect();
+
+    // Fetch timestamps and tiers only when their respective signals are active.
+    let (timestamps_res, tiers_res) = tokio::join!(
+        async {
+            if config.recency_weight > 0.0 {
+                memory.sqlite().message_timestamps(&ids).await
+            } else {
+                Ok(HashMap::new())
+            }
+        },
+        async {
+            if config.tier_boost_weight > 0.0 {
+                memory.sqlite().fetch_tiers(&ids).await
+            } else {
+                Ok(HashMap::new())
+            }
+        },
+    );
+    let timestamps: HashMap<MessageId, i64> = timestamps_res.unwrap_or_else(|e| {
+        tracing::warn!("score_candidates: failed to fetch timestamps: {e:#}");
+        HashMap::new()
+    });
+    let tiers: HashMap<MessageId, String> = tiers_res.unwrap_or_else(|e| {
+        tracing::warn!("score_candidates: failed to fetch tiers: {e:#}");
+        HashMap::new()
+    });
+
+    // Fetch access counts for cognitive signal.
+    let access_counts: HashMap<MessageId, i64> = if config.cognitive_signal_weight > 0.0 {
+        memory
+            .sqlite()
+            .message_access_counts(&ids)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("score_candidates: failed to fetch access counts: {e:#}");
+                HashMap::new()
+            })
+    } else {
+        HashMap::new()
+    };
+
+    let tfidf_scores = if config.tfidf_weight > 0.0 {
+        compute_tfidf_scores(query, &candidates)
+    } else {
+        vec![0.0_f64; candidates.len()]
+    };
+
+    let max_access: i64 = access_counts.values().copied().max().unwrap_or(0);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0_i64, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+
+    let mut scored: Vec<ScoredCandidate> = candidates
+        .into_iter()
+        .zip(tfidf_scores)
+        .map(|(recalled, tfidf)| {
+            let msg_id = MessageId(recalled.message.metadata.db_id.unwrap_or(0));
+
+            let similarity = f64::from(recalled.score);
+            let recency = if config.recency_weight > 0.0 && config.recency_half_life_days > 0 {
+                let ts = timestamps.get(&msg_id).copied().unwrap_or(now_secs);
+                compute_recency(ts, now_secs, config.recency_half_life_days)
+            } else {
+                0.0
+            };
+
+            let cognitive = if config.cognitive_signal_weight > 0.0 && max_access > 0 {
+                let count = access_counts.get(&msg_id).copied().unwrap_or(0);
+                // Both are i64; precision loss is acceptable for a normalized ratio.
+                #[allow(clippy::cast_precision_loss)]
+                let ratio = count as f64 / max_access as f64;
+                ratio
+            } else {
+                0.0
+            };
+
+            let tier_signal = if config.tier_boost_weight > 0.0 {
+                let tier = tiers.get(&msg_id).map_or("episodic", String::as_str);
+                if tier == "semantic" {
+                    config.semantic_tier_boost
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            let final_score = config.similarity_weight * similarity
+                + config.recency_weight * recency
+                + config.tfidf_weight * tfidf
+                + config.cognitive_signal_weight * cognitive
+                + config.tier_boost_weight * tier_signal;
+
+            ScoredCandidate {
+                recalled: RecalledMessage {
+                    // f64 → f32: deliberate truncation, score precision is adequate.
+                    #[allow(clippy::cast_possible_truncation)]
+                    score: final_score as f32,
+                    ..recalled
+                },
+            }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| {
+        b.recalled
+            .score
+            .partial_cmp(&a.recalled.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    Ok(scored.into_iter().map(|s| s.recalled).collect())
+}
+
+/// Compute recency score in `[0.0, 1.0]` using exponential half-life decay.
+///
+/// Returns `1.0` for a message created right now and approaches `0.0` for very old messages.
+/// A message that is exactly `half_life_days` old receives a score of `0.5`.
+///
+/// # Precondition
+///
+/// `half_life_days` must be greater than zero. Passing `0` is a programming error and will
+/// panic in debug builds.
+fn compute_recency(created_at_secs: i64, now_secs: i64, half_life_days: u32) -> f64 {
+    debug_assert!(half_life_days > 0, "half_life_days must be > 0");
+    // Precision loss is acceptable: age is a time delta in days, not a financial value.
+    #[allow(clippy::cast_precision_loss)]
+    let age_days = (now_secs - created_at_secs).max(0) as f64 / 86_400.0;
+    let lambda = std::f64::consts::LN_2 / f64::from(half_life_days);
+    (-lambda * age_days).exp()
+}
+
+/// Compute per-candidate TF-IDF scores against `query`, normalised to `[0.0, 1.0]`.
+///
+/// Uses a simplified TF-IDF with BM25-style parameters (k1 = 1.2, b = 0.75).
+/// Scores are normalised by dividing by the maximum score in the batch.
+fn compute_tfidf_scores(query: &str, candidates: &[RecalledMessage]) -> Vec<f64> {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+
+    let query_terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+
+    if query_terms.is_empty() || candidates.is_empty() {
+        return vec![0.0; candidates.len()];
+    }
+
+    // Tokenise each candidate document.
+    let docs: Vec<Vec<String>> = candidates
+        .iter()
+        .map(|c| {
+            c.message
+                .content
+                .split_whitespace()
+                .map(str::to_lowercase)
+                .collect()
+        })
+        .collect();
+
+    // Precision loss is acceptable for term-frequency ratios over small candidate sets.
+    #[allow(clippy::cast_precision_loss)]
+    let n = docs.len() as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let avg_dl = docs.iter().map(|d| d.len() as f64).sum::<f64>().max(1.0) / n;
+
+    let mut scores = vec![0.0_f64; docs.len()];
+
+    for term in &query_terms {
+        // Document frequency across the candidate set.
+        #[allow(clippy::cast_precision_loss)]
+        let df = docs.iter().filter(|d| d.contains(term)).count() as f64;
+        if df == 0.0 {
+            continue;
+        }
+        // IDF with smoothing.
+        let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
+
+        for (i, doc) in docs.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let dl = doc.len() as f64;
+            #[allow(clippy::cast_precision_loss)]
+            let tf = doc.iter().filter(|t| *t == term).count() as f64;
+            let bm25_tf = (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg_dl));
+            scores[i] += idf * bm25_tf;
+        }
+    }
+
+    // Normalise to [0.0, 1.0].
+    let max_score = scores.iter().copied().fold(0.0_f64, f64::max);
+    if max_score > 0.0 {
+        for s in &mut scores {
+            *s /= max_score;
+        }
+    }
+
+    scores
 }
 
 /// Truncate `candidates` to fit within `budget` tokens.
@@ -409,6 +655,211 @@ mod tests {
             },
             score: 1.0,
         }
+    }
+
+    // ── Signal scoring unit tests ─────────────────────────────────────────────
+
+    #[test]
+    fn compute_recency_zero_age_returns_one() {
+        let now = 1_000_000_i64;
+        let score = compute_recency(now, now, 7);
+        assert!((score - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_recency_half_life_returns_half() {
+        let now = 1_000_000_i64;
+        let half_life_days = 7_u32;
+        let age_secs = i64::from(half_life_days) * 86_400;
+        let score = compute_recency(now - age_secs, now, half_life_days);
+        assert!((score - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_recency_large_age_approaches_zero() {
+        // 1000 days with 7-day half-life: score ≈ 2^(-1000/7) ≈ 1e-43
+        let now = 1_000_i64 * 86_400;
+        let score = compute_recency(0, now, 7);
+        assert!(score < 1e-6, "score was {score}");
+    }
+
+    #[test]
+    fn compute_recency_future_timestamp_clamped_to_one() {
+        let now = 1_000_000_i64;
+        // created_at in the future → age < 0 → clamped to 0 → score = 1.0
+        let score = compute_recency(now + 86_400, now, 7);
+        assert!((score - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_tfidf_empty_candidates_returns_empty() {
+        let scores = compute_tfidf_scores("hello", &[]);
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn compute_tfidf_empty_query_returns_zeros() {
+        let candidates = vec![make_message("hello world")];
+        let scores = compute_tfidf_scores("", &candidates);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0], 0.0);
+    }
+
+    #[test]
+    fn compute_tfidf_exact_match_scores_nonzero() {
+        let candidates = vec![
+            make_message("the quick brown fox"),
+            make_message("completely unrelated content"),
+        ];
+        let scores = compute_tfidf_scores("fox", &candidates);
+        assert_eq!(scores.len(), 2);
+        // The message containing "fox" must score higher.
+        assert!(scores[0] > scores[1]);
+    }
+
+    #[test]
+    fn compute_tfidf_no_match_returns_zeros() {
+        let candidates = vec![make_message("apple banana cherry")];
+        let scores = compute_tfidf_scores("zzz xyz", &candidates);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0], 0.0);
+    }
+
+    #[test]
+    fn compute_tfidf_max_score_normalised_to_one() {
+        let candidates = vec![
+            make_message("rust programming language"),
+            make_message("python programming language"),
+            make_message("java is a drink"),
+        ];
+        let scores = compute_tfidf_scores("rust programming", &candidates);
+        let max = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!((max - 1.0).abs() < 1e-9, "max score must be 1.0, got {max}");
+    }
+
+    #[test]
+    fn score_candidates_empty_input_returns_empty() {
+        // Pure sync test via tokio runtime.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let memory = crate::testing::mock_semantic_memory()
+                .await
+                .expect("mock_semantic_memory");
+            let config = TieredRetrievalConfig::default();
+            let result = score_candidates(&memory, "query", vec![], &config)
+                .await
+                .expect("score_candidates must not fail on empty input");
+            assert!(result.is_empty());
+        });
+    }
+
+    #[test]
+    fn score_candidates_similarity_weight_reorders_by_score() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let memory = crate::testing::mock_semantic_memory()
+                .await
+                .expect("mock_semantic_memory");
+            // similarity_weight = 1.0 activates the scoring formula; candidates provided in
+            // ascending score order to verify that sort_by reorders them descending.
+            let config = TieredRetrievalConfig {
+                similarity_weight: 1.0,
+                ..TieredRetrievalConfig::default()
+            };
+            let candidates = vec![
+                RecalledMessage {
+                    message: make_message("low score").message,
+                    score: 0.1,
+                },
+                RecalledMessage {
+                    message: make_message("high score").message,
+                    score: 0.9,
+                },
+                RecalledMessage {
+                    message: make_message("mid score").message,
+                    score: 0.5,
+                },
+            ];
+            let result = score_candidates(&memory, "query", candidates, &config)
+                .await
+                .expect("score_candidates must not fail");
+            assert_eq!(result.len(), 3);
+            // Descending order: 0.9 → 0.5 → 0.1
+            assert!(
+                result[0].score >= result[1].score,
+                "first score {} must be >= second score {}",
+                result[0].score,
+                result[1].score
+            );
+            assert!(
+                result[1].score >= result[2].score,
+                "second score {} must be >= third score {}",
+                result[1].score,
+                result[2].score
+            );
+            // Highest original score should be ranked first.
+            assert!(
+                (result[0].score - 0.9_f32).abs() < 1e-4,
+                "expected first score ~0.9, got {}",
+                result[0].score
+            );
+        });
+    }
+
+    #[test]
+    fn score_candidates_all_zero_weights_returns_original_order() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let memory = crate::testing::mock_semantic_memory()
+                .await
+                .expect("mock_semantic_memory");
+            // All weights zero: score_candidates must return candidates unchanged.
+            let config = TieredRetrievalConfig {
+                similarity_weight: 0.0,
+                recency_weight: 0.0,
+                tfidf_weight: 0.0,
+                cognitive_signal_weight: 0.0,
+                tier_boost_weight: 0.0,
+                ..TieredRetrievalConfig::default()
+            };
+            let candidates = vec![
+                RecalledMessage {
+                    message: make_message("first").message,
+                    score: 0.9,
+                },
+                RecalledMessage {
+                    message: make_message("second").message,
+                    score: 0.1,
+                },
+            ];
+            let result = score_candidates(&memory, "query", candidates, &config)
+                .await
+                .expect("score_candidates must not fail");
+            // Original order preserved because all-zero weights triggers early return.
+            assert_eq!(result[0].score, 0.9);
+            assert_eq!(result[1].score, 0.1);
+        });
+    }
+
+    #[test]
+    fn tiered_retrieval_config_signal_weight_defaults() {
+        let cfg = TieredRetrievalConfig::default();
+        assert_eq!(cfg.similarity_weight, 1.0);
+        assert_eq!(cfg.recency_weight, 0.0);
+        assert_eq!(cfg.recency_half_life_days, 7);
+        assert_eq!(cfg.tfidf_weight, 0.0);
+        assert_eq!(cfg.cognitive_signal_weight, 0.0);
+        assert_eq!(cfg.tier_boost_weight, 0.0);
+        assert_eq!(cfg.semantic_tier_boost, 1.0);
     }
 
     #[test]

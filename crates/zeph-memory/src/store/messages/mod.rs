@@ -581,7 +581,10 @@ impl SqliteStore {
                         role: parse_role(&role_str),
                         content,
                         parts,
-                        metadata: MessageMetadata::default(),
+                        metadata: MessageMetadata {
+                            db_id: Some(id.0),
+                            ..MessageMetadata::default()
+                        },
                     },
                 )
             })
@@ -824,6 +827,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(name = "memory.store.message_timestamps", skip(self, ids), fields(count = ids.len()))]
     pub async fn message_timestamps(
         &self,
         ids: &[MessageId],
@@ -1062,6 +1066,36 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Fetch `access_count` for the given message IDs.
+    ///
+    /// Messages not found or already deleted are omitted from the result.
+    ///
+    /// Used by the MEMTIER cognitive signal to approximate message importance
+    /// based on access frequency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    #[tracing::instrument(name = "memory.store.message_access_counts", skip(self, ids), fields(count = ids.len()))]
+    pub async fn message_access_counts(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, i64>, MemoryError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT id, access_count FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+        );
+        let mut q = zeph_db::query_as::<_, (MessageId, i64)>(&query);
+        for &id in ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().collect())
+    }
+
     // ── Tier promotion helpers ─────────────────────────────────────────────────
 
     /// Return episodic messages with `session_count >= min_sessions`, ordered by
@@ -1268,6 +1302,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(name = "memory.store.fetch_tiers", skip(self, ids), fields(count = ids.len()))]
     pub async fn fetch_tiers(
         &self,
         ids: &[MessageId],
