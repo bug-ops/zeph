@@ -88,7 +88,7 @@ pub use state::{AppState, ProcessorEvent, TaskManager, TaskProcessor};
 /// let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 ///
 /// A2aServer::new(card, Arc::new(MyProcessor), "0.0.0.0", 9090, shutdown_rx)
-///     .with_auth(Some("my-secret-token".into()))
+///     .with_auth(Some("my-secret-token"))
 ///     .serve()
 ///     .await?;
 /// # Ok(())
