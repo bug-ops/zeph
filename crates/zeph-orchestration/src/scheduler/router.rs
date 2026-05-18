@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 
 use super::DagScheduler;
 use crate::graph::{TaskNode, TaskStatus};
+use zeph_common::text::xml_escape;
 use zeph_sanitizer::{ContentSource, ContentSourceKind};
 
 impl DagScheduler {
@@ -93,22 +94,6 @@ impl DagScheduler {
         context_block.push_str("</completed-dependencies>\n\n");
         format!("{context_block}Your task: {}", task.description)
     }
-}
-
-/// Escape XML special characters in a string to prevent tag injection.
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '&' => out.push_str("&amp;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 #[allow(clippy::wildcard_imports)]
 use acp::schema::*;
 use agent_client_protocol as acp;
+use zeph_common::text::xml_escape;
 
 use zeph_core::LoopbackEvent;
 
@@ -94,13 +95,6 @@ pub(super) const DIAGNOSTICS_MIME_TYPE: &str = "application/vnd.zed.diagnostics+
 
 /// Deserialize Zed LSP diagnostics JSON and append a formatted `<diagnostics>` block to `out`.
 ///
-pub(super) fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 /// Each entry is rendered as `file:line: [SEVERITY] message`.
 /// On parse error the block is emitted empty to avoid injecting untrusted raw JSON into the prompt.
 pub(super) fn format_diagnostics_block(json: &str, out: &mut String) {

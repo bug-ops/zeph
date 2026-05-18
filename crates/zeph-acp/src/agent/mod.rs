@@ -2695,8 +2695,9 @@ pub(super) mod helpers;
 use helpers::{
     DEFAULT_MODE_ID, DIAGNOSTICS_MIME_TYPE, build_available_commands, build_config_options,
     build_mode_state, format_diagnostics_block, loopback_event_to_updates, mime_to_ext, model_meta,
-    session_update_to_event, xml_escape,
+    session_update_to_event,
 };
+use zeph_common::text::xml_escape;
 
 pub(crate) mod handlers;
 

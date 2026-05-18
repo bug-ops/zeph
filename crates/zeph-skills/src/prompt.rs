@@ -34,6 +34,8 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use zeph_common::text::xml_escape;
+
 use crate::group::SkillGroup;
 use crate::loader::Skill;
 use crate::resource::discover_resources;
@@ -81,21 +83,6 @@ pub fn sanitize_skill_body(body: &str) -> String {
     let mut out = body.to_string();
     for (pattern, replacement) in SANITIZE_PATTERNS {
         out = replace_case_insensitive(&out, pattern, replacement);
-    }
-    out
-}
-
-/// Escape XML special characters in attribute values and text content.
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            other => out.push(other),
-        }
     }
     out
 }

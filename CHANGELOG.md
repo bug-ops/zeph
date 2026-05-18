@@ -10,7 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `zeph-core`: rename `ShadowEvent` → `SentinelEvent` in `shadow_sentinel` module to eliminate
   naming collision with `zeph_sanitizer::ShadowMemory`; `ShadowEventStore` and `ShadowEventRow`
-  retain their names (closes #4379).### Fixed
+  retain their names (closes #4379).
+
+### Fixed
+
+- `zeph-core`: GoSkills `active_skills` and `matched_indices` are now filtered in lockstep during
+  channel allowlist pruning; previously the allowlist filter removed skills from `active_skills`
+  but left stale indices in `matched_indices`, causing `group_skills` to look up the wrong
+  embedding vectors and produce incorrect groupings (closes #4430).
+- `zeph-common`: extract shared `xml_escape` utility into `zeph_common::text::xml_escape`;
+  remove three duplicate private copies from `zeph-experiments`, `zeph-orchestration`, and
+  `zeph-skills` (closes #4431). The canonical implementation escapes `&`, `<`, `>`, `"`, and
+  `'` — a superset of the most permissive prior copy.
 
 - `zeph` (binary): `ConsolidationHandler` is now registered with `zeph-scheduler` at bootstrap
   under `TaskKind::Custom("five_signal_consolidation")` when

@@ -745,7 +745,7 @@ impl<C: Channel> Agent<C> {
         }
         self.update_skill_confidence_metrics().await;
 
-        let (all_skills, active_skills): (Vec<Skill>, Vec<Skill>) = {
+        let (all_skills, active_skills, matched_indices): (Vec<Skill>, Vec<Skill>, Vec<usize>) = {
             let reg = self.services.skill.registry.read();
             let all: Vec<Skill> = reg
                 .all_meta()
@@ -762,13 +762,14 @@ impl<C: Channel> Agent<C> {
                     allowed
                 })
                 .collect();
-            let active: Vec<Skill> = self
-                .services
-                .skill
-                .active_skill_names
+            // Zip matched_indices with active_skill_names so that the allowlist filter
+            // keeps both in sync. Without this, active_skills[i] and matched_indices[i]
+            // would refer to different skills after allowlist pruning.
+            let (active, filtered_indices): (Vec<Skill>, Vec<usize>) = matched_indices
                 .iter()
-                .filter_map(|name| reg.skill(name).ok())
-                .filter(|s| {
+                .zip(self.services.skill.active_skill_names.iter())
+                .filter_map(|(&idx, name)| reg.skill(name).ok().map(|s| (s, idx)))
+                .filter(|(s, _idx)| {
                     let allowed = zeph_config::is_skill_allowed(
                         s.name(),
                         &self.runtime.config.channel_skills,
@@ -781,8 +782,8 @@ impl<C: Channel> Agent<C> {
                     }
                     allowed
                 })
-                .collect();
-            (all, active)
+                .unzip();
+            (all, active, filtered_indices)
         };
 
         // Rebuild matched_indices to stay 1:1 with active_skills after the channel-allowlist

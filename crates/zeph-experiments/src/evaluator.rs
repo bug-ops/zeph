@@ -557,12 +557,7 @@ fn build_judge_messages(case: &BenchmarkCase, response: &str) -> Vec<Message> {
     ]
 }
 
-/// Escape XML metacharacters in a string to prevent prompt injection.
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
+use zeph_common::text::xml_escape;
 
 /// Compute aggregate report from collected scores.
 fn build_report(

@@ -113,6 +113,37 @@ pub fn truncate_to_chars(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Escape XML special characters in a string.
+///
+/// Replaces `&`, `<`, `>`, `"`, and `'` with their XML entity equivalents.
+/// Use this when embedding arbitrary text into XML attributes or text nodes to
+/// prevent tag injection.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::text::xml_escape;
+///
+/// assert_eq!(xml_escape("a < b && b > c"), "a &lt; b &amp;&amp; b &gt; c");
+/// assert_eq!(xml_escape(r#"say "hi""#), "say &quot;hi&quot;");
+/// assert_eq!(xml_escape("it's"), "it&#39;s");
+/// ```
+#[must_use]
+pub fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
