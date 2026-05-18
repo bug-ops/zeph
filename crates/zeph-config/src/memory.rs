@@ -2186,7 +2186,7 @@ pub struct GraphConfig {
     pub llm_timeout_secs: u64,
     /// PRISM query-sensitive edge costing in A* graph recall.
     ///
-    /// When `true`, edge cost in [`graph_recall_astar`] is modulated by the cosine similarity
+    /// When `true`, edge cost in the A\* graph recall function is modulated by the cosine similarity
     /// between the query embedding and the target entity embedding:
     /// `cost = (1.0 - confidence) * (1.0 - target_cosine).max(0.01)`.
     /// Edges toward semantically relevant entities receive lower cost and are therefore
