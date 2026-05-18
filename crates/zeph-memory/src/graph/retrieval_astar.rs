@@ -594,11 +594,12 @@ mod tests {
         use petgraph::graph::NodeIndex;
 
         let mut node_map: HashMap<i64, NodeIndex> = (0..600i64)
-            .map(|id| (id, NodeIndex::new(id as usize)))
+            .map(|id| (id, NodeIndex::new(usize::try_from(id).unwrap())))
             .collect();
         // Assign scores: entity 599 gets 1.0, 598 gets 0.999, ..., 0 gets ~0.0.
-        let entity_scores: HashMap<i64, f32> =
-            (0..600i64).map(|id| (id, id as f32 / 599.0)).collect();
+        let entity_scores: HashMap<i64, f32> = (0..600i64)
+            .map(|id| (id, id as f64 as f32 / 599.0))
+            .collect();
 
         cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
 
@@ -614,7 +615,7 @@ mod tests {
         use petgraph::graph::NodeIndex;
 
         let mut node_map: HashMap<i64, NodeIndex> = (0..10i64)
-            .map(|id| (id, NodeIndex::new(id as usize)))
+            .map(|id| (id, NodeIndex::new(usize::try_from(id).unwrap())))
             .collect();
         let entity_scores: HashMap<i64, f32> = HashMap::new();
 
