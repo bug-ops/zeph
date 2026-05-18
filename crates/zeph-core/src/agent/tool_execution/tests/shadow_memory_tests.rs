@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Tests for ShadowMemory wiring via the `with_shadow_memory_config` builder (spec 010-7).
+//! Tests for `ShadowMemory` wiring via the `with_shadow_memory_config` builder (spec 010-7).
 
 use zeph_config::ShadowMemoryConfig;
 

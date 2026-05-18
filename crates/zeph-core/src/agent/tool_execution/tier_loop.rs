@@ -2754,7 +2754,6 @@ mod tests {
             drift_threshold: 0.01,
             window_size: 3,
             max_events: 50,
-            ..Default::default()
         };
         Agent::new(provider, channel, registry, None, 5, executor).with_shadow_memory_config(&cfg)
     }
@@ -2797,7 +2796,6 @@ mod tests {
                 drift_threshold: 0.01,
                 window_size: 3,
                 max_events: 100,
-                ..Default::default()
             };
             let mut agent = Agent::new(
                 mock_provider(vec![]),
@@ -2838,7 +2836,7 @@ mod tests {
             }
             // If no GoalDrift was emitted, at minimum confirm events were recorded.
             let mem = agent.services.security.shadow_memory.as_ref().unwrap();
-            assert!(mem.len() > 0, "shadow_memory must have recorded events");
+            assert!(!mem.is_empty(), "shadow_memory must have recorded events");
         });
     }
 }
