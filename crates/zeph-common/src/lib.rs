@@ -42,6 +42,7 @@ pub use task_supervisor::{
     BlockingError, BlockingHandle, MAX_RESTART_DELAY, RestartPolicy, TaskDescriptor, TaskHandle,
     TaskSnapshot, TaskStatus, TaskSupervisor,
 };
+pub use text::format_tokens;
 pub use trust_level::SkillTrustLevel;
 pub use types::{ProviderName, SessionId, SkillName, ToolDefinition, ToolName};
 

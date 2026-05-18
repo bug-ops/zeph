@@ -3,6 +3,34 @@
 
 //! String utility functions for Unicode-safe text manipulation.
 
+/// Format a token count as a short human-readable string.
+///
+/// - `>= 1_000_000` → `"{:.1}M"`
+/// - `>= 1_000`     → `"{:.1}k"`
+/// - otherwise      → decimal digits
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::text::format_tokens;
+///
+/// assert_eq!(format_tokens(0), "0");
+/// assert_eq!(format_tokens(999), "999");
+/// assert_eq!(format_tokens(1_500), "1.5k");
+/// assert_eq!(format_tokens(2_000_000), "2.0M");
+/// ```
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 /// Truncate `s` to at most `max_bytes` bytes, preserving UTF-8 char boundaries.
 ///
 /// Returns an owned `String`. If `s` fits within `max_bytes`, returns a copy
