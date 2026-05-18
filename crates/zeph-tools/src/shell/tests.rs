@@ -2881,6 +2881,7 @@ mod resolve_context {
 
     use super::*;
     use crate::ExecutionContext;
+    #[cfg(not(target_os = "windows"))]
     use crate::executor::ToolCall;
 
     /// Build a `ShellExecutor` whose only `allowed_path` is `dir`, so sandbox checks
