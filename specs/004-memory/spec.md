@@ -16,6 +16,9 @@ related:
   - "[[001-system-invariants/spec#6. Memory Pipeline Contract]]"
   - "[[002-agent-loop/spec]]"
   - "[[004-6-graph-memory]]"
+  - "[[004-16-shadow-memory-safety]]"
+  - "[[004-17-implicit-conflict-detection]]"
+  - "[[004-18-five-signal-retrieval]]"
   - "[[012-graph-memory/spec]]"
   - "[[031-database-abstraction/spec]]"
 ---
@@ -167,6 +170,9 @@ with zero overhead when disabled (#3318, #3349).
 | [[004-10-memory-memmachine-retrieval]] | MemMachine retrieval depth, query bias correction, episode preservation |
 | [[004-11-memory-hela-mem]] | HeLa-Mem Hebbian edge weights, consolidation, spreading activation |
 | [[004-12-memory-reasoning-bank]] | ReasoningBank distilled strategy memory, self-judge pipeline |
+| [[004-16-shadow-memory-safety]] | Shadow Memory Safety — trajectory-level attack defense (MAGE, issue #3695) |
+| [[004-17-implicit-conflict-detection]] | Implicit Conflict Detection — STALE/CUPMem fuzzy predicate matching and propagation-aware SYNAPSE recall (issue #3702) |
+| [[004-18-five-signal-retrieval]] | Five-Signal Retrieval — access frequency, causal distance, novelty signals + async consolidation daemon (MemTier, issue #3703) |
 
 ## Integration Points
 
