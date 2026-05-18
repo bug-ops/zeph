@@ -82,10 +82,10 @@ impl TaskHandler for ConsolidationHandler {
 
 #[cfg(feature = "scheduler")]
 impl ConsolidationHandler {
+    #[tracing::instrument(name = "memory.five_signal.consolidation.run_once", skip(self))]
     async fn run_once(&self) -> Result<(), MemoryError> {
         use sqlx::Row as _;
 
-        let _span = tracing::info_span!("memory.five_signal.consolidation.run_once").entered();
         tracing::info!("five_signal: consolidation daemon run started");
 
         let start = std::time::Instant::now();

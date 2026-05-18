@@ -35,16 +35,16 @@ impl AccessFrequencyCache {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(
+        name = "memory.five_signal.access_frequency.load",
+        skip(self, fact_ids),
+        fields(fact_count = fact_ids.len())
+    )]
     pub async fn load_for_candidates(
         &self,
         session_id: &str,
         fact_ids: &[MessageId],
     ) -> Result<HashMap<MessageId, f64>, crate::error::MemoryError> {
-        let _span = tracing::info_span!(
-            "memory.five_signal.access_frequency.load",
-            fact_count = fact_ids.len()
-        )
-        .entered();
         tracing::debug!("five_signal: loading access frequencies");
 
         if fact_ids.is_empty() {
@@ -100,12 +100,12 @@ impl AccessFrequencyCache {
     /// Record a fact access event in `fact_access_log`.
     ///
     /// Failures are logged as `WARN` and do not propagate — access logging is non-critical.
+    #[tracing::instrument(
+        name = "memory.five_signal.access_frequency.log",
+        skip(self, fact_type, session_id),
+        fields(fact_id = fact_id.0)
+    )]
     pub async fn log_access(&self, fact_id: MessageId, fact_type: &str, session_id: &str) {
-        let _span = tracing::info_span!(
-            "memory.five_signal.access_frequency.log",
-            fact_id = fact_id.0
-        )
-        .entered();
         tracing::debug!("five_signal: logging access");
 
         let accessed_at = std::time::SystemTime::now()

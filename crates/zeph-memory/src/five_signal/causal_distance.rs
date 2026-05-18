@@ -50,17 +50,16 @@ impl CausalDistanceComputer {
     /// # Errors
     ///
     /// Returns an error if the graph BFS query fails.
+    #[tracing::instrument(
+        name = "memory.five_signal.causal_distance.compute",
+        skip(self, entity_ids),
+        fields(goal_entity_id, candidate_count = entity_ids.len())
+    )]
     pub async fn compute(
         &mut self,
         goal_entity_id: Option<i64>,
         entity_ids: &[i64],
     ) -> Result<HashMap<i64, u32>, crate::error::MemoryError> {
-        let _span = tracing::info_span!(
-            "memory.five_signal.causal_distance.compute",
-            goal_entity_id,
-            candidate_count = entity_ids.len()
-        )
-        .entered();
         tracing::debug!("five_signal: computing causal distances");
 
         let Some(goal_id) = goal_entity_id else {
