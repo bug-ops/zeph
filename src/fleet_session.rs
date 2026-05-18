@@ -9,6 +9,8 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use chrono::Utc;
+
 use zeph_memory::store::SqliteStore;
 use zeph_memory::store::agent_sessions::{
     AgentSessionRow, SessionChannel, SessionKind, SessionStatus,
@@ -106,8 +108,8 @@ pub(crate) async fn start_session(
         status: SessionStatus::Active,
         channel,
         model: model.to_owned(),
-        created_at: utc_now(),
-        last_active_at: utc_now(),
+        created_at: Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        last_active_at: Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         turns: 0,
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -157,66 +159,4 @@ fn parse_channel(name: &str) -> SessionChannel {
         "slack" => SessionChannel::Slack,
         _ => SessionChannel::Cli,
     }
-}
-
-fn utc_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Format as SQLite-compatible ISO-8601 UTC string (no sub-second precision needed).
-    let (year, month, day, hour, min, sec) = epoch_to_datetime(secs);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}")
-}
-
-fn epoch_to_datetime(epoch: u64) -> (u64, u64, u64, u64, u64, u64) {
-    let sec = epoch % 60;
-    let epoch = epoch / 60;
-    let min = epoch % 60;
-    let epoch = epoch / 60;
-    let hour = epoch % 24;
-    let mut days = epoch / 24;
-
-    // Days since 1970-01-01.
-    let mut year = 1970u64;
-    loop {
-        let leap = is_leap(year);
-        let days_in_year = if leap { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-
-    let leap = is_leap(year);
-    let months = [
-        31u64,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1u64;
-    for &m in &months {
-        if days < m {
-            break;
-        }
-        days -= m;
-        month += 1;
-    }
-
-    (year, month, days + 1, hour, min, sec)
-}
-
-fn is_leap(year: u64) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }

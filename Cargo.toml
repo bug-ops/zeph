@@ -226,12 +226,11 @@ discord = ["zeph-channels/discord"]
 slack = ["zeph-channels/slack"]
 gateway = ["dep:zeph-gateway"]
 prometheus = ["gateway", "dep:prometheus-client", "zeph-gateway/prometheus"]
-scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "dep:chrono", "zeph-core/scheduler", "zeph-scheduler/daemon", "zeph-memory/scheduler"]
+scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "zeph-core/scheduler", "zeph-scheduler/daemon", "zeph-memory/scheduler"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
 profiling = [
     "dep:tracing-chrome",
-    "dep:chrono",
     "dep:sysinfo",
     "zeph-core/profiling",
     "zeph-core/sysinfo",
@@ -276,7 +275,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true, features = ["clock"] }
+chrono = { workspace = true, features = ["clock"] }
 clap = { workspace = true, features = ["derive", "env"] }
 cron = { workspace = true, optional = true }
 dialoguer.workspace = true

@@ -272,6 +272,7 @@ impl RateLimitState {
 /// # Errors
 ///
 /// Returns `401 Unauthorized` on authentication failure.
+#[tracing::instrument(skip_all, name = "common.http_middleware.auth")]
 pub async fn auth_middleware(
     axum::extract::State(cfg): axum::extract::State<AuthConfig>,
     mut req: Request<Body>,
@@ -339,6 +340,7 @@ pub async fn auth_middleware(
 ///
 /// Returns `429 Too Many Requests` when the rate limit is exceeded or the rate-limit
 /// table is full and cannot accommodate a new IP after eviction.
+#[tracing::instrument(skip_all, name = "common.http_middleware.rate_limit")]
 pub async fn rate_limit_middleware(
     axum::extract::State(state): axum::extract::State<RateLimitState>,
     req: Request<Body>,
