@@ -125,9 +125,11 @@ mod tests {
 
     #[test]
     fn zero_sum_falls_back_to_fifty_fifty() {
-        let mut cfg = FiveSignalConfig::default();
-        cfg.w_recency = 0.0;
-        cfg.w_relevance = 0.0;
+        let cfg = FiveSignalConfig {
+            w_recency: 0.0,
+            w_relevance: 0.0,
+            ..FiveSignalConfig::default()
+        };
         let w = FiveSignalWeights::normalized(&cfg);
         assert!((w.w_recency - 0.5).abs() < 1e-9);
         assert!((w.w_relevance - 0.5).abs() < 1e-9);
@@ -136,9 +138,11 @@ mod tests {
     #[traced_test]
     #[test]
     fn unnormalized_weights_emit_warn() {
-        let mut cfg = FiveSignalConfig::default();
-        cfg.w_recency = 2.0;
-        cfg.w_relevance = 3.0;
+        let cfg = FiveSignalConfig {
+            w_recency: 2.0,
+            w_relevance: 3.0,
+            ..FiveSignalConfig::default()
+        };
         // sum = 5.0, not 1.0 → WARN must be emitted
         let _w = FiveSignalWeights::normalized(&cfg);
         assert!(logs_contain("weights do not sum to 1.0"));
@@ -147,21 +151,25 @@ mod tests {
     #[traced_test]
     #[test]
     fn zero_sum_emits_warn() {
-        let mut cfg = FiveSignalConfig::default();
-        cfg.w_recency = 0.0;
-        cfg.w_relevance = 0.0;
+        let cfg = FiveSignalConfig {
+            w_recency: 0.0,
+            w_relevance: 0.0,
+            ..FiveSignalConfig::default()
+        };
         let _w = FiveSignalWeights::normalized(&cfg);
         assert!(logs_contain("all weights are zero"));
     }
 
     #[test]
     fn unnormalized_weights_are_scaled() {
-        let mut cfg = FiveSignalConfig::default();
-        cfg.w_recency = 2.0;
-        cfg.w_relevance = 2.0;
-        cfg.w_frequency = 1.0;
-        cfg.w_causal = 0.0;
-        cfg.w_novelty = 0.0;
+        let cfg = FiveSignalConfig {
+            w_recency: 2.0,
+            w_relevance: 2.0,
+            w_frequency: 1.0,
+            w_causal: 0.0,
+            w_novelty: 0.0,
+            ..FiveSignalConfig::default()
+        };
         // sum = 5.0 → w_recency = 0.4, w_relevance = 0.4, w_frequency = 0.2
         let w = FiveSignalWeights::normalized(&cfg);
         let total = w.w_recency + w.w_relevance + w.w_frequency + w.w_causal + w.w_novelty;
