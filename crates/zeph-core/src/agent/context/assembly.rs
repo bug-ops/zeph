@@ -789,7 +789,7 @@ impl<C: Channel> Agent<C> {
         // filter may have removed skills that were present in active_skill_names.
         // Without this, group_skills() reads embeddings at stale positions, producing wrong groups.
         let active_skill_name_set: std::collections::HashSet<&str> =
-            active_skills.iter().map(|s| s.name()).collect();
+            active_skills.iter().map(Skill::name).collect();
         let matched_indices: Vec<usize> = matched_indices
             .into_iter()
             .filter(|&i| {
