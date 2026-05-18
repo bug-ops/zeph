@@ -1466,6 +1466,18 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
+    let fleet_session_id = uuid::Uuid::new_v4().to_string();
+    if let Err(e) = crate::fleet_session::start_session(
+        memory.sqlite(),
+        &fleet_session_id,
+        &active_channel_name,
+        config.llm.effective_model(),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "fleet session init failed; continuing without fleet tracking");
+    }
+
     if !exec_mode.bare {
         let store = std::sync::Arc::new(memory.sqlite().clone());
         let embedding = memory.embedding_store().cloned();
@@ -3278,6 +3290,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 early_tui,
                 backfill_rx,
                 task_supervisor: Some((*supervisor).clone()),
+                fleet_session_id: fleet_session_id.clone(),
             },
         ))
         .await;
@@ -3297,6 +3310,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .expect("status_rx must be Some in CLI mode: early forwarder only runs on TUI path");
     tokio::spawn(forward_status_to_stderr(status_rx));
     let result = Box::pin(agent.run()).await;
+    {
+        let fleet_result: anyhow::Result<()> = match &result {
+            Ok(()) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!("{e}")),
+        };
+        crate::fleet_session::end_session(memory.sqlite(), &fleet_session_id, &fleet_result).await;
+    }
     // Explicitly shut down MCP connections before agent.shutdown() so that child processes
     // are killed while the tokio runtime is still active (#2693).
     shutdown_mcp_manager.shutdown_all_shared().await;

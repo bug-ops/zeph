@@ -11,6 +11,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use zeph_config::ProviderKind;
+use zeph_config::features::VaultBackend;
 use zeph_core::vault::{AgeVaultProvider, ArcAgeVaultProvider, VaultProvider};
 use zeph_llm::cocoon::CocoonClient;
 
@@ -247,7 +248,6 @@ async fn check_vault_key(
     let _span = tracing::info_span!("cli.cocoon.doctor.vault").entered();
     let vault_args = crate::bootstrap::parse_vault_args(config, None, None, None);
 
-    use zeph_config::features::VaultBackend;
     let vault: Box<dyn VaultProvider> = match vault_args.backend {
         VaultBackend::Age => {
             let (Some(key), Some(path)) = (

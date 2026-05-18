@@ -34,6 +34,8 @@ pub(crate) struct TuiRunParams<'a> {
         tokio::sync::watch::Receiver<Option<zeph_memory::semantic::BackfillProgress>>,
     /// Optional supervisor passed to the TUI task registry panel (#2962).
     pub(crate) task_supervisor: Option<zeph_common::task_supervisor::TaskSupervisor>,
+    /// Fleet session ID to mark completed/failed when the TUI session exits.
+    pub(crate) fleet_session_id: String,
 }
 
 /// Phase-1 TUI handle: TUI is rendering but the agent hasn't started yet.
@@ -303,6 +305,12 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
         tui_command_context(params.config, params.cli_tafc),
     ));
 
+    {
+        let fleet_cfg = params.config.tui.fleet;
+        let db_path = params.config.memory.sqlite_path.clone();
+        forwarders.spawn(fleet_poll_task(db_path, fleet_cfg, agent_tx.clone()));
+    }
+
     if let Some(tool_rx) = params.tool_rx {
         forwarders.spawn(forward_tool_events_to_tui(tool_rx, agent_tx.clone()));
     }
@@ -318,11 +326,11 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     let mut agent = agent.with_warmup_ready(warmup_rx);
     let agent_future = agent.run();
 
-    tokio::select! {
+    let run_result: anyhow::Result<()> = tokio::select! {
         result = tui_done => {
             forwarders.abort_all();
             agent.shutdown().await;
-            result.map_err(|_| anyhow::anyhow!("TUI thread exited without sending result"))??;
+            result.map_err(|_| anyhow::anyhow!("TUI thread exited without sending result"))?
         }
         result = agent_future => {
             // Abort all forwarding tasks first, then drop our agent_tx clone.
@@ -331,11 +339,21 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
             forwarders.abort_all();
             drop(agent_tx);
             agent.shutdown().await;
-            result?;
+            result.map_err(anyhow::Error::from)
+        }
+    };
+
+    let db_path = params.config.memory.sqlite_path.clone();
+    match zeph_memory::store::SqliteStore::new(&db_path).await {
+        Ok(store) => {
+            crate::fleet_session::end_session(&store, &params.fleet_session_id, &run_result).await;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "fleet: failed to open DB for end_session on TUI exit");
         }
     }
 
-    Ok(())
+    run_result
 }
 
 pub(crate) async fn forward_status_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
@@ -625,4 +643,50 @@ pub(crate) async fn forward_index_progress_to_tui(
     };
     tokio::time::sleep(delay).await;
     let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+}
+
+/// Periodically poll the database for fleet session data and forward snapshots to the TUI.
+///
+/// Runs until the `agent_tx` channel closes (agent exited). The interval is controlled by
+/// [`zeph_config::FleetConfig::refresh_interval_secs`].
+#[cfg(feature = "tui")]
+pub(crate) async fn fleet_poll_task(
+    db_path: String,
+    cfg: zeph_config::FleetConfig,
+    tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+) {
+    let interval_secs = cfg.refresh_interval_secs.max(1);
+    let limit = cfg.max_sessions;
+
+    let store = match zeph_memory::store::SqliteStore::new(&db_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "fleet poll: failed to open DB; fleet panel will be empty");
+            return;
+        }
+    };
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        ticker.tick().await;
+
+        let sessions = match store.list_agent_sessions(limit, None).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(error = %e, "fleet poll: list_agent_sessions failed");
+                continue;
+            }
+        };
+
+        let snapshot = zeph_tui::widgets::fleet::FleetSnapshot { sessions };
+        if tx
+            .send(zeph_tui::AgentEvent::FleetSnapshot(snapshot))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
 }

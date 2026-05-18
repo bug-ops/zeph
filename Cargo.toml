@@ -232,7 +232,6 @@ pdf = ["zeph-memory/pdf"]
 profiling = [
     "dep:tracing-chrome",
     "dep:chrono",
-    "dep:uuid",
     "dep:sysinfo",
     "zeph-core/profiling",
     "zeph-core/sysinfo",
@@ -310,7 +309,7 @@ tracing-chrome = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
-uuid = { workspace = true, optional = true, features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 zeph-a2a = { workspace = true, optional = true }
 zeph-acp = { workspace = true, optional = true }
 zeph-bench = { workspace = true, optional = true }

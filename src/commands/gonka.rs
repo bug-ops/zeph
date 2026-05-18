@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use zeph_config::ProviderKind;
+use zeph_config::features::VaultBackend;
 use zeph_core::redact::scrub_content;
 use zeph_core::vault::{AgeVaultProvider, ArcAgeVaultProvider, VaultProvider};
 use zeph_llm::gonka::RequestSigner;
@@ -47,7 +48,6 @@ async fn resolve_vault_secrets(
     let _span = tracing::info_span!("cli.gonka.doctor.vault").entered();
     let vault_args = crate::bootstrap::parse_vault_args(config, None, None, None);
 
-    use zeph_config::features::VaultBackend;
     let vault: Box<dyn VaultProvider> = match vault_args.backend {
         VaultBackend::Age => {
             let (Some(key), Some(path)) = (

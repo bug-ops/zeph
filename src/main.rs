@@ -112,6 +112,7 @@ mod commands;
 mod daemon;
 mod db_url;
 mod execution_mode;
+mod fleet_session;
 mod gateway_spawn;
 mod init;
 #[cfg(feature = "prometheus")]
