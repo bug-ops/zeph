@@ -860,6 +860,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Instantiate and attach [`ShadowMemory`](zeph_sanitizer::ShadowMemory) from config.
+    ///
+    /// When `config.enabled = false` this is a no-op — the field stays `None`.
+    /// Called from the builder entry point after the causal IPI section is configured.
+    #[must_use]
+    pub fn with_shadow_memory_config(mut self, config: &zeph_config::ShadowMemoryConfig) -> Self {
+        self.services.security.shadow_memory = zeph_sanitizer::ShadowMemory::new(config);
+        self
+    }
+
     /// Attach a temporal causal IPI analyzer.
     ///
     /// When `Some`, the native tool dispatch loop runs pre/post behavioral probes.

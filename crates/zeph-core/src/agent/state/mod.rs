@@ -387,6 +387,12 @@ pub(crate) struct SecurityState {
     /// Initialized as noop when `memory.shadow_memory.enabled = false` (default).
     /// `begin_turn()` calls `advance_turn()` then ingests pending signal codes.
     pub(crate) mage_accumulator: zeph_memory::shadow::TrajectoryRiskAccumulator,
+    /// Per-session append-only shadow memory for cross-turn goal-drift detection (spec 010-7).
+    ///
+    /// `None` when `security.causal_ipi.shadow_memory.enabled = false` (default).
+    /// When `Some`, `process_tool_result_batch` records a `ShadowEvent` after each tool batch,
+    /// then calls `goal_drift_score()` and emits a `GoalDrift` security event when alerted.
+    pub(crate) shadow_memory: Option<zeph_sanitizer::ShadowMemory>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).

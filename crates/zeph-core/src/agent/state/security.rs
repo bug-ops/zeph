@@ -57,6 +57,7 @@ impl Default for SecurityState {
             shadow_sentinel: None,
             risk_chain_accumulator: None,
             mage_accumulator: zeph_memory::shadow::TrajectoryRiskAccumulator::new_noop(),
+            shadow_memory: None,
         }
     }
 }

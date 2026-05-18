@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: wire `ShadowMemory` into the agent loop; `SecurityState` now holds
+  `Option<ShadowMemory>`, instantiated from `security.causal_ipi.shadow_memory` config at
+  startup. `process_tool_result_batch` records a `ShadowEvent` after each tool batch and emits a
+  `GoalDrift` security event when `goal_drift_score().should_alert` is `true` (closes #4439).
 - `zeph-core`: GoSkills `active_skills` and `matched_indices` are now filtered in lockstep during
   channel allowlist pruning; previously the allowlist filter removed skills from `active_skills`
   but left stale indices in `matched_indices`, causing `group_skills` to look up the wrong

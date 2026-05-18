@@ -969,6 +969,7 @@ pub(crate) fn apply_causal_analyzer_with_cfg<C: Channel>(
     provider: zeph_llm::any::AnyProvider,
     causal_config: &zeph_sanitizer::causal_ipi::CausalIpiConfig,
 ) -> zeph_core::agent::Agent<C> {
+    let agent = agent.with_shadow_memory_config(&causal_config.shadow_memory);
     if !causal_config.enabled {
         return agent;
     }
