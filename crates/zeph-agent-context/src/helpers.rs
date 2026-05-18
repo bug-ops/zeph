@@ -744,7 +744,7 @@ pub async fn fetch_semantic_recall_raw(
     let t0 = Instant::now();
     let recalled = if let Some(r) = router {
         memory
-            .recall_routed_async(query, recall_limit, None, r)
+            .recall_routed_async(query, recall_limit, None, r, None)
             .await?
     } else {
         memory.recall(query, recall_limit, None).await?

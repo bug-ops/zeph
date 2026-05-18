@@ -784,7 +784,7 @@ impl SemanticMemory {
         };
 
         let results = self
-            .recall_merge_and_rank(keyword_results, vector_results, limit)
+            .recall_merge_and_rank(keyword_results, vector_results, limit, None)
             .await?;
         #[cfg(feature = "profiling")]
         {
@@ -856,6 +856,7 @@ impl SemanticMemory {
         keyword_results: Vec<(MessageId, f64)>,
         vector_results: Vec<crate::embedding_store::SearchResult>,
         limit: usize,
+        goal_entity_id: Option<i64>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         tracing::debug!(
             vector_count = vector_results.len(),
@@ -1017,7 +1018,8 @@ impl SemanticMemory {
         if let Some(fs) = &self.five_signal
             && !fs.weights.is_baseline()
         {
-            self.apply_five_signal_scoring(&mut ranked, fs).await;
+            self.apply_five_signal_scoring(&mut ranked, fs, goal_entity_id)
+                .await;
         }
 
         let ids: Vec<MessageId> = ranked.iter().map(|r| r.0).collect();
@@ -1074,6 +1076,7 @@ impl SemanticMemory {
         &self,
         ranked: &mut [(MessageId, f64)],
         fs: &crate::five_signal::FiveSignalRuntime,
+        goal_entity_id: Option<i64>,
     ) {
         use crate::five_signal::causal_distance::CausalDistanceComputer;
         use crate::five_signal::scoring::{CandidateSignals, apply_five_signal_scoring};
@@ -1133,7 +1136,7 @@ impl SemanticMemory {
         let causal_distance_map: std::collections::HashMap<i64, u32> = {
             let entity_ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
             let mut computer = fs.causal_computer.lock().await;
-            match computer.compute(None, &entity_ids).await {
+            match computer.compute(goal_entity_id, &entity_ids).await {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::warn!(error = %e, "five_signal: causal BFS failed (using neutral)");
@@ -1185,6 +1188,9 @@ impl SemanticMemory {
     /// Delegates to FTS5-only, vector-only, or hybrid search based on the router decision,
     /// then runs the shared merge and ranking pipeline.
     ///
+    /// * `goal_entity_id` — optional goal entity for causal distance scoring; when `None`, the
+    ///   causal distance signal contribution is zero (FR-006).
+    ///
     /// # Errors
     ///
     /// Returns an error if any underlying search or database operation fails.
@@ -1198,6 +1204,7 @@ impl SemanticMemory {
         limit: usize,
         filter: Option<SearchFilter>,
         router: &dyn crate::router::MemoryRouter,
+        goal_entity_id: Option<i64>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         use crate::router::MemoryRoute;
 
@@ -1284,7 +1291,7 @@ impl SemanticMemory {
             "recall: routed search results"
         );
 
-        self.recall_merge_and_rank(keyword_results, vector_results, limit)
+        self.recall_merge_and_rank(keyword_results, vector_results, limit, goal_entity_id)
             .await
     }
 
@@ -1294,6 +1301,9 @@ impl SemanticMemory {
     ///
     /// Falls back to [`recall_routed`](Self::recall_routed) for routers that only implement
     /// the sync `MemoryRouter` trait (e.g. `HeuristicRouter`).
+    ///
+    /// * `goal_entity_id` — optional goal entity for causal distance scoring; when `None`, the
+    ///   causal distance signal contribution is zero (FR-006).
     ///
     /// # Errors
     ///
@@ -1308,6 +1318,7 @@ impl SemanticMemory {
         limit: usize,
         filter: Option<crate::embedding_store::SearchFilter>,
         router: &dyn crate::router::AsyncMemoryRouter,
+        goal_entity_id: Option<i64>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         use crate::router::MemoryRoute;
 
@@ -1384,7 +1395,7 @@ impl SemanticMemory {
             "recall: routed search results (async)"
         );
 
-        self.recall_merge_and_rank(keyword_results, vector_results, limit)
+        self.recall_merge_and_rank(keyword_results, vector_results, limit, goal_entity_id)
             .await
     }
 

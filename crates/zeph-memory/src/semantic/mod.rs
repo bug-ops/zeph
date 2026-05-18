@@ -809,6 +809,12 @@ impl SemanticMemory {
         self
     }
 
+    /// Return the five-signal runtime if enabled, or `None` when disabled.
+    #[must_use]
+    pub fn five_signal_runtime(&self) -> Option<Arc<crate::five_signal::FiveSignalRuntime>> {
+        self.five_signal.clone()
+    }
+
     /// Classify a query's intent for query-bias correction (MM-F3, #3341).
     ///
     /// Returns [`QueryIntent::FirstPerson`] when the query contains self-referential language

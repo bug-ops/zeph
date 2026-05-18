@@ -272,6 +272,7 @@ pub(crate) async fn init_scheduler(
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
     experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
+    five_signal_runtime: Option<Arc<zeph_memory::five_signal::FiveSignalRuntime>>,
 ) -> Option<SchedulerInitResult> {
     if !config.scheduler.enabled {
         return None;
@@ -367,6 +368,45 @@ pub(crate) async fn init_scheduler(
         None
     };
 
+    // Register five-signal consolidation daemon when both five_signal and scheduler are enabled.
+    if config.memory.five_signal.consolidation_daemon.enabled {
+        if let Some(rt) = five_signal_runtime {
+            use zeph_memory::five_signal::consolidation::ConsolidationHandler;
+            use zeph_scheduler::ScheduledTask;
+
+            let daemon_cfg = config.memory.five_signal.consolidation_daemon.clone();
+            let interval_secs = daemon_cfg.interval_seconds;
+            let handler = ConsolidationHandler::new(rt, daemon_cfg);
+            let cron = format!("*/{interval_secs} * * * * *");
+            match ScheduledTask::new(
+                "five_signal_consolidation",
+                &cron,
+                TaskKind::Custom("five_signal_consolidation".to_owned()),
+                serde_json::Value::Null,
+            ) {
+                Ok(task) => {
+                    scheduler.add_task(task);
+                    scheduler.register_handler(
+                        &TaskKind::Custom("five_signal_consolidation".to_owned()),
+                        Box::new(handler),
+                    );
+                    tracing::info!(
+                        interval_secs,
+                        "five-signal consolidation daemon registered with scheduler"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("scheduler: invalid five_signal_consolidation cron: {e}");
+                }
+            }
+        } else {
+            tracing::warn!(
+                "five_signal.consolidation_daemon.enabled=true but five_signal runtime is None; \
+                 daemon not registered"
+            );
+        }
+    }
+
     scheduler.register_handler(
         &TaskKind::Custom("custom".to_owned()),
         Box::new(CustomTaskHandler::new(custom_tx)),
@@ -396,6 +436,7 @@ pub(crate) async fn bootstrap_scheduler<C>(
     config: &Config,
     shutdown_rx: watch::Receiver<bool>,
     experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
+    five_signal_runtime: Option<Arc<zeph_memory::five_signal::FiveSignalRuntime>>,
 ) -> (zeph_core::agent::Agent<C>, Option<SchedulerExecutor>)
 where
     C: zeph_core::channel::Channel,
@@ -412,7 +453,9 @@ where
         return (agent, None);
     }
 
-    let Some(result) = init_scheduler(config, shutdown_rx, experiment_deps).await else {
+    let Some(result) =
+        init_scheduler(config, shutdown_rx, experiment_deps, five_signal_runtime).await
+    else {
         return (agent, None);
     };
 
@@ -474,7 +517,7 @@ mod tests {
         config.memory.sqlite_path = ":memory:".into();
 
         let (_agent, executor_opt): (_, Option<crate::scheduler_executor::SchedulerExecutor>) =
-            Box::pin(bootstrap_scheduler(agent, &config, shutdown_rx, None)).await;
+            Box::pin(bootstrap_scheduler(agent, &config, shutdown_rx, None, None)).await;
         assert!(
             executor_opt.is_some(),
             "expected Some(SchedulerExecutor) when scheduler is enabled"

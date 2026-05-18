@@ -225,7 +225,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
         Box::pin(async move {
             let recalled = if let Some(r) = router {
                 self.inner
-                    .recall_routed_async(query, limit, None, r)
+                    .recall_routed_async(query, limit, None, r, None)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
             } else {

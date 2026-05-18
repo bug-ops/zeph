@@ -265,7 +265,9 @@ async fn retrieve_tier(
 
     // All tiers route through recall_routed; the heuristic router maps intent-appropriate
     // routes. Graph traversal for DeepReasoning is left to the caller via recall_graph.
-    memory.recall_routed(query, top_k, filter, &heuristic).await
+    memory
+        .recall_routed(query, top_k, filter, &heuristic, None)
+        .await
 }
 
 /// Truncate `candidates` to fit within `budget` tokens.

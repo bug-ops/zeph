@@ -12,6 +12,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   naming collision with `zeph_sanitizer::ShadowMemory`; `ShadowEventStore` and `ShadowEventRow`
   retain their names (closes #4379).### Fixed
 
+- `zeph` (binary): `ConsolidationHandler` is now registered with `zeph-scheduler` at bootstrap
+  under `TaskKind::Custom("five_signal_consolidation")` when
+  `memory.five_signal.consolidation_daemon.enabled = true`; previously the daemon was implemented
+  but never scheduled, so FR-010/FR-011/FR-012 were silently not satisfied (closes #4402).
+- `zeph` (binary): `FiveSignalMetrics` counters (`five_signal_recall_total`,
+  `consolidation_daemon_runs_total`, `consolidation_promoted_total`,
+  `consolidation_demoted_total`) are now wired to the Prometheus registry via
+  `spawn_metrics_sync_with_five_signal`; previously the counters existed in memory only and were
+  invisible to scraping (closes #4404, requires `prometheus` feature).
+- `zeph-memory`: `apply_five_signal_scoring` now passes `goal_entity_id` down to
+  `CausalDistanceComputer::compute` instead of the hardcoded `None`; the causal distance signal
+  is no longer always zero when a goal entity is present (closes #4405). Call sites that do not
+  yet supply a goal entity continue to pass `None` per FR-006.
+
 - `zeph-core`: `memory_save` tool now returns "Saved to session memory (ephemeral — not
   available after session ends)." in `--bare` mode instead of the persistent-mode message that
   incorrectly implied data would survive the session (closes #4394).

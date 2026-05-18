@@ -238,7 +238,7 @@ async fn recall_routed_keyword_route_returns_fts5_results() {
     assert_eq!(router.route("rust_guide"), MemoryRoute::Keyword);
 
     let recalled = memory
-        .recall_routed("rust_guide", 5, None, &router)
+        .recall_routed("rust_guide", 5, None, &router, None)
         .await
         .unwrap();
     assert!(recalled.len() <= 2);
@@ -263,7 +263,7 @@ async fn recall_routed_semantic_route_without_qdrant_returns_empty_vectors() {
     );
 
     let recalled = memory
-        .recall_routed("how does the agent loop work", 5, None, &router)
+        .recall_routed("how does the agent loop work", 5, None, &router, None)
         .await
         .unwrap();
     assert!(recalled.is_empty(), "no Qdrant → empty semantic recall");
@@ -288,7 +288,7 @@ async fn recall_routed_hybrid_route_falls_back_to_fts5_on_no_qdrant() {
     );
 
     let recalled = memory
-        .recall_routed("context window token budget", 5, None, &router)
+        .recall_routed("context window token budget", 5, None, &router, None)
         .await
         .unwrap();
     assert!(!recalled.is_empty(), "FTS5 should find the stored message");
@@ -334,6 +334,7 @@ async fn recall_routed_episodic_route_no_time_range() {
                 role: None,
             }),
             &router,
+            None,
         )
         .await
         .unwrap();
@@ -384,6 +385,7 @@ async fn recall_routed_episodic_all_temporal_stripped_falls_back_to_original() {
                 role: None,
             }),
             &router,
+            None,
         )
         .await
         .unwrap();

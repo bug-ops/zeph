@@ -5,8 +5,8 @@
 //!
 //! [`PrometheusMetrics`] owns an [`Arc<Registry>`] and all ~25 metric families derived from
 //! [`MetricsSnapshot`].  Call [`PrometheusMetrics::sync`] periodically to push the current
-//! snapshot values into the registry.  [`spawn_metrics_sync`] spawns the background task that
-//! drives the sync loop.
+//! snapshot values into the registry.  [`spawn_metrics_sync_with_five_signal`] spawns the
+//! background task that drives the sync loop.
 //!
 //! This module is compiled only when the `prometheus` feature is enabled.
 
@@ -125,7 +125,7 @@ fn counter_delta_f64(current: f64, prev: f64) -> f64 {
 /// Owns all Prometheus metric families and an [`Arc<Registry>`].
 ///
 /// Construct via [`PrometheusMetrics::new`], then pass the [`Arc<Registry>`] to the gateway and
-/// call [`PrometheusMetrics::sync`] periodically from [`spawn_metrics_sync`].
+/// call [`PrometheusMetrics::sync`] periodically from [`spawn_metrics_sync_with_five_signal`].
 ///
 /// # Examples
 ///
@@ -192,6 +192,12 @@ pub struct PrometheusMetrics {
     // --- Background task latency histograms (Phase 2B) ---
     // Index 0 = enrichment, index 1 = telemetry (matches TaskClass::index()).
     bg_task_duration_seconds: [Histogram; 2],
+
+    // --- Five-signal retrieval metrics ---
+    five_signal_recall_total: Counter,
+    five_signal_consolidation_runs_total: Counter,
+    five_signal_promoted_total: Counter,
+    five_signal_demoted_total: Counter,
 }
 
 impl PrometheusMetrics {
@@ -419,6 +425,34 @@ impl PrometheusMetrics {
             bg_telemetry.clone(),
         );
 
+        let five_signal_recall_total = Counter::default();
+        registry.register(
+            "zeph_five_signal_recall",
+            "Total five-signal recall invocations",
+            five_signal_recall_total.clone(),
+        );
+
+        let five_signal_consolidation_runs_total = Counter::default();
+        registry.register(
+            "zeph_five_signal_consolidation_daemon_runs",
+            "Total five-signal consolidation daemon runs",
+            five_signal_consolidation_runs_total.clone(),
+        );
+
+        let five_signal_promoted_total = Counter::default();
+        registry.register(
+            "zeph_five_signal_consolidation_promoted",
+            "Total facts promoted to Qdrant by the five-signal consolidation daemon",
+            five_signal_promoted_total.clone(),
+        );
+
+        let five_signal_demoted_total = Counter::default();
+        registry.register(
+            "zeph_five_signal_consolidation_demoted",
+            "Total facts demoted to episodic_only by the five-signal consolidation daemon",
+            five_signal_demoted_total.clone(),
+        );
+
         Self {
             registry: Arc::new(registry),
             llm_tokens_total,
@@ -450,6 +484,10 @@ impl PrometheusMetrics {
             turn_duration_seconds,
             tool_execution_seconds,
             bg_task_duration_seconds: [bg_enrichment, bg_telemetry],
+            five_signal_recall_total,
+            five_signal_consolidation_runs_total,
+            five_signal_promoted_total,
+            five_signal_demoted_total,
         }
     }
 
@@ -720,6 +758,65 @@ impl PrometheusMetrics {
         self.skills_total
             .set(i64::try_from(current.total_skills).unwrap_or(i64::MAX));
     }
+
+    /// Synchronise five-signal counter values from the given [`FiveSignalMetrics`] snapshot.
+    ///
+    /// Reads atomic snapshot values and increments Prometheus counters by the delta since
+    /// `prev`. Call periodically from the same sync loop as [`PrometheusMetrics::sync`].
+    pub fn sync_five_signal(
+        &self,
+        current: &zeph_memory::five_signal::metrics::FiveSignalMetrics,
+        prev: &FiveSignalPrev,
+    ) -> FiveSignalPrev {
+        let recall = current
+            .recall_total
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let recall_delta = counter_delta(recall, prev.recall);
+        if recall_delta > 0 {
+            self.five_signal_recall_total.inc_by(recall_delta);
+        }
+
+        let runs = current
+            .consolidation_runs_total
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let runs_delta = counter_delta(runs, prev.runs);
+        if runs_delta > 0 {
+            self.five_signal_consolidation_runs_total.inc_by(runs_delta);
+        }
+
+        let promoted = current
+            .promoted_total
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let promoted_delta = counter_delta(promoted, prev.promoted);
+        if promoted_delta > 0 {
+            self.five_signal_promoted_total.inc_by(promoted_delta);
+        }
+
+        let demoted = current
+            .demoted_total
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let demoted_delta = counter_delta(demoted, prev.demoted);
+        if demoted_delta > 0 {
+            self.five_signal_demoted_total.inc_by(demoted_delta);
+        }
+
+        FiveSignalPrev {
+            recall,
+            runs,
+            promoted,
+            demoted,
+        }
+    }
+}
+
+/// Previous five-signal counter values for delta computation in
+/// [`PrometheusMetrics::sync_five_signal`].
+#[derive(Default)]
+pub struct FiveSignalPrev {
+    recall: u64,
+    runs: u64,
+    promoted: u64,
+    demoted: u64,
 }
 
 impl Default for PrometheusMetrics {
@@ -752,11 +849,14 @@ impl zeph_core::metrics::HistogramRecorder for PrometheusMetrics {
 // Background sync task
 // ---------------------------------------------------------------------------
 
-/// Spawn a background task that periodically reads the `MetricsSnapshot` watch channel and
-/// calls [`PrometheusMetrics::sync`].
+/// Spawn a background task that periodically syncs [`MetricsSnapshot`] and optionally
+/// [`FiveSignalMetrics`] into the Prometheus registry.
 ///
-/// `interval_secs` is clamped to a minimum of 1 second.  The task uses
+/// `interval_secs` is clamped to a minimum of 1 second. The task uses
 /// [`tokio::time::MissedTickBehavior::Skip`] so slow syncs do not accumulate ticks.
+///
+/// When `five_signal` is `Some`, the `zeph_five_signal_*` counters are updated on every
+/// sync interval using atomic snapshot delta computation.
 ///
 /// Returns a [`tokio::task::JoinHandle`] that should be stored and awaited on shutdown.
 ///
@@ -768,17 +868,18 @@ impl zeph_core::metrics::HistogramRecorder for PrometheusMetrics {
 /// use std::sync::Arc;
 /// use tokio::sync::watch;
 /// use zeph_core::metrics::MetricsSnapshot;
-/// use zeph::metrics_export::{PrometheusMetrics, spawn_metrics_sync};
+/// use zeph::metrics_export::{PrometheusMetrics, spawn_metrics_sync_with_five_signal};
 ///
 /// let pm = Arc::new(PrometheusMetrics::new());
 /// let (_tx, rx) = watch::channel(MetricsSnapshot::default());
-/// let _handle = spawn_metrics_sync(pm, rx, 5);
+/// let _handle = spawn_metrics_sync_with_five_signal(pm, rx, 5, None);
 /// # }
 /// ```
-pub fn spawn_metrics_sync(
+pub fn spawn_metrics_sync_with_five_signal(
     metrics: Arc<PrometheusMetrics>,
     mut snapshot_rx: watch::Receiver<MetricsSnapshot>,
     interval_secs: u64,
+    five_signal: Option<Arc<zeph_memory::five_signal::metrics::FiveSignalMetrics>>,
 ) -> tokio::task::JoinHandle<()> {
     let original = interval_secs;
     let interval_secs = original.max(1);
@@ -791,6 +892,7 @@ pub fn spawn_metrics_sync(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut prev = MetricsSnapshot::default();
+        let mut five_signal_prev = FiveSignalPrev::default();
 
         loop {
             interval.tick().await;
@@ -798,6 +900,10 @@ pub fn spawn_metrics_sync(
             let current = snapshot_rx.borrow_and_update().clone();
             metrics.sync(&current, &prev);
             prev = current;
+
+            if let Some(ref fs) = five_signal {
+                five_signal_prev = metrics.sync_five_signal(fs, &five_signal_prev);
+            }
         }
     })
 }
@@ -873,7 +979,7 @@ mod tests {
         // (interval_secs=0 should clamp to 1 without panic)
         let pm = Arc::new(PrometheusMetrics::new());
         let (tx, rx) = watch::channel(MetricsSnapshot::default());
-        let handle = spawn_metrics_sync(pm, rx, 0);
+        let handle = spawn_metrics_sync_with_five_signal(pm, rx, 0, None);
         // Drop tx so the watch channel is closed; handle will finish on next tick
         drop(tx);
         // Abort the task — we just want to confirm no panic during construction
@@ -996,5 +1102,62 @@ mod tests {
         recorder.observe_llm_latency(std::time::Duration::from_millis(100));
         recorder.observe_turn_duration(std::time::Duration::from_secs(5));
         recorder.observe_tool_execution(std::time::Duration::from_millis(50));
+    }
+
+    // Regression test for #4404: FiveSignalMetrics counters are exported to Prometheus.
+    #[test]
+    fn sync_five_signal_exports_counters() {
+        use zeph_memory::five_signal::metrics::FiveSignalMetrics;
+
+        let pm = PrometheusMetrics::new();
+        let fs = FiveSignalMetrics::default();
+        fs.inc_recall();
+        fs.inc_recall();
+        fs.inc_consolidation_run();
+        fs.add_promoted(3);
+        fs.add_demoted(1);
+
+        let prev = FiveSignalPrev::default();
+        pm.sync_five_signal(&fs, &prev);
+
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &pm.registry).unwrap();
+        assert!(
+            buf.contains("zeph_five_signal_recall_total 2"),
+            "recall counter missing or wrong: {buf}"
+        );
+        assert!(
+            buf.contains("zeph_five_signal_consolidation_daemon_runs_total 1"),
+            "consolidation_runs counter missing or wrong: {buf}"
+        );
+        assert!(
+            buf.contains("zeph_five_signal_consolidation_promoted_total 3"),
+            "promoted counter missing or wrong: {buf}"
+        );
+        assert!(
+            buf.contains("zeph_five_signal_consolidation_demoted_total 1"),
+            "demoted counter missing or wrong: {buf}"
+        );
+    }
+
+    // Regression test for #4404: sync_five_signal does not double-count on second call.
+    #[test]
+    fn sync_five_signal_no_double_count() {
+        use zeph_memory::five_signal::metrics::FiveSignalMetrics;
+
+        let pm = PrometheusMetrics::new();
+        let fs = FiveSignalMetrics::default();
+        fs.inc_recall();
+
+        let prev = pm.sync_five_signal(&fs, &FiveSignalPrev::default());
+        // No new increments — second sync must add delta = 0.
+        pm.sync_five_signal(&fs, &prev);
+
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &pm.registry).unwrap();
+        assert!(
+            buf.contains("zeph_five_signal_recall_total 1"),
+            "counter must not double-count: {buf}"
+        );
     }
 }

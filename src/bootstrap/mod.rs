@@ -658,7 +658,7 @@ impl AppBuilder {
             self.config.memory.five_signal.clone(),
             main_pool,
             graph_store,
-            None, // qdrant consolidation daemon wired separately when scheduler feature enabled
+            None, // qdrant: passed via EmbeddingStore if available — see build_memory for full wiring
             session_start,
             session_id,
         ));

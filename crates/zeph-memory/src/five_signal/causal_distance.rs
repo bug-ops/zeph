@@ -144,4 +144,24 @@ mod tests {
         let score = CausalDistanceComputer::distance_to_score(neutral);
         assert!((score - 0.2).abs() < 1e-9);
     }
+
+    // Regression test for #4405: goal_entity_id=None returns empty map without touching the DB.
+    #[tokio::test]
+    async fn compute_none_goal_returns_empty_map() {
+        use std::sync::Arc;
+
+        // Build a minimal in-memory graph store so the constructor is satisfied.
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        let graph_store = Arc::new(crate::graph::GraphStore::new(pool));
+        let mut computer = CausalDistanceComputer::new(graph_store, 10, 5);
+
+        let result = computer
+            .compute(None, &[1, 2, 3])
+            .await
+            .expect("None goal must not fail");
+        assert!(
+            result.is_empty(),
+            "goal_entity_id=None must return empty map, got: {result:?}"
+        );
+    }
 }

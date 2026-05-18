@@ -464,7 +464,14 @@ async fn build_acp_deps(
             }
         };
 
-        match crate::scheduler::init_scheduler(config, shutdown_rx.clone(), exp_deps).await {
+        match crate::scheduler::init_scheduler(
+            config,
+            shutdown_rx.clone(),
+            exp_deps,
+            memory.five_signal_runtime(),
+        )
+        .await
+        {
             Some(result) => {
                 let exec = std::sync::Arc::new(result.executor);
                 let mut custom_rx = result.custom_rx;

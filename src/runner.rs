@@ -2714,11 +2714,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent
     } else {
         let exp_deps = provider_for_experiments.map(|p| (p, Some(std::sync::Arc::clone(&memory))));
+        let five_signal_rt = memory.five_signal_runtime();
         let (agent, sched_executor) = Box::pin(bootstrap_scheduler(
             agent,
             config,
             shutdown_rx.clone(),
             exp_deps,
+            five_signal_rt,
         ))
         .await;
         if let Some(sched_exec) = sched_executor {
@@ -3209,10 +3211,12 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let _prometheus_sync_handle = if exec_mode.bare {
         None
     } else if let Some(prom) = prom_arc {
-        let handle = crate::metrics_export::spawn_metrics_sync(
+        let five_signal_metrics = memory.five_signal_runtime().map(|rt| rt.metrics.clone());
+        let handle = crate::metrics_export::spawn_metrics_sync_with_five_signal(
             std::sync::Arc::clone(&prom),
             prometheus_metrics_rx,
             config.metrics.sync_interval_secs,
+            five_signal_metrics,
         );
         let effective_path = {
             let p = &config.metrics.path;
