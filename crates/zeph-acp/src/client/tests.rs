@@ -67,6 +67,7 @@ async fn subagent_env_isolation() {
 }
 
 #[tokio::test]
+#[cfg(not(target_os = "windows"))]
 async fn subagent_cwd_respected() {
     use tokio::io::{AsyncReadExt, BufReader};
 

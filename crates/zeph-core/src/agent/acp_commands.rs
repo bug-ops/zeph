@@ -121,9 +121,11 @@ mod tests {
 
     #[test]
     fn dirs_populated() {
-        let cfg = cfg_with_dirs(&["/tmp"]);
+        let tmp = std::env::temp_dir();
+        let tmp_str = tmp.to_string_lossy();
+        let cfg = cfg_with_dirs(&[tmp_str.as_ref()]);
         let out = format_acp_dirs(&cfg);
-        assert!(out.contains("/tmp"), "got: {out}");
+        assert!(out.contains(tmp_str.as_ref()), "got: {out}");
         assert!(!out.contains("(none configured)"), "got: {out}");
     }
 
