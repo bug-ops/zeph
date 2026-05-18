@@ -122,3 +122,33 @@ pub fn render(snapshot: &FleetSnapshot, frame: &mut Frame, area: Rect, list_stat
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     frame.render_stateful_widget(list, area, list_state);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::format_tokens_short;
+
+    #[test]
+    fn format_tokens_short_zero() {
+        assert_eq!(format_tokens_short(0), "0");
+    }
+
+    #[test]
+    fn format_tokens_short_below_1k() {
+        assert_eq!(format_tokens_short(999), "999");
+    }
+
+    #[test]
+    fn format_tokens_short_exactly_1k() {
+        assert_eq!(format_tokens_short(1_000), "1.0k");
+    }
+
+    #[test]
+    fn format_tokens_short_below_1m() {
+        assert_eq!(format_tokens_short(999_999), "1000.0k");
+    }
+
+    #[test]
+    fn format_tokens_short_exactly_1m() {
+        assert_eq!(format_tokens_short(1_000_000), "1.0M");
+    }
+}

@@ -6,6 +6,22 @@ use crate::provider::ImageData;
 use crate::provider::MessageMetadata;
 use tokio_stream::StreamExt;
 
+#[test]
+fn completion_tokens_details_reasoning_tokens_deserialized() {
+    let json = r#"{
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "completion_tokens_details": {
+            "reasoning_tokens": 5
+        }
+    }"#;
+    let usage: OpenAiUsage = serde_json::from_str(json).expect("deserialization failed");
+    assert_eq!(usage.prompt_tokens, 10);
+    assert_eq!(usage.completion_tokens, 20);
+    let details = usage.completion_tokens_details.expect("details missing");
+    assert_eq!(details.reasoning_tokens, 5);
+}
+
 fn test_provider() -> OpenAiProvider {
     OpenAiProvider::new(OpenAiConfig {
         api_key: "sk-test-key".into(),
