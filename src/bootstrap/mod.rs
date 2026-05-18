@@ -476,6 +476,8 @@ impl AppBuilder {
         memory =
             memory.with_summarization_timeout(self.config.memory.summarization_llm_timeout_secs);
 
+        memory = self.attach_five_signal(memory);
+
         Ok(memory)
     }
 
@@ -625,6 +627,52 @@ impl AppBuilder {
             "reasoning bank enabled, ReasoningMemory attached"
         );
         mem
+    }
+
+    /// Attach [`zeph_memory::five_signal::FiveSignalRuntime`] when `memory.five_signal.enabled`.
+    ///
+    /// When `memory.graph` is disabled, the causal-distance signal is effectively zero for every
+    /// fact (no edges to traverse). The runtime is still created so the other four signals work.
+    fn attach_five_signal(&self, memory: SemanticMemory) -> SemanticMemory {
+        if !self.config.memory.five_signal.enabled {
+            return memory;
+        }
+
+        let main_pool = memory.sqlite().pool().clone();
+
+        let graph_store = if let Some(gs) = memory.graph_store.clone() {
+            gs
+        } else {
+            tracing::warn!(
+                "five_signal enabled but memory.graph is disabled — causal signal will be 0"
+            );
+            // Use the main pool as a stand-in; BFS will find no edges, producing score 0.
+            Arc::new(zeph_memory::GraphStore::new(main_pool.clone()))
+        };
+
+        let session_start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let runtime = Arc::new(zeph_memory::five_signal::FiveSignalRuntime::new(
+            self.config.memory.five_signal.clone(),
+            main_pool,
+            graph_store,
+            None, // qdrant consolidation daemon wired separately when scheduler feature enabled
+            session_start,
+            session_id,
+        ));
+
+        tracing::info!(
+            w_recency = %self.config.memory.five_signal.w_recency,
+            w_relevance = %self.config.memory.five_signal.w_relevance,
+            w_frequency = %self.config.memory.five_signal.w_frequency,
+            w_causal = %self.config.memory.five_signal.w_causal,
+            w_novelty = %self.config.memory.five_signal.w_novelty,
+            "five-signal SYNAPSE retrieval enabled"
+        );
+
+        memory.with_five_signal(runtime)
     }
 
     /// Build a minimal ephemeral memory for bare mode.

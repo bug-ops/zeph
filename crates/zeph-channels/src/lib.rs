@@ -40,6 +40,7 @@ mod line_editor;
 pub mod markdown;
 #[cfg(feature = "slack")]
 pub mod slack;
+pub mod streaming;
 pub mod telegram;
 pub mod telegram_api_ext;
 pub mod telegram_moderation;

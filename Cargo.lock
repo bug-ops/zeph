@@ -10910,6 +10910,7 @@ dependencies = [
  "zeph-config",
  "zeph-db",
  "zeph-llm",
+ "zeph-scheduler",
 ]
 
 [[package]]

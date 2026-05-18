@@ -72,6 +72,12 @@ pub struct TurnContext {
     /// Populated from the active channel's `allowed_tools` config by the agent runtime
     /// at turn start via [`TurnContext::with_tool_allowlist`].
     pub tool_allowlist: Option<Vec<String>>,
+    /// Current goal entity id in the MAGMA graph, used by five-signal causal distance (issue #4374).
+    ///
+    /// Initially always `None`; populated by the orchestration layer when a goal node
+    /// can be resolved from the active task description. When `None`, the causal distance
+    /// signal contributes zero regardless of `w_causal` weight (FR-006).
+    pub current_goal_entity_id: Option<i64>,
 }
 
 impl TurnContext {
@@ -97,6 +103,7 @@ impl TurnContext {
             cancel_token,
             timeouts,
             tool_allowlist: None,
+            current_goal_entity_id: None,
         }
     }
 

@@ -244,11 +244,13 @@ impl CodeIndexer {
     /// # Errors
     ///
     /// Returns an error if the embedding probe or collection setup fails.
+    #[tracing::instrument(name = "index.indexer.index_project", skip_all)]
     pub async fn index_project(
         &self,
         root: &Path,
         progress_tx: Option<&watch::Sender<IndexProgress>>,
     ) -> Result<IndexReport> {
+        tracing::Span::current().record("root", tracing::field::display(root.display()));
         if self
             .indexing
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -288,12 +290,14 @@ impl CodeIndexer {
         Ok(report)
     }
 
+    #[tracing::instrument(name = "index.indexer.ensure_collection", skip_all)]
     async fn ensure_collection_for_provider(&self) -> Result<()> {
         let probe = self.provider.embed("probe").await?;
         let vector_size = u64::try_from(probe.len())?;
         self.store.ensure_collection(vector_size).await
     }
 
+    #[tracing::instrument(name = "index.indexer.walk_project_files", skip_all)]
     async fn walk_project_files(
         &self,
         root: &Path,
@@ -339,6 +343,7 @@ impl CodeIndexer {
         }
     }
 
+    #[tracing::instrument(name = "index.indexer.index_batch", skip_all)]
     #[allow(clippy::too_many_arguments)]
     async fn index_batch(
         &self,
@@ -411,6 +416,7 @@ impl CodeIndexer {
         tokio::task::yield_now().await;
     }
 
+    #[tracing::instrument(name = "index.indexer.cleanup_removed_files", skip_all)]
     async fn cleanup_removed_files(
         &self,
         current_files: &HashSet<String>,
@@ -433,7 +439,9 @@ impl CodeIndexer {
     /// # Errors
     ///
     /// Returns an error if reading, chunking, or embedding fails.
+    #[tracing::instrument(name = "index.indexer.reindex_file", skip_all)]
     pub async fn reindex_file(&self, root: &Path, abs_path: &Path) -> Result<usize> {
+        tracing::Span::current().record("file_path", tracing::field::display(abs_path.display()));
         let rel_path = abs_path
             .strip_prefix(root)
             .unwrap_or(abs_path)
@@ -465,7 +473,9 @@ impl FileIndexWorker {
     ///
     /// New chunks (those not already in the store) are accumulated, embedded in order, and
     /// upserted in a single batch call to minimise round-trips to `Qdrant` and `SQLite`.
+    #[tracing::instrument(name = "index.indexer.index_file", skip_all)]
     async fn index_file(&self, abs_path: &Path, rel_path: &str) -> Result<(usize, usize)> {
+        tracing::Span::current().record("file_path", rel_path);
         let metadata = tokio::fs::metadata(abs_path).await?;
         if metadata.len() > self.config.max_file_bytes as u64 {
             tracing::debug!(

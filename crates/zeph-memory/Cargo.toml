@@ -40,6 +40,7 @@ zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-db.workspace = true
 zeph-llm.workspace = true
+zeph-scheduler = { workspace = true, optional = true }
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [features]
@@ -47,6 +48,7 @@ profiling = []
 default = ["sqlite", "jsonschema"]
 jsonschema = ["zeph-common/jsonschema"]
 pdf = ["dep:pdf-extract"]
+scheduler = ["dep:zeph-scheduler"]
 sqlite = ["zeph-db/sqlite"]
 postgres = ["zeph-db/postgres"]
 testing = ["zeph-llm/testing"]

@@ -75,6 +75,7 @@ pub mod document;
 pub mod episodic_consolidation;
 pub mod episodic_graph;
 pub mod facade;
+pub mod five_signal;
 pub mod forgetting;
 pub mod hebbian_consolidation;
 pub mod optical_forgetting;

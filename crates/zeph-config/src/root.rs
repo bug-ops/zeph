@@ -287,6 +287,7 @@ impl Default for Config {
                 em_graph: crate::memory::EmGraphConfig::default(),
                 episodic_consolidation: crate::memory::EpisodicConsolidationConfig::default(),
                 shadow_memory: crate::memory::TrajectoryRiskAccumulatorConfig::default(),
+                five_signal: crate::memory::FiveSignalConfig::default(),
             },
             telegram: None,
             discord: None,

@@ -16,8 +16,8 @@ use super::{
     MigrateError, Migration, MigrationResult, migrate_acp_subagents_config,
     migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_autodream_config,
     migrate_cocoon_provider_notice, migrate_compression_predictor_config, migrate_database_url,
-    migrate_egress_config, migrate_focus_auto_consolidate_min_window, migrate_forgetting_config,
-    migrate_goals_config, migrate_hooks_permission_denied_config,
+    migrate_egress_config, migrate_five_signal_config, migrate_focus_auto_consolidate_min_window,
+    migrate_forgetting_config, migrate_goals_config, migrate_hooks_permission_denied_config,
     migrate_hooks_turn_complete_config, migrate_magic_docs_config, migrate_mcp_elicitation_config,
     migrate_mcp_max_connect_attempts, migrate_mcp_trust_levels, migrate_memory_graph_config,
     migrate_memory_hebbian_config, migrate_memory_hebbian_consolidation_config,
@@ -550,5 +550,16 @@ impl Migration for MigrateTraceMetadata {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_trace_metadata(toml_src)
+    }
+}
+
+pub(super) struct MigrateFiveSignalConfig;
+impl Migration for MigrateFiveSignalConfig {
+    fn name(&self) -> &'static str {
+        "migrate_five_signal_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_five_signal_config(toml_src)
     }
 }

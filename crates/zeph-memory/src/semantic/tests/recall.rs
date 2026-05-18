@@ -87,6 +87,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
+        five_signal: None,
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

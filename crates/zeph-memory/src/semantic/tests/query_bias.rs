@@ -108,6 +108,7 @@ async fn test_apply_query_bias_dimension_mismatch_returns_unchanged() {
         retrieval_failure_logger: None,
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
+        five_signal: None,
     };
 
     let embedding = vec![0.1_f32, 0.2, 0.3];

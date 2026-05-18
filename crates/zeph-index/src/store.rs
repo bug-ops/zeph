@@ -147,7 +147,9 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` or `SQLite` operations fail.
+    #[tracing::instrument(name = "index.store.upsert_chunk", skip_all)]
     pub async fn upsert_chunk(&self, chunk: &ChunkInsert<'_>, vector: Vec<f32>) -> Result<String> {
+        tracing::Span::current().record("file_path", chunk.file_path);
         let point_id = uuid::Uuid::new_v4().to_string();
 
         let payload = serde_json::json!({
@@ -213,10 +215,12 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` or `SQLite` operations fail.
+    #[tracing::instrument(name = "index.store.upsert_chunks_batch", skip_all)]
     pub async fn upsert_chunks_batch(
         &self,
         chunks: Vec<(ChunkInsert<'_>, Vec<f32>)>,
     ) -> Result<Vec<String>> {
+        tracing::Span::current().record("chunk_count", chunks.len());
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
@@ -309,10 +313,12 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
+    #[tracing::instrument(name = "index.store.existing_hashes", skip_all)]
     pub async fn existing_hashes(
         &self,
         hashes: &[&str],
     ) -> Result<std::collections::HashSet<String>> {
+        tracing::Span::current().record("hash_count", hashes.len());
         if hashes.is_empty() {
             return Ok(std::collections::HashSet::new());
         }
@@ -342,7 +348,9 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` or `SQLite` operations fail.
+    #[tracing::instrument(name = "index.store.remove_file_chunks", skip_all)]
     pub async fn remove_file_chunks(&self, file_path: &str) -> Result<usize> {
+        tracing::Span::current().record("file_path", file_path);
         let ids: Vec<(String,)> = zeph_db::query_as(sql!(
             "SELECT qdrant_id FROM chunk_metadata WHERE file_path = ?"
         ))
@@ -380,6 +388,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` search fails.
+    #[tracing::instrument(name = "index.store.search", skip_all)]
     pub async fn search(
         &self,
         query_vector: EmbeddingVector<Normalized>,
@@ -415,6 +424,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
+    #[tracing::instrument(name = "index.store.indexed_files", skip_all)]
     pub async fn indexed_files(&self) -> Result<Vec<String>> {
         let rows: Vec<(String,)> =
             zeph_db::query_as(sql!("SELECT DISTINCT file_path FROM chunk_metadata"))
