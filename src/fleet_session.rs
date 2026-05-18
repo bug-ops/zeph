@@ -6,10 +6,75 @@
 //! Provides helpers for registering, updating, and reconciling agent sessions
 //! in the `agent_sessions` table so the fleet dashboard has accurate data.
 
+use std::pin::Pin;
+use std::sync::Arc;
+
 use zeph_memory::store::SqliteStore;
 use zeph_memory::store::agent_sessions::{
     AgentSessionRow, SessionChannel, SessionKind, SessionStatus,
 };
+use zeph_subagent::fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus};
+
+/// Adapts [`SqliteStore`] to the [`FleetRegistry`] trait used by [`SubAgentManager`].
+///
+/// Wrap a `SqliteStore` with this adapter and inject it via
+/// [`SubAgentManager::set_fleet_registry`] so spawned sub-agents appear in the
+/// fleet dashboard.
+pub(crate) struct SqliteFleetRegistry(Arc<SqliteStore>);
+
+impl SqliteFleetRegistry {
+    /// Create a new adapter from a shared store.
+    pub(crate) fn new(store: Arc<SqliteStore>) -> Self {
+        Self(store)
+    }
+}
+
+impl FleetRegistry for SqliteFleetRegistry {
+    fn register_active<'a>(
+        &'a self,
+        info: &'a FleetSessionInfo,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let row = AgentSessionRow {
+                id: info.id.clone(),
+                kind: SessionKind::Autonomous,
+                status: SessionStatus::Active,
+                channel: SessionChannel::Cli,
+                model: String::new(),
+                created_at: info.started_at.clone(),
+                last_active_at: info.started_at.clone(),
+                turns: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                reasoning_tokens: 0,
+                cost_cents: 0.0,
+                goal_text: Some(format!("sub-agent: {}", info.agent_name)),
+            };
+            self.0
+                .upsert_agent_session(&row)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn mark_terminal<'a>(
+        &'a self,
+        session_id: &'a str,
+        status: FleetSessionStatus,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let s = match status {
+                FleetSessionStatus::Completed => SessionStatus::Completed,
+                FleetSessionStatus::Failed => SessionStatus::Failed,
+                FleetSessionStatus::Cancelled => SessionStatus::Cancelled,
+            };
+            self.0
+                .update_agent_session_status(session_id, s)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+}
 
 /// Register a new session in the fleet table and reconcile any stale sessions.
 ///

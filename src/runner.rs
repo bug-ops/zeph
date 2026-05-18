@@ -2682,6 +2682,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         ) {
             tracing::warn!("sub-agent definition loading failed: {e:#}");
         }
+        // Register sub-agents in the fleet dashboard (#4370).
+        if !exec_mode.bare {
+            let fleet_store = std::sync::Arc::new(memory.sqlite().clone());
+            let registry =
+                std::sync::Arc::new(crate::fleet_session::SqliteFleetRegistry::new(fleet_store));
+            mgr.set_fleet_registry(registry);
+        }
         agent.with_orchestration(config.orchestration.clone(), config.agents.clone(), mgr)
     };
     let agent = {

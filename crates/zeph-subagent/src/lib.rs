@@ -43,6 +43,7 @@ pub mod command;
 pub mod def;
 pub mod error;
 pub mod filter;
+pub mod fleet;
 pub mod grants;
 pub mod hooks;
 pub mod manager;
@@ -58,6 +59,7 @@ pub use def::{
 };
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
+pub use fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
 pub use grants::{Grant, GrantKind, PermissionGrants, SecretRequest};
 pub use hooks::{
     HookAction, HookDef, HookError, HookMatcher, HookOutput, HookRunResult, McpDispatch,

@@ -21,6 +21,7 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
 use zeph_config::{ContentIsolationConfig, McpServerConfig, SubAgentConfig};
 
 use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
+use crate::fleet::{FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
 
 use super::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use super::error::SubAgentError;
@@ -394,6 +395,11 @@ pub struct SubAgentManager {
     transcript_dir: Option<PathBuf>,
     /// Maximum number of transcript files to keep (0 = unlimited).
     transcript_max_files: usize,
+    /// Optional fleet registry for registering sub-agents in the fleet dashboard.
+    ///
+    /// When `None`, fleet registration is skipped silently. Inject via
+    /// [`set_fleet_registry`][Self::set_fleet_registry].
+    fleet_registry: Option<SharedFleetRegistry>,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -406,6 +412,7 @@ impl std::fmt::Debug for SubAgentManager {
             .field("stop_hooks_count", &self.stop_hooks.len())
             .field("transcript_dir", &self.transcript_dir)
             .field("transcript_max_files", &self.transcript_max_files)
+            .field("fleet_registry", &self.fleet_registry.is_some())
             .finish()
     }
 }
@@ -696,6 +703,7 @@ impl SubAgentManager {
             stop_hooks: Vec::new(),
             transcript_dir: None,
             transcript_max_files: 50,
+            fleet_registry: None,
         }
     }
 
@@ -722,6 +730,15 @@ impl SubAgentManager {
     /// Set config-level lifecycle stop hooks (fired when any agent finishes or is cancelled).
     pub fn set_stop_hooks(&mut self, hooks: Vec<super::hooks::HookDef>) {
         self.stop_hooks = hooks;
+    }
+
+    /// Inject a fleet registry so spawned sub-agents appear in the fleet dashboard.
+    ///
+    /// When set, [`spawn`][Self::spawn] registers the session as `Active` and
+    /// [`collect`][Self::collect] / [`cancel`][Self::cancel] mark it terminal.
+    /// Errors from the registry are logged at `warn` level and never propagate to callers.
+    pub fn set_fleet_registry(&mut self, registry: SharedFleetRegistry) {
+        self.fleet_registry = Some(registry);
     }
 
     /// Load sub-agent definitions from the given directories.
@@ -1007,6 +1024,22 @@ impl SubAgentManager {
         };
 
         self.agents.insert(task_id.clone(), handle);
+
+        // Register sub-agent in the fleet dashboard (fire-and-forget).
+        if let Some(ref registry) = self.fleet_registry {
+            let registry = Arc::clone(registry);
+            let info = FleetSessionInfo {
+                id: task_id.clone(),
+                agent_name: def_name.to_owned(),
+                started_at: crate::transcript::utc_now_pub(),
+            };
+            tokio::spawn(async move {
+                if let Err(e) = registry.register_active(&info).await {
+                    tracing::warn!(error = %e, task_id = %info.id, "fleet: register_active failed");
+                }
+            });
+        }
+
         // FIX-6: log permission_mode so operators can audit privilege escalation at spawn time.
         // Per-mode runtime enforcement is split across three sites and intentionally NOT done here:
         //   - `Plan` is enforced by `PlanModeExecutor` (build_filtered_executor, ~line 68).
@@ -1120,6 +1153,20 @@ impl SubAgentManager {
         handle.grants.revoke_all();
         tracing::info!(task_id, "sub-agent cancelled");
 
+        // Mark session as cancelled in the fleet dashboard (fire-and-forget).
+        if let Some(ref registry) = self.fleet_registry {
+            let registry = Arc::clone(registry);
+            let tid = task_id.to_owned();
+            tokio::spawn(async move {
+                if let Err(e) = registry
+                    .mark_terminal(&tid, FleetSessionStatus::Cancelled)
+                    .await
+                {
+                    tracing::warn!(error = %e, task_id = %tid, "fleet: mark_terminal(Cancelled) failed");
+                }
+            });
+        }
+
         // Fire SubagentStop lifecycle hooks (fire-and-forget).
         if !self.stop_hooks.is_empty() {
             let stop_hooks = self.stop_hooks.clone();
@@ -1148,6 +1195,24 @@ impl SubAgentManager {
                 handle.state = SubAgentState::Canceled;
                 handle.grants.revoke_all();
                 tracing::info!(task_id, "sub-agent cancelled (cancel_all)");
+
+                // Mark session as cancelled in the fleet dashboard (fire-and-forget).
+                if let Some(ref registry) = self.fleet_registry {
+                    let registry = Arc::clone(registry);
+                    let tid = task_id.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = registry
+                            .mark_terminal(&tid, FleetSessionStatus::Cancelled)
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                task_id = %tid,
+                                "fleet: mark_terminal(Cancelled) failed (cancel_all)"
+                            );
+                        }
+                    });
+                }
             }
         }
     }
@@ -1282,24 +1347,42 @@ impl SubAgentManager {
             Ok(String::new())
         };
 
-        // Write terminal meta sidecar if transcripts were enabled at spawn time.
-        if let Some(ref dir) = handle.transcript_dir.clone() {
+        // Determine terminal state for both transcript meta and fleet registration.
+        let final_state = {
             let status = handle.status_rx.borrow();
-            let final_status = if result.is_err() {
+            if result.is_err() {
                 SubAgentState::Failed
             } else if status.state == SubAgentState::Canceled {
                 SubAgentState::Canceled
             } else {
                 SubAgentState::Completed
-            };
-            let turns_used = status.turns_used;
-            drop(status);
+            }
+        };
 
+        // Mark session as terminal in the fleet dashboard (fire-and-forget).
+        if let Some(ref registry) = self.fleet_registry {
+            let registry = Arc::clone(registry);
+            let tid = task_id.to_owned();
+            let fleet_status = match final_state {
+                SubAgentState::Failed => FleetSessionStatus::Failed,
+                SubAgentState::Canceled => FleetSessionStatus::Cancelled,
+                _ => FleetSessionStatus::Completed,
+            };
+            tokio::spawn(async move {
+                if let Err(e) = registry.mark_terminal(&tid, fleet_status).await {
+                    tracing::warn!(error = %e, task_id = %tid, "fleet: mark_terminal failed");
+                }
+            });
+        }
+
+        // Write terminal meta sidecar if transcripts were enabled at spawn time.
+        if let Some(ref dir) = handle.transcript_dir.clone() {
+            let turns_used = handle.status_rx.borrow().turns_used;
             let meta = TranscriptMeta {
                 agent_id: task_id.to_owned(),
                 agent_name: handle.def.name.clone(),
                 def_name: handle.def.name.clone(),
-                status: final_status,
+                status: final_state,
                 started_at: handle.started_at_str.clone(),
                 finished_at: Some(crate::transcript::utc_now_pub()),
                 resumed_from: None,
@@ -4537,5 +4620,170 @@ mod tests {
         }
 
         mgr.cancel(&new_id).unwrap();
+    }
+
+    // ---- Fleet registry tests (#4370) ----
+
+    use crate::fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
+    use std::sync::Mutex;
+    use tokio::sync::Notify;
+
+    /// Records every fleet call for later assertion and signals via `Notify`.
+    struct MockFleetRegistry {
+        registered: Mutex<Vec<String>>,
+        terminated: Mutex<Vec<(String, FleetSessionStatus)>>,
+        register_notify: Notify,
+        terminal_notify: Notify,
+    }
+
+    impl MockFleetRegistry {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                registered: Mutex::new(Vec::new()),
+                terminated: Mutex::new(Vec::new()),
+                register_notify: Notify::new(),
+                terminal_notify: Notify::new(),
+            })
+        }
+    }
+
+    impl FleetRegistry for MockFleetRegistry {
+        fn register_active<'a>(
+            &'a self,
+            info: &'a FleetSessionInfo,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+            self.registered.lock().unwrap().push(info.id.clone());
+            self.register_notify.notify_one();
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn mark_terminal<'a>(
+            &'a self,
+            session_id: &'a str,
+            status: FleetSessionStatus,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+            self.terminated
+                .lock()
+                .unwrap()
+                .push((session_id.to_owned(), status));
+            self.terminal_notify.notify_one();
+            Box::pin(std::future::ready(Ok(())))
+        }
+    }
+
+    fn make_manager_with_fleet(registry: SharedFleetRegistry) -> SubAgentManager {
+        let mut mgr = SubAgentManager::new(4);
+        mgr.set_fleet_registry(registry);
+        mgr
+    }
+
+    #[tokio::test]
+    async fn fleet_register_active_called_on_spawn() {
+        let registry = MockFleetRegistry::new();
+        let mut mgr = make_manager_with_fleet(Arc::clone(&registry) as SharedFleetRegistry);
+        mgr.definitions.push(sample_def());
+
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "task",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                SpawnContext::default(),
+            )
+            .unwrap();
+
+        // Wait until the background task calls register_active.
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            registry.register_notify.notified(),
+        )
+        .await
+        .expect("register_active was not called within 2s");
+
+        let registered = registry.registered.lock().unwrap();
+        assert!(
+            registered.contains(&task_id),
+            "register_active must be called with the spawned task_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn fleet_mark_terminal_completed_on_collect() {
+        let registry = MockFleetRegistry::new();
+        let mut mgr = make_manager_with_fleet(Arc::clone(&registry) as SharedFleetRegistry);
+        mgr.definitions.push(sample_def());
+
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "task",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                SpawnContext::default(),
+            )
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let _ = mgr.collect(&task_id).await;
+
+        // Wait until the background task calls mark_terminal.
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            registry.terminal_notify.notified(),
+        )
+        .await
+        .expect("mark_terminal was not called within 2s after collect");
+
+        let terminated = registry.terminated.lock().unwrap();
+        assert!(
+            terminated.iter().any(|(id, s)| id == &task_id
+                && matches!(
+                    s,
+                    FleetSessionStatus::Completed | FleetSessionStatus::Failed
+                )),
+            "mark_terminal must be called with a terminal status after collect"
+        );
+    }
+
+    #[tokio::test]
+    async fn fleet_mark_terminal_cancelled_on_cancel() {
+        let registry = MockFleetRegistry::new();
+        let mut mgr = make_manager_with_fleet(Arc::clone(&registry) as SharedFleetRegistry);
+        mgr.definitions.push(sample_def());
+
+        let task_id = mgr
+            .spawn(
+                "bot",
+                "task",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                SpawnContext::default(),
+            )
+            .unwrap();
+
+        mgr.cancel(&task_id).unwrap();
+
+        // Wait until the background task calls mark_terminal.
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            registry.terminal_notify.notified(),
+        )
+        .await
+        .expect("mark_terminal was not called within 2s after cancel");
+
+        let terminated = registry.terminated.lock().unwrap();
+        assert!(
+            terminated
+                .iter()
+                .any(|(id, s)| id == &task_id && *s == FleetSessionStatus::Cancelled),
+            "mark_terminal must be called with Cancelled after cancel"
+        );
     }
 }

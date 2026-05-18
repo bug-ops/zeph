@@ -21,6 +21,13 @@ use crate::graph::types::{EdgeType, GraphFact};
 
 const ENTITY_COLLECTION: &str = "zeph_graph_entities";
 
+/// Maximum number of graph nodes passed to the A* traversal loop.
+///
+/// Without a cap the A* inner loop is O(|nodes|²) per seed, which becomes
+/// prohibitively slow on large or highly-connected graphs. Nodes are ranked by
+/// their seed score before truncation so only the least-relevant nodes are dropped.
+const MAX_GRAPH_NODES: usize = 500;
+
 /// Cosine similarity of two equal-length slices. Returns `0.0` when either norm is zero.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
@@ -35,6 +42,35 @@ const DEFAULT_COMMUNITY_CAP: usize = 3;
 
 /// Query embedding paired with per-entity embedding map, produced by the PRISM path.
 type PrismEmbeddings = Option<(Vec<f32>, HashMap<i64, Vec<f32>>)>;
+
+/// Truncate `node_map` in-place to at most `cap` entries, keeping those with the highest score.
+///
+/// Score is looked up from `entity_scores`; entities absent from that map receive `0.0`.
+/// When `node_map.len() <= cap` the map is unchanged.
+pub(crate) fn cap_node_map<V>(
+    node_map: &mut HashMap<i64, V>,
+    entity_scores: &HashMap<i64, f32>,
+    cap: usize,
+) {
+    if node_map.len() <= cap {
+        return;
+    }
+    let mut scored: Vec<(i64, f32)> = node_map
+        .keys()
+        .map(|&id| {
+            let s = entity_scores.get(&id).copied().unwrap_or(0.0);
+            (id, s)
+        })
+        .collect();
+    scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+    scored.truncate(cap);
+    let keep: HashSet<i64> = scored.into_iter().map(|(id, _)| id).collect();
+    node_map.retain(|id, _| keep.contains(id));
+    tracing::debug!(
+        retained = node_map.len(),
+        "graph_recall_astar: node_map capped"
+    );
+}
 
 /// Retrieve graph facts using A* shortest-path traversal.
 ///
@@ -250,6 +286,9 @@ pub async fn graph_recall_astar(
         };
         graph.add_edge(src, tgt, cost);
     }
+
+    // Cap node_map to the highest-scored nodes to bound A* time complexity.
+    cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
 
     // Run A* from each seed; collect path node pairs.
     let mut path_pairs: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
@@ -548,5 +587,39 @@ mod tests {
         // Entity embeddings missing → fallback to confidence-only → same results as baseline.
         assert!(!result.is_empty());
         assert_eq!(result[0].entity_name, "alice");
+    }
+
+    #[test]
+    fn cap_node_map_truncates_to_cap_keeping_highest_scored() {
+        use petgraph::graph::NodeIndex;
+
+        let mut node_map: HashMap<i64, NodeIndex> = (0..600i64)
+            .map(|id| (id, NodeIndex::new(id as usize)))
+            .collect();
+        // Assign scores: entity 599 gets 1.0, 598 gets 0.999, ..., 0 gets ~0.0.
+        let entity_scores: HashMap<i64, f32> =
+            (0..600i64).map(|id| (id, id as f32 / 599.0)).collect();
+
+        cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
+
+        assert_eq!(node_map.len(), MAX_GRAPH_NODES);
+        // The 500 retained nodes must all have id >= 100 (top 500 by score are ids 100..=599).
+        for &id in node_map.keys() {
+            assert!(id >= 100, "low-scored node {id} should have been dropped");
+        }
+    }
+
+    #[test]
+    fn cap_node_map_noop_when_within_limit() {
+        use petgraph::graph::NodeIndex;
+
+        let mut node_map: HashMap<i64, NodeIndex> = (0..10i64)
+            .map(|id| (id, NodeIndex::new(id as usize)))
+            .collect();
+        let entity_scores: HashMap<i64, f32> = HashMap::new();
+
+        cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
+
+        assert_eq!(node_map.len(), 10);
     }
 }

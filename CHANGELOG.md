@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-memory`: `MAX_GRAPH_NODES` constant (500) added to A* graph retrieval; `node_map` is
+  truncated to the highest-scored 500 nodes before the inner loop, bounding worst-case complexity
+  from O(n²) per seed to O(n log n) (closes #4368).
+- `zeph-subagent`: `FleetRegistry` trait and `SqliteFleetRegistry` adapter; sub-agents spawned by
+  `SubAgentManager` are now registered in the fleet `agent_sessions` table and visible in the fleet
+  dashboard. `cancel_all` marks all active sub-agent sessions as cancelled on shutdown (closes #4370).
+
 ## [0.21.2] - 2026-05-18
 
 ### Added
