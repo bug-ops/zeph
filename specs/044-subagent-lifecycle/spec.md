@@ -276,7 +276,62 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 
 ---
 
-## 9. Open Questions
+## 9. Orchestrator Identity Fields (#4032)
+
+`SpawnContext` gains orchestrator identity fields so spawned subagents can identify the
+parent orchestrator in their system prompt header.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `orchestrator_name` | `Option<String>` | Name of the parent agent or orchestrator |
+| `orchestrator_role` | `Option<String>` | Role string (e.g., `"coordinator"`, `"supervisor"`) |
+
+When `orchestrator_role` is `None`, the spawned subagent's orchestrator header omits the
+role clause entirely (no dangling pronoun). This fixes a grammar issue where the header
+read "from ()" when role was absent (#4070).
+
+### Key Invariants
+
+- Both fields are optional — absent = header omits the field without breaking formatting
+- `orchestrator_name` and `orchestrator_role` are injected into the subagent's system prompt only; not stored in the transcript
+
+---
+
+## 10. MCP Config Inheritance on Respawn (#4342)
+
+When a subagent is respawned (e.g., after crash or explicit restart), the parent's MCP
+config is re-inherited automatically. Previously, the MCP server list was captured at
+initial spawn time and lost on respawn.
+
+### Mechanism
+
+`SpawnContext::mcp_tool_names` is updated from the live parent `McpManager` reference
+at respawn time, not from a stale snapshot.
+
+### Key Invariants
+
+- Respawned subagents MUST inherit the parent's current MCP config, not the config at initial spawn
+- MCP tool names list is never cached in `SubAgentDef` — always fetched live from parent manager
+
+---
+
+## 11. Worktree Teardown Safety (#4342)
+
+When a subagent operating in a git worktree is stopped, the teardown sequence checks
+whether the worktree is still referenced by any other active subagent before removing it.
+
+- Teardown is blocked if another agent has the worktree as its cwd
+- Teardown proceeds if no active agents reference the worktree
+- `git worktree remove` is invoked only if both conditions hold: worktree is not referenced AND the path matches the `worktrees/` prefix
+
+### Key Invariants
+
+- NEVER remove a worktree that is still in use by an active subagent
+- NEVER remove a path that was not created by Zeph (must match known prefix pattern)
+
+---
+
+## 12. Open Questions
 
 None.
 

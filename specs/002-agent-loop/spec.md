@@ -395,6 +395,70 @@ field.
 
 ---
 
+## Autonomous Goal Execution (#4320)
+
+`/goal create --auto [--turns N]` runs the agent autonomously for up to N turns without
+user input until the goal condition is met or the turn limit is reached.
+
+### Architecture: AutonomousDriver
+
+`AutonomousDriver` is driven cooperatively from within the existing `Agent::run` `select!`
+loop — no separate spawned task. The `--auto` flag is communicated via a
+`pending_start_arc` side-channel from `handle_goal` back to the main loop, preserving
+`&mut self` exclusivity.
+
+```
+Agent::run select! loop
+    └── AutonomousDriver (cooperative select! branch)
+            ├── turn_delay_ms sleep between turns
+            ├── deferred supervisor retry on 429 (no blocking sleep)
+            └── exit when: goal met | turn limit | stop signal
+```
+
+### GoalSupervisor
+
+Performs an independent LLM call every `verify_interval` turns to confirm goal
+achievement. Returns a JSON verdict `{ achieved: bool, reason: String }`.
+
+- Isolated from the main LLM provider via `supervisor_provider` config field
+- Deferred retry on 429 — never blocks the autonomous loop with a blocking sleep
+- Pauses after `max_supervisor_fails` consecutive failures (supervisor circuit-breaker)
+
+### AutonomousRegistry
+
+`Arc<Mutex<HashMap<GoalId, AutonomousGoalState>>>` for fleet view and orphan detection.
+Orphaned goals (from crashed sessions) are detected and marked on startup.
+
+### GoalConfig Extensions
+
+Seven new fields added to `GoalConfig` (#4320, #4355):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `autonomous_enabled` | bool | false | Enable `--auto` flag on `/goal create` |
+| `autonomous_max_turns` | u64 | 50 | Turn limit for autonomous runs |
+| `supervisor_provider` | Option<ProviderName> | None | LLM provider for supervisor verification calls |
+| `verify_interval` | u64 | 5 | Turns between supervisor verification calls |
+| `supervisor_timeout_secs` | u64 | 30 | Per-call timeout for supervisor LLM calls |
+| `max_stuck_count` | u64 | 3 | Consecutive identical-output turns before abort |
+| `autonomous_turn_delay_ms` | u64 | 500 | Delay between autonomous turns |
+
+### `/agents` Command Extension
+
+`/agents` shows an **Autonomous Goals** fleet section listing active, completed, and
+orphaned goals with their turn counts and supervisor verification status.
+
+### Key Invariants
+
+- `AutonomousDriver` MUST NOT be spawned as a separate task — must run inside `Agent::run`
+  to preserve `&mut self` exclusivity
+- Supervisor verification is fire-and-forget between turns — NEVER blocks a turn on supervisor LLM call
+- `autonomous_enabled = false` (default) means `--auto` is rejected at parse time; no behavior change
+- Orphan detection runs once at startup via `AutonomousRegistry::reconcile_orphans()`
+- Turn delay between autonomous turns uses `tokio::time::sleep` — NEVER `std::thread::sleep`
+
+---
+
 ## Memory Retrieval Failure Logging (#3597)
 
 OmniMem self-improvement loop requires a dataset of memory retrieval failures.

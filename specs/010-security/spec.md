@@ -507,3 +507,74 @@ Any path in `SandboxPolicy::allow_read` is appended **after** the deny-first blo
 1. Deny rules are placed **after** `(allow file-read*)` and **before** `allow_read` overrides in all non-Off profiles.
 2. Rules apply to **all** `SandboxProfile` variants except `Off`.
 3. Profile generation **fails closed** when `dirs::home_dir()` returns `None` — a `SandboxError::Policy` is returned and the sandbox cannot be started.
+
+---
+
+## ShellDeobfuscator (#4246, #2417)
+
+`ShellDeobfuscator` normalizes obfuscated shell command patterns before `PolicyGate` evaluation,
+preventing bypass via encoding tricks.
+
+### Normalized Patterns
+
+- Hex escapes (`\x72\x6d` → `rm`)
+- Octal escapes (`\162\155` → `rm`)
+- Unicode escapes (`\u{72}\u{6d}` → `rm`)
+- Subshell syntax (`$(echo rm)`, `` `echo rm` ``)
+- Variable placeholders (`${CMD}`, indirect variable refs)
+
+### Integration
+
+Deobfuscation runs in `zeph-tools` before `PolicyGate::check()`. Original command is
+preserved in the audit log; deobfuscated form is used for policy matching.
+
+### Key Invariants
+
+- Deobfuscation is applied to ALL shell commands regardless of trust level
+- Original command is ALWAYS logged in the audit trail; deobfuscated form is used for policy only
+- Deobfuscator must complete in < 1 ms on typical inputs — pure string transformation, no I/O
+
+---
+
+## RiskChainAccumulator (#4246, #3887)
+
+Detects multi-step attack chains within a single turn by correlating consecutive tool
+call risk signals.
+
+### Attack Patterns Detected
+
+| Pattern | Description |
+|---------|-------------|
+| `exfil_read_then_send` | File read followed by network egress in same turn |
+| `cred_then_egress` | Credential access followed by network egress |
+| `scope_escalation` | Consecutive permission-escalating tool calls |
+
+### Integration
+
+`RiskChainAccumulator` is reset at `begin_turn()` via `SecurityState` and accumulates signals
+from `ShellExecutor` and `NetworkEgress` risk classifications during the tool loop. Signals
+are pushed to `RiskSignalQueue`. When a complete chain is detected, a `SecurityEvent::RiskChain`
+is emitted before the offending tool is executed.
+
+### Key Invariants
+
+- `RiskChainAccumulator` MUST be reset at the start of every turn — accumulated chains never span across turns
+- A `RiskChain` event blocks the triggering tool call — not just logs it
+- NEVER accumulate signals from subagent tool calls into the parent session's chain accumulator
+
+---
+
+## SafeFix: Safer Command Suggestions (#4246)
+
+`SafeFix` provides safer command alternatives when a tool call is blocked. The alternative
+is included in the `ToolError::BlockedWithFix` variant and surfaced to the LLM as a hint.
+
+Examples:
+- `rm -rf /some/path` → `rm -rI /some/path` (interactive confirmation)
+- `curl http://...` → `curl -sS --fail https://...` (HTTPS + fail-fast)
+
+### Key Invariants
+
+- `SafeFix` is advisory only — the LLM may ignore the suggestion
+- `BlockedWithFix` is a separate variant from `ToolError::Blocked` — no existing match sites are broken
+- NEVER surface `SafeFix` suggestions to the user (they are for the LLM context only)

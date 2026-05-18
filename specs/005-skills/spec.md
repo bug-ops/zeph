@@ -538,3 +538,48 @@ When `/skill create` is called, the description input is scanned for injection p
 - Trust fallback is `Provisional`, not `Trusted` — NEVER assume full trust on first load
 - Low-confidence skill injection is blocked: score must clear both `disambiguation_threshold` and `min_injection_score`
 - Input injection scan for `/skill create` must run BEFORE the LLM call — not after generation
+
+---
+
+## Data-Instruction Boundary for SKILL.md Descriptions (#4135, #4232)
+
+Untrusted SKILL.md `description` fields are wrapped in `<data-description>` boundary tags
+before context injection to prevent LLM confusion between skill descriptions and agent
+instructions.
+
+### `sanitize_skill_metadata()`
+
+Called in `zeph-skills` before any skill description is injected into the system prompt:
+
+1. XML-escape inner content (`&`, `<`, `>`, `"`, `'`)
+2. Strip common instruction-prefix patterns (e.g., `Ignore previous instructions`, `You are now`)
+3. Wrap in `<data-description>…</data-description>`
+4. Char-truncate at `floor_char_boundary()` for UTF-8 safety
+
+### Per-Invocation Blake3 Re-Hash
+
+When `SkillTrust::requires_trust_check = true` is set on a skill, a blake3 hash of the
+skill content is computed at **every invocation** and compared against the stored hash at
+load time. A mismatch (post-load mutation) triggers `SkillError::TamperDetected` and
+blocks invocation.
+
+```toml
+# Per-skill in SKILL.md frontmatter (or set by the registry on high-privilege install)
+requires_trust_check = true
+```
+
+### Stage-1 Advisory SKILL.md Scan (#4132)
+
+Before executing a skill, the system runs a lightweight static scan over the SKILL.md body
+to detect high-risk patterns (e.g., `eval`, `exec`, `import os`, network exfil keywords)
+and emits an advisory `SecurityEvent::SkillAdvisory` with severity and matched pattern.
+
+- Advisory scan is non-blocking: it does NOT prevent skill execution
+- `SkillEmbedding::from_raw()` visibility tightened to `pub(crate)` — external callers must use the public `SkillEmbedding::new()` constructor which enforces dimension validation
+
+### Key Invariants
+
+- `sanitize_skill_metadata()` MUST run before EVERY description injection — no bypass path
+- Blake3 re-hash only applies to skills with `requires_trust_check = true`; normal skills use load-time trust only
+- Advisory scan result MUST NOT block skill invocation in v1 — advisory only
+- NEVER store the raw unsanitized description in the system prompt

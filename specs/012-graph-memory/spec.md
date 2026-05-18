@@ -332,3 +332,39 @@ link_weight_decay_interval_secs = 86400
 - Decay runs independently of eviction — never couple to GC cycle timing
 - `retrieval_count` is incremented atomically on each successful edge traversal
 - NEVER apply boost to edges with `retrieval_count = 0` — baseline confidence applies unchanged
+
+---
+
+## PRISM: Query-Sensitive A* Edge Costing (#4079, #4360)
+
+Opt-in traversal enhancement that weights BFS graph recall by cosine similarity between the
+query embedding and each candidate entity vector, in addition to the existing confidence score.
+
+### Cost Function
+
+```
+cost(edge) = (1 - edge.confidence) * (1 - cosine_sim(query_vec, entity_vec)).max(0.01)
+```
+
+- Lower cost = preferred traversal path (A* semantics)
+- `.max(0.01)` prevents zero-cost edges from producing degenerate traversal
+
+### Implementation
+
+1. Query embedding fetched **once per `recall_graph()` call** via the configured embed provider, bounded by a 10 s timeout
+2. Entity vectors batch-fetched via `qdrant_point_ids_for_entities` + `get_vectors_from_collection`
+3. On timeout or embed error: **silent fallback** to confidence-only cost (`cost = 1 - confidence`)
+
+### Config
+
+```toml
+[memory.graph]
+query_sensitive_cost = false  # default — no behavior change when disabled
+```
+
+### Key Invariants
+
+- Default is `false` — PRISM is opt-in; confidence-only cost is the default behavior
+- Query embedding is fetched exactly once per recall call — NEVER per entity
+- On embed failure, fallback is silent (DEBUG log only) — never surface to user
+- PRISM does not change the returned entity set; only the traversal order changes

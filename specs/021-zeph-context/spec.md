@@ -291,7 +291,74 @@ slots unchanged.
 
 ---
 
-## 10. Open Questions
+## 10. PRISM Query-Sensitive Edge Costing (#4079, #4360)
+
+PRISM adds an opt-in query-sensitive A* cost function to graph recall in `zeph-memory`.
+When enabled, the BFS traversal weights each candidate entity by cosine similarity to the
+current query embedding rather than using confidence-only cost.
+
+### Cost Function
+
+```
+cost = (1 - confidence) * (1 - cosine_sim).max(0.01)
+```
+
+- `confidence` = edge confidence from MAGMA typed edge
+- `cosine_sim` = cosine similarity between query vector and entity vector (0.0–1.0)
+- `.max(0.01)` prevents zero-cost edges from causing BFS to skip valid nodes
+
+### Implementation Details
+
+- Query embedding is fetched **once per graph recall call** — not per entity
+- Entity vectors are batch-fetched via `qdrant_point_ids_for_entities` + `get_vectors_from_collection`
+- Embed call is bounded by a 10 s timeout; on timeout, falls back to confidence-only cost (no error)
+
+### Config
+
+```toml
+[memory.graph]
+query_sensitive_cost = false  # default off — no behavior change when disabled
+```
+
+### Key Invariants
+
+- Default is `false` — existing behavior unchanged without explicit opt-in
+- Fallback to confidence-only cost is silent (logged at `DEBUG` only)
+- NEVER fetch query embedding per entity — exactly one embed call per graph recall invocation
+
+---
+
+## 11. DACS Summary Injection (#4080, #4360)
+
+DACS implements `ContextInjectionMode::Summary` for subagent context injection.
+When a parent agent spawns a subagent with `injection_mode = "summary"`, the parent
+constructs a deterministic, LLM-free summary to pass as the subagent's initial context.
+
+### Summary Construction
+
+1. Last user message — up to 80 chars
+2. Last 3 assistant text snippets — up to 60 chars each
+3. Tool-use parts are stripped
+4. Newlines collapsed to spaces
+5. Result char-truncated at `floor_char_boundary` to `summary_max_chars` (default 600)
+6. Empty result returns `task_prompt` unchanged
+
+### Config
+
+```toml
+[agent.subagent]
+summary_max_chars = 600  # default
+```
+
+### Key Invariants
+
+- Summary construction is synchronous and LLM-free — no async calls, no provider dependency
+- Empty summary falls back to `task_prompt` — subagent always receives at least the task
+- NEVER include raw tool outputs in the summary — strip `ToolUse` and `ToolResult` parts
+
+---
+
+## 12. Open Questions
 
 None.
 

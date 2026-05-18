@@ -12,7 +12,7 @@ tags:
   - agent-loop
   - contract
 created: 2026-05-17
-status: draft
+status: approved
 related:
   - "[[010-security/spec]]"
   - "[[010-2-injection-defense]]"
@@ -355,15 +355,19 @@ pub struct SafeHarborConfig {
 
 #### MAGE → `zeph-sanitizer` + `zeph-memory` + `zeph-agent-tools`
 
-1. **`zeph-sanitizer`** — new `ShadowMemory` component:
-   - `ShadowMemory::new()` — initialize at session start
-   - `ShadowMemory::record_turn()` — log turn summary after tool execution
+**Implemented in PR #4215.**
+
+1. **`zeph-sanitizer`** — `ShadowMemory` component (`crates/zeph-sanitizer/src/shadow_memory.rs`):
+   - `ShadowMemory::new()` — initialize at session start (VecDeque-backed turn history)
+   - `ShadowMemory::record_turn()` — log `ShadowEvent` after tool execution
    - `ShadowMemory::cumulative_score()` — read current risk score
    - Stored in-memory (no persistence), evicted at session end
+   - Goal drift detection: `jaccard_distance` on tool-name sets, permission escalation pattern, deviation ratio
+   - `GoalDriftResult` carries score, flags, and the triggering event summary
+   - `classify_tool_permission()` maps tool names to permission-level tiers for escalation detection
 
-2. **`zeph-memory`** — new `shadow_memory` SQLite table (optional, for multi-session correlation in v2):
-   - For v1: shadow memory is session-scoped only, no table used
-   - Reserve table schema for future cross-session threat fingerprinting
+2. **`zeph-memory`** — `shadow_memory` SQLite table reserved for v2 cross-session fingerprinting;
+   not written in v1 (session-scoped only)
 
 3. **`zeph-agent-tools`** — pre-action risk probe hook:
    - `pre_action_risk_probe()` — called before `ToolExecutor::execute`

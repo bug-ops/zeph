@@ -234,6 +234,55 @@ validating the new config. `HookRunner::replace_config` is an atomic swap using
 
 ---
 
+## PostToolUse Output Replacement (#3998)
+
+A `post_tool_use` hook can replace the tool output seen by the LLM by returning a JSON
+object with `hookSpecificOutput.updatedToolOutput`. When present and non-null, the
+replacement is substituted into the tool result before it enters the LLM context.
+
+- Multiple chained hooks are supported; the **last non-null replacement wins**
+- Each subsequent hook in the chain receives the prior replacement as its stdin
+- Replacements that are null or absent leave the prior output unchanged
+- `duration_ms` (u64 wall-clock milliseconds of tool execution, excluding permission
+  prompts and PreToolUse hook time) is included in the hook input JSON for both
+  `post_tool_use` and `post_tool_use_failure` events
+
+### Output Replacement Invariants
+
+- Replacement applies to the tool result only — system prompt and chat messages are never modified by hook output
+- An empty `updatedToolOutput` string IS a valid replacement — the tool result becomes empty
+- A null `updatedToolOutput` is treated as "no replacement" — prior output unchanged
+
+---
+
+## Inline Hooks in config.toml (#3885, #4252)
+
+Hooks can be defined inline in `config.toml` under the `[hooks]` section alongside other
+configuration. This is the canonical inline declaration format; plugin-provided hooks via
+`SKILL.md` are merged at startup.
+
+```toml
+[[hooks.pre_tool_use]]
+type = "command"
+command = "echo 'about to call $ZEPH_TOOL_NAME'"
+
+[[hooks.pre_tool_use]]
+type = "mcp_tool"
+server = "my-server"
+tool = "notify"
+args = { tool = "$ZEPH_TOOL_NAME" }
+
+[[hooks.post_tool_use]]
+type = "command"
+command = "echo 'tool took ${ZEPH_TOOL_DURATION_MS}ms'"
+```
+
+All six event types (`cwd_changed`, `file_changed`, `permission_denied`, `turn_complete`,
+`pre_tool_use`, `post_tool_use`) and both action types (`command`, `mcp_tool`) are supported
+inline. The `[hooks]` section is optional; absent section = empty hook lists = zero-cost.
+
+---
+
 ## Key Invariants
 
 - Hook commands execute with the blocked-command list applied — dangerous shell patterns are prevented

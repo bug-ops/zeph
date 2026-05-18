@@ -163,6 +163,64 @@ with zero overhead when disabled (#3318, #3349).
 - `ExperienceStore` wiring must be guarded by `memory.graph.experience.enabled`
 - `MemoryError::Promotion` is a distinct error variant in `zeph-memory` (thiserror, no anyhow)
 
+## MemFlow Tiered Retrieval (#3791, arXiv:2605.03312)
+
+Intent-driven tiered retrieval with three depth tiers controlled by LLM-based classifier and validator.
+
+| Tier | Intent | Retrieval Scope |
+|------|--------|----------------|
+| `ProfileLookup` | Simple entity/fact lookup | SQLite working store only |
+| `TargetedRetrieval` | Multi-turn reasoning | Episodic + Qdrant semantic |
+| `DeepReasoning` | Complex cross-session inference | All tiers + graph traversal |
+
+- Classifier LLM call determines the tier before retrieval; validator LLM call verifies the result post-retrieval
+- Both calls route via configurable `*_provider` fields (multi-model pattern)
+- Fail-open heuristic: on classifier error or timeout → default to `TargetedRetrieval`
+- Disabled by default: `[memory.memflow] enabled = false`
+
+### Config
+
+```toml
+[memory.memflow]
+enabled = false
+classifier_provider = ""   # [[llm.providers]] name; empty = primary
+validator_provider  = ""
+```
+
+---
+
+## ScrapMem Optical Forgetting (#3791, arXiv:2605.03804)
+
+Progressive `ContentFidelity` decay for messages that have not been accessed recently,
+combined with an Episodic Memory Graph (EM-Graph) for causal-temporal event linking.
+
+| Fidelity Level | Storage | Description |
+|----------------|---------|-------------|
+| `Full` | Complete content | No decay applied |
+| `Compressed` | Summarized form | Low-access messages; summary generated at decay point |
+| `SummaryOnly` | Brief summary | Very low-access; original tokens freed |
+
+- EM-Graph edges link events by causal and temporal proximity; used for context-aware decay decisions
+- Decay is driven by a background loop (`optical_forgetting_loop`) that runs off the hot path
+- Disabled by default: `[memory.scrap_mem] enabled = false`
+
+### Key Invariants
+
+- `optical_forgetting_loop` MUST NOT run on the agent turn thread
+- Decay is irreversible within a session; original content is not restored on access
+- EM-Graph edges persist in SQLite (episodic graph table) — decay state is recoverable across restarts
+
+---
+
+## Tiered Recall (`recall_tiered`) Wired to Agent Loop (#3968)
+
+`recall_tiered` and `optical_forgetting_loop` are now wired into the production agent loop
+(previously implemented but not called from `zeph-core`). `recall_tiered` is called from
+`ContextAssembler::gather()` as the default semantic recall path when MemFlow is enabled.
+When disabled, the prior `recall_semantic` path is used unchanged.
+
+---
+
 ## Sub-Specifications
 
 | Sub-spec | Feature |

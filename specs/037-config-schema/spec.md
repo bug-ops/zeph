@@ -220,6 +220,39 @@ Writes the migrated TOML back to the config file path.
 - Store secrets or API keys as plain strings in any config struct.
 - Use `serde_yaml` or `serde_yml` — TOML only for config files.
 - Add `ZEPH_VAULT_BACKEND=env` as a documented or supported pattern.
+- Use `String` for fields that have a closed set of valid values — use enums with `#[serde(rename_all = "lowercase")]`.
+
+---
+
+## Stringly-Typed Field Migration (#3832, #3833, #4295, #4305, #4355)
+
+A series of PRs migrated stringly-typed config fields to proper Rust enums. Invalid values
+now produce a deserialization error at startup instead of a runtime `warn!` log and silent fallback.
+
+### Migrated Fields
+
+| Field | Old Type | New Type | Enum Values |
+|-------|----------|----------|-------------|
+| `GoalConfig.supervisor_provider` | `Option<String>` | `Option<ProviderName>` | any `[[llm.providers]]` name |
+| `OrchestrationConfig.default_failure_strategy` | `String` | `FailureStrategy` | `abort`, `skip`, `retry` |
+| `PlannedTask.failure_strategy` | `String` | `Option<FailureStrategy>` | same |
+| `AuditConfig.destination` | `String` | `AuditDestination` | `file`, `db`, `both` |
+| `StoreRoutingConfig.fallback_route` | `String` | `FallbackRoute` | `local`, `remote` |
+| `VaultBackend` | `String` | `VaultBackend` enum | `age`, `env` |
+
+`VaultBackend` is `#[non_exhaustive]` and emits a `warn!` on unknown backend strings
+(graceful degradation to default, not a hard error) (#4074).
+
+### ProviderName Type
+
+`ProviderName` is `Arc<str>` (migrated from `String` in #4230). This allows cheap cloning
+of provider references throughout the subsystem. All `*_provider` config fields use
+`Option<ProviderName>` or `ProviderName`.
+
+### FleetEntry.state Migration
+
+`FleetEntry.state: String` → `AutonomousState` enum (#4338). Values: `Idle`, `Running`,
+`Paused`, `Completed`, `Failed`. `#[non_exhaustive]` for forward compatibility.
 
 ---
 

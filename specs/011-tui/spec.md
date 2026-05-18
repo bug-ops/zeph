@@ -60,6 +60,7 @@ TuiApp
 | Plan View | `p` | DAG task graph, task states |
 | Security | `s` | Content sanitizer status, quarantine events |
 | SubAgents | `a` | Interactive subagent sidebar with j/k navigation and transcript viewer |
+| Fleet | `f` | Read-only table of all agent sessions (active/completed/unknown); auto-refreshed by `AgentEvent::FleetSnapshot` (#3884) |
 | Task Registry | `/tasks` | Live table of all supervised tasks (see below) |
 | Status Bar | always | Current operation spinner + short status text |
 
@@ -148,6 +149,58 @@ Backfilling embeddings: {done}/{total} ({pct}%)
 ```
 
 This is driven by a `tokio::sync::watch` channel from `spawn_embed_backfill()`. The status clears automatically when the channel signals `None` (completion or timeout). No spinner is used — the fraction display is the progress indicator.
+
+## Fleet Panel (#3884, #4354, #4363)
+
+`Panel::Fleet` (feature-gated `tui`) shows a live table of agent sessions tracked in the `agent_sessions` DB table.
+
+| Column | Content |
+|--------|---------|
+| Session ID | Truncated UUID |
+| Kind | `cli`, `tui`, `telegram`, `discord`, `slack` |
+| Status | `active`, `completed`, `unknown` |
+| Channel | Channel identifier |
+| Started | Wall-clock start time |
+| Duration | Elapsed wall time |
+
+- Toggled with `f`
+- Read-only: no user interaction, no j/k navigation
+- Refresh driven by `AgentEvent::FleetSnapshot`; a background tokio interval task polls `list_agent_sessions` every `[fleet] refresh_interval_secs` (default 5) and sends the event
+- Session lifecycle: `upsert_agent_session` on start, `update_agent_session_status` on normal or error exit; `reconcile_stale_sessions` marks stale active rows as `unknown` on startup (single atomic UPDATE, no TOCTOU race)
+- CLI subcommand `zeph agents fleet` prints the same data as a formatted table
+
+### Config
+
+```toml
+[fleet]
+refresh_interval_secs = 5  # default; serde(default) — no migration needed
+```
+
+### Key Invariants
+
+- `reconcile_stale_sessions` runs once at startup before any session is registered — never after
+- Fleet panel is read-only; the user cannot kill or restart sessions from the TUI
+- `AgentEvent::FleetSnapshot` carries the full snapshot; the panel renders it directly without querying the DB again
+
+---
+
+## Reasoning Token Tracking (#3904, #4354)
+
+The Metrics panel displays reasoning tokens (thinking blocks) separately from prompt and completion tokens.
+
+| Metric | Description |
+|--------|-------------|
+| `reasoning_tokens` | Cumulative count of tokens in `<thinking>` blocks for the session |
+
+`MetricsSnapshot::reasoning_tokens` is updated after each LLM response that contains thinking-block parts. Displayed in the Metrics panel alongside prompt/completion/cached token counts.
+
+---
+
+## Terminal Title (#4354)
+
+When running in TUI mode, the terminal title is set to `Zeph — <session_id_short>` using ANSI escape sequences. The title is updated once at TUI startup and reset to the previous title on exit.
+
+---
 
 ## Log Fallback to Platform Log Directory
 

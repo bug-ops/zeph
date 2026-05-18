@@ -125,6 +125,42 @@ are available in PR4+:
 - When `message_ids_enabled = true`, every `PromptResponse` and every streamed chunk must carry the
   originating `message_id` — partial echo (response but not chunks, or vice versa) is a bug
 
+## Session CRUD Endpoints (#3902, #4252)
+
+ACP exposes REST-style endpoints for session lifecycle management alongside the existing WebSocket/SSE protocol paths.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST /sessions` | Create new session | Returns `{ session_id, status }` |
+| `GET /sessions/{id}` | Fetch session metadata | Returns current status, `working_dir`, created_at |
+| `PATCH /sessions/{id}` | Update session (partial update) | Supports `working_dir` update |
+| `DELETE /sessions/{id}` | Terminate session | Graceful teardown (same as `session/close`) |
+
+### SessionStatus Enum
+
+```
+running  — session is active and processing messages
+idle     — session is open but waiting for input
+stopped  — session has been gracefully terminated
+error    — session terminated due to an unhandled error
+```
+
+`SessionStatus` is `#[non_exhaustive]` — callers must handle unknown variants gracefully.
+
+### PATCH working_dir rules
+
+- The new `working_dir` must be within the `additional_directories` allowlist (same gate as session init)
+- Path is canonicalized via `tokio::fs::canonicalize` — no blocking worker threads
+- Paths outside the allowlist return `403 Forbidden` — never silently accepted
+
+### Key Invariants
+
+- `POST /sessions` response is synchronous — the session is ready to accept messages before the response returns
+- `DELETE /sessions/{id}` follows the same flush-then-remove contract as `session/close`
+- `GET /sessions/{id}` returns 404 after `DELETE` — session IDs are not reused
+
+---
+
 ## Unstable Features (feature: `acp-unstable`)
 
 - `unstable-session-list`: enumerate active sessions

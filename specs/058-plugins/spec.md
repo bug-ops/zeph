@@ -450,7 +450,74 @@ not by inode or creation order. This ensures reproducible overlay merge results 
 
 ---
 
-## 12. Open Questions
+## 12. Auto-Update Policy (#3902, #4252, #4289)
+
+`PluginMeta::auto_update: bool` (default `false`) is an opt-in field declared in the
+plugin manifest. When `true`, `PluginManager::enforce_auto_update()` checks for updates
+on startup and schedules periodic refresh.
+
+### Behavior
+
+- `auto_update = false` (default): plugin is never auto-updated; manual update only
+- `auto_update = true`: `PluginManager` checks for a newer version on every startup
+  and updates in the background via `spawn_blocking`
+- Update check is non-blocking — startup proceeds regardless of update outcome
+
+### `add_remote()` Fix (#4318)
+
+The blocking `add()` call inside `add_remote()` is now dispatched via
+`tokio::task::spawn_blocking` to prevent stalling the async executor on disk I/O during
+remote plugin installation.
+
+### Key Invariants
+
+- `auto_update` is declared in the plugin manifest, not in agent config — plugin author controls this
+- Auto-update MUST NOT overwrite a locally-modified plugin without re-verifying the integrity hash
+- NEVER perform `add_remote()` synchronously on the async executor thread
+
+---
+
+## 13. Plugin Dependency Enforcement (#4312)
+
+Plugins can declare `requires` dependencies in their manifest. `PluginManager` enforces
+these before activation.
+
+### Dependency Types
+
+- `skills`: list of skill names that must be active
+- `mcp_servers`: list of MCP server names that must be configured
+- `features`: list of compile-time feature flags that must be enabled
+
+### Enforcement
+
+`PluginManager::activate()` checks all declared dependencies before injecting the plugin's
+config overlay and skills. Missing dependencies result in `PluginError::DependencyNotMet`
+with a human-readable message listing which dependencies failed.
+
+### Key Invariants
+
+- Dependency check runs BEFORE config overlay merge — a plugin with unsatisfied deps never modifies agent config
+- NEVER activate a plugin with unresolvable skill or MCP dependencies silently
+
+---
+
+## 14. Projected Context Cost in TUI (#4312)
+
+The TUI Plugin panel displays a **projected context cost** for each active plugin:
+estimated tokens the plugin's skills and config will consume per turn.
+
+| Column | Description |
+|--------|-------------|
+| Name | Plugin name |
+| Skills | Count of active skills from this plugin |
+| Projected Cost | Estimated token cost per turn |
+| Status | `active`, `inactive`, `error` |
+
+This helps operators identify token-heavy plugins before they cause context pressure.
+
+---
+
+## 15. Open Questions
 
 None.
 
