@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-core`: `memory_save` tool now returns "Saved to session memory (ephemeral — not
+  available after session ends)." in `--bare` mode instead of the persistent-mode message that
+  incorrectly implied data would survive the session (closes #4394).
+
+### Changed
+
+- `zeph-common`: canonical `AuditSignalType`, `Severity`, and `AuditSignal` types moved here
+  from `zeph-sanitizer` and `zeph-memory`; both crates re-export from `zeph_common::audit` for
+  backward compatibility (closes #4395).
+
 ### Added
 
 - `zeph-memory`, `zeph-config`: Five-signal SYNAPSE retrieval (#4374). Extends the recall

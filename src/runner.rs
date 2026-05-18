@@ -1753,13 +1753,16 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let skill_paths_for_features = skill_paths.clone();
     let plugin_dirs_supplier = app.plugin_dirs_supplier();
 
-    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
-        std::sync::Arc::clone(&memory),
-        conversation_id,
-        zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
-            config.security.memory_validation.clone(),
-        ),
-    );
+    let memory_executor = {
+        let e = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
+            std::sync::Arc::clone(&memory),
+            conversation_id,
+            zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
+                config.security.memory_validation.clone(),
+            ),
+        );
+        if exec_mode.bare { e.ephemeral() } else { e }
+    };
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
         std::sync::Arc::new(memory.sqlite().clone()),
     )

@@ -9,6 +9,7 @@
 //! It has no `zeph-*` dependencies. The optional `treesitter` feature adds tree-sitter
 //! query constants and helpers.
 
+pub mod audit;
 pub mod config;
 pub mod error_taxonomy;
 pub mod fs_secure;

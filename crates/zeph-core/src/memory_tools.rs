@@ -38,13 +38,17 @@ fn default_role() -> String {
     "assistant".into()
 }
 
+/// Executes `memory_search` and `memory_save` tool calls on behalf of the agent.
 pub struct MemoryToolExecutor {
     memory: Arc<SemanticMemory>,
     conversation_id: ConversationId,
     validator: MemoryWriteValidator,
+    /// When `true` the backing store is in-memory (bare mode) and saves do not persist across sessions.
+    ephemeral: bool,
 }
 
 impl MemoryToolExecutor {
+    /// Create with default validator and persistent (non-ephemeral) semantics.
     #[must_use]
     pub fn new(memory: Arc<SemanticMemory>, conversation_id: ConversationId) -> Self {
         Self {
@@ -53,6 +57,7 @@ impl MemoryToolExecutor {
             validator: MemoryWriteValidator::new(
                 zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
             ),
+            ephemeral: false,
         }
     }
 
@@ -67,7 +72,18 @@ impl MemoryToolExecutor {
             memory,
             conversation_id,
             validator,
+            ephemeral: false,
         }
+    }
+
+    /// Mark this executor as ephemeral (bare mode).
+    ///
+    /// When set, `memory_save` reports that the content is session-only and will not be
+    /// available after the session ends.
+    #[must_use]
+    pub fn ephemeral(mut self) -> Self {
+        self.ephemeral = true;
+        self
     }
 }
 
@@ -199,10 +215,19 @@ impl ToolExecutor for MemoryToolExecutor {
                     .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
                 let summary = match message_id_opt {
-                    Some(message_id) => format!(
-                        "Saved to memory (message_id: {message_id}, conversation: {}). Content will be available for future recall.",
-                        self.conversation_id
-                    ),
+                    Some(message_id) => {
+                        if self.ephemeral {
+                            format!(
+                                "Saved to session memory (message_id: {message_id}, conversation: {}). Ephemeral — not available after session ends.",
+                                self.conversation_id
+                            )
+                        } else {
+                            format!(
+                                "Saved to memory (message_id: {message_id}, conversation: {}). Content will be available for future recall.",
+                                self.conversation_id
+                            )
+                        }
+                    }
                     None => "Memory admission rejected: message did not meet quality threshold."
                         .to_owned(),
                 };
@@ -373,6 +398,38 @@ mod tests {
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_save_ephemeral_returns_session_only_message() {
+        let memory = make_memory().await;
+        let sqlite = memory.sqlite().clone();
+        let cid = sqlite.create_conversation().await.unwrap();
+        let executor = MemoryToolExecutor::new(Arc::new(memory), cid).ephemeral();
+
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "content".into(),
+            serde_json::Value::String("temp fact".into()),
+        );
+        let call = ToolCall {
+            tool_id: zeph_common::ToolName::new("memory_save"),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+        };
+        let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
+        assert!(
+            output.summary.contains("Ephemeral"),
+            "bare-mode save must mention ephemeral semantics; got: {}",
+            output.summary
+        );
+        assert!(
+            !output.summary.contains("available for future recall"),
+            "bare-mode save must not claim cross-session persistence; got: {}",
+            output.summary
+        );
     }
 
     /// `memory_search` description must mention user-provided facts so the model
