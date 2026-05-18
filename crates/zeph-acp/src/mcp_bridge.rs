@@ -30,6 +30,9 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// All converted entries start with [`McpTrustLevel::Untrusted`] and no tool allowlist
 /// so that the agent sandbox applies to IDE-requested MCP servers.
 ///
+/// `elicitation_enabled` is read from the `_meta` field of each server entry under
+/// the key `"elicitation_enabled"`. Absent or non-boolean values default to `false`.
+///
 /// # Security
 ///
 /// Dangerous environment variables are stripped from `Stdio` server configs.
@@ -73,7 +76,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                     expected_tools: Vec::new(),
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),
-                    elicitation_enabled: false,
+                    elicitation_enabled: elicitation_from_meta(stdio.meta.as_ref()),
                     elicitation_timeout_secs: 120,
                     env_isolation: false,
                 })
@@ -90,7 +93,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                 expected_tools: Vec::new(),
                 roots: Vec::new(),
                 tool_metadata: HashMap::new(),
-                elicitation_enabled: false,
+                elicitation_enabled: elicitation_from_meta(http.meta.as_ref()),
                 elicitation_timeout_secs: 120,
                 env_isolation: false,
             }),
@@ -109,7 +112,7 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                     expected_tools: Vec::new(),
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),
-                    elicitation_enabled: false,
+                    elicitation_enabled: elicitation_from_meta(sse.meta.as_ref()),
                     elicitation_timeout_secs: 120,
                     env_isolation: false,
                 })
@@ -120,6 +123,17 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
             }
         })
         .collect()
+}
+
+/// Read `elicitation_enabled` from the ACP `_meta` map.
+///
+/// IDEs pass `elicitation_enabled: true` inside the `_meta` field of an MCP server entry
+/// to opt-in to MCP elicitation support for that server. Absent or non-boolean values
+/// default to `false` so existing clients are unaffected.
+fn elicitation_from_meta(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    meta.and_then(|m| m.get("elicitation_enabled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Env vars that must never be passed from ACP clients to MCP child processes.
@@ -151,6 +165,53 @@ fn is_dangerous_env_var(name: &str) -> bool {
             | "NODE_PATH"
             | "RUBYLIB"
     )
+}
+
+#[cfg(test)]
+mod elicitation_tests {
+    use super::elicitation_from_meta;
+
+    #[test]
+    fn absent_meta_returns_false() {
+        assert!(!elicitation_from_meta(None));
+    }
+
+    #[test]
+    fn missing_key_returns_false() {
+        let mut map = serde_json::Map::new();
+        map.insert("other_key".to_owned(), serde_json::Value::Bool(true));
+        assert!(!elicitation_from_meta(Some(&map)));
+    }
+
+    #[test]
+    fn key_true_returns_true() {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "elicitation_enabled".to_owned(),
+            serde_json::Value::Bool(true),
+        );
+        assert!(elicitation_from_meta(Some(&map)));
+    }
+
+    #[test]
+    fn key_false_returns_false() {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "elicitation_enabled".to_owned(),
+            serde_json::Value::Bool(false),
+        );
+        assert!(!elicitation_from_meta(Some(&map)));
+    }
+
+    #[test]
+    fn non_bool_value_returns_false() {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "elicitation_enabled".to_owned(),
+            serde_json::Value::String("true".to_owned()),
+        );
+        assert!(!elicitation_from_meta(Some(&map)));
+    }
 }
 
 #[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
