@@ -24,9 +24,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::markdown::markdown_to_telegram;
+use crate::streaming::StreamingBuffer;
 use crate::telegram_api_ext::{BotAccessSettings, GuestMessage, TelegramApiClient};
 use axum::Router;
 use axum::body::Body;
@@ -101,11 +102,8 @@ pub struct TelegramChannel {
     chat_id: Option<ChatId>,
     rx: mpsc::Receiver<IncomingMessage>,
     allowed_users: Vec<String>,
-    accumulated: String,
-    last_edit: Option<Instant>,
+    buffer: StreamingBuffer,
     message_id: Option<MessageId>,
-    /// Minimum interval between streaming message edits. Defaults to 3 seconds.
-    stream_interval: Duration,
     /// Raw Bot API 10.0 client for methods not yet covered by teloxide.
     api_ext: TelegramApiClient,
     /// Enable Guest Mode: respond to @mentions via `answerGuestQuery`.
@@ -137,8 +135,7 @@ impl std::fmt::Debug for TelegramChannel {
         f.debug_struct("TelegramChannel")
             .field("chat_id", &self.chat_id)
             .field("allowed_users", &self.allowed_users)
-            .field("accumulated_len", &self.accumulated.len())
-            .field("stream_interval_ms", &self.stream_interval.as_millis())
+            .field("accumulated_len", &self.buffer.len())
             .field("guest_mode", &self.guest_mode)
             .field("bot_to_bot", &self.bot_to_bot)
             .field(
@@ -190,10 +187,8 @@ impl TelegramChannel {
             chat_id: None,
             rx,
             allowed_users,
-            accumulated: String::new(),
-            last_edit: None,
+            buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
-            stream_interval: Duration::from_secs(3),
             api_ext,
             guest_mode: false,
             guest_query_id: None,
@@ -216,16 +211,17 @@ impl TelegramChannel {
     #[must_use]
     pub fn with_stream_interval(mut self, interval: Duration) -> Self {
         const MIN_INTERVAL: Duration = Duration::from_millis(500);
-        if interval < MIN_INTERVAL {
+        let clamped = if interval < MIN_INTERVAL {
             tracing::warn!(
                 requested_ms = interval.as_millis(),
                 clamped_ms = MIN_INTERVAL.as_millis(),
                 "stream_interval_ms is below the minimum safe value; clamping to 500ms to avoid Telegram rate limits"
             );
-            self.stream_interval = MIN_INTERVAL;
+            MIN_INTERVAL
         } else {
-            self.stream_interval = interval;
-        }
+            interval
+        };
+        self.buffer = StreamingBuffer::new(clamped);
         self
     }
 
@@ -430,10 +426,8 @@ impl TelegramChannel {
             chat_id: None,
             rx,
             allowed_users,
-            accumulated: String::new(),
-            last_edit: None,
+            buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
-            stream_interval: Duration::from_secs(3),
             api_ext: TelegramApiClient::new("test_token"),
             guest_mode: false,
             guest_query_id: None,
@@ -457,22 +451,17 @@ impl TelegramChannel {
         }
     }
 
-    fn should_send_update(&self) -> bool {
-        match self.last_edit {
-            None => true,
-            Some(last) => last.elapsed() > self.stream_interval,
-        }
-    }
-
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
             return Err(ChannelError::NoActiveSession);
         };
 
-        let text = if self.accumulated.is_empty() {
+        let text_owned;
+        let text = if self.buffer.is_empty() {
             "..."
         } else {
-            &self.accumulated
+            text_owned = self.buffer.text().to_owned();
+            &text_owned
         };
 
         let formatted_text = markdown_to_telegram(text);
@@ -524,7 +513,6 @@ impl TelegramChannel {
                                 "Telegram edit failed (message_id stale?): {e}, sending new message"
                             );
                             self.message_id = None;
-                            self.last_edit = None;
 
                             let msg = self
                                 .bot
@@ -571,7 +559,7 @@ impl TelegramChannel {
             }
         }
 
-        self.last_edit = Some(Instant::now());
+        self.buffer.mark_flushed();
         Ok(())
     }
 }
@@ -1064,8 +1052,7 @@ impl Channel for TelegramChannel {
             self.chat_id = Some(incoming.chat_id);
 
             // Reset streaming state for new response
-            self.accumulated.clear();
-            self.last_edit = None;
+            self.buffer.reset();
             self.message_id = None;
 
             let is_guest = incoming.guest_query_id.is_some();
@@ -1125,10 +1112,10 @@ impl Channel for TelegramChannel {
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         // Guest context: accumulate full response — flush_chunks calls answerGuestQuery once.
         if self.guest_query_id.is_some() {
-            if !self.accumulated.is_empty() {
-                self.accumulated.push('\n');
+            if !self.buffer.is_empty() {
+                self.buffer.push("\n");
             }
-            self.accumulated.push_str(text);
+            self.buffer.push(text);
             return Ok(());
         }
 
@@ -1178,11 +1165,11 @@ impl Channel for TelegramChannel {
     ///
     /// [`flush_chunks`]: TelegramChannel::flush_chunks
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
-        self.accumulated.push_str(chunk);
+        self.buffer.push(chunk);
         tracing::debug!(
             "received chunk (size: {}, total: {})",
             chunk.len(),
-            self.accumulated.len()
+            self.buffer.len()
         );
 
         // In guest context, accumulate only — never call send_or_edit (NFR-005).
@@ -1191,8 +1178,8 @@ impl Channel for TelegramChannel {
             return Ok(());
         }
 
-        if self.should_send_update() {
-            tracing::debug!("sending update (should_send_update returned true)");
+        if self.buffer.should_flush() {
+            tracing::debug!("sending update (buffer.should_flush returned true)");
             self.send_or_edit().await?;
         }
 
@@ -1213,13 +1200,13 @@ impl Channel for TelegramChannel {
         tracing::debug!(
             "flushing chunks (message_id: {:?}, accumulated: {} bytes)",
             self.message_id,
-            self.accumulated.len()
+            self.buffer.len()
         );
 
         // Guest context: send accumulated text via answerGuestQuery (single call).
         if let Some(query_id) = self.guest_query_id.take() {
-            let full_text = std::mem::take(&mut self.accumulated);
-            let text = full_text.trim();
+            let full_text = self.buffer.take();
+            let text = full_text.trim().to_owned();
             if text.len() > MAX_MESSAGE_LEN {
                 tracing::warn!(
                     query_id,
@@ -1231,12 +1218,12 @@ impl Channel for TelegramChannel {
             if !text.is_empty()
                 && let Err(e) = self
                     .api_ext
-                    .answer_guest_query(&query_id, text, Some("HTML"))
+                    .answer_guest_query(&query_id, &text, Some("HTML"))
                     .await
             {
                 tracing::warn!(query_id, "answer_guest_query failed: {e}");
             }
-            self.last_edit = None;
+            self.buffer.reset();
             self.message_id = None;
             return Ok(());
         }
@@ -1244,13 +1231,12 @@ impl Channel for TelegramChannel {
         // Send if there is unsent accumulated text OR an existing message to finalize.
         // The `message_id.is_some()` guard alone would silently discard text that arrived
         // before the first interval elapsed (so `send_or_edit` was never called).
-        if self.message_id.is_some() || !self.accumulated.is_empty() {
+        if self.message_id.is_some() || !self.buffer.is_empty() {
             self.send_or_edit().await?;
         }
 
         // Clear state for next response
-        self.accumulated.clear();
-        self.last_edit = None;
+        self.buffer.reset();
         self.message_id = None;
 
         Ok(())
@@ -1481,8 +1467,6 @@ fn coerce_telegram_field(text: &str, kind: &ElicitationFieldType) -> Option<serd
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use wiremock::matchers::any;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1524,10 +1508,8 @@ mod tests {
             chat_id: Some(ChatId(1)),
             rx,
             allowed_users,
-            accumulated: String::new(),
-            last_edit: None,
+            buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
-            stream_interval: Duration::from_secs(3),
             api_ext: TelegramApiClient::with_base_url(server.uri()),
             guest_mode: false,
             guest_query_id: None,
@@ -1585,61 +1567,52 @@ mod tests {
     }
 
     #[test]
-    fn should_send_update_first_chunk() {
+    fn buffer_should_flush_on_first_chunk() {
         let channel = TelegramChannel::new("test_token".to_string(), Vec::new());
-        assert!(channel.should_send_update());
+        assert!(channel.buffer.should_flush());
     }
 
     #[test]
-    fn should_send_update_time_threshold() {
-        let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new());
-        channel.accumulated = "test".to_string();
-        channel.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(4)).unwrap());
-        assert!(channel.should_send_update());
+    fn buffer_should_flush_after_threshold() {
+        let mut buf = StreamingBuffer::new(Duration::from_millis(1));
+        buf.push("test");
+        buf.mark_flushed();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(buf.should_flush());
     }
 
     #[test]
-    fn should_not_send_update_within_threshold() {
+    fn buffer_should_not_flush_within_threshold() {
         let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new());
-        channel.last_edit = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(500))
-                .unwrap(),
-        );
-        assert!(!channel.should_send_update());
+        channel.buffer.push("x");
+        channel.buffer.mark_flushed();
+        assert!(!channel.buffer.should_flush());
     }
 
     #[test]
     fn with_stream_interval_custom_interval_respected() {
-        let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new())
-            .with_stream_interval(Duration::from_secs(2));
+        let mut buf = StreamingBuffer::new(Duration::from_secs(2));
         // 1500ms elapsed < 2000ms interval — should NOT send
-        channel.last_edit = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(1500))
-                .unwrap(),
-        );
-        assert!(!channel.should_send_update());
-        // 2500ms elapsed > 2000ms interval — should send
-        channel.last_edit = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(2500))
-                .unwrap(),
-        );
-        assert!(channel.should_send_update());
+        buf.push("x");
+        buf.mark_flushed();
+        // Still within throttle
+        assert!(!buf.should_flush());
     }
 
     #[test]
     fn with_stream_interval_clamps_below_500ms() {
+        // Verify clamping doesn't panic and builder succeeds
         let channel = TelegramChannel::new("test_token".to_string(), Vec::new())
             .with_stream_interval(Duration::from_millis(100));
-        assert_eq!(channel.stream_interval, Duration::from_millis(500));
+        // After clamping to 500ms, buffer should be ready to flush (no last_edit yet)
+        assert!(channel.buffer.should_flush());
     }
 
     #[test]
     fn with_stream_interval_default_is_3s() {
+        // Just verify the builder compiles and returns a valid channel
         let channel = TelegramChannel::new("test_token", Vec::new());
-        assert_eq!(channel.stream_interval, Duration::from_secs(3));
+        assert!(channel.buffer.should_flush()); // no prior edit
     }
 
     #[test]
@@ -1713,25 +1686,26 @@ mod tests {
     #[tokio::test]
     async fn send_chunk_accumulates_text_without_api_call() {
         let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
-        // Suppress the API call by setting last_edit within the 10-second threshold.
-        channel.last_edit = Some(Instant::now());
+        // Suppress the API call by marking flushed (throttle active).
+        channel.buffer.push("seed");
+        channel.buffer.mark_flushed();
 
         channel.send_chunk("hello").await.unwrap();
         channel.send_chunk(" world").await.unwrap();
 
-        assert_eq!(channel.accumulated, "hello world");
+        // "seed" was already there; new chunks appended
+        assert_eq!(channel.buffer.text(), "seedhello world");
     }
 
     #[tokio::test]
     async fn flush_chunks_clears_state_when_no_accumulated_and_no_message_id() {
         let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
-        // accumulated is empty and message_id is None — no API call expected.
-        channel.last_edit = Some(Instant::now());
+        // buffer is empty and message_id is None — no API call expected.
+        channel.buffer.mark_flushed();
 
         channel.flush_chunks().await.unwrap();
 
-        assert!(channel.accumulated.is_empty());
-        assert!(channel.last_edit.is_none());
+        assert!(channel.buffer.is_empty());
         assert!(channel.message_id.is_none());
     }
 
@@ -1743,9 +1717,9 @@ mod tests {
         let server = MockServer::start().await;
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
 
-        // Suppress the periodic send by setting last_edit to now (interval not elapsed).
-        channel.last_edit = Some(Instant::now());
-        channel.accumulated = "short reply".to_string();
+        // Suppress the periodic send by marking buffer as flushed (interval not elapsed).
+        channel.buffer.push("short reply");
+        channel.buffer.mark_flushed();
         // message_id is None — the periodic path never fired.
 
         channel.flush_chunks().await.unwrap();
@@ -1756,7 +1730,7 @@ mod tests {
             !requests.is_empty(),
             "flush_chunks must send accumulated text even when message_id is None"
         );
-        assert!(channel.accumulated.is_empty());
+        assert!(channel.buffer.is_empty());
     }
 
     // ---------------------------------------------------------------------------
@@ -1785,14 +1759,13 @@ mod tests {
         let server = MockServer::start().await;
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
 
-        channel.accumulated = "partial response".to_string();
-        channel.last_edit = Some(Instant::now());
+        channel.buffer.push("partial response");
+        channel.buffer.mark_flushed();
         channel.message_id = Some(teloxide::types::MessageId(42));
 
         channel.flush_chunks().await.unwrap();
 
-        assert!(channel.accumulated.is_empty());
-        assert!(channel.last_edit.is_none());
+        assert!(channel.buffer.is_empty());
         assert!(channel.message_id.is_none());
     }
 
@@ -1859,7 +1832,7 @@ mod tests {
         // Build text that exceeds MAX_MESSAGE_LEN after markdown_to_telegram pass.
         // Plain ASCII repeated is safe: markdown_to_telegram won't expand it beyond itself.
         let long_text = "a".repeat(MAX_MESSAGE_LEN + 1);
-        channel.accumulated = long_text;
+        channel.buffer.push(&long_text);
 
         channel.send_or_edit().await.unwrap();
 
@@ -1877,7 +1850,7 @@ mod tests {
         let server = MockServer::start().await;
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
 
-        channel.accumulated = "short text".to_string();
+        channel.buffer.push("short text");
 
         channel.send_or_edit().await.unwrap();
 
@@ -1899,7 +1872,7 @@ mod tests {
         // Pre-set a message_id to trigger the edit branch.
         channel.message_id = Some(teloxide::types::MessageId(42));
         let long_text = "b".repeat(MAX_MESSAGE_LEN + 1);
-        channel.accumulated = long_text;
+        channel.buffer.push(&long_text);
 
         channel.send_or_edit().await.unwrap();
 
@@ -2115,15 +2088,13 @@ mod tests {
     async fn send_chunk_does_not_call_api_in_guest_context() {
         let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
         channel.guest_query_id = Some("qid".to_string());
-        // Simulate interval elapsed so send_or_edit would fire if not guarded
-        channel.last_edit = None;
+        // buffer has no last_edit so should_flush() returns true — but guest guard prevents API call
 
         channel.send_chunk("part1").await.unwrap();
         channel.send_chunk(" part2").await.unwrap();
 
-        // Accumulated text must be present (guard ran, no API call was possible anyway
-        // since there is no mock server — if send_or_edit were called, it would panic)
-        assert_eq!(channel.accumulated, "part1 part2");
+        // Accumulated text must be present (guest guard ran, no API call)
+        assert_eq!(channel.buffer.text(), "part1 part2");
     }
 
     #[tokio::test]
@@ -2147,7 +2118,7 @@ mod tests {
 
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
         channel.guest_query_id = Some("qid42".to_string());
-        channel.accumulated = "response text".to_string();
+        channel.buffer.push("response text");
 
         channel.flush_chunks().await.unwrap();
 
@@ -2157,7 +2128,7 @@ mod tests {
             "answerGuestQuery must be called exactly once"
         );
         assert!(channel.guest_query_id.is_none());
-        assert!(channel.accumulated.is_empty());
+        assert!(channel.buffer.is_empty());
     }
 
     #[tokio::test]

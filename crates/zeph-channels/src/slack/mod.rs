@@ -13,12 +13,16 @@
 pub mod api;
 pub mod events;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
-use zeph_core::channel::{Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage};
+use zeph_core::channel::{
+    Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationRequest,
+    ElicitationResponse,
+};
 
 use self::events::IncomingMessage;
+use crate::streaming::StreamingBuffer;
 
 const EDIT_THROTTLE: Duration = Duration::from_secs(2);
 
@@ -29,8 +33,7 @@ pub struct SlackChannel {
     channel_id: Option<String>,
     allowed_user_ids: Vec<String>,
     allowed_channel_ids: Vec<String>,
-    accumulated: String,
-    last_edit: Option<Instant>,
+    buffer: StreamingBuffer,
     message_ts: Option<String>,
 }
 
@@ -81,8 +84,7 @@ impl SlackChannel {
             channel_id: None,
             allowed_user_ids,
             allowed_channel_ids,
-            accumulated: String::new(),
-            last_edit: None,
+            buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_ts: None,
         })
     }
@@ -99,14 +101,9 @@ impl SlackChannel {
         self.allowed_user_ids.contains(&msg.user_id)
     }
 
-    fn should_send_update(&self) -> bool {
-        self.last_edit
-            .is_none_or(|last| last.elapsed() > EDIT_THROTTLE)
-    }
-
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.slack.send_or_edit", skip_all, level = "debug", fields(buf_len = %self.accumulated.len()))
+        tracing::instrument(name = "channel.slack.send_or_edit", skip_all, level = "debug", fields(buf_len = %self.buffer.len()))
     )]
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let channel_id = self
@@ -114,10 +111,10 @@ impl SlackChannel {
             .as_deref()
             .ok_or(ChannelError::NoActiveSession)?;
 
-        let text = if self.accumulated.is_empty() {
+        let text = if self.buffer.is_empty() {
             "..."
         } else {
-            &self.accumulated
+            self.buffer.text()
         };
 
         match &self.message_ts {
@@ -143,7 +140,7 @@ impl SlackChannel {
             }
         }
 
-        self.last_edit = Some(Instant::now());
+        self.buffer.mark_flushed();
         Ok(())
     }
 }
@@ -174,8 +171,7 @@ impl Channel for SlackChannel {
         };
 
         self.channel_id = Some(incoming.channel_id);
-        self.accumulated.clear();
-        self.last_edit = None;
+        self.buffer.reset();
         self.message_ts = None;
 
         let mut attachments = Vec::new();
@@ -224,8 +220,8 @@ impl Channel for SlackChannel {
         tracing::instrument(name = "channel.slack.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
     )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
-        self.accumulated.push_str(chunk);
-        if self.should_send_update() {
+        self.buffer.push(chunk);
+        if self.buffer.should_flush() {
             self.send_or_edit().await?;
         }
         Ok(())
@@ -236,11 +232,10 @@ impl Channel for SlackChannel {
         tracing::instrument(name = "channel.slack.flush_chunks", skip_all, level = "debug")
     )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        if self.message_ts.is_some() {
+        if self.message_ts.is_some() || !self.buffer.is_empty() {
             self.send_or_edit().await?;
         }
-        self.accumulated.clear();
-        self.last_edit = None;
+        self.buffer.reset();
         self.message_ts = None;
         Ok(())
     }
@@ -304,6 +299,17 @@ impl Channel for SlackChannel {
             }
         }
     }
+
+    async fn elicit(
+        &mut self,
+        request: ElicitationRequest,
+    ) -> Result<ElicitationResponse, ChannelError> {
+        tracing::warn!(
+            server = %request.server_name,
+            "elicit() not supported on Slack channel — declining"
+        );
+        Ok(ElicitationResponse::Declined)
+    }
 }
 
 #[cfg(test)]
@@ -320,8 +326,7 @@ mod tests {
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_channel_ids: vec![],
-            accumulated: String::new(),
-            last_edit: None,
+            buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_ts: None,
         }
     }
@@ -336,34 +341,34 @@ mod tests {
     }
 
     #[test]
-    fn should_send_update_true_when_no_last_edit() {
+    fn buffer_should_flush_true_when_no_last_edit() {
         let ch = make_channel();
-        assert!(ch.should_send_update());
+        assert!(ch.buffer.should_flush());
     }
 
     #[test]
-    fn should_send_update_false_within_throttle() {
+    fn buffer_should_flush_false_within_throttle() {
         let mut ch = make_channel();
-        ch.last_edit = Some(Instant::now());
-        assert!(!ch.should_send_update());
+        ch.buffer.push("x");
+        ch.buffer.mark_flushed();
+        assert!(!ch.buffer.should_flush());
     }
 
     #[test]
-    fn should_send_update_true_after_throttle() {
-        let mut ch = make_channel();
-        ch.last_edit = Some(Instant::now().checked_sub(Duration::from_secs(3)).unwrap());
-        assert!(ch.should_send_update());
+    fn buffer_should_flush_true_after_throttle() {
+        let mut buf = StreamingBuffer::new(Duration::from_millis(1));
+        buf.push("x");
+        buf.mark_flushed();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(buf.should_flush());
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn flush_chunks_clears_state() {
         let mut ch = make_channel();
-        ch.accumulated = "test".into();
-        ch.last_edit = Some(Instant::now());
-        // message_ts is None, so send_or_edit won't be called
+        // buffer empty, message_ts None — send_or_edit is NOT called
         ch.flush_chunks().await.unwrap();
-        assert!(ch.accumulated.is_empty());
-        assert!(ch.last_edit.is_none());
+        assert!(ch.buffer.is_empty());
         assert!(ch.message_ts.is_none());
     }
 
@@ -417,8 +422,7 @@ mod tests {
             channel_id: Some("C1".into()),
             allowed_user_ids: vec!["U-allowed".into()],
             allowed_channel_ids: vec![],
-            accumulated: String::new(),
-            last_edit: None,
+            buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_ts: None,
         };
         // Send an unauthorized message followed by an authorized "yes".
@@ -469,8 +473,7 @@ mod tests {
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_channel_ids: vec![],
-            accumulated: String::new(),
-            last_edit: None,
+            buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_ts: None,
         };
         tx.try_send(IncomingMessage {
@@ -500,9 +503,9 @@ mod tests {
     #[test]
     fn accumulate_chunks() {
         let mut ch = make_channel();
-        ch.accumulated.push_str("part1");
-        ch.accumulated.push_str(" part2");
-        assert_eq!(ch.accumulated, "part1 part2");
+        ch.buffer.push("part1");
+        ch.buffer.push(" part2");
+        assert_eq!(ch.buffer.text(), "part1 part2");
     }
 
     #[tokio::test(flavor = "current_thread")]
