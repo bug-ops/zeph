@@ -46,6 +46,12 @@ pub(super) struct AgentLoopArgs {
     pub(super) task_prompt: String,
     pub(super) skills: Option<Vec<String>>,
     pub(super) max_turns: u32,
+    /// Maximum number of messages retained in the in-memory history buffer.
+    ///
+    /// When the buffer exceeds this limit the oldest non-system messages are dropped
+    /// from the front, keeping the system message (index 0) intact. This prevents
+    /// LLM providers from rejecting requests once the model's context window is full.
+    pub(super) max_history_messages: usize,
     pub(super) cancel: CancellationToken,
     pub(super) status_tx: watch::Sender<SubAgentStatus>,
     pub(super) started_at: Instant,
@@ -598,6 +604,27 @@ async fn handle_tool_step(
     }
 }
 
+/// Drop the oldest non-system messages when `messages` exceeds `limit`.
+///
+/// The system message at index 0 (if `role == System`) is always preserved.
+/// When `limit == 0` the function is a no-op.
+fn trim_message_history(messages: &mut Vec<Message>, limit: usize) {
+    if limit == 0 || messages.len() <= limit {
+        return;
+    }
+    let has_system = messages.first().is_some_and(|m| m.role == Role::System);
+    let excess = messages.len() - limit;
+    // Remove from the front, but skip index 0 when a system message is present.
+    let start = usize::from(has_system);
+    let drain_end = (start + excess).min(messages.len());
+    tracing::debug!(
+        dropped = drain_end - start,
+        remaining = messages.len() - (drain_end - start),
+        "trimming subagent message history"
+    );
+    messages.drain(start..drain_end);
+}
+
 #[tracing::instrument(name = "subagent.agent_loop.run", skip_all, fields(task_id = %args.task_id, agent_name = %args.agent_name))]
 pub(super) async fn run_agent_loop(
     args: AgentLoopArgs,
@@ -609,6 +636,7 @@ pub(super) async fn run_agent_loop(
         task_prompt,
         skills,
         max_turns,
+        max_history_messages,
         cancel,
         status_tx,
         started_at,
@@ -681,6 +709,8 @@ pub(super) async fn run_agent_loop(
             TurnOutcome::NudgeSent | TurnOutcome::SecretHandled => {}
             TurnOutcome::Done | TurnOutcome::Cancelled => break,
         }
+
+        trim_message_history(&mut messages, max_history_messages);
     }
 
     let _ = status_tx.send(SubAgentStatus {
@@ -691,6 +721,74 @@ pub(super) async fn run_agent_loop(
     });
 
     Ok(last_result)
+}
+
+#[cfg(test)]
+mod trim_message_history_tests {
+    use super::*;
+
+    fn sys(text: &str) -> Message {
+        make_message(Role::System, text.to_owned())
+    }
+    fn usr(text: &str) -> Message {
+        make_message(Role::User, text.to_owned())
+    }
+    fn asst(text: &str) -> Message {
+        make_message(Role::Assistant, text.to_owned())
+    }
+
+    #[test]
+    fn noop_when_within_limit() {
+        let mut msgs = vec![sys("sys"), usr("u1"), asst("a1")];
+        trim_message_history(&mut msgs, 10);
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn noop_when_limit_zero() {
+        let mut msgs = vec![sys("sys"), usr("u1"), asst("a1"), usr("u2")];
+        trim_message_history(&mut msgs, 0);
+        assert_eq!(msgs.len(), 4);
+    }
+
+    #[test]
+    fn preserves_system_message_and_trims_oldest() {
+        // 6 messages, limit 4 → drop 2 oldest non-system
+        let mut msgs = vec![
+            sys("sys"),
+            usr("u1"),
+            asst("a1"),
+            usr("u2"),
+            asst("a2"),
+            usr("u3"),
+        ];
+        trim_message_history(&mut msgs, 4);
+        assert_eq!(msgs.len(), 4, "should have 4 messages after trim");
+        assert_eq!(
+            msgs[0].role,
+            Role::System,
+            "system message must be at index 0"
+        );
+        assert_eq!(msgs[1].content, "u2");
+        assert_eq!(msgs[2].content, "a2");
+        assert_eq!(msgs[3].content, "u3");
+    }
+
+    #[test]
+    fn no_system_message_trims_from_front() {
+        let mut msgs = vec![usr("u1"), asst("a1"), usr("u2"), asst("a2"), usr("u3")];
+        trim_message_history(&mut msgs, 3);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].content, "u2");
+    }
+
+    #[test]
+    fn exactly_at_limit_is_noop() {
+        let mut msgs = vec![sys("sys"), usr("u1"), asst("a1")];
+        trim_message_history(&mut msgs, 3);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, Role::System);
+    }
 }
 
 #[cfg(test)]

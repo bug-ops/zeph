@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeph_llm::any::AnyProvider;
@@ -400,6 +400,17 @@ pub struct SubAgentManager {
     /// When `None`, fleet registration is skipped silently. Inject via
     /// [`set_fleet_registry`][Self::set_fleet_registry].
     fleet_registry: Option<SharedFleetRegistry>,
+    /// Tracks fire-and-forget hook and fleet-registry tasks to prevent silent panic swallowing.
+    ///
+    /// Completed and panicked tasks are drained before each new spawn. On graceful shutdown,
+    /// [`shutdown_all`][Self::shutdown_all] aborts all outstanding tasks via
+    /// [`JoinSet::shutdown`].
+    hook_tasks: JoinSet<()>,
+    /// Maximum number of concurrent hook tasks allowed in [`hook_tasks`][Self::hook_tasks].
+    ///
+    /// When the limit is reached, new fire-and-forget tasks are dropped with a warning instead
+    /// of growing the set unboundedly under high-throughput spawning.
+    max_hook_tasks: usize,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -413,6 +424,8 @@ impl std::fmt::Debug for SubAgentManager {
             .field("transcript_dir", &self.transcript_dir)
             .field("transcript_max_files", &self.transcript_max_files)
             .field("fleet_registry", &self.fleet_registry.is_some())
+            .field("hook_tasks_len", &self.hook_tasks.len())
+            .field("max_hook_tasks", &self.max_hook_tasks)
             .finish()
     }
 }
@@ -704,7 +717,30 @@ impl SubAgentManager {
             transcript_dir: None,
             transcript_max_files: 50,
             fleet_registry: None,
+            hook_tasks: JoinSet::new(),
+            max_hook_tasks: 64,
         }
+    }
+
+    /// Drain completed hook tasks and spawn a new one if below the limit.
+    ///
+    /// Polls [`hook_tasks`][Self::hook_tasks] for finished entries so the set does not
+    /// accumulate stale handles. When the set is at capacity, logs a warning and skips
+    /// the spawn rather than growing unboundedly.
+    fn spawn_hook_task<F>(&mut self, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        // Drain completed/panicked tasks before checking capacity.
+        while self.hook_tasks.try_join_next().is_some() {}
+        if self.hook_tasks.len() >= self.max_hook_tasks {
+            tracing::warn!(
+                limit = self.max_hook_tasks,
+                "hook task limit reached — dropping fire-and-forget task"
+            );
+            return;
+        }
+        self.hook_tasks.spawn(future);
     }
 
     /// Reserve `n` concurrency slots for the orchestration scheduler.
@@ -925,6 +961,7 @@ impl SubAgentManager {
         let permission_mode = def.permissions.permission_mode;
         let background = def.permissions.background;
         let max_turns = def.permissions.max_turns;
+        let max_history_messages = def.permissions.max_history_messages;
 
         // Apply config-level default_memory_scope when the agent has no explicit memory field.
         let effective_memory = def.memory.or(config.default_memory_scope);
@@ -985,6 +1022,7 @@ impl SubAgentManager {
                 task_prompt: effective_task_prompt,
                 skills,
                 max_turns,
+                max_history_messages,
                 cancel: cancel_clone,
                 status_tx,
                 started_at,
@@ -1033,7 +1071,7 @@ impl SubAgentManager {
                 agent_name: def_name.to_owned(),
                 started_at: crate::transcript::utc_now_pub(),
             };
-            tokio::spawn(async move {
+            self.spawn_hook_task(async move {
                 if let Err(e) = registry.register_active(&info).await {
                     tracing::warn!(error = %e, task_id = %info.id, "fleet: register_active failed");
                 }
@@ -1075,7 +1113,7 @@ impl SubAgentManager {
         if !config.hooks.start.is_empty() {
             let start_hooks = config.hooks.start.clone();
             let start_env = make_hook_env(task_id, def_name, "");
-            tokio::spawn(async move {
+            self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&start_hooks, &start_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStart hook failed");
                 }
@@ -1136,6 +1174,8 @@ impl SubAgentManager {
         for id in ids {
             let _ = self.cancel(&id);
         }
+        // Abort all outstanding hook/fleet tasks so they don't outlive the manager.
+        self.hook_tasks.abort_all();
     }
 
     /// Cancel a running sub-agent by task ID.
@@ -1151,13 +1191,15 @@ impl SubAgentManager {
         handle.cancel.cancel();
         handle.state = SubAgentState::Canceled;
         handle.grants.revoke_all();
+        // Clone name before dropping borrow on handle (borrow-checker: split borrows).
+        let def_name = handle.def.name.clone();
         tracing::info!(task_id, "sub-agent cancelled");
 
         // Mark session as cancelled in the fleet dashboard (fire-and-forget).
         if let Some(ref registry) = self.fleet_registry {
             let registry = Arc::clone(registry);
             let tid = task_id.to_owned();
-            tokio::spawn(async move {
+            self.spawn_hook_task(async move {
                 if let Err(e) = registry
                     .mark_terminal(&tid, FleetSessionStatus::Cancelled)
                     .await
@@ -1170,8 +1212,8 @@ impl SubAgentManager {
         // Fire SubagentStop lifecycle hooks (fire-and-forget).
         if !self.stop_hooks.is_empty() {
             let stop_hooks = self.stop_hooks.clone();
-            let stop_env = make_hook_env(task_id, &handle.def.name, "");
-            tokio::spawn(async move {
+            let stop_env = make_hook_env(task_id, &def_name, "");
+            self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&stop_hooks, &stop_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStop hook failed");
                 }
@@ -1186,6 +1228,11 @@ impl SubAgentManager {
     /// Used during main agent shutdown or Ctrl+C handling when `DagScheduler` may not be
     /// running. For coordinated scheduler-aware cancellation, prefer `DagScheduler::cancel_all`.
     pub fn cancel_all(&mut self) {
+        // Collect fleet tasks first; cannot call spawn_hook_task while iterating agents
+        // because both paths borrow self mutably.
+        let mut pending_fleet: Vec<
+            std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>,
+        > = Vec::new();
         for (task_id, handle) in &mut self.agents {
             if matches!(
                 handle.state,
@@ -1200,7 +1247,7 @@ impl SubAgentManager {
                 if let Some(ref registry) = self.fleet_registry {
                     let registry = Arc::clone(registry);
                     let tid = task_id.clone();
-                    tokio::spawn(async move {
+                    pending_fleet.push(Box::pin(async move {
                         if let Err(e) = registry
                             .mark_terminal(&tid, FleetSessionStatus::Cancelled)
                             .await
@@ -1211,9 +1258,12 @@ impl SubAgentManager {
                                 "fleet: mark_terminal(Cancelled) failed (cancel_all)"
                             );
                         }
-                    });
+                    }));
                 }
             }
+        }
+        for fut in pending_fleet {
+            self.spawn_hook_task(fut);
         }
     }
 
@@ -1332,7 +1382,7 @@ impl SubAgentManager {
         if !self.stop_hooks.is_empty() {
             let stop_hooks = self.stop_hooks.clone();
             let stop_env = make_hook_env(task_id, &handle.def.name, "");
-            tokio::spawn(async move {
+            self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&stop_hooks, &stop_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStop hook failed");
                 }
@@ -1368,7 +1418,7 @@ impl SubAgentManager {
                 SubAgentState::Canceled => FleetSessionStatus::Cancelled,
                 _ => FleetSessionStatus::Completed,
             };
-            tokio::spawn(async move {
+            self.spawn_hook_task(async move {
                 if let Err(e) = registry.mark_terminal(&tid, fleet_status).await {
                     tracing::warn!(error = %e, task_id = %tid, "fleet: mark_terminal failed");
                 }
@@ -1506,6 +1556,7 @@ impl SubAgentManager {
         let permission_mode = def.permissions.permission_mode;
         let background = def.permissions.background;
         let max_turns = def.permissions.max_turns;
+        let max_history_messages = def.permissions.max_history_messages;
         let system_prompt = def.system_prompt.clone();
         let task_prompt_owned = task_prompt.to_owned();
         let cancel_clone = cancel.clone();
@@ -1547,6 +1598,7 @@ impl SubAgentManager {
                 task_prompt: task_prompt_owned,
                 skills,
                 max_turns,
+                max_history_messages,
                 cancel: cancel_clone,
                 status_tx,
                 started_at,
@@ -1602,7 +1654,7 @@ impl SubAgentManager {
             let start_hooks = config.hooks.start.clone();
             let def_name = meta.def_name.clone();
             let start_env = make_hook_env(&new_task_id, &def_name, "");
-            tokio::spawn(async move {
+            self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&start_hooks, &start_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStart hook failed");
                 }
@@ -3536,6 +3588,7 @@ mod tests {
             spawn_depth: 0,
             mcp_tool_names: Vec::new(),
             content_isolation: ContentIsolationConfig::default(),
+            max_history_messages: 200,
         }
     }
 
@@ -4784,6 +4837,87 @@ mod tests {
                 .iter()
                 .any(|(id, s)| id == &task_id && *s == FleetSessionStatus::Cancelled),
             "mark_terminal must be called with Cancelled after cancel"
+        );
+    }
+
+    // ── spawn_hook_task cap enforcement (#4422) ────────────────────────────
+
+    #[tokio::test]
+    async fn spawn_hook_task_respects_cap() {
+        let rt_handle = tokio::runtime::Handle::current();
+        let _guard = rt_handle.enter();
+
+        let mut mgr = make_manager();
+        mgr.max_hook_tasks = 3;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u32>();
+
+        // Spawn 5 tasks; only 3 should be accepted (cap = 3).
+        for i in 0u32..5 {
+            let tx2 = tx.clone();
+            mgr.spawn_hook_task(async move {
+                // Tiny sleep so tasks are still running during the loop.
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                let _ = tx2.send(i);
+            });
+        }
+
+        // hook_tasks should not exceed the cap.
+        assert!(
+            mgr.hook_tasks.len() <= mgr.max_hook_tasks,
+            "hook_tasks.len() = {} exceeded max_hook_tasks = {}",
+            mgr.hook_tasks.len(),
+            mgr.max_hook_tasks
+        );
+
+        // Drain all spawned tasks.
+        mgr.hook_tasks.join_all().await;
+        drop(tx);
+
+        let mut received = Vec::new();
+        while let Ok(v) = rx.try_recv() {
+            received.push(v);
+        }
+
+        assert!(
+            received.len() <= 3,
+            "at most 3 tasks should have run, got {}",
+            received.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_hook_task_drains_completed_before_cap_check() {
+        let rt_handle = tokio::runtime::Handle::current();
+        let _guard = rt_handle.enter();
+
+        let mut mgr = make_manager();
+        mgr.max_hook_tasks = 2;
+
+        // Spawn 2 instant tasks that complete immediately.
+        for _ in 0..2 {
+            mgr.spawn_hook_task(async {});
+        }
+
+        // Let them finish.
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        // Now spawn 2 more — should succeed because completed tasks are drained first.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        for _ in 0..2 {
+            let tx2 = tx.clone();
+            mgr.spawn_hook_task(async move {
+                let _ = tx2.send(());
+            });
+        }
+
+        mgr.hook_tasks.join_all().await;
+        drop(tx);
+
+        let count = std::iter::from_fn(|| rx.try_recv().ok()).count();
+        assert_eq!(
+            count, 2,
+            "both new tasks should run after stale ones are drained"
         );
     }
 }

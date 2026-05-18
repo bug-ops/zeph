@@ -164,6 +164,12 @@ pub struct SubAgentPermissions {
     pub ttl_secs: u64,
     /// Controls tool access philosophy (`Default`, `Plan`, `BypassPermissions`).
     pub permission_mode: PermissionMode,
+    /// Maximum number of messages retained in the in-memory history buffer.
+    ///
+    /// When the live `messages` vec exceeds this limit the oldest non-system messages
+    /// are evicted from the front, keeping the system message intact. Set to `0` to
+    /// disable eviction entirely (not recommended for long-running agents).
+    pub max_history_messages: usize,
 }
 
 impl Default for SubAgentPermissions {
@@ -175,6 +181,7 @@ impl Default for SubAgentPermissions {
             timeout_secs: 600,
             ttl_secs: 300,
             permission_mode: PermissionMode::Default,
+            max_history_messages: 200,
         }
     }
 }
@@ -231,6 +238,8 @@ struct RawPermissions {
     ttl_secs: u64,
     #[serde(default)]
     permission_mode: PermissionMode,
+    #[serde(default = "default_max_history_messages")]
+    max_history_messages: usize,
 }
 
 impl Default for RawPermissions {
@@ -242,6 +251,7 @@ impl Default for RawPermissions {
             timeout_secs: default_timeout(),
             ttl_secs: default_ttl(),
             permission_mode: PermissionMode::Default,
+            max_history_messages: default_max_history_messages(),
         }
     }
 }
@@ -262,6 +272,9 @@ fn default_timeout() -> u64 {
 }
 fn default_ttl() -> u64 {
     300
+}
+fn default_max_history_messages() -> usize {
+    200
 }
 
 // ── Frontmatter format detection ──────────────────────────────────────────────
@@ -471,6 +484,7 @@ impl SubAgentDef {
                 timeout_secs: p.timeout_secs,
                 ttl_secs: p.ttl_secs,
                 permission_mode: p.permission_mode,
+                max_history_messages: p.max_history_messages,
             },
             skills: SkillFilter {
                 include: raw.skills.include,
