@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-05-18
+
 ### Added
 
 - `zeph-memory`: `MAX_GRAPH_NODES` constant (500) added to A* graph retrieval; `node_map` is
