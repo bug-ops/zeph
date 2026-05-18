@@ -3213,11 +3213,14 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let _prometheus_sync_handle = if exec_mode.bare {
         None
     } else if let Some(prom) = prom_arc {
+        let five_signal_metrics = memory
+            .five_signal_runtime()
+            .map(|rt| std::sync::Arc::clone(&rt.metrics));
         let handle = crate::metrics_export::spawn_metrics_sync_with_five_signal(
             std::sync::Arc::clone(&prom),
             prometheus_metrics_rx,
             config.metrics.sync_interval_secs,
-            None,
+            five_signal_metrics,
         );
         let effective_path = {
             let p = &config.metrics.path;

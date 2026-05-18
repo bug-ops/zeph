@@ -1140,6 +1140,32 @@ mod tests {
         );
     }
 
+    // Regression test for #4427: spawn_metrics_sync_with_five_signal must receive Some when
+    // five_signal is configured; previously runner.rs passed None unconditionally.
+    #[tokio::test]
+    async fn test_spawn_metrics_sync_receives_five_signal() {
+        use zeph_memory::five_signal::metrics::FiveSignalMetrics;
+
+        let pm = Arc::new(PrometheusMetrics::new());
+        let (tx, rx) = watch::channel(MetricsSnapshot::default());
+        let fs = Arc::new(FiveSignalMetrics::default());
+        fs.inc_recall();
+
+        let handle = spawn_metrics_sync_with_five_signal(pm.clone(), rx, 0, Some(Arc::clone(&fs)));
+        // Give the spawned task one iteration to run.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        drop(tx);
+        handle.abort();
+
+        // If five_signal was wired (Some), sync_five_signal will have exported the counter.
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &pm.registry).unwrap();
+        assert!(
+            buf.contains("zeph_five_signal_recall_total 1"),
+            "five_signal metrics must be exported when Some is passed; got:\n{buf}"
+        );
+    }
+
     // Regression test for #4404: sync_five_signal does not double-count on second call.
     #[test]
     fn sync_five_signal_no_double_count() {
