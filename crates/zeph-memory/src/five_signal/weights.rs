@@ -111,12 +111,14 @@ mod tests {
 
     #[test]
     fn already_normalized_stays_unchanged() {
-        let mut cfg = FiveSignalConfig::default();
-        cfg.w_recency = 0.35;
-        cfg.w_relevance = 0.35;
-        cfg.w_frequency = 0.15;
-        cfg.w_causal = 0.10;
-        cfg.w_novelty = 0.05;
+        let cfg = FiveSignalConfig {
+            w_recency: 0.35,
+            w_relevance: 0.35,
+            w_frequency: 0.15,
+            w_causal: 0.10,
+            w_novelty: 0.05,
+            ..FiveSignalConfig::default()
+        };
         let w = FiveSignalWeights::normalized(&cfg);
         assert!((w.w_recency - 0.35).abs() < 1e-9);
         assert!((w.w_frequency - 0.15).abs() < 1e-9);

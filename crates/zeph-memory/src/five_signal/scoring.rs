@@ -91,9 +91,11 @@ mod tests {
     use zeph_config::memory::FiveSignalConfig;
 
     fn baseline_weights() -> FiveSignalWeights {
-        let mut cfg = FiveSignalConfig::default();
-        cfg.w_recency = 0.5;
-        cfg.w_relevance = 0.5;
+        let cfg = FiveSignalConfig {
+            w_recency: 0.5,
+            w_relevance: 0.5,
+            ..FiveSignalConfig::default()
+        };
         FiveSignalWeights::normalized(&cfg)
     }
 
@@ -127,10 +129,12 @@ mod tests {
 
     #[test]
     fn frequency_signal_flips_order() {
-        let mut cfg = FiveSignalConfig::default();
-        cfg.w_recency = 0.35;
-        cfg.w_relevance = 0.35;
-        cfg.w_frequency = 0.30;
+        let cfg = FiveSignalConfig {
+            w_recency: 0.35,
+            w_relevance: 0.35,
+            w_frequency: 0.30,
+            ..FiveSignalConfig::default()
+        };
         let w = FiveSignalWeights::normalized(&cfg);
 
         let id1 = MessageId(1); // lower relevance, high frequency
