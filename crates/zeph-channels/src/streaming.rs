@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn take_activates_throttle() {
-        let mut buf = StreamingBuffer::new(Duration::from_secs(60));
+        let mut buf = StreamingBuffer::new(Duration::from_mins(1));
         buf.push("x");
         buf.take();
         // Throttle is active immediately after take()
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn reset_clears_all_state() {
-        let mut buf = StreamingBuffer::new(Duration::from_secs(60));
+        let mut buf = StreamingBuffer::new(Duration::from_mins(1));
         buf.push("something");
         buf.take(); // activates throttle
         buf.push("more");
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn mark_flushed_records_timestamp_without_draining() {
-        let mut buf = StreamingBuffer::new(Duration::from_secs(60));
+        let mut buf = StreamingBuffer::new(Duration::from_mins(1));
         buf.push("data");
         buf.mark_flushed();
         // Text still present
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn should_flush_false_within_throttle() {
-        let mut buf = StreamingBuffer::new(Duration::from_secs(60));
+        let mut buf = StreamingBuffer::new(Duration::from_mins(1));
         buf.push("x");
         buf.mark_flushed();
         assert!(!buf.should_flush());
