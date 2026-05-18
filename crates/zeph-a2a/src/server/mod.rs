@@ -233,17 +233,20 @@ impl A2aServer {
         tracing::info!("A2A server listening on {}", self.addr);
 
         let mut shutdown_rx = self.shutdown_rx;
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                while !*shutdown_rx.borrow_and_update() {
-                    if shutdown_rx.changed().await.is_err() {
-                        std::future::pending::<()>().await;
-                    }
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            while !*shutdown_rx.borrow_and_update() {
+                if shutdown_rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
                 }
-                tracing::info!("A2A server shutting down");
-            })
-            .await
-            .map_err(|e| A2aError::Server(format!("server error: {e}")))?;
+            }
+            tracing::info!("A2A server shutting down");
+        })
+        .await
+        .map_err(|e| A2aError::Server(format!("server error: {e}")))?;
 
         Ok(())
     }

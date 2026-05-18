@@ -75,6 +75,12 @@ pub(super) async fn test_semantic_memory(_supports_embeddings: bool) -> Semantic
 }
 
 #[tokio::test]
+async fn five_signal_runtime_getter_returns_none_by_default() {
+    let memory = test_semantic_memory(false).await;
+    assert!(memory.five_signal_runtime().is_none());
+}
+
+#[tokio::test]
 async fn with_qdrant_ops_constructs_successfully() {
     let ops = crate::QdrantOps::new("http://127.0.0.1:1", None).unwrap();
     let provider = test_provider();

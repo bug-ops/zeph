@@ -464,13 +464,9 @@ async fn build_acp_deps(
             }
         };
 
-        match crate::scheduler::init_scheduler(
-            config,
-            shutdown_rx.clone(),
-            exp_deps,
-            memory.five_signal_runtime(),
-        )
-        .await
+        let five_signal = memory.five_signal_runtime();
+        match crate::scheduler::init_scheduler(config, shutdown_rx.clone(), exp_deps, five_signal)
+            .await
         {
             Some(result) => {
                 let exec = std::sync::Arc::new(result.executor);
