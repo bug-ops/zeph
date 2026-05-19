@@ -174,13 +174,13 @@ impl SkillMiner {
     }
 
     /// Pre-compute embeddings for existing skill descriptions.
-    async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(String, SkillEmbedding)> {
+    async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(SkillMeta, SkillEmbedding)> {
         let mut embeddings = Vec::with_capacity(skills.len());
         let timeout = Duration::from_millis(self.config.generation_timeout_ms);
         for skill in skills {
             let embed_fut = self.embed_provider.embed(&skill.description);
             match tokio::time::timeout(timeout, embed_fut).await {
-                Ok(Ok(emb)) => embeddings.push((skill.name.clone(), SkillEmbedding::from_raw(emb))),
+                Ok(Ok(emb)) => embeddings.push((skill.clone(), SkillEmbedding::from_raw(emb))),
                 Ok(Err(e)) => {
                     tracing::warn!(
                         skill = %skill.name,
@@ -204,7 +204,7 @@ impl SkillMiner {
     async fn process_repo(
         &self,
         repo: &RepoCandidate,
-        existing_embeddings: &[(String, SkillEmbedding)],
+        existing_embeddings: &[(SkillMeta, SkillEmbedding)],
         is_dry_run: bool,
     ) -> Result<Option<MinedSkill>, SkillError> {
         // Generate skill from repo.
@@ -444,7 +444,7 @@ impl SkillMiner {
     pub async fn is_novel(
         &self,
         candidate: &GeneratedSkill,
-        existing_embeddings: &[(String, SkillEmbedding)],
+        existing_embeddings: &[(SkillMeta, SkillEmbedding)],
     ) -> Result<(bool, f32), SkillError> {
         async move {
             if existing_embeddings.is_empty() {
@@ -579,12 +579,21 @@ mod tests {
         threshold: f32,
     }
 
+    fn make_skill_meta(name: &str) -> SkillMeta {
+        use crate::loader::load_skill_meta_from_str;
+        let content = format!(
+            "---\nname: {name}\ndescription: A test skill.\n---\n\n## Usage\n\nDo stuff.\n"
+        );
+        let (meta, _) = load_skill_meta_from_str(&content).unwrap();
+        meta
+    }
+
     impl FixedEmbedMiner {
         // Directly invoke the dedup logic that is_novel implements, bypassing LLM calls.
         fn is_novel_direct(
             &self,
             candidate_emb: &SkillEmbedding,
-            existing: &[(String, SkillEmbedding)],
+            existing: &[(SkillMeta, SkillEmbedding)],
         ) -> (bool, f32) {
             if existing.is_empty() {
                 return (true, 0.0);
@@ -606,7 +615,7 @@ mod tests {
         };
         let candidate = SkillEmbedding::from_raw(helper.embed_vec.clone());
         let existing = vec![(
-            "existing".to_string(),
+            make_skill_meta("existing"),
             SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]),
         )];
         let (novel, sim) = helper.is_novel_direct(&candidate, &existing);
@@ -626,7 +635,7 @@ mod tests {
         };
         let candidate = SkillEmbedding::from_raw(helper.embed_vec.clone());
         let existing = vec![(
-            "other".to_string(),
+            make_skill_meta("other"),
             SkillEmbedding::from_raw(vec![0.0, 1.0, 0.0]),
         )];
         let (novel, sim) = helper.is_novel_direct(&candidate, &existing);
@@ -787,7 +796,7 @@ mod tests {
         let skill = make_test_skill();
         // Provide a non-empty existing list so the embed is actually attempted.
         let dummy_existing = vec![(
-            "dummy".to_string(),
+            make_skill_meta("dummy"),
             SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]),
         )];
         let result = miner.is_novel(&skill, &dummy_existing).await;

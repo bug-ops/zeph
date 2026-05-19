@@ -21,6 +21,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `mcp_secs` fields (all default 120 s / 300 s); wired into `AcpServerConfig` and
   `ZephAcpAgentState` via `.with_timeouts()`; replaces previously hardcoded 120-second defaults.
 - `zeph-acp`: add `AcpError::ProviderDisabled` and `AcpError::ProviderNotFound` variants.
+- `zeph-skills`: add `merger` module with `MergeDecision` enum and `decide`/`find_nearest` functions
+  implementing the three-way Add/Merge/Discard skill candidate evaluation (AutoSkill A2, spec 057,
+  closes #4448). Similarity thresholds: `merge_threshold` (0.75) and `dedup_threshold` (0.90).
+- `zeph-skills`: add `trace_extractor` module with `TraceExtractor` pipeline that extracts SKILL.md
+  candidates from post-session user-only conversation messages, quarantines them under `_quarantine/`,
+  and applies injection scanning and embedding-based dedup (AutoSkill A1, spec 056, closes #4447).
+- `zeph-skills`: add `write_quarantined()` to `SkillGenerator` for writing skills to `_quarantine/`
+  subdirectory without user approval.
+- `zeph-skills`: add `version`, `source`, and `session_id` fields to `SkillMeta` and `RawFrontmatter`
+  for spec 057 versioned merge tracking and spec 056 session attribution. Added `Default` impl for
+  `SkillMeta`.
+- `zeph-config`: add `LearningConfig` fields `trace_extraction_enabled`, `trace_extraction_provider`,
+  `trace_extraction_max_turns`, `trace_extraction_max_input_bytes`, `skill_merge_enabled`,
+  `skill_merge_provider`, and `merge_threshold` for AutoSkill A1/A2 opt-in configuration.
+- `zeph-core`: add post-session hook `maybe_extract_skills_from_trace` that fires after the agent
+  loop exits and spawns a background `TraceExtractor` task when enabled.
+- `zeph-db`: add migration `092_skill_trace_sessions.sql` (SQLite) and `091_skill_trace_sessions.sql`
+  (PostgreSQL) for the idempotency table that prevents double-processing of sessions.
 
 ### Changed
 

@@ -120,6 +120,26 @@ fn default_d2skill_max_corrections() -> u32 {
     3
 }
 
+fn default_trace_extraction_max_turns() -> u32 {
+    200
+}
+
+fn default_trace_extraction_max_sessions_queued() -> usize {
+    10
+}
+
+fn default_trace_extraction_max_input_bytes() -> usize {
+    131_072 // 128 KB
+}
+
+fn default_merge_threshold() -> f32 {
+    0.75
+}
+
+fn default_skill_merge_enabled() -> bool {
+    true
+}
+
 /// Strategy for detecting implicit user corrections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -312,6 +332,41 @@ pub struct LearningConfig {
     /// Empty = fall back to primary provider.
     #[serde(default)]
     pub d2skill_provider: ProviderName,
+
+    // --- AutoSkill A1: Conversation trace extraction (spec 056) ---
+    /// Enable background skill extraction from completed conversation traces. Default: `false`.
+    #[serde(default)]
+    pub trace_extraction_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for trace extraction LLM calls.
+    /// Empty = fall back to the primary provider.
+    #[serde(default)]
+    pub trace_extraction_provider: ProviderName,
+    /// Maximum user messages to include per extraction session. Default: 200.
+    #[serde(default = "default_trace_extraction_max_turns")]
+    pub trace_extraction_max_turns: u32,
+    /// Maximum concurrent background extraction tasks before dropping oldest. Default: 10.
+    #[serde(default = "default_trace_extraction_max_sessions_queued")]
+    pub trace_extraction_max_sessions_queued: usize,
+    /// Maximum total bytes of user messages to send to the extraction LLM. Default: 131072 (128 KB).
+    #[serde(default = "default_trace_extraction_max_input_bytes")]
+    pub trace_extraction_max_input_bytes: usize,
+
+    // --- AutoSkill A2: Versioned merging (spec 057) ---
+    /// Enable the Merge branch in the Add/Merge/Discard decision flow. Default: `true`.
+    ///
+    /// When `false`, candidates in the merge zone (`merge_threshold <= sim < dedup_threshold`)
+    /// are Discarded instead of merged.
+    #[serde(default = "default_skill_merge_enabled")]
+    pub skill_merge_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for LLM merge calls.
+    /// Empty = fall back to the primary provider.
+    #[serde(default)]
+    pub skill_merge_provider: ProviderName,
+    /// Minimum cosine similarity to trigger a merge with the nearest skill. Default: 0.75.
+    ///
+    /// Must be strictly less than `dedup_threshold` (validated at startup).
+    #[serde(default = "default_merge_threshold")]
+    pub merge_threshold: f32,
 }
 
 impl Default for LearningConfig {
@@ -361,6 +416,14 @@ impl Default for LearningConfig {
             d2skill_enabled: false,
             d2skill_max_corrections: default_d2skill_max_corrections(),
             d2skill_provider: ProviderName::default(),
+            trace_extraction_enabled: false,
+            trace_extraction_provider: ProviderName::default(),
+            trace_extraction_max_turns: default_trace_extraction_max_turns(),
+            trace_extraction_max_sessions_queued: default_trace_extraction_max_sessions_queued(),
+            trace_extraction_max_input_bytes: default_trace_extraction_max_input_bytes(),
+            skill_merge_enabled: default_skill_merge_enabled(),
+            skill_merge_provider: ProviderName::default(),
+            merge_threshold: default_merge_threshold(),
         }
     }
 }

@@ -62,6 +62,19 @@ pub struct SkillMeta {
     pub name: String,
     /// Short capability description used for embedding-based matching.
     pub description: String,
+    /// Monotonically incrementing version counter (spec 057). Default: `0`.
+    ///
+    /// Incremented by 1 on each LLM merge. Existing skills without this field load as `0`.
+    pub version: u32,
+    /// Origin tag for the skill (`source` frontmatter field).
+    ///
+    /// Examples: `"trace_extraction"`, `"github_mining"`, `"user_created"`.
+    /// Empty string when not set.
+    pub source: String,
+    /// Session identifier from which this skill was extracted (`session_id` frontmatter field).
+    ///
+    /// Only present for skills created by the trace extraction pipeline (spec 056).
+    pub session_id: Option<String>,
     /// Optional agent version or runtime compatibility constraint.
     pub compatibility: Option<String>,
     /// SPDX license identifier.
@@ -107,6 +120,27 @@ pub struct Skill {
     pub meta: SkillMeta,
     /// Raw Markdown body (everything after the closing `---` delimiter).
     pub body: String,
+}
+
+impl Default for SkillMeta {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            version: 0,
+            source: String::new(),
+            session_id: None,
+            compatibility: None,
+            license: None,
+            metadata: vec![],
+            allowed_tools: vec![],
+            requires_secrets: vec![],
+            skill_dir: PathBuf::new(),
+            source_url: None,
+            git_hash: None,
+            category: None,
+        }
+    }
 }
 
 impl Skill {
@@ -159,6 +193,9 @@ fn validate_skill_name(name: &str, dir_name: &str) -> Result<(), SkillError> {
 struct RawFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    version: u32,
+    source: String,
+    session_id: Option<String>,
     compatibility: Option<String>,
     license: Option<String>,
     metadata: Vec<(String, String)>,
@@ -316,6 +353,19 @@ fn apply_field(raw: &mut RawFrontmatter, key: &str, value: String) {
     match key {
         "name" => raw.name = Some(value),
         "description" => raw.description = Some(value),
+        "version" => {
+            raw.version = value.trim().parse::<u32>().unwrap_or(0);
+        }
+        "source" => {
+            if !value.is_empty() {
+                raw.source = value;
+            }
+        }
+        "session_id" => {
+            if !value.is_empty() {
+                raw.session_id = Some(value);
+            }
+        }
         "compatibility" => {
             if !value.is_empty() {
                 raw.compatibility = Some(value);
@@ -381,6 +431,9 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
     let mut raw = RawFrontmatter {
         name: None,
         description: None,
+        version: 0,
+        source: String::new(),
+        session_id: None,
         compatibility: None,
         license: None,
         metadata: Vec::new(),
@@ -566,6 +619,9 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
     let meta = SkillMeta {
         name,
         description,
+        version: raw.version,
+        source: raw.source,
+        session_id: raw.session_id,
         compatibility: raw.compatibility,
         license: raw.license,
         metadata: raw.metadata,
@@ -642,6 +698,9 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
     Ok(SkillMeta {
         name,
         description,
+        version: raw.version,
+        source: raw.source,
+        session_id: raw.session_id,
         compatibility: raw.compatibility,
         license: raw.license,
         metadata: raw.metadata,

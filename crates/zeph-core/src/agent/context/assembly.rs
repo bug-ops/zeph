@@ -1875,15 +1875,7 @@ mod tests {
                 meta: SkillMeta {
                     name: name.into(),
                     description: "desc".into(),
-                    compatibility: None,
-                    license: None,
-                    metadata: vec![],
-                    allowed_tools: vec![],
-                    requires_secrets: vec![],
-                    skill_dir: PathBuf::new(),
-                    source_url: None,
-                    git_hash: None,
-                    category: None,
+                    ..Default::default()
                 },
                 body: "body".into(),
             }
@@ -1951,15 +1943,7 @@ mod tests {
                 meta: SkillMeta {
                     name: name.into(),
                     description: "desc".into(),
-                    compatibility: None,
-                    license: None,
-                    metadata: vec![],
-                    allowed_tools: vec![],
-                    requires_secrets: vec![],
-                    skill_dir: PathBuf::new(),
-                    source_url: None,
-                    git_hash: None,
-                    category: None,
+                    ..Default::default()
                 },
                 body: "body".into(),
             }
@@ -2004,15 +1988,7 @@ mod tests {
         let make_meta = |name: &str| SkillMeta {
             name: name.to_owned(),
             description: "desc".to_owned(),
-            compatibility: None,
-            license: None,
-            metadata: vec![],
-            allowed_tools: vec![],
-            requires_secrets: vec![],
-            skill_dir: std::path::PathBuf::new(),
-            source_url: None,
-            git_hash: None,
-            category: None,
+            ..Default::default()
         };
         let skills = [make_meta("blocked-skill"), make_meta("allowed-skill")];
 
@@ -2053,15 +2029,7 @@ mod tests {
                 meta: SkillMeta {
                     name: name.into(),
                     description: "desc".into(),
-                    compatibility: None,
-                    license: None,
-                    metadata: vec![],
-                    allowed_tools: vec![],
-                    requires_secrets: vec![],
-                    skill_dir: PathBuf::new(),
-                    source_url: None,
-                    git_hash: None,
-                    category: None,
+                    ..Default::default()
                 },
                 body: "body".into(),
             }

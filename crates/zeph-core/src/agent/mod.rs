@@ -59,6 +59,7 @@ pub(crate) mod state;
 pub(crate) mod task_injection;
 pub(crate) mod tool_execution;
 pub(crate) mod tool_orchestrator;
+mod trace_extraction;
 pub mod trajectory;
 mod trajectory_commands;
 mod trust_commands;
@@ -1165,6 +1166,9 @@ impl<C: Channel> Agent<C> {
         // autoDream: run background memory consolidation if conditions are met (#2697).
         // Runs with a timeout — partial state is acceptable for MVP.
         self.maybe_autodream().await;
+
+        // AutoSkill A1: extract skill candidates from the completed session trace (spec 056).
+        self.maybe_extract_skills_from_trace().await;
 
         // Flush trace collector on normal exit (C-04: Drop handles error/panic paths).
         if let Some(ref mut tc) = self.runtime.debug.trace_collector {

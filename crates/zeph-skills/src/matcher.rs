@@ -612,15 +612,7 @@ mod tests {
         SkillMeta {
             name: name.into(),
             description: description.into(),
-            compatibility: None,
-            license: None,
-            metadata: Vec::new(),
-            allowed_tools: Vec::new(),
-            requires_secrets: Vec::new(),
-            skill_dir: PathBuf::new(),
-            source_url: None,
-            git_hash: None,
-            category: None,
+            ..Default::default()
         }
     }
 
@@ -628,15 +620,8 @@ mod tests {
         SkillMeta {
             name: name.into(),
             description: description.into(),
-            compatibility: None,
-            license: None,
-            metadata: Vec::new(),
-            allowed_tools: Vec::new(),
-            requires_secrets: Vec::new(),
-            skill_dir: PathBuf::new(),
-            source_url: None,
-            git_hash: None,
             category: Some(category.into()),
+            ..Default::default()
         }
     }
 

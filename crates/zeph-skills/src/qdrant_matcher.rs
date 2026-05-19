@@ -165,21 +165,12 @@ impl QdrantSkillMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn make_meta(name: &str, description: &str) -> SkillMeta {
         SkillMeta {
             name: name.into(),
             description: description.into(),
-            compatibility: None,
-            license: None,
-            metadata: Vec::new(),
-            allowed_tools: Vec::new(),
-            requires_secrets: Vec::new(),
-            skill_dir: PathBuf::new(),
-            source_url: None,
-            git_hash: None,
-            category: None,
+            ..Default::default()
         }
     }
 

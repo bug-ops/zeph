@@ -284,6 +284,47 @@ impl SkillGenerator {
     }
 }
 
+impl SkillGenerator {
+    /// Write a skill candidate to the quarantine subdirectory.
+    ///
+    /// Unlike [`Self::approve_and_save`], this overwrites existing quarantined drafts and
+    /// does not check for directory existence (re-extraction overwrites previous candidates).
+    /// The output path is `<output_dir>/_quarantine/<name>/SKILL.md`.
+    ///
+    /// The `_quarantine` prefix ensures the registry's directory scanner never loads these
+    /// files as active skills, because `validate_skill_name` rejects `_`-prefixed names.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SkillError::Invalid` if the name fails validation.
+    /// Returns `SkillError::Io` on filesystem errors.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// use zeph_skills::generator::{SkillGenerator, GeneratedSkill};
+    ///
+    /// async fn quarantine(gen: &SkillGenerator, skill: &GeneratedSkill) {
+    ///     let path = gen.write_quarantined(skill).await.unwrap();
+    ///     assert!(path.to_str().unwrap().contains("_quarantine"));
+    /// }
+    /// ```
+    pub async fn write_quarantined(&self, skill: &GeneratedSkill) -> Result<PathBuf, SkillError> {
+        validate_generated_name(&skill.name)?;
+        let quarantine_dir = self.output_dir.join("_quarantine").join(&skill.name);
+        tokio::fs::create_dir_all(&quarantine_dir).await?;
+        let skill_path = quarantine_dir.join("SKILL.md");
+        tokio::fs::write(&skill_path, &skill.content).await?;
+        tracing::info!(
+            name = %skill.name,
+            path = %skill_path.display(),
+            "skill written to quarantine"
+        );
+        Ok(skill_path)
+    }
+}
+
 /// Validate that `name` is a safe lowercase-hyphen identifier (no path separators).
 fn validate_generated_name(name: &str) -> Result<(), SkillError> {
     if name.is_empty() || name.len() > 64 {
