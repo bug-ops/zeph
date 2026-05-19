@@ -606,7 +606,6 @@ pub use zeph_common::math::cosine_similarity;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn make_meta(name: &str, description: &str) -> SkillMeta {
         SkillMeta {

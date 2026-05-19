@@ -1864,7 +1864,6 @@ mod tests {
     #[test]
     fn group_structured_branch_produces_active_skill_tags_when_above_threshold() {
         use std::collections::HashMap;
-        use std::path::PathBuf;
         use zeph_common::SkillTrustLevel;
         use zeph_skills::group::{GroupResult, group_skills};
         use zeph_skills::loader::{Skill, SkillMeta};
@@ -1934,7 +1933,6 @@ mod tests {
 
     #[test]
     fn group_structured_branch_falls_back_to_flat_when_below_threshold() {
-        use std::path::PathBuf;
         use zeph_skills::group::{GroupResult, group_skills};
         use zeph_skills::loader::{Skill, SkillMeta};
 
@@ -2020,7 +2018,6 @@ mod tests {
     /// so `group_skills()` looks up the wrong embedding and produces incorrect support groups.
     #[test]
     fn channel_allowlist_filter_rebuilds_matched_indices() {
-        use std::path::PathBuf;
         use zeph_skills::group::{GroupResult, group_skills};
         use zeph_skills::loader::{Skill, SkillMeta};
 

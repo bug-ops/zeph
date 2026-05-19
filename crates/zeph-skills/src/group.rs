@@ -140,7 +140,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use super::*;
     use crate::loader::{Skill, SkillMeta};
