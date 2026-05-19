@@ -181,6 +181,8 @@ struct SharedAgentDeps {
     acp_auth_methods: Vec<zeph_core::config::AcpAuthMethod>,
     /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
     acp_message_ids_enabled: bool,
+    /// ACP timeout configuration (elicitation, terminal, MCP).
+    acp_timeouts: zeph_config::AcpTimeoutsConfig,
     /// Resolves current per-plugin skill dirs at hot-reload time.
     plugin_dirs_supplier: std::sync::Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 
@@ -575,6 +577,7 @@ async fn build_acp_deps(
         acp_additional_directories: config.acp.additional_directories.clone(),
         acp_auth_methods: config.acp.auth_methods.clone(),
         acp_message_ids_enabled: config.acp.message_ids_enabled,
+        acp_timeouts: config.acp.timeouts.clone(),
         plugin_dirs_supplier: std::sync::Arc::new(plugin_dirs_supplier),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -1322,7 +1325,7 @@ pub(crate) async fn run_acp_server(
         mcp_manager: Some(mcp_manager_for_acp),
         auth_bearer_token: deps.acp_auth_bearer_token.clone(),
         discovery_enabled: deps.acp_discovery_enabled,
-        terminal_timeout_secs: 120,
+        terminal_timeout_secs: deps.acp_timeouts.terminal_secs,
         project_rules: deps.acp_project_rules.clone(),
         title_max_chars: deps.acp_title_max_chars,
         max_history: deps.acp_max_history,
@@ -1335,6 +1338,7 @@ pub(crate) async fn run_acp_server(
         additional_directories: effective_additional_dirs,
         auth_methods: effective_auth_methods,
         message_ids_enabled: effective_message_ids,
+        timeouts: deps.acp_timeouts.clone(),
     };
 
     let shared = Arc::new(deps);
@@ -1394,7 +1398,7 @@ pub(crate) async fn run_acp_http_server(
         mcp_manager: Some(Arc::clone(&mcp_manager_for_acp)),
         auth_bearer_token,
         discovery_enabled: app.config().acp.discovery_enabled,
-        terminal_timeout_secs: 120,
+        terminal_timeout_secs: app.config().acp.timeouts.terminal_secs,
         project_rules: collect_project_rules(&app.skill_paths_for_registry()),
         title_max_chars: app.config().memory.sessions.title_max_chars,
         max_history: app.config().memory.sessions.max_history,
@@ -1403,6 +1407,7 @@ pub(crate) async fn run_acp_http_server(
         additional_directories: app.config().acp.additional_directories.clone(),
         auth_methods: app.config().acp.auth_methods.clone(),
         message_ids_enabled: app.config().acp.message_ids_enabled,
+        timeouts: app.config().acp.timeouts.clone(),
     };
     let shared_deps: Arc<RwLock<Option<Arc<SharedAgentDeps>>>> = Arc::new(RwLock::new(None));
     let shared_deps_for_spawner = Arc::clone(&shared_deps);
