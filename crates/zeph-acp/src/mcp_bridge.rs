@@ -33,6 +33,9 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// `elicitation_enabled` is read from the `_meta` field of each server entry under
 /// the key `"elicitation_enabled"`. Absent or non-boolean values default to `false`.
 ///
+/// `elicitation_default_timeout_secs` is used as the fallback when `elicitation_timeout_secs`
+/// is absent from `_meta`. Pass `[acp.timeouts].elicitation_secs` from the agent config.
+///
 /// # Security
 ///
 /// Dangerous environment variables are stripped from `Stdio` server configs.
@@ -47,12 +50,15 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// let servers = vec![
 ///     McpServer::Stdio(McpServerStdio::new("my-server", "/usr/bin/my-mcp")),
 /// ];
-/// let entries = acp_mcp_servers_to_entries(&servers);
+/// let entries = acp_mcp_servers_to_entries(&servers, 120);
 /// assert_eq!(entries.len(), 1);
 /// assert_eq!(entries[0].id, "my-server");
 /// ```
 #[must_use]
-pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<ServerEntry> {
+pub fn acp_mcp_servers_to_entries(
+    servers: &[acp::schema::McpServer],
+    elicitation_default_timeout_secs: u64,
+) -> Vec<ServerEntry> {
     servers
         .iter()
         .filter_map(|s| match s {
@@ -77,7 +83,10 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),
                     elicitation_enabled: elicitation_from_meta(stdio.meta.as_ref()),
-                    elicitation_timeout_secs: elicitation_timeout_from_meta(stdio.meta.as_ref()),
+                    elicitation_timeout_secs: elicitation_timeout_from_meta(
+                        stdio.meta.as_ref(),
+                        elicitation_default_timeout_secs,
+                    ),
                     env_isolation: false,
                 })
             }
@@ -94,7 +103,10 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                 roots: Vec::new(),
                 tool_metadata: HashMap::new(),
                 elicitation_enabled: elicitation_from_meta(http.meta.as_ref()),
-                elicitation_timeout_secs: elicitation_timeout_from_meta(http.meta.as_ref()),
+                elicitation_timeout_secs: elicitation_timeout_from_meta(
+                    http.meta.as_ref(),
+                    elicitation_default_timeout_secs,
+                ),
                 env_isolation: false,
             }),
             acp::schema::McpServer::Sse(sse) => {
@@ -113,7 +125,10 @@ pub fn acp_mcp_servers_to_entries(servers: &[acp::schema::McpServer]) -> Vec<Ser
                     roots: Vec::new(),
                     tool_metadata: HashMap::new(),
                     elicitation_enabled: elicitation_from_meta(sse.meta.as_ref()),
-                    elicitation_timeout_secs: elicitation_timeout_from_meta(sse.meta.as_ref()),
+                    elicitation_timeout_secs: elicitation_timeout_from_meta(
+                        sse.meta.as_ref(),
+                        elicitation_default_timeout_secs,
+                    ),
                     env_isolation: false,
                 })
             }
@@ -138,11 +153,15 @@ fn elicitation_from_meta(meta: Option<&serde_json::Map<String, serde_json::Value
 
 /// Read `elicitation_timeout_secs` from the ACP `_meta` map.
 ///
-/// Returns the u64 timeout value when present and valid, otherwise falls back to `120`.
-fn elicitation_timeout_from_meta(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> u64 {
+/// Returns the u64 timeout value when present and valid, otherwise falls back to
+/// `default_secs` from `[acp.timeouts]` configuration.
+pub(crate) fn elicitation_timeout_from_meta(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    default_secs: u64,
+) -> u64 {
     meta.and_then(|m| m.get("elicitation_timeout_secs"))
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(120)
+        .unwrap_or(default_secs)
 }
 
 /// Env vars that must never be passed from ACP clients to MCP child processes.
@@ -229,14 +248,14 @@ mod elicitation_timeout_tests {
 
     #[test]
     fn absent_meta_returns_default() {
-        assert_eq!(elicitation_timeout_from_meta(None), 120);
+        assert_eq!(elicitation_timeout_from_meta(None, 120), 120);
     }
 
     #[test]
     fn missing_key_returns_default() {
         let mut map = serde_json::Map::new();
         map.insert("other_key".to_owned(), serde_json::Value::Bool(true));
-        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 120);
+        assert_eq!(elicitation_timeout_from_meta(Some(&map), 120), 120);
     }
 
     #[test]
@@ -246,7 +265,7 @@ mod elicitation_timeout_tests {
             "elicitation_timeout_secs".to_owned(),
             serde_json::Value::Number(60.into()),
         );
-        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 60);
+        assert_eq!(elicitation_timeout_from_meta(Some(&map), 120), 60);
     }
 
     #[test]
@@ -256,14 +275,19 @@ mod elicitation_timeout_tests {
             "elicitation_timeout_secs".to_owned(),
             serde_json::Value::String("60".to_owned()),
         );
-        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 120);
+        assert_eq!(elicitation_timeout_from_meta(Some(&map), 120), 120);
     }
 
     #[test]
     fn negative_value_returns_default() {
         let mut map = serde_json::Map::new();
         map.insert("elicitation_timeout_secs".to_owned(), serde_json::json!(-1));
-        assert_eq!(elicitation_timeout_from_meta(Some(&map)), 120);
+        assert_eq!(elicitation_timeout_from_meta(Some(&map), 120), 120);
+    }
+
+    #[test]
+    fn custom_default_is_used_when_meta_absent() {
+        assert_eq!(elicitation_timeout_from_meta(None, 300), 300);
     }
 }
 
@@ -278,7 +302,7 @@ mod tests {
             "my-mcp",
             "/usr/bin/my-mcp",
         ))];
-        let entries = acp_mcp_servers_to_entries(&servers);
+        let entries = acp_mcp_servers_to_entries(&servers, 120);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "my-mcp");
         assert!(matches!(entries[0].transport, McpTransport::Stdio { .. }));
@@ -290,7 +314,7 @@ mod tests {
             "http-mcp",
             "http://localhost",
         ))];
-        let entries = acp_mcp_servers_to_entries(&servers);
+        let entries = acp_mcp_servers_to_entries(&servers, 120);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "http-mcp");
         assert!(matches!(entries[0].transport, McpTransport::Http { .. }));
@@ -302,7 +326,7 @@ mod tests {
             "http-mcp",
             "http://example.com:8080/mcp",
         ))];
-        let entries = acp_mcp_servers_to_entries(&servers);
+        let entries = acp_mcp_servers_to_entries(&servers, 120);
         if let McpTransport::Http { url, .. } = &entries[0].transport {
             assert_eq!(url, "http://example.com:8080/mcp");
         } else {
@@ -316,7 +340,7 @@ mod tests {
             EnvVariable::new("FOO", "bar"),
             EnvVariable::new("BAZ", "qux"),
         ]);
-        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)]);
+        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)], 120);
         if let McpTransport::Stdio { env, .. } = &entries[0].transport {
             assert_eq!(env.get("FOO"), Some(&"bar".to_owned()));
             assert_eq!(env.get("BAZ"), Some(&"qux".to_owned()));
@@ -327,7 +351,7 @@ mod tests {
 
     #[test]
     fn empty_input_returns_empty() {
-        assert!(acp_mcp_servers_to_entries(&[]).is_empty());
+        assert!(acp_mcp_servers_to_entries(&[], 120).is_empty());
     }
 
     #[test]
@@ -336,7 +360,7 @@ mod tests {
             "sse-mcp",
             "http://localhost/sse",
         ))];
-        let entries = acp_mcp_servers_to_entries(&servers);
+        let entries = acp_mcp_servers_to_entries(&servers, 120);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "sse-mcp");
         assert!(matches!(entries[0].transport, McpTransport::Http { .. }));
@@ -348,7 +372,7 @@ mod tests {
             "sse-mcp",
             "http://example.com/sse",
         ))];
-        let entries = acp_mcp_servers_to_entries(&servers);
+        let entries = acp_mcp_servers_to_entries(&servers, 120);
         if let McpTransport::Http { url, .. } = &entries[0].transport {
             assert_eq!(url, "http://example.com/sse");
         } else {
@@ -364,7 +388,7 @@ mod tests {
             McpServer::Stdio(McpServerStdio::new("stdio-2", "/bin/mcp2")),
             McpServer::Sse(McpServerSse::new("sse-1", "http://localhost/sse")),
         ];
-        let entries = acp_mcp_servers_to_entries(&servers);
+        let entries = acp_mcp_servers_to_entries(&servers, 120);
         assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].id, "stdio-1");
         assert_eq!(entries[1].id, "http-1");
@@ -390,7 +414,7 @@ mod tests {
             EnvVariable::new("NODE_PATH", "/tmp/evil"),
             EnvVariable::new("RUBYLIB", "/tmp/evil"),
         ]);
-        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)]);
+        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)], 120);
         if let McpTransport::Stdio { env, .. } = &entries[0].transport {
             assert_eq!(env.get("SAFE_VAR"), Some(&"ok".to_owned()));
             assert!(env.get("LD_PRELOAD").is_none());
@@ -418,7 +442,7 @@ mod tests {
             McpServer::Http(McpServerHttp::new("h", "http://localhost")),
             McpServer::Sse(McpServerSse::new("e", "http://localhost/sse")),
         ];
-        let entries = acp_mcp_servers_to_entries(&servers);
+        let entries = acp_mcp_servers_to_entries(&servers, 120);
         for entry in &entries {
             assert!(
                 entry.tool_allowlist.is_none(),

@@ -10572,6 +10572,7 @@ name = "zeph-acp"
 version = "0.21.2"
 dependencies = [
  "agent-client-protocol 0.12.1",
+ "agent-client-protocol-schema 0.13.2",
  "agent-client-protocol-tokio",
  "async-stream",
  "axum 0.8.9",

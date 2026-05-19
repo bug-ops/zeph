@@ -58,6 +58,18 @@ fn default_acp_lsp_max_workspace_symbols() -> usize {
 fn default_acp_lsp_request_timeout_secs() -> u64 {
     10
 }
+
+fn default_acp_elicitation_timeout_secs() -> u64 {
+    120
+}
+
+fn default_acp_terminal_timeout_secs() -> u64 {
+    120
+}
+
+fn default_acp_mcp_timeout_secs() -> u64 {
+    300
+}
 fn default_lsp_mcp_server_id() -> String {
     "mcpls".into()
 }
@@ -485,6 +497,9 @@ pub struct AcpConfig {
     /// Sub-agent delegation configuration (`[acp.subagents]`).
     #[serde(default)]
     pub subagents: AcpSubagentsConfig,
+    /// Timeout configuration for ACP operations (`[acp.timeouts]`).
+    #[serde(default)]
+    pub timeouts: AcpTimeoutsConfig,
 }
 
 impl Default for AcpConfig {
@@ -507,6 +522,7 @@ impl Default for AcpConfig {
             auth_methods: default_acp_auth_methods(),
             message_ids_enabled: true,
             subagents: AcpSubagentsConfig::default(),
+            timeouts: AcpTimeoutsConfig::default(),
         }
     }
 }
@@ -534,7 +550,35 @@ impl std::fmt::Debug for AcpConfig {
             .field("auth_methods", &self.auth_methods)
             .field("message_ids_enabled", &self.message_ids_enabled)
             .field("subagents", &self.subagents)
+            .field("timeouts", &self.timeouts)
             .finish()
+    }
+}
+
+/// Timeout configuration for ACP operations.
+///
+/// These values replace the previously hardcoded 120-second defaults for terminal
+/// and elicitation operations, and the 300-second default for MCP bridge calls.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AcpTimeoutsConfig {
+    /// Timeout in seconds for elicitation requests sent to the IDE. Default: 120.
+    #[serde(default = "default_acp_elicitation_timeout_secs")]
+    pub elicitation_secs: u64,
+    /// Timeout in seconds for terminal command execution. Default: 120.
+    #[serde(default = "default_acp_terminal_timeout_secs")]
+    pub terminal_secs: u64,
+    /// Timeout in seconds for MCP bridge operations. Default: 300.
+    #[serde(default = "default_acp_mcp_timeout_secs")]
+    pub mcp_secs: u64,
+}
+
+impl Default for AcpTimeoutsConfig {
+    fn default() -> Self {
+        Self {
+            elicitation_secs: default_acp_elicitation_timeout_secs(),
+            terminal_secs: default_acp_terminal_timeout_secs(),
+            mcp_secs: default_acp_mcp_timeout_secs(),
+        }
     }
 }
 

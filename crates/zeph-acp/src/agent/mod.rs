@@ -11,6 +11,7 @@
 //! IDE capabilities (filesystem, terminal, LSP) are detected during `initialize()` and
 //! surfaced to the agent loop through [`AcpContext`].
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use parking_lot::{Mutex, RwLock};
 use agent_client_protocol as acp;
 use futures::StreamExt as _;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_core::channel::{ChannelMessage, LoopbackChannel, LoopbackHandle};
 use zeph_core::text::truncate_to_chars;
@@ -60,6 +62,21 @@ use crate::transport::SharedAvailableModels;
 /// });
 /// ```
 pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync>;
+
+/// Session-scoped provider configuration set via `providers/set`.
+///
+/// Overrides the global provider routing for one provider id within a single ACP session.
+/// Vault-resolved API keys are never stored here — only the public routing fields.
+#[cfg(feature = "unstable-llm-providers")]
+pub(crate) struct ProviderSetOverride {
+    /// Protocol type for this provider override.
+    pub api_type: agent_client_protocol_schema::LlmProtocol,
+    /// Base URL for requests sent through this provider.
+    pub base_url: String,
+    /// Additional headers (e.g. routing headers, not auth secrets).
+    #[allow(dead_code)]
+    pub headers: HashMap<String, String>,
+}
 
 /// Per-session context passed to the agent spawner.
 ///
@@ -291,6 +308,13 @@ pub struct AcpContext {
     /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
     /// and read by the agent loop context builder to inject diagnostics into the system prompt.
     pub diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
+    /// Elicitation bridge for sending form requests to the IDE.
+    ///
+    /// `None` when the IDE did not advertise elicitation capability during `initialize()`,
+    /// or when the `unstable-elicitation` feature is disabled.
+    #[cfg(feature = "unstable-elicitation")]
+    #[allow(dead_code)]
+    pub(crate) elicitation_bridge: Option<elicitation::ElicitationBridge>,
 }
 
 /// Factory that receives a [`LoopbackChannel`], optional [`AcpContext`], and [`SessionContext`],
@@ -384,6 +408,21 @@ pub(crate) struct SessionEntry {
     /// is sufficient without `parking_lot`.
     #[cfg(feature = "unstable-message-id")]
     pub(crate) current_message_id: std::sync::Mutex<Option<String>>,
+    /// Join handle for the elicitation bridge task spawned in `do_new_session`.
+    ///
+    /// Aborted on session close / reap for clean shutdown. `None` when the IDE
+    /// did not advertise elicitation capability or the feature is not enabled.
+    #[cfg(feature = "unstable-elicitation")]
+    pub(crate) elicitation_bridge_handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for SessionEntry {
+    fn drop(&mut self) {
+        #[cfg(feature = "unstable-elicitation")]
+        if let Some(handle) = self.elicitation_bridge_handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl SessionEntry {
@@ -456,6 +495,23 @@ pub struct ZephAcpAgentState {
     auth_methods_config: Vec<zeph_core::config::AcpAuthMethod>,
     /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
     message_ids_enabled: bool,
+    /// Timeout configuration for ACP operations (terminal, elicitation, MCP bridge).
+    pub(crate) timeouts: zeph_config::AcpTimeoutsConfig,
+    /// Whether the IDE advertised elicitation capability during `initialize()`.
+    #[cfg(feature = "unstable-elicitation")]
+    pub(crate) elicitation_supported: std::sync::atomic::AtomicBool,
+    /// Available provider names from `[[llm.providers]]` configuration.
+    ///
+    /// Used by `providers/list` to build the response without exposing vault keys.
+    /// Each entry pairs the provider name with its protocol type.
+    #[cfg(feature = "unstable-llm-providers")]
+    pub(crate) provider_names: Vec<(String, agent_client_protocol_schema::LlmProtocol)>,
+    /// Connection-scoped disabled providers (no `session_id` in ACP schema).
+    #[cfg(feature = "unstable-llm-providers")]
+    pub(crate) global_disabled_providers: Mutex<HashSet<String>>,
+    /// Connection-scoped provider overrides (no `session_id` in ACP schema).
+    #[cfg(feature = "unstable-llm-providers")]
+    pub(crate) global_provider_overrides: Mutex<HashMap<String, ProviderSetOverride>>,
 }
 
 /// Backward-compatible alias.
@@ -492,6 +548,15 @@ impl ZephAcpAgentState {
             additional_directories_allow: Vec::new(),
             auth_methods_config: vec![zeph_core::config::AcpAuthMethod::Agent],
             message_ids_enabled: true,
+            timeouts: zeph_config::AcpTimeoutsConfig::default(),
+            #[cfg(feature = "unstable-elicitation")]
+            elicitation_supported: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "unstable-llm-providers")]
+            provider_names: Vec::new(),
+            #[cfg(feature = "unstable-llm-providers")]
+            global_disabled_providers: Mutex::new(HashSet::new()),
+            #[cfg(feature = "unstable-llm-providers")]
+            global_provider_overrides: Mutex::new(HashMap::new()),
         }
     }
 
@@ -519,6 +584,28 @@ impl ZephAcpAgentState {
     #[must_use]
     pub fn with_message_ids_enabled(mut self, enabled: bool) -> Self {
         self.message_ids_enabled = enabled;
+        self
+    }
+
+    /// Configure ACP operation timeouts.
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: zeph_config::AcpTimeoutsConfig) -> Self {
+        self.timeouts = timeouts;
+        self
+    }
+
+    /// Configure available providers for `providers/list`.
+    ///
+    /// Each entry is `(name, protocol)` where `name` matches a `[[llm.providers]]` entry
+    /// and `protocol` is the wire type used to build the default `current` config.
+    /// Vault-resolved API keys are never passed here.
+    #[cfg(feature = "unstable-llm-providers")]
+    #[must_use]
+    pub fn with_provider_names(
+        mut self,
+        names: Vec<(String, agent_client_protocol_schema::LlmProtocol)>,
+    ) -> Self {
+        self.provider_names = names;
         self
     }
 
@@ -653,6 +740,9 @@ impl ZephAcpAgentState {
         cancel_signal: Arc<tokio::sync::Notify>,
         provider_override: Arc<RwLock<Option<AnyProvider>>>,
         cwd: PathBuf,
+        #[cfg(feature = "unstable-elicitation")] elicitation_tx: Option<
+            elicitation::ElicitationSender,
+        >,
     ) -> AcpContext {
         // Use actual IDE capabilities from initialize(); default to false (deny by default).
         let (can_read, can_write, ide_supports_lsp) = {
@@ -684,7 +774,7 @@ impl ZephAcpAgentState {
             Arc::clone(&conn),
             session_id.clone(),
             Some(perm_gate.clone()),
-            120,
+            self.timeouts.terminal_secs,
         );
         tokio::spawn(shell_handler);
 
@@ -711,6 +801,11 @@ impl ZephAcpAgentState {
             parent_tool_use_id: None,
             lsp_provider,
             diagnostics_cache: Arc::clone(&self.diagnostics_cache),
+            #[cfg(feature = "unstable-elicitation")]
+            elicitation_bridge: elicitation_tx.map(|tx| elicitation::ElicitationBridge {
+                tx,
+                timeout_secs: self.timeouts.elicitation_secs,
+            }),
         }
     }
 
@@ -905,6 +1000,16 @@ impl ZephAcpAgentState {
         args: acp::schema::InitializeRequest,
     ) -> acp::Result<acp::schema::InitializeResponse> {
         tracing::debug!("ACP initialize");
+        #[cfg(feature = "unstable-elicitation")]
+        {
+            let supports = args.client_capabilities.elicitation.is_some();
+            self.elicitation_supported
+                .store(supports, std::sync::atomic::Ordering::Relaxed);
+            tracing::debug!(
+                elicitation_supported = supports,
+                "ACP initialize: elicitation capability"
+            );
+        }
         *self.client_caps.write() = args.client_capabilities;
         let title = format!("{} AI Agent", self.agent_name);
 
@@ -1002,6 +1107,12 @@ impl ZephAcpAgentState {
     ) -> acp::Result<acp::schema::ExtResponse> {
         if let Some(fut) = crate::custom::dispatch(self, &args) {
             return fut.await;
+        }
+        #[cfg(feature = "unstable-llm-providers")]
+        {
+            if let Some(resp) = self.ext_method_providers(&args)? {
+                return Ok(resp);
+            }
         }
         self.ext_method_mcp(&args).await
     }
@@ -1152,28 +1263,53 @@ impl ZephAcpAgentState {
         let provider_override_for_ctx = Arc::clone(&provider_override);
 
         let session_cwd = args.cwd.clone();
+
+        #[cfg(feature = "unstable-elicitation")]
+        let (elicitation_tx, elicitation_bridge_handle) = if self
+            .elicitation_supported
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let (tx, rx) = elicitation::elicitation_channel();
+            let handle = elicitation::spawn_elicitation_bridge(
+                cx.clone(),
+                rx,
+                Arc::clone(&cancel_signal),
+                self.timeouts.elicitation_secs,
+            );
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
+
         let acp_ctx = self.build_acp_context(
             &session_id,
             cx,
             cancel_signal,
             provider_override_for_ctx,
             session_cwd.clone(),
+            #[cfg(feature = "unstable-elicitation")]
+            elicitation_tx,
         );
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
-        let entry = Self::make_session_entry(
+        let mut entry = Self::make_session_entry(
             handle,
             initial_model.clone(),
             session_cwd.clone(),
             shell_executor,
             provider_override,
         );
+        #[cfg(feature = "unstable-elicitation")]
+        {
+            entry.elicitation_bridge_handle = elicitation_bridge_handle;
+        }
 
         Self::spawn_notify_drainer(&entry, cx)?;
         self.sessions.lock().insert(session_id.clone(), entry);
 
         if let Some(ref manager) = self.mcp_manager {
-            let entries = acp_mcp_servers_to_entries(&args.mcp_servers);
+            let entries =
+                acp_mcp_servers_to_entries(&args.mcp_servers, self.timeouts.elicitation_secs);
             for server_entry in entries {
                 let id = server_entry.id.clone();
                 if let Err(e) = manager.add_server(&server_entry).await {
@@ -1426,6 +1562,8 @@ impl ZephAcpAgentState {
             cancel_signal,
             provider_override_for_ctx,
             session_cwd.clone(),
+            #[cfg(feature = "unstable-elicitation")]
+            None,
         );
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
@@ -1588,6 +1726,8 @@ impl ZephAcpAgentState {
             cancel_signal,
             provider_override_for_ctx,
             args.cwd.clone(),
+            #[cfg(feature = "unstable-elicitation")]
+            None,
         );
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
@@ -1694,6 +1834,8 @@ impl ZephAcpAgentState {
             cancel_signal,
             provider_override_for_ctx,
             args.cwd.clone(),
+            #[cfg(feature = "unstable-elicitation")]
+            None,
         );
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
@@ -2532,6 +2674,8 @@ impl ZephAcpAgentState {
             shell_executor,
             #[cfg(feature = "unstable-message-id")]
             current_message_id: std::sync::Mutex::new(None),
+            #[cfg(feature = "unstable-elicitation")]
+            elicitation_bridge_handle: None,
         }
     }
 
@@ -2674,6 +2818,147 @@ impl ZephAcpAgentState {
             )),
         }
     }
+
+    /// Dispatch `providers/*` ext methods.
+    ///
+    /// Returns `Some(ExtResponse)` when the method is handled, `None` when the caller should
+    /// fall through to `ext_method_mcp`.
+    #[cfg(feature = "unstable-llm-providers")]
+    fn ext_method_providers(
+        &self,
+        args: &acp::schema::ExtRequest,
+    ) -> acp::Result<Option<acp::schema::ExtResponse>> {
+        use agent_client_protocol_schema as schema;
+        let method = args.method.as_ref();
+        match method {
+            "providers/list" => {
+                let req: schema::ListProvidersRequest = serde_json::from_str(args.params.get())
+                    .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
+                let resp = self.do_list_providers(req)?;
+                let json = serde_json::to_string(&resp)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let raw = serde_json::value::RawValue::from_string(json)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
+            }
+            "providers/set" => {
+                let req: schema::SetProvidersRequest = serde_json::from_str(args.params.get())
+                    .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
+                let resp = self.do_set_providers(req)?;
+                let json = serde_json::to_string(&resp)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let raw = serde_json::value::RawValue::from_string(json)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
+            }
+            "providers/disable" => {
+                let req: schema::DisableProvidersRequest = serde_json::from_str(args.params.get())
+                    .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
+                let resp = self.do_disable_providers(req)?;
+                let json = serde_json::to_string(&resp)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                let raw = serde_json::value::RawValue::from_string(json)
+                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Handle `providers/list` — return all known providers without vault keys.
+    ///
+    /// # Errors
+    ///
+    /// Never fails; returns `Ok` in all cases.
+    #[cfg(feature = "unstable-llm-providers")]
+    #[tracing::instrument(skip_all, name = "acp.handler.list_providers")]
+    pub(crate) fn do_list_providers(
+        &self,
+        _req: agent_client_protocol_schema::ListProvidersRequest,
+    ) -> acp::Result<agent_client_protocol_schema::ListProvidersResponse> {
+        let disabled = self.global_disabled_providers.lock();
+        let overrides = self.global_provider_overrides.lock();
+        let providers: Vec<agent_client_protocol_schema::ProviderInfo> = self
+            .provider_names
+            .iter()
+            .map(|(name, protocol)| {
+                let is_disabled = disabled.contains(name.as_str());
+                let current = if is_disabled {
+                    None
+                } else if let Some(ov) = overrides.get(name.as_str()) {
+                    Some(agent_client_protocol_schema::ProviderCurrentConfig::new(
+                        ov.api_type.clone(),
+                        ov.base_url.clone(),
+                    ))
+                } else {
+                    // Default — no base_url exposed; provider is available via global config.
+                    Some(agent_client_protocol_schema::ProviderCurrentConfig::new(
+                        protocol.clone(),
+                        String::new(),
+                    ))
+                };
+                agent_client_protocol_schema::ProviderInfo::new(
+                    name.clone(),
+                    vec![protocol.clone()],
+                    false,
+                    current,
+                )
+            })
+            .collect();
+        Ok(agent_client_protocol_schema::ListProvidersResponse::new(
+            providers,
+        ))
+    }
+
+    /// Handle `providers/set` — store a connection-scoped provider override.
+    ///
+    /// The override is stored in global state (no `session_id` in the ACP schema) and
+    /// takes effect on the next turn's provider resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_params` if `req.id` is not in the registered provider list.
+    #[cfg(feature = "unstable-llm-providers")]
+    #[tracing::instrument(skip_all, name = "acp.handler.set_providers")]
+    pub(crate) fn do_set_providers(
+        &self,
+        req: agent_client_protocol_schema::SetProvidersRequest,
+    ) -> acp::Result<agent_client_protocol_schema::SetProvidersResponse> {
+        if !self.provider_names.iter().any(|(name, _)| name == &req.id) {
+            return Err(
+                acp::Error::invalid_params().data(format!("unknown provider id: {}", req.id))
+            );
+        }
+        self.global_provider_overrides.lock().insert(
+            req.id.clone(),
+            ProviderSetOverride {
+                api_type: req.api_type,
+                base_url: req.base_url,
+                headers: req.headers,
+            },
+        );
+        tracing::debug!(provider_id = %req.id, "provider override set");
+        Ok(agent_client_protocol_schema::SetProvidersResponse::new())
+    }
+
+    /// Handle `providers/disable` — mark a provider as disabled for this connection.
+    ///
+    /// Takes effect on the next turn's provider resolution.
+    ///
+    /// # Errors
+    ///
+    /// Always succeeds; returns `DisableProvidersResponse`.
+    #[cfg(feature = "unstable-llm-providers")]
+    #[tracing::instrument(skip_all, name = "acp.handler.disable_providers")]
+    pub(crate) fn do_disable_providers(
+        &self,
+        req: agent_client_protocol_schema::DisableProvidersRequest,
+    ) -> acp::Result<agent_client_protocol_schema::DisableProvidersResponse> {
+        let id = req.id;
+        tracing::debug!(provider_id = %id, "provider disabled");
+        self.global_disabled_providers.lock().insert(id);
+        Ok(agent_client_protocol_schema::DisableProvidersResponse::new())
+    }
 }
 
 /// Returns `true` when `trimmed_text` is an ACP-native slash command that should
@@ -2716,6 +3001,8 @@ fn build_prompt_response(
     r
 }
 
+#[cfg(feature = "unstable-elicitation")]
+pub(crate) mod elicitation;
 pub(super) mod helpers;
 use helpers::{
     DEFAULT_MODE_ID, DIAGNOSTICS_MIME_TYPE, build_available_commands, build_config_options,
@@ -2931,6 +3218,166 @@ const _: () = {
 
 #[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
 mod tests;
+
+#[cfg(all(test, feature = "unstable-llm-providers"))]
+mod providers_tests {
+    use super::*;
+    use agent_client_protocol_schema as schema;
+
+    fn make_state() -> ZephAcpAgentState {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        ZephAcpAgentState::new(spawner, 4, 1800, None).with_provider_names(vec![
+            ("openai".to_owned(), schema::LlmProtocol::OpenAi),
+            ("claude".to_owned(), schema::LlmProtocol::Anthropic),
+        ])
+    }
+
+    #[test]
+    fn list_providers_returns_all_registered() {
+        let state = make_state();
+        let resp = state
+            .do_list_providers(schema::ListProvidersRequest::new())
+            .unwrap();
+        assert_eq!(resp.providers.len(), 2);
+        let ids: Vec<&str> = resp.providers.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.contains(&"openai"));
+        assert!(ids.contains(&"claude"));
+    }
+
+    #[test]
+    fn list_providers_empty_when_none_registered() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let state = ZephAcpAgentState::new(spawner, 4, 1800, None).with_provider_names(vec![]);
+        let resp = state
+            .do_list_providers(schema::ListProvidersRequest::new())
+            .unwrap();
+        assert!(resp.providers.is_empty());
+    }
+
+    #[test]
+    fn protocol_type_reflected_in_default_current_config() {
+        let state = make_state();
+        let resp = state
+            .do_list_providers(schema::ListProvidersRequest::new())
+            .unwrap();
+        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        let current = openai
+            .current
+            .as_ref()
+            .expect("openai must have current config");
+        assert_eq!(
+            current.api_type,
+            schema::LlmProtocol::OpenAi,
+            "openai provider must report OpenAi protocol"
+        );
+        let claude = resp.providers.iter().find(|p| p.id == "claude").unwrap();
+        let current = claude
+            .current
+            .as_ref()
+            .expect("claude must have current config");
+        assert_eq!(
+            current.api_type,
+            schema::LlmProtocol::Anthropic,
+            "claude provider must report Anthropic protocol"
+        );
+    }
+
+    #[test]
+    fn disable_provider_hides_current_config_in_list() {
+        let state = make_state();
+        state
+            .do_disable_providers(schema::DisableProvidersRequest::new("openai"))
+            .unwrap();
+        let resp = state
+            .do_list_providers(schema::ListProvidersRequest::new())
+            .unwrap();
+        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        assert!(
+            openai.current.is_none(),
+            "disabled provider must have no current config"
+        );
+        let claude = resp.providers.iter().find(|p| p.id == "claude").unwrap();
+        assert!(
+            claude.current.is_some(),
+            "non-disabled provider must still have current config"
+        );
+    }
+
+    #[test]
+    fn disable_unknown_provider_succeeds() {
+        let state = make_state();
+        state
+            .do_disable_providers(schema::DisableProvidersRequest::new("nonexistent"))
+            .unwrap();
+    }
+
+    #[test]
+    fn set_provider_unknown_id_returns_error() {
+        let state = make_state();
+        let err = state
+            .do_set_providers(
+                schema::SetProvidersRequest::new(
+                    "unknown_provider",
+                    schema::LlmProtocol::OpenAi,
+                    "https://evil.example.com",
+                )
+                .headers(std::collections::HashMap::new()),
+            )
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown provider id"),
+            "expected 'unknown provider id' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn set_provider_override_appears_in_list() {
+        let state = make_state();
+        state
+            .do_set_providers(
+                schema::SetProvidersRequest::new(
+                    "openai",
+                    schema::LlmProtocol::OpenAi,
+                    "https://custom.example.com",
+                )
+                .headers(std::collections::HashMap::new()),
+            )
+            .unwrap();
+        let resp = state
+            .do_list_providers(schema::ListProvidersRequest::new())
+            .unwrap();
+        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        let current = openai.current.as_ref().expect("override must be present");
+        assert_eq!(current.base_url, "https://custom.example.com");
+    }
+
+    #[test]
+    fn disable_after_set_clears_current_config() {
+        let state = make_state();
+        state
+            .do_set_providers(
+                schema::SetProvidersRequest::new(
+                    "openai",
+                    schema::LlmProtocol::OpenAi,
+                    "https://custom.example.com",
+                )
+                .headers(std::collections::HashMap::new()),
+            )
+            .unwrap();
+        state
+            .do_disable_providers(schema::DisableProvidersRequest::new("openai"))
+            .unwrap();
+        let resp = state
+            .do_list_providers(schema::ListProvidersRequest::new())
+            .unwrap();
+        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
+        assert!(
+            openai.current.is_none(),
+            "provider disabled after set must have no current config"
+        );
+    }
+}
 
 #[cfg(all(test, feature = "unstable-message-id"))]
 mod message_id_tests {

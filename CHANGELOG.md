@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-acp`: add `unstable-elicitation` feature — per-session elicitation bridge task
+  (`spawn_elicitation_bridge`) with `Arc<Notify>` cancel signal, bounded mpsc channel, and
+  `ElicitationBridge::elicit()` helper; bridge task is spawned in `do_new_session` when the IDE
+  advertises `elicitation` capability during `initialize()`, and aborted on session drop via
+  `Drop` impl on `SessionEntry` (closes #4456).
+- `zeph-acp`: add `unstable-llm-providers` feature — connection-scoped `providers/list`,
+  `providers/set`, and `providers/disable` handlers dispatched via ext method; state stored in
+  `ZephAcpAgentState.global_disabled_providers` and `global_provider_overrides`; 6 unit tests
+  verify list, set, disable, and combined flows (closes #4455).
+- `zeph-config`: add `AcpTimeoutsConfig` struct with `elicitation_secs`, `terminal_secs`,
+  `mcp_secs` fields (all default 120 s / 300 s); wired into `AcpServerConfig` and
+  `ZephAcpAgentState` via `.with_timeouts()`; replaces previously hardcoded 120-second defaults.
+- `zeph-acp`: add `AcpError::ProviderDisabled` and `AcpError::ProviderNotFound` variants.
+
 ### Changed
 
 - `zeph-acp`: upgrade agent-client-protocol SDK to 0.12.1; migrate feature gate

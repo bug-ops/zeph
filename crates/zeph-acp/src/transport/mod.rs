@@ -124,6 +124,8 @@ pub struct AcpServerConfig {
     pub auth_methods: Vec<zeph_core::config::AcpAuthMethod>,
     /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
     pub message_ids_enabled: bool,
+    /// Per-request timeout configuration for elicitation, terminal, and MCP operations.
+    pub timeouts: zeph_config::AcpTimeoutsConfig,
 }
 
 impl Clone for AcpServerConfig {
@@ -148,6 +150,7 @@ impl Clone for AcpServerConfig {
             additional_directories: self.additional_directories.clone(),
             auth_methods: self.auth_methods.clone(),
             message_ids_enabled: self.message_ids_enabled,
+            timeouts: self.timeouts.clone(),
         }
     }
 }
@@ -174,6 +177,7 @@ impl Default for AcpServerConfig {
             additional_directories: Vec::new(),
             auth_methods: vec![zeph_core::config::AcpAuthMethod::Agent],
             message_ids_enabled: true,
+            timeouts: zeph_config::AcpTimeoutsConfig::default(),
         }
     }
 }

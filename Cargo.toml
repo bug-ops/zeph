@@ -18,6 +18,7 @@ publish = true
 [workspace.dependencies]
 age = { version = "0.11.3", default-features = false }
 agent-client-protocol = "0.12.1"
+agent-client-protocol-schema = "0.13.2"
 agent-client-protocol-tokio = "0.11.1"
 anyhow = "1.0.102"
 arboard = "3.6.1"

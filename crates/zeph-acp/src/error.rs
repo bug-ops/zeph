@@ -54,4 +54,23 @@ pub enum AcpError {
     /// A `ResourceLink` URI could not be resolved (bad scheme, path traversal, SSRF, etc.).
     #[error("resource link error: {0}")]
     ResourceLink(String),
+
+    /// The requested LLM provider is disabled for this session.
+    ///
+    /// Returned when a session-level `providers/disable` call has been made for the given
+    /// provider and the agent loop tries to resolve it for the next turn.
+    #[error("provider disabled: {provider_id}")]
+    ProviderDisabled {
+        /// The identifier of the disabled provider.
+        provider_id: String,
+    },
+
+    /// The requested LLM provider does not exist in the global provider registry.
+    ///
+    /// Returned when `providers/set` or turn resolution references an unknown provider id.
+    #[error("provider not found: {provider_id}")]
+    ProviderNotFound {
+        /// The identifier of the unknown provider.
+        provider_id: String,
+    },
 }
