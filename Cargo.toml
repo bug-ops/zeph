@@ -128,7 +128,7 @@ tower-http = { version = "0.6.10", default-features = false }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-chrome = "0.7.2"
-tracing-opentelemetry = "0.32.1"
+tracing-opentelemetry = "0.33.0"
 tracing-subscriber = { version = "0.3.23", default-features = false }
 tracing-test = "0.2.6"
 tree-sitter = "0.26.8"

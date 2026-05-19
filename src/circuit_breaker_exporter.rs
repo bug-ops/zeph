@@ -109,7 +109,7 @@ impl<E: SpanExporter + fmt::Debug> SpanExporter for CircuitBreakerExporter<E> {
         }
     }
 
-    fn shutdown_with_timeout(&mut self, timeout: Duration) -> OTelSdkResult {
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
         self.inner.shutdown_with_timeout(timeout)
     }
 }
