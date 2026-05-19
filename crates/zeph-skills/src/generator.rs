@@ -305,8 +305,8 @@ impl SkillGenerator {
     /// use std::path::PathBuf;
     /// use zeph_skills::generator::{SkillGenerator, GeneratedSkill};
     ///
-    /// async fn quarantine(gen: &SkillGenerator, skill: &GeneratedSkill) {
-    ///     let path = gen.write_quarantined(skill).await.unwrap();
+    /// async fn quarantine(generator: &SkillGenerator, skill: &GeneratedSkill) {
+    ///     let path = generator.write_quarantined(skill).await.unwrap();
     ///     assert!(path.to_str().unwrap().contains("_quarantine"));
     /// }
     /// ```

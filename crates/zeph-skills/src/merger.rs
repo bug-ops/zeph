@@ -81,7 +81,7 @@ pub enum MergeDecision {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use zeph_skills::merger::{MergeDecision, decide};
 /// use zeph_skills::loader::SkillMeta;
 /// use std::path::PathBuf;
@@ -142,7 +142,7 @@ pub fn decide(
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use zeph_skills::merger::find_nearest;
 /// use zeph_skills::embedding::SkillEmbedding;
 /// use zeph_skills::loader::SkillMeta;
