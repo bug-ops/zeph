@@ -147,17 +147,18 @@ impl RequestSigner {
 /// Algorithm: SHA-256(compressed_pubkey) → RIPEMD-160 → `bech32(chain_prefix, data)`.
 /// This matches the Bitcoin/Cosmos address derivation standard.
 fn derive_address(pubkey: &k256::PublicKey, chain_prefix: &str) -> String {
-    use bech32::ToBase32 as _;
+    use bech32::{Bech32, Hrp};
 
     let compressed = pubkey.to_encoded_point(true);
     let sha_hash = sha2::Sha256::digest(compressed.as_bytes());
     let sha_bytes: &[u8] = &sha_hash[..];
     let ripe_hash = ripemd::Ripemd160::digest(sha_bytes);
     let ripe_bytes: &[u8] = &ripe_hash[..];
-    let data5 = ripe_bytes.to_base32();
     // bech32::encode only fails on invalid HRP characters, which chain_prefix
     // is guaranteed to avoid in practice (lowercase ASCII letters only).
-    bech32::encode(chain_prefix, data5, bech32::Variant::Bech32)
+    let hrp = Hrp::parse(chain_prefix)
+        .unwrap_or_else(|e| panic!("invalid bech32 HRP '{chain_prefix}': {e}"));
+    bech32::encode::<Bech32>(hrp, ripe_bytes)
         .unwrap_or_else(|e| panic!("bech32 encode failed for prefix '{chain_prefix}': {e}"))
 }
 

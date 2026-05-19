@@ -217,47 +217,49 @@ impl SpeechToText for CandleWhisperProvider {
 }
 
 fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::DecoderOptions;
-    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::codecs::CodecParameters;
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
     use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     let cursor = Cursor::new(bytes.to_vec());
     let mss = MediaSourceStream::new(Box::new(cursor), MediaSourceStreamOptions::default());
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &Hint::new(),
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| LlmError::TranscriptionFailed(format!("probe: {e}")))?;
 
-    let mut format = probed.format;
     let track = format
-        .default_track()
+        .default_track(TrackType::Audio)
         .ok_or_else(|| LlmError::TranscriptionFailed("no audio track".into()))?;
-    let sample_rate = track
-        .codec_params
+    let audio_params = match track.codec_params.as_ref() {
+        Some(CodecParameters::Audio(p)) => p.clone(),
+        _ => return Err(LlmError::TranscriptionFailed("non-audio track".into())),
+    };
+    let sample_rate = audio_params
         .sample_rate
         .ok_or_else(|| LlmError::TranscriptionFailed("unknown sample rate".into()))?;
-    let channels = track
-        .codec_params
+    let channels = audio_params
         .channels
+        .as_ref()
         .map_or(1, symphonia::core::audio::Channels::count);
     let track_id = track.id;
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .map_err(|e| LlmError::TranscriptionFailed(format!("decoder: {e}")))?;
 
     let mut pcm = Vec::new();
 
-    while let Ok(packet) = format.next_packet() {
-        if packet.track_id() != track_id {
+    while let Ok(Some(packet)) = format.next_packet() {
+        if packet.track_id != track_id {
             continue;
         }
         let audio_buf = match decoder.decode(&packet) {
@@ -267,10 +269,9 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
                 continue;
             }
         };
-        let spec = *audio_buf.spec();
-        let mut sample_buf = SampleBuffer::<f32>::new(audio_buf.capacity() as u64, spec);
-        sample_buf.copy_interleaved_ref(audio_buf);
-        let samples = sample_buf.samples();
+        let n_samples = audio_buf.frames() * audio_buf.spec().channels().count();
+        let mut samples: Vec<f32> = vec![0f32; n_samples];
+        audio_buf.copy_to_slice_interleaved(&mut samples[..]);
 
         if channels > 1 {
             for chunk in samples.chunks(channels) {
@@ -279,7 +280,7 @@ fn decode_audio(bytes: &[u8]) -> Result<Vec<f32>, LlmError> {
                 pcm.push(avg);
             }
         } else {
-            pcm.extend_from_slice(samples);
+            pcm.extend_from_slice(&samples);
         }
     }
 
