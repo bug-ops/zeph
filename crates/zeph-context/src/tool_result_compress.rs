@@ -143,6 +143,7 @@ impl ToolResultCompressor {
     /// struct WordCounter;
     /// impl zeph_common::memory::TokenCounting for WordCounter {
     ///     fn count_tokens(&self, text: &str) -> usize { text.split_whitespace().count() }
+    ///     fn count_tool_schema_tokens(&self, _schema: &serde_json::Value) -> usize { 0 }
     /// }
     ///
     /// let config = ToolResultCompressionConfig {
@@ -216,6 +217,7 @@ impl ToolResultCompressor {
     /// struct WordCounter;
     /// impl zeph_common::memory::TokenCounting for WordCounter {
     ///     fn count_tokens(&self, text: &str) -> usize { text.split_whitespace().count() }
+    ///     fn count_tool_schema_tokens(&self, _schema: &serde_json::Value) -> usize { 0 }
     /// }
     ///
     /// let config = ToolResultCompressionConfig {
