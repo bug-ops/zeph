@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-plugins`: replaced blocking `std::fs::write` / `std::fs::read_to_string` calls in the
   async `update_one_plugin` with `tokio::fs` equivalents, preventing Tokio thread starvation
   during concurrent auto-update checks (closes #4560).
+- `apply_response_cache`: hourly cleanup background task now exits cleanly when the session shuts
+  down. The loop uses `tokio::select!` on a `CancellationToken` child of `mem_cancel`, which is
+  already cancelled via `shutdown_rx` at session teardown. Closes #4572.
+- `runner`: TUI early-status-forwarder `JoinHandle` annotated as intentionally dropped at block
+  end (self-terminating when the channel closes). Removes misleading bare `let _` and satisfies
+  `clippy::let_underscore_future`. Closes #4571.
 
 ### Added
 
