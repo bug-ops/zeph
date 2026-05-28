@@ -457,8 +457,14 @@ impl<C: Channel> Agent<C> {
                 threshold,
                 "semantic cache lookup: examining up to {max_candidates} candidates",
             );
-            match self.embedding_provider.embed(&content).await {
-                Ok(embedding) => {
+            let embed_timeout =
+                std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
+            match tokio::time::timeout(embed_timeout, self.embedding_provider.embed(&content)).await
+            {
+                Err(_elapsed) => {
+                    tracing::warn!("semantic cache: embed() timed out, skipping semantic cache");
+                }
+                Ok(Ok(embedding)) => {
                     let embed_model = self.services.skill.embedding_model.clone();
                     match cache
                         .get_semantic(&embedding, &embed_model, threshold, max_candidates)
@@ -489,7 +495,7 @@ impl<C: Channel> Agent<C> {
                         }
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!("embedding generation failed, skipping semantic cache: {e:#}");
                 }
             }

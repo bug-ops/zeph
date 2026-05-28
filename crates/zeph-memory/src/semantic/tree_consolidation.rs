@@ -226,7 +226,24 @@ async fn embed_candidates(
             .map(|row| {
                 let id = row.id;
                 let content = row.content.clone();
-                async move { (id, content.clone(), provider.embed(&content).await) }
+                async move {
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        provider.embed(&content),
+                    )
+                    .await;
+                    let result = match result {
+                        Ok(r) => r,
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                node_id = id,
+                                "tree consolidation: embed() timed out, skipping node"
+                            );
+                            return (id, content, Err(zeph_llm::error::LlmError::Timeout));
+                        }
+                    };
+                    (id, content, result)
+                }
             })
             .collect();
 
@@ -308,6 +325,51 @@ async fn merge_via_llm(provider: &AnyProvider, contents: &[&str]) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `embed()` timeout in `embed_candidates` → timed-out nodes are dropped, function returns
+    /// only successfully embedded entries (fail-open: the sweep can still proceed with fewer nodes).
+    #[tokio::test]
+    async fn embed_candidates_timeout_drops_timed_out_nodes() {
+        let slow = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embed_delay(10_000),
+        );
+
+        let candidates = vec![
+            MemoryTreeRow {
+                id: 1,
+                level: 0,
+                parent_id: None,
+                content: "Alice prefers Rust".to_owned(),
+                source_ids: "[]".to_owned(),
+                token_count: 3,
+                consolidated_at: None,
+                created_at: "2026-01-01T00:00:00".to_owned(),
+            },
+            MemoryTreeRow {
+                id: 2,
+                level: 0,
+                parent_id: None,
+                content: "Alice likes async code".to_owned(),
+                source_ids: "[]".to_owned(),
+                token_count: 4,
+                consolidated_at: None,
+                created_at: "2026-01-01T00:00:01".to_owned(),
+            },
+        ];
+
+        tokio::time::pause();
+
+        let fut = embed_candidates(&slow, &candidates);
+        let (result, ()) = tokio::join!(fut, async {
+            tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        });
+
+        assert!(
+            result.is_empty(),
+            "all nodes must be dropped on embed timeout, got {} entries",
+            result.len()
+        );
+    }
 
     #[test]
     fn cluster_by_similarity_groups_identical_vectors() {

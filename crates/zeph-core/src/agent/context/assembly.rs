@@ -562,6 +562,7 @@ impl<C: Channel> Agent<C> {
 
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.services.skill.matcher {
             let provider = self.embedding_provider.clone();
+            let embed_timeout_secs = self.runtime.config.timeouts.embedding_seconds;
             let _ = self.channel.send_status("matching skills...").await;
             let match_result = matcher
                 .match_skills(
@@ -572,7 +573,20 @@ impl<C: Channel> Agent<C> {
                     |text| {
                         let owned = text.to_owned();
                         let p = provider.clone();
-                        Box::pin(async move { p.embed(&owned).await })
+                        Box::pin(async move {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(embed_timeout_secs),
+                                p.embed(&owned),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_elapsed) => {
+                                    tracing::warn!("skill matcher: embed() timed out");
+                                    Err(zeph_llm::error::LlmError::Timeout)
+                                }
+                            }
+                        })
                     },
                 )
                 .await;
@@ -627,8 +641,30 @@ impl<C: Channel> Agent<C> {
                 );
 
                 // SkillOrchestra: RL routing head re-rank (past warmup only).
+                let rl_query_embed = if self.services.skill.rl_head.is_some() {
+                    let rl_embed_timeout = std::time::Duration::from_secs(
+                        self.runtime.config.timeouts.embedding_seconds,
+                    );
+                    match tokio::time::timeout(
+                        rl_embed_timeout,
+                        self.embedding_provider.embed(query),
+                    )
+                    .await
+                    {
+                        Ok(Ok(v)) => Some(v),
+                        Ok(Err(_)) => None,
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                "rl_head: embed() timed out, skipping RL re-rank this turn"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 if let Some(rl_head) = &self.services.skill.rl_head
-                    && let Ok(query_embed) = self.embedding_provider.embed(query).await
+                    && let Some(query_embed) = rl_query_embed
                     && {
                         let ok = query_embed.len() == rl_head.embed_dim();
                         if !ok {
@@ -1018,8 +1054,21 @@ impl<C: Channel> Agent<C> {
                             .clone()
                             .unwrap_or_else(|| self.embedding_provider.clone());
                         let _ = self.channel.send_status("selecting tools...").await;
-                        match embed_provider.embed(query).await {
-                            Ok(query_emb) => {
+                        let embed_timeout = std::time::Duration::from_secs(
+                            self.runtime.config.timeouts.embedding_seconds,
+                        );
+                        let embed_outcome =
+                            tokio::time::timeout(embed_timeout, embed_provider.embed(query)).await;
+                        match embed_outcome {
+                            Err(_elapsed) => {
+                                tracing::warn!(
+                                    "semantic tool discovery: embed() timed out, falling back to all tools"
+                                );
+                                if !params.strict {
+                                    self.services.mcp.sync_executor_tools();
+                                }
+                            }
+                            Ok(Ok(query_emb)) => {
                                 let selected = index.select(
                                     &query_emb,
                                     params.top_k,
@@ -1033,7 +1082,7 @@ impl<C: Channel> Agent<C> {
                                 );
                                 self.services.mcp.apply_pruned_tools(selected);
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 tracing::warn!(
                                     strict = params.strict,
                                     "semantic tool discovery: query embed failed, falling back to all tools: {e:#}"
@@ -1110,8 +1159,15 @@ impl<C: Channel> Agent<C> {
                 .collect();
 
             let _ = self.channel.send_status("filtering tools...").await;
-            match self.embedding_provider.embed(query).await {
-                Ok(query_emb) => {
+            let schema_embed_timeout =
+                std::time::Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
+            match tokio::time::timeout(schema_embed_timeout, self.embedding_provider.embed(query))
+                .await
+            {
+                Err(_elapsed) => {
+                    tracing::warn!("tool filter: embed() timed out, using all tools");
+                }
+                Ok(Ok(query_emb)) => {
                     let mut result = filter.filter(&all_ids, &descriptions, query, &query_emb);
 
                     // Apply dependency graph AFTER schema filter (and after any TAFC
@@ -1156,7 +1212,7 @@ impl<C: Channel> Agent<C> {
                     }
                     self.services.tool_state.cached_filtered_tool_ids = Some(result.included);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!("tool filter: query embed failed, using all tools: {e:#}");
                 }
             }

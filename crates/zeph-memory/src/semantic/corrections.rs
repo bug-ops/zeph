@@ -74,11 +74,19 @@ impl SemanticMemory {
             tracing::debug!("corrections: skipped, no embedding support");
             return Ok(vec![]);
         }
-        let embedding = self
-            .effective_embed_provider()
-            .embed(query)
-            .await
-            .map_err(MemoryError::Llm)?;
+        let embedding = match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.effective_embed_provider().embed(query),
+        )
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(MemoryError::Llm(e)),
+            Err(_) => {
+                tracing::warn!("search_corrections: embed() timed out, returning empty");
+                return Ok(vec![]);
+            }
+        };
         let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
         store
             .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)
@@ -166,5 +174,26 @@ mod tests {
             result.is_ok(),
             "embed timeout must return Ok(()) (fail-open, skip write), got {result:?}"
         );
+    }
+
+    /// `embed()` timeout in `retrieve_similar_corrections` → returns `Ok(vec![])` (fail-open).
+    #[tokio::test]
+    async fn retrieve_similar_corrections_embed_timeout_returns_empty() {
+        let mem = mem_with_slow_embed(10_000).await;
+
+        tokio::time::pause();
+
+        let fut = mem.retrieve_similar_corrections("prefer concise answers", 5, 0.7);
+        let (result, ()) = tokio::join!(fut, async {
+            tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        });
+
+        match result {
+            Ok(rows) => assert!(
+                rows.is_empty(),
+                "embed timeout must return empty vec (fail-open), got {rows:?}"
+            ),
+            Err(e) => panic!("embed timeout must not propagate error, got {e:?}"),
+        }
     }
 }
