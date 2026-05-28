@@ -30,5 +30,6 @@ pub mod manager;
 pub mod microcompact;
 pub mod slot;
 pub mod summarization;
+pub mod tool_result_compress;
 pub mod turn_context;
 pub mod typed_page;

@@ -7,7 +7,7 @@
 //! subsystems: `TiMem` (temporal-hierarchical memory tree), `autoDream` (background consolidation),
 //! and `MagicDocs` (document context injection).
 
-/// `TiMem` tree config, `autoDream`, `MagicDocs`, and microcompact subsystem state.
+/// `TiMem` tree config, `autoDream`, `MagicDocs`, microcompact, Acon, and ARC subsystem state.
 ///
 /// These subsystems are initialized together during agent construction and managed as a group
 /// across the agent lifetime. Isolating them in their own struct makes it clear that they are
@@ -25,6 +25,10 @@ pub(crate) struct MemorySubsystemState {
     pub(crate) magic_docs_config: zeph_config::MagicDocsConfig,
     /// `MagicDocs` session state (#2702). Tracks registered doc paths and last update turn.
     pub(crate) magic_docs: super::super::magic_docs::MagicDocsState,
+    /// Acon tool-result compression configuration (#4021).
+    pub(crate) acon_config: zeph_config::AconConfig,
+    /// ARC agent-initiated compaction configuration (#4020).
+    pub(crate) arc_config: zeph_config::ArcCompactionConfig,
 }
 
 impl Default for MemorySubsystemState {
@@ -36,6 +40,8 @@ impl Default for MemorySubsystemState {
             autodream: super::super::autodream::AutoDreamState::new(),
             magic_docs_config: zeph_config::MagicDocsConfig::default(),
             magic_docs: super::super::magic_docs::MagicDocsState::new(),
+            acon_config: zeph_config::AconConfig::default(),
+            arc_config: zeph_config::ArcCompactionConfig::default(),
         }
     }
 }

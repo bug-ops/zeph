@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   overlap + plan-tool relevance, proactive AgeMem regrade trigger before context fills,
   `PlannedToolHint` struct for PAACE plan-aware context retention. Covers GitHub #4016, #4017, #4018.
   MVP (v0.21): heuristic scoring only; RL training pipeline and orchestration wiring deferred.
+- `ToolResultCompressor`: configurable per-result token budget with truncation for tool outputs
+  before they enter message history (Acon #4021). Config: `[memory.compression.acon]`.
+- `request_compaction` internal tool: agent-initiated context compaction on demand (ARC #4020).
+  Config: `[memory.compression.arc]`. Rate-limited to one compaction per turn via `CompactionState`.
 
 - `zeph-skills`: `promoter` module — pure-logic helpers for `AutoSkill A6` heuristic promotion:
   `compute_batch_hash` (BLAKE3, order-independent), `build_promotion_prompt`, `parse_promotion_response`,

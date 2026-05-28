@@ -2073,6 +2073,182 @@ pub struct CompressionConfig {
     /// Typed-page classification and batch-level assertion checking (#3630).
     #[serde(default)]
     pub typed_pages: TypedPagesConfig,
+    /// Acon tool-result compression settings (#4021).
+    ///
+    /// Controls per-result and batch-level token budgets for tool outputs before they enter
+    /// message history. Distinct from `[tools.compression]` (TACO), which applies regex-based
+    /// rule compression at the executor level.
+    #[serde(default)]
+    pub acon: AconConfig,
+    /// ARC agent-initiated compaction settings (#4020).
+    ///
+    /// When `allow_agent_compaction = true`, the agent can call the `request_compaction`
+    /// internal tool to trigger context summarization on demand.
+    #[serde(default)]
+    pub arc: ArcCompactionConfig,
+}
+
+fn default_acon_passthrough_threshold() -> usize {
+    2000
+}
+
+fn default_acon_summarize_threshold() -> usize {
+    4000
+}
+
+fn default_acon_total_budget() -> usize {
+    8000
+}
+
+fn validate_acon_passthrough_threshold<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "acon.passthrough_threshold must be >= 1",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_acon_summarize_threshold<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "acon.summarize_threshold must be >= 1",
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_acon_total_budget<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <usize as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom("acon.total_budget must be >= 1"));
+    }
+    Ok(value)
+}
+
+/// Token budget configuration for Acon tool-result compression (#4021).
+///
+/// Controls per-result and batch-level token budgets for tool outputs injected into context.
+/// Distinct from `[tools.compression]` (TACO), which applies regex-based rule compression
+/// at the executor level.
+///
+/// # Invariants
+///
+/// The following ordering must hold: `passthrough_threshold < summarize_threshold <= total_budget`.
+/// A config where `passthrough_threshold >= summarize_threshold` would make the summarization path
+/// unreachable, silently producing incorrect compression behavior.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.compression.acon]
+/// enabled = true
+/// passthrough_threshold = 2000
+/// summarize_threshold = 4000
+/// total_budget = 8000
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AconConfig {
+    /// Enable Acon tool-result compression. Default: `true`.
+    pub enabled: bool,
+    /// Token count below which results pass through unchanged.
+    /// Also the truncation target: results above this get char-truncated to this size.
+    /// Must be < `summarize_threshold`. Default: `2000`.
+    #[serde(default = "default_acon_passthrough_threshold")]
+    #[serde(deserialize_with = "validate_acon_passthrough_threshold")]
+    pub passthrough_threshold: usize,
+    /// Token count above which LLM summarization should be attempted before truncation.
+    /// Must be > `passthrough_threshold` and <= `total_budget`. Default: `4000`.
+    #[serde(default = "default_acon_summarize_threshold")]
+    #[serde(deserialize_with = "validate_acon_summarize_threshold")]
+    pub summarize_threshold: usize,
+    /// Maximum total tokens for all tool results in a single turn.
+    /// Must be >= `summarize_threshold`. Default: `8000`.
+    #[serde(default = "default_acon_total_budget")]
+    #[serde(deserialize_with = "validate_acon_total_budget")]
+    pub total_budget: usize,
+    /// Provider name from `[[llm.providers]]` for LLM summarization of large results.
+    /// Falls back to the primary provider when empty. Default: `""`.
+    #[serde(default)]
+    pub summarize_provider: ProviderName,
+}
+
+impl AconConfig {
+    /// Validate threshold ordering invariants after deserialization.
+    ///
+    /// Returns an error string if `passthrough_threshold >= summarize_threshold` or
+    /// `summarize_threshold > total_budget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive error string when any threshold invariant is violated.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.passthrough_threshold >= self.summarize_threshold {
+            return Err(format!(
+                "acon: passthrough_threshold ({}) must be < summarize_threshold ({})",
+                self.passthrough_threshold, self.summarize_threshold
+            ));
+        }
+        if self.summarize_threshold > self.total_budget {
+            return Err(format!(
+                "acon: summarize_threshold ({}) must be <= total_budget ({})",
+                self.summarize_threshold, self.total_budget
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for AconConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            passthrough_threshold: default_acon_passthrough_threshold(),
+            summarize_threshold: default_acon_summarize_threshold(),
+            total_budget: default_acon_total_budget(),
+            summarize_provider: ProviderName::default(),
+        }
+    }
+}
+
+/// Configuration for ARC agent-initiated compaction (#4020).
+///
+/// When `allow_agent_compaction = true`, the `request_compaction` internal tool is
+/// registered and the agent can call it to trigger context summarization on demand.
+/// Rate limiting is handled by `CompactionState` — only one compaction fires per turn.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [memory.compression.arc]
+/// allow_agent_compaction = true
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ArcCompactionConfig {
+    /// Allow the agent to request compaction via the `request_compaction` tool call.
+    /// Default: `true`.
+    pub allow_agent_compaction: bool,
+}
+
+impl Default for ArcCompactionConfig {
+    fn default() -> Self {
+        Self {
+            allow_agent_compaction: true,
+        }
+    }
 }
 
 /// Configuration for typed-page compaction invariants (#3630).

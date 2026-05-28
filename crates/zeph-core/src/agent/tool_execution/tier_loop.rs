@@ -1081,9 +1081,18 @@ impl<C: Channel> Agent<C> {
             let is_focus_tool = self.services.focus.config.enabled
                 && (tc.name == "start_focus" || tc.name == "complete_focus");
             let is_compress = tc.name == "compress_context";
-            if is_focus_tool || is_compress {
+            let is_request_compaction = tc.name == "request_compaction"
+                && self
+                    .services
+                    .memory
+                    .subsystems
+                    .arc_config
+                    .allow_agent_compaction;
+            if is_focus_tool || is_compress || is_request_compaction {
                 let result = if is_compress {
                     self.handle_compress_context().await
+                } else if is_request_compaction {
+                    self.handle_request_compaction(&tc.input).await
                 } else {
                     let (text, maybe_checkpoint) =
                         self.handle_focus_tool(tc.name.as_str(), &tc.input);
@@ -1503,8 +1512,9 @@ impl<C: Channel> Agent<C> {
             let tc = &tool_calls[idx];
             let call = &calls[idx];
 
-            // Skip focus tools and compress_context — pre-handled before the tier loop.
+            // Skip focus tools, compress_context, and request_compaction — pre-handled before the tier loop.
             if tc.name == "compress_context"
+                || tc.name == "request_compaction"
                 || (self.services.focus.config.enabled
                     && (tc.name == "start_focus" || tc.name == "complete_focus"))
             {
@@ -2033,6 +2043,9 @@ impl<C: Channel> Agent<C> {
         // Spec 010-7 FR-001–FR-004: record shadow event and check goal drift.
         self.record_shadow_event(tool_calls, goal_summary_for_shadow);
 
+        // Acon: compress tool results before they enter message history (#4021).
+        self.apply_acon_compression(tool_calls, &mut result_parts);
+
         let user_msg = Message::from_parts(Role::User, result_parts);
         // flagged_urls accumulates across ALL tools in this batch (cross-tool trust boundary).
         // A URL from tool N's output can flag tool M's arguments even if tool M returned clean
@@ -2176,6 +2189,108 @@ impl<C: Channel> Agent<C> {
             );
         }
     }
+
+    /// Apply Acon tool-result compression to `result_parts` in-place before the parts enter
+    /// message history. No-op when `acon_config.enabled` is false or the batch is empty.
+    #[tracing::instrument(name = "context.tool_result_compress", skip_all, level = "debug")]
+    fn apply_acon_compression(
+        &mut self,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        result_parts: &mut [MessagePart],
+    ) {
+        use zeph_context::tool_result_compress::{
+            CompressionMethod, ToolResultCompressionConfig, ToolResultCompressor, ToolResultEntry,
+        };
+
+        let acon = &self.services.memory.subsystems.acon_config;
+        if !acon.enabled {
+            return;
+        }
+
+        let cfg = ToolResultCompressionConfig::from(acon);
+        let tc = std::sync::Arc::clone(&self.runtime.metrics.token_counter);
+
+        // Build a lookup from tool_use_id → tool_name so we can populate the trace field
+        // without relying on positional correspondence between result_parts and tool_calls.
+        // This is robust to future changes where process_one_tool_result emits zero or
+        // multiple ToolResult parts per call.
+        let id_to_name: std::collections::HashMap<&str, &str> = tool_calls
+            .iter()
+            .map(|tc| (tc.id.as_str(), tc.name.as_str()))
+            .collect();
+
+        // Collect (part_index, tool_name, owned_text) for each ToolResult part. Text is cloned
+        // to avoid borrow conflicts when we later mutate result_parts.
+        let indexed_texts: Vec<(usize, String, String)> = result_parts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, part)| {
+                if let MessagePart::ToolResult {
+                    content,
+                    tool_use_id,
+                    ..
+                } = part
+                {
+                    let name = id_to_name
+                        .get(tool_use_id.as_str())
+                        .copied()
+                        .unwrap_or("")
+                        .to_owned();
+                    Some((i, name, content.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if indexed_texts.is_empty() {
+            return;
+        }
+
+        let entries: Vec<ToolResultEntry<'_>> = indexed_texts
+            .iter()
+            .map(|(part_idx, name, text)| ToolResultEntry {
+                tool_name: name.as_str(),
+                text: text.as_str(),
+                index: *part_idx,
+            })
+            .collect();
+
+        let compressed = ToolResultCompressor::compress_batch(&entries, tc.as_ref(), &cfg);
+
+        let mut tokens_saved: usize = 0;
+        let mut results_compressed: u32 = 0;
+
+        for (result, (part_idx, _, _)) in compressed.iter().zip(indexed_texts.iter()) {
+            if result.method != CompressionMethod::PassThrough
+                && let MessagePart::ToolResult { content, .. } = &mut result_parts[*part_idx]
+            {
+                content.clone_from(&result.text);
+                tokens_saved = tokens_saved.saturating_add(
+                    result
+                        .original_tokens
+                        .saturating_sub(result.compressed_tokens),
+                );
+                results_compressed += 1;
+            }
+        }
+
+        if results_compressed > 0 {
+            tracing::debug!(
+                tokens_saved,
+                results_compressed,
+                "acon: tool result compression applied"
+            );
+            self.update_metrics(|m| {
+                m.acon_tokens_saved = m
+                    .acon_tokens_saved
+                    .saturating_add(u64::try_from(tokens_saved).unwrap_or(u64::MAX));
+                m.acon_results_compressed = m
+                    .acon_results_compressed
+                    .saturating_add(u64::from(results_compressed));
+            });
+        }
+    }
 }
 
 async fn recv_elicitation(
@@ -2235,6 +2350,17 @@ impl<C: Channel> Agent<C> {
 
         // Inject compress_context tool — always available when context-compression is enabled (#2218).
         tool_defs.push(crate::agent::focus::compress_context_tool_definition());
+
+        // Inject request_compaction tool when ARC agent-initiated compaction is enabled (#4020).
+        if self
+            .services
+            .memory
+            .subsystems
+            .arc_config
+            .allow_agent_compaction
+        {
+            tool_defs.push(crate::agent::focus::request_compaction_tool_definition());
+        }
 
         // Pre-compute the full tool set for iterations 1+ before filtering.
         let all_tool_defs = tool_defs.clone();
@@ -2611,6 +2737,7 @@ mod tests {
         // matching_hooks is never called for them. Confirm they do NOT match the
         // hook matchers in the first place (extra guard).
         assert!(matching_hooks(&matchers, "compress_context").is_empty());
+        assert!(matching_hooks(&matchers, "request_compaction").is_empty());
         assert!(matching_hooks(&matchers, "start_focus").is_empty());
         assert!(matching_hooks(&matchers, "complete_focus").is_empty());
     }
@@ -2838,5 +2965,78 @@ mod tests {
             let mem = agent.services.security.shadow_memory.as_ref().unwrap();
             assert!(!mem.is_empty(), "shadow_memory must have recorded events");
         });
+    }
+
+    // Gap 3: handle_request_compaction must return the rate-limit error when
+    // CompactionState is already CompactedThisTurn.
+    #[test]
+    fn request_compaction_rate_limit_fires_when_compacted_this_turn() {
+        use crate::agent::context_manager::CompactionState;
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_skills::registry::SkillRegistry;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut agent = Agent::new(
+                mock_provider(vec![]),
+                MockChannel::new(vec![] as Vec<String>),
+                SkillRegistry::empty(),
+                None,
+                5,
+                MockToolExecutor::no_tools(),
+            );
+            // Simulate a compaction that already happened this turn.
+            agent
+                .context_manager
+                .set_compaction_state(CompactionState::CompactedThisTurn { cooldown: 0 });
+            let input = serde_json::json!({"reason": "context is growing"});
+            let result = agent.handle_request_compaction(&input).await;
+            assert!(
+                result.contains("already performed this turn"),
+                "rate-limit guard must fire: got {result:?}"
+            );
+        });
+    }
+
+    // Gap 5: apply_acon_compression must be a no-op when acon_config.enabled = false.
+    #[test]
+    fn apply_acon_compression_noop_when_disabled() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_llm::provider::MessagePart;
+        use zeph_skills::registry::SkillRegistry;
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // Disable Acon.
+        agent.services.memory.subsystems.acon_config.enabled = false;
+
+        // Build a result part with text that would be truncated if Acon were active.
+        let big_content = "word ".repeat(5000);
+        let mut parts = vec![MessagePart::ToolResult {
+            tool_use_id: "id_shell".to_owned(),
+            content: big_content.clone(),
+            is_error: false,
+        }];
+        let calls = vec![make_tool_req("shell")];
+
+        agent.apply_acon_compression(&calls, &mut parts);
+
+        // Content must be unchanged.
+        if let MessagePart::ToolResult { content, .. } = &parts[0] {
+            assert_eq!(
+                content.len(),
+                big_content.len(),
+                "content must not be modified when acon is disabled"
+            );
+        } else {
+            panic!("expected ToolResult part");
+        }
     }
 }

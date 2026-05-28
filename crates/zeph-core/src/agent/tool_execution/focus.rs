@@ -368,6 +368,47 @@ impl<C: Channel> Agent<C> {
             .await;
         self.push_message(user_msg);
     }
+
+    /// Handle the `request_compaction` tool call (ARC #4020).
+    ///
+    /// Delegates to `handle_compress_context` with additional guards:
+    /// - Rate limit: reuses `CompactionState` — fires at most once per turn.
+    /// - Minimum context threshold: only fires when above the soft compaction threshold.
+    /// - Reason is truncated to 256 chars before logging (critic note N5).
+    #[tracing::instrument(name = "agent.request_compaction", skip_all, level = "info")]
+    pub(crate) async fn handle_request_compaction(&mut self, input: &serde_json::Value) -> String {
+        let raw_reason = input
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(no reason provided)");
+
+        // Truncate reason to 256 chars at a valid UTF-8 char boundary.
+        let reason = &raw_reason[..raw_reason.floor_char_boundary(256.min(raw_reason.len()))];
+
+        // CompactionState is the single authority for per-turn rate limiting.
+        if self
+            .context_manager
+            .compaction_state()
+            .is_compacted_this_turn()
+        {
+            return "[error] Compaction already performed this turn. Try again next turn."
+                .to_string();
+        }
+
+        // Only compact when context usage is above the soft threshold.
+        let cached = self.runtime.providers.cached_prompt_tokens;
+        let tier = self.context_manager.compaction_tier(cached);
+        if matches!(tier, zeph_context::manager::CompactionTier::None) {
+            return format!(
+                "Context usage is below the compaction threshold. \
+                 No compaction needed at this time ({cached} tokens cached)."
+            );
+        }
+
+        tracing::info!(reason, "agent requested compaction (ARC)");
+
+        self.handle_compress_context().await
+    }
 }
 
 /// Build the LLM prompt messages used to summarize a slice of conversation messages.

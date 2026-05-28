@@ -94,6 +94,10 @@ pub struct AgentSessionConfig {
     pub microcompact_config: crate::config::MicrocompactConfig,
     pub autodream_config: crate::config::AutoDreamConfig,
     pub magic_docs_config: crate::config::MagicDocsConfig,
+    /// Acon tool-result compression configuration (#4021).
+    pub acon_config: zeph_config::AconConfig,
+    /// ARC agent-initiated compaction configuration (#4020).
+    pub arc_config: zeph_config::ArcCompactionConfig,
     pub anomaly_config: zeph_tools::AnomalyConfig,
     pub result_cache_config: zeph_tools::ResultCacheConfig,
     pub utility_config: zeph_tools::UtilityScoringConfig,
@@ -170,6 +174,8 @@ impl AgentSessionConfig {
             microcompact_config: config.memory.microcompact.clone(),
             autodream_config: config.memory.autodream.clone(),
             magic_docs_config: config.magic_docs.clone(),
+            acon_config: config.memory.compression.acon.clone(),
+            arc_config: config.memory.compression.arc.clone(),
             anomaly_config: config.tools.anomaly.clone(),
             result_cache_config: config.tools.result_cache.clone(),
             utility_config: config.tools.utility.clone(),

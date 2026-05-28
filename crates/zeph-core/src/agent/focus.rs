@@ -90,6 +90,36 @@ pub(crate) fn compress_context_tool_definition() -> ToolDefinition {
     }
 }
 
+/// Build the tool definition for `request_compaction` (ARC #4020).
+///
+/// Registered when `memory.compression.arc.allow_agent_compaction = true`.
+/// The tool allows the agent to trigger context summarization on demand when the
+/// conversation context becomes unwieldy. Rate limiting is enforced by `CompactionState`
+/// — only one compaction fires per turn regardless of how many times the agent calls this.
+pub(crate) fn request_compaction_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "request_compaction".into(),
+        description: "Request immediate context compaction. Use when the conversation context \
+                      feels unwieldy or when you are running low on context space. Provide a \
+                      brief reason for the compaction request.\n\n\
+                      This triggers summarization of older conversation history, preserving \
+                      recent messages and pinned knowledge. Limited to one compaction per turn.\n\n\
+                      Parameters:\n- reason (string, required): brief explanation (max 256 chars)."
+            .into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Brief reason for requesting compaction (max 256 chars)."
+                }
+            },
+            "required": ["reason"]
+        }),
+        output_schema: None,
+    }
+}
+
 // Used by build_knowledge_message (context-compression feature).
 pub(crate) const KNOWLEDGE_BLOCK_PREFIX: &str = "[knowledge]\n";
 

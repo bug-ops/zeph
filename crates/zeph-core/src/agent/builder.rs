@@ -2073,6 +2073,8 @@ impl<C: Channel> Agent<C> {
             microcompact_config,
             autodream_config,
             magic_docs_config,
+            acon_config,
+            arc_config,
             anomaly_config,
             result_cache_config,
             mut utility_config,
@@ -2144,6 +2146,8 @@ impl<C: Channel> Agent<C> {
         self.services.memory.subsystems.microcompact_config = microcompact_config;
         self.services.memory.subsystems.autodream_config = autodream_config;
         self.services.memory.subsystems.magic_docs_config = magic_docs_config;
+        self.services.memory.subsystems.acon_config = acon_config;
+        self.services.memory.subsystems.arc_config = arc_config;
         self.services.orchestration.orchestration_config = orchestration_config;
         self.wire_graph_persistence();
         self.runtime.config.budget_hint_enabled = budget_hint_enabled;
@@ -2405,6 +2409,8 @@ mod tests {
             high_density_budget: 0.7,
             low_density_budget: 0.3,
             typed_pages: zeph_config::TypedPagesConfig::default(),
+            acon: zeph_config::AconConfig::default(),
+            arc: zeph_config::ArcCompactionConfig::default(),
         };
         let agent = make_agent().with_compression(compression);
         assert!(

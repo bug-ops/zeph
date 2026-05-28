@@ -211,6 +211,10 @@ pub struct MetricsSnapshot {
     pub compaction_turns_after_hard: Vec<u64>,
     pub compression_events: u64,
     pub compression_tokens_saved: u64,
+    /// Tool results compressed by Acon (#4021) this session.
+    pub acon_results_compressed: u64,
+    /// Tokens saved by Acon tool-result compression (#4021) this session.
+    pub acon_tokens_saved: u64,
     pub tool_output_prunes: u64,
     /// Compaction probe outcomes (#1609).
     pub compaction_probe_passes: u64,

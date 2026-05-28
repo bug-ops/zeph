@@ -1295,6 +1295,19 @@ sweep_batch_size = 100
 # [memory.compression.probe]
 # probe_provider = "fast"    # SLM: single-number quality scoring
 #
+# # Acon: token-budget compression of tool results before they enter message history (#4021).
+# # Invariants: passthrough_threshold < summarize_threshold <= total_budget.
+# [memory.compression.acon]
+# enabled = true
+# passthrough_threshold = 2000  # results <= this pass through unchanged
+# summarize_threshold = 4000    # results above this are candidates for LLM summarization (caller's responsibility)
+# total_budget = 8000           # max total tokens across all tool results in one turn
+# summarize_provider = ""       # provider for LLM summarization; falls back to primary when empty
+#
+# # ARC: agent-initiated context compaction (#4020).
+# [memory.compression.arc]
+# allow_agent_compaction = true  # set false to disable the request_compaction tool
+#
 # [memory.semantic]
 # scene_provider = "fast"    # SLM: short label generation
 #
