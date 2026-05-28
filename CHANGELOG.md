@@ -16,6 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the named provider is resolved from the provider registry and passed to `CodeIndexer::new` instead
   of the primary agent provider; falls back to the main provider when the named provider is absent,
   with a warning log (closes #4492).
+- `zeph-channels`: track all `tokio::spawn` JoinHandles in Discord and Slack adapters — gateway
+  handle stored in `DiscordChannel`, event-server handle stored in `SlackChannel`; both are aborted
+  on Drop via `JoinHandle` ownership semantics. Slash-command registration spawn is intentionally
+  fire-and-forget (`let _handle`) with a doc comment explaining non-fatal failure semantics
+  (closes #4493).
 
 ### Added
 

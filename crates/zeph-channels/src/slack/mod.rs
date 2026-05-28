@@ -30,6 +30,8 @@ const EDIT_THROTTLE: Duration = Duration::from_secs(2);
 pub struct SlackChannel {
     rx: mpsc::Receiver<IncomingMessage>,
     api: api::SlackApi,
+    /// Webhook server task. Kept alive for the duration of the channel session.
+    _server_handle: tokio::task::JoinHandle<()>,
     channel_id: Option<String>,
     allowed_user_ids: Vec<String>,
     allowed_channel_ids: Vec<String>,
@@ -70,7 +72,7 @@ impl SlackChannel {
                 String::new()
             }
         };
-        let rx = events::spawn_event_server(
+        let (server_handle, rx) = events::spawn_event_server(
             host,
             port,
             signing_secret,
@@ -81,6 +83,7 @@ impl SlackChannel {
         Ok(Self {
             rx,
             api,
+            _server_handle: server_handle,
             channel_id: None,
             allowed_user_ids,
             allowed_channel_ids,
@@ -323,6 +326,7 @@ mod tests {
         SlackChannel {
             rx,
             api,
+            _server_handle: tokio::spawn(std::future::pending()),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_channel_ids: vec![],
@@ -340,14 +344,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn buffer_should_flush_true_when_no_last_edit() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn buffer_should_flush_true_when_no_last_edit() {
         let ch = make_channel();
         assert!(ch.buffer.should_flush());
     }
 
-    #[test]
-    fn buffer_should_flush_false_within_throttle() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn buffer_should_flush_false_within_throttle() {
         let mut ch = make_channel();
         ch.buffer.push("x");
         ch.buffer.mark_flushed();
@@ -372,39 +376,39 @@ mod tests {
         assert!(ch.message_ts.is_none());
     }
 
-    #[test]
-    fn is_authorized_allows_all_when_empty_lists() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn is_authorized_allows_all_when_empty_lists() {
         let ch = make_channel();
         let msg = make_incoming("U1", "C1");
         assert!(ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_rejects_channel_not_in_allowlist() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn is_authorized_rejects_channel_not_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_channel_ids = vec!["C-allowed".into()];
         let msg = make_incoming("U1", "C-other");
         assert!(!ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_allows_channel_in_allowlist() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn is_authorized_allows_channel_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_channel_ids = vec!["C1".into()];
         let msg = make_incoming("U1", "C1");
         assert!(ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_allows_user_in_allowlist() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn is_authorized_allows_user_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_user_ids = vec!["U1".into()];
         let msg = make_incoming("U1", "C1");
         assert!(ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_rejects_user_not_in_allowlist() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn is_authorized_rejects_user_not_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_user_ids = vec!["U-other".into()];
         let msg = make_incoming("U1", "C1");
@@ -419,6 +423,7 @@ mod tests {
         let mut ch = SlackChannel {
             rx,
             api,
+            _server_handle: tokio::spawn(std::future::pending()),
             channel_id: Some("C1".into()),
             allowed_user_ids: vec!["U-allowed".into()],
             allowed_channel_ids: vec![],
@@ -463,13 +468,14 @@ mod tests {
         assert!(confirmed);
     }
 
-    #[test]
-    fn try_recv_sets_channel_id() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn try_recv_sets_channel_id() {
         let (tx, rx) = mpsc::channel(16);
         let api = api::SlackApi::new("xoxb-test".into());
         let mut ch = SlackChannel {
             rx,
             api,
+            _server_handle: tokio::spawn(std::future::pending()),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_channel_ids: vec![],
@@ -488,8 +494,8 @@ mod tests {
         assert_eq!(ch.channel_id.as_deref(), Some("C123"));
     }
 
-    #[test]
-    fn debug_impl() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_impl() {
         let ch = make_channel();
         let debug = format!("{ch:?}");
         assert!(debug.contains("SlackChannel"));
@@ -500,8 +506,8 @@ mod tests {
         assert_eq!(EDIT_THROTTLE, Duration::from_secs(2));
     }
 
-    #[test]
-    fn accumulate_chunks() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn accumulate_chunks() {
         let mut ch = make_channel();
         ch.buffer.push("part1");
         ch.buffer.push(" part2");
