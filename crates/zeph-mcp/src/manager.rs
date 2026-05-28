@@ -48,6 +48,7 @@ pub(crate) use zeph_config::McpTrustLevel;
 const MAX_INJECTION_PENALTIES_PER_REGISTRATION: usize = 3;
 
 /// Transport type for MCP server connections.
+#[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum McpTransport {
     /// Stdio: spawn child process with command + args.

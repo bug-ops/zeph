@@ -325,6 +325,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
 }
 
 /// Result of an OAuth connection attempt.
+#[non_exhaustive]
 pub enum OAuthConnectResult {
     /// Connection established using cached or freshly obtained tokens.
     Connected(McpClient),

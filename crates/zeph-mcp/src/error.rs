@@ -7,6 +7,7 @@ use zeph_common::ToolName;
 ///
 /// Used by [`McpError::code`] and callers such as the agent retry loop to decide
 /// whether an operation should be retried, backed off, or abandoned.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpErrorCode {
@@ -56,6 +57,7 @@ impl McpErrorCode {
 /// assert_eq!(err.code(), Some(McpErrorCode::Transient));
 /// assert!(err.code().unwrap().is_retryable());
 /// ```
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
     #[error("connection failed for server '{server_id}': {message}")]

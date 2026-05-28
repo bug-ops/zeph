@@ -1143,6 +1143,10 @@ impl<C: Channel> Agent<C> {
                     // Pass all tools through without filtering.
                     self.services.mcp.sync_executor_tools();
                 }
+                _ => {
+                    // Unknown future variant: fall back to passing all tools through.
+                    self.services.mcp.sync_executor_tools();
+                }
             }
         }
 

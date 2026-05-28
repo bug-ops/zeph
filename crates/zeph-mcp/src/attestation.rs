@@ -23,6 +23,7 @@ pub type ToolFingerprint = String;
 ///
 /// Produced by [`attest_tools`] at connect time. Stored in [`ServerTrustBoundary`] and used
 /// to decide whether unexpected tools should be filtered or surfaced as warnings.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum AttestationResult {
     /// All actual tools are in the operator-declared expected set.

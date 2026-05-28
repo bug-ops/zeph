@@ -212,6 +212,7 @@ fn sanitize_server_id(id: &str) -> String {
 /// Used in [`CrossToolReference::severity`] to distinguish a plain cross-reference
 /// (suspicious, but may be legitimate) from one that accompanies an injection pattern
 /// (high-confidence attack surface indicator).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrossRefSeverity {
     /// Cross-reference only — no injection pattern on the same source tool.

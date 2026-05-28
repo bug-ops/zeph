@@ -23,6 +23,7 @@ use crate::tool::{DataSensitivity, McpTool};
 // ── Data-flow policy ─────────────────────────────────────────────────────────
 
 /// Data-flow policy violation.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum DataFlowViolation {
     #[error(
@@ -81,6 +82,7 @@ pub(crate) use zeph_config::McpPolicy;
 ///
 /// Returned by [`PolicyEnforcer::check`]. The outer [`McpError`](crate::error::McpError)
 /// wraps this as `McpError::PolicyViolation`.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyViolation {
     #[error("tool '{tool_name}' is denied on server '{server_id}'")]

@@ -23,6 +23,7 @@ use crate::tool::McpTool;
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 /// Errors produced by [`SemanticToolIndex::build`].
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SemanticIndexError {
     /// Every tool in the input list failed to embed.
@@ -254,6 +255,7 @@ impl SemanticToolIndex {
 /// Mirrors `ToolDiscoveryStrategyConfig` in `zeph-config` but lives in `zeph-mcp`
 /// to avoid a circular crate dependency.  Callers in `zeph-core` convert between
 /// the two representations.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ToolDiscoveryStrategy {
     /// Embedding-based cosine similarity retrieval.  Fast, no LLM call per turn.

@@ -220,6 +220,7 @@ pub async fn prune_tools_cached<P: LlmProvider>(
 }
 
 /// Errors that can occur during tool pruning.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum PruningError {
     /// LLM call failed.
