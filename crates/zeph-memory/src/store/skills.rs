@@ -2143,4 +2143,106 @@ mod tests {
             "the last saved version must be the active one"
         );
     }
+
+    // ── AutoSkill A6: heuristic promotion helpers ─────────────────────────
+
+    async fn insert_heuristic(store: &SqliteStore, skill: &str, text: &str, confidence: f64) {
+        zeph_db::query(sql!(
+            "INSERT INTO skill_heuristics (skill_name, heuristic_text, confidence) VALUES (?, ?, ?)"
+        ))
+        .bind(skill)
+        .bind(text)
+        .bind(confidence)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn count_heuristics_by_skill_threshold_and_confidence() {
+        let store = test_store().await;
+
+        // "git" has 3 heuristics: 2 above min_confidence, 1 below
+        insert_heuristic(&store, "git", "use --no-pager", 0.8).await;
+        insert_heuristic(&store, "git", "check status first", 0.9).await;
+        insert_heuristic(&store, "git", "low confidence hint", 0.3).await;
+
+        // "docker" has 1 heuristic above confidence — below min_count=2
+        insert_heuristic(&store, "docker", "use --rm", 0.7).await;
+
+        let results = store.count_heuristics_by_skill(0.5, 2).await.unwrap();
+        assert_eq!(results.len(), 1, "only git meets threshold");
+        assert_eq!(results[0].0, "git");
+        assert_eq!(results[0].1, 2, "only heuristics >= 0.5 confidence counted");
+    }
+
+    #[tokio::test]
+    async fn load_heuristic_texts_sorted_for_deterministic_hash() {
+        let store = test_store().await;
+
+        insert_heuristic(&store, "git", "zebra", 0.8).await;
+        insert_heuristic(&store, "git", "alpha", 0.9).await;
+        insert_heuristic(&store, "git", "middle", 0.7).await;
+        insert_heuristic(&store, "git", "skipped", 0.2).await; // below min_confidence
+
+        let texts = store
+            .load_heuristic_texts_for_promotion("git", 0.5)
+            .await
+            .unwrap();
+
+        assert_eq!(texts.len(), 3);
+        assert_eq!(texts, vec!["alpha", "middle", "zebra"], "must be sorted ASC");
+    }
+
+    #[tokio::test]
+    async fn promotion_already_evaluated_idempotency() {
+        let store = test_store().await;
+
+        // Not yet evaluated.
+        let found = store
+            .promotion_already_evaluated("git", "abc123")
+            .await
+            .unwrap();
+        assert!(!found);
+
+        store
+            .record_promotion_evaluation("git", "abc123", "none", None)
+            .await
+            .unwrap();
+
+        // Now it should be found.
+        let found = store
+            .promotion_already_evaluated("git", "abc123")
+            .await
+            .unwrap();
+        assert!(found);
+    }
+
+    #[tokio::test]
+    async fn record_promotion_evaluation_insert_or_ignore() {
+        let store = test_store().await;
+
+        // First insert — succeeds.
+        store
+            .record_promotion_evaluation("git", "hash1", "body_enrichment", Some("git-v2"))
+            .await
+            .unwrap();
+
+        // Duplicate insert — should not error (INSERT OR IGNORE).
+        store
+            .record_promotion_evaluation("git", "hash1", "new_skill", Some("git-extra"))
+            .await
+            .unwrap();
+
+        // Only one row should exist; recommendation is from the first insert.
+        let rec: (String,) = zeph_db::query_as(sql!(
+            "SELECT recommendation FROM skill_heuristic_promotions WHERE skill_name = ? AND batch_hash = ?"
+        ))
+        .bind("git")
+        .bind("hash1")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(rec.0, "body_enrichment", "first insert wins (INSERT OR IGNORE)");
+    }
 }
