@@ -983,7 +983,7 @@ pub(crate) fn apply_causal_analyzer_with_cfg<C: Channel>(
 }
 
 pub(crate) async fn apply_code_indexer(
-    config: &IndexConfig,
+    full_config: &Config,
     qdrant_ops: Option<QdrantOps>,
     provider: zeph_llm::any::AnyProvider,
     pool: zeph_db::DbPool,
@@ -991,6 +991,7 @@ pub(crate) async fn apply_code_indexer(
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     supervisor: Option<zeph_common::TaskSupervisor>,
 ) -> CodeIndexerSetup {
+    let config = &full_config.index;
     if !config.enabled {
         return (None, None);
     }
@@ -1000,7 +1001,27 @@ pub(crate) async fn apply_code_indexer(
             anyhow::anyhow!("code index requires Qdrant backend (vector_backend = \"qdrant\")")
         })?;
         let store = CodeStore::with_ops(ops, pool);
-        let provider_arc = std::sync::Arc::new(provider);
+        let embed_provider = config
+            .embed_provider
+            .as_ref()
+            .and_then(|p| p.as_non_empty())
+            .and_then(|name| {
+                match crate::bootstrap::create_named_provider(name, full_config) {
+                    Ok(p) => {
+                        tracing::info!(provider = %name, "Using dedicated embed provider for indexer");
+                        Some(p)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %name,
+                            "Index embed_provider resolution failed, falling back to main provider: {e:#}"
+                        );
+                        None
+                    }
+                }
+            })
+            .unwrap_or(provider);
+        let provider_arc = std::sync::Arc::new(embed_provider);
         let base_indexer = CodeIndexer::new(
             store,
             provider_arc,
@@ -1697,26 +1718,40 @@ mod tests {
 
     #[tokio::test]
     async fn apply_code_indexer_disabled_returns_no_runtime() {
-        let config = IndexConfig {
-            enabled: false,
-            ..IndexConfig::default()
+        let full_config = Config {
+            index: IndexConfig {
+                enabled: false,
+                ..IndexConfig::default()
+            },
+            ..Config::default()
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
 
-        let (watcher, progress_rx) =
-            apply_code_indexer(&config, None, offline_provider(), pool, false, None, None).await;
+        let (watcher, progress_rx) = apply_code_indexer(
+            &full_config,
+            None,
+            offline_provider(),
+            pool,
+            false,
+            None,
+            None,
+        )
+        .await;
         assert!(watcher.is_none());
         assert!(progress_rx.is_none());
     }
 
     #[tokio::test]
     async fn apply_code_indexer_enabled_returns_runtime_without_watcher_when_disabled() {
-        let config = IndexConfig {
-            enabled: true,
-            watch: false,
-            ..IndexConfig::default()
+        let full_config = Config {
+            index: IndexConfig {
+                enabled: true,
+                watch: false,
+                ..IndexConfig::default()
+            },
+            ..Config::default()
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
@@ -1724,7 +1759,7 @@ mod tests {
         let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
 
         let (watcher, _progress_rx) = apply_code_indexer(
-            &config,
+            &full_config,
             Some(qdrant),
             offline_provider(),
             pool,
@@ -1738,28 +1773,42 @@ mod tests {
 
     #[tokio::test]
     async fn apply_code_indexer_workspace_root_none_uses_current_dir() {
-        let config = IndexConfig {
-            enabled: false,
-            workspace_root: None,
-            ..IndexConfig::default()
+        let full_config = Config {
+            index: IndexConfig {
+                enabled: false,
+                workspace_root: None,
+                ..IndexConfig::default()
+            },
+            ..Config::default()
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
 
-        let (watcher, _) =
-            apply_code_indexer(&config, None, offline_provider(), pool, false, None, None).await;
+        let (watcher, _) = apply_code_indexer(
+            &full_config,
+            None,
+            offline_provider(),
+            pool,
+            false,
+            None,
+            None,
+        )
+        .await;
         assert!(watcher.is_none());
     }
 
     #[tokio::test]
     async fn apply_code_indexer_workspace_root_some_path() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let config = IndexConfig {
-            enabled: true,
-            watch: false,
-            workspace_root: Some(tmp_dir.path().to_path_buf()),
-            ..IndexConfig::default()
+        let full_config = Config {
+            index: IndexConfig {
+                enabled: true,
+                watch: false,
+                workspace_root: Some(tmp_dir.path().to_path_buf()),
+                ..IndexConfig::default()
+            },
+            ..Config::default()
         };
         let tmp_db = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp_db.path().display());
@@ -1767,7 +1816,7 @@ mod tests {
         let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
 
         let (watcher, _) = apply_code_indexer(
-            &config,
+            &full_config,
             Some(qdrant),
             offline_provider(),
             pool,
@@ -1777,6 +1826,43 @@ mod tests {
         )
         .await;
         assert!(watcher.is_none()); // watch = false
+    }
+
+    // When embed_provider names an unknown provider, apply_code_indexer must fall back to
+    // the main provider and log a warning rather than panicking or returning an error.
+    // The indexer still starts (Qdrant fails to connect, so watcher stays None, but init
+    // proceeds far enough to exercise the resolution branch).
+    #[tokio::test]
+    async fn apply_code_indexer_unknown_embed_provider_falls_back_to_main() {
+        use zeph_common::ProviderName;
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let full_config = Config {
+            index: IndexConfig {
+                enabled: true,
+                watch: false,
+                workspace_root: Some(tmp_dir.path().to_path_buf()),
+                embed_provider: Some(ProviderName::from("nonexistent-provider")),
+                ..IndexConfig::default()
+            },
+            ..Config::default()
+        };
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp_db.path().display());
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+
+        // Must not panic; unknown embed_provider falls back to main provider.
+        let (watcher, _) = apply_code_indexer(
+            &full_config,
+            Some(qdrant),
+            offline_provider(),
+            pool,
+            false,
+            None,
+            None,
+        )
+        .await;
+        assert!(watcher.is_none());
     }
 
     #[tokio::test]

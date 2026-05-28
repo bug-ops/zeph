@@ -207,7 +207,7 @@ impl FileExecutor {
         feature = "profiling",
         tracing::instrument(name = "tool.file", skip_all, fields(operation = %tool_id))
     )]
-    pub fn execute_file_tool(
+    pub async fn execute_file_tool(
         &self,
         tool_id: &str,
         params: &serde_json::Map<String, serde_json::Value>,
@@ -215,15 +215,15 @@ impl FileExecutor {
         match tool_id {
             "read" => {
                 let p: ReadParams = deserialize_params(params)?;
-                self.handle_read(&p)
+                self.handle_read(&p).await
             }
             "write" => {
                 let p: WriteParams = deserialize_params(params)?;
-                self.handle_write(&p)
+                self.handle_write(&p).await
             }
             "edit" => {
                 let p: EditParams = deserialize_params(params)?;
-                self.handle_edit(&p)
+                self.handle_edit(&p).await
             }
             "find_path" => {
                 let p: FindPathParams = deserialize_params(params)?;
@@ -235,7 +235,7 @@ impl FileExecutor {
             }
             "list_directory" => {
                 let p: ListDirectoryParams = deserialize_params(params)?;
-                self.handle_list_directory(&p)
+                self.handle_list_directory(&p).await
             }
             "create_directory" => {
                 let p: CreateDirectoryParams = deserialize_params(params)?;
@@ -257,10 +257,10 @@ impl FileExecutor {
         }
     }
 
-    fn handle_read(&self, params: &ReadParams) -> Result<Option<ToolOutput>, ToolError> {
+    async fn handle_read(&self, params: &ReadParams) -> Result<Option<ToolOutput>, ToolError> {
         let path = self.validate_path(Path::new(&params.path))?;
         self.check_read_sandbox(&path)?;
-        let content = std::fs::read_to_string(&path)?;
+        let content = tokio::fs::read_to_string(&path).await?;
 
         let offset = params.offset.unwrap_or(0) as usize;
         let limit = params.limit.map_or(usize::MAX, |l| l as usize);
@@ -287,14 +287,14 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_write(&self, params: &WriteParams) -> Result<Option<ToolOutput>, ToolError> {
+    async fn handle_write(&self, params: &WriteParams) -> Result<Option<ToolOutput>, ToolError> {
         let path = self.validate_path(Path::new(&params.path))?;
-        let old_content = std::fs::read_to_string(&path).unwrap_or_default();
+        let old_content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
-        std::fs::write(&path, &params.content)?;
+        tokio::fs::write(&path, &params.content).await?;
 
         Ok(Some(ToolOutput {
             tool_name: ToolName::new("write"),
@@ -314,9 +314,9 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_edit(&self, params: &EditParams) -> Result<Option<ToolOutput>, ToolError> {
+    async fn handle_edit(&self, params: &EditParams) -> Result<Option<ToolOutput>, ToolError> {
         let path = self.validate_path(Path::new(&params.path))?;
-        let content = std::fs::read_to_string(&path)?;
+        let content = tokio::fs::read_to_string(&path).await?;
 
         if !content.contains(&params.old_string) {
             return Err(ToolError::Execution(std::io::Error::new(
@@ -326,7 +326,7 @@ impl FileExecutor {
         }
 
         let new_content = content.replacen(&params.old_string, &params.new_string, 1);
-        std::fs::write(&path, &new_content)?;
+        tokio::fs::write(&path, &new_content).await?;
 
         Ok(Some(ToolOutput {
             tool_name: ToolName::new("edit"),
@@ -433,13 +433,14 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_list_directory(
+    async fn handle_list_directory(
         &self,
         params: &ListDirectoryParams,
     ) -> Result<Option<ToolOutput>, ToolError> {
         let path = self.validate_path(Path::new(&params.path))?;
 
-        if !path.is_dir() {
+        let meta = tokio::fs::metadata(&path).await?;
+        if !meta.is_dir() {
             return Err(ToolError::Execution(std::io::Error::new(
                 std::io::ErrorKind::NotADirectory,
                 format!("{} is not a directory", params.path),
@@ -450,11 +451,14 @@ impl FileExecutor {
         let mut files = Vec::new();
         let mut symlinks = Vec::new();
 
-        for entry in std::fs::read_dir(&path)? {
-            let entry = entry?;
+        let mut read_dir = tokio::fs::read_dir(&path).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
             let name = entry.file_name().to_string_lossy().into_owned();
             // Use symlink_metadata (lstat) to detect symlinks without following them.
-            let meta = std::fs::symlink_metadata(entry.path())?;
+            let entry_path = entry.path();
+            let meta = tokio::task::spawn_blocking(move || std::fs::symlink_metadata(&entry_path))
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))??;
             if meta.is_symlink() {
                 symlinks.push(format!("[symlink] {name}"));
             } else if meta.is_dir() {
@@ -609,6 +613,7 @@ impl ToolExecutor for FileExecutor {
     )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         self.execute_file_tool(call.tool_id.as_str(), &call.params)
+            .await
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -855,22 +860,26 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn read_file() {
+    #[tokio::test]
+    async fn read_file() {
         let dir = temp_dir();
         let file = dir.path().join("test.txt");
         fs::write(&file, "line1\nline2\nline3\n").unwrap();
 
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("read", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("read", &params)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.tool_name, "read");
         assert!(result.summary.contains("line1"));
         assert!(result.summary.contains("line3"));
     }
 
-    #[test]
-    fn read_with_offset_and_limit() {
+    #[tokio::test]
+    async fn read_with_offset_and_limit() {
         let dir = temp_dir();
         let file = dir.path().join("test.txt");
         fs::write(&file, "a\nb\nc\nd\ne\n").unwrap();
@@ -881,15 +890,19 @@ mod tests {
             ("offset", serde_json::json!(1)),
             ("limit", serde_json::json!(2)),
         ]);
-        let result = exec.execute_file_tool("read", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("read", &params)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(result.summary.contains('b'));
         assert!(result.summary.contains('c'));
         assert!(!result.summary.contains('a'));
         assert!(!result.summary.contains('d'));
     }
 
-    #[test]
-    fn write_file() {
+    #[tokio::test]
+    async fn write_file() {
         let dir = temp_dir();
         let file = dir.path().join("out.txt");
 
@@ -898,13 +911,17 @@ mod tests {
             ("path", serde_json::json!(file.to_str().unwrap())),
             ("content", serde_json::json!("hello world")),
         ]);
-        let result = exec.execute_file_tool("write", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("write", &params)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(result.summary.contains("11 bytes"));
         assert_eq!(fs::read_to_string(&file).unwrap(), "hello world");
     }
 
-    #[test]
-    fn edit_file() {
+    #[tokio::test]
+    async fn edit_file() {
         let dir = temp_dir();
         let file = dir.path().join("edit.txt");
         fs::write(&file, "foo bar baz").unwrap();
@@ -915,13 +932,17 @@ mod tests {
             ("old_string", serde_json::json!("bar")),
             ("new_string", serde_json::json!("qux")),
         ]);
-        let result = exec.execute_file_tool("edit", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("edit", &params)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(result.summary.contains("Edited"));
         assert_eq!(fs::read_to_string(&file).unwrap(), "foo qux baz");
     }
 
-    #[test]
-    fn edit_not_found() {
+    #[tokio::test]
+    async fn edit_not_found() {
         let dir = temp_dir();
         let file = dir.path().join("edit.txt");
         fs::write(&file, "foo bar").unwrap();
@@ -932,29 +953,29 @@ mod tests {
             ("old_string", serde_json::json!("nonexistent")),
             ("new_string", serde_json::json!("x")),
         ]);
-        let result = exec.execute_file_tool("edit", &params);
+        let result = exec.execute_file_tool("edit", &params).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn sandbox_violation() {
+    #[tokio::test]
+    async fn sandbox_violation() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/etc/passwd"))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
-    #[test]
-    fn unknown_tool_returns_none() {
+    #[tokio::test]
+    async fn unknown_tool_returns_none() {
         let exec = FileExecutor::new(vec![]);
         let params = serde_json::Map::new();
-        let result = exec.execute_file_tool("unknown", &params).unwrap();
+        let result = exec.execute_file_tool("unknown", &params).await.unwrap();
         assert!(result.is_none());
     }
 
-    #[test]
-    fn find_path_finds_files() {
+    #[tokio::test]
+    async fn find_path_finds_files() {
         let dir = temp_dir();
         fs::write(dir.path().join("a.rs"), "").unwrap();
         fs::write(dir.path().join("b.rs"), "").unwrap();
@@ -964,14 +985,15 @@ mod tests {
         let params = make_params(&[("pattern", serde_json::json!(pattern))]);
         let result = exec
             .execute_file_tool("find_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(result.summary.contains("a.rs"));
         assert!(result.summary.contains("b.rs"));
     }
 
-    #[test]
-    fn grep_finds_matches() {
+    #[tokio::test]
+    async fn grep_finds_matches() {
         let dir = temp_dir();
         fs::write(
             dir.path().join("test.txt"),
@@ -984,27 +1006,31 @@ mod tests {
             ("pattern", serde_json::json!("hello")),
             ("path", serde_json::json!(dir.path().to_str().unwrap())),
         ]);
-        let result = exec.execute_file_tool("grep", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("grep", &params)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(result.summary.contains("hello world"));
         assert!(result.summary.contains("hello again"));
         assert!(!result.summary.contains("foo bar"));
     }
 
-    #[test]
-    fn write_sandbox_bypass_nonexistent_path() {
+    #[tokio::test]
+    async fn write_sandbox_bypass_nonexistent_path() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[
             ("path", serde_json::json!("/tmp/evil/escape.txt")),
             ("content", serde_json::json!("pwned")),
         ]);
-        let result = exec.execute_file_tool("write", &params);
+        let result = exec.execute_file_tool("write", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
         assert!(!Path::new("/tmp/evil/escape.txt").exists());
     }
 
-    #[test]
-    fn find_path_filters_outside_sandbox() {
+    #[tokio::test]
+    async fn find_path_filters_outside_sandbox() {
         let sandbox = temp_dir();
         let outside = temp_dir();
         fs::write(outside.path().join("secret.rs"), "secret").unwrap();
@@ -1014,6 +1040,7 @@ mod tests {
         let params = make_params(&[("pattern", serde_json::json!(pattern))]);
         let result = exec
             .execute_file_tool("find_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(!result.summary.contains("secret.rs"));
@@ -1039,8 +1066,8 @@ mod tests {
         assert!(result.summary.contains("content"));
     }
 
-    #[test]
-    fn tool_executor_tool_definitions_lists_all() {
+    #[tokio::test]
+    async fn tool_executor_tool_definitions_lists_all() {
         let exec = FileExecutor::new(vec![]);
         let defs = exec.tool_definitions();
         let ids: Vec<&str> = defs.iter().map(|d| d.id.as_ref()).collect();
@@ -1057,20 +1084,20 @@ mod tests {
         assert_eq!(defs.len(), 10);
     }
 
-    #[test]
-    fn grep_relative_path_validated() {
+    #[tokio::test]
+    async fn grep_relative_path_validated() {
         let sandbox = temp_dir();
         let exec = FileExecutor::new(vec![sandbox.path().to_path_buf()]);
         let params = make_params(&[
             ("pattern", serde_json::json!("password")),
             ("path", serde_json::json!("../../etc")),
         ]);
-        let result = exec.execute_file_tool("grep", &params);
+        let result = exec.execute_file_tool("grep", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
-    #[test]
-    fn tool_definitions_returns_ten_tools() {
+    #[tokio::test]
+    async fn tool_definitions_returns_ten_tools() {
         let exec = FileExecutor::new(vec![]);
         let defs = exec.tool_definitions();
         assert_eq!(defs.len(), 10);
@@ -1092,16 +1119,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tool_definitions_all_use_tool_call() {
+    #[tokio::test]
+    async fn tool_definitions_all_use_tool_call() {
         let exec = FileExecutor::new(vec![]);
         for def in exec.tool_definitions() {
             assert_eq!(def.invocation, InvocationHint::ToolCall);
         }
     }
 
-    #[test]
-    fn tool_definitions_read_schema_has_params() {
+    #[tokio::test]
+    async fn tool_definitions_read_schema_has_params() {
         let exec = FileExecutor::new(vec![]);
         let defs = exec.tool_definitions();
         let read = defs.iter().find(|d| d.id.as_ref() == "read").unwrap();
@@ -1112,19 +1139,19 @@ mod tests {
         assert!(props.contains_key("limit"));
     }
 
-    #[test]
-    fn missing_required_path_returns_invalid_params() {
+    #[tokio::test]
+    async fn missing_required_path_returns_invalid_params() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = serde_json::Map::new();
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
     }
 
     // --- list_directory tests ---
 
-    #[test]
-    fn list_directory_returns_entries() {
+    #[tokio::test]
+    async fn list_directory_returns_entries() {
         let dir = temp_dir();
         fs::write(dir.path().join("file.txt"), "").unwrap();
         fs::create_dir(dir.path().join("subdir")).unwrap();
@@ -1133,6 +1160,7 @@ mod tests {
         let params = make_params(&[("path", serde_json::json!(dir.path().to_str().unwrap()))]);
         let result = exec
             .execute_file_tool("list_directory", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(result.summary.contains("[dir]  subdir"));
@@ -1143,8 +1171,8 @@ mod tests {
         assert!(dir_pos < file_pos);
     }
 
-    #[test]
-    fn list_directory_empty_dir() {
+    #[tokio::test]
+    async fn list_directory_empty_dir() {
         let dir = temp_dir();
         let subdir = dir.path().join("empty");
         fs::create_dir(&subdir).unwrap();
@@ -1153,71 +1181,73 @@ mod tests {
         let params = make_params(&[("path", serde_json::json!(subdir.to_str().unwrap()))]);
         let result = exec
             .execute_file_tool("list_directory", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(result.summary.contains("Empty directory"));
     }
 
-    #[test]
-    fn list_directory_sandbox_violation() {
+    #[tokio::test]
+    async fn list_directory_sandbox_violation() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/etc"))]);
-        let result = exec.execute_file_tool("list_directory", &params);
+        let result = exec.execute_file_tool("list_directory", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
-    #[test]
-    fn list_directory_nonexistent_returns_error() {
+    #[tokio::test]
+    async fn list_directory_nonexistent_returns_error() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let missing = dir.path().join("nonexistent");
         let params = make_params(&[("path", serde_json::json!(missing.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("list_directory", &params);
+        let result = exec.execute_file_tool("list_directory", &params).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn list_directory_on_file_returns_error() {
+    #[tokio::test]
+    async fn list_directory_on_file_returns_error() {
         let dir = temp_dir();
         let file = dir.path().join("file.txt");
         fs::write(&file, "content").unwrap();
 
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("list_directory", &params);
+        let result = exec.execute_file_tool("list_directory", &params).await;
         assert!(result.is_err());
     }
 
     // --- create_directory tests ---
 
-    #[test]
-    fn create_directory_creates_nested() {
+    #[tokio::test]
+    async fn create_directory_creates_nested() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let nested = dir.path().join("a/b/c");
         let params = make_params(&[("path", serde_json::json!(nested.to_str().unwrap()))]);
         let result = exec
             .execute_file_tool("create_directory", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(result.summary.contains("Created"));
         assert!(nested.is_dir());
     }
 
-    #[test]
-    fn create_directory_sandbox_violation() {
+    #[tokio::test]
+    async fn create_directory_sandbox_violation() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/tmp/evil_dir"))]);
-        let result = exec.execute_file_tool("create_directory", &params);
+        let result = exec.execute_file_tool("create_directory", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
     // --- delete_path tests ---
 
-    #[test]
-    fn delete_path_file() {
+    #[tokio::test]
+    async fn delete_path_file() {
         let dir = temp_dir();
         let file = dir.path().join("del.txt");
         fs::write(&file, "bye").unwrap();
@@ -1225,13 +1255,14 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
         exec.execute_file_tool("delete_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(!file.exists());
     }
 
-    #[test]
-    fn delete_path_empty_directory() {
+    #[tokio::test]
+    async fn delete_path_empty_directory() {
         let dir = temp_dir();
         let subdir = dir.path().join("empty_sub");
         fs::create_dir(&subdir).unwrap();
@@ -1239,13 +1270,14 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!(subdir.to_str().unwrap()))]);
         exec.execute_file_tool("delete_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(!subdir.exists());
     }
 
-    #[test]
-    fn delete_path_non_empty_dir_without_recursive_fails() {
+    #[tokio::test]
+    async fn delete_path_non_empty_dir_without_recursive_fails() {
         let dir = temp_dir();
         let subdir = dir.path().join("nonempty");
         fs::create_dir(&subdir).unwrap();
@@ -1253,12 +1285,12 @@ mod tests {
 
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!(subdir.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("delete_path", &params);
+        let result = exec.execute_file_tool("delete_path", &params).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn delete_path_recursive() {
+    #[tokio::test]
+    async fn delete_path_recursive() {
         let dir = temp_dir();
         let subdir = dir.path().join("recurse");
         fs::create_dir(&subdir).unwrap();
@@ -1270,36 +1302,37 @@ mod tests {
             ("recursive", serde_json::json!(true)),
         ]);
         exec.execute_file_tool("delete_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(!subdir.exists());
     }
 
-    #[test]
-    fn delete_path_sandbox_violation() {
+    #[tokio::test]
+    async fn delete_path_sandbox_violation() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/etc/hosts"))]);
-        let result = exec.execute_file_tool("delete_path", &params);
+        let result = exec.execute_file_tool("delete_path", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
-    #[test]
-    fn delete_path_refuses_sandbox_root() {
+    #[tokio::test]
+    async fn delete_path_refuses_sandbox_root() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[
             ("path", serde_json::json!(dir.path().to_str().unwrap())),
             ("recursive", serde_json::json!(true)),
         ]);
-        let result = exec.execute_file_tool("delete_path", &params);
+        let result = exec.execute_file_tool("delete_path", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
     // --- move_path tests ---
 
-    #[test]
-    fn move_path_renames_file() {
+    #[tokio::test]
+    async fn move_path_renames_file() {
         let dir = temp_dir();
         let src = dir.path().join("src.txt");
         let dst = dir.path().join("dst.txt");
@@ -1311,14 +1344,15 @@ mod tests {
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
         exec.execute_file_tool("move_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(!src.exists());
         assert_eq!(fs::read_to_string(&dst).unwrap(), "data");
     }
 
-    #[test]
-    fn move_path_cross_sandbox_denied() {
+    #[tokio::test]
+    async fn move_path_cross_sandbox_denied() {
         let sandbox = temp_dir();
         let outside = temp_dir();
         let src = sandbox.path().join("src.txt");
@@ -1330,14 +1364,14 @@ mod tests {
             ("source", serde_json::json!(src.to_str().unwrap())),
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
-        let result = exec.execute_file_tool("move_path", &params);
+        let result = exec.execute_file_tool("move_path", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
     // --- copy_path tests ---
 
-    #[test]
-    fn copy_path_file() {
+    #[tokio::test]
+    async fn copy_path_file() {
         let dir = temp_dir();
         let src = dir.path().join("src.txt");
         let dst = dir.path().join("dst.txt");
@@ -1349,14 +1383,15 @@ mod tests {
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
         exec.execute_file_tool("copy_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(fs::read_to_string(&src).unwrap(), "hello");
         assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
     }
 
-    #[test]
-    fn copy_path_directory_recursive() {
+    #[tokio::test]
+    async fn copy_path_directory_recursive() {
         let dir = temp_dir();
         let src_dir = dir.path().join("src_dir");
         fs::create_dir(&src_dir).unwrap();
@@ -1370,13 +1405,14 @@ mod tests {
             ("destination", serde_json::json!(dst_dir.to_str().unwrap())),
         ]);
         exec.execute_file_tool("copy_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(fs::read_to_string(dst_dir.join("a.txt")).unwrap(), "aaa");
     }
 
-    #[test]
-    fn copy_path_sandbox_violation() {
+    #[tokio::test]
+    async fn copy_path_sandbox_violation() {
         let sandbox = temp_dir();
         let outside = temp_dir();
         let src = sandbox.path().join("src.txt");
@@ -1388,37 +1424,37 @@ mod tests {
             ("source", serde_json::json!(src.to_str().unwrap())),
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
-        let result = exec.execute_file_tool("copy_path", &params);
+        let result = exec.execute_file_tool("copy_path", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
     // CR-11: invalid glob pattern returns error
-    #[test]
-    fn find_path_invalid_pattern_returns_error() {
+    #[tokio::test]
+    async fn find_path_invalid_pattern_returns_error() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("pattern", serde_json::json!("[invalid"))]);
-        let result = exec.execute_file_tool("find_path", &params);
+        let result = exec.execute_file_tool("find_path", &params).await;
         assert!(result.is_err());
     }
 
     // CR-12: create_directory is idempotent on existing dir
-    #[test]
-    fn create_directory_idempotent() {
+    #[tokio::test]
+    async fn create_directory_idempotent() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let target = dir.path().join("exists");
         fs::create_dir(&target).unwrap();
 
         let params = make_params(&[("path", serde_json::json!(target.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("create_directory", &params);
+        let result = exec.execute_file_tool("create_directory", &params).await;
         assert!(result.is_ok());
         assert!(target.is_dir());
     }
 
     // CR-13: move_path source sandbox violation
-    #[test]
-    fn move_path_source_sandbox_violation() {
+    #[tokio::test]
+    async fn move_path_source_sandbox_violation() {
         let sandbox = temp_dir();
         let outside = temp_dir();
         let src = outside.path().join("src.txt");
@@ -1430,13 +1466,13 @@ mod tests {
             ("source", serde_json::json!(src.to_str().unwrap())),
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
-        let result = exec.execute_file_tool("move_path", &params);
+        let result = exec.execute_file_tool("move_path", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
     // CR-13: copy_path source sandbox violation
-    #[test]
-    fn copy_path_source_sandbox_violation() {
+    #[tokio::test]
+    async fn copy_path_source_sandbox_violation() {
         let sandbox = temp_dir();
         let outside = temp_dir();
         let src = outside.path().join("src.txt");
@@ -1448,14 +1484,14 @@ mod tests {
             ("source", serde_json::json!(src.to_str().unwrap())),
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
-        let result = exec.execute_file_tool("copy_path", &params);
+        let result = exec.execute_file_tool("copy_path", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
     // CR-01: copy_dir_recursive skips symlinks
     #[cfg(unix)]
-    #[test]
-    fn copy_dir_skips_symlinks() {
+    #[tokio::test]
+    async fn copy_dir_skips_symlinks() {
         let dir = temp_dir();
         let src_dir = dir.path().join("src");
         fs::create_dir(&src_dir).unwrap();
@@ -1472,6 +1508,7 @@ mod tests {
             ("destination", serde_json::json!(dst_dir.to_str().unwrap())),
         ]);
         exec.execute_file_tool("copy_path", &params)
+            .await
             .unwrap()
             .unwrap();
         // Real file copied
@@ -1485,8 +1522,8 @@ mod tests {
 
     // CR-04: list_directory detects symlinks
     #[cfg(unix)]
-    #[test]
-    fn list_directory_shows_symlinks() {
+    #[tokio::test]
+    async fn list_directory_shows_symlinks() {
         let dir = temp_dir();
         let target = dir.path().join("target.txt");
         fs::write(&target, "x").unwrap();
@@ -1496,14 +1533,15 @@ mod tests {
         let params = make_params(&[("path", serde_json::json!(dir.path().to_str().unwrap()))]);
         let result = exec
             .execute_file_tool("list_directory", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(result.summary.contains("[symlink] link"));
         assert!(result.summary.contains("[file] target.txt"));
     }
 
-    #[test]
-    fn tilde_path_is_expanded() {
+    #[tokio::test]
+    async fn tilde_path_is_expanded() {
         let exec = FileExecutor::new(vec![PathBuf::from("~/nonexistent_subdir_for_test")]);
         assert!(
             !exec.allowed_paths[0].to_string_lossy().starts_with('~'),
@@ -1512,8 +1550,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn absolute_path_unchanged() {
+    #[tokio::test]
+    async fn absolute_path_unchanged() {
         let exec = FileExecutor::new(vec![PathBuf::from("/tmp")]);
         // On macOS /tmp is a symlink to /private/tmp; canonicalize resolves it.
         // The invariant is that the result is absolute and tilde-free.
@@ -1530,8 +1568,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tilde_only_expands_to_home() {
+    #[tokio::test]
+    async fn tilde_only_expands_to_home() {
         let exec = FileExecutor::new(vec![PathBuf::from("~")]);
         assert!(
             !exec.allowed_paths[0].to_string_lossy().starts_with('~'),
@@ -1540,8 +1578,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn empty_allowed_paths_uses_cwd() {
+    #[tokio::test]
+    async fn empty_allowed_paths_uses_cwd() {
         let exec = FileExecutor::new(vec![]);
         assert!(
             !exec.allowed_paths.is_empty(),
@@ -1551,40 +1589,40 @@ mod tests {
 
     // --- normalize_path tests ---
 
-    #[test]
-    fn normalize_path_normal_path() {
+    #[tokio::test]
+    async fn normalize_path_normal_path() {
         assert_eq!(
             normalize_path(Path::new("/tmp/sandbox/file.txt")),
             PathBuf::from("/tmp/sandbox/file.txt")
         );
     }
 
-    #[test]
-    fn normalize_path_collapses_dot() {
+    #[tokio::test]
+    async fn normalize_path_collapses_dot() {
         assert_eq!(
             normalize_path(Path::new("/tmp/sandbox/./file.txt")),
             PathBuf::from("/tmp/sandbox/file.txt")
         );
     }
 
-    #[test]
-    fn normalize_path_collapses_dotdot() {
+    #[tokio::test]
+    async fn normalize_path_collapses_dotdot() {
         assert_eq!(
             normalize_path(Path::new("/tmp/sandbox/nonexistent/../../etc/passwd")),
             PathBuf::from("/tmp/etc/passwd")
         );
     }
 
-    #[test]
-    fn normalize_path_nested_dotdot() {
+    #[tokio::test]
+    async fn normalize_path_nested_dotdot() {
         assert_eq!(
             normalize_path(Path::new("/tmp/sandbox/a/b/../../../etc/passwd")),
             PathBuf::from("/tmp/etc/passwd")
         );
     }
 
-    #[test]
-    fn normalize_path_at_sandbox_boundary() {
+    #[tokio::test]
+    async fn normalize_path_at_sandbox_boundary() {
         assert_eq!(
             normalize_path(Path::new("/tmp/sandbox")),
             PathBuf::from("/tmp/sandbox")
@@ -1593,43 +1631,43 @@ mod tests {
 
     // --- validate_path dotdot bypass tests ---
 
-    #[test]
-    fn validate_path_dotdot_bypass_nonexistent_blocked() {
+    #[tokio::test]
+    async fn validate_path_dotdot_bypass_nonexistent_blocked() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         // /sandbox/nonexistent/../../etc/passwd normalizes to /etc/passwd — must be blocked
         let escape = format!("{}/nonexistent/../../etc/passwd", dir.path().display());
         let params = make_params(&[("path", serde_json::json!(escape))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(
             matches!(result, Err(ToolError::SandboxViolation { .. })),
             "expected SandboxViolation for dotdot bypass, got {result:?}"
         );
     }
 
-    #[test]
-    fn validate_path_dotdot_nested_bypass_blocked() {
+    #[tokio::test]
+    async fn validate_path_dotdot_nested_bypass_blocked() {
         let dir = temp_dir();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let escape = format!("{}/a/b/../../../etc/shadow", dir.path().display());
         let params = make_params(&[("path", serde_json::json!(escape))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
     }
 
-    #[test]
-    fn validate_path_inside_sandbox_passes() {
+    #[tokio::test]
+    async fn validate_path_inside_sandbox_passes() {
         let dir = temp_dir();
         let file = dir.path().join("allowed.txt");
         fs::write(&file, "ok").unwrap();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn validate_path_dot_components_inside_sandbox_passes() {
+    #[tokio::test]
+    async fn validate_path_dot_components_inside_sandbox_passes() {
         let dir = temp_dir();
         let file = dir.path().join("sub/file.txt");
         fs::create_dir_all(dir.path().join("sub")).unwrap();
@@ -1637,14 +1675,14 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let dotpath = format!("{}/sub/./file.txt", dir.path().display());
         let params = make_params(&[("path", serde_json::json!(dotpath))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(result.is_ok());
     }
 
     // --- #2489: per-path read allow/deny sandbox tests ---
 
-    #[test]
-    fn read_sandbox_deny_blocks_file() {
+    #[tokio::test]
+    async fn read_sandbox_deny_blocks_file() {
         let dir = temp_dir();
         let secret = dir.path().join(".env");
         fs::write(&secret, "SECRET=abc").unwrap();
@@ -1655,15 +1693,15 @@ mod tests {
         };
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
         let params = make_params(&[("path", serde_json::json!(secret.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(
             matches!(result, Err(ToolError::SandboxViolation { .. })),
             "expected SandboxViolation, got: {result:?}"
         );
     }
 
-    #[test]
-    fn read_sandbox_allow_overrides_deny() {
+    #[tokio::test]
+    async fn read_sandbox_allow_overrides_deny() {
         let dir = temp_dir();
         let public = dir.path().join("public.env");
         fs::write(&public, "VAR=ok").unwrap();
@@ -1674,15 +1712,15 @@ mod tests {
         };
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
         let params = make_params(&[("path", serde_json::json!(public.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(
             result.is_ok(),
             "allow override should permit read: {result:?}"
         );
     }
 
-    #[test]
-    fn read_sandbox_empty_deny_allows_all() {
+    #[tokio::test]
+    async fn read_sandbox_empty_deny_allows_all() {
         let dir = temp_dir();
         let file = dir.path().join("data.txt");
         fs::write(&file, "data").unwrap();
@@ -1690,12 +1728,12 @@ mod tests {
         let config = crate::config::FileConfig::default();
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
         let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
-        let result = exec.execute_file_tool("read", &params);
+        let result = exec.execute_file_tool("read", &params).await;
         assert!(result.is_ok(), "empty deny should allow all: {result:?}");
     }
 
-    #[test]
-    fn read_sandbox_grep_skips_denied_files() {
+    #[tokio::test]
+    async fn read_sandbox_grep_skips_denied_files() {
         let dir = temp_dir();
         let allowed = dir.path().join("allowed.txt");
         let denied = dir.path().join(".env");
@@ -1711,7 +1749,11 @@ mod tests {
             ("pattern", serde_json::json!("needle")),
             ("path", serde_json::json!(dir.path().to_str().unwrap())),
         ]);
-        let result = exec.execute_file_tool("grep", &params).unwrap().unwrap();
+        let result = exec
+            .execute_file_tool("grep", &params)
+            .await
+            .unwrap()
+            .unwrap();
         // Should find match in allowed.txt but not in .env
         assert!(
             result.summary.contains("allowed.txt"),
@@ -1725,8 +1767,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn find_path_truncates_at_default_limit() {
+    #[tokio::test]
+    async fn find_path_truncates_at_default_limit() {
         let dir = temp_dir();
         // Create 205 files.
         for i in 0..205u32 {
@@ -1737,6 +1779,7 @@ mod tests {
         let params = make_params(&[("pattern", serde_json::json!(pattern))]);
         let result = exec
             .execute_file_tool("find_path", &params)
+            .await
             .unwrap()
             .unwrap();
         // Default limit is 200; summary should mention truncation.
@@ -1750,8 +1793,8 @@ mod tests {
         assert_eq!(lines.len(), 201, "expected 200 paths + 1 truncation line");
     }
 
-    #[test]
-    fn find_path_respects_max_results() {
+    #[tokio::test]
+    async fn find_path_respects_max_results() {
         let dir = temp_dir();
         for i in 0..10u32 {
             fs::write(dir.path().join(format!("f_{i}.txt")), "").unwrap();
@@ -1764,6 +1807,7 @@ mod tests {
         ]);
         let result = exec
             .execute_file_tool("find_path", &params)
+            .await
             .unwrap()
             .unwrap();
         assert!(result.summary.contains("and more results"));

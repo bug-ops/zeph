@@ -2501,9 +2501,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             tui_status!("Indexing codebase...");
         }
         agent_setup::apply_code_indexer(
-            &config.index,
+            config,
             index_qdrant_ops,
-            index_provider.clone(),
+            provider.clone(),
             index_pool,
             is_cli,
             Some(agent_status_tx.clone()),

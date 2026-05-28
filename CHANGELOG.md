@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-tools`: convert `FileExecutor` file I/O from blocking `std::fs` to non-blocking `tokio::fs`
+  in `handle_read`, `handle_write`, `handle_edit`, and `handle_list_directory`; `symlink_metadata`
+  wrapped in `tokio::task::spawn_blocking`; prevents tokio worker thread starvation on large file
+  operations (closes #4490).
+- `zeph-index`: wire `IndexConfig.embed_provider` into `apply_code_indexer` — when the field is set,
+  the named provider is resolved from the provider registry and passed to `CodeIndexer::new` instead
+  of the primary agent provider; falls back to the main provider when the named provider is absent,
+  with a warning log (closes #4492).
+
 ### Added
 
 - `zeph-config`: add `dedup_threshold: f32` field to `LearningConfig` (AutoSkill A2, spec 057)

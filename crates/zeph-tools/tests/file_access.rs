@@ -30,8 +30,8 @@ fn sandbox(dir: &TempDir) -> FileExecutor {
 // Basic allowed-path access
 // ---------------------------------------------------------------------------
 
-#[test]
-fn allowed_path_permits_read_write() {
+#[tokio::test]
+async fn allowed_path_permits_read_write() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("hello.txt");
     std::fs::write(&file, "hello world").unwrap();
@@ -41,6 +41,7 @@ fn allowed_path_permits_read_write() {
     let read_params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
     let result = exec
         .execute_file_tool("read", &read_params)
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -54,12 +55,14 @@ fn allowed_path_permits_read_write() {
         ("content", serde_json::json!("overwritten")),
     ]);
     exec.execute_file_tool("write", &write_params)
+        .await
         .unwrap()
         .unwrap();
 
     let verify_params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
     let verify = exec
         .execute_file_tool("read", &verify_params)
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -73,8 +76,8 @@ fn allowed_path_permits_read_write() {
 // Disallowed path blocks all operations
 // ---------------------------------------------------------------------------
 
-#[test]
-fn disallowed_path_blocks_all_operations() {
+#[tokio::test]
+async fn disallowed_path_blocks_all_operations() {
     let sandbox_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     let outside_file = outside_dir.path().join("target.txt");
@@ -137,7 +140,7 @@ fn disallowed_path_blocks_all_operations() {
     ];
 
     for (tool, params) in cases {
-        let result = exec.execute_file_tool(tool, params);
+        let result = exec.execute_file_tool(tool, params).await;
         assert!(
             matches!(result, Err(ToolError::SandboxViolation { .. })),
             "tool '{tool}': expected SandboxViolation for outside-sandbox path, got: {result:?}"
@@ -151,8 +154,8 @@ fn disallowed_path_blocks_all_operations() {
 
 /// A symlink inside the sandbox pointing directly outside must be denied.
 #[cfg(unix)]
-#[test]
-fn symlink_escape_blocked() {
+#[tokio::test]
+async fn symlink_escape_blocked() {
     let sandbox_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     let outside_file = outside_dir.path().join("outside.txt");
@@ -163,7 +166,7 @@ fn symlink_escape_blocked() {
 
     let exec = sandbox(&sandbox_dir);
     let params = make_params(&[("path", serde_json::json!(link.to_str().unwrap()))]);
-    let result = exec.execute_file_tool("read", &params);
+    let result = exec.execute_file_tool("read", &params).await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "expected SandboxViolation when reading a symlink that escapes the sandbox, \
@@ -173,8 +176,8 @@ fn symlink_escape_blocked() {
 
 /// A multi-hop symlink chain that ultimately resolves outside the sandbox must be denied.
 #[cfg(unix)]
-#[test]
-fn nested_symlink_chain_blocked() {
+#[tokio::test]
+async fn nested_symlink_chain_blocked() {
     let sandbox_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     let outside_file = outside_dir.path().join("deep.txt");
@@ -188,7 +191,7 @@ fn nested_symlink_chain_blocked() {
 
     let exec = sandbox(&sandbox_dir);
     let params = make_params(&[("path", serde_json::json!(link1.to_str().unwrap()))]);
-    let result = exec.execute_file_tool("read", &params);
+    let result = exec.execute_file_tool("read", &params).await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "expected SandboxViolation for multi-hop symlink chain escaping sandbox, got: {result:?}"
@@ -199,8 +202,8 @@ fn nested_symlink_chain_blocked() {
 // Path traversal
 // ---------------------------------------------------------------------------
 
-#[test]
-fn parent_traversal_blocked() {
+#[tokio::test]
+async fn parent_traversal_blocked() {
     let sandbox_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     let outside_file = outside_dir.path().join("escape.txt");
@@ -220,7 +223,7 @@ fn parent_traversal_blocked() {
 
     let exec = sandbox(&sandbox_dir);
     let params = make_params(&[("path", serde_json::json!(traversal.to_str().unwrap()))]);
-    let result = exec.execute_file_tool("read", &params);
+    let result = exec.execute_file_tool("read", &params).await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "expected SandboxViolation for path traversal ({}), got: {result:?}",
@@ -232,8 +235,8 @@ fn parent_traversal_blocked() {
 // Multiple allowed paths
 // ---------------------------------------------------------------------------
 
-#[test]
-fn multiple_allowed_paths() {
+#[tokio::test]
+async fn multiple_allowed_paths() {
     let dir_a = TempDir::new().unwrap();
     let dir_b = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
@@ -251,6 +254,7 @@ fn multiple_allowed_paths() {
             "read",
             &make_params(&[("path", serde_json::json!(file_a.to_str().unwrap()))]),
         )
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -267,6 +271,7 @@ fn multiple_allowed_paths() {
                 ("content", serde_json::json!("written to B")),
             ]),
         )
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -275,10 +280,12 @@ fn multiple_allowed_paths() {
         result_b.summary
     );
 
-    let outside_result = exec.execute_file_tool(
-        "read",
-        &make_params(&[("path", serde_json::json!(outside_file.to_str().unwrap()))]),
-    );
+    let outside_result = exec
+        .execute_file_tool(
+            "read",
+            &make_params(&[("path", serde_json::json!(outside_file.to_str().unwrap()))]),
+        )
+        .await;
     assert!(
         matches!(outside_result, Err(ToolError::SandboxViolation { .. })),
         "expected SandboxViolation for outside_dir (not in allowed_paths), got: {outside_result:?}"
@@ -289,8 +296,8 @@ fn multiple_allowed_paths() {
 // Empty allowed_paths defaults to cwd
 // ---------------------------------------------------------------------------
 
-#[test]
-fn empty_allowed_paths_defaults_to_cwd() {
+#[tokio::test]
+async fn empty_allowed_paths_defaults_to_cwd() {
     // FileExecutor::new([]) falls back to current_dir() as the allowed path.
     // A file in the real cwd must be accessible.
     let cwd = std::env::current_dir().unwrap();
@@ -298,7 +305,7 @@ fn empty_allowed_paths_defaults_to_cwd() {
 
     let exec = FileExecutor::new(vec![]);
     let params = make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]);
-    let result = exec.execute_file_tool("read", &params);
+    let result = exec.execute_file_tool("read", &params).await;
     assert!(
         result.is_ok(),
         "expected Cargo.toml in cwd to be readable with empty allowed_paths, got: {result:?}"
@@ -320,18 +327,20 @@ fn empty_allowed_paths_defaults_to_cwd() {
 /// - mixing tilde + real path → real path still works (tilde is dead weight)
 ///
 /// When #2115 is fixed, update these assertions to verify tilde IS expanded.
-#[test]
-fn tilde_in_allowed_paths_regression() {
+#[tokio::test]
+async fn tilde_in_allowed_paths_regression() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("data.txt");
     std::fs::write(&file, "content").unwrap();
 
     // Tilde-only: no real path can match the literal "~/nonexistent" string.
     let exec_tilde_only = FileExecutor::new(vec![PathBuf::from("~/nonexistent")]);
-    let result = exec_tilde_only.execute_file_tool(
-        "read",
-        &make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
-    );
+    let result = exec_tilde_only
+        .execute_file_tool(
+            "read",
+            &make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
+        )
+        .await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "expected SandboxViolation when allowed_paths contains only a literal tilde path \
@@ -348,6 +357,7 @@ fn tilde_in_allowed_paths_regression() {
             "read",
             &make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
         )
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -362,8 +372,8 @@ fn tilde_in_allowed_paths_regression() {
 // Nonexistent allowed path handled gracefully
 // ---------------------------------------------------------------------------
 
-#[test]
-fn nonexistent_allowed_path_handled_gracefully() {
+#[tokio::test]
+async fn nonexistent_allowed_path_handled_gracefully() {
     // A nonexistent path in allowed_paths must not panic during construction.
     // canonicalize() will fail and unwrap_or keeps the raw path. Access to
     // other valid paths in allowed_paths still works.
@@ -381,6 +391,7 @@ fn nonexistent_allowed_path_handled_gracefully() {
             "read",
             &make_params(&[("path", serde_json::json!(file.to_str().unwrap()))]),
         )
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -395,8 +406,8 @@ fn nonexistent_allowed_path_handled_gracefully() {
 // delete_path refuses sandbox root
 // ---------------------------------------------------------------------------
 
-#[test]
-fn delete_sandbox_root_blocked() {
+#[tokio::test]
+async fn delete_sandbox_root_blocked() {
     let dir = TempDir::new().unwrap();
     let exec = sandbox(&dir);
 
@@ -404,7 +415,7 @@ fn delete_sandbox_root_blocked() {
         ("path", serde_json::json!(dir.path().to_str().unwrap())),
         ("recursive", serde_json::json!(true)),
     ]);
-    let result = exec.execute_file_tool("delete_path", &params);
+    let result = exec.execute_file_tool("delete_path", &params).await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "expected SandboxViolation when attempting to delete the sandbox root, got: {result:?}"
@@ -419,8 +430,8 @@ fn delete_sandbox_root_blocked() {
 // Cross-boundary move and copy — all four cases
 // ---------------------------------------------------------------------------
 
-#[test]
-fn cross_boundary_move_blocked() {
+#[tokio::test]
+async fn cross_boundary_move_blocked() {
     let sandbox_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     let inside_file = sandbox_dir.path().join("inside.txt");
@@ -431,64 +442,72 @@ fn cross_boundary_move_blocked() {
     let exec = sandbox(&sandbox_dir);
 
     // 1. move from sandbox to outside — destination violation
-    let result = exec.execute_file_tool(
-        "move_path",
-        &make_params(&[
-            ("source", serde_json::json!(inside_file.to_str().unwrap())),
-            (
-                "destination",
-                serde_json::json!(outside_dir.path().join("moved.txt").to_str().unwrap()),
-            ),
-        ]),
-    );
+    let result = exec
+        .execute_file_tool(
+            "move_path",
+            &make_params(&[
+                ("source", serde_json::json!(inside_file.to_str().unwrap())),
+                (
+                    "destination",
+                    serde_json::json!(outside_dir.path().join("moved.txt").to_str().unwrap()),
+                ),
+            ]),
+        )
+        .await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "move sandbox->outside: expected SandboxViolation, got: {result:?}"
     );
 
     // 2. move from outside to sandbox — source violation
-    let result = exec.execute_file_tool(
-        "move_path",
-        &make_params(&[
-            ("source", serde_json::json!(outside_file.to_str().unwrap())),
-            (
-                "destination",
-                serde_json::json!(sandbox_dir.path().join("dst.txt").to_str().unwrap()),
-            ),
-        ]),
-    );
+    let result = exec
+        .execute_file_tool(
+            "move_path",
+            &make_params(&[
+                ("source", serde_json::json!(outside_file.to_str().unwrap())),
+                (
+                    "destination",
+                    serde_json::json!(sandbox_dir.path().join("dst.txt").to_str().unwrap()),
+                ),
+            ]),
+        )
+        .await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "move outside->sandbox: expected SandboxViolation, got: {result:?}"
     );
 
     // 3. copy from sandbox to outside — destination violation
-    let result = exec.execute_file_tool(
-        "copy_path",
-        &make_params(&[
-            ("source", serde_json::json!(inside_file.to_str().unwrap())),
-            (
-                "destination",
-                serde_json::json!(outside_dir.path().join("copied.txt").to_str().unwrap()),
-            ),
-        ]),
-    );
+    let result = exec
+        .execute_file_tool(
+            "copy_path",
+            &make_params(&[
+                ("source", serde_json::json!(inside_file.to_str().unwrap())),
+                (
+                    "destination",
+                    serde_json::json!(outside_dir.path().join("copied.txt").to_str().unwrap()),
+                ),
+            ]),
+        )
+        .await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "copy sandbox->outside: expected SandboxViolation, got: {result:?}"
     );
 
     // 4. copy from outside to sandbox — source violation
-    let result = exec.execute_file_tool(
-        "copy_path",
-        &make_params(&[
-            ("source", serde_json::json!(outside_file.to_str().unwrap())),
-            (
-                "destination",
-                serde_json::json!(sandbox_dir.path().join("dst2.txt").to_str().unwrap()),
-            ),
-        ]),
-    );
+    let result = exec
+        .execute_file_tool(
+            "copy_path",
+            &make_params(&[
+                ("source", serde_json::json!(outside_file.to_str().unwrap())),
+                (
+                    "destination",
+                    serde_json::json!(sandbox_dir.path().join("dst2.txt").to_str().unwrap()),
+                ),
+            ]),
+        )
+        .await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "copy outside->sandbox: expected SandboxViolation, got: {result:?}"
@@ -499,8 +518,8 @@ fn cross_boundary_move_blocked() {
 // write creates parent directories within sandbox
 // ---------------------------------------------------------------------------
 
-#[test]
-fn write_creates_parent_dirs_within_sandbox() {
+#[tokio::test]
+async fn write_creates_parent_dirs_within_sandbox() {
     let dir = TempDir::new().unwrap();
     let deep = dir.path().join("a").join("b").join("c").join("file.txt");
 
@@ -509,7 +528,10 @@ fn write_creates_parent_dirs_within_sandbox() {
         ("path", serde_json::json!(deep.to_str().unwrap())),
         ("content", serde_json::json!("deep content")),
     ]);
-    exec.execute_file_tool("write", &params).unwrap().unwrap();
+    exec.execute_file_tool("write", &params)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(deep.exists(), "deeply nested file must exist after write");
     assert_eq!(
@@ -523,8 +545,8 @@ fn write_creates_parent_dirs_within_sandbox() {
 // grep path validated
 // ---------------------------------------------------------------------------
 
-#[test]
-fn grep_path_validated() {
+#[tokio::test]
+async fn grep_path_validated() {
     let sandbox_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
     std::fs::write(outside_dir.path().join("secret.txt"), "password: hunter2").unwrap();
@@ -537,7 +559,7 @@ fn grep_path_validated() {
             serde_json::json!(outside_dir.path().to_str().unwrap()),
         ),
     ]);
-    let result = exec.execute_file_tool("grep", &params);
+    let result = exec.execute_file_tool("grep", &params).await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "expected SandboxViolation when grep path is outside sandbox, got: {result:?}"
@@ -548,8 +570,8 @@ fn grep_path_validated() {
 // find_path excludes files outside sandbox
 // ---------------------------------------------------------------------------
 
-#[test]
-fn find_path_stays_in_sandbox() {
+#[tokio::test]
+async fn find_path_stays_in_sandbox() {
     let sandbox_dir = TempDir::new().unwrap();
     let outside_dir = TempDir::new().unwrap();
 
@@ -565,6 +587,7 @@ fn find_path_stays_in_sandbox() {
             "find_path",
             &make_params(&[("pattern", serde_json::json!(pattern_inside))]),
         )
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -580,6 +603,7 @@ fn find_path_stays_in_sandbox() {
             "find_path",
             &make_params(&[("pattern", serde_json::json!(pattern_outside))]),
         )
+        .await
         .unwrap()
         .unwrap();
     assert!(
@@ -593,8 +617,8 @@ fn find_path_stays_in_sandbox() {
 // grep with no path param uses "." which must be validated against sandbox
 // ---------------------------------------------------------------------------
 
-#[test]
-fn grep_default_path_stays_in_sandbox() {
+#[tokio::test]
+async fn grep_default_path_stays_in_sandbox() {
     // sandbox_dir is NOT the current working directory, so grep without a path
     // param defaults to "." (CWD) which is outside sandbox — must be rejected.
     let sandbox_dir = TempDir::new().unwrap();
@@ -602,7 +626,7 @@ fn grep_default_path_stays_in_sandbox() {
 
     // No "path" key — defaults to "."
     let params = make_params(&[("pattern", serde_json::json!("anything"))]);
-    let result = exec.execute_file_tool("grep", &params);
+    let result = exec.execute_file_tool("grep", &params).await;
     assert!(
         matches!(result, Err(ToolError::SandboxViolation { .. })),
         "grep without path param defaults to CWD which is outside sandbox — \
