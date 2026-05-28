@@ -41,6 +41,7 @@ fn make_doc(content: &str) -> Document {
     }
 }
 
+#[ignore = "requires Docker"]
 #[tokio::test]
 async fn ingest_single_document() {
     let container = qdrant_image().start().await.unwrap();
@@ -69,6 +70,7 @@ async fn ingest_single_document() {
     assert_eq!(results.len(), 1);
 }
 
+#[ignore = "requires Docker"]
 #[tokio::test]
 async fn ingest_empty_document_returns_zero() {
     let container = qdrant_image().start().await.unwrap();
@@ -90,6 +92,7 @@ async fn ingest_empty_document_returns_zero() {
     assert_eq!(count, 0);
 }
 
+#[ignore = "requires Docker"]
 #[tokio::test]
 async fn ingest_multi_chunk_document() {
     let container = qdrant_image().start().await.unwrap();
@@ -122,6 +125,7 @@ async fn ingest_multi_chunk_document() {
     assert_eq!(results.len(), count);
 }
 
+#[ignore = "requires Docker"]
 #[tokio::test]
 async fn load_and_ingest_text_file() {
     let container = qdrant_image().start().await.unwrap();
@@ -154,6 +158,7 @@ async fn load_and_ingest_text_file() {
     assert_eq!(results.len(), 1);
 }
 
+#[ignore = "requires Docker"]
 #[tokio::test]
 async fn ingested_chunks_have_correct_payload() {
     let container = qdrant_image().start().await.unwrap();

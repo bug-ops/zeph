@@ -96,9 +96,7 @@ impl<C: Channel> super::Agent<C> {
             .as_ref()
             .map(|tx| tx.send("Extracting skills from session…".into()));
 
-        // Intentionally fire-and-forget: extraction runs after the session ends.
-        // _handle makes the drop explicit rather than silent.
-        let _handle = tokio::spawn(run_extraction(
+        self.services.learning_engine.trace_extraction_handle = Some(tokio::spawn(run_extraction(
             extract_provider,
             embed_provider,
             output_dir,
@@ -112,7 +110,7 @@ impl<C: Channel> super::Agent<C> {
             conversation_id,
             db_pool,
             status_tx,
-        ));
+        )));
     }
 
     /// Check whether `session_id` already exists in `skill_trace_sessions`.

@@ -39,6 +39,11 @@ pub(crate) struct LearningEngine {
     /// Capped at `MAX_LEARNING_TASKS`. New spawns are skipped (not aborted) when the
     /// cap is reached. The set is detached via `detach_all` at each turn boundary.
     pub(crate) learning_tasks: tokio::task::JoinSet<()>,
+    /// Handle for the post-session `AutoSkill` trace extraction task (spec 056).
+    ///
+    /// Set by `maybe_extract_skills_from_trace`; awaited at shutdown so the extraction
+    /// task is not silently dropped if the agent exits before it completes.
+    pub(crate) trace_extraction_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl LearningEngine {
@@ -53,6 +58,7 @@ impl LearningEngine {
             analysis_interval: DEFAULT_ANALYSIS_INTERVAL,
             last_analyzed_correction_id: 0,
             learning_tasks: tokio::task::JoinSet::new(),
+            trace_extraction_handle: None,
         }
     }
 

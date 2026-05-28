@@ -751,6 +751,11 @@ impl<C: Channel> Agent<C> {
         // Abort learning tasks (JoinSet detached at turn boundaries but not on shutdown).
         self.services.learning_engine.learning_tasks.abort_all();
 
+        // Await the AutoSkill trace extraction task so it is not silently dropped.
+        if let Some(h) = self.services.learning_engine.trace_extraction_handle.take() {
+            let _ = h.await;
+        }
+
         // Allow cancelled tasks to release their HTTP connections before the summary LLM call.
         // abort_all() posts cancellation signals but does not drain tasks; aborted futures only
         // observe cancellation at their next .await point. Without yielding here the summary
