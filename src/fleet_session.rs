@@ -67,8 +67,8 @@ impl FleetRegistry for SqliteFleetRegistry {
         Box::pin(async move {
             let s = match status {
                 FleetSessionStatus::Completed => SessionStatus::Completed,
-                FleetSessionStatus::Failed => SessionStatus::Failed,
                 FleetSessionStatus::Cancelled => SessionStatus::Cancelled,
+                _ => SessionStatus::Failed,
             };
             self.0
                 .update_agent_session_status(session_id, s)

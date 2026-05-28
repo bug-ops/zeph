@@ -2537,6 +2537,7 @@ impl<C: Channel> Agent<C> {
             AgentCommand::Approve { id } => self.handle_agent_approve(&id),
             AgentCommand::Deny { id } => self.handle_agent_deny(&id),
             AgentCommand::Resume { id, prompt } => self.handle_agent_resume(&id, &prompt).await,
+            _ => None,
         }
     }
 
@@ -2611,6 +2612,7 @@ impl<C: Channel> Agent<C> {
             AgentsCommand::Delete { name } => {
                 format!("To delete '{name}', remove the file `.zeph/agents/{name}.md`.")
             }
+            _ => "Unknown agents command.".to_owned(),
         }
     }
 

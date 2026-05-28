@@ -62,6 +62,7 @@ pub struct SecretRequest {
 /// let tool = GrantKind::Tool("shell".to_owned());
 /// assert_eq!(tool.to_string(), "Tool(shell)");
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GrantKind {
     /// A vault secret key granted for in-memory access.

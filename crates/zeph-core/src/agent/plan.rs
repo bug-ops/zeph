@@ -892,6 +892,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
             GraphStatus::Completed => "Plan completed successfully.",
             GraphStatus::Canceled => "Plan was canceled.",
+            _ => "Plan is in an unknown state.",
         }
         .to_owned()
     }
@@ -998,6 +999,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 self.services.orchestration.pending_graph = Some(loaded);
                 msg
             }
+            _ => format!("Plan '{id_str}' is in an unrecognised state and cannot be resumed."),
         }
     }
 

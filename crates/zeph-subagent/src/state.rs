@@ -16,6 +16,7 @@
 /// let state = SubAgentState::Working;
 /// assert_ne!(state, SubAgentState::Completed);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubAgentState {
     /// The agent has been enqueued but the tokio task has not started yet.

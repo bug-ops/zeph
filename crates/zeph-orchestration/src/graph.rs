@@ -124,6 +124,7 @@ impl FromStr for GraphId {
 /// assert!(!TaskStatus::Running.is_terminal());
 /// assert_eq!(TaskStatus::Pending.to_string(), "pending");
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -178,6 +179,7 @@ impl fmt::Display for TaskStatus {
 /// assert_eq!(GraphStatus::Running.to_string(), "running");
 /// assert_eq!(GraphStatus::Failed.to_string(), "failed");
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphStatus {
@@ -245,6 +247,7 @@ pub struct TaskResult {
 /// let mode: ExecutionMode = serde_json::from_str("\"sequential\"").unwrap();
 /// assert_eq!(mode, ExecutionMode::Sequential);
 /// ```
+#[non_exhaustive]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
 )]

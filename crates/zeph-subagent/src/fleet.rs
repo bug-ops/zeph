@@ -19,6 +19,7 @@ use std::sync::Arc;
 ///
 /// Mirrors the terminal variants of `zeph_memory::SessionStatus` without creating a
 /// dependency on that crate.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FleetSessionStatus {
     /// Session ended normally.

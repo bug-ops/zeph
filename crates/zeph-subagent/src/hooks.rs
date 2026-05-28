@@ -164,6 +164,7 @@ pub trait McpDispatch: Send + Sync {
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 /// Errors that can occur when executing a lifecycle hook.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum HookError {
     /// The shell command exited with a non-zero status code.

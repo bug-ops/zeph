@@ -31,6 +31,7 @@ pub fn now_ms() -> u64 {
 ///
 /// Only `Failed` is constructible in v1. `WeakOutput` is reserved for
 /// future use once predicate confidence distribution is calibrated.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LineageKind {
     /// Task failed with the given error class (e.g., `"timeout"`, `"llm_error"`).

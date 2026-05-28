@@ -46,6 +46,7 @@ use crate::task::{ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode
 /// # Ok(())
 /// # }
 /// ```
+#[non_exhaustive]
 pub enum SchedulerMessage {
     /// Register a new task (or replace an existing one with the same name).
     Add(Box<TaskDescriptor>),

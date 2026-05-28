@@ -59,6 +59,7 @@ pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
 /// assert_eq!(TaskKind::from_str_kind("memory_cleanup"), TaskKind::MemoryCleanup);
 /// assert_eq!(TaskKind::from_str_kind("my_custom"), TaskKind::Custom("my_custom".into()));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskKind {
     /// Triggers the memory subsystem's cleanup / compaction routine.
@@ -134,6 +135,7 @@ impl TaskKind {
 ///   each successful execution and never removes the task from memory.
 /// - [`TaskMode::OneShot`] fires once when `now >= run_at` and then removes the
 ///   task from the in-memory task list and marks it `done` in the store.
+#[non_exhaustive]
 pub enum TaskMode {
     /// Run on a repeating cron schedule.
     Periodic {

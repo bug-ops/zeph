@@ -26,6 +26,7 @@ use super::error::SubAgentError;
 /// let cmd = AgentsCommand::parse("/agents show reviewer").unwrap();
 /// assert_eq!(cmd, AgentsCommand::Show { name: "reviewer".to_owned() });
 /// ```
+#[non_exhaustive]
 #[derive(Debug, PartialEq)]
 pub enum AgentsCommand {
     /// List all discovered sub-agent definitions.
@@ -132,6 +133,7 @@ impl AgentsCommand {
 ///     prompt: "check the PR".to_owned(),
 /// });
 /// ```
+#[non_exhaustive]
 #[derive(Debug, PartialEq)]
 pub enum AgentCommand {
     /// List all running sub-agent tasks.

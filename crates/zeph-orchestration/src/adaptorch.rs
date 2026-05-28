@@ -29,6 +29,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 /// Task decomposition shape inferred from the user goal text.
 ///
 /// `Unknown` absorbs all unclassified cases and defaults the hint to [`TopologyHint::Hybrid`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskClass {
@@ -45,6 +46,7 @@ pub enum TaskClass {
 /// Soft topology hint injected into the planner system prompt.
 ///
 /// Advisory only — `TopologyClassifier::analyze` still runs on the produced graph.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TopologyHint {

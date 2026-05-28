@@ -26,6 +26,7 @@ use zeph_config::OrchestrationConfig;
 use super::graph::{TaskGraph, TaskId, TaskNode};
 
 /// Structural classification of a `TaskGraph`.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Topology {
@@ -49,6 +50,7 @@ pub enum Topology {
 }
 
 /// How the scheduler should dispatch tasks based on topology analysis.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchStrategy {
