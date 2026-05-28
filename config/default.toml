@@ -248,6 +248,13 @@ cooldown_minutes = 60
 # d2skill_enabled = false
 # d2skill_max_corrections = 3
 # d2skill_provider = ""
+# A1 trace extraction: post-session SKILL.md candidate extraction from conversation messages
+# trace_extraction_enabled = false
+# trace_extraction_provider = ""           # LLM provider for candidate extraction. Empty = primary.
+# trace_extraction_embed_provider = ""     # Embed provider for dedup. Empty = primary embed provider.
+# trace_extraction_max_turns = 20
+# trace_extraction_max_sessions_queued = 10
+# trace_extraction_max_input_bytes = 32768
 
 # Provider name for `/skill create` NL skill generation. Empty = primary provider.
 # generation_provider = "quality"
