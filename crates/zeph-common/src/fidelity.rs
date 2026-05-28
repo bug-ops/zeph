@@ -54,11 +54,7 @@ pub enum ContextFidelity {
 /// ```
 /// use zeph_common::fidelity::PlannedToolHint;
 ///
-/// let hint = PlannedToolHint {
-///     tool_name: "shell".to_string(),
-///     keywords: vec!["cargo".to_string(), "build".to_string()],
-///     distance_from_current: 1,
-/// };
+/// let hint = PlannedToolHint::new("shell", vec!["cargo".to_string(), "build".to_string()], 1);
 /// assert_eq!(hint.tool_name, "shell");
 /// assert_eq!(hint.distance_from_current, 1);
 /// ```
@@ -71,4 +67,19 @@ pub struct PlannedToolHint {
     pub keywords: Vec<String>,
     /// Steps until this tool is scheduled. 1 = immediately next, capped at 5.
     pub distance_from_current: u8,
+}
+
+impl PlannedToolHint {
+    /// Creates a new [`PlannedToolHint`].
+    pub fn new(
+        tool_name: impl Into<String>,
+        keywords: Vec<String>,
+        distance_from_current: u8,
+    ) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            keywords,
+            distance_from_current,
+        }
+    }
 }

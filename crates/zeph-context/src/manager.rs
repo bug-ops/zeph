@@ -365,9 +365,10 @@ impl ContextManager {
     /// use zeph_context::manager::ContextManager;
     ///
     /// let mut cm = ContextManager::new();
-    /// cm.regraded_this_turn = true;
+    /// cm.set_regraded_this_turn(true);
     /// cm.advance_turn();
-    /// assert!(!cm.regraded_this_turn);
+    /// // regraded_this_turn is reset to false — proactive regrade is available again
+    /// assert!(!cm.should_proactively_regrade(0, 0.6, false));
     /// ```
     pub fn advance_turn(&mut self) {
         self.regraded_this_turn = false;
