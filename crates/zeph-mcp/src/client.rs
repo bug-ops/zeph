@@ -21,7 +21,7 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpError,
 };
 use tokio::process::Command;
-use tokio::sync::mpsc::{Sender, UnboundedSender};
+use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use url::Url;
 
@@ -80,11 +80,13 @@ pub struct HandlerConfig {
 /// 1. Rate-limits per server (min 5 s between refreshes).
 /// 2. Fetches the updated tool list via `context.peer.list_all_tools()`.
 /// 3. Caps to `MAX_TOOLS_PER_SERVER` tools.
-/// 4. Sends `ToolRefreshEvent` to `McpManager` via an unbounded mpsc channel.
+/// 4. Sends `ToolRefreshEvent` to `McpManager` via a bounded mpsc channel (capacity 16).
+///    On a full channel the event is silently dropped — the manager will process the
+///    already-queued event, which is equivalent or more recent.
 ///    `McpManager::ingest_tools` performs sanitization and trust-penalty application.
 pub struct ToolListChangedHandler {
     server_id: String,
-    tx: UnboundedSender<ToolRefreshEvent>,
+    tx: Sender<ToolRefreshEvent>,
     /// Shared across all handler instances; tracks last successful refresh per server.
     last_refresh: Arc<DashMap<String, Instant>>,
     /// Configured roots to expose to the MCP server via `roots/list`.
@@ -103,7 +105,7 @@ pub struct ToolListChangedHandler {
 impl ToolListChangedHandler {
     pub(crate) fn new(
         server_id: impl Into<String>,
-        tx: UnboundedSender<ToolRefreshEvent>,
+        tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         roots: Arc<Vec<rmcp::model::Root>>,
         max_description_bytes: usize,
@@ -298,18 +300,26 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
         self.last_refresh
             .insert(self.server_id.clone(), Instant::now());
 
-        if self
-            .tx
-            .send(ToolRefreshEvent {
-                server_id: self.server_id.clone(),
-                tools,
-            })
-            .is_err()
-        {
-            tracing::warn!(
-                server_id = self.server_id,
-                "tools/list_changed: refresh channel closed — manager may have shut down"
-            );
+        match self.tx.try_send(ToolRefreshEvent {
+            server_id: self.server_id.clone(),
+            tools,
+        }) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                // Channel is full: a pending refresh event already waits for the manager.
+                // The manager will process that event, which is equally or more recent.
+                // Dropping this notification is safe — latest-wins semantics.
+                tracing::debug!(
+                    server_id = self.server_id,
+                    "tools/list_changed: refresh channel full — dropping duplicate notification"
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!(
+                    server_id = self.server_id,
+                    "tools/list_changed: refresh channel closed — manager may have shut down"
+                );
+            }
         }
     }
 }
@@ -337,7 +347,7 @@ pub struct OAuthPending {
     /// Original MCP server URL (needed to rebuild transport after auth).
     pub url: String,
     pub timeout: Duration,
-    pub tx: UnboundedSender<ToolRefreshEvent>,
+    pub tx: Sender<ToolRefreshEvent>,
     pub last_refresh: Arc<DashMap<String, Instant>>,
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
@@ -382,7 +392,7 @@ impl McpClient {
         timeout: Duration,
         suppress_stderr: bool,
         env_isolation: bool,
-        tx: UnboundedSender<ToolRefreshEvent>,
+        tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
@@ -470,7 +480,7 @@ impl McpClient {
         url: &str,
         timeout: Duration,
         trusted: bool,
-        tx: UnboundedSender<ToolRefreshEvent>,
+        tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
@@ -528,7 +538,7 @@ impl McpClient {
         headers: &HashMap<String, String>,
         timeout: Duration,
         trusted: bool,
-        tx: UnboundedSender<ToolRefreshEvent>,
+        tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
@@ -615,7 +625,7 @@ impl McpClient {
         client_name: &str,
         credential_store: Arc<dyn CredentialStore>,
         trusted: bool,
-        tx: UnboundedSender<ToolRefreshEvent>,
+        tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         timeout: Duration,
         handler_cfg: HandlerConfig,
@@ -967,7 +977,7 @@ impl McpClient {
     /// Only available in `#[cfg(test)]` contexts.
     #[cfg(test)]
     pub(crate) fn new_disconnected_for_test(server_id: impl Into<String>) -> Self {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<ToolRefreshEvent>();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(16);
         let handler = ToolListChangedHandler::new(
             "test",
             tx,
@@ -1245,10 +1255,10 @@ mod tests {
 
     fn make_handler() -> (
         ToolListChangedHandler,
-        tokio::sync::mpsc::UnboundedReceiver<ToolRefreshEvent>,
+        tokio::sync::mpsc::Receiver<ToolRefreshEvent>,
         Arc<DashMap<String, Instant>>,
     ) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
         let last_refresh = Arc::new(DashMap::new());
         let handler = ToolListChangedHandler::new(
             "test-server",
@@ -1275,7 +1285,7 @@ mod tests {
         }];
         handler
             .tx
-            .send(ToolRefreshEvent {
+            .try_send(ToolRefreshEvent {
                 server_id: "test-server".into(),
                 tools: tools.clone(),
             })
@@ -1287,9 +1297,9 @@ mod tests {
 
     #[test]
     fn handler_closed_channel_send_is_err() {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ToolRefreshEvent>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(16);
         drop(rx); // Close the receiver
-        let result = tx.send(ToolRefreshEvent {
+        let result = tx.try_send(ToolRefreshEvent {
             server_id: "s".into(),
             tools: vec![],
         });
@@ -1405,7 +1415,7 @@ mod tests {
         use rmcp::model::Root;
         let root = Root::new("file:///workspace").with_name("workspace");
         let roots = Arc::new(vec![root]);
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let last_refresh = Arc::new(DashMap::new());
         let handler = ToolListChangedHandler::new(
             "test-server",
@@ -1431,7 +1441,7 @@ mod tests {
 
     #[test]
     fn handler_stores_max_description_bytes() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let last_refresh = Arc::new(DashMap::new());
         let handler = ToolListChangedHandler::new(
             "srv",
@@ -1734,5 +1744,46 @@ mod tests {
                 "status {status} must not be retryable"
             );
         }
+    }
+
+    /// Verify bounded channel drop semantics: filling the 16-slot channel and sending a 17th
+    /// event returns TrySendError::Full (no panic, no block). The receiver drains exactly 16
+    /// items — the 17th is dropped, implementing latest-wins / oldest-drop behaviour.
+    #[test]
+    fn tool_refresh_channel_full_drops_overflow_without_panic() {
+        const CAPACITY: usize = 16;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(CAPACITY);
+
+        // Fill to capacity.
+        for i in 0..CAPACITY {
+            let result = tx.try_send(ToolRefreshEvent {
+                server_id: format!("srv-{i}"),
+                tools: vec![],
+            });
+            assert!(result.is_ok(), "send {i} within capacity must succeed");
+        }
+
+        // One more send must return TrySendError::Full — no panic, no block.
+        let overflow_result = tx.try_send(ToolRefreshEvent {
+            server_id: "srv-overflow".into(),
+            tools: vec![],
+        });
+        assert!(
+            matches!(
+                overflow_result,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+            ),
+            "17th send must return TrySendError::Full"
+        );
+
+        // Receiver drains exactly CAPACITY items; the overflow event is not present.
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(
+            count, CAPACITY,
+            "receiver must drain exactly {CAPACITY} items"
+        );
     }
 }

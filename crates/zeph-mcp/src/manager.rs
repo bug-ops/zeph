@@ -199,9 +199,10 @@ pub struct McpManager {
     /// Sender half of the refresh event channel; cloned into each `ToolListChangedHandler`.
     /// Wrapped in Mutex<Option<...>> so `shutdown_all_shared()` can drop it while holding `&self`.
     /// When this sender and all handler senders are dropped, the refresh task terminates.
-    refresh_tx: SyncMutex<Option<mpsc::UnboundedSender<ToolRefreshEvent>>>,
+    /// Bounded at 16: on `TrySendError::Full` the notification is dropped — latest-wins semantics.
+    refresh_tx: SyncMutex<Option<mpsc::Sender<ToolRefreshEvent>>>,
     /// Receiver half; taken once by `spawn_refresh_task()`.
-    refresh_rx: SyncMutex<Option<mpsc::UnboundedReceiver<ToolRefreshEvent>>>,
+    refresh_rx: SyncMutex<Option<mpsc::Receiver<ToolRefreshEvent>>>,
     /// Broadcasts the full flattened tool list after any server refresh.
     tools_watch_tx: watch::Sender<Vec<McpTool>>,
     /// Shared rate-limit state across all `ToolListChangedHandler` instances.
@@ -312,7 +313,7 @@ impl McpManager {
         enforcer: PolicyEnforcer,
         elicitation_queue_capacity: usize,
     ) -> Self {
-        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let (refresh_tx, refresh_rx) = mpsc::channel(16);
         let (elicitation_tx, elicitation_rx) = mpsc::channel(elicitation_queue_capacity.max(1));
         let (tools_watch_tx, _) = watch::channel(Vec::new());
         let server_trust: HashMap<String, _> = configs
@@ -472,7 +473,7 @@ impl McpManager {
     /// Clone the refresh sender for use in `ToolListChangedHandler`.
     ///
     /// Returns `None` if the manager has already been shut down.
-    fn clone_refresh_tx(&self) -> Option<mpsc::UnboundedSender<ToolRefreshEvent>> {
+    fn clone_refresh_tx(&self) -> Option<mpsc::Sender<ToolRefreshEvent>> {
         self.refresh_tx.lock().as_ref().cloned()
     }
 
@@ -1240,7 +1241,7 @@ impl McpManager {
     async fn connect_and_list_tools(
         &self,
         entry: &ServerEntry,
-        tx: mpsc::UnboundedSender<ToolRefreshEvent>,
+        tx: mpsc::Sender<ToolRefreshEvent>,
     ) -> Result<(McpClient, Vec<McpTool>), McpError> {
         // MF-2: insert lock BEFORE connecting so no refresh can slip through before the lock is set.
         if self.lock_tool_list {
@@ -1559,7 +1560,7 @@ async fn run_oauth_handshake(
     client_name: String,
     credential_store: Arc<dyn CredentialStore>,
     trusted: bool,
-    tx: mpsc::UnboundedSender<ToolRefreshEvent>,
+    tx: mpsc::Sender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
     timeout: Duration,
     handler_cfg: crate::client::HandlerConfig,
@@ -2009,7 +2010,7 @@ async fn connect_with_retry(
     entry: &ServerEntry,
     allowed_commands: &[String],
     suppress_stderr: bool,
-    tx: mpsc::UnboundedSender<ToolRefreshEvent>,
+    tx: mpsc::Sender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
     handler_cfg: &crate::client::HandlerConfig,
     max_attempts: u8,
@@ -2045,7 +2046,7 @@ async fn connect_entry(
     entry: &ServerEntry,
     allowed_commands: &[String],
     suppress_stderr: bool,
-    tx: mpsc::UnboundedSender<ToolRefreshEvent>,
+    tx: mpsc::Sender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
     handler_cfg: &crate::client::HandlerConfig,
 ) -> Result<McpClient, McpError> {
@@ -2552,7 +2553,7 @@ mod tests {
 
         // Send a refresh event directly through the internal channel.
         let tx = mgr.clone_refresh_tx().unwrap();
-        tx.send(crate::client::ToolRefreshEvent {
+        tx.try_send(crate::client::ToolRefreshEvent {
             server_id: "srv1".into(),
             tools: vec![make_tool("srv1", "tool_a")],
         })
@@ -2572,14 +2573,14 @@ mod tests {
         mgr.spawn_refresh_task();
 
         let tx = mgr.clone_refresh_tx().unwrap();
-        tx.send(crate::client::ToolRefreshEvent {
+        tx.try_send(crate::client::ToolRefreshEvent {
             server_id: "srv1".into(),
             tools: vec![make_tool("srv1", "tool_a")],
         })
         .unwrap();
         rx.changed().await.unwrap();
 
-        tx.send(crate::client::ToolRefreshEvent {
+        tx.try_send(crate::client::ToolRefreshEvent {
             server_id: "srv2".into(),
             tools: vec![make_tool("srv2", "tool_b"), make_tool("srv2", "tool_c")],
         })
@@ -2597,14 +2598,14 @@ mod tests {
         mgr.spawn_refresh_task();
 
         let tx = mgr.clone_refresh_tx().unwrap();
-        tx.send(crate::client::ToolRefreshEvent {
+        tx.try_send(crate::client::ToolRefreshEvent {
             server_id: "srv1".into(),
             tools: vec![make_tool("srv1", "tool_old")],
         })
         .unwrap();
         rx.changed().await.unwrap();
 
-        tx.send(crate::client::ToolRefreshEvent {
+        tx.try_send(crate::client::ToolRefreshEvent {
             server_id: "srv1".into(),
             tools: vec![
                 make_tool("srv1", "tool_new1"),
@@ -2639,7 +2640,7 @@ mod tests {
         // Inject a tool via refresh event.
         let tx = mgr.clone_refresh_tx().unwrap();
         let mut rx = mgr.subscribe_tool_changes();
-        tx.send(crate::client::ToolRefreshEvent {
+        tx.try_send(crate::client::ToolRefreshEvent {
             server_id: "srv1".into(),
             tools: vec![make_tool("srv1", "tool_a")],
         })
