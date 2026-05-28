@@ -1,17 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! In-memory BM25 inverted index over skill descriptions with Reciprocal Rank Fusion.
+//! In-memory BM25 inverted index over skill descriptions with pluggable fusion strategies.
 //!
 //! BM25 (Okapi BM25) is a bag-of-words ranking function that outperforms TF-IDF for
 //! short descriptions by normalizing term frequency against document length.
 //!
-//! This module provides two components:
+//! This module provides three components:
 //!
 //! 1. **[`Bm25Index`]** — an inverted index built from skill descriptions that can be
 //!    queried for lexical matches.
-//! 2. **[`rrf_fuse`]** — Reciprocal Rank Fusion to combine BM25 and embedding results
-//!    into a single ranked list.
+//! 2. **[`linear_fuse`]** — linear interpolation fusion (default path used by `assembly.rs`):
+//!    `score = alpha * cosine_clamped + (1 - alpha) * bm25_norm`. Controlled by `bm25_alpha`
+//!    in `SkillsConfig`.
+//! 3. **[`rrf_fuse`]** — Reciprocal Rank Fusion (rank-based, parameter-free). Retained as a
+//!    public utility; not used in the default matching pipeline.
 //!
 //! # Tokenization
 //!
@@ -172,6 +175,104 @@ fn tokenize(text: &str) -> Vec<String> {
         .filter(|s| s.len() >= 3)
         .map(String::from)
         .collect()
+}
+
+/// Linear interpolation fusion: combine cosine-similarity and BM25 scores.
+///
+/// Formula: `fused = alpha * cosine_clamped + (1 - alpha) * bm25_norm`
+///
+/// - Cosine scores are clamped to `[0.0, 1.0]` (negative similarity is treated as 0).
+/// - BM25 scores are min-max normalized to `[0.0, 1.0]`. When all BM25 scores are equal
+///   (including the single-result case), all are set to `0.5` (neutral signal) to avoid
+///   artificially inflating or deflating skills matched only by BM25.
+/// - Skills absent from one list receive `0.0` for that signal.
+/// - Results are sorted descending and truncated to `limit`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_skills::bm25::{linear_fuse, Bm25Index};
+/// use zeph_skills::matcher::ScoredMatch;
+///
+/// let emb = vec![ScoredMatch { index: 0, score: 0.9 }, ScoredMatch { index: 1, score: 0.4 }];
+/// let bm25 = vec![(1usize, 3.0f32), (2usize, 1.0f32)];
+/// let fused = linear_fuse(&emb, &bm25, 0.7, 5);
+/// assert_eq!(fused.len(), 3);
+/// ```
+#[must_use]
+pub fn linear_fuse(
+    embedding_results: &[ScoredMatch],
+    bm25_results: &[(usize, f32)],
+    alpha: f32,
+    limit: usize,
+) -> Vec<ScoredMatch> {
+    use std::collections::HashMap;
+
+    // Clamp alpha to valid range; callers should clamp at config load, but be defensive.
+    let alpha = alpha.clamp(0.0, 1.0);
+
+    // Collect all involved skill indices.
+    let mut cosine_map: HashMap<usize, f32> = HashMap::new();
+    for m in embedding_results {
+        // Clamp to [0, 1]: negative cosine = anti-correlated, treat as 0 (MF-2).
+        // Clamp to [0, 1]: negative = anti-correlated (→ 0); fp rounding can push above 1.0.
+        cosine_map.insert(m.index, m.score.clamp(0.0, 1.0));
+    }
+
+    // Normalize BM25 scores to [0, 1] via min-max.
+    let bm25_norm_map: HashMap<usize, f32> = if bm25_results.is_empty() {
+        HashMap::new()
+    } else {
+        let min = bm25_results
+            .iter()
+            .map(|(_, s)| *s)
+            .fold(f32::INFINITY, f32::min);
+        let max = bm25_results
+            .iter()
+            .map(|(_, s)| *s)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        // When min == max (single result or all identical), use 0.5 (neutral) (MF-1).
+        let range = max - min;
+        bm25_results
+            .iter()
+            .map(|&(idx, score)| {
+                let norm = if range < f32::EPSILON {
+                    0.5
+                } else {
+                    (score - min) / range
+                };
+                (idx, norm)
+            })
+            .collect()
+    };
+
+    // Union all skill indices and compute fused score.
+    let all_indices: std::collections::HashSet<usize> = cosine_map
+        .keys()
+        .chain(bm25_norm_map.keys())
+        .copied()
+        .collect();
+
+    let mut fused: Vec<ScoredMatch> = all_indices
+        .into_iter()
+        .map(|idx| {
+            let cosine = cosine_map.get(&idx).copied().unwrap_or(0.0);
+            let bm25 = bm25_norm_map.get(&idx).copied().unwrap_or(0.0);
+            ScoredMatch {
+                index: idx,
+                score: alpha * cosine + (1.0 - alpha) * bm25,
+            }
+        })
+        .collect();
+
+    fused.sort_unstable_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    fused.truncate(limit);
+    fused
 }
 
 /// Reciprocal Rank Fusion: combine two ranked result lists into one.
@@ -459,5 +560,87 @@ mod tests {
         let results = idx.search("database", 5);
         assert_eq!(results.len(), 1);
         assert!(results[0].1 > 0.0, "BM25 score should be positive");
+    }
+
+    // --- linear_fuse tests ---
+
+    #[test]
+    fn linear_fuse_empty_both_returns_empty() {
+        let fused = linear_fuse(&[], &[], 0.7, 5);
+        assert!(fused.is_empty());
+    }
+
+    #[test]
+    fn linear_fuse_bm25_only_returns_midpoint_score() {
+        // BM25-only hit: single result → min==max → normalized to 0.5.
+        // With alpha=0.7: score = 0.7*0 + 0.3*0.5 = 0.15.
+        let fused = linear_fuse(&[], &[(0, 5.0_f32)], 0.7, 5);
+        assert_eq!(fused.len(), 1);
+        let expected = 0.3_f32 * 0.5;
+        assert!(
+            (fused[0].score - expected).abs() < 1e-5,
+            "expected {expected}, got {}",
+            fused[0].score,
+        );
+    }
+
+    #[test]
+    fn linear_fuse_negative_cosine_clamped_to_zero() {
+        // Cosine of -0.5 should be clamped to 0.
+        let emb = vec![ScoredMatch {
+            index: 0,
+            score: -0.5,
+        }];
+        let fused = linear_fuse(&emb, &[], 0.7, 5);
+        assert_eq!(fused.len(), 1);
+        // With no BM25 and clamped cosine=0: score = 0.7*0 + 0.3*0 = 0.
+        assert_eq!(fused[0].score, 0.0);
+    }
+
+    #[test]
+    fn linear_fuse_scores_bounded_zero_to_one() {
+        let emb: Vec<ScoredMatch> = (0..5)
+            .map(|i| ScoredMatch {
+                index: i,
+                score: 1.0 - i as f32 * 0.2,
+            })
+            .collect();
+        let bm25: Vec<(usize, f32)> = (3..8).map(|i| (i, (i as f32) * 2.0)).collect();
+        let fused = linear_fuse(&emb, &bm25, 0.7, 20);
+        for m in &fused {
+            assert!(
+                m.score >= 0.0 && m.score <= 1.0,
+                "score {:.4} out of [0,1]",
+                m.score,
+            );
+        }
+    }
+
+    /// Vocabulary mismatch: skill 0 has high cosine score but no keyword match;
+    /// skill 1 has low cosine score but exact keyword match via BM25.
+    /// With alpha=0.3 (BM25-dominant), skill 1 should rank higher.
+    #[test]
+    fn linear_fuse_bm25_helps_lexical_keyword_match() {
+        // skill 0: high cosine (0.9), no BM25 hit
+        let emb = vec![
+            ScoredMatch {
+                index: 0,
+                score: 0.9,
+            },
+            ScoredMatch {
+                index: 1,
+                score: 0.3,
+            },
+        ];
+        // skill 1: has a BM25 score of 5.0 (exact term match), skill 0 not in BM25
+        let bm25 = vec![(1usize, 5.0_f32)];
+        // alpha=0.3 means BM25 has 0.7 weight — lexical signal dominates.
+        let fused = linear_fuse(&emb, &bm25, 0.3, 5);
+        // skill 1: 0.3*0.3 + 0.7*1.0 = 0.09 + 0.7 = 0.79
+        // skill 0: 0.3*0.9 + 0.7*0.0 = 0.27
+        assert_eq!(
+            fused[0].index, 1,
+            "BM25-matched skill should rank first with low alpha"
+        );
     }
 }

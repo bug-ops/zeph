@@ -42,6 +42,10 @@ fn default_hybrid_search() -> bool {
     true
 }
 
+fn default_bm25_alpha() -> f32 {
+    0.7
+}
+
 fn default_max_active_skills() -> NonZeroUsize {
     NonZeroUsize::new(5).expect("5 is non-zero")
 }
@@ -276,6 +280,12 @@ pub struct SkillsConfig {
     pub cosine_weight: f32,
     #[serde(default = "default_hybrid_search")]
     pub hybrid_search: bool,
+    /// Blend weight for BM25 hybrid retrieval: `score = bm25_alpha * cosine_clamped + (1 - bm25_alpha) * bm25_norm`.
+    ///
+    /// Only used when `hybrid_search = true`. Valid range: `[0.0, 1.0]`. Values outside this
+    /// range are clamped at load time with a warning. Default: `0.7` (cosine-dominant).
+    #[serde(default = "default_bm25_alpha")]
+    pub bm25_alpha: f32,
     #[serde(default)]
     pub learning: LearningConfig,
     #[serde(default)]
@@ -312,6 +322,16 @@ pub struct SkillsConfig {
     /// Defaults to `None` → 1536 (`text-embedding-3-small` output dimension).
     #[serde(default)]
     pub rl_embed_dim: Option<usize>,
+
+    // --- Query rewriting ---
+    /// Provider name for optional query rewriting before skill matching.
+    ///
+    /// When set to a non-empty provider name, the query is rewritten via a fast LLM call
+    /// (5 s timeout) before embedding. The rewritten query is used only for skill matching,
+    /// not for the conversation. When empty (default), query rewriting is disabled and the
+    /// raw user query is embedded directly — zero overhead.
+    #[serde(default)]
+    pub query_rewrite_provider: ProviderName,
 
     // --- NL skill generation ---
     /// Provider name for `/skill create` NL generation. Empty = primary provider.

@@ -729,6 +729,7 @@ mod tests {
             source_url: None,
             git_hash: None,
             category: None,
+            triggers: vec![],
         };
         let emb = SkillEmbedding::from_raw(vec![1.0, 0.0]);
         let existing = vec![(meta, emb)];

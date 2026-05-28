@@ -46,6 +46,12 @@
 //! | `x-source-url` | no | Upstream URL used during install |
 //! | `x-git-hash` | no | Git commit hash captured at install time |
 //! | `metadata` | no | Arbitrary key-value block for custom attributes |
+//! | `triggers` | no | Comma-separated trigger phrases for embedding-based matching (max 20, each 3–200 chars) |
+//!
+//! ## Trigger Phrases
+//!
+//! `triggers` uses comma as delimiter (not spaces) because trigger phrases are multi-word.
+//! Example: `triggers: search the web, find information online, look up something`
 
 use std::path::{Path, PathBuf};
 
@@ -93,6 +99,14 @@ pub struct SkillMeta {
     pub git_hash: Option<String>,
     /// Optional category grouping (from `category` frontmatter field, e.g. "web", "data", "dev", "system").
     pub category: Option<String>,
+    /// Optional trigger phrases for embedding-based matching (`triggers` frontmatter field).
+    ///
+    /// Each phrase is embedded at `SkillMatcher` construction time. During matching, the
+    /// best-matching trigger score is compared against the description score and the higher
+    /// value wins, improving recall for skills with narrow descriptions but broad applicability.
+    ///
+    /// Max 20 triggers per skill; each 3–200 chars. Excess or invalid entries are silently dropped.
+    pub triggers: Vec<String>,
 }
 
 /// A fully loaded skill: metadata plus the raw Markdown body.
@@ -139,6 +153,7 @@ impl Default for SkillMeta {
             source_url: None,
             git_hash: None,
             category: None,
+            triggers: vec![],
         }
     }
 }
@@ -206,6 +221,7 @@ struct RawFrontmatter {
     source_url: Option<String>,
     git_hash: Option<String>,
     category: Option<String>,
+    triggers: Vec<String>,
 }
 
 /// Validate a skill category name.
@@ -416,6 +432,17 @@ fn apply_field(raw: &mut RawFrontmatter, key: &str, value: String) {
                 }
             }
         }
+        // Comma-separated (not space) because trigger phrases are multi-word.
+        "triggers" => {
+            const MAX_TRIGGERS: usize = 20;
+            let parsed: Vec<String> = value
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| s.len() >= 3 && s.len() <= 200)
+                .take(MAX_TRIGGERS)
+                .collect();
+            raw.triggers = parsed;
+        }
         "metadata" if value.is_empty() => {
             // Handled by caller — sets in_metadata flag.
         }
@@ -443,6 +470,7 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
         source_url: None,
         git_hash: None,
         category: None,
+        triggers: Vec::new(),
     };
     let mut in_metadata = false;
 
@@ -631,6 +659,7 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
         source_url: raw.source_url,
         git_hash: raw.git_hash,
         category: raw.category,
+        triggers: raw.triggers,
     };
 
     Ok((meta, body.to_string()))
@@ -710,6 +739,7 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         source_url: raw.source_url,
         git_hash: raw.git_hash,
         category: raw.category,
+        triggers: raw.triggers,
     })
 }
 
@@ -1584,5 +1614,50 @@ mod tests {
         );
         let meta = load_skill_meta(&path).unwrap();
         assert_eq!(meta.category.as_deref(), Some("dev"));
+    }
+
+    // --- A5: trigger parsing tests ---
+
+    #[test]
+    fn triggers_parsed_from_frontmatter() {
+        let raw = parse_frontmatter("triggers: search the web, find information, look up\n");
+        assert_eq!(
+            raw.triggers,
+            vec!["search the web", "find information", "look up"]
+        );
+    }
+
+    #[test]
+    fn triggers_empty_value_produces_empty_vec() {
+        let raw = parse_frontmatter("triggers: \n");
+        assert!(raw.triggers.is_empty());
+    }
+
+    #[test]
+    fn triggers_too_short_entries_filtered() {
+        // "ab" is 2 chars — below the 3-char minimum.
+        let raw = parse_frontmatter("triggers: ab, valid trigger phrase\n");
+        assert_eq!(raw.triggers, vec!["valid trigger phrase"]);
+    }
+
+    #[test]
+    fn triggers_cap_at_twenty() {
+        // Build 25 comma-separated phrases; only first 20 should be kept.
+        let phrases: Vec<String> = (0..25).map(|i| format!("phrase number {i:02}")).collect();
+        let yaml = format!("triggers: {}\n", phrases.join(", "));
+        let raw = parse_frontmatter(&yaml);
+        assert_eq!(raw.triggers.len(), 20);
+    }
+
+    #[test]
+    fn triggers_stored_on_loaded_skill_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "my-skill",
+            "---\nname: my-skill\ndescription: A test skill.\ntriggers: run shell command, execute bash\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(meta.triggers, vec!["run shell command", "execute bash"]);
     }
 }

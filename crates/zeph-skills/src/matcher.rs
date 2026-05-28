@@ -256,22 +256,33 @@ impl CategoryMatcher {
     }
 }
 
+/// Maximum number of trigger embeddings across all skills.
+///
+/// Prevents a pathological skill library from stalling startup with thousands of embed calls.
+const MAX_TOTAL_TRIGGER_EMBEDDINGS: usize = 500;
+
 #[derive(Debug, Clone)]
 pub struct SkillMatcher {
     embeddings: Vec<(usize, SkillEmbedding)>,
+    /// Trigger embeddings grouped by skill index for O(1) lookup during matching.
+    /// Key: skill index (matches `embeddings[i].0`). Value: all trigger phrase embeddings for that skill.
+    /// Empty when no skills define triggers.
+    trigger_embeddings: HashMap<usize, Vec<SkillEmbedding>>,
     /// Populated when at least 2 multi-skill categories exist.
     category_matcher: Option<CategoryMatcher>,
 }
 
 impl SkillMatcher {
-    /// Create a matcher by pre-computing embeddings for all skill descriptions.
+    /// Create a matcher by pre-computing embeddings for all skill descriptions and trigger phrases.
     ///
-    /// Returns `None` if all embeddings fail (caller should fall back to all skills).
+    /// Returns `None` if all description embeddings fail (caller should fall back to all skills).
+    #[allow(clippy::too_many_lines)]
     pub async fn new<F>(skills: &[&SkillMeta], embed_fn: F) -> Option<Self>
     where
         F: Fn(&str) -> EmbedFuture,
     {
         type EmbedOutcome = (usize, String, Result<Vec<f32>, Option<zeph_llm::LlmError>>);
+        type TriggerOutcome = (usize, Result<Vec<f32>, ()>);
 
         // Collect raw results without logging per-skill; errors will be summarized below.
         let raw: Vec<EmbedOutcome> = stream::iter(skills.iter().enumerate())
@@ -331,8 +342,62 @@ impl SkillMatcher {
             if cm.is_useful() { Some(cm) } else { None }
         };
 
+        // Build trigger embeddings up to the global cap.
+        // Each entry is (skill_index, phrase, embed_future); we flatten all skill triggers first.
+        let trigger_tasks: Vec<(usize, String)> = {
+            let mut tasks = Vec::new();
+            let mut total = 0usize;
+            'outer: for (skill_idx, skill) in skills.iter().enumerate() {
+                for phrase in &skill.triggers {
+                    if total >= MAX_TOTAL_TRIGGER_EMBEDDINGS {
+                        tracing::warn!(
+                            "trigger embedding cap ({MAX_TOTAL_TRIGGER_EMBEDDINGS}) reached; \
+                             remaining trigger phrases skipped"
+                        );
+                        break 'outer;
+                    }
+                    tasks.push((skill_idx, phrase.clone()));
+                    total += 1;
+                }
+            }
+            tasks
+        };
+
+        let trigger_raw: Vec<TriggerOutcome> = stream::iter(trigger_tasks)
+            .map(|(skill_idx, phrase)| {
+                let fut = embed_fn(&phrase);
+                async move {
+                    let result = match tokio::time::timeout(Duration::from_secs(10), fut).await {
+                        Ok(Ok(vec)) => Ok(vec),
+                        Ok(Err(e)) => {
+                            tracing::debug!("trigger embed failed for phrase: {e:#}");
+                            Err(())
+                        }
+                        Err(_) => {
+                            tracing::debug!("trigger embed timed out");
+                            Err(())
+                        }
+                    };
+                    (skill_idx, result)
+                }
+            })
+            .buffer_unordered(20)
+            .collect()
+            .await;
+
+        let mut trigger_embeddings: HashMap<usize, Vec<SkillEmbedding>> = HashMap::new();
+        for (skill_idx, result) in trigger_raw {
+            if let Ok(vec) = result {
+                trigger_embeddings
+                    .entry(skill_idx)
+                    .or_default()
+                    .push(SkillEmbedding::from_raw(vec));
+            }
+        }
+
         Some(Self {
             embeddings,
+            trigger_embeddings,
             category_matcher,
         })
     }
@@ -407,6 +472,30 @@ impl SkillMatcher {
                 })
                 .collect(),
         };
+
+        // A5: merge best trigger score into description score via max().
+        if !self.trigger_embeddings.is_empty() {
+            for m in &mut scored {
+                if let Some(triggers) = self.trigger_embeddings.get(&m.index) {
+                    let best_trigger = triggers
+                        .iter()
+                        .map(|emb| cosine_similarity(&query_vec, emb.as_ref()))
+                        .fold(f32::NEG_INFINITY, f32::max);
+
+                    if best_trigger > f32::NEG_INFINITY {
+                        if best_trigger > m.score + 0.1 {
+                            tracing::trace!(
+                                skill_index = m.index,
+                                trigger_score = best_trigger,
+                                description_score = m.score,
+                                "trigger score dominates description score"
+                            );
+                        }
+                        m.score = m.score.max(best_trigger);
+                    }
+                }
+            }
+        }
 
         scored.sort_unstable_by(|a, b| {
             b.score
@@ -890,6 +979,7 @@ mod tests {
     fn matcher_backend_in_memory_is_not_qdrant() {
         let matcher = SkillMatcher {
             embeddings: vec![(0, SkillEmbedding::from_raw(vec![1.0, 0.0]))],
+            trigger_embeddings: HashMap::new(),
             category_matcher: None,
         };
         let backend = SkillMatcherBackend::InMemory(matcher);
@@ -900,6 +990,7 @@ mod tests {
     async fn backend_in_memory_sync_is_noop() {
         let matcher = SkillMatcher {
             embeddings: vec![],
+            trigger_embeddings: HashMap::new(),
             category_matcher: None,
         };
         let mut backend = SkillMatcherBackend::InMemory(matcher);
@@ -927,6 +1018,7 @@ mod tests {
     fn matcher_debug() {
         let matcher = SkillMatcher {
             embeddings: vec![(0, SkillEmbedding::from_raw(vec![1.0]))],
+            trigger_embeddings: HashMap::new(),
             category_matcher: None,
         };
         let dbg = format!("{matcher:?}");
@@ -937,6 +1029,7 @@ mod tests {
     fn backend_debug() {
         let matcher = SkillMatcher {
             embeddings: vec![],
+            trigger_embeddings: HashMap::new(),
             category_matcher: None,
         };
         let backend = SkillMatcherBackend::InMemory(matcher);
@@ -1137,6 +1230,7 @@ mod tests {
                 (0, SkillEmbedding::from_raw(vec![1.0, 0.0])),
                 (1, SkillEmbedding::from_raw(vec![0.0, 1.0])),
             ],
+            trigger_embeddings: HashMap::new(),
             category_matcher: None,
         };
         let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
@@ -1154,6 +1248,7 @@ mod tests {
                 (0, SkillEmbedding::from_raw(v.clone())),
                 (1, SkillEmbedding::from_raw(v)),
             ],
+            trigger_embeddings: HashMap::new(),
             category_matcher: None,
         };
         let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
@@ -1168,6 +1263,7 @@ mod tests {
         // embeddings only contains index 0; index 1 has no embedding.
         let matcher = SkillMatcher {
             embeddings: vec![(0, SkillEmbedding::from_raw(vec![1.0, 0.0]))],
+            trigger_embeddings: HashMap::new(),
             category_matcher: None,
         };
         let metas = [make_meta("a", "alpha"), make_meta("b", "beta")];
@@ -1356,6 +1452,102 @@ mod tests {
         assert!(
             matches!(result, MatchResult::Scored(ref v) if !v.is_empty()),
             "successful match with results must produce Scored([…])"
+        );
+    }
+
+    // --- A5: trigger embedding tests ---
+
+    fn make_meta_with_triggers(name: &str, description: &str, triggers: Vec<&str>) -> SkillMeta {
+        SkillMeta {
+            name: name.into(),
+            description: description.into(),
+            triggers: triggers.into_iter().map(String::from).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Skill with no description match but exact trigger match should score higher than
+    /// a semantically similar skill with no triggers.
+    #[tokio::test]
+    async fn trigger_score_dominates_description_score() {
+        // embed_fn_mapping:
+        //   "alpha" → [1,0,0], "beta" → [0,1,0], "gamma" → [0,0,1], "query" → [0.9,0.1,0]
+        // Skill 0 ("a") description "alpha" → high cosine with "query" (≈0.9)
+        // Skill 1 ("b") description "beta"  → low cosine with "query" (≈0.1)
+        //   but trigger "alpha" → [1,0,0] → cosine with "query" ≈0.9
+        //
+        // Skill 1 should match at least as well as skill 0 via its trigger.
+        let meta0 = make_meta("a", "alpha");
+        let meta1 = make_meta_with_triggers("b", "beta", vec!["alpha"]);
+        let refs: Vec<&SkillMeta> = vec![&meta0, &meta1];
+
+        let matcher = SkillMatcher::new(&refs, embed_fn_mapping).await.unwrap();
+        // Confirm trigger embeddings were stored: 1 skill (index 1) with 1 trigger.
+        assert_eq!(matcher.trigger_embeddings.len(), 1);
+        assert!(matcher.trigger_embeddings.contains_key(&1)); // skill index 1
+
+        let scored = scored(
+            matcher
+                .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
+                .await,
+        );
+        // Both should be at or above the description score for skill 0 (~0.9).
+        // Skill 1 should now have score ≈ 0.9 via trigger, not ≈ 0.1 via description.
+        let score1 = scored
+            .iter()
+            .find(|m| m.index == 1)
+            .map(|m| m.score)
+            .unwrap_or(0.0);
+        assert!(
+            score1 >= 0.85,
+            "trigger should lift skill 1 score to ~0.9, got {score1:.3}",
+        );
+    }
+
+    /// Trigger embeddings that fail (error returned) should be skipped silently.
+    #[tokio::test]
+    async fn trigger_embed_failure_skipped_silently() {
+        let meta = make_meta_with_triggers("a", "alpha", vec!["will-fail-trigger"]);
+        let refs: Vec<&SkillMeta> = vec![&meta];
+
+        // embed_fn fails for anything not in the mapping (returns zero vec, which is fine;
+        // in practice we want to test the fail path — use embed_fn_fail for the trigger).
+        let embed_fn = |text: &str| -> EmbedFuture {
+            if text == "will-fail-trigger" {
+                Box::pin(async { Err(zeph_llm::LlmError::Other("trigger embed fail".into())) })
+            } else {
+                // description "alpha" succeeds
+                embed_fn_mapping(text)
+            }
+        };
+
+        let matcher = SkillMatcher::new(&refs, embed_fn).await.unwrap();
+        // Trigger embed failed → trigger_embeddings should be empty.
+        assert!(matcher.trigger_embeddings.is_empty());
+    }
+
+    /// Global trigger cap (500) is enforced: if total triggers across all skills exceed 500,
+    /// only the first 500 are embedded and the rest are silently dropped.
+    #[tokio::test]
+    async fn global_trigger_cap_limits_embeddings() {
+        // Build skills with enough triggers to exceed the 500-cap.
+        // Each skill has 20 triggers (the per-skill max); 26 skills × 20 = 520 total.
+        let trigger_phrase = "trigger phrase number";
+        let metas: Vec<SkillMeta> = (0..26_usize)
+            .map(|i| {
+                let triggers: Vec<&str> = (0..20).map(|_| trigger_phrase).collect();
+                make_meta_with_triggers(&format!("skill-{i:02}"), "alpha", triggers)
+            })
+            .collect();
+        let refs: Vec<&SkillMeta> = metas.iter().collect();
+
+        let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
+
+        // Total trigger embeddings stored across all skills must be ≤ 500.
+        let total: usize = matcher.trigger_embeddings.values().map(|v| v.len()).sum();
+        assert!(
+            total <= MAX_TOTAL_TRIGGER_EMBEDDINGS,
+            "total trigger embeddings {total} exceeds cap {MAX_TOTAL_TRIGGER_EMBEDDINGS}"
         );
     }
 }

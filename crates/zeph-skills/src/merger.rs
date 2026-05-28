@@ -209,6 +209,7 @@ mod tests {
             source_url: None,
             git_hash: None,
             category: None,
+            triggers: vec![],
         }
     }
 

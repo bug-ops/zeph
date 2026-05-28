@@ -109,6 +109,9 @@ pub(crate) struct SkillState {
     pub(crate) available_custom_secrets: HashMap<String, Secret>,
     pub(crate) cosine_weight: f32,
     pub(crate) hybrid_search: bool,
+    /// Linear blend weight for BM25 hybrid fusion: `fused = bm25_alpha * cosine + (1-bm25_alpha) * bm25_norm`.
+    /// Clamped to `[0.0, 1.0]` at config load. Default: `0.7`.
+    pub(crate) bm25_alpha: f32,
     pub(crate) bm25_index: Option<zeph_skills::bm25::Bm25Index>,
     pub(crate) two_stage_matching: bool,
     /// Threshold for confusability warnings (0.0 = disabled).
@@ -123,6 +126,8 @@ pub(crate) struct SkillState {
     /// Directory where `/skill create` writes generated skills.
     /// Defaults to `managed_dir` if `None`.
     pub(crate) generation_output_dir: Option<std::path::PathBuf>,
+    /// Provider name for query rewriting before skill matching. Empty = disabled.
+    pub(crate) query_rewrite_provider_name: String,
     /// Provider name for `/skill create` generation. Empty = primary.
     pub(crate) generation_provider_name: String,
     /// Provider name for skill disambiguation LLM calls. Empty = primary.
@@ -1144,6 +1149,7 @@ impl SkillState {
             available_custom_secrets: HashMap::new(),
             cosine_weight: 0.7,
             hybrid_search: true,
+            bm25_alpha: 0.7,
             bm25_index: None,
             two_stage_matching: false,
             confusability_threshold: 0.0,
@@ -1151,6 +1157,7 @@ impl SkillState {
             rl_weight: 0.3,
             rl_warmup_updates: 50,
             generation_output_dir: None,
+            query_rewrite_provider_name: String::new(),
             generation_provider_name: String::new(),
             disambiguate_provider_name: String::new(),
             generation_timeout_ms: 60_000,

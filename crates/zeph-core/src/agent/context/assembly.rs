@@ -16,6 +16,7 @@ use zeph_skills::prompt::{
 use super::super::{Agent, Skill, format_skills_prompt};
 use crate::channel::Channel;
 use crate::context::build_system_prompt_with_instructions;
+use tracing::Instrument as _;
 
 // ── Security event sink adapter ───────────────────────────────────────────────
 //
@@ -515,13 +516,52 @@ impl<C: Channel> Agent<C> {
         // Stays empty when falling back to the full skill set (no matcher, embed failure).
         let mut skills_to_record: Vec<String> = Vec::new();
 
+        // A3: optionally rewrite query via a fast LLM call to improve retrieval quality.
+        let rewritten_query: Option<String> = {
+            let provider_name = self.services.skill.query_rewrite_provider_name.clone();
+            if provider_name.is_empty() {
+                None
+            } else {
+                let rewrite_provider = self.resolve_background_provider(&provider_name);
+                let span = tracing::info_span!("skills.matcher.query_rewrite");
+                let prompt = format!(
+                    "Rewrite this user message as a concise skill-matching query. \
+                     Return only the rewritten query, nothing else.\nUser message: {query}"
+                );
+                let messages = vec![zeph_llm::provider::Message::from_legacy(
+                    zeph_llm::provider::Role::User,
+                    prompt,
+                )];
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    rewrite_provider.chat(&messages).instrument(span),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        let rewritten = response.trim().to_string();
+                        validate_query_rewrite(query, &rewritten)
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("query rewrite failed: {e:#}; using original query");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!("query rewrite timed out after 5s; using original query");
+                        None
+                    }
+                }
+            }
+        };
+        let effective_query = rewritten_query.as_deref().unwrap_or(query);
+
         let matched_indices: Vec<usize> = if let Some(matcher) = &self.services.skill.matcher {
             let provider = self.embedding_provider.clone();
             let _ = self.channel.send_status("matching skills...").await;
             let match_result = matcher
                 .match_skills(
                     &all_meta,
-                    query,
+                    effective_query,
                     self.services.skill.max_active_skills,
                     self.services.skill.two_stage_matching,
                     |text| {
@@ -540,10 +580,12 @@ impl<C: Channel> Agent<C> {
                 if self.services.skill.hybrid_search
                     && let Some(ref bm25) = self.services.skill.bm25_index
                 {
-                    let bm25_results = bm25.search(query, self.services.skill.max_active_skills);
-                    scored = zeph_skills::bm25::rrf_fuse(
+                    let bm25_results =
+                        bm25.search(effective_query, self.services.skill.max_active_skills);
+                    scored = zeph_skills::bm25::linear_fuse(
                         &scored,
                         &bm25_results,
+                        self.services.skill.bm25_alpha,
                         self.services.skill.max_active_skills,
                     );
                 }
@@ -1395,6 +1437,32 @@ impl<C: Channel> Agent<C> {
 //
 // These shim methods expose individual context-service operations directly on
 // `Agent<C>` so that Category 2 integration tests can drive them in isolation
+/// Validate the result of a query rewrite and return it if acceptable.
+///
+/// Returns `None` (fall back to original) when the rewritten text is empty, too short,
+/// or suspiciously longer than the original — heuristics that guard against prompt-injection
+/// producing unrelated or excessively long rewrites.
+///
+/// Lengths are measured in Unicode scalar values (chars), not bytes, so multi-byte scripts
+/// (CJK, emoji) are handled correctly.
+fn validate_query_rewrite(original: &str, rewritten: &str) -> Option<String> {
+    let original_chars = original.chars().count();
+    let rewritten_chars = rewritten.chars().count();
+    let max_allowed = original_chars.saturating_mul(5).max(500);
+
+    if rewritten_chars < 3 || rewritten_chars > max_allowed {
+        tracing::warn!(
+            original_chars,
+            rewritten_chars,
+            "query rewrite discarded: length out of bounds"
+        );
+        None
+    } else {
+        tracing::debug!(original_chars, rewritten_chars, "query rewrite applied");
+        Some(rewritten.to_string())
+    }
+}
+
 // without going through the full `prepare_context` pipeline. They are not part
 // of the production call path — production code uses `ContextService` methods
 // directly via `prepare_context`.
@@ -2104,5 +2172,59 @@ mod tests {
             matches!(stale_result, GroupResult::Flat(_)),
             "stale indices cause wrong (flat) grouping when entry/support would be grouped"
         );
+    }
+
+    // --- validate_query_rewrite tests ---
+
+    #[test]
+    fn validate_rewrite_empty_provider_guard_returns_none() {
+        // Mirrors the call-site guard: `if provider_name.is_empty() { return None }`.
+        // An empty provider produces an empty rewritten string, which validate_query_rewrite
+        // must reject so callers fall back to the original query.
+        let result = validate_query_rewrite("any query", "");
+        assert!(
+            result.is_none(),
+            "empty rewrite must be rejected (< 3 chars)"
+        );
+    }
+
+    #[test]
+    fn validate_rewrite_accepts_valid_rewrite() {
+        let result = validate_query_rewrite("search the web", "find information online");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "find information online");
+    }
+
+    #[test]
+    fn validate_rewrite_rejects_too_short() {
+        let result = validate_query_rewrite("search the web", "ab");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn validate_rewrite_rejects_too_long() {
+        let original = "hello";
+        // 5x chars("hello")=5 → max_allowed=max(25, 500)=500; need >500 chars
+        let long = "a".repeat(501);
+        let result = validate_query_rewrite(original, &long);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn validate_rewrite_accepts_5x_expansion() {
+        let original = "hi";
+        // 2 chars → max=max(10,500)=500; 10 chars is exactly 5x → accept
+        let result = validate_query_rewrite(original, "hello world");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn validate_rewrite_handles_cjk_chars_by_count() {
+        // "搜索" = 2 CJK chars = 6 bytes. Should pass min-3-chars check if rewritten to ≥3 chars.
+        let result = validate_query_rewrite("搜索", "搜索网络");
+        assert!(result.is_some());
+        // "ab" would be 2 bytes (< 3 bytes) but also < 3 chars → rejected
+        let result2 = validate_query_rewrite("搜索", "ab");
+        assert!(result2.is_none());
     }
 }

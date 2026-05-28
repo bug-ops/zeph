@@ -3153,12 +3153,27 @@ impl<C: Channel> Agent<C> {
         self.services.skill.min_injection_score = config.skills.min_injection_score;
         self.services.skill.cosine_weight = config.skills.cosine_weight.clamp(0.0, 1.0);
         self.services.skill.hybrid_search = config.skills.hybrid_search;
+        {
+            let alpha = config.skills.bm25_alpha;
+            if !(0.0..=1.0).contains(&alpha) {
+                tracing::warn!(
+                    bm25_alpha = alpha,
+                    "bm25_alpha is outside [0.0, 1.0]; clamping to valid range"
+                );
+            }
+            self.services.skill.bm25_alpha = alpha.clamp(0.0, 1.0);
+        }
         self.services.skill.two_stage_matching = config.skills.two_stage_matching;
         self.services.skill.confusability_threshold =
             config.skills.confusability_threshold.clamp(0.0, 1.0);
         self.services.skill.group_structured = config.skills.group_structured;
         self.services.skill.support_similarity_threshold =
             config.skills.support_similarity_threshold;
+        config
+            .skills
+            .query_rewrite_provider
+            .as_str()
+            .clone_into(&mut self.services.skill.query_rewrite_provider_name);
         config
             .skills
             .generation_provider
