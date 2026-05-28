@@ -23,6 +23,7 @@ pub mod weights;
 
 use std::sync::Arc;
 
+use zeph_common::SessionId;
 use zeph_config::memory::FiveSignalConfig;
 use zeph_db::DbPool;
 
@@ -58,7 +59,7 @@ pub struct FiveSignalRuntime {
     ///
     /// Set at bootstrap from a per-process UUID so access counts are isolated
     /// per session and do not bleed across process restarts.
-    pub session_id: String,
+    pub session_id: SessionId,
     /// Config snapshot (used by the consolidation daemon).
     pub config: FiveSignalConfig,
 }
@@ -92,7 +93,7 @@ impl FiveSignalRuntime {
         graph_store: Arc<crate::graph::GraphStore>,
         qdrant: Option<Arc<EmbeddingStore>>,
         session_start: i64,
-        session_id: String,
+        session_id: impl Into<SessionId>,
     ) -> Self {
         let weights = FiveSignalWeights::normalized(&config);
 
@@ -119,7 +120,7 @@ impl FiveSignalRuntime {
             pool,
             qdrant,
             session_start,
-            session_id,
+            session_id: session_id.into(),
             config,
         }
     }

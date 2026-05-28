@@ -55,6 +55,8 @@
 
 use std::path::{Path, PathBuf};
 
+use zeph_common::SessionId;
+
 use crate::error::SkillError;
 
 /// Parsed frontmatter metadata for a single skill.
@@ -80,7 +82,7 @@ pub struct SkillMeta {
     /// Session identifier from which this skill was extracted (`session_id` frontmatter field).
     ///
     /// Only present for skills created by the trace extraction pipeline (spec 056).
-    pub session_id: Option<String>,
+    pub session_id: Option<SessionId>,
     /// Optional agent version or runtime compatibility constraint.
     pub compatibility: Option<String>,
     /// SPDX license identifier.
@@ -662,7 +664,7 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
         description,
         version: raw.version,
         source: raw.source,
-        session_id: raw.session_id,
+        session_id: raw.session_id.map(SessionId::new),
         compatibility: raw.compatibility,
         license: raw.license,
         metadata: raw.metadata,
@@ -743,7 +745,7 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         description,
         version: raw.version,
         source: raw.source,
-        session_id: raw.session_id,
+        session_id: raw.session_id.map(SessionId::new),
         compatibility: raw.compatibility,
         license: raw.license,
         metadata: raw.metadata,

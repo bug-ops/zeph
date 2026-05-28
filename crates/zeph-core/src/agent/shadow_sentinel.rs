@@ -41,6 +41,8 @@ use zeph_llm::LlmProvider;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
 
+use zeph_common::SessionId;
+
 use crate::agent::error::AgentError;
 
 // ── Risk category ────────────────────────────────────────────────────────────
@@ -89,7 +91,7 @@ pub struct SentinelEvent {
     /// Database row id (0 for unsaved records).
     pub id: i64,
     /// Agent session identifier.
-    pub session_id: String,
+    pub session_id: SessionId,
     /// Turn number within the session.
     pub turn_number: u64,
     /// Event category: `"tool_call"`, `"tool_result"`, `"risk_signal"`, `"probe_result"`.
@@ -320,7 +322,7 @@ impl ShadowEventStore {
               probe_verdict, context_summary, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&event.session_id)
+        .bind(event.session_id.as_str())
         .bind(i64::try_from(event.turn_number).unwrap_or(i64::MAX))
         .bind(&event.event_type)
         .bind(&event.tool_id)
@@ -419,7 +421,7 @@ impl From<ShadowEventRow> for SentinelEvent {
     fn from(r: ShadowEventRow) -> Self {
         Self {
             id: r.id,
-            session_id: r.session_id,
+            session_id: SessionId::new(r.session_id),
             turn_number: u64::try_from(r.turn_number).unwrap_or(0),
             event_type: r.event_type,
             tool_id: r.tool_id,
@@ -457,7 +459,7 @@ pub struct ShadowSentinel {
     /// Counter of probe calls made in the current turn. Uses `AtomicU32` so all
     /// probe-checking methods can take `&self` even under parallel tool execution.
     probes_this_turn: AtomicU32,
-    session_id: String,
+    session_id: SessionId,
 }
 
 impl ShadowSentinel {
@@ -474,7 +476,7 @@ impl ShadowSentinel {
         store: ShadowEventStore,
         probe: Box<dyn SafetyProbe>,
         config: zeph_config::ShadowSentinelConfig,
-        session_id: impl Into<String>,
+        session_id: impl Into<SessionId>,
     ) -> Self {
         Self {
             store,

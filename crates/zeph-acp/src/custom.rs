@@ -8,6 +8,7 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use zeph_common::SessionId;
 
 use crate::agent::ZephAcpAgent;
 
@@ -23,7 +24,7 @@ pub(crate) struct SessionListParams {}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SessionListEntry {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub created_at: String,
     pub busy: bool,
 }
@@ -35,7 +36,7 @@ pub(crate) struct SessionListResponse {
 
 #[derive(Deserialize)]
 pub(crate) struct SessionGetParams {
-    pub session_id: String,
+    pub session_id: SessionId,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -46,7 +47,7 @@ pub(crate) struct SessionEventEntry {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SessionGetResponse {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub created_at: String,
     pub busy: bool,
     pub events: Vec<SessionEventEntry>,
@@ -54,7 +55,7 @@ pub(crate) struct SessionGetResponse {
 
 #[derive(Deserialize)]
 pub(crate) struct SessionDeleteParams {
-    pub session_id: String,
+    pub session_id: SessionId,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,12 +65,12 @@ pub(crate) struct SessionDeleteResponse {
 
 #[derive(Deserialize)]
 pub(crate) struct SessionExportParams {
-    pub session_id: String,
+    pub session_id: SessionId,
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SessionExportResponse {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub events: Vec<SessionEventEntry>,
     pub exported_at: String,
 }
@@ -81,7 +82,7 @@ pub(crate) struct SessionImportParams {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SessionImportResponse {
-    pub session_id: String,
+    pub session_id: SessionId,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +91,7 @@ pub(crate) struct AgentToolsParams {
         dead_code,
         reason = "required for JSON deserialization of the ACP ext method params"
     )]
-    pub session_id: String,
+    pub session_id: SessionId,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -106,7 +107,7 @@ pub(crate) struct AgentToolsResponse {
 
 #[derive(Deserialize)]
 pub(crate) struct WorkingDirUpdateParams {
-    pub session_id: String,
+    pub session_id: SessionId,
     pub path: String,
 }
 
@@ -212,10 +213,11 @@ async fn handle_session_list(
             Ok(rows) => {
                 sessions.reserve(rows.len());
                 for row in rows {
+                    let sid = String::from(&*row.id);
                     sessions.insert(
-                        row.id.clone(),
+                        sid.clone(),
                         SessionListEntry {
-                            session_id: row.id,
+                            session_id: SessionId::new(sid),
                             created_at: row.created_at,
                             busy: false,
                         },
@@ -231,7 +233,7 @@ async fn handle_session_list(
         sessions.insert(
             sid.clone(),
             SessionListEntry {
-                session_id: sid,
+                session_id: SessionId::new(sid),
                 created_at,
                 busy,
             },
@@ -297,7 +299,7 @@ async fn handle_session_get(
     };
 
     let resp = SessionGetResponse {
-        session_id: sid.to_owned(),
+        session_id: SessionId::new(sid),
         created_at,
         busy,
         events,
@@ -394,7 +396,9 @@ async fn handle_session_import(
             .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
     }
 
-    to_ext_response(&SessionImportResponse { session_id: new_id })
+    to_ext_response(&SessionImportResponse {
+        session_id: SessionId::new(new_id),
+    })
 }
 
 #[allow(clippy::unused_async)]

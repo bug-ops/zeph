@@ -35,6 +35,7 @@ use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
 pub use zeph_config::memory::EmGraphConfig;
 
+use zeph_common::SessionId;
 use zeph_db::ActiveDialect;
 
 use crate::error::MemoryError;
@@ -53,7 +54,7 @@ pub struct EpisodicEvent {
     /// `SQLite` row ID (`0` when not yet persisted).
     pub id: i64,
     /// Session identifier this event belongs to.
-    pub session_id: String,
+    pub session_id: SessionId,
     /// The message that triggered this event.
     pub message_id: MessageId,
     /// Short event category (e.g. `"decision"`, `"discovery"`, `"error"`, `"tool_use"`).
@@ -173,7 +174,7 @@ fn parse_events_response(raw: &str, session_id: &str, message_id: MessageId) -> 
             }
             Some(EpisodicEvent {
                 id: 0,
-                session_id: session_id.to_owned(),
+                session_id: SessionId::new(session_id),
                 message_id,
                 event_type,
                 summary,
@@ -338,7 +339,7 @@ pub async fn store_events(
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
         let id = sqlx::query_scalar::<_, i64>(&sql)
-            .bind(&event.session_id)
+            .bind(event.session_id.as_str())
             .bind(event.message_id.0)
             .bind(&event.event_type)
             .bind(&event.summary)
@@ -416,7 +417,7 @@ pub async fn fetch_recent_events(
         .map(
             |(id, session_id, message_id, event_type, summary, created_at)| EpisodicEvent {
                 id,
-                session_id,
+                session_id: SessionId::new(session_id),
                 message_id: MessageId(message_id),
                 event_type,
                 summary,
@@ -503,7 +504,7 @@ pub async fn recall_episodic_causal(
         for &id in &visited {
             q = q.bind(id);
         }
-        q = q.bind(session_id);
+        q = q.bind(session_id.as_str());
 
         let rows = q.fetch_all(&pool).await?;
 
@@ -512,7 +513,7 @@ pub async fn recall_episodic_causal(
             .map(
                 |(id, session_id, message_id, event_type, summary, created_at)| EpisodicEvent {
                     id,
-                    session_id,
+                    session_id: SessionId::new(session_id),
                     message_id: MessageId(message_id),
                     event_type,
                     summary,
@@ -611,7 +612,7 @@ mod tests {
 
         let mut events = vec![EpisodicEvent {
             id: 0,
-            session_id: "test-session".to_owned(),
+            session_id: SessionId::new("test-session"),
             message_id: mid,
             event_type: "decision".to_owned(),
             summary: "User decided to use approach A".to_owned(),
@@ -647,7 +648,7 @@ mod tests {
         let mut events = vec![
             EpisodicEvent {
                 id: 0,
-                session_id: "sess".to_owned(),
+                session_id: SessionId::new("sess"),
                 message_id: mid,
                 event_type: "discovery".to_owned(),
                 summary: "Found a bug".to_owned(),
@@ -656,7 +657,7 @@ mod tests {
             },
             EpisodicEvent {
                 id: 0,
-                session_id: "sess".to_owned(),
+                session_id: SessionId::new("sess"),
                 message_id: mid,
                 event_type: "decision".to_owned(),
                 summary: "Decided to fix it".to_owned(),
@@ -742,7 +743,7 @@ mod tests {
         let mut events = vec![
             EpisodicEvent {
                 id: 0,
-                session_id: "sess".to_owned(),
+                session_id: SessionId::new("sess"),
                 message_id: mid,
                 event_type: "decision".to_owned(),
                 summary: "A".to_owned(),
@@ -751,7 +752,7 @@ mod tests {
             },
             EpisodicEvent {
                 id: 0,
-                session_id: "sess".to_owned(),
+                session_id: SessionId::new("sess"),
                 message_id: mid,
                 event_type: "discovery".to_owned(),
                 summary: "B".to_owned(),

@@ -592,12 +592,6 @@ fn ensure_closed_frontmatter(content: String) -> String {
     result
 }
 
-/// Check whether a session has already been extracted (idempotency guard).
-///
-/// Callers are responsible for implementing the DB check against `skill_trace_sessions`.
-/// This type is the `session_id` string used as the primary key.
-pub type SessionId = String;
-
 /// Build the content for a `skill_trace_sessions` insert.
 ///
 /// Returns `(session_id, processed_at_unix, proposed, saved, merged)`.

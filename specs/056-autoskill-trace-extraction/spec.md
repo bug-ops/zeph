@@ -136,12 +136,16 @@ All fields live under `[skills.learning]`:
 # A1: Conversation trace extraction
 trace_extraction_enabled = false               # opt-in; default off
 trace_extraction_provider = ""                 # named [[llm.providers]] name; empty = primary
+trace_extraction_embed_provider = ""           # embed provider for dedup; empty = primary embed provider
 trace_extraction_max_turns = 200               # max user messages sent per session
 trace_extraction_max_sessions_queued = 10      # max concurrent background extraction tasks
 ```
 
 - `trace_extraction_provider`: resolves via `ProviderRegistry::get_by_name()`. Empty string
   falls back to the default provider. Unknown name emits a warning and falls back — never panics.
+- `trace_extraction_embed_provider`: embed provider for dedup; empty = primary embed provider.
+  Resolves via `ProviderRegistry::get_by_name()`. Empty string falls back to the default provider.
+  Unknown name emits a warning and falls back — never panics.
 
 ---
 
