@@ -594,17 +594,23 @@ mod tests {
         let fused = linear_fuse(&emb, &[], 0.7, 5);
         assert_eq!(fused.len(), 1);
         // With no BM25 and clamped cosine=0: score = 0.7*0 + 0.3*0 = 0.
-        assert_eq!(fused[0].score, 0.0);
+        assert!(
+            fused[0].score.abs() < 1e-6,
+            "expected 0.0, got {}",
+            fused[0].score
+        );
     }
 
     #[test]
     fn linear_fuse_scores_bounded_zero_to_one() {
+        #[allow(clippy::cast_precision_loss)]
         let emb: Vec<ScoredMatch> = (0..5)
             .map(|i| ScoredMatch {
                 index: i,
                 score: 1.0 - i as f32 * 0.2,
             })
             .collect();
+        #[allow(clippy::cast_precision_loss)]
         let bm25: Vec<(usize, f32)> = (3..8).map(|i| (i, (i as f32) * 2.0)).collect();
         let fused = linear_fuse(&emb, &bm25, 0.7, 20);
         for m in &fused {

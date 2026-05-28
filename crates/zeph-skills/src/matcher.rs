@@ -1486,18 +1486,17 @@ mod tests {
         assert_eq!(matcher.trigger_embeddings.len(), 1);
         assert!(matcher.trigger_embeddings.contains_key(&1)); // skill index 1
 
-        let scored = scored(
+        let match_results = scored(
             matcher
                 .match_skills(refs.len(), "query", 2, false, embed_fn_mapping)
                 .await,
         );
         // Both should be at or above the description score for skill 0 (~0.9).
         // Skill 1 should now have score ≈ 0.9 via trigger, not ≈ 0.1 via description.
-        let score1 = scored
+        let score1 = match_results
             .iter()
             .find(|m| m.index == 1)
-            .map(|m| m.score)
-            .unwrap_or(0.0);
+            .map_or(0.0, |m| m.score);
         assert!(
             score1 >= 0.85,
             "trigger should lift skill 1 score to ~0.9, got {score1:.3}",
@@ -1544,7 +1543,7 @@ mod tests {
         let matcher = SkillMatcher::new(&refs, embed_fn_constant).await.unwrap();
 
         // Total trigger embeddings stored across all skills must be ≤ 500.
-        let total: usize = matcher.trigger_embeddings.values().map(|v| v.len()).sum();
+        let total: usize = matcher.trigger_embeddings.values().map(Vec::len).sum();
         assert!(
             total <= MAX_TOTAL_TRIGGER_EMBEDDINGS,
             "total trigger embeddings {total} exceeds cap {MAX_TOTAL_TRIGGER_EMBEDDINGS}"
