@@ -1167,7 +1167,7 @@ impl Default for ComplexityRoutingConfig {
 /// inter_threshold = 0.20
 /// shadow_sample_rate = 0.1
 /// secondary_provider = "quality"
-/// embed_provider = ""
+/// embedding_provider = ""
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -1182,8 +1182,8 @@ pub struct CoeConfig {
     pub shadow_sample_rate: f64,
     /// Provider name from `[[llm.providers]]` used as the escalation target.
     pub secondary_provider: ProviderName,
-    /// Provider name for inter-divergence embeddings. Empty → inherit bandit's embed provider.
-    pub embed_provider: ProviderName,
+    /// Provider name for inter-divergence embeddings. Empty → inherit bandit's embedding provider.
+    pub embedding_provider: ProviderName,
 }
 
 impl Default for CoeConfig {
@@ -1194,7 +1194,7 @@ impl Default for CoeConfig {
             inter_threshold: 0.20,
             shadow_sample_rate: 0.1,
             secondary_provider: ProviderName::default(),
-            embed_provider: ProviderName::default(),
+            embedding_provider: ProviderName::default(),
         }
     }
 }

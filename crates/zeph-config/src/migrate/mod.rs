@@ -3310,7 +3310,7 @@ mod steps;
 use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateEgressConfig, MigrateFiveSignalConfig,
+    MigrateDatabaseUrl, MigrateEgressConfig, MigrateEmbedProviderRename, MigrateFiveSignalConfig,
     MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
     MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
     MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
@@ -3530,6 +3530,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateTraceMetadata),
             // Step 48 — five-signal SYNAPSE retrieval advisory (#4374)
             Box::new(MigrateFiveSignalConfig),
+            // Step 49 — rename embed_provider → embedding_provider (#4480)
+            Box::new(MigrateEmbedProviderRename),
         ]
     });
 
@@ -3588,6 +3590,76 @@ pub fn migrate_five_signal_config(toml_src: &str) -> Result<MigrationResult, Mig
     })
 }
 
+/// Rename `embed_provider` → `embedding_provider` in `[memory.semantic]`, `[index]`,
+/// `[llm.coe]`, and `trace_extraction_embed_provider` → `trace_extraction_embedding_provider`
+/// in `[learning]` (#4480).
+///
+/// All four keys are renamed in a single pass. Keys that are already using the new name,
+/// or that do not appear in the config, are left untouched (idempotent).
+///
+/// # Errors
+///
+/// This implementation never returns an error; the `Result` return type
+/// satisfies the [`Migration`] trait contract.
+pub fn migrate_embed_provider_rename(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Fast-path: nothing to do when none of the old names are present.
+    let has_old =
+        toml_src.contains("embed_provider") || toml_src.contains("trace_extraction_embed_provider");
+    if !has_old {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Line-oriented rename: replace `embed_provider` with `embedding_provider` and
+    // `trace_extraction_embed_provider` with `trace_extraction_embedding_provider`.
+    // Only rename standalone key occurrences (key = value lines), not values or comments.
+    let mut changed_count = 0usize;
+    let mut sections_changed = Vec::new();
+
+    let output = toml_src
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            // Rename trace_extraction_embed_provider first (longer prefix must come first)
+            if trimmed.starts_with("trace_extraction_embed_provider") {
+                let replaced = line.replacen(
+                    "trace_extraction_embed_provider",
+                    "trace_extraction_embedding_provider",
+                    1,
+                );
+                changed_count += 1;
+                if !sections_changed.contains(&"learning".to_owned()) {
+                    sections_changed.push("learning".to_owned());
+                }
+                return replaced;
+            }
+            if trimmed.starts_with("embed_provider") {
+                let replaced = line.replacen("embed_provider", "embedding_provider", 1);
+                changed_count += 1;
+                return replaced;
+            }
+            line.to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Preserve trailing newline if the original had one.
+    let output = if toml_src.ends_with('\n') && !output.ends_with('\n') {
+        format!("{output}\n")
+    } else {
+        output
+    };
+
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed,
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3603,8 +3675,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            48,
-            "MIGRATIONS registry must contain all 48 sequential steps"
+            49,
+            "MIGRATIONS registry must contain all 49 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5190,8 +5262,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_forty_eight_entries() {
-        assert_eq!(MIGRATIONS.len(), 48);
+    fn registry_has_forty_nine_entries() {
+        assert_eq!(MIGRATIONS.len(), 49);
     }
 
     #[test]
@@ -5230,7 +5302,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–45).
+        // Names must follow the documented step order (steps 1–49).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -5280,6 +5352,7 @@ prompt_cache_ttl = "1h"
             "migrate_cocoon_provider_notice",
             "migrate_trace_metadata",
             "migrate_five_signal_config",
+            "migrate_embed_provider_rename",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5553,5 +5626,82 @@ prompt_cache_ttl = "1h"
         let second = migrate_five_signal_config(&first.output).unwrap();
         assert_eq!(second.output, first.output);
         assert_eq!(second.changed_count, 0);
+    }
+
+    // ── migrate_embed_provider_rename tests (#4480) ───────────────────────────
+
+    #[test]
+    fn migrate_embed_provider_rename_renames_all_four_keys() {
+        let src = "\
+[memory.semantic]\n\
+embed_provider = \"ollama-embed\"\n\
+\n\
+[index]\n\
+embed_provider = \"ollama-embed\"\n\
+\n\
+[llm.coe]\n\
+embed_provider = \"\"\n\
+\n\
+[learning]\n\
+trace_extraction_embed_provider = \"embed-fast\"\n";
+        let result = migrate_embed_provider_rename(src).unwrap();
+        assert_eq!(result.changed_count, 4);
+        assert!(
+            result
+                .output
+                .contains("embedding_provider = \"ollama-embed\"")
+        );
+        assert!(
+            result
+                .output
+                .contains("trace_extraction_embedding_provider = \"embed-fast\"")
+        );
+        assert!(!result.output.contains("trace_extraction_embed_provider ="));
+        assert!(!result.output.contains("\nembed_provider ="));
+    }
+
+    #[test]
+    fn migrate_embed_provider_rename_idempotent_on_own_output() {
+        let src = "\
+[memory.semantic]\n\
+embed_provider = \"ollama-embed\"\n\
+\n\
+[learning]\n\
+trace_extraction_embed_provider = \"embed-fast\"\n";
+        let first = migrate_embed_provider_rename(src).unwrap();
+        assert_eq!(first.changed_count, 2);
+        let second = migrate_embed_provider_rename(&first.output).unwrap();
+        assert_eq!(second.changed_count, 0, "second run must be a no-op");
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_embed_provider_rename_noop_when_no_old_keys() {
+        let src = "\
+[memory.semantic]\n\
+embedding_provider = \"ollama-embed\"\n\
+\n\
+[learning]\n\
+trace_extraction_embedding_provider = \"embed-fast\"\n";
+        let result = migrate_embed_provider_rename(src).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_embed_provider_rename_preserves_commented_lines() {
+        // Lines starting with `#` must not be renamed — `trimmed.starts_with("embed_provider")`
+        // is false when the line starts with `#`.
+        let src = "# embed_provider = \"old-key\"  # this is a comment\n\
+trace_extraction_embed_provider = \"live\"\n";
+        let result = migrate_embed_provider_rename(src).unwrap();
+        // Only the uncommented key is renamed.
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("# embed_provider = \"old-key\""));
+        assert!(
+            result
+                .output
+                .contains("trace_extraction_embedding_provider = \"live\"")
+        );
     }
 }

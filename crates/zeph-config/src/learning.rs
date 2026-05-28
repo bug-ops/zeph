@@ -356,7 +356,7 @@ pub struct LearningConfig {
     /// Provider name from `[[llm.providers]]` for embedding calls during trace extraction.
     /// Must reference a provider that supports `embed()`. Empty = fall back to the primary provider.
     #[serde(default)]
-    pub trace_extraction_embed_provider: ProviderName,
+    pub trace_extraction_embedding_provider: ProviderName,
     /// Maximum user messages to include per extraction session. Default: 200.
     #[serde(default = "default_trace_extraction_max_turns")]
     pub trace_extraction_max_turns: u32,
@@ -461,7 +461,7 @@ impl Default for LearningConfig {
             d2skill_provider: ProviderName::default(),
             trace_extraction_enabled: false,
             trace_extraction_provider: ProviderName::default(),
-            trace_extraction_embed_provider: ProviderName::default(),
+            trace_extraction_embedding_provider: ProviderName::default(),
             trace_extraction_max_turns: default_trace_extraction_max_turns(),
             trace_extraction_max_sessions_queued: default_trace_extraction_max_sessions_queued(),
             trace_extraction_max_input_bytes: default_trace_extraction_max_input_bytes(),
@@ -712,12 +712,12 @@ domain_success_gate = true
     }
 
     #[test]
-    fn trace_extraction_embed_provider_default_and_roundtrip() {
+    fn trace_extraction_embedding_provider_default_and_roundtrip() {
         let cfg = LearningConfig::default();
-        assert!(cfg.trace_extraction_embed_provider.is_empty());
+        assert!(cfg.trace_extraction_embedding_provider.is_empty());
         let cfg: LearningConfig =
-            toml::from_str(r#"trace_extraction_embed_provider = "embed-fast""#).unwrap();
-        assert_eq!(cfg.trace_extraction_embed_provider, "embed-fast");
+            toml::from_str(r#"trace_extraction_embedding_provider = "embed-fast""#).unwrap();
+        assert_eq!(cfg.trace_extraction_embedding_provider, "embed-fast");
     }
 
     #[test]

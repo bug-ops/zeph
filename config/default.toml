@@ -251,7 +251,7 @@ cooldown_minutes = 60
 # A1 trace extraction: post-session SKILL.md candidate extraction from conversation messages
 # trace_extraction_enabled = false
 # trace_extraction_provider = ""           # LLM provider for candidate extraction. Empty = primary.
-# trace_extraction_embed_provider = ""     # Embed provider for dedup. Empty = primary embed provider.
+# trace_extraction_embedding_provider = "" # Embed provider for dedup. Empty = primary embed provider.
 # trace_extraction_max_turns = 20
 # trace_extraction_max_sessions_queued = 10
 # trace_extraction_max_input_bytes = 32768
@@ -388,7 +388,7 @@ importance_weight = 0.15
 # guardrail at the API server level (rate limits, Ollama single-model lock).
 # Recommended: a cheap embedding model (e.g. text-embedding-3-small, nomic-embed-text).
 # Defaults to the main provider when unset.
-# embed_provider = "ollama-embed"
+# embedding_provider = "ollama-embed"
 
 # MemMachine-inspired retrieval-stage tuning (#3340). Applies to all recall paths.
 [memory.retrieval]
@@ -450,7 +450,7 @@ repo_map_ttl_secs = 300
 # main agent provider, preventing server-side rate-limit contention and Ollama model-lock with
 # the guardrail. Recommended: a cheap embedding model (e.g. text-embedding-3-small for OpenAI,
 # nomic-embed-text for Ollama). Defaults to the main provider when unset.
-# embed_provider = "ollama-embed"
+# embedding_provider = "ollama-embed"
 
 # [discord]
 # token = ""                    # or set ZEPH_DISCORD_TOKEN

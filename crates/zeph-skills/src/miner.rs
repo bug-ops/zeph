@@ -82,7 +82,9 @@ pub struct MinedSkill {
 pub struct MiningConfig {
     /// GitHub search queries to run (e.g. `["cli tool rust"]`).
     pub queries: Vec<String>,
+    /// Maximum number of repository candidates to evaluate per query.
     pub max_repos_per_query: usize,
+    /// Cosine similarity threshold above which a new skill is considered a duplicate. Default: 0.85.
     pub dedup_threshold: f32,
     /// Minimum similarity to trigger a merge with the nearest skill. Default: 0.75.
     ///
@@ -90,6 +92,7 @@ pub struct MiningConfig {
     pub merge_threshold: f32,
     /// When `false`, the merge zone collapses to Discard. Default: `true`.
     pub merge_enabled: bool,
+    /// Directory where approved SKILL.md files are written.
     pub output_dir: PathBuf,
     /// GitHub API rate limit in requests per minute.
     pub rate_limit_rpm: u32,

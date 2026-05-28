@@ -2102,7 +2102,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 Err(e) => {
                     tracing::warn!(
                         provider = %discovery.embedding_provider,
-                        "MCP registry embed_provider resolution failed, using main provider: {e:#}"
+                        "MCP registry embedding_provider resolution failed, using main provider: {e:#}"
                     );
                     provider.clone()
                 }
@@ -2121,19 +2121,19 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     let index_pool = memory.sqlite().pool().clone();
     let index_provider = config
         .index
-        .embed_provider
+        .embedding_provider
         .as_ref()
         .and_then(|p| p.as_non_empty())
         .and_then(
             |name| match crate::bootstrap::create_named_provider(name, config) {
                 Ok(p) => {
-                    tracing::info!(provider = %name, "Using dedicated embed provider for indexer");
+                    tracing::info!(provider = %name, "Using dedicated embedding provider for indexer");
                     Some(p)
                 }
                 Err(e) => {
                     tracing::warn!(
                         provider = %name,
-                        "Index embed_provider resolution failed, using main provider: {e:#}"
+                        "Index embedding_provider resolution failed, using main provider: {e:#}"
                     );
                     None
                 }

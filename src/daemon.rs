@@ -470,7 +470,7 @@ pub(crate) async fn run_daemon(
                 Err(e) => {
                     tracing::warn!(
                         provider = %discovery.embedding_provider,
-                        "MCP registry embed_provider resolution failed, using main provider: {e:#}"
+                        "MCP registry embedding_provider resolution failed, using main provider: {e:#}"
                     );
                     provider.clone()
                 }

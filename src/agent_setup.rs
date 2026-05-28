@@ -1002,7 +1002,7 @@ pub(crate) async fn apply_code_indexer(
         })?;
         let store = CodeStore::with_ops(ops, pool);
         let embed_provider = config
-            .embed_provider
+            .embedding_provider
             .as_ref()
             .and_then(|p| p.as_non_empty())
             .and_then(|name| {
@@ -1014,7 +1014,7 @@ pub(crate) async fn apply_code_indexer(
                     Err(e) => {
                         tracing::warn!(
                             provider = %name,
-                            "Index embed_provider resolution failed, falling back to main provider: {e:#}"
+                            "Index embedding_provider resolution failed, falling back to main provider: {e:#}"
                         );
                         None
                     }
@@ -1828,12 +1828,12 @@ mod tests {
         assert!(watcher.is_none()); // watch = false
     }
 
-    // When embed_provider names an unknown provider, apply_code_indexer must fall back to
+    // When embedding_provider names an unknown provider, apply_code_indexer must fall back to
     // the main provider and log a warning rather than panicking or returning an error.
     // The indexer still starts (Qdrant fails to connect, so watcher stays None, but init
     // proceeds far enough to exercise the resolution branch).
     #[tokio::test]
-    async fn apply_code_indexer_unknown_embed_provider_falls_back_to_main() {
+    async fn apply_code_indexer_unknown_embedding_provider_falls_back_to_main() {
         use zeph_common::ProviderName;
         let tmp_dir = tempfile::tempdir().unwrap();
         let full_config = Config {
@@ -1841,7 +1841,7 @@ mod tests {
                 enabled: true,
                 watch: false,
                 workspace_root: Some(tmp_dir.path().to_path_buf()),
-                embed_provider: Some(ProviderName::from("nonexistent-provider")),
+                embedding_provider: Some(ProviderName::from("nonexistent-provider")),
                 ..IndexConfig::default()
             },
             ..Config::default()
@@ -1851,7 +1851,7 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
 
-        // Must not panic; unknown embed_provider falls back to main provider.
+        // Must not panic; unknown embedding_provider falls back to main provider.
         let (watcher, _) = apply_code_indexer(
             &full_config,
             Some(qdrant),

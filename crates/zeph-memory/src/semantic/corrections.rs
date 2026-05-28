@@ -146,7 +146,7 @@ mod tests {
             0.3,
             Arc::new(TokenCounter::new()),
         )
-        .with_embed_provider(slow_embed)
+        .with_embedding_provider(slow_embed)
     }
 
     /// `embed()` timeout in `store_correction_embedding` → returns `Ok(())` (fail-open, skips write).

@@ -1652,7 +1652,7 @@ pub struct SemanticConfig {
     /// from contending with the guardrail at the API server level (rate limits, Ollama
     /// single-model lock). Falls back to the main agent provider when `None`.
     #[serde(default)]
-    pub embed_provider: Option<ProviderName>,
+    pub embedding_provider: Option<ProviderName>,
 }
 
 impl Default for SemanticConfig {
@@ -1668,7 +1668,7 @@ impl Default for SemanticConfig {
             mmr_lambda: default_mmr_lambda(),
             importance_enabled: true,
             importance_weight: default_importance_weight(),
-            embed_provider: None,
+            embedding_provider: None,
         }
     }
 }

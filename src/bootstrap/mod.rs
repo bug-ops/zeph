@@ -463,7 +463,7 @@ impl AppBuilder {
         }
 
         if let Some(ep) = embed_provider {
-            memory = memory.with_embed_provider(ep);
+            memory = memory.with_embedding_provider(ep);
         }
 
         memory =
@@ -701,7 +701,7 @@ impl AppBuilder {
             .config
             .memory
             .semantic
-            .embed_provider
+            .embedding_provider
             .as_ref()
             .and_then(|p| p.as_non_empty())?;
 
@@ -714,7 +714,7 @@ impl AppBuilder {
                 tracing::warn!(
                     provider = %name,
                     error = %e,
-                    "Memory embed_provider resolution failed — main provider will be used"
+                    "Memory embedding_provider resolution failed — main provider will be used"
                 );
                 None
             }

@@ -64,9 +64,9 @@ impl<C: Channel> super::Agent<C> {
 
         let provider =
             self.resolve_background_provider(learning_cfg.heuristic_promotion_provider.as_str());
-        // Reuse the trace extraction embed provider for Add/Merge/Discard flow.
-        let embed_provider =
-            self.resolve_background_provider(learning_cfg.trace_extraction_embed_provider.as_str());
+        // Reuse the trace extraction embedding provider for Add/Merge/Discard flow.
+        let embed_provider = self
+            .resolve_background_provider(learning_cfg.trace_extraction_embedding_provider.as_str());
 
         let Some(ref output_dir) = self.services.skill.managed_dir else {
             tracing::debug!("heuristic_promotion: no managed_dir configured, skipping");

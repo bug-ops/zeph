@@ -29,6 +29,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-config`: renamed `embed_provider` config field to `embedding_provider` across
+  `IndexConfig` (`[index]`), `SemanticConfig` (`[memory.semantic]`), and `CoeConfig`
+  (`[llm.coe]`); renamed `trace_extraction_embed_provider` to
+  `trace_extraction_embedding_provider` in `LearningConfig` (`[skills.learning]`).
+  Existing config files are upgraded automatically by migration step 49
+  (`migrate_embed_provider_rename`). The `SemanticMemory::with_embed_provider()` builder
+  method is renamed to `with_embedding_provider()` (closes #4480).
+- `zeph-config`: added migration step 49 (`migrate_embed_provider_rename`) to rename old
+  `embed_provider` / `trace_extraction_embed_provider` keys in user TOML config files.
+- `zeph-memory`, `zeph-llm`, `zeph-skills`: added missing `///` doc comments to previously
+  undocumented public items: `EmbeddingStore::with_store`, `EmbeddingStore::health_check`,
+  `ProviderStats` fields, `EmaTracker::new`, `Extractor::extract`, `CompatibleProvider`
+  builder methods, `MiningConfig` fields (closes #4483).
+
 - `zeph-llm`: mark `StreamChunk`, `ThinkingBlock`, `ChatResponse`, `MessagePart`, and `LlmError`
   as `#[non_exhaustive]` — adding new variants in the future will not be a breaking change for
   downstream crates (closes #4515, #4517).

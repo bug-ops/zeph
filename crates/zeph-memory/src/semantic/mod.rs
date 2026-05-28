@@ -1059,7 +1059,7 @@ impl SemanticMemory {
     /// instead of the main `provider`. This prevents `embed_backfill` from saturating the main
     /// provider and causing guardrail timeouts due to rate-limit contention or Ollama model-lock.
     #[must_use]
-    pub fn with_embed_provider(mut self, embed_provider: AnyProvider) -> Self {
+    pub fn with_embedding_provider(mut self, embed_provider: AnyProvider) -> Self {
         self.embed_provider = Some(embed_provider);
         self
     }

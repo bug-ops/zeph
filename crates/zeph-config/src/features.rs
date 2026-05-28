@@ -685,7 +685,7 @@ pub struct IndexConfig {
     /// at the API server level (rate limits, Ollama single-model lock). Falls back to the main
     /// agent provider when `None`.
     #[serde(default)]
-    pub embed_provider: Option<ProviderName>,
+    pub embedding_provider: Option<ProviderName>,
     /// Maximum parallel `embed_batch` calls during indexing (default: 2 to stay within provider
     /// TPM limits).
     #[serde(default = "default_index_embed_concurrency")]
@@ -709,7 +709,7 @@ impl Default for IndexConfig {
             batch_size: default_index_batch_size(),
             memory_batch_size: default_index_memory_batch_size(),
             max_file_bytes: default_index_max_file_bytes(),
-            embed_provider: None,
+            embedding_provider: None,
             embed_concurrency: default_index_embed_concurrency(),
         }
     }

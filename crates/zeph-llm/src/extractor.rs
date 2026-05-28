@@ -61,9 +61,14 @@ impl<'a, P: LlmProvider> Extractor<'a, P> {
         self
     }
 
+    /// Extract structured data of type `T` from free-form `input` text.
+    ///
+    /// The JSON schema for `T` is injected into the prompt automatically. On a parse failure
+    /// the call is retried once with the raw response appended for self-correction.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the provider fails or the response cannot be parsed.
+    /// Returns an error if the provider fails or the response cannot be parsed after the retry.
     pub async fn extract<T>(&self, input: &str) -> Result<T, LlmError>
     where
         T: DeserializeOwned + JsonSchema + 'static,

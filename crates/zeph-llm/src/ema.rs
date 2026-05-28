@@ -11,8 +11,11 @@ use parking_lot::RwLock;
 /// Per-provider EMA statistics used for routing decisions.
 #[derive(Debug, Clone)]
 pub struct ProviderStats {
+    /// Exponential moving average of success rate (0.0 = always failing, 1.0 = always succeeding).
     pub success_ema: f64,
+    /// Exponential moving average of observed call latency in milliseconds.
     pub latency_ema_ms: f64,
+    /// Total number of recorded calls for this provider.
     pub total_calls: u64,
 }
 
@@ -41,6 +44,10 @@ pub struct EmaTracker {
 }
 
 impl EmaTracker {
+    /// Create a new `EmaTracker`.
+    ///
+    /// `alpha` controls how quickly the EMA reacts to new observations (0 < alpha ≤ 1).
+    /// `reorder_interval` is the number of recorded calls between reorder checks; use 0 to disable.
     #[must_use]
     pub fn new(alpha: f64, reorder_interval: u64) -> Self {
         Self {

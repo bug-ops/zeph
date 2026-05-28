@@ -127,10 +127,12 @@ impl CompatibleProvider {
 }
 
 impl CompatibleProvider {
+    /// Attach a status channel for streaming progress events to the TUI.
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         self.inner.status_tx = Some(tx);
     }
 
+    /// Override generation parameters (temperature, top-p, etc.) for all subsequent calls.
     #[must_use]
     pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
         self.inner = self.inner.with_generation_overrides(overrides);

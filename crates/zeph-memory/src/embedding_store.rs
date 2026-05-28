@@ -131,6 +131,10 @@ impl EmbeddingStore {
         }
     }
 
+    /// Create an `EmbeddingStore` backed by an arbitrary [`VectorStore`] implementation.
+    ///
+    /// Intended for testing: inject a pre-configured or mock store without requiring
+    /// an external Qdrant instance.
     #[must_use]
     pub fn with_store(store: Box<dyn VectorStore>, pool: DbPool) -> Self {
         Self {
@@ -140,6 +144,7 @@ impl EmbeddingStore {
         }
     }
 
+    /// Return `true` if the backing store is reachable and healthy.
     pub async fn health_check(&self) -> bool {
         self.ops.health_check().await.unwrap_or(false)
     }

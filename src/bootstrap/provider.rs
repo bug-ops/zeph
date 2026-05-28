@@ -132,13 +132,13 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
             .find(|e| e.effective_name() == coe_cfg.secondary_provider.as_str())
             .and_then(|e| build_provider_from_entry(e, config).ok())
     };
-    let embed = if coe_cfg.embed_provider.is_empty() {
+    let embed = if coe_cfg.embedding_provider.is_empty() {
         pool.iter()
             .find(|e| e.embed)
             .and_then(|e| build_provider_from_entry(e, config).ok())
     } else {
         pool.iter()
-            .find(|e| e.effective_name() == coe_cfg.embed_provider.as_str())
+            .find(|e| e.effective_name() == coe_cfg.embedding_provider.as_str())
             .and_then(|e| build_provider_from_entry(e, config).ok())
     };
     if let (Some(sec), Some(emb)) = (secondary, embed) {
