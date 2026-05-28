@@ -621,9 +621,11 @@ erl_min_confidence = 0.6
 
     #[test]
     fn validate_merge_eq_dedup_err() {
-        let mut cfg = LearningConfig::default();
-        cfg.merge_threshold = 0.90;
-        cfg.dedup_threshold = 0.90;
+        let cfg = LearningConfig {
+            merge_threshold: 0.90,
+            dedup_threshold: 0.90,
+            ..LearningConfig::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(
             err.contains("merge_threshold") && err.contains("dedup_threshold"),
@@ -633,9 +635,11 @@ erl_min_confidence = 0.6
 
     #[test]
     fn validate_merge_gt_dedup_err() {
-        let mut cfg = LearningConfig::default();
-        cfg.merge_threshold = 0.95;
-        cfg.dedup_threshold = 0.90;
+        let cfg = LearningConfig {
+            merge_threshold: 0.95,
+            dedup_threshold: 0.90,
+            ..LearningConfig::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(
             err.contains("merge_threshold") && err.contains("dedup_threshold"),
