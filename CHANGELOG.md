@@ -39,6 +39,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `maybe_start_heuristic_promotion()` moved from post-loop cleanup to agent startup
+  so the background task spawns unconditionally — previously, an early `Err` return from
+  `process_user_message` (e.g. LLM 429) skipped the cleanup block entirely and the task never
+  started. Added `is_some()` guard to make idempotency structurally enforced rather than claimed
+  (closes #4537).
+- `zeph-core`: `validate_query_rewrite` in `assembly.rs` relocated before the test-only
+  integration bridges section — it was accidentally placed inside the split comment block,
+  making it appear to be a test helper when it is a production function (closes #4521).
 - `zeph-memory`: `count_heuristics_by_skill` now filters `skill_name IS NOT NULL` before grouping,
   preventing sqlx from attempting to decode a NULL row into `String` and excluding general heuristics
   (NULL skill_name) from AutoSkill A6 promotion scans (closes #4531).
