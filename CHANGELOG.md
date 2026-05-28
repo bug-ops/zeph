@@ -39,6 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-memory`: `count_heuristics_by_skill` now filters `skill_name IS NOT NULL` before grouping,
+  preventing sqlx from attempting to decode a NULL row into `String` and excluding general heuristics
+  (NULL skill_name) from AutoSkill A6 promotion scans (closes #4531).
+- `zeph-core`: wrap `SkillRegistry::load` call in `add_merge_discard_decision` with
+  `tokio::task::spawn_blocking` to avoid blocking a Tokio worker thread with synchronous filesystem
+  I/O; falls back to empty registry on JoinError (closes #4530).
 - `zeph-config`: add `list_tasks` to `AdversarialPolicyConfig::default_exempt_tools()` so the
   `/scheduler list` slash command is never blocked by the adversarial probe gate when the embed
   provider is unavailable and `fail_open = false`; read-only scheduler intrinsics now bypass the
@@ -48,7 +54,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DispatchStrategy`, `LineageKind`, `SubAgentState`, `AgentsCommand`, `AgentCommand`,
   `FleetSessionStatus`, `GrantKind`, `HookError`, `SchedulerMessage`, `TaskKind`, `TaskMode`);
   prevents downstream exhaustive `match` breakage when new variants are added (closes #4527).
-
 - `zeph-tools`: convert remaining 6 `FileExecutor` handlers from blocking `std::fs` to non-blocking
   `tokio::fs` (`handle_create_directory`, `handle_delete_path`, `handle_move_path`,
   `handle_copy_path`) and wrap recursive helpers (`grep_recursive`, `copy_dir_recursive`) in
