@@ -3591,7 +3591,7 @@ mod tests {
             mcp_tool_names: Vec::new(),
             content_isolation: ContentIsolationConfig::default(),
             max_history_messages: 200,
-            llm_timeout: std::time::Duration::from_secs(120),
+            llm_timeout: std::time::Duration::from_mins(2),
         }
     }
 
