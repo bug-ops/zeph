@@ -193,7 +193,7 @@ impl Scheduler {
     }
 
     /// Configure RTW-A re-entry defense settings from a
-    /// [`zeph_config::SchedulerSecurityConfig`]-compatible value set.
+    /// `SchedulerSecurityConfig`-compatible value set.
     ///
     /// All three parameters map directly to the corresponding `[scheduler.security]` TOML fields.
     /// Pass `enabled = false` to disable all RTW-A mechanisms (e.g. in unit tests where task data
@@ -1706,7 +1706,7 @@ mod tests {
         );
     }
 
-    /// RTW-A Mechanism 2: tasks hydrated from DB during init() get External provenance
+    /// RTW-A Mechanism 2: tasks hydrated from DB during `init()` get External provenance
     /// when the DB row has no provenance column value.
     #[tokio::test]
     async fn reentry_mech2_hydrated_jobs_get_external_provenance() {
@@ -1752,7 +1752,7 @@ mod tests {
     }
 
     /// RTW-A Mechanism 3: a custom task prompt containing an injection pattern
-    /// must be blocked when injection_pattern_check is enabled.
+    /// must be blocked when `injection_pattern_check` is enabled.
     #[tokio::test]
     async fn reentry_mech3_injection_pattern_blocks_custom_task_prompt() {
         let pool = test_pool().await;
@@ -1800,7 +1800,7 @@ mod tests {
     }
 
     /// RTW-A Mechanism 4: custom task prompts are suppressed after a tick that includes
-    /// an external-read handler (UpdateCheck).
+    /// an external-read handler (`UpdateCheck`).
     #[tokio::test]
     async fn reentry_mech4_custom_prompt_suppressed_after_external_read_tick() {
         struct ExternalReadHandler;

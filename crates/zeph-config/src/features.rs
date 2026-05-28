@@ -996,7 +996,7 @@ pub struct SchedulerSecurityConfig {
     /// Mechanism 3: scan `task_data` for injection patterns before forwarding to the LLM.
     ///
     /// When enabled, prompts matching known injection markers are blocked and a
-    /// [`SchedulerError::PromptInjectionBlocked`](zeph_scheduler::SchedulerError) is emitted.
+    /// `SchedulerError::PromptInjectionBlocked` is emitted.
     /// Default: `true`.
     #[serde(default = "default_true")]
     pub injection_pattern_check: bool,
