@@ -30,7 +30,7 @@ impl<C: Channel> Agent<C> {
                     .map_or(policy_config.rules.len(), |e| e.rule_count());
                 let default_str = match policy_config.default_effect {
                     DefaultEffect::Allow => "allow",
-                    DefaultEffect::Deny => "deny",
+                    _ => "deny",
                 };
                 let status_str = if policy_config.enabled {
                     "enabled"

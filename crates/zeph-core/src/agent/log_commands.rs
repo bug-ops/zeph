@@ -20,7 +20,7 @@ pub(crate) fn format_logging_status(logging: &LoggingConfig, out: &mut String) {
     let rotation_str = match logging.rotation {
         LogRotation::Daily => "daily",
         LogRotation::Hourly => "hourly",
-        LogRotation::Never => "never",
+        _ => "never",
     };
     let _ = writeln!(out, "Rotation:  {rotation_str}");
     let _ = writeln!(out, "Max files: {}", logging.max_files);

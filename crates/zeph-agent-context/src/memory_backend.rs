@@ -244,9 +244,9 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
     ) -> BoxFut<'a, Vec<MemGraphFact>> {
         Box::pin(async move {
             let mem_view = match params.view {
-                RecallView::Head => MemRecallView::Head,
                 RecallView::ZoomIn => MemRecallView::ZoomIn,
                 RecallView::ZoomOut => MemRecallView::ZoomOut,
+                _ => MemRecallView::Head,
             };
             let mem_edge_types: Vec<zeph_memory::EdgeType> = params
                 .edge_types
@@ -255,10 +255,10 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                     use zeph_common::memory::EdgeType as CE;
                     use zeph_memory::EdgeType as ME;
                     match e {
-                        CE::Semantic => ME::Semantic,
                         CE::Temporal => ME::Temporal,
                         CE::Causal => ME::Causal,
                         CE::Entity => ME::Entity,
+                        _ => ME::Semantic,
                     }
                 })
                 .collect();
@@ -373,7 +373,6 @@ pub fn build_memory_router(
     }
     let fallback = manager.routing.fallback_route;
     match manager.routing.strategy {
-        StoreRoutingStrategy::Heuristic => Box::new(zeph_memory::HeuristicRouter),
         StoreRoutingStrategy::Llm => {
             let Some(provider) = manager.store_routing_provider.clone() else {
                 tracing::warn!(
@@ -398,6 +397,7 @@ pub fn build_memory_router(
                 manager.routing.confidence_threshold,
             ))
         }
+        _ => Box::new(zeph_memory::HeuristicRouter),
     }
 }
 

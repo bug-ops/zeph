@@ -19,6 +19,7 @@ pub use zeph_common::memory::EdgeType;
 /// Used by the LLM extractor to classify extracted named entities into coarse types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EntityType {
     /// A human or AI agent.
     Person,
@@ -299,9 +300,9 @@ pub fn evolved_weight(retrieval_count: i32, base_confidence: f32) -> f32 {
 pub fn edge_type_weight(et: EdgeType) -> f32 {
     match et {
         EdgeType::Causal => 1.2,
-        EdgeType::Semantic => 1.0, // baseline
         EdgeType::Temporal => 0.9,
         EdgeType::Entity => 0.8,
+        _ => 1.0,
     }
 }
 

@@ -45,6 +45,7 @@ const CLOCK_SKEW_GRACE_SECS: u64 = 30;
 
 /// Errors produced by [`Ibct::issue`] and [`Ibct::verify`].
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum IbctError {
     /// The HMAC-SHA256 signature does not match the token's fields.
     /// Indicates tampering or use of a wrong key.

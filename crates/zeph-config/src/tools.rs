@@ -20,6 +20,7 @@ use zeph_common::SkillTrustLevel;
 /// Tool access level controlling agent autonomy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum AutonomyLevel {
     /// Read-only tools: `read`, `find_path`, `grep`, `list_directory`, `web_scrape`, `fetch`
     ReadOnly,
@@ -33,6 +34,7 @@ pub enum AutonomyLevel {
 /// Action a permission rule resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PermissionAction {
     /// Allow the tool call unconditionally.
     Allow,
@@ -214,6 +216,7 @@ impl Default for PreExecutionVerifierConfig {
 /// Effect applied when a policy rule matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PolicyEffect {
     /// Allow the tool call.
     Allow,
@@ -224,6 +227,7 @@ pub enum PolicyEffect {
 /// Default effect when no policy rule matches.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum DefaultEffect {
     /// Allow the call when no rule matches.
     Allow,
@@ -279,6 +283,7 @@ pub struct PolicyRuleConfig {
 /// Baseline restriction profile for the OS-level sandbox.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum SandboxProfile {
     /// Read-only to `allow_read` paths, no writes, no network.
     ReadOnly,
@@ -302,6 +307,7 @@ fn default_sandbox_profile() -> SandboxProfile {
 /// (`"auto"`, `"seatbelt"`, `"landlock-bwrap"`, `"noop"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum SandboxBackend {
     /// Automatically select the best available backend for the current OS.
     #[default]
@@ -820,6 +826,7 @@ pub struct AuthorizationConfig {
 ///
 /// Deserializes from a string in TOML: `"stdout"`, `"stderr"`, or a file path.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum AuditDestination {
     /// Write audit entries to standard output.
     #[default]
@@ -1058,6 +1065,7 @@ impl Default for ScrapeConfig {
 /// Speculative tool execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum SpeculationMode {
     /// No speculation; uses existing synchronous path.
     #[default]

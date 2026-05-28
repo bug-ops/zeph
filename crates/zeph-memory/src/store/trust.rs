@@ -12,6 +12,7 @@ use crate::error::MemoryError;
 /// Discriminant for the skill source stored in the trust table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum SourceKind {
     Local,
     Hub,

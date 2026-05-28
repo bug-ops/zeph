@@ -6,6 +6,7 @@
 /// Memory tier classification for the AOI four-layer architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum MemoryTier {
     /// Current conversation window. Virtual tier — not stored in the DB.
     Working,

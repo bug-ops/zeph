@@ -16,6 +16,7 @@ fn default_log_max_files() -> usize {
 /// Log file rotation strategy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum LogRotation {
     #[default]
     Daily,

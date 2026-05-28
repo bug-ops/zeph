@@ -46,6 +46,7 @@ use crate::store::SqliteStore;
 /// how much of the original content is preserved. A message can be both
 /// `CompressionLevel::Episodic` and `ContentFidelity::Compressed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ContentFidelity {
     /// Original full-fidelity content.
     Full,

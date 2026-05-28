@@ -80,10 +80,8 @@ pub(crate) fn maybe_soft_compact_mid_iteration(summ: &mut ContextSummarizationVi
 /// Only runs when a `TaskAware` or `Mig` pruning strategy is active.
 pub(crate) fn maybe_refresh_task_goal(summ: &mut ContextSummarizationView<'_>) {
     match &summ.context_manager.compression.pruning_strategy {
-        zeph_config::PruningStrategy::Reactive
-        | zeph_config::PruningStrategy::Subgoal
-        | zeph_config::PruningStrategy::SubgoalMig => return,
         zeph_config::PruningStrategy::TaskAware | zeph_config::PruningStrategy::Mig => {}
+        _ => return,
     }
 
     // Phase 1: apply completed background result.

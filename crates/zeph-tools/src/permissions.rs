@@ -74,6 +74,7 @@ impl PermissionPolicy {
                 }
                 PermissionAction::Ask
             }
+            _ => PermissionAction::Deny,
         }
     }
 

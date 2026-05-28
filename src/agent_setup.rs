@@ -1434,7 +1434,7 @@ pub(crate) fn apply_mcp_discovery<C: Channel>(
     let strategy = match discovery.strategy {
         ToolDiscoveryStrategyConfig::Embedding => ToolDiscoveryStrategy::Embedding,
         ToolDiscoveryStrategyConfig::Llm => ToolDiscoveryStrategy::Llm,
-        ToolDiscoveryStrategyConfig::None => ToolDiscoveryStrategy::None,
+        _ => ToolDiscoveryStrategy::None,
     };
 
     if strategy == ToolDiscoveryStrategy::Llm {

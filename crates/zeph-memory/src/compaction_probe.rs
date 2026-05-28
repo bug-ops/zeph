@@ -60,6 +60,7 @@ impl Default for ProbeQuestion {
 
 /// Three-tier verdict for compaction probe quality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ProbeVerdict {
     /// Score >= `threshold`: summary preserves enough context. Proceed.
     Pass,

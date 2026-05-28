@@ -13,6 +13,7 @@ use crate::jsonrpc::JsonRpcError;
 ///   `-32002` is not-cancelable.
 /// - Abort on [`Security`](A2aError::Security) — endpoint rejected by TLS or SSRF policy.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum A2aError {
     /// A `reqwest` HTTP transport error (connection refused, timeout, TLS, etc.).
     #[error("HTTP request failed: {0}")]

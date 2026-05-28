@@ -92,6 +92,7 @@ pub struct GuestMessage {
 /// unrecognised status string is captured by the `Other` variant.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ChatMemberStatus {
     /// The user is the chat creator.
     Creator,
@@ -140,6 +141,7 @@ struct TelegramResponse<T> {
 
 /// Errors returned by [`TelegramApiClient`] methods.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TelegramApiError {
     /// HTTP transport or status error.
     #[error("HTTP error: {0}")]

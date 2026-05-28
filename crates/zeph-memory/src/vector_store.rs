@@ -17,6 +17,7 @@ use std::pin::Pin;
 
 /// Error type for [`VectorStore`] operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VectorStoreError {
     #[error("connection error: {0}")]
     Connection(String),
@@ -70,6 +71,7 @@ pub struct FieldCondition {
 
 /// Value type in a [`FieldCondition`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum FieldValue {
     /// Exact integer match.
     Integer(i64),

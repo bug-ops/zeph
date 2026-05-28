@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// Output format for debug dump files.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum DumpFormat {
     /// Write LLM requests as pretty-printed internal zeph-llm JSON (`{id}-request.json`).
     #[default]

@@ -90,6 +90,7 @@ pub struct MemoryMatch {
 
 /// Which memory backend produced a [`MemoryMatch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MemorySource {
     /// Qdrant vector search.
     Semantic,

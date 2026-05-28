@@ -62,6 +62,7 @@ use crate::BlockingSpawner;
 ///
 /// Used in [`TaskDescriptor`] to configure restart behaviour for a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RestartPolicy {
     /// Task runs once; normal completion removes it from the registry.
     RunOnce,
@@ -139,6 +140,7 @@ impl TaskHandle {
 
 /// Error returned by [`BlockingHandle::join`].
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockingError {
     /// The task panicked before producing a result.
     Panicked,
@@ -233,6 +235,7 @@ impl<R> BlockingHandle<R> {
 
 /// Point-in-time state of a supervised task.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TaskStatus {
     /// Task is actively running.
     Running,

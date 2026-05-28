@@ -38,6 +38,7 @@ const EMBED_TIMEOUT_SECS: u64 = 30;
 
 /// Outcome of an entity resolution attempt.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ResolutionOutcome {
     /// Exact name+type match in `SQLite`.
     ExactMatch,

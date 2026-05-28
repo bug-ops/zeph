@@ -59,6 +59,7 @@ pub struct SyncStats {
 
 /// Errors produced by [`EmbeddingRegistry`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EmbeddingRegistryError {
     #[error("vector store error: {0}")]
     VectorStore(#[from] VectorStoreError),

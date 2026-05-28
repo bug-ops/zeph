@@ -95,6 +95,13 @@ pub fn resolve_memory_dir(scope: MemoryScope, agent_name: &str) -> Result<PathBu
                 .join("agent-memory-local")
                 .join(agent_name)
         }
+        _ => {
+            let home = dirs::home_dir().ok_or_else(|| SubAgentError::Memory {
+                name: agent_name.to_owned(),
+                reason: "home directory unavailable".to_owned(),
+            })?;
+            home.join(".zeph").join("agent-memory").join(agent_name)
+        }
     };
     Ok(dir)
 }

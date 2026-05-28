@@ -545,7 +545,7 @@ async fn adapt_plan(
                 ToolPolicy::DenyList(excluded) => {
                     format!("all except: [{}]", excluded.join(", "))
                 }
-                ToolPolicy::InheritAll => "all".to_string(),
+                _ => "all".to_string(),
             };
             format!(
                 "- name: \"{}\", description: \"{}\", tools: [{}]",

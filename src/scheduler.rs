@@ -208,6 +208,7 @@ pub(crate) fn load_config_tasks(
             ScheduledTaskKind::UpdateCheck => TaskKind::UpdateCheck,
             ScheduledTaskKind::Experiment => TaskKind::Experiment,
             ScheduledTaskKind::Custom(s) => TaskKind::Custom(s.clone()),
+            _ => continue,
         };
 
         let mode = if let Some(cron_expr) = &task.cron {

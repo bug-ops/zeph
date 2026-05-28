@@ -98,9 +98,9 @@ impl DebugDumper {
             return id;
         }
         let json = match self.format {
-            DumpFormat::Json => json_dump(request),
             DumpFormat::Raw => raw_dump(request),
             DumpFormat::Trace => unreachable!("handled above"),
+            _ => json_dump(request),
         };
         self.write(&format!("{id:04}-request.json"), json.as_bytes());
         id

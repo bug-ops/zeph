@@ -23,6 +23,7 @@
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ErrorDomain {
     /// The agent selected the wrong tool or misunderstood the task.
     /// Recovery: re-plan, pick a different tool or approach.
@@ -76,6 +77,7 @@ impl ErrorDomain {
 /// Setup → `ParamHandling` → Execution → `ResultInterpretation`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ToolInvocationPhase {
     /// Tool lookup/registration phase: was the tool name valid?
     Setup,

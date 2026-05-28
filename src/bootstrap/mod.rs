@@ -208,7 +208,7 @@ impl AppBuilder {
                 })?;
                 Some(ops)
             }
-            zeph_core::config::VectorBackend::Sqlite => None,
+            _ => None,
         };
 
         Ok(Self {
@@ -399,6 +399,16 @@ impl AppBuilder {
                 .await
                 .map_err(|e| BootstrapError::Memory(e.to_string()))?
             }
+            _ => SemanticMemory::with_sqlite_backend_and_pool_size(
+                db_path,
+                provider.clone(),
+                &embed_model,
+                self.config.memory.semantic.vector_weight,
+                self.config.memory.semantic.keyword_weight,
+                self.config.memory.sqlite_pool_size,
+            )
+            .await
+            .map_err(|e| BootstrapError::Memory(e.to_string()))?,
         };
 
         memory = memory.with_ranking_options(

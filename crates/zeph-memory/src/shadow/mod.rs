@@ -34,6 +34,7 @@ fn signal_type_label(t: AuditSignalType) -> &'static str {
         AuditSignalType::PromptInjectionPattern => "prompt_injection",
         AuditSignalType::ToolChainAnomaly => "tool_chain_anomaly",
         AuditSignalType::ConfidenceDrop => "confidence_drop",
+        _ => "unknown",
     }
 }
 
@@ -42,6 +43,7 @@ fn severity_label(s: Severity) -> &'static str {
         Severity::Low => "low",
         Severity::Medium => "medium",
         Severity::High => "high",
+        _ => "unknown",
     }
 }
 
@@ -150,11 +152,13 @@ impl TrajectoryRiskAccumulator {
             AuditSignalType::PromptInjectionPattern => config.signal_weights.prompt_injection,
             AuditSignalType::ToolChainAnomaly => config.signal_weights.tool_chain_anomaly,
             AuditSignalType::ConfidenceDrop => config.signal_weights.confidence_drop,
+            _ => 0.0,
         };
         let severity_mult = match severity {
             Severity::Low => config.severity_multipliers.low,
             Severity::Medium => config.severity_multipliers.medium,
             Severity::High => config.severity_multipliers.high,
+            _ => 1.0,
         };
         let raw_score = base_weight * severity_mult;
 

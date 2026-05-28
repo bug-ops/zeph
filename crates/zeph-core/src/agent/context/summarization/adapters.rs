@@ -223,6 +223,7 @@ impl CompactionProbeCallback for AgentProbe {
                             self.metrics.record_compaction_probe_error();
                             ProbeOutcome::Pass
                         }
+                        _ => ProbeOutcome::Pass,
                     }
                 }
             }

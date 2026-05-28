@@ -384,6 +384,7 @@ async fn fire_single_hook<S: BuildHasher>(
                 }),
             }
         }
+        _ => Ok(HookOutput::default()),
     }
 }
 

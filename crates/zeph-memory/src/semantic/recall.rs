@@ -1221,10 +1221,6 @@ impl SemanticMemory {
                 let kw = self.recall_fts5_raw(query, limit, conversation_id).await?;
                 (kw, Vec::new())
             }
-            MemoryRoute::Semantic => {
-                let vr = self.recall_vectors_raw(query, limit, filter).await?;
-                (Vec::new(), vr)
-            }
             MemoryRoute::Hybrid => {
                 let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
                     Ok(r) => r,
@@ -1282,6 +1278,10 @@ impl SemanticMemory {
                 };
                 let vr = self.recall_vectors_raw(query, limit, filter).await?;
                 (kw, vr)
+            }
+            _ => {
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (Vec::new(), vr)
             }
         };
 
@@ -1341,10 +1341,6 @@ impl SemanticMemory {
                 let kw = self.recall_fts5_raw(query, limit, conversation_id).await?;
                 (kw, Vec::new())
             }
-            MemoryRoute::Semantic => {
-                let vr = self.recall_vectors_raw(query, limit, filter).await?;
-                (Vec::new(), vr)
-            }
             MemoryRoute::Hybrid => {
                 let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
                     Ok(r) => r,
@@ -1386,6 +1382,10 @@ impl SemanticMemory {
                 };
                 let vr = self.recall_vectors_raw(query, limit, filter).await?;
                 (kw, vr)
+            }
+            _ => {
+                let vr = self.recall_vectors_raw(query, limit, filter).await?;
+                (Vec::new(), vr)
             }
         };
 

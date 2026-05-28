@@ -13,6 +13,7 @@ use crate::error::MemoryError;
 /// Discriminant for the type of agent session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum SessionKind {
     /// An interactive conversation session (CLI or TUI).
     Interactive,
@@ -54,6 +55,7 @@ impl std::str::FromStr for SessionKind {
 /// Lifecycle status of an agent session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum SessionStatus {
     /// Session is currently running.
     Active,
@@ -103,6 +105,7 @@ impl std::str::FromStr for SessionStatus {
 /// Channel over which the session was initiated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum SessionChannel {
     Cli,
     Tui,

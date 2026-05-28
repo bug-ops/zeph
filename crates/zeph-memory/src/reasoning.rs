@@ -77,6 +77,7 @@ Respond with the strategy text only — no headers, no lists, no markdown.";
 ///
 /// Stored as a `TEXT NOT NULL` column (`"success"` or `"failure"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Outcome {
     /// The agent successfully completed the task.
     Success,

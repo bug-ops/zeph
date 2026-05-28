@@ -1799,6 +1799,7 @@ fn apply_attestation(
                         .filter(|t| expected_tools.iter().any(|e| e == &t.name))
                         .collect()
                 }
+                _ => tools,
             }
         }
     }
@@ -1813,7 +1814,6 @@ fn apply_allowlist(
     status_tx: Option<&StatusTx>,
 ) -> Vec<McpTool> {
     match trust_level {
-        McpTrustLevel::Trusted => tools,
         McpTrustLevel::Untrusted => match allowlist {
             None => {
                 let msg = format!(
@@ -1871,6 +1871,7 @@ fn apply_allowlist(
                 filtered
             }
         }
+        _ => tools,
     }
 }
 

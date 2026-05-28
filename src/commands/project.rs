@@ -217,6 +217,7 @@ async fn run_purge(
     let backend_label = match backend {
         VectorBackend::Qdrant => "qdrant",
         VectorBackend::Sqlite => "sqlite",
+        _ => "unknown",
     };
 
     if dry_run {
@@ -450,6 +451,17 @@ impl PurgeEngine<'_> {
                     }],
                 };
             }
+            _ => {
+                return PurgeCategory {
+                    name: "Audit log",
+                    items: vec![PurgeItem {
+                        path_or_desc: "(unknown destination)".to_owned(),
+                        path: None,
+                        bytes: 0,
+                        note: None,
+                    }],
+                };
+            }
         };
         PurgeCategory {
             name: "Audit log",
@@ -471,30 +483,25 @@ impl PurgeEngine<'_> {
         use zeph_memory::qdrant_ops::QdrantOps;
 
         println!("  Qdrant collections:");
-        match backend {
-            VectorBackend::Sqlite => {
-                println!(
-                    "    (skipped — vector_backend is sqlite; vectors stored in SQLite DB above)"
-                );
-            }
-            VectorBackend::Qdrant => {
-                let api_key = config
-                    .memory
-                    .qdrant_api_key
-                    .as_ref()
-                    .map(|s| s.expose().to_owned());
-                let ops = match QdrantOps::new(&config.memory.qdrant_url, api_key.as_deref()) {
-                    Ok(o) => o,
-                    Err(e) => {
-                        println!("    (cannot connect to Qdrant: {e})");
-                        return;
-                    }
-                };
-                for name in qdrant_collections(config) {
-                    let exists = ops.collection_exists(&name).await.unwrap_or(false);
-                    let status = if exists { "exists" } else { "not found" };
-                    println!("    {name:<40} ({status})");
+        if matches!(backend, VectorBackend::Sqlite) {
+            println!("    (skipped — vector_backend is sqlite; vectors stored in SQLite DB above)");
+        } else {
+            let api_key = config
+                .memory
+                .qdrant_api_key
+                .as_ref()
+                .map(|s| s.expose().to_owned());
+            let ops = match QdrantOps::new(&config.memory.qdrant_url, api_key.as_deref()) {
+                Ok(o) => o,
+                Err(e) => {
+                    println!("    (cannot connect to Qdrant: {e})");
+                    return;
                 }
+            };
+            for name in qdrant_collections(config) {
+                let exists = ops.collection_exists(&name).await.unwrap_or(false);
+                let status = if exists { "exists" } else { "not found" };
+                println!("    {name:<40} ({status})");
             }
         }
         println!();
@@ -509,75 +516,65 @@ impl PurgeEngine<'_> {
         use zeph_config::VectorBackend;
         use zeph_memory::qdrant_ops::QdrantOps;
 
-        match backend {
-            VectorBackend::Sqlite => {
-                println!(
-                    "  Qdrant: skipped (vector_backend = sqlite; vectors removed with SQLite DB)"
-                );
-                0
+        if matches!(backend, VectorBackend::Sqlite) {
+            println!("  Qdrant: skipped (vector_backend = sqlite; vectors removed with SQLite DB)");
+            return 0;
+        }
+        let api_key = config
+            .memory
+            .qdrant_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned());
+        let ops = match QdrantOps::new(&config.memory.qdrant_url, api_key.as_deref()) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("  Warning: cannot connect to Qdrant: {e}");
+                return 0;
             }
-            VectorBackend::Qdrant => {
-                let api_key = config
-                    .memory
-                    .qdrant_api_key
-                    .as_ref()
-                    .map(|s| s.expose().to_owned());
-                let ops = match QdrantOps::new(&config.memory.qdrant_url, api_key.as_deref()) {
-                    Ok(o) => o,
-                    Err(e) => {
-                        eprintln!("  Warning: cannot connect to Qdrant: {e}");
-                        return 0;
-                    }
-                };
+        };
 
-                // A-3: use buffer_unordered for concurrent deletion (worst-case 10 collections).
-                let results: Vec<(String, bool)> = futures::stream::iter(qdrant_collections(
-                    config,
-                ))
-                .map(|name| {
-                    let ops = &ops;
-                    async move {
-                        // M-2: check existence before attempting delete to avoid noisy warnings.
-                        let exists = ops.collection_exists(&name).await.unwrap_or(true);
-                        if !exists {
-                            return (name, false);
-                        }
-                        let deleted = tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            ops.delete_collection(&name),
-                        )
-                        .await;
-                        match deleted {
-                            Ok(Ok(())) => (name, true),
-                            Ok(Err(e)) => {
-                                eprintln!(
-                                    "  Warning: failed to delete Qdrant collection {name}: {e}"
-                                );
-                                (name, false)
-                            }
-                            Err(_) => {
-                                eprintln!("  Warning: timeout deleting Qdrant collection {name}");
-                                (name, false)
-                            }
-                        }
+        // A-3: use buffer_unordered for concurrent deletion (worst-case 10 collections).
+        let results: Vec<(String, bool)> = futures::stream::iter(qdrant_collections(config))
+            .map(|name| {
+                let ops = &ops;
+                async move {
+                    // M-2: check existence before attempting delete to avoid noisy warnings.
+                    let exists = ops.collection_exists(&name).await.unwrap_or(true);
+                    if !exists {
+                        return (name, false);
                     }
-                })
-                .buffer_unordered(10)
-                .collect()
-                .await;
-
-                let mut deleted = 0usize;
-                for (name, success) in results {
-                    if success {
-                        println!("  Deleted Qdrant collection: {name}");
-                        deleted += 1;
-                    } else {
-                        println!("  Qdrant collection {name}: not found or skipped");
+                    let deleted = tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        ops.delete_collection(&name),
+                    )
+                    .await;
+                    match deleted {
+                        Ok(Ok(())) => (name, true),
+                        Ok(Err(e)) => {
+                            eprintln!("  Warning: failed to delete Qdrant collection {name}: {e}");
+                            (name, false)
+                        }
+                        Err(_) => {
+                            eprintln!("  Warning: timeout deleting Qdrant collection {name}");
+                            (name, false)
+                        }
                     }
                 }
-                deleted
+            })
+            .buffer_unordered(10)
+            .collect()
+            .await;
+
+        let mut deleted = 0usize;
+        for (name, success) in results {
+            if success {
+                println!("  Deleted Qdrant collection: {name}");
+                deleted += 1;
+            } else {
+                println!("  Qdrant collection {name}: not found or skipped");
             }
         }
+        deleted
     }
 }
 
@@ -642,9 +639,10 @@ fn print_dry_run_report(
         println!();
     }
 
-    let qdrant_note = match backend {
-        zeph_config::VectorBackend::Qdrant => " (+ Qdrant collections)",
-        zeph_config::VectorBackend::Sqlite => "",
+    let qdrant_note = if matches!(backend, zeph_config::VectorBackend::Qdrant) {
+        " (+ Qdrant collections)"
+    } else {
+        ""
     };
     println!(
         "Total: ~{} would be freed{}",

@@ -22,7 +22,7 @@ fn severity_threshold(min: DiagnosticSeverity) -> u64 {
         DiagnosticSeverity::Error => 1,
         DiagnosticSeverity::Warning => 2,
         DiagnosticSeverity::Info => 3,
-        DiagnosticSeverity::Hint => 4,
+        _ => 4,
     }
 }
 

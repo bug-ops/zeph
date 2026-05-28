@@ -29,6 +29,7 @@ use crossterm::{
 ///
 /// Both [`read_line`] (TTY) and [`read_line_piped`] (non-TTY) return this type
 /// so the caller can handle all three cases uniformly.
+#[non_exhaustive]
 pub enum ReadLineResult {
     /// A complete line was read.  The trailing newline is stripped.
     Line(String),

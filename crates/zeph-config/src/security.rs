@@ -402,6 +402,7 @@ impl Default for ShadowSentinelConfig {
 /// Controls whether a zero-match glob is a fatal error or a warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PatternStrictness {
     /// All namespaces are strict — zero-match globs are fatal.
     Strict,

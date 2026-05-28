@@ -38,6 +38,7 @@ use crate::error::MemoryError;
 /// TOML format declares it per predicate without an `edge_type` field (critic nit #2). Per-edge-type
 /// overrides are a future extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Cardinality {
     /// Single-valued: conflict resolver picks one head edge when multiples coexist.
     One,

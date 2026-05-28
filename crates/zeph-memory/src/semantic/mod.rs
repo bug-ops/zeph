@@ -100,6 +100,7 @@ pub(crate) struct CachedCentroid {
 /// When `Enabled`, older memories receive lower scores based on the configured
 /// half-life. When `Disabled`, all memories are scored equally regardless of age.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum TemporalDecay {
     /// Apply exponential decay: older memories score lower.
     Enabled,
@@ -128,6 +129,7 @@ impl From<bool> for TemporalDecay {
 /// When `Enabled`, recall results are re-ranked to balance relevance and
 /// diversity using the configured lambda parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum MmrReranking {
     /// Apply MMR diversity re-ranking after initial vector search.
     Enabled,
@@ -156,6 +158,7 @@ impl From<bool> for MmrReranking {
 /// When `Enabled`, each stored message receives an importance score that
 /// is blended into the recall ranking with the configured weight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ImportanceScoring {
     /// Blend importance scores into recall ranking.
     Enabled,
@@ -184,6 +187,7 @@ impl From<bool> for ImportanceScoring {
 /// When `Enabled`, queries containing first-person language are biased towards
 /// the stored user profile centroid to improve personalised recall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum QueryBiasCorrection {
     /// Shift first-person query embeddings towards the user profile centroid.
     #[default]
@@ -212,6 +216,7 @@ impl From<bool> for QueryBiasCorrection {
 /// When `Enabled`, each graph edge traversed during recall receives a small
 /// weight increment (`hebbian_lr`), strengthening frequently-used associations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum HebbianReinforcement {
     /// Increment edge weights after each recall traversal.
     Enabled,

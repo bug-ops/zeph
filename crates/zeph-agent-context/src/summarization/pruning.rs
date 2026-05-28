@@ -34,7 +34,7 @@ pub(crate) fn prune_tool_outputs(
         PruningStrategy::Mig => prune_tool_outputs_mig(summ, min_to_free),
         PruningStrategy::Subgoal => prune_tool_outputs_subgoal(summ, min_to_free),
         PruningStrategy::SubgoalMig => prune_tool_outputs_subgoal_mig(summ, min_to_free),
-        PruningStrategy::Reactive => prune_tool_outputs_oldest_first(summ, min_to_free),
+        _ => prune_tool_outputs_oldest_first(summ, min_to_free),
     }
 }
 

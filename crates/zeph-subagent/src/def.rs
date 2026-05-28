@@ -760,7 +760,7 @@ impl<'a> WritableToolPolicy<'a> {
                 deny: Some(v),
                 except,
             },
-            ToolPolicy::InheritAll => Self {
+            _ => Self {
                 allow: None,
                 deny: None,
                 except,

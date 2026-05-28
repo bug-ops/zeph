@@ -1166,10 +1166,8 @@ impl ZephAcpAgentState {
         let auth_methods: Vec<acp::schema::AuthMethod> = self
             .auth_methods_config
             .iter()
-            .map(|m| match m {
-                zeph_core::config::AcpAuthMethod::Agent => acp::schema::AuthMethod::Agent(
-                    acp::schema::AuthMethodAgent::new("zeph", "Zeph"),
-                ),
+            .map(|_m| {
+                acp::schema::AuthMethod::Agent(acp::schema::AuthMethodAgent::new("zeph", "Zeph"))
             })
             .collect();
 

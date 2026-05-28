@@ -168,9 +168,9 @@ impl From<&zeph_config::QualityConfig> for QualityConfig {
             proposer_provider: c.proposer_provider.clone(),
             checker_provider: c.checker_provider.clone(),
             trigger: match c.trigger {
-                zeph_config::TriggerPolicy::HasRetrieval => TriggerPolicy::HasRetrieval,
                 zeph_config::TriggerPolicy::Always => TriggerPolicy::Always,
                 zeph_config::TriggerPolicy::Manual => TriggerPolicy::Manual,
+                _ => TriggerPolicy::HasRetrieval,
             },
             min_evidence: c.min_evidence,
             async_run: c.async_run,

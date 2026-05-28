@@ -193,7 +193,7 @@ pub(crate) fn init_tracing(
             let rotation = match logging.rotation {
                 LogRotation::Daily => Rotation::DAILY,
                 LogRotation::Hourly => Rotation::HOURLY,
-                LogRotation::Never => Rotation::NEVER,
+                _ => Rotation::NEVER,
             };
             match RollingFileAppender::builder()
                 .rotation(rotation)

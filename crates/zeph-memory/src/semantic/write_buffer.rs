@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use crate::types::{ConversationId, MemoryTier};
 
 /// A single buffered write operation waiting to be flushed to the store.
+#[non_exhaustive]
 pub enum BufferedWrite {
     /// Save a message to the messages table.
     SaveMessage {

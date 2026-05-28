@@ -12,6 +12,7 @@ use crate::subagent::{HookDef, MemoryScope, PermissionMode};
 ///
 /// Used in `SubAgentDef.model` frontmatter field.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ModelSpec {
     /// Use the parent agent's active provider at spawn time.
     Inherit,
@@ -65,6 +66,7 @@ impl<'de> Deserialize<'de> for ModelSpec {
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ParentContextPolicy {
     /// Pass the parent history verbatim — legacy behaviour, no sanitization.
     Inherit,
@@ -78,6 +80,7 @@ pub enum ParentContextPolicy {
 /// Controls how parent agent context is injected into a spawned sub-agent's task prompt.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ContextInjectionMode {
     /// No parent context injected.
     None,

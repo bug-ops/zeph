@@ -297,6 +297,10 @@ pub fn propagate_failure(
             graph.status = GraphStatus::Paused;
             Vec::new()
         }
+        _ => {
+            graph.status = GraphStatus::Failed;
+            Vec::new()
+        }
     }
 }
 

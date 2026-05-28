@@ -123,9 +123,9 @@ impl FilteredToolExecutor {
             return false;
         }
         match &self.policy {
-            ToolPolicy::InheritAll => true,
             ToolPolicy::AllowList(list) => list.iter().any(|t| normalize_tool_id(t) == normalized),
             ToolPolicy::DenyList(list) => !list.iter().any(|t| normalize_tool_id(t) == normalized),
+            _ => true,
         }
     }
 }

@@ -74,7 +74,7 @@ impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
                     zeph_llm::provider::Message::from_legacy(
                         match m.role {
                             zeph_tools::PolicyRole::System => zeph_llm::provider::Role::System,
-                            zeph_tools::PolicyRole::User => zeph_llm::provider::Role::User,
+                            _ => zeph_llm::provider::Role::User,
                         },
                         m.content.clone(),
                     )
@@ -341,6 +341,19 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
                 transport = ?transport,
                 "ACP autostart requested via config, but this build was compiled without the `acp-http` feature; falling back to stdio"
             );
+            Box::pin(run_acp_server(
+                config_path.as_deref(),
+                vault_backend.as_deref(),
+                vault_key.as_deref(),
+                vault_path.as_deref(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            ))
+            .await
+        }
+        #[cfg(feature = "acp-http")]
+        _ => {
             Box::pin(run_acp_server(
                 config_path.as_deref(),
                 vault_backend.as_deref(),
@@ -1093,10 +1106,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             let source_kind = source_kind.clone();
             let initial_level = match source_kind {
                 zeph_memory::store::SourceKind::Bundled => &trust_cfg.bundled_level,
-                zeph_memory::store::SourceKind::Hub => &trust_cfg.default_level,
                 zeph_memory::store::SourceKind::Local | zeph_memory::store::SourceKind::File => {
                     &trust_cfg.local_level
                 }
+                _ => &trust_cfg.default_level,
             };
             let Some(current_hash) = maybe_hash else {
                 tracing::warn!("failed to compute hash for '{}'", meta.name);
@@ -1292,6 +1305,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             AnyChannel::Discord(_) => "discord",
             #[cfg(feature = "slack")]
             AnyChannel::Slack(_) => "slack",
+            _ => "unknown",
         },
     }
     .to_owned();
@@ -1304,6 +1318,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         AnyChannel::Discord(_) => "discord",
         #[cfg(feature = "slack")]
         AnyChannel::Slack(_) => "slack",
+        _ => "unknown",
     }
     .to_owned();
 

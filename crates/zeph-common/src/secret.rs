@@ -85,6 +85,7 @@ impl fmt::Display for Secret {
 /// The `Backend(String)` variant is the escape hatch for third-party vault implementations:
 /// format the underlying error into the `String` when no more specific variant applies.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VaultError {
     #[error("secret not found: {0}")]
     NotFound(String),

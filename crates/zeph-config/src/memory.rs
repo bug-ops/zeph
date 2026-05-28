@@ -658,6 +658,7 @@ impl Default for NoteLinkingConfig {
 /// Vector backend selector for embedding storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum VectorBackend {
     Qdrant,
     #[default]
@@ -1542,6 +1543,7 @@ impl Default for DigestConfig {
 /// Context assembly strategy (#2288).
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ContextStrategy {
     /// Full conversation history trimmed to budget, with memory augmentation.
     /// This is the default and existing behavior.
@@ -1686,6 +1688,7 @@ impl Default for SemanticConfig {
 /// Consider raising `memory.recall_tokens` proportionally when switching to `Structured`.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ContextFormat {
     /// Emit a labeled header per snippet:
     /// `[Memory | <source> | <date> | relevance: <score>]` followed by the content.
@@ -1882,6 +1885,7 @@ impl Default for HebbianConfig {
 /// Compression strategy for active context compression (#1161).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "strategy", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CompressionStrategy {
     /// Compress only when reactive compaction fires (current behavior).
     #[default]
@@ -1909,6 +1913,7 @@ pub enum CompressionStrategy {
 /// heuristic with scored eviction.
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PruningStrategy {
     /// Oldest-first eviction — current default behavior.
     #[default]
@@ -2125,6 +2130,7 @@ impl Default for TypedPagesConfig {
 /// Enforcement mode for typed-page compaction (#3630).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TypedPagesEnforcement {
     /// Classify and audit only. Zero behavioral change relative to the untyped path.
     #[default]
@@ -2188,6 +2194,7 @@ impl Default for SidequestConfig {
 /// The default (`synapse`) preserves existing SYNAPSE spreading-activation behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GraphRetrievalStrategy {
     /// SYNAPSE spreading activation (default, existing behavior).
     #[default]
@@ -2461,6 +2468,7 @@ pub struct GraphConfig {
     schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SimilarityMethod {
     /// Normalized Levenshtein edit distance.
     #[default]
@@ -2484,6 +2492,7 @@ pub enum SimilarityMethod {
     schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ConflictResolutionStrategy {
     /// Mark the pair as a candidate but do not supersede either edge.
     #[default]
@@ -2927,6 +2936,7 @@ fn default_rl_retrain_interval_secs() -> u64 {
 /// `Rl` replaces the LLM-based `future_utility` factor with a trained logistic regression model.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AdmissionStrategy {
     /// Current A-MAC behavior: weighted heuristics + optional LLM call. Default.
     #[default]
@@ -3099,6 +3109,7 @@ impl Default for AdmissionConfig {
 /// Routing strategy for `[memory.store_routing]`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum StoreRoutingStrategy {
     /// Pure heuristic pattern matching. Zero LLM calls. Default.
     #[default]
@@ -3743,6 +3754,7 @@ impl Default for ReasoningConfig {
 /// Serialises as `"ebbinghaus"` in TOML/JSON so existing configs remain valid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum EvictionPolicy {
     /// Ebbinghaus forgetting-curve eviction.
     #[default]
@@ -3827,6 +3839,7 @@ impl Default for CompressionGuidelinesConfig {
 /// `zeph-memory` re-exports this type from here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ProbeCategory {
     /// Did specific facts survive? (file paths, function names, values, decisions)
     Recall,
@@ -3953,6 +3966,7 @@ pub struct MemCotConfig {
 /// Maps 1-to-1 to `zeph_memory::RecallView`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RecallViewConfig {
     /// Standard retrieval — no enrichment. Byte-identical to legacy behaviour.
     #[default]

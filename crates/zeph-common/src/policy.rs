@@ -23,6 +23,7 @@ pub struct PolicyMessage {
 
 /// Role for a [`PolicyMessage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PolicyRole {
     /// System-level instruction.
     System,

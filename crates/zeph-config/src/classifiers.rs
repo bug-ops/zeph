@@ -79,6 +79,7 @@ where
 /// Only safe for well-calibrated models or when FPR is verified on your workload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum InjectionEnforcementMode {
     /// Log + metric only, never block.
     Warn,

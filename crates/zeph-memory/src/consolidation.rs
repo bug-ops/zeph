@@ -39,6 +39,7 @@ use zeph_common::math::cosine_similarity;
 /// not based on similarity clustering.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TopologyOp {
     /// Merge N similar messages into one consolidated entry.
     Merge {

@@ -16,6 +16,7 @@
 /// }
 /// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MemoryError {
     #[error("database error: {0}")]
     Sqlx(#[from] zeph_db::SqlxError),

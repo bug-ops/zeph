@@ -273,6 +273,9 @@ impl PolicyEnforcer {
             DefaultEffect::Deny => PolicyDecision::Deny {
                 trace: "default: deny (no matching rules)".to_owned(),
             },
+            _ => PolicyDecision::Deny {
+                trace: "default: deny (unknown effect)".to_owned(),
+            },
         }
     }
 }

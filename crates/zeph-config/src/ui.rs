@@ -108,6 +108,7 @@ fn default_lsp_call_timeout_secs() -> u64 {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum AcpAuthMethod {
     /// Vault-backed agent auth — the sole supported method in PR 4.
     Agent,
@@ -137,6 +138,7 @@ fn default_acp_auth_methods() -> Vec<AcpAuthMethod> {
 
 /// Error returned when parsing an [`AdditionalDir`] fails.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AdditionalDirError {
     /// The raw path contains a `..` component.
     #[error("path `{0}` contains `..` traversal")]
@@ -273,6 +275,7 @@ impl<'de> serde::Deserialize<'de> for AdditionalDir {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ToolDensity {
     /// Single-line summary only (tool name + line count, no output body).
     Compact,
@@ -355,6 +358,7 @@ impl Default for FleetConfig {
 /// ACP server transport mode.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum AcpTransport {
     /// JSON-RPC over stdin/stdout (default, IDE embedding).
     #[default]
@@ -642,6 +646,7 @@ impl Default for AcpLspConfig {
 /// Minimum diagnostic severity to include in LSP context injection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum DiagnosticSeverity {
     #[default]
     Error,

@@ -236,7 +236,7 @@ fn build_prompt(goal: &str, agents: &[SubAgentDef], max_tasks: u32) -> Vec<Messa
                 ToolPolicy::DenyList(excluded) => {
                     format!("all except: [{}]", excluded.join(", "))
                 }
-                ToolPolicy::InheritAll => "all".to_string(),
+                _ => "all".to_string(),
             };
             format!(
                 "- name: \"{}\", description: \"{}\", tools: [{}]",

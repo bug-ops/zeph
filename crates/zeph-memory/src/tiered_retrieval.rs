@@ -48,6 +48,7 @@ use crate::types::{ConversationId, MessageId};
 ///
 /// Maps to increasing levels of retrieval cost and depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum IntentClass {
     /// Fast profile/attribute lookup — keyword search, top-k = 3.
     ProfileLookup,
@@ -61,8 +62,8 @@ impl IntentClass {
     fn from_route(route: MemoryRoute) -> Self {
         match route {
             MemoryRoute::Keyword | MemoryRoute::Episodic => Self::ProfileLookup,
-            MemoryRoute::Semantic | MemoryRoute::Hybrid => Self::TargetedRetrieval,
             MemoryRoute::Graph => Self::DeepReasoning,
+            _ => Self::TargetedRetrieval,
         }
     }
 

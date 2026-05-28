@@ -42,7 +42,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   undocumented public items: `EmbeddingStore::with_store`, `EmbeddingStore::health_check`,
   `ProviderStats` fields, `EmaTracker::new`, `Extractor::extract`, `CompatibleProvider`
   builder methods, `MiningConfig` fields (closes #4483).
-
+- `zeph-memory`, `zeph-common`, `zeph-config`, `zeph-channels`, `zeph-commands`, `zeph-gateway`,
+  `zeph-a2a`: add `#[non_exhaustive]` to all extensible `pub enum` types — adding new variants
+  in future releases will not be a breaking change for downstream crates (closes #4513, #4514, #4532).
 - `zeph-llm`: mark `StreamChunk`, `ThinkingBlock`, `ChatResponse`, `MessagePart`, and `LlmError`
   as `#[non_exhaustive]` — adding new variants in the future will not be a breaking change for
   downstream crates (closes #4515, #4517).

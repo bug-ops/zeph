@@ -76,7 +76,6 @@ pub fn check_capability_escalation(
     trust_level: SkillTrustLevel,
 ) -> Vec<String> {
     match trust_level {
-        SkillTrustLevel::Trusted | SkillTrustLevel::Verified => Vec::new(),
         SkillTrustLevel::Quarantined => allowed_tools
             .iter()
             .filter(|tool| {
@@ -88,6 +87,7 @@ pub fn check_capability_escalation(
             .collect(),
         // Blocked skills must not declare any tools — all are violations.
         SkillTrustLevel::Blocked => allowed_tools.to_vec(),
+        _ => Vec::new(),
     }
 }
 

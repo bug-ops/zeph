@@ -108,6 +108,7 @@ fn handle_show(name: &str, config_path: Option<&Path>) -> anyhow::Result<()> {
         ToolPolicy::AllowList(v) => format!("allow {v:?}"),
         ToolPolicy::DenyList(v) => format!("deny {v:?}"),
         ToolPolicy::InheritAll => "inherit_all".to_owned(),
+        _ => "all".to_owned(),
     };
     if def.disallowed_tools.is_empty() {
         println!("Tools:       {tools_str}");

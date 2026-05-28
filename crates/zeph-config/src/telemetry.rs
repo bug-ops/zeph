@@ -35,6 +35,7 @@ fn default_system_metrics_interval_secs() -> u64 {
 ///   feature).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum TelemetryBackend {
     /// Write `{trace_dir}/{session_id}_{timestamp}.json` Chrome traces.
     #[default]

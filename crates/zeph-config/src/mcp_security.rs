@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 /// `max()` comparisons when computing the worst-case sensitivity of a tool set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum DataSensitivity {
     /// No sensitive data.
     #[default]
@@ -34,6 +35,7 @@ pub enum DataSensitivity {
 /// Stored inside [`ToolSecurityMeta::capabilities`] and used by the data-flow policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CapabilityClass {
     /// Reads from the local filesystem.
     FilesystemRead,

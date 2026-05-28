@@ -51,6 +51,7 @@ use crate::telegram::TelegramChannel;
 /// # });
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AnyChannel {
     Cli(CliChannel),
     JsonCli(JsonCliChannel),

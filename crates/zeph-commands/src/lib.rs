@@ -109,6 +109,7 @@ pub enum CommandOutput {
 
 /// Category for grouping commands in `/help` output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SlashCategory {
     /// Session management: `/clear`, `/reset`, `/exit`, etc.
     Session,

@@ -606,7 +606,6 @@ fn apply_context_injection(
     use zeph_config::ContextInjectionMode;
 
     match mode {
-        ContextInjectionMode::None => task_prompt.to_owned(),
         ContextInjectionMode::LastAssistantTurn => {
             let last_assistant = parent_messages
                 .iter()
@@ -631,6 +630,7 @@ fn apply_context_injection(
                 format!("Parent agent context: {summary}\n\n{task_prompt}")
             }
         }
+        _ => task_prompt.to_owned(),
     }
 }
 

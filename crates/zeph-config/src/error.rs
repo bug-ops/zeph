@@ -7,6 +7,7 @@ use zeph_common::secret::VaultError;
 ///
 /// Covers file I/O, TOML parsing, validation, and vault resolution.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     #[error("failed to read config file: {0}")]
     Io(#[from] std::io::Error),

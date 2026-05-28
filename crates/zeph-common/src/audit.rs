@@ -11,6 +11,7 @@
 ///
 /// Variants correspond to the four signal classes defined in spec 004-16, FR-007.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum AuditSignalType {
     /// A policy gate denied or flagged an operation.
     PolicyViolation,
@@ -27,6 +28,7 @@ pub enum AuditSignalType {
 /// Mapped to a numeric multiplier by `TrajectorySeverityMultipliers`:
 /// `Low → 0.5`, `Medium → 1.0`, `High → 2.0` (defaults).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Severity {
     /// Minor or likely-benign signal.
     Low,

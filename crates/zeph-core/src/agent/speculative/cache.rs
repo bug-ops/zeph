@@ -73,6 +73,9 @@ impl SpeculativeHandle {
             Err(BlockingError::SupervisorDropped) => Err(ToolError::Execution(
                 std::io::Error::other("speculative task cancelled"),
             )),
+            Err(_) => Err(ToolError::Execution(std::io::Error::other(
+                "speculative task failed",
+            ))),
         }
     }
 }

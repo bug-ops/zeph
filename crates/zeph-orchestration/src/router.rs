@@ -130,7 +130,7 @@ fn agent_has_tool(def: &SubAgentDef, tool_name: &str) -> bool {
     match &def.tools {
         ToolPolicy::AllowList(allowed) => allowed.iter().any(|t| t == tool_name),
         ToolPolicy::DenyList(denied) => !denied.iter().any(|t| t == tool_name),
-        ToolPolicy::InheritAll => true,
+        _ => true,
     }
 }
 

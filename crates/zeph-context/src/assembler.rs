@@ -124,7 +124,6 @@ fn resolve_effective_strategy(
     sidequest_turn_counter: u64,
 ) -> zeph_config::ContextStrategy {
     match memory.context_strategy {
-        zeph_config::ContextStrategy::FullHistory => zeph_config::ContextStrategy::FullHistory,
         zeph_config::ContextStrategy::MemoryFirst => zeph_config::ContextStrategy::MemoryFirst,
         zeph_config::ContextStrategy::Adaptive => {
             if sidequest_turn_counter >= u64::from(memory.crossover_turn_threshold) {
@@ -133,6 +132,7 @@ fn resolve_effective_strategy(
                 zeph_config::ContextStrategy::FullHistory
             }
         }
+        _ => zeph_config::ContextStrategy::FullHistory,
     }
 }
 
@@ -427,9 +427,9 @@ pub(crate) async fn fetch_graph_facts(
     let edge_types = classify_graph_subgraph(effective_query);
 
     let view = match memory.memcot_config.recall_view {
-        zeph_config::RecallViewConfig::Head => RecallView::Head,
         zeph_config::RecallViewConfig::ZoomIn => RecallView::ZoomIn,
         zeph_config::RecallViewConfig::ZoomOut => RecallView::ZoomOut,
+        _ => RecallView::Head,
     };
 
     let sa_params = if sa_config.enabled {

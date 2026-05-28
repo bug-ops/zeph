@@ -39,6 +39,7 @@ pub struct AppState {
 /// final artifact. [`StatusUpdate`](ProcessorEvent::StatusUpdate) events update the task's
 /// state in [`TaskManager`] and, for streaming calls, are forwarded as SSE events.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ProcessorEvent {
     /// A task lifecycle state transition. Set `is_final = true` on the terminal state.
     StatusUpdate { state: TaskState, is_final: bool },
@@ -244,6 +245,7 @@ impl Default for TaskManager {
 
 /// Error returned by [`TaskManager::cancel_task`] when cancellation cannot proceed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CancelError {
     /// No task with the given ID exists in the store.
     NotFound,

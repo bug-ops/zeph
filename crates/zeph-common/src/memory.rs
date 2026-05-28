@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 /// Serialises with `snake_case` names (`keyword`, `semantic`, `hybrid`, `graph`, `episodic`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum MemoryRoute {
     /// Full-text search only (`SQLite` FTS5). Fast, good for keyword/exact queries.
     Keyword,
@@ -79,6 +80,7 @@ pub trait AsyncMemoryRouter: MemoryRouter {
 /// assert_eq!(RecallView::default(), RecallView::Head);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum RecallView {
     /// Standard retrieval — no enrichment beyond what the base method provides.
     #[default]
@@ -93,6 +95,7 @@ pub enum RecallView {
 
 /// The three abstraction levels in the compression spectrum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum CompressionLevel {
     /// Raw episodic messages — full fidelity, high token cost.
     Episodic,
@@ -270,6 +273,7 @@ pub struct SpreadingActivationParams {
 /// MAGMA edge type: the semantic category of a relationship between two entities.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EdgeType {
     #[default]
     Semantic,

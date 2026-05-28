@@ -41,6 +41,7 @@ use crate::graph::types::Edge;
 /// a circular crate dependency (`zeph-memory` → `zeph-config` → `zeph-mcp` → `zeph-memory`).
 /// `zeph-config` re-exports its own copy; callers convert between the two.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConflictStrategy {
     /// Pick the edge with the most recent `valid_from` timestamp.
     Recency,

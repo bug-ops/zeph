@@ -37,6 +37,7 @@ fn status_color(status: &TaskStatus) -> Color {
         TaskStatus::Completed => Color::Green,
         TaskStatus::Failed { .. } => Color::Red,
         TaskStatus::Aborted => Color::DarkGray,
+        _ => Color::White,
     }
 }
 
@@ -47,6 +48,7 @@ fn format_status(status: &TaskStatus) -> String {
         TaskStatus::Completed => "Completed".to_owned(),
         TaskStatus::Failed { .. } => "Failed".to_owned(),
         TaskStatus::Aborted => "Aborted".to_owned(),
+        _ => "Unknown".to_owned(),
     }
 }
 

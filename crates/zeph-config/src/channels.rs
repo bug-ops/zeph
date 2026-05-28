@@ -17,6 +17,7 @@ pub use crate::mcp_security::ToolSecurityMeta;
 /// Controls SSRF validation, tool filtering, and data-flow policy enforcement.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum McpTrustLevel {
     /// Full trust — all tools exposed, SSRF check skipped. Use for operator-controlled servers.
     Trusted,
@@ -643,6 +644,7 @@ impl Default for ToolPruningConfig {
 /// circular crate dependency (`zeph-config` → `zeph-mcp`).
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ToolDiscoveryStrategyConfig {
     /// Embedding-based cosine similarity retrieval.  Fast, no LLM call per turn.
     Embedding,
@@ -999,6 +1001,7 @@ impl Default for McpOAuthConfig {
 /// Where OAuth tokens are stored.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum OAuthTokenStorage {
     /// Persisted in the age vault (default).
     #[default]

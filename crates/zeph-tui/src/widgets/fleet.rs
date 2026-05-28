@@ -27,6 +27,7 @@ fn status_color(status: SessionStatus) -> Color {
         SessionStatus::Failed => Color::Red,
         SessionStatus::Cancelled => Color::Yellow,
         SessionStatus::Unknown => Color::Magenta,
+        _ => Color::White,
     }
 }
 

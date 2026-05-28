@@ -282,11 +282,11 @@ impl ToolScope {
 fn is_strict_pattern(pattern: &str, strictness: PatternStrictness) -> bool {
     match strictness {
         PatternStrictness::Strict => true,
-        PatternStrictness::Permissive => false,
         PatternStrictness::ProvisionalForDynamicNamespaces => {
             // Strict for builtin: and skill:; provisional for mcp:, acp:, a2a:
             pattern.starts_with("builtin:") || pattern.starts_with("skill:")
         }
+        _ => false,
     }
 }
 

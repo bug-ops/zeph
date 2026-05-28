@@ -704,6 +704,7 @@ pub async fn fetch_graph_facts_raw(
             }
             append_graph_facts(&facts, &mut body, &mut tokens_so_far, budget_tokens, tc);
         }
+        _ => {}
     }
 
     if body == GRAPH_FACTS_PREFIX {
@@ -802,7 +803,7 @@ pub async fn fetch_semantic_recall_raw(
         }
         let entry = match context_format {
             ContextFormat::Structured => format_structured_recall_entry(item),
-            ContextFormat::Plain => format_plain_recall_entry(item),
+            _ => format_plain_recall_entry(item),
         };
         let entry_tokens = tc.count_tokens(&entry);
         if tokens_used + entry_tokens > token_budget {

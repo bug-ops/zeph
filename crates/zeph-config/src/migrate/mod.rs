@@ -46,6 +46,7 @@ static CANONICAL_ORDER: &[&str] = &[
 
 /// Error type for migration failures.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MigrateError {
     /// Failed to parse the user's config.
     #[error("failed to parse input config: {0}")]

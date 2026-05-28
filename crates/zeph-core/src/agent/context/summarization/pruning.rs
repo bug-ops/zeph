@@ -126,7 +126,7 @@ impl<C: Channel> Agent<C> {
                 PruningStrategy::SubgoalMig => {
                     return self.prune_tool_outputs_subgoal_mig(min_to_free);
                 }
-                PruningStrategy::Reactive => {} // fall through to oldest-first
+                _ => {} // fall through to oldest-first
             }
         }
         self.prune_tool_outputs_oldest_first(min_to_free)

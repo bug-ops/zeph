@@ -105,6 +105,7 @@ pub fn create_mcp_manager_with_vault(
             OAuthTokenStorage::Memory => {
                 Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new())
             }
+            _ => Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new()),
         };
         manager = manager.with_oauth_credential_store(s.id.clone(), store);
     }

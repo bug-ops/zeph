@@ -1431,7 +1431,7 @@ mod tests {
                     crate::SkillTrustLevel::Trusted => 0u8,
                     crate::SkillTrustLevel::Verified => 1,
                     crate::SkillTrustLevel::Quarantined => 2,
-                    crate::SkillTrustLevel::Blocked => 3,
+                    _ => 3,
                 };
                 self.0.store(v, Ordering::Relaxed);
             }

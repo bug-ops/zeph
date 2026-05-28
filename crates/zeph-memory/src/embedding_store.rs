@@ -26,6 +26,7 @@ use crate::vector_store::{FieldCondition, FieldValue, VectorFilter, VectorPoint,
 /// The kind is encoded in the Qdrant payload so search filters can restrict
 /// results to one category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MessageKind {
     /// A normal conversation message.
     Regular,

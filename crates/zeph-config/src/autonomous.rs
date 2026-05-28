@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 /// - `Running` / `Verifying` → `Failed` (unrecoverable error)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AutonomousState {
     /// The agent is actively running multi-turn execution.
     Running,

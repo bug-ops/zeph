@@ -464,6 +464,7 @@ impl Default for PiiFilterConfig {
 /// What happens when the guardrail flags input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum GuardrailAction {
     /// Block the input and return an error message to the user.
     #[default]
@@ -475,6 +476,7 @@ pub enum GuardrailAction {
 /// Behavior on timeout or LLM error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum GuardrailFailStrategy {
     /// Block input on timeout/error (safe default for security-sensitive deployments).
     #[default]

@@ -104,6 +104,7 @@ pub struct QualityScore {
 /// Reason for a quality gate rejection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum QualityRejectionReason {
     /// Cosine similarity to recent writes is too high — the content is redundant.
     Redundant,

@@ -287,12 +287,12 @@ impl AuditLogger {
                 let file = tokio::fs::File::from_std(std_file);
                 AuditDestination::File(tokio::sync::Mutex::new(file))
             }
-            CfgDest::Stdout | CfgDest::Stderr => AuditDestination::Stdout,
             CfgDest::File(path) => {
                 let std_file = zeph_common::fs_secure::append_private(path)?;
                 let file = tokio::fs::File::from_std(std_file);
                 AuditDestination::File(tokio::sync::Mutex::new(file))
             }
+            _ => AuditDestination::Stdout,
         };
 
         Ok(Self { destination })

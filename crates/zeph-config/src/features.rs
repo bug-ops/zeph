@@ -243,6 +243,7 @@ fn default_gateway_webhook_send_timeout_secs() -> u64 {
 /// Controls how skills are formatted in the system prompt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum SkillPromptMode {
     Full,
     Compact,
@@ -1028,6 +1029,7 @@ impl Default for SchedulerConfig {
 /// Known variants map to built-in handlers; `Custom` accommodates user-defined task types.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ScheduledTaskKind {
     MemoryCleanup,
     SkillRefresh,

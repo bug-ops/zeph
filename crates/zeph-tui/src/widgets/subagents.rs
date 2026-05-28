@@ -751,7 +751,7 @@ fn render_detail(defs: &[SubAgentDef], index: usize, theme: &Theme, frame: &mut 
     let tools_str = match &def.tools {
         ToolPolicy::AllowList(v) => format!("allow {v:?}"),
         ToolPolicy::DenyList(v) => format!("deny {v:?}"),
-        ToolPolicy::InheritAll => "inherit_all".to_owned(),
+        _ => "all".to_owned(),
     };
     let except_str = if def.disallowed_tools.is_empty() {
         String::new()

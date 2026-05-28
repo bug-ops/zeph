@@ -817,11 +817,11 @@ impl<C: Channel> Agent<C> {
                     permission_mode: def.map_or_else(String::new, |d| {
                         use zeph_subagent::def::PermissionMode;
                         match d.permissions.permission_mode {
-                            PermissionMode::Default => String::new(),
                             PermissionMode::AcceptEdits => "accept_edits".into(),
                             PermissionMode::DontAsk => "dont_ask".into(),
                             PermissionMode::BypassPermissions => "bypass_permissions".into(),
                             PermissionMode::Plan => "plan".into(),
+                            _ => String::new(),
                         }
                     }),
                     transcript_dir: mgr
@@ -2433,6 +2433,7 @@ impl<C: Channel> Agent<C> {
                 Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
                 Some(zeph_subagent::MemoryScope::Project) => " [memory:project]",
                 Some(zeph_subagent::MemoryScope::Local) => " [memory:local]",
+                Some(_) => " [memory:unknown]",
                 None => "",
             };
             if let Some(ref src) = d.source {
@@ -2555,6 +2556,7 @@ impl<C: Channel> Agent<C> {
                 Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
                 Some(zeph_subagent::MemoryScope::Project) => " [memory:project]",
                 Some(zeph_subagent::MemoryScope::Local) => " [memory:local]",
+                Some(_) => " [memory:unknown]",
                 None => "",
             };
             if let Some(ref src) = d.source {
@@ -2933,10 +2935,10 @@ impl<C: Channel> Agent<C> {
             };
             let initial_level = match source_kind {
                 zeph_memory::store::SourceKind::Bundled => &trust_cfg.bundled_level,
-                zeph_memory::store::SourceKind::Hub => &trust_cfg.default_level,
                 zeph_memory::store::SourceKind::Local | zeph_memory::store::SourceKind::File => {
                     &trust_cfg.local_level
                 }
+                _ => &trust_cfg.default_level,
             };
             let existing = memory
                 .sqlite()

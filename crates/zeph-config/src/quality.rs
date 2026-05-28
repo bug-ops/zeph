@@ -19,6 +19,7 @@ use crate::providers::ProviderName;
 /// When to trigger the self-check pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TriggerPolicy {
     /// Run only when the turn has retrieved context.
     #[default]

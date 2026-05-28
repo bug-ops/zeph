@@ -35,7 +35,7 @@ fn trust_to_u8(level: SkillTrustLevel) -> u8 {
         SkillTrustLevel::Trusted => 0,
         SkillTrustLevel::Verified => 1,
         SkillTrustLevel::Quarantined => 2,
-        SkillTrustLevel::Blocked => 3,
+        _ => 3,
     }
 }
 
@@ -111,14 +111,14 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
                     command: "all tools blocked (trust=blocked)".to_owned(),
                 });
             }
-            SkillTrustLevel::Quarantined => {
-                if is_quarantine_denied(tool_id) || self.is_mcp_tool(tool_id) {
-                    return Err(ToolError::Blocked {
-                        command: format!("{tool_id} denied (trust=quarantined)"),
-                    });
-                }
+            SkillTrustLevel::Quarantined
+                if is_quarantine_denied(tool_id) || self.is_mcp_tool(tool_id) =>
+            {
+                return Err(ToolError::Blocked {
+                    command: format!("{tool_id} denied (trust=quarantined)"),
+                });
             }
-            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
+            _ => {}
         }
 
         // PermissionPolicy was designed for the bash tool. In Supervised mode, tools
@@ -136,7 +136,7 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
             PermissionAction::Ask => Err(ToolError::ConfirmationRequired {
                 command: input.to_owned(),
             }),
-            PermissionAction::Deny => Err(ToolError::Blocked {
+            _ => Err(ToolError::Blocked {
                 command: input.to_owned(),
             }),
         }
@@ -157,7 +157,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                     ),
                 });
             }
-            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
+            _ => {}
         }
         self.inner.execute(response).await
     }
@@ -173,7 +173,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                     ),
                 });
             }
-            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
+            _ => {}
         }
         self.inner.execute_confirmed(response).await
     }
@@ -208,16 +208,15 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
                     command: "all tools blocked (trust=blocked)".to_owned(),
                 });
             }
-            SkillTrustLevel::Quarantined => {
+            SkillTrustLevel::Quarantined
                 if is_quarantine_denied(call.tool_id.as_str())
-                    || self.is_mcp_tool(call.tool_id.as_str())
-                {
-                    return Err(ToolError::Blocked {
-                        command: format!("{} denied (trust=quarantined)", call.tool_id),
-                    });
-                }
+                    || self.is_mcp_tool(call.tool_id.as_str()) =>
+            {
+                return Err(ToolError::Blocked {
+                    command: format!("{} denied (trust=quarantined)", call.tool_id),
+                });
             }
-            SkillTrustLevel::Trusted | SkillTrustLevel::Verified => {}
+            _ => {}
         }
         self.inner.execute_tool_call_confirmed(call).await
     }

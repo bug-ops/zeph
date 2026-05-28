@@ -16,6 +16,7 @@ fn cat_label(cat: ProbeCategory) -> &'static str {
         ProbeCategory::Artifact => "Art",
         ProbeCategory::Continuation => "Con",
         ProbeCategory::Decision => "Dec",
+        _ => "Unk",
     }
 }
 
@@ -28,6 +29,7 @@ fn render_probe_last_line<'a>(metrics: &'a MetricsSnapshot, lines: &mut Vec<Line
         ProbeVerdict::SoftFail => ("SoftFail", Color::Yellow),
         ProbeVerdict::HardFail => ("HardFail", Color::Red),
         ProbeVerdict::Error => ("Error", Color::Gray),
+        _ => ("Unknown", Color::White),
     };
     let score_str = metrics
         .last_probe_score

@@ -13,6 +13,7 @@ use zeph_db::sql;
 
 /// Classification of a memory retrieval failure event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RetrievalFailureType {
     /// No results were returned for the query.
     NoHit,

@@ -155,6 +155,7 @@ fn default_heuristic_promotion_interval_hours() -> u64 {
 /// Strategy for detecting implicit user corrections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum DetectorMode {
     /// Pattern-matching only — zero LLM calls. Default behavior.
     #[default]

@@ -7,6 +7,7 @@ use thiserror::Error;
 ///
 /// All variants implement [`std::error::Error`] via [`thiserror`].
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum GatewayError {
     /// The server could not bind to the requested address.
     ///

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// execution and returns only the plan text.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PermissionMode {
     /// Standard behavior — prompt for each action (sub-agents auto-approve).
     #[default]
@@ -34,6 +35,7 @@ pub enum PermissionMode {
 /// Determines where the agent's `MEMORY.md` and topic files are stored across sessions.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum MemoryScope {
     /// User-level: `~/.zeph/agent-memory/<name>/`.
     User,
@@ -50,6 +52,7 @@ pub enum MemoryScope {
 /// Controls which tools the sub-agent may call, independent of the global tool denylist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ToolPolicy {
     /// Only the listed tool IDs are accessible.
     AllowList(Vec<String>),
@@ -115,6 +118,7 @@ impl SkillFilter {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HookAction {
     /// Execute a shell command via `sh -c`.
     Command {
