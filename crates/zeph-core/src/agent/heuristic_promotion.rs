@@ -377,7 +377,8 @@ async fn write_draft(
         PromotionRecommendation::BodyEnrichment { integrated_body } => {
             // Patch version and inject required frontmatter fields.
             let versioned_body = patch_version(integrated_body, parent_version + 1);
-            let patched_body = patch_frontmatter(&versioned_body, "heuristic_promotion", skill_name);
+            let patched_body =
+                patch_frontmatter(&versioned_body, "heuristic_promotion", skill_name);
             let skill = build_generated_skill(skill_name, &patched_body)?;
             match generator.write_quarantined(&skill).await {
                 Ok(_) => {
@@ -420,7 +421,9 @@ async fn write_draft(
                     );
                     return None;
                 }
-                MergeDecision::Merge { ref nearest_name, .. } => {
+                MergeDecision::Merge {
+                    ref nearest_name, ..
+                } => {
                     tracing::debug!(
                         parent_skill = skill_name,
                         candidate = name,
@@ -535,7 +538,10 @@ fn build_generated_skill(name: &str, content: &str) -> Option<GeneratedSkill> {
                 content: content.to_string(),
                 meta,
                 warnings: if scan.has_matches() {
-                    vec![format!("injection patterns: {}", scan.matched_patterns.join(", "))]
+                    vec![format!(
+                        "injection patterns: {}",
+                        scan.matched_patterns.join(", ")
+                    )]
                 } else {
                     vec![]
                 },
@@ -580,7 +586,11 @@ fn patch_frontmatter(skill_md: &str, source: &str, parent_skill: &str) -> String
     lines.insert(insert_after, format!("parent_skill: {parent_skill}"));
     lines.insert(insert_after, format!("source: {source}"));
 
-    format!("---{}---{}", lines.join("\n"), rest.trim_start_matches("---"))
+    format!(
+        "---{}---{}",
+        lines.join("\n"),
+        rest.trim_start_matches("---")
+    )
 }
 
 /// Replace or insert the `version:` field in SKILL.md frontmatter.
@@ -654,19 +664,40 @@ mod tests {
     fn patch_frontmatter_inserts_source_and_parent_skill() {
         let md = "---\nname: foo\ndescription: Foo.\n---\n\n# Body\n";
         let patched = patch_frontmatter(md, "heuristic_promotion", "code-review");
-        assert!(patched.contains("source: heuristic_promotion"), "patched: {patched}");
-        assert!(patched.contains("parent_skill: code-review"), "patched: {patched}");
-        assert!(patched.contains("name: foo"), "name field missing: {patched}");
+        assert!(
+            patched.contains("source: heuristic_promotion"),
+            "patched: {patched}"
+        );
+        assert!(
+            patched.contains("parent_skill: code-review"),
+            "patched: {patched}"
+        );
+        assert!(
+            patched.contains("name: foo"),
+            "name field missing: {patched}"
+        );
     }
 
     #[test]
     fn patch_frontmatter_replaces_existing_source_and_parent_skill() {
         let md = "---\nname: bar\nsource: old_source\nparent_skill: old-parent\ndescription: Bar.\n---\n\n# Body\n";
         let patched = patch_frontmatter(md, "heuristic_promotion", "new-parent");
-        assert!(patched.contains("source: heuristic_promotion"), "patched: {patched}");
-        assert!(patched.contains("parent_skill: new-parent"), "patched: {patched}");
-        assert!(!patched.contains("old_source"), "old source not removed: {patched}");
-        assert!(!patched.contains("old-parent"), "old parent not removed: {patched}");
+        assert!(
+            patched.contains("source: heuristic_promotion"),
+            "patched: {patched}"
+        );
+        assert!(
+            patched.contains("parent_skill: new-parent"),
+            "patched: {patched}"
+        );
+        assert!(
+            !patched.contains("old_source"),
+            "old source not removed: {patched}"
+        );
+        assert!(
+            !patched.contains("old-parent"),
+            "old parent not removed: {patched}"
+        );
     }
 
     #[test]
