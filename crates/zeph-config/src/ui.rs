@@ -70,6 +70,11 @@ fn default_acp_terminal_timeout_secs() -> u64 {
 fn default_acp_mcp_timeout_secs() -> u64 {
     300
 }
+
+fn default_acp_notify_ack_timeout_ms() -> u64 {
+    5000
+}
+
 fn default_lsp_mcp_server_id() -> String {
     "mcpls".into()
 }
@@ -570,6 +575,12 @@ pub struct AcpTimeoutsConfig {
     /// Timeout in seconds for MCP bridge operations. Default: 300.
     #[serde(default = "default_acp_mcp_timeout_secs")]
     pub mcp_secs: u64,
+    /// Maximum time in milliseconds to wait for a notification ack from the IDE client.
+    ///
+    /// If the IDE client does not acknowledge a session notification within this window,
+    /// `send_notification` returns an error instead of blocking indefinitely. Default: 5000.
+    #[serde(default = "default_acp_notify_ack_timeout_ms")]
+    pub notify_ack_timeout_ms: u64,
 }
 
 impl Default for AcpTimeoutsConfig {
@@ -578,6 +589,7 @@ impl Default for AcpTimeoutsConfig {
             elicitation_secs: default_acp_elicitation_timeout_secs(),
             terminal_secs: default_acp_terminal_timeout_secs(),
             mcp_secs: default_acp_mcp_timeout_secs(),
+            notify_ack_timeout_ms: default_acp_notify_ack_timeout_ms(),
         }
     }
 }

@@ -96,6 +96,10 @@ fn default_summary_max_chars() -> usize {
     600
 }
 
+fn default_llm_timeout_secs() -> u64 {
+    120
+}
+
 fn default_max_tool_iterations() -> usize {
     10
 }
@@ -584,6 +588,12 @@ pub struct SubAgentConfig {
     /// Default: `600` (≈200 tokens at 3 chars/token).
     #[serde(default = "default_summary_max_chars")]
     pub summary_max_chars: usize,
+    /// Maximum wall time in seconds for a single LLM call inside a sub-agent turn.
+    ///
+    /// If the provider does not return a response within this window, the call is
+    /// cancelled and the sub-agent turn fails with a timeout error. Default: 120.
+    #[serde(default = "default_llm_timeout_secs")]
+    pub llm_timeout_secs: u64,
 }
 
 impl Default for SubAgentConfig {
@@ -607,6 +617,7 @@ impl Default for SubAgentConfig {
             parent_context_policy: ParentContextPolicy::default(),
             max_parent_messages: default_max_parent_messages(),
             summary_max_chars: default_summary_max_chars(),
+            llm_timeout_secs: default_llm_timeout_secs(),
         }
     }
 }

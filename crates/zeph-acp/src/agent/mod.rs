@@ -903,8 +903,16 @@ impl ZephAcpAgentState {
         tx.send((notification, ack_tx))
             .await
             .map_err(|_| acp::Error::internal_error().data("notification channel closed"))?;
-        ack_rx
+        let timeout = std::time::Duration::from_millis(self.timeouts.notify_ack_timeout_ms);
+        tokio::time::timeout(timeout, ack_rx)
             .await
+            .map_err(|_| {
+                tracing::warn!(
+                    timeout_ms = self.timeouts.notify_ack_timeout_ms,
+                    "notification ack timed out — IDE client may be hung"
+                );
+                acp::Error::internal_error().data("notification ack timed out")
+            })?
             .map_err(|_| acp::Error::internal_error().data("notification ack lost"))
     }
 
@@ -3684,5 +3692,55 @@ mod usage_tests {
         assert_eq!(u.total_tokens, 0);
         assert_eq!(u.cached_read_tokens, None);
         assert_eq!(u.cached_write_tokens, None);
+    }
+}
+
+/// Regression tests for #4528: `send_notification` must not block indefinitely.
+#[cfg(test)]
+mod notify_timeout_tests {
+    use std::sync::Arc;
+
+    use parking_lot::RwLock;
+    use zeph_core::channel::LoopbackChannel;
+    use zeph_llm::any::AnyProvider;
+
+    use super::*;
+
+    fn make_agent_for_timeout() -> ZephAcpAgent {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let mut agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        // Override to a very small value so the test finishes in ~50 ms.
+        agent.timeouts.notify_ack_timeout_ms = 50;
+        agent
+    }
+
+    /// `send_notification` must return an error within `notify_ack_timeout_ms` when
+    /// no drainer is running (simulates a hung IDE client).
+    #[tokio::test]
+    async fn send_notification_returns_error_when_ack_times_out() {
+        let agent = make_agent_for_timeout();
+        let session_id = acp::schema::SessionId::new("timeout-test".to_owned());
+
+        let (_, handle) = LoopbackChannel::pair(4);
+        let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let entry = ZephAcpAgent::make_session_entry(
+            handle,
+            "test-model".to_owned(),
+            std::path::PathBuf::from("."),
+            None,
+            provider_override,
+        );
+        // Insert without starting the drainer — no ack will ever be sent.
+        agent.sessions.lock().insert(session_id.clone(), entry);
+
+        let update = acp::schema::SessionUpdate::AgentMessageChunk(acp::schema::ContentChunk::new(
+            "hello".into(),
+        ));
+        let notif = acp::schema::SessionNotification::new(session_id.clone(), update);
+        let result = agent.send_notification(&session_id, notif).await;
+        assert!(
+            result.is_err(),
+            "send_notification must fail when ack does not arrive within the timeout"
+        );
     }
 }

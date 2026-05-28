@@ -66,6 +66,8 @@ pub(super) struct AgentLoopArgs {
     pub(super) spawn_depth: u32,
     pub(super) mcp_tool_names: Vec<String>,
     pub(super) content_isolation: zeph_config::ContentIsolationConfig,
+    /// Maximum wall time for a single LLM call inside an agent turn.
+    pub(super) llm_timeout: std::time::Duration,
 }
 
 pub(super) fn make_message(role: Role, content: String) -> Message {
@@ -140,8 +142,18 @@ async fn call_provider_with_status(
     status_tx: &watch::Sender<SubAgentStatus>,
     turns: u32,
     started_at: Instant,
+    llm_timeout: std::time::Duration,
 ) -> Result<ChatResponse, super::error::SubAgentError> {
-    let llm_result = provider.chat_with_tools(messages, tool_defs).await;
+    let llm_result =
+        tokio::time::timeout(llm_timeout, provider.chat_with_tools(messages, tool_defs))
+            .await
+            .map_err(|_| {
+                tracing::warn!(
+                    timeout_secs = llm_timeout.as_secs(),
+                    "sub-agent LLM call timed out"
+                );
+                super::error::SubAgentError::Llm("LLM call timed out".to_owned())
+            })?;
     match llm_result {
         Ok(r) => Ok(r),
         Err(e) => {
@@ -379,10 +391,18 @@ async fn run_turn(
     secret_request_tx: &mpsc::Sender<SecretRequest>,
     secret_rx: &mut mpsc::Receiver<Option<String>>,
     sanitizer: &ContentSanitizer,
+    llm_timeout: std::time::Duration,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
-    let response =
-        call_provider_with_status(provider, messages, tool_defs, status_tx, *turns, started_at)
-            .await?;
+    let response = call_provider_with_status(
+        provider,
+        messages,
+        tool_defs,
+        status_tx,
+        *turns,
+        started_at,
+        llm_timeout,
+    )
+    .await?;
 
     let response_text = match &response {
         ChatResponse::Text(t) => t.clone(),
@@ -653,6 +673,7 @@ pub(super) async fn run_agent_loop(
         spawn_depth: _spawn_depth,
         mcp_tool_names,
         content_isolation,
+        llm_timeout,
     } = args;
 
     let sanitizer = ContentSanitizer::new(&content_isolation);
@@ -704,6 +725,7 @@ pub(super) async fn run_agent_loop(
             &secret_request_tx,
             &mut secret_rx,
             &sanitizer,
+            llm_timeout,
         )
         .await?
         {

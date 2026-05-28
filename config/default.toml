@@ -958,6 +958,10 @@ enabled = false
 # handshake_timeout_secs = 30
 # prompt_timeout_secs = 600
 
+[acp.timeouts]
+# Maximum milliseconds to wait for an IDE client notification ack before returning an error (default 5000)
+notify_ack_timeout_ms = 5000
+
 [agents]
 # Enable sub-agent spawning (required for /agent commands and multi-agent workflows)
 enabled = false
@@ -969,6 +973,8 @@ allow_bypass_permissions = false
 transcript_enabled = true
 # Maximum number of transcript files to retain (0 = unlimited)
 transcript_max_files = 50
+# Maximum wall time in seconds for a single LLM call inside a sub-agent turn (default 120)
+llm_timeout_secs = 120
 
 [orchestration]
 # Enable the orchestration subsystem (/plan commands and task graph execution)

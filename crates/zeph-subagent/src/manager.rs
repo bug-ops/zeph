@@ -1037,6 +1037,7 @@ impl SubAgentManager {
                 spawn_depth: spawn_depth + 1,
                 mcp_tool_names,
                 content_isolation: ctx.content_isolation,
+                llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
             }));
 
         let handle_transcript_dir = if config.transcript_enabled {
@@ -1613,6 +1614,7 @@ impl SubAgentManager {
                 spawn_depth: 0,
                 mcp_tool_names: resumed_mcp_tool_names.clone(),
                 content_isolation: ContentIsolationConfig::default(),
+                llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
             }));
 
         let resume_handle_transcript_dir = if config.transcript_enabled {
@@ -3589,6 +3591,7 @@ mod tests {
             mcp_tool_names: Vec::new(),
             content_isolation: ContentIsolationConfig::default(),
             max_history_messages: 200,
+            llm_timeout: std::time::Duration::from_secs(120),
         }
     }
 
@@ -4919,5 +4922,33 @@ mod tests {
             count, 2,
             "both new tasks should run after stale ones are drained"
         );
+    }
+
+    // ── LLM timeout regression tests for #4525 ───────────────────────────────
+
+    /// Verifies that `call_provider_with_status` (exercised via `run_agent_loop`)
+    /// returns `SubAgentError::Llm` when the provider exceeds `llm_timeout` instead
+    /// of blocking forever.
+    #[tokio::test]
+    async fn llm_timeout_returns_error_instead_of_blocking() {
+        let mut mock = MockProvider::default();
+        // Provider sleeps for 2 s — longer than the configured timeout.
+        mock.delay_ms = 2_000;
+        let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
+
+        let mut args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 1);
+        // Set a tight timeout so the test completes in ~50 ms.
+        args.llm_timeout = std::time::Duration::from_millis(50);
+
+        let result = run_agent_loop(args).await;
+        match result {
+            Err(super::super::error::SubAgentError::Llm(msg)) => {
+                assert!(
+                    msg.contains("timed out"),
+                    "expected timeout message, got: {msg}"
+                );
+            }
+            other => panic!("expected SubAgentError::Llm on timeout, got: {other:?}"),
+        }
     }
 }

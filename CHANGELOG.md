@@ -92,6 +92,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   observability (closes #4496).
 - `zeph-acp`, `zeph-gateway`: add `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]` annotations to
   all feature-gated public items so docs.rs renders them with the correct feature badge (closes #4497).
+- `zeph-acp`: `send_notification` no longer blocks indefinitely when the IDE client does not
+  acknowledge a session notification; `tokio::time::timeout` wraps `ack_rx.await` with a
+  configurable window (`acp.timeouts.notify_ack_timeout_ms`, default 5000 ms); timeout is logged
+  as `warn` and returns an internal error (closes #4528).
+- `zeph-subagent`: LLM calls inside sub-agent turns are now bounded by `agents.llm_timeout_secs`
+  (default 120 s); previously `chat_with_tools` could block indefinitely if the provider stalled;
+  timeout logs a `warn` and returns `SubAgentError::Llm("LLM call timed out")` (closes #4525).
 
 ### Changed
 
