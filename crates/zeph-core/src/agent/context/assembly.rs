@@ -1433,10 +1433,6 @@ impl<C: Channel> Agent<C> {
     }
 }
 
-// ── Test-only integration bridges ─────────────────────────────────────────────
-//
-// These shim methods expose individual context-service operations directly on
-// `Agent<C>` so that Category 2 integration tests can drive them in isolation
 /// Validate the result of a query rewrite and return it if acceptable.
 ///
 /// Returns `None` (fall back to original) when the rewritten text is empty, too short,
@@ -1463,6 +1459,10 @@ fn validate_query_rewrite(original: &str, rewritten: &str) -> Option<String> {
     }
 }
 
+// ── Test-only integration bridges ─────────────────────────────────────────────
+//
+// These shim methods expose individual context-service operations directly on
+// `Agent<C>` so that Category 2 integration tests can drive them in isolation
 // without going through the full `prepare_context` pipeline. They are not part
 // of the production call path — production code uses `ContextService` methods
 // directly via `prepare_context`.

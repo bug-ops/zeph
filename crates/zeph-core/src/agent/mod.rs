@@ -876,6 +876,11 @@ impl<C: Channel> Agent<C> {
         self.load_and_cache_session_digest().await;
         self.maybe_send_resume_recap().await;
 
+        // AutoSkill A6: start periodic heuristic promotion task at session startup so it runs
+        // even when the main loop exits early due to an error (spec 061). The function guards
+        // against double-spawn via a heuristic_promotion_handle.is_some() check.
+        self.maybe_start_heuristic_promotion();
+
         loop {
             self.apply_provider_override();
             self.check_tool_refresh().await;
@@ -1195,17 +1200,6 @@ impl<C: Channel> Agent<C> {
 
         // AutoSkill A1: extract skill candidates from the completed session trace (spec 056).
         self.maybe_extract_skills_from_trace().await;
-
-        // AutoSkill A6: start periodic heuristic promotion task if not yet running (spec 061).
-        // Idempotent: re-calling after first run is a no-op because the handle is already set.
-        if self
-            .services
-            .learning_engine
-            .heuristic_promotion_handle
-            .is_none()
-        {
-            self.maybe_start_heuristic_promotion();
-        }
 
         // Flush trace collector on normal exit (C-04: Drop handles error/panic paths).
         if let Some(ref mut tc) = self.runtime.debug.trace_collector {

@@ -5,6 +5,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use zeph_config::LearningConfig;
 
 #[tokio::test]
 async fn agent_new_initializes_with_system_prompt() {
@@ -845,4 +846,82 @@ async fn agent_metrics_skills_updated_on_prompt_rebuild() {
     let snapshot = rx.borrow().clone();
     assert_eq!(snapshot.total_skills, 1);
     assert!(!snapshot.active_skills.is_empty());
+}
+
+/// Regression test for #4537: `maybe_start_heuristic_promotion` must run at session
+/// startup (before `loop {}`), not in the post-loop cleanup block.
+///
+/// Previously the call was placed after the main loop, so an early `?` return from
+/// `process_user_message` would skip it entirely. The fix moves it to startup so the
+/// background task is always spawned when enabled.
+///
+/// This test directly calls `maybe_start_heuristic_promotion` and asserts the handle
+/// is set — mirroring what `Agent::run` does at startup in a real session.
+#[tokio::test]
+async fn heuristic_promotion_handle_set_at_startup_when_enabled() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    // Configure heuristic promotion as enabled with a real managed_dir.
+    agent.services.learning_engine.config = Some(LearningConfig {
+        heuristic_promotion_enabled: true,
+        ..LearningConfig::default()
+    });
+    agent.services.skill.managed_dir = Some(tmp.path().to_path_buf());
+
+    // Before the fix, this call only happened in the post-loop cleanup block.
+    // With the fix it is called at session startup, unconditionally before `loop {}`.
+    agent.maybe_start_heuristic_promotion();
+
+    assert!(
+        agent
+            .services
+            .learning_engine
+            .heuristic_promotion_handle
+            .is_some(),
+        "heuristic_promotion_handle must be set immediately after maybe_start_heuristic_promotion() \
+         is called, regardless of whether the main loop runs"
+    );
+
+    // Clean up the background task so tokio doesn't warn about leaked tasks.
+    if let Some(h) = agent
+        .services
+        .learning_engine
+        .heuristic_promotion_handle
+        .take()
+    {
+        h.abort();
+    }
+}
+
+/// Complementary to the regression above: when `heuristic_promotion_enabled = false`
+/// the method must remain a no-op and leave the handle as `None`.
+#[tokio::test]
+async fn heuristic_promotion_handle_not_set_when_disabled() {
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+    // Provide config but leave heuristic_promotion_enabled = false (default).
+    agent.services.learning_engine.config = Some(LearningConfig::default());
+
+    agent.maybe_start_heuristic_promotion();
+
+    assert!(
+        agent
+            .services
+            .learning_engine
+            .heuristic_promotion_handle
+            .is_none(),
+        "no handle should be spawned when heuristic_promotion_enabled = false"
+    );
 }

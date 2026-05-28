@@ -42,9 +42,19 @@ const LLM_TIMEOUT_SECS: u64 = 120;
 impl<C: Channel> super::Agent<C> {
     /// Spawn the periodic heuristic promotion background task if configured.
     ///
-    /// Called once at agent startup (after learning config is loaded). When
-    /// `heuristic_promotion_enabled = false`, this is a no-op.
+    /// Called once at agent startup (after learning config is loaded). No-ops when
+    /// `heuristic_promotion_enabled = false`, when `managed_dir` is unset, or when
+    /// the task is already running (idempotent via `heuristic_promotion_handle` guard).
     pub(super) fn maybe_start_heuristic_promotion(&mut self) {
+        if self
+            .services
+            .learning_engine
+            .heuristic_promotion_handle
+            .is_some()
+        {
+            return;
+        }
+
         let Some(ref learning_cfg) = self.services.learning_engine.config else {
             return;
         };
