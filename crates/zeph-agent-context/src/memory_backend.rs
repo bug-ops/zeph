@@ -19,6 +19,12 @@ use zeph_common::memory::{
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::{ConversationId, RecallView as MemRecallView, RecalledFact};
 
+fn box_err<E: std::error::Error + Send + Sync + 'static>(
+    e: E,
+) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(e)
+}
+
 fn map_persona_fact(r: zeph_memory::PersonaFactRow) -> MemPersonaFact {
     MemPersonaFact {
         category: r.category,
@@ -128,7 +134,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .sqlite()
                 .load_persona_facts(min_confidence)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(rows.into_iter().map(map_persona_fact).collect())
         })
     }
@@ -144,7 +150,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .sqlite()
                 .load_trajectory_entries(tier, top_k)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(rows.into_iter().map(map_trajectory_entry).collect())
         })
     }
@@ -156,7 +162,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .sqlite()
                 .load_tree_level(level.into(), top_k)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(rows.into_iter().map(map_tree_node).collect())
         })
     }
@@ -164,11 +170,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
     fn load_summaries(&self, conversation_id: i64) -> BoxFut<'_, Vec<MemSummary>> {
         Box::pin(async move {
             let cid = ConversationId(conversation_id);
-            let rows = self
-                .inner
-                .load_summaries(cid)
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            let rows = self.inner.load_summaries(cid).await.map_err(box_err)?;
             Ok(rows.into_iter().map(map_summary).collect())
         })
     }
@@ -183,7 +185,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .inner
                 .retrieve_reasoning_strategies(query, top_k)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(strategies.into_iter().map(map_reasoning_strategy).collect())
         })
     }
@@ -191,10 +193,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
     fn mark_reasoning_used<'a>(&'a self, ids: &'a [String]) -> BoxFut<'a, ()> {
         Box::pin(async move {
             if let Some(ref reasoning) = self.inner.reasoning {
-                reasoning
-                    .mark_used(ids)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                reasoning.mark_used(ids).await.map_err(box_err)?;
             }
             Ok(())
         })
@@ -211,7 +210,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .inner
                 .retrieve_similar_corrections(query, limit, min_score)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(corrections.into_iter().map(map_correction).collect())
         })
     }
@@ -227,12 +226,12 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 self.inner
                     .recall_routed_async(query, limit, None, r, None)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                    .map_err(box_err)?
             } else {
                 self.inner
                     .recall(query, limit, None)
                     .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                    .map_err(box_err)?
             };
             Ok(recalled.into_iter().map(map_recalled_message).collect())
         })
@@ -288,7 +287,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                     sa_params,
                 )
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(recalled.into_iter().map(map_graph_fact).collect())
         })
     }
@@ -305,7 +304,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .inner
                 .search_session_summaries(query, limit, cid)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(results.into_iter().map(map_session_summary).collect())
         })
     }
@@ -321,7 +320,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                 .inner
                 .search_document_collection(collection, query, top_k)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                .map_err(box_err)?;
             Ok(points
                 .into_iter()
                 .map(|p| {

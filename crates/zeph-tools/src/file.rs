@@ -231,7 +231,7 @@ impl FileExecutor {
             }
             "grep" => {
                 let p: GrepParams = deserialize_params(params)?;
-                self.handle_grep(&p)
+                self.handle_grep(&p).await
             }
             "list_directory" => {
                 let p: ListDirectoryParams = deserialize_params(params)?;
@@ -239,19 +239,19 @@ impl FileExecutor {
             }
             "create_directory" => {
                 let p: CreateDirectoryParams = deserialize_params(params)?;
-                self.handle_create_directory(&p)
+                self.handle_create_directory(&p).await
             }
             "delete_path" => {
                 let p: DeletePathParams = deserialize_params(params)?;
-                self.handle_delete_path(&p)
+                self.handle_delete_path(&p).await
             }
             "move_path" => {
                 let p: MovePathParams = deserialize_params(params)?;
-                self.handle_move_path(&p)
+                self.handle_move_path(&p).await
             }
             "copy_path" => {
                 let p: CopyPathParams = deserialize_params(params)?;
-                self.handle_copy_path(&p)
+                self.handle_copy_path(&p).await
             }
             _ => Ok(None),
         }
@@ -392,7 +392,7 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_grep(&self, params: &GrepParams) -> Result<Option<ToolOutput>, ToolError> {
+    async fn handle_grep(&self, params: &GrepParams) -> Result<Option<ToolOutput>, ToolError> {
         let search_path = params.path.as_deref().unwrap_or(".");
         let case_sensitive = params.case_sensitive.unwrap_or(true);
         let path = self.validate_path(Path::new(search_path))?;
@@ -411,9 +411,38 @@ impl FileExecutor {
             ))
         })?;
 
-        let sandbox = |p: &Path| self.check_read_sandbox(p);
-        let mut results = Vec::new();
-        grep_recursive(&path, &regex, &mut results, 100, &sandbox)?;
+        let allowed_paths = self.allowed_paths.clone();
+        let read_deny_globs = self.read_deny_globs.clone();
+        let read_allow_globs = self.read_allow_globs.clone();
+        let results = tokio::task::spawn_blocking(move || {
+            let sandbox = |p: &Path| {
+                let Some(ref deny) = read_deny_globs else {
+                    return Ok(());
+                };
+                if deny.is_match(p)
+                    && !read_allow_globs
+                        .as_ref()
+                        .is_some_and(|allow| allow.is_match(p))
+                {
+                    return Err(ToolError::SandboxViolation {
+                        path: p.display().to_string(),
+                    });
+                }
+                Ok(())
+            };
+            // Validate path is within sandbox before grepping.
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !allowed_paths.iter().any(|a| canonical.starts_with(a)) {
+                return Err(ToolError::SandboxViolation {
+                    path: path.display().to_string(),
+                });
+            }
+            let mut results = Vec::new();
+            grep_recursive(&path, &regex, &mut results, 100, &sandbox)?;
+            Ok(results)
+        })
+        .await
+        .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))??;
 
         Ok(Some(ToolOutput {
             tool_name: ToolName::new("grep"),
@@ -494,12 +523,12 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_create_directory(
+    async fn handle_create_directory(
         &self,
         params: &CreateDirectoryParams,
     ) -> Result<Option<ToolOutput>, ToolError> {
         let path = self.validate_path(Path::new(&params.path))?;
-        std::fs::create_dir_all(&path)?;
+        tokio::fs::create_dir_all(&path).await?;
 
         Ok(Some(ToolOutput {
             tool_name: ToolName::new("create_directory"),
@@ -515,7 +544,7 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_delete_path(
+    async fn handle_delete_path(
         &self,
         params: &DeletePathParams,
     ) -> Result<Option<ToolOutput>, ToolError> {
@@ -532,13 +561,13 @@ impl FileExecutor {
             if params.recursive {
                 // Accepted risk: remove_dir_all has no depth/size guard within the sandbox.
                 // Resource exhaustion is bounded by the filesystem and OS limits.
-                std::fs::remove_dir_all(&path)?;
+                tokio::fs::remove_dir_all(&path).await?;
             } else {
                 // remove_dir only succeeds on empty dirs
-                std::fs::remove_dir(&path)?;
+                tokio::fs::remove_dir(&path).await?;
             }
         } else {
-            std::fs::remove_file(&path)?;
+            tokio::fs::remove_file(&path).await?;
         }
 
         Ok(Some(ToolOutput {
@@ -555,10 +584,13 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_move_path(&self, params: &MovePathParams) -> Result<Option<ToolOutput>, ToolError> {
+    async fn handle_move_path(
+        &self,
+        params: &MovePathParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
         let src = self.validate_path(Path::new(&params.source))?;
         let dst = self.validate_path(Path::new(&params.destination))?;
-        std::fs::rename(&src, &dst)?;
+        tokio::fs::rename(&src, &dst).await?;
 
         Ok(Some(ToolOutput {
             tool_name: ToolName::new("move_path"),
@@ -574,17 +606,24 @@ impl FileExecutor {
         }))
     }
 
-    fn handle_copy_path(&self, params: &CopyPathParams) -> Result<Option<ToolOutput>, ToolError> {
+    async fn handle_copy_path(
+        &self,
+        params: &CopyPathParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
         let src = self.validate_path(Path::new(&params.source))?;
         let dst = self.validate_path(Path::new(&params.destination))?;
 
         if src.is_dir() {
-            copy_dir_recursive(&src, &dst)?;
+            let src2 = src.clone();
+            let dst2 = dst.clone();
+            tokio::task::spawn_blocking(move || copy_dir_recursive(&src2, &dst2))
+                .await
+                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))??;
         } else {
             if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
+                tokio::fs::create_dir_all(parent).await?;
             }
-            std::fs::copy(&src, &dst)?;
+            tokio::fs::copy(&src, &dst).await?;
         }
 
         Ok(Some(ToolOutput {

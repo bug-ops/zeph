@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-tools`: convert remaining 6 `FileExecutor` handlers from blocking `std::fs` to non-blocking
+  `tokio::fs` (`handle_create_directory`, `handle_delete_path`, `handle_move_path`,
+  `handle_copy_path`) and wrap recursive helpers (`grep_recursive`, `copy_dir_recursive`) in
+  `tokio::task::spawn_blocking`; eliminates tokio worker thread starvation on directory operations
+  (closes #4507).
 - `zeph-tools`: convert `FileExecutor` file I/O from blocking `std::fs` to non-blocking `tokio::fs`
   in `handle_read`, `handle_write`, `handle_edit`, and `handle_list_directory`; `symlink_metadata`
   wrapped in `tokio::task::spawn_blocking`; prevents tokio worker thread starvation on large file
@@ -41,6 +46,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   observability (closes #4496).
 - `zeph-acp`, `zeph-gateway`: add `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]` annotations to
   all feature-gated public items so docs.rs renders them with the correct feature badge (closes #4497).
+
+### Changed
+
+- `zeph-agent-context`: extract private `box_err` helper in `memory_backend.rs` and replace 12
+  identical `map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)` closures; no behavior
+  change (closes #4511).
 
 ### Added
 
