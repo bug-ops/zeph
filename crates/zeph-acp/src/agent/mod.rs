@@ -3639,7 +3639,7 @@ mod usage_tests {
     fn session_accumulator_default_is_zero() {
         let acc = SessionUsageAccumulator::default();
         assert_eq!(acc.total_input_tokens, 0);
-        assert_eq!(acc.last_cost_cents, 0.0);
+        assert!(acc.last_cost_cents.abs() < f64::EPSILON);
         assert_eq!(acc.last_context_window, 0);
     }
 
