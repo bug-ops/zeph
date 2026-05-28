@@ -111,8 +111,8 @@ pub enum AgentError {
     ContextError(String),
 
     /// A database operation in the agent subsystem failed.
-    #[error("database error: {0}")]
-    Db(String),
+    #[error(transparent)]
+    Db(#[from] zeph_db::DbError),
 }
 
 impl AgentError {

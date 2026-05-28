@@ -331,7 +331,7 @@ impl ShadowEventStore {
         .bind(event.created_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| AgentError::Db(e.to_string()))?;
+        .map_err(|e| AgentError::Db(e.into()))?;
 
         Ok(())
     }
@@ -361,7 +361,7 @@ impl ShadowEventStore {
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AgentError::Db(e.to_string()))?;
+        .map_err(|e| AgentError::Db(e.into()))?;
 
         // DB returns DESC (newest first); reverse once to get ASC (oldest first) for LLM context.
         let mut events: Vec<SentinelEvent> = rows.into_iter().map(SentinelEvent::from).collect();
@@ -394,7 +394,7 @@ impl ShadowEventStore {
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| AgentError::Db(e.to_string()))?;
+        .map_err(|e| AgentError::Db(e.into()))?;
 
         Ok(rows.into_iter().map(SentinelEvent::from).collect())
     }

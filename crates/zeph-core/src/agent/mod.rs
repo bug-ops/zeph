@@ -752,8 +752,17 @@ impl<C: Channel> Agent<C> {
         self.services.learning_engine.learning_tasks.abort_all();
 
         // Await the AutoSkill trace extraction task so it is not silently dropped.
+        // Bounded to avoid hanging shutdown when the LLM call inside the task stalls.
         if let Some(h) = self.services.learning_engine.trace_extraction_handle.take() {
-            let _ = h.await;
+            let deadline = std::time::Duration::from_mins(2);
+            match tokio::time::timeout(deadline, h).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("trace_extraction: task panicked at shutdown: {e}"),
+                Err(_) => tracing::warn!(
+                    "trace_extraction: timed out at shutdown ({}s), aborting",
+                    deadline.as_secs()
+                ),
+            }
         }
 
         // Allow cancelled tasks to release their HTTP connections before the summary LLM call.

@@ -32,6 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now resolves the embed provider by name from `[[llm.providers]]` instead of passing
   `embedding_model` (a model-ID string) as a provider name, which always triggered a fallback
   warning and used the primary text provider for embeddings (closes #4494).
+- `zeph-core`: `trace_extraction_handle.await` at shutdown is now wrapped in
+  `tokio::time::timeout(2 min)` — prevents agent exit from stalling when the LLM inside
+  the trace extraction task is slow or unresponsive; timeout and task panic are logged
+  separately (closes #4500).
+- `zeph-core`: `AgentError::Db` now wraps `zeph_db::DbError` via `#[from]` instead of
+  erasing it to `String`, preserving the full error chain for structured handling and
+  observability (closes #4496).
 
 ### Added
 
