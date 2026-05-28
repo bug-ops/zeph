@@ -37,6 +37,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-skills`: `parent_skill: Option<String>` field in `SkillMeta` and SKILL.md frontmatter;
   propagated through `parse_frontmatter`, `load_skill_meta_from_str`, and `load_skill_meta`.
 - CLI: `zeph skills promote-heuristics [--skill <name>]` subcommand for manual promotion dry-run.
+- `zeph-mcp`: configurable MCP startup retry backoff (`mcp.startup_retry_backoff_ms`, default 1000 ms) —
+  controls the exponential backoff base delay between server reconnect attempts at startup; see
+  migration step 50 (`migrate_mcp_retry_and_tool_timeout`).
+- `zeph-mcp`: per-call tool timeout (`mcp.tool_timeout_secs`) — when set, overrides the per-server
+  `[[mcp.servers]].timeout` for `tools/call` requests while leaving handshake and `tools/list` timeouts
+  unchanged. When absent (the default), per-server timeout governs all requests. Maximum value: 3600 s.
+- `zeph-plugins`: `disable --force` support (`zeph plugin disable <name> --force`) — proceeds past
+  enabled dependents when `force = true`, returning them in `DisableResult.forced_over_dependents`.
 
 ### Changed
 
@@ -63,6 +71,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-plugins`: mark `PluginError` as `#[non_exhaustive]` (closes #4517).
 - `zeph-sanitizer`: mark `ExfiltrationEvent` as `#[non_exhaustive]` (closes #4517).
 - `zeph-skills`: mark `MatchResult` and `SkillMatcherBackend` as `#[non_exhaustive]` (closes #4520).
+- **BREAKING** `zeph-plugins`: `PluginManager::disable(name)` signature changed to
+  `disable(name, force: bool)`. Pass `false` to preserve the previous behavior (refuse to disable if
+  enabled dependents exist).
 
 ### Security
 

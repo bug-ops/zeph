@@ -198,6 +198,45 @@ max_bot_chain_depth = 5
     }
 
     #[test]
+    fn startup_retry_backoff_ms_default_is_1000() {
+        let cfg = McpConfig::default();
+        assert_eq!(cfg.startup_retry_backoff_ms, 1000);
+    }
+
+    #[test]
+    fn startup_retry_backoff_ms_deserializes_from_toml() {
+        let src = "startup_retry_backoff_ms = 500\n";
+        let cfg: McpConfig = toml::from_str(src).expect("valid toml");
+        assert_eq!(cfg.startup_retry_backoff_ms, 500);
+    }
+
+    #[test]
+    fn tool_timeout_secs_default_is_none() {
+        let cfg = McpConfig::default();
+        assert!(cfg.tool_timeout_secs.is_none());
+    }
+
+    #[test]
+    fn tool_timeout_secs_deserializes_from_toml() {
+        let src = "tool_timeout_secs = 120\n";
+        let cfg: McpConfig = toml::from_str(src).expect("valid toml");
+        assert_eq!(cfg.tool_timeout_secs, Some(120));
+    }
+
+    #[test]
+    fn tool_timeout_secs_rejects_above_3600() {
+        let src = "tool_timeout_secs = 3601\n";
+        assert!(toml::from_str::<McpConfig>(src).is_err());
+    }
+
+    #[test]
+    fn tool_timeout_secs_accepts_3600() {
+        let src = "tool_timeout_secs = 3600\n";
+        let cfg: McpConfig = toml::from_str(src).expect("valid toml");
+        assert_eq!(cfg.tool_timeout_secs, Some(3600));
+    }
+
+    #[test]
     fn wildcard_star_allows_any_skill() {
         let cfg = allow(&["*"]);
         assert!(is_skill_allowed("anything", &cfg));
@@ -293,6 +332,14 @@ fn default_max_dynamic_servers() -> usize {
 
 fn default_mcp_timeout() -> u64 {
     30
+}
+
+fn default_startup_retry_backoff_ms() -> u64 {
+    1000
+}
+
+fn default_tool_timeout_secs() -> Option<u64> {
+    None
 }
 
 fn default_oauth_callback_port() -> u16 {
@@ -782,6 +829,21 @@ where
     Ok(v)
 }
 
+fn validate_tool_timeout_secs<'de, D>(d: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<u64>::deserialize(d)?;
+    if let Some(n) = v
+        && n > 3600
+    {
+        return Err(serde::de::Error::custom(format!(
+            "mcp.tool_timeout_secs must be \u{2264} 3600 (got {n})"
+        )));
+    }
+    Ok(v)
+}
+
 #[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpConfig {
@@ -868,6 +930,28 @@ pub struct McpConfig {
     /// is emitted once per session per tool.
     #[serde(default = "default_output_schema_hint_bytes")]
     pub output_schema_hint_bytes: usize,
+    /// Base delay in milliseconds before each retry attempt at startup.
+    ///
+    /// The actual backoff is computed as `min(startup_retry_backoff_ms * 2^(k-1), 8_000) ms`
+    /// where `k` is the 1-based attempt index. Default: 1000 ms.
+    ///
+    /// Set to a lower value for faster failover in test/development environments.
+    #[serde(default = "default_startup_retry_backoff_ms")]
+    pub startup_retry_backoff_ms: u64,
+    /// Per-call timeout in seconds applied to each MCP tool invocation.
+    ///
+    /// This is separate from `[[mcp.servers]].timeout`, which controls the handshake and
+    /// `tools/list` timeout. `tool_timeout_secs` applies after the connection is established,
+    /// for each `tools/call` request.
+    ///
+    /// When absent (the default), the per-server `timeout` governs `tools/call` as well.
+    /// Set to a lower value to cap runaway tools without changing the handshake timeout.
+    /// Maximum accepted value is 3600 s; values above that are rejected at parse time.
+    #[serde(
+        default = "default_tool_timeout_secs",
+        deserialize_with = "validate_tool_timeout_secs"
+    )]
+    pub tool_timeout_secs: Option<u64>,
 }
 
 impl Default for McpConfig {
@@ -890,6 +974,8 @@ impl Default for McpConfig {
             forward_output_schema: false,
             output_schema_hint_bytes: default_output_schema_hint_bytes(),
             max_connect_attempts: default_max_connect_attempts(),
+            startup_retry_backoff_ms: default_startup_retry_backoff_ms(),
+            tool_timeout_secs: None,
         }
     }
 }

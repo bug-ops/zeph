@@ -2354,6 +2354,59 @@ pub fn migrate_mcp_max_connect_attempts(toml_src: &str) -> Result<MigrationResul
     })
 }
 
+/// Add commented-out `startup_retry_backoff_ms` and `tool_timeout_secs` keys under `[mcp]`
+/// if absent (#4004).
+///
+/// Both keys have `#[serde(default)]` and require no user action; this migration surfaces them
+/// so operators can discover and tune the new retry and per-call timeout settings.
+///
+/// # Errors
+///
+/// Returns `Ok` with unchanged output when either key is already present or `[mcp]` is absent.
+pub fn migrate_mcp_retry_and_tool_timeout(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let has_backoff = toml_src.contains("startup_retry_backoff_ms");
+    let has_timeout = toml_src.contains("tool_timeout_secs");
+
+    if (has_backoff && has_timeout) || !toml_src.contains("[mcp]\n") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut output = toml_src.to_owned();
+    let mut changed = false;
+
+    if !has_backoff {
+        let comment = "# startup_retry_backoff_ms = 1000  \
+            # base backoff ms between startup retries (doubles per attempt, cap 8000 ms)\n";
+        output = output.replacen("[mcp]\n", &format!("[mcp]\n{comment}"), 1);
+        changed = true;
+    }
+
+    if !has_timeout {
+        let comment = "# tool_timeout_secs = 60  \
+            # per-call timeout for tools/call requests; when absent, per-server timeout is used\n";
+        output = output.replacen("[mcp]\n", &format!("[mcp]\n{comment}"), 1);
+        changed = true;
+    }
+
+    if changed {
+        Ok(MigrationResult {
+            output,
+            changed_count: 1,
+            sections_changed: vec!["mcp".to_owned()],
+        })
+    } else {
+        Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        })
+    }
+}
+
 /// Add a commented-out `[quality]` block if the config lacks it (#3228).
 ///
 /// Introduced alongside the MARCH self-check pipeline (#3226). All `QualityConfig`
@@ -3315,7 +3368,7 @@ use steps::{
     MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
     MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
     MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
@@ -3533,6 +3586,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateFiveSignalConfig),
             // Step 49 — rename embed_provider → embedding_provider (#4480)
             Box::new(MigrateEmbedProviderRename),
+            // Step 50 — add mcp startup_retry_backoff_ms and tool_timeout_secs (#4004)
+            Box::new(MigrateMcpRetryAndToolTimeout),
         ]
     });
 
@@ -3676,8 +3731,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            49,
-            "MIGRATIONS registry must contain all 49 sequential steps"
+            50,
+            "MIGRATIONS registry must contain all 50 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5263,8 +5318,8 @@ prompt_cache_ttl = "1h"
     // ── Migration registry ────────────────────────────────────────────────────
 
     #[test]
-    fn registry_has_forty_nine_entries() {
-        assert_eq!(MIGRATIONS.len(), 49);
+    fn registry_has_fifty_entries() {
+        assert_eq!(MIGRATIONS.len(), 50);
     }
 
     #[test]
@@ -5354,6 +5409,7 @@ prompt_cache_ttl = "1h"
             "migrate_trace_metadata",
             "migrate_five_signal_config",
             "migrate_embed_provider_rename",
+            "migrate_mcp_retry_and_tool_timeout",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5462,6 +5518,39 @@ prompt_cache_ttl = "1h"
     fn migrate_mcp_max_connect_attempts_skips_when_no_mcp_section() {
         let src = "[agent]\nname = \"Zeph\"\n";
         let result = migrate_mcp_max_connect_attempts(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    // ── Step 50 — mcp startup_retry_backoff_ms and tool_timeout_secs ──────────────────────────────
+
+    #[test]
+    fn migrate_mcp_retry_and_tool_timeout_adds_both_keys_when_absent() {
+        let src = "[mcp]\nallowed_commands = []\n";
+        let result = migrate_mcp_retry_and_tool_timeout(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("startup_retry_backoff_ms"),
+            "output must include startup_retry_backoff_ms"
+        );
+        assert!(
+            result.output.contains("tool_timeout_secs"),
+            "output must include tool_timeout_secs"
+        );
+    }
+
+    #[test]
+    fn migrate_mcp_retry_and_tool_timeout_idempotent_when_both_present() {
+        let src = "[mcp]\n# startup_retry_backoff_ms = 1000\n# tool_timeout_secs = 60\n";
+        let result = migrate_mcp_retry_and_tool_timeout(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_mcp_retry_and_tool_timeout_skips_when_no_mcp_section() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_mcp_retry_and_tool_timeout(src).expect("migrate");
         assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
     }

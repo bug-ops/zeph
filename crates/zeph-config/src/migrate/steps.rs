@@ -8,7 +8,8 @@
 //! steps 41–45 add goal lifecycle, TACO compression, orchestrator provider, per-provider
 //! admission control, and `GonkaGate` advisory notice; step 46 is an advisory notice for Cocoon;
 //! steps 47–48 add trace metadata and five-signal SYNAPSE config; step 49 renames
-//! `embed_provider` → `embedding_provider` (#4480).
+//! `embed_provider` → `embedding_provider` (#4480); step 50 adds MCP
+//! `startup_retry_backoff_ms` and `tool_timeout_secs` (#4004).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -22,22 +23,22 @@ use super::{
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts,
-    migrate_mcp_trust_levels, migrate_memory_graph_config, migrate_memory_hebbian_config,
-    migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
-    migrate_memory_persona_config, migrate_memory_reasoning_config,
-    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_memory_retrieval_query_bias, migrate_microcompact_config,
-    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_otel_filter, migrate_planner_model_to_provider, migrate_provider_max_concurrent,
-    migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
+    migrate_mcp_retry_and_tool_timeout, migrate_mcp_trust_levels, migrate_memory_graph_config,
+    migrate_memory_hebbian_config, migrate_memory_hebbian_consolidation_config,
+    migrate_memory_hebbian_spread_config, migrate_memory_persona_config,
+    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
+    migrate_memory_retrieval_config, migrate_memory_retrieval_query_bias,
+    migrate_microcompact_config, migrate_orchestration_orchestrator_provider,
+    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_quality_config,
+    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
     migrate_telemetry_config, migrate_tools_compression_config, migrate_trace_metadata,
     migrate_vigil_config,
 };
 
-// ── Wrapper structs for all 49 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 50 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -575,5 +576,16 @@ impl Migration for MigrateEmbedProviderRename {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_embed_provider_rename(toml_src)
+    }
+}
+
+pub(super) struct MigrateMcpRetryAndToolTimeout;
+impl Migration for MigrateMcpRetryAndToolTimeout {
+    fn name(&self) -> &'static str {
+        "migrate_mcp_retry_and_tool_timeout"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_mcp_retry_and_tool_timeout(toml_src)
     }
 }

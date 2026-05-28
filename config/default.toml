@@ -483,9 +483,16 @@ max_dynamic_servers = 10
 # When true, warn the user before prompting for sensitive-looking fields (password, token, etc.).
 # elicitation_warn_sensitive_fields = true
 # Maximum number of connection attempts per MCP server at startup (1 = no retry, default: 3).
-# Backoff: 500 ms, 1 s, 2 s, 4 s, 8 s, ... (capped at 8 s). Must be in 1..=10.
+# Backoff: min(startup_retry_backoff_ms * 2^(k-1), 8_000) ms. Must be in 1..=10.
 # Note: dynamic /mcp add retains single-attempt behaviour; a follow-up tracks retry there.
 # max_connect_attempts = 3
+# Base delay in milliseconds for exponential backoff between startup retry attempts (default: 1000 ms).
+# Actual delay = min(startup_retry_backoff_ms * 2^(attempt-1), 8000) ms.
+# startup_retry_backoff_ms = 1000
+# Per-call timeout in seconds for MCP tool invocations after connection is established.
+# When absent (default), the per-server [[mcp.servers]].timeout governs all requests.
+# Maximum accepted value: 3600 s.
+# tool_timeout_secs = 60
 
 [mcp.pruning]
 # Enable dynamic MCP tool pruning (LLM-based relevance filter before main inference)

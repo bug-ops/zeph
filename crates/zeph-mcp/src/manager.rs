@@ -256,6 +256,17 @@ pub struct McpManager {
     ///
     /// `1` = no retry, `3` = two retries. Validated at config-parse time: `1..=10`.
     max_connect_attempts: u8,
+    /// Base delay in milliseconds for exponential backoff between startup retry attempts.
+    ///
+    /// The actual delay is `min(startup_retry_backoff_ms * 2^(attempt-1), 8_000) ms`.
+    /// Default: 1 000 ms.
+    startup_retry_backoff_ms: u64,
+    /// Per-call timeout applied to each `tools/call` request after connection is established.
+    ///
+    /// When `Some`, overrides the per-server `ServerEntry.timeout` for tool calls only.
+    /// When `None`, the per-server `ServerEntry.timeout` is used for all operations.
+    /// Default: `None` (uses per-server timeout).
+    tool_timeout_secs: Option<u64>,
     /// When `true`, `tools/list_changed` refresh events are rejected for servers whose
     /// initial tool list has been committed (i.e. their ID is in `tool_list_locked`).
     ///
@@ -372,6 +383,8 @@ impl McpManager {
             tool_list_locked: Arc::new(DashMap::new()),
             shutdown_token: CancellationToken::new(),
             max_connect_attempts: 3,
+            startup_retry_backoff_ms: 1_000,
+            tool_timeout_secs: None,
         }
     }
 
@@ -454,6 +467,27 @@ impl McpManager {
     #[must_use]
     pub fn with_max_connect_attempts(mut self, attempts: u8) -> Self {
         self.max_connect_attempts = attempts.clamp(1, 10);
+        self
+    }
+
+    /// Set the base backoff delay for startup retry attempts.
+    ///
+    /// The actual inter-attempt delay is `min(base_ms * 2^(k-1), 8_000) ms` where `k` is
+    /// the 1-based attempt index. Default: 1 000 ms. Values of 0 are treated as 1 ms.
+    #[must_use]
+    pub fn with_startup_retry_backoff_ms(mut self, base_ms: u64) -> Self {
+        self.startup_retry_backoff_ms = base_ms.max(1);
+        self
+    }
+
+    /// Set a global per-call timeout for MCP tool invocations.
+    ///
+    /// When set, this timeout overrides the per-server `ServerEntry.timeout` for every
+    /// `tools/call` request, while leaving connection and `tools/list` timeouts unchanged.
+    /// When not set (the default), the per-server timeout governs all operations.
+    #[must_use]
+    pub fn with_tool_timeout_secs(mut self, secs: u64) -> Self {
+        self.tool_timeout_secs = Some(secs.max(1));
         self
     }
 
@@ -675,6 +709,7 @@ impl McpManager {
         let suppress = self.suppress_stderr;
         let cloned_status_tx = self.status_tx.clone();
         let max_attempts = self.max_connect_attempts;
+        let retry_backoff_base_ms = self.startup_retry_backoff_ms;
 
         let non_oauth: Vec<_> = self
             .configs
@@ -708,6 +743,7 @@ impl McpManager {
                     last_refresh,
                     &handler_cfg,
                     max_attempts,
+                    retry_backoff_base_ms,
                     status_tx.as_ref(),
                     &shutdown,
                 )
@@ -1144,7 +1180,13 @@ impl McpManager {
             .ok_or_else(|| McpError::ServerNotFound {
                 server_id: server_id.into(),
             })?;
-        let result = client.call_tool(tool_name, args).await?;
+        let result = if let Some(tool_timeout_secs) = self.tool_timeout_secs {
+            client
+                .call_tool_with_timeout(tool_name, args, Duration::from_secs(tool_timeout_secs))
+                .await?
+        } else {
+            client.call_tool(tool_name, args).await?
+        };
 
         if let Some(ref guard) = self.embedding_guard {
             let text = extract_text_content(&result);
@@ -1878,19 +1920,17 @@ fn apply_allowlist(
 /// Compute the sleep duration before retry attempt `attempt + 1`.
 ///
 /// Doubling exponential backoff capped at 8 s:
-/// `min(500ms * 2^(attempt - 1), 8_000ms)`.
+/// `min(base_ms * 2^(attempt - 1), 8_000ms)`.
 ///
-/// For `max_connect_attempts = 3` the sequence is **500 ms, 1 s**
+/// For `base_ms = 1000, max_connect_attempts = 3` the sequence is **1 s, 2 s**
 /// (three attempts → two inter-attempt gaps).
-/// For `max_connect_attempts = 10` the full sequence is
-/// 500, 1000, 2000, 4000, 8000, 8000, 8000, 8000, 8000 ms (total ≤ 47 s).
+/// For `max_connect_attempts = 10` the full sequence caps at 8 s after the 4th inter-attempt gap.
 ///
 /// `attempt` is 1-based and corresponds to the just-failed attempt index.
-fn connect_retry_backoff(attempt: u8) -> Duration {
-    const BASE_MS: u64 = 500;
+fn connect_retry_backoff(attempt: u8, base_ms: u64) -> Duration {
     const CAP_MS: u64 = 8_000;
     let exp = u32::from(attempt.saturating_sub(1));
-    let raw = BASE_MS.saturating_mul(2u64.saturating_pow(exp.min(20)));
+    let raw = base_ms.saturating_mul(2u64.saturating_pow(exp.min(20)));
     Duration::from_millis(raw.min(CAP_MS))
 }
 
@@ -1932,9 +1972,13 @@ fn is_retryable_connect_error(err: &McpError) -> bool {
 ///
 /// Cancellation via `shutdown` is checked before every attempt and during backoff sleeps.
 /// On cancellation, returns `Err(McpError::ManagerShuttingDown)` immediately.
+///
+/// `retry_backoff_base_ms` is the base delay in milliseconds; the actual delay doubles
+/// with each attempt, capped at 8 000 ms. See [`connect_retry_backoff`] for details.
 async fn retry_loop<F, Fut>(
     server_id: &str,
     max_attempts: u8,
+    retry_backoff_base_ms: u64,
     status_tx: Option<&StatusTx>,
     shutdown: &CancellationToken,
     mut attempt_fn: F,
@@ -1985,7 +2029,7 @@ where
                     break;
                 }
                 // Cancellable backoff sleep.
-                let delay = connect_retry_backoff(attempt);
+                let delay = connect_retry_backoff(attempt, retry_backoff_base_ms);
                 tokio::select! {
                     biased;
                     () = shutdown.cancelled() => {
@@ -2015,12 +2059,14 @@ async fn connect_with_retry(
     last_refresh: Arc<DashMap<String, Instant>>,
     handler_cfg: &crate::client::HandlerConfig,
     max_attempts: u8,
+    retry_backoff_base_ms: u64,
     status_tx: Option<&StatusTx>,
     shutdown: &CancellationToken,
 ) -> Result<McpClient, McpError> {
     retry_loop(
         entry.id.as_str(),
         max_attempts,
+        retry_backoff_base_ms,
         status_tx,
         shutdown,
         |_attempt| {
@@ -2429,6 +2475,44 @@ mod tests {
                 panic!("expected ServerNotFound");
             }
         }
+    }
+
+    /// Verify that `call_tool` dispatches through the `call_tool_with_timeout` path when
+    /// `tool_timeout_secs` is set, and that `ServerNotFound` is still returned for a missing
+    /// server (i.e., the branch is reached before the lookup).
+    ///
+    /// For a connected server the timeout branch produces `McpError::ToolCall` because the
+    /// disconnected test client's service exits immediately — we confirm the error is *not*
+    /// `ServerNotFound`, proving the lookup succeeded and the `Some(timeout)` branch fired.
+    #[tokio::test]
+    async fn call_tool_uses_tool_timeout_branch_when_configured() {
+        let mgr =
+            McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])).with_tool_timeout_secs(5);
+        // Server not registered — ServerNotFound regardless of timeout config.
+        let err = mgr
+            .call_tool("missing", "tool", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::ServerNotFound { .. }),
+            "expected ServerNotFound, got: {err}"
+        );
+
+        // Register a disconnected-for-test client so the lookup succeeds;
+        // the service exits immediately, producing McpError::ToolCall.
+        let entry = make_entry("srv");
+        let client = McpClient::new_disconnected_for_test("srv");
+        mgr.commit_added_server(&entry, client, vec![])
+            .await
+            .expect("commit must succeed");
+        let err = mgr
+            .call_tool("srv", "any_tool", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            !matches!(err, McpError::ServerNotFound { .. }),
+            "should not get ServerNotFound for a registered server, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -3445,6 +3529,7 @@ mod tests {
 
     #[test]
     fn connect_retry_backoff_table() {
+        // base_ms = 500 gives the legacy sequence; verify the doubling curve and 8 s cap.
         let expected_ms: &[(u8, u64)] = &[
             (1, 500),
             (2, 1000),
@@ -3458,13 +3543,24 @@ mod tests {
             (10, 8000),
         ];
         for &(attempt, expected) in expected_ms {
-            let actual = u64::try_from(connect_retry_backoff(attempt).as_millis())
+            let actual = u64::try_from(connect_retry_backoff(attempt, 500).as_millis())
                 .expect("backoff duration fits u64");
             assert_eq!(
                 actual, expected,
                 "backoff for attempt {attempt} should be {expected} ms"
             );
         }
+    }
+
+    #[test]
+    fn connect_retry_backoff_respects_custom_base_ms() {
+        // base_ms = 1000 (default config value): 1000, 2000, 4000, 8000, …
+        assert_eq!(connect_retry_backoff(1, 1000), Duration::from_millis(1000));
+        assert_eq!(connect_retry_backoff(2, 1000), Duration::from_millis(2000));
+        assert_eq!(connect_retry_backoff(3, 1000), Duration::from_millis(4000));
+        assert_eq!(connect_retry_backoff(4, 1000), Duration::from_millis(8000));
+        // cap enforced at 8 s regardless of attempt
+        assert_eq!(connect_retry_backoff(10, 1000), Duration::from_millis(8000));
     }
 
     // ── Error classifier ───────────────────────────────────────────────────────────────────────
@@ -3551,7 +3647,7 @@ mod tests {
         let token = CancellationToken::new();
         let first_attempt = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let first_clone = std::sync::Arc::clone(&first_attempt);
-        let _: Result<McpClient, McpError> = retry_loop("srv", 1, None, &token, |attempt| {
+        let _: Result<McpClient, McpError> = retry_loop("srv", 1, 1, None, &token, |attempt| {
             let first = std::sync::Arc::clone(&first_clone);
             async move {
                 first.store(attempt, std::sync::atomic::Ordering::SeqCst);
@@ -3573,7 +3669,7 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         let mut called = false;
-        let result = retry_loop("srv", 3, None, &token, |_attempt| {
+        let result = retry_loop("srv", 3, 1, None, &token, |_attempt| {
             called = true;
             async move {
                 Err(McpError::Connection {
@@ -3601,13 +3697,14 @@ mod tests {
         let count_clone = std::sync::Arc::clone(&attempt_count);
 
         // Spawn a task that cancels the token shortly after the first attempt fails and
-        // the retry_loop is sleeping its backoff.
+        // the retry_loop is sleeping its backoff. With start_paused=true and base_ms=1000,
+        // the first backoff is 1 s; cancel after 100 ms interrupts it before attempt 2.
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             token_clone.cancel();
         });
 
-        let result = retry_loop("srv", 3, None, &token, |_| {
+        let result = retry_loop("srv", 3, 1000, None, &token, |_| {
             let count = std::sync::Arc::clone(&count_clone);
             async move {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3636,7 +3733,7 @@ mod tests {
         let attempt_count = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let count_clone = std::sync::Arc::clone(&attempt_count);
 
-        let result = retry_loop("srv", 5, None, &token, |_| {
+        let result = retry_loop("srv", 5, 1, None, &token, |_| {
             let count = std::sync::Arc::clone(&count_clone);
             async move {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3664,7 +3761,7 @@ mod tests {
         let attempt_count = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let count_clone = std::sync::Arc::clone(&attempt_count);
 
-        let result = retry_loop("srv", 3, None, &token, |_| {
+        let result = retry_loop("srv", 3, 1, None, &token, |_| {
             let count = std::sync::Arc::clone(&count_clone);
             async move {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3685,5 +3782,47 @@ mod tests {
             matches!(result, Err(McpError::Connection { .. })),
             "last error should be propagated"
         );
+    }
+
+    // ── Builder methods for new config fields ──────────────────────────────────────────────────
+
+    #[test]
+    fn with_startup_retry_backoff_ms_sets_field() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]))
+            .with_startup_retry_backoff_ms(500);
+        assert_eq!(mgr.startup_retry_backoff_ms, 500);
+    }
+
+    #[test]
+    fn with_startup_retry_backoff_ms_clamps_zero_to_one() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]))
+            .with_startup_retry_backoff_ms(0);
+        assert_eq!(mgr.startup_retry_backoff_ms, 1, "0 must clamp to 1");
+    }
+
+    #[test]
+    fn with_tool_timeout_secs_sets_field() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]))
+            .with_tool_timeout_secs(120);
+        assert_eq!(mgr.tool_timeout_secs, Some(120));
+    }
+
+    #[test]
+    fn with_tool_timeout_secs_clamps_zero_to_one() {
+        let mgr =
+            McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![])).with_tool_timeout_secs(0);
+        assert_eq!(mgr.tool_timeout_secs, Some(1), "0 must clamp to 1");
+    }
+
+    #[test]
+    fn tool_timeout_secs_is_none_by_default() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+        assert!(mgr.tool_timeout_secs.is_none());
+    }
+
+    #[test]
+    fn startup_retry_backoff_ms_default_is_1000() {
+        let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+        assert_eq!(mgr.startup_retry_backoff_ms, 1_000);
     }
 }

@@ -63,6 +63,19 @@ pub struct RemoveResult {
     pub removed_mcp_ids: Vec<String>,
 }
 
+/// Result of a successful `plugin disable` operation.
+///
+/// When `--force` is used and dependents exist, the disable proceeds and the list of
+/// overridden dependents is returned so callers can surface a warning to the user.
+#[derive(Debug, Default)]
+pub struct DisableResult {
+    /// Names of enabled plugins that depended on the disabled plugin.
+    ///
+    /// Non-empty only when the operation was forced past a dependency guard.
+    /// Callers should warn the user that these plugins may misbehave until re-enabled.
+    pub forced_over_dependents: Vec<String>,
+}
+
 /// Installed plugin metadata as returned by `plugin list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPlugin {
@@ -937,6 +950,16 @@ impl PluginManager {
         }
         visiting.pop();
 
+        // When re-enabling a plugin as a transitive dependency (visiting is non-empty), warn so
+        // the operator knows that something they explicitly disabled was brought back.
+        if let Some(requested_by) = visiting.last() {
+            tracing::warn!(
+                plugin = %name,
+                requested_by = %requested_by,
+                "auto-enabling previously-disabled plugin as transitive dependency"
+            );
+        }
+
         // Remove the `.disabled` marker to enable this plugin.
         std::fs::remove_file(&disabled_marker).map_err(|e| PluginError::Io {
             path: disabled_marker.clone(),
@@ -949,8 +972,9 @@ impl PluginManager {
 
     /// Disable an installed plugin by creating a `.disabled` marker file.
     ///
-    /// Refuses to disable the plugin if any *enabled* plugin depends on it. The caller receives
-    /// a [`PluginError::DependencyRequired`] error with a formatted hint listing the dependents.
+    /// Refuses to disable the plugin if any *enabled* plugin depends on it, unless `force` is
+    /// `true`. When `force` is `true` the operation proceeds regardless, and the returned
+    /// [`DisableResult`] lists the dependents that were overridden so callers can warn the user.
     ///
     /// Disabling an already-disabled plugin is a no-op (idempotent).
     ///
@@ -963,9 +987,33 @@ impl PluginManager {
     /// # Errors
     ///
     /// - [`PluginError::NotFound`] — plugin is not installed.
-    /// - [`PluginError::DependencyRequired`] — at least one enabled plugin depends on this one.
+    /// - [`PluginError::DependencyRequired`] — at least one enabled plugin depends on this one
+    ///   and `force` is `false`.
     /// - [`PluginError::Io`] — the `.disabled` marker cannot be written.
-    pub fn disable(&self, name: &str) -> Result<(), PluginError> {
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use zeph_plugins::PluginManager;
+    /// # fn main() -> Result<(), zeph_plugins::PluginError> {
+    /// let mgr = PluginManager::new(
+    ///     "/tmp/plugins".into(),
+    ///     "/tmp/managed".into(),
+    ///     vec![],
+    ///     vec![],
+    /// );
+    /// // Normal disable — fails if any enabled plugin depends on "my-plugin".
+    /// mgr.disable("my-plugin", false)?;
+    ///
+    /// // Forced disable — proceeds even if dependents exist.
+    /// let result = mgr.disable("my-plugin", true)?;
+    /// if !result.forced_over_dependents.is_empty() {
+    ///     eprintln!("Warning: disabled despite dependents: {:?}", result.forced_over_dependents);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn disable(&self, name: &str, force: bool) -> Result<DisableResult, PluginError> {
         validate_plugin_name(name)?;
         let plugin_dir = self.plugins_dir.join(name);
         if !plugin_dir.exists() {
@@ -974,12 +1022,27 @@ impl PluginManager {
             });
         }
 
-        self.guard_no_dependents(name)?;
+        let forced_over_dependents = if force {
+            let dependents = self.dependents_of(name);
+            if !dependents.is_empty() {
+                tracing::warn!(
+                    plugin = %name,
+                    dependents = ?dependents,
+                    "force-disabling plugin that has enabled dependents"
+                );
+            }
+            dependents
+        } else {
+            self.guard_no_dependents(name)?;
+            Vec::new()
+        };
 
         // Already disabled — nothing to do.
         let disabled_marker = plugin_dir.join(".disabled");
         if disabled_marker.exists() {
-            return Ok(());
+            return Ok(DisableResult {
+                forced_over_dependents,
+            });
         }
 
         std::fs::write(&disabled_marker, b"").map_err(|e| PluginError::Io {
@@ -987,8 +1050,10 @@ impl PluginManager {
             source: e,
         })?;
 
-        tracing::info!(plugin = %name, "plugin disabled");
-        Ok(())
+        tracing::info!(plugin = %name, force, "plugin disabled");
+        Ok(DisableResult {
+            forced_over_dependents,
+        })
     }
 
     /// Returns the names of all **enabled** plugins that declare `name` as a dependency.
@@ -3252,7 +3317,7 @@ path = "skills/my-skill"
             vec![],
             vec![],
         );
-        let err = mgr.disable("base").unwrap_err();
+        let err = mgr.disable("base", false).unwrap_err();
         assert!(
             matches!(err, PluginError::DependencyRequired { ref name, .. } if name == "base"),
             "expected DependencyRequired, got {err:?}"
@@ -3270,7 +3335,7 @@ path = "skills/my-skill"
             vec![],
             vec![],
         );
-        mgr.disable("base").unwrap();
+        mgr.disable("base", false).unwrap();
         assert!(plugins_dir.path().join("base").join(".disabled").exists());
         mgr.enable("base").unwrap();
         assert!(!plugins_dir.path().join("base").join(".disabled").exists());
@@ -3287,9 +3352,9 @@ path = "skills/my-skill"
             vec![],
             vec![],
         );
-        mgr.disable("base").unwrap();
+        mgr.disable("base", false).unwrap();
         // Second disable must be a no-op, not an error.
-        mgr.disable("base").unwrap();
+        mgr.disable("base", false).unwrap();
     }
 
     #[test]
@@ -3467,6 +3532,69 @@ path = "skills/my-skill"
         assert!(
             matches!(err, PluginError::InvalidName { .. }),
             "expected InvalidName for malformed dep name, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn disable_force_succeeds_despite_dependent() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "ext", &["base"]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        // Without force this would fail with DependencyRequired.
+        let result = mgr.disable("base", true).unwrap();
+        assert!(
+            result.forced_over_dependents.contains(&"ext".to_owned()),
+            "forced_over_dependents must list 'ext', got {:?}",
+            result.forced_over_dependents
+        );
+        assert!(
+            plugins_dir.path().join("base").join(".disabled").exists(),
+            "base must be disabled after force"
+        );
+    }
+
+    #[test]
+    fn disable_force_no_dependents_returns_empty_list() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "standalone", &[]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        let result = mgr.disable("standalone", true).unwrap();
+        assert!(
+            result.forced_over_dependents.is_empty(),
+            "no dependents means forced_over_dependents must be empty"
+        );
+    }
+
+    #[test]
+    fn disable_force_false_same_as_no_force() {
+        let plugins_dir = tempfile::tempdir().unwrap();
+        let managed_dir = tempfile::tempdir().unwrap();
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "base", &[]);
+        install_plugin_with_deps(plugins_dir.path(), managed_dir.path(), "ext", &["base"]);
+        let mgr = PluginManager::new(
+            plugins_dir.path().to_path_buf(),
+            managed_dir.path().to_path_buf(),
+            vec![],
+            vec![],
+        );
+        // force=false with dependents must still refuse.
+        let err = mgr.disable("base", false).unwrap_err();
+        assert!(
+            matches!(err, PluginError::DependencyRequired { .. }),
+            "expected DependencyRequired with force=false, got {err:?}"
         );
     }
 

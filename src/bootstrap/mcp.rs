@@ -82,7 +82,11 @@ pub fn create_mcp_manager_with_vault(
         config.mcp.max_instructions_bytes,
     )
     .with_lock_tool_list(config.mcp.lock_tool_list)
-    .with_max_connect_attempts(config.mcp.max_connect_attempts);
+    .with_max_connect_attempts(config.mcp.max_connect_attempts)
+    .with_startup_retry_backoff_ms(config.mcp.startup_retry_backoff_ms);
+    if let Some(secs) = config.mcp.tool_timeout_secs {
+        manager = manager.with_tool_timeout_secs(secs);
+    }
 
     // Register OAuth credential stores
     for s in &config.mcp.servers {
