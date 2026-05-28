@@ -1747,7 +1747,7 @@ mod tests {
     }
 
     /// Verify bounded channel drop semantics: filling the 16-slot channel and sending a 17th
-    /// event returns TrySendError::Full (no panic, no block). The receiver drains exactly 16
+    /// event returns `TrySendError::Full` (no panic, no block). The receiver drains exactly 16
     /// items — the 17th is dropped, implementing latest-wins / oldest-drop behaviour.
     #[test]
     fn tool_refresh_channel_full_drops_overflow_without_panic() {
