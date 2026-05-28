@@ -60,7 +60,7 @@ impl<C: Channel> super::Agent<C> {
         let extract_provider =
             self.resolve_background_provider(learning_cfg.trace_extraction_provider.as_str());
         let embed_provider =
-            self.resolve_background_provider(self.services.skill.embedding_model.as_str());
+            self.resolve_background_provider(learning_cfg.trace_extraction_embed_provider.as_str());
 
         let Some(ref output_dir) = self.services.skill.managed_dir else {
             tracing::debug!("trace_extraction: no managed_dir configured, skipping");

@@ -13,6 +13,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on Drop via `JoinHandle` ownership semantics. Slash-command registration spawn is intentionally
   fire-and-forget (`let _handle`) with a doc comment explaining non-fatal failure semantics
   (closes #4493).
+- `zeph-skills`: `trace_extractor` — `ensure_closed_frontmatter` now detects the closing `---`
+  delimiter via a line-exact match (`lines().any(|l| l.trim() == "---")`) instead of a substring
+  search; previously, `---` embedded in a YAML field value (e.g. `description: "see spec ---
+  section 3"`) incorrectly suppressed the repair, causing all candidates to fail with "invalid
+  skill: unclosed frontmatter" (closes #4495).
+- `zeph-skills`: `trace_extractor` extraction prompt updated with an explicit frontmatter
+  open/close `---` example to guide the LLM toward well-formed output (closes #4495).
+- `zeph-config`: add `trace_extraction_embed_provider` field to `LearningConfig`; `trace_extraction`
+  now resolves the embed provider by name from `[[llm.providers]]` instead of passing
+  `embedding_model` (a model-ID string) as a provider name, which always triggered a fallback
+  warning and used the primary text provider for embeddings (closes #4494).
 
 ### Added
 
