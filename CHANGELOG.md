@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `specs/062-context-adaptive-memory/`: formal specification package for Context-Adaptive Memory (CAM)
+  subsystem — three-level fidelity (Full/Compressed/Placeholder) via `ContextFidelity` enum in
+  `zeph-common`, heuristic `FidelityScorer` combining temporal decay + role importance + keyword
+  overlap + plan-tool relevance, proactive AgeMem regrade trigger before context fills,
+  `PlannedToolHint` struct for PAACE plan-aware context retention. Covers GitHub #4016, #4017, #4018.
+  MVP (v0.21): heuristic scoring only; RL training pipeline and orchestration wiring deferred.
+
 - `zeph-skills`: `promoter` module — pure-logic helpers for `AutoSkill A6` heuristic promotion:
   `compute_batch_hash` (BLAKE3, order-independent), `build_promotion_prompt`, `parse_promotion_response`,
   `PromotionRecommendation` enum (`BodyEnrichment`, `NewSkill`, `None`). No async/DB/LLM dependencies.

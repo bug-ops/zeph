@@ -44,6 +44,7 @@ Spec IDs (001–044) follow a logical grouping:
 - **052**: Gonka.ai Phase 2 — native network transport (GonkaProvider, ECDSA signing, EndpointPool, chat_with_tools, chat_typed) [implemented]
 - **053**: SpeculationEngine — speculative tool execution (SSE decoding path, PASTE skill activation, ToolStartEvent{speculative:true})
 - **055**: Cocoon distributed compute integration — CocoonProvider, CocoonClient, `zeph cocoon doctor`, TUI palette entries, vault key ZEPH_COCOON_ACCESS_HASH
+- **062**: Context-Adaptive Memory (CAM) — three-level fidelity (Full/Compressed/Placeholder), heuristic FidelityScorer, proactive AgeMem regrade, PlannedToolHint for PAACE; GitHub #4016, #4017, #4018
 
 ---
 
@@ -142,3 +143,4 @@ Spec IDs (001–044) follow a logical grouping:
 | `059-autoskill-bm25-hybrid/spec.md` | AutoSkill A4: wire existing `bm25.rs` into `SkillMatcher` with alpha-weighted fusion (`score = hybrid_alpha * cosine + (1-hybrid_alpha) * bm25_normalized`); BM25 index built at construction and rebuilt on hot-reload; `hybrid_alpha` config field; GitHub #4450 | `zeph-skills` |
 | `060-autoskill-trigger-sets/spec.md` | AutoSkill A5: embed `triggers` SKILL.md frontmatter entries as additional retrieval vectors; max-cosine aggregation across triggers; `trigger_weight` blends trigger and description scores; `max_triggers_per_skill` cap; in-memory only (v1); GitHub #4451 | `zeph-skills` |
 | `061-autoskill-heuristic-promotion/spec.md` | AutoSkill A6: periodic background job promotes ERL heuristics to quarantined SKILL.md drafts when heuristic count ≥ `heuristic_promotion_threshold`; LLM evaluates body-enrichment vs. new-skill vs. none; idempotency via `skill_heuristic_promotions` table; `heuristic_promotion_provider` config field; GitHub #4452 | `zeph-skills` |
+| `062-context-adaptive-memory/spec.md` | Context-Adaptive Memory (CAM): three-level fidelity (Full/Compressed/Placeholder), heuristic FidelityScorer, proactive AgeMem regrade trigger, PlannedToolHint struct for PAACE DAG lookahead; MVP: heuristic scoring only; GitHub #4016, #4017, #4018 | `zeph-common`, `zeph-context`, `zeph-agent-context` |
