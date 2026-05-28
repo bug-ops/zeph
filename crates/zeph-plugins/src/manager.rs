@@ -749,7 +749,7 @@ impl PluginManager {
     #[tracing::instrument(name = "plugins.manager.update_one", skip_all, fields(plugin = %plugin.name))]
     async fn update_one_plugin(&self, plugin: &InstalledPlugin) -> AutoUpdateStatus {
         let source_path = plugin.path.join(".plugin-source.toml");
-        let Some(source) = read_plugin_source(&source_path) else {
+        let Some(source) = read_plugin_source(&source_path).await else {
             return AutoUpdateStatus::NoSource;
         };
 
@@ -1183,8 +1183,8 @@ impl PluginManager {
 /// Read `.plugin-source.toml` from `path` and return it, or `None` on any failure.
 ///
 /// Failures are logged as debug — missing sidecar is normal for local-install plugins.
-fn read_plugin_source(path: &std::path::Path) -> Option<PluginSource> {
-    let text = std::fs::read_to_string(path).ok()?;
+async fn read_plugin_source(path: &std::path::Path) -> Option<PluginSource> {
+    let text = tokio::fs::read_to_string(path).await.ok()?;
     match toml::from_str::<PluginSource>(&text) {
         Ok(s) => Some(s),
         Err(e) => {

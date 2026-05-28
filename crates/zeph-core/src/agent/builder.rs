@@ -1184,6 +1184,7 @@ impl<C: Channel> Agent<C> {
         provider: zeph_llm::any::AnyProvider,
     ) -> Self {
         use zeph_llm::provider::LlmProvider;
+        const STARTUP_EMBED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
         if !config.enabled {
             return self;
@@ -1206,18 +1207,25 @@ impl<C: Channel> Agent<C> {
         let mut embeddings = Vec::with_capacity(filterable.len());
         for (id, description) in filterable {
             let text = format!("{id}: {description}");
-            match provider.embed(&text).await {
-                Ok(emb) => {
+            match tokio::time::timeout(STARTUP_EMBED_TIMEOUT, provider.embed(&text)).await {
+                Ok(Ok(emb)) => {
                     embeddings.push(zeph_tools::ToolEmbedding {
                         tool_id: id.as_str().into(),
                         embedding: emb,
                     });
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::info!(
                         provider = provider.name(),
                         "tool schema filter disabled: embedding not supported \
                         by provider ({e:#})"
+                    );
+                    return self;
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        provider = provider.name(),
+                        "tool schema filter disabled: embedding provider timed out during startup"
                     );
                     return self;
                 }

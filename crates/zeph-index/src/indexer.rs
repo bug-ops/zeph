@@ -292,7 +292,19 @@ impl CodeIndexer {
 
     #[tracing::instrument(name = "index.indexer.ensure_collection", skip_all)]
     async fn ensure_collection_for_provider(&self) -> Result<()> {
-        let probe = self.provider.embed("probe").await?;
+        const STARTUP_EMBED_TIMEOUT_SECS: u64 = 15;
+        let probe = tokio::time::timeout(
+            Duration::from_secs(STARTUP_EMBED_TIMEOUT_SECS),
+            self.provider.embed("probe"),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                timeout_secs = STARTUP_EMBED_TIMEOUT_SECS,
+                "embedding provider timed out during startup"
+            );
+            crate::error::IndexError::EmbedTimeout(STARTUP_EMBED_TIMEOUT_SECS)
+        })??;
         let vector_size = u64::try_from(probe.len())?;
         self.store.ensure_collection(vector_size).await
     }
@@ -888,6 +900,57 @@ mod tests {
         }
         // Guard dropped — flag must be false.
         assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    /// Verify that `ensure_collection_for_provider` returns `IndexError::EmbedTimeout`
+    /// when the embedding provider exceeds the 15-second startup timeout.
+    ///
+    /// Uses `tokio::time::pause` + `advance` to avoid a real 15-second wall-clock wait.
+    /// DB is initialised before pausing time to avoid SQLite pool timeout under paused clock.
+    #[tokio::test]
+    async fn ensure_collection_timeout_returns_embed_timeout_error() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+
+        // Pause time only after DB initialisation to avoid SQLite PoolTimedOut.
+        tokio::time::pause();
+
+        // embed_delay_ms must exceed the 15 s timeout; we pair it with time::advance
+        // so the test completes instantly in wall-clock time.
+        let slow_provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default()
+                .with_embed_delay(20_000) // 20 s > 15 s timeout
+                .with_embedding(vec![0.0_f32; 384]),
+        ));
+
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let indexer = CodeIndexer::new(store, slow_provider, IndexerConfig::default());
+
+        // Advance mock time past the 15-second timeout so tokio::time::timeout fires.
+        let drive = tokio::spawn(async {
+            tokio::time::advance(std::time::Duration::from_secs(16)).await;
+        });
+
+        let result = indexer.ensure_collection_for_provider().await;
+        drive.await.unwrap();
+
+        match result {
+            Err(crate::error::IndexError::EmbedTimeout(secs)) => {
+                assert_eq!(secs, 15, "timeout value must be the configured 15 s");
+            }
+            other => panic!("expected IndexError::EmbedTimeout, got: {other:?}"),
+        }
     }
 
     /// Verify that `compare_exchange` rejects a second caller while the flag is set.
