@@ -23,6 +23,8 @@ const EDIT_THROTTLE: Duration = Duration::from_millis(1500);
 pub struct DiscordChannel {
     rx: mpsc::Receiver<IncomingMessage>,
     rest: rest::RestClient,
+    /// Gateway WebSocket listener. Kept alive for the duration of the channel session.
+    _gateway_handle: tokio::task::JoinHandle<()>,
     channel_id: Option<String>,
     allowed_user_ids: Vec<String>,
     allowed_role_ids: Vec<String>,
@@ -51,16 +53,18 @@ impl DiscordChannel {
         allowed_role_ids: Vec<String>,
         allowed_channel_ids: Vec<String>,
     ) -> Self {
-        let (_gateway_handle, rx) = gateway::spawn_gateway(token.clone());
+        let (gateway_handle, rx) = gateway::spawn_gateway(token.clone());
         let rest = rest::RestClient::new(token);
-        // Register slash commands asynchronously; failure is non-fatal.
+        // Register slash commands asynchronously; failure is non-fatal and does not
+        // affect message delivery, so the handle is intentionally not tracked.
         let rest_for_reg = rest.clone();
-        tokio::spawn(async move {
+        let _handle = tokio::spawn(async move {
             rest_for_reg.register_slash_commands().await;
         });
         Self {
             rx,
             rest,
+            _gateway_handle: gateway_handle,
             channel_id: None,
             allowed_user_ids,
             allowed_role_ids,
@@ -346,6 +350,7 @@ mod tests {
         DiscordChannel {
             rx,
             rest,
+            _gateway_handle: tokio::spawn(std::future::pending()),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_role_ids: vec![],
@@ -364,55 +369,55 @@ mod tests {
         }
     }
 
-    #[test]
-    fn is_authorized_allows_all_when_empty_lists() {
+    #[tokio::test]
+    async fn is_authorized_allows_all_when_empty_lists() {
         let ch = make_channel();
         let msg = make_incoming("user1", "ch1", vec![]);
         assert!(ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_rejects_channel_not_in_allowlist() {
+    #[tokio::test]
+    async fn is_authorized_rejects_channel_not_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_channel_ids = vec!["ch-allowed".into()];
         let msg = make_incoming("user1", "ch-other", vec![]);
         assert!(!ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_allows_channel_in_allowlist() {
+    #[tokio::test]
+    async fn is_authorized_allows_channel_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_channel_ids = vec!["ch1".into()];
         let msg = make_incoming("user1", "ch1", vec![]);
         assert!(ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_allows_user_in_allowlist() {
+    #[tokio::test]
+    async fn is_authorized_allows_user_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_user_ids = vec!["user1".into()];
         let msg = make_incoming("user1", "ch1", vec![]);
         assert!(ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_rejects_user_not_in_allowlist() {
+    #[tokio::test]
+    async fn is_authorized_rejects_user_not_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_user_ids = vec!["user-other".into()];
         let msg = make_incoming("user1", "ch1", vec![]);
         assert!(!ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_allows_role_in_allowlist() {
+    #[tokio::test]
+    async fn is_authorized_allows_role_in_allowlist() {
         let mut ch = make_channel();
         ch.allowed_role_ids = vec!["admin".into()];
         let msg = make_incoming("user1", "ch1", vec!["admin".into()]);
         assert!(ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn is_authorized_rejects_when_no_matching_role_or_user() {
+    #[tokio::test]
+    async fn is_authorized_rejects_when_no_matching_role_or_user() {
         let mut ch = make_channel();
         ch.allowed_user_ids = vec!["user-other".into()];
         ch.allowed_role_ids = vec!["admin".into()];
@@ -420,14 +425,14 @@ mod tests {
         assert!(!ch.is_authorized(&msg));
     }
 
-    #[test]
-    fn buffer_should_flush_true_when_no_last_edit() {
+    #[tokio::test]
+    async fn buffer_should_flush_true_when_no_last_edit() {
         let ch = make_channel();
         assert!(ch.buffer.should_flush());
     }
 
-    #[test]
-    fn buffer_should_flush_false_within_throttle() {
+    #[tokio::test]
+    async fn buffer_should_flush_false_within_throttle() {
         let mut ch = make_channel();
         ch.buffer.push("x");
         ch.buffer.mark_flushed();
@@ -443,8 +448,8 @@ mod tests {
         assert!(buf.should_flush());
     }
 
-    #[test]
-    fn send_chunk_accumulates() {
+    #[tokio::test]
+    async fn send_chunk_accumulates() {
         let mut ch = make_channel();
         ch.buffer.push("hello ");
         ch.buffer.push("world");
@@ -466,13 +471,14 @@ mod tests {
         assert!(ch2.message_id.is_none());
     }
 
-    #[test]
-    fn try_recv_sets_channel_id() {
+    #[tokio::test]
+    async fn try_recv_sets_channel_id() {
         let (tx, rx) = mpsc::channel(16);
         let rest = rest::RestClient::new("test-token".into());
         let mut ch = DiscordChannel {
             rx,
             rest,
+            _gateway_handle: tokio::spawn(std::future::pending()),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_role_ids: vec![],
@@ -486,13 +492,14 @@ mod tests {
         assert_eq!(ch.channel_id.as_deref(), Some("ch42"));
     }
 
-    #[test]
-    fn try_recv_skips_unauthorized() {
+    #[tokio::test]
+    async fn try_recv_skips_unauthorized() {
         let (tx, rx) = mpsc::channel(16);
         let rest = rest::RestClient::new("test-token".into());
         let mut ch = DiscordChannel {
             rx,
             rest,
+            _gateway_handle: tokio::spawn(std::future::pending()),
             channel_id: None,
             allowed_user_ids: vec!["allowed-user".into()],
             allowed_role_ids: vec![],
@@ -505,8 +512,8 @@ mod tests {
         assert!(ch.try_recv().is_none());
     }
 
-    #[test]
-    fn debug_impl() {
+    #[tokio::test]
+    async fn debug_impl() {
         let ch = make_channel();
         let debug = format!("{ch:?}");
         assert!(debug.contains("DiscordChannel"));
@@ -556,6 +563,7 @@ mod tests {
         let mut ch = DiscordChannel {
             rx,
             rest,
+            _gateway_handle: tokio::spawn(std::future::pending()),
             channel_id: Some("ch1".into()),
             allowed_user_ids: vec!["allowed-user".into()],
             allowed_role_ids: vec![],

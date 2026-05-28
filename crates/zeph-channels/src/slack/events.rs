@@ -42,6 +42,10 @@ struct EventState {
 }
 
 /// Spawn the Slack Events API webhook server.
+///
+/// Returns the server's `JoinHandle` alongside the message receiver. The caller
+/// is responsible for keeping the handle alive (e.g. storing it in the owning
+/// struct) for the duration of the channel session.
 #[must_use]
 pub fn spawn_event_server(
     host: String,
@@ -50,7 +54,7 @@ pub fn spawn_event_server(
     bot_user_id: String,
     allowed_user_ids: Vec<String>,
     allowed_channel_ids: Vec<String>,
-) -> mpsc::Receiver<IncomingMessage> {
+) -> (tokio::task::JoinHandle<()>, mpsc::Receiver<IncomingMessage>) {
     let (tx, rx) = mpsc::channel(64);
     let state = EventState {
         signing_secret,
@@ -60,7 +64,7 @@ pub fn spawn_event_server(
         allowed_channel_ids,
     };
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let app = Router::new()
             .route("/slack/events", post(handle_event))
             .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
@@ -78,7 +82,7 @@ pub fn spawn_event_server(
         }
     });
 
-    rx
+    (handle, rx)
 }
 
 async fn handle_event(

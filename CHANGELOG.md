@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-channels`: track all `tokio::spawn` JoinHandles in Discord and Slack adapters — gateway
+  handle stored in `DiscordChannel`, event-server handle stored in `SlackChannel`; both are aborted
+  on Drop via `JoinHandle` ownership semantics. Slash-command registration spawn is intentionally
+  fire-and-forget (`let _handle`) with a doc comment explaining non-fatal failure semantics
+  (closes #4493).
+
 ### Added
 
 - `zeph-config`: add `dedup_threshold: f32` field to `LearningConfig` (AutoSkill A2, spec 057)
