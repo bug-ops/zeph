@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod boundary_and_classifier_tests;
+mod focus_tests;
 mod hook_block_cap_tests;
 mod native_tests;
 mod parallel_and_handle_tests;

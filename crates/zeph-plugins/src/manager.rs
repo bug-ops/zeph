@@ -840,11 +840,12 @@ impl PluginManager {
         };
         let source_dest = plugin.path.join(".plugin-source.toml");
         if let Ok(toml_str) = toml::to_string(&new_source) {
-            let _ = std::fs::write(&source_dest, toml_str);
+            let _ = tokio::fs::write(&source_dest, toml_str).await;
         }
 
         // Read the new version from the updated manifest.
-        let new_version = std::fs::read_to_string(plugin.path.join(".plugin.toml"))
+        let new_version = tokio::fs::read_to_string(plugin.path.join(".plugin.toml"))
+            .await
             .ok()
             .and_then(|s| toml::from_str::<crate::manifest::PluginManifest>(&s).ok())
             .map_or_else(|| old_version.clone(), |m| m.plugin.version);

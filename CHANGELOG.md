@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-core`: `select_messages_for_compression` now sorts indices before building `to_compress`,
+  ensuring messages are passed to the compression LLM in chronological (ascending index) order.
+  Previously, iterating a raw `HashSet<usize>` produced non-deterministic ordering (closes #4558).
+- `zeph-plugins`: replaced blocking `std::fs::write` / `std::fs::read_to_string` calls in the
+  async `update_one_plugin` with `tokio::fs` equivalents, preventing Tokio thread starvation
+  during concurrent auto-update checks (closes #4560).
+
 ### Added
 
 - `specs/062-context-adaptive-memory/`: formal specification package for Context-Adaptive Memory (CAM)

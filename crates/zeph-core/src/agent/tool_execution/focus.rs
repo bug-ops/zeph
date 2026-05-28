@@ -290,7 +290,7 @@ impl<C: Channel> Agent<C> {
     /// Returns `None` (with the compressible count) when the history is too short (fewer than
     /// `preserve_tail + 4` compressible messages). Returns `Some` with the removal set and
     /// the messages to summarize when compression can proceed.
-    fn select_messages_for_compression(
+    pub(crate) fn select_messages_for_compression(
         &self,
         preserve_tail: usize,
     ) -> Result<
@@ -320,7 +320,9 @@ impl<C: Channel> Agent<C> {
             .copied()
             .collect();
 
-        let to_compress: Vec<zeph_llm::provider::Message> = to_remove_indices
+        let mut sorted_indices: Vec<usize> = to_remove_indices.iter().copied().collect();
+        sorted_indices.sort_unstable();
+        let to_compress: Vec<zeph_llm::provider::Message> = sorted_indices
             .iter()
             .map(|&i| self.msg.messages[i].clone())
             .collect();
