@@ -906,7 +906,7 @@ mod tests {
     /// when the embedding provider exceeds the 15-second startup timeout.
     ///
     /// Uses `tokio::time::pause` + `advance` to avoid a real 15-second wall-clock wait.
-    /// DB is initialised before pausing time to avoid SQLite pool timeout under paused clock.
+    /// DB is initialised before pausing time to avoid `SQLite` pool timeout under paused clock.
     /// Must run serially — `tokio::time::pause` is process-global and breaks parallel tests.
     #[serial_test::serial]
     #[tokio::test]
