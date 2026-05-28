@@ -314,6 +314,7 @@ async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
         enabled: true,
         sources: vec![],
         model: "mock".to_owned(),
+        timeout_ms: 30_000,
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -373,6 +374,7 @@ async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
         enabled: true,
         sources: vec![],
         model: "mock".to_owned(),
+        timeout_ms: 30_000,
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 

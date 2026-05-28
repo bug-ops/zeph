@@ -260,6 +260,14 @@ pub struct QuarantineConfig {
     /// Provider name passed to `create_named_provider`.
     #[serde(default = "default_quarantine_model")]
     pub model: String,
+
+    /// Maximum time in milliseconds to wait for the quarantine LLM to respond.
+    ///
+    /// When the LLM does not respond within this window, `extract_facts` returns a timeout
+    /// error so the agent can recover rather than stalling indefinitely.
+    /// Defaults to 30 000 ms (30 s).
+    #[serde(default = "default_quarantine_timeout_ms")]
+    pub timeout_ms: u64,
 }
 
 fn default_quarantine_sources() -> Vec<String> {
@@ -270,12 +278,17 @@ fn default_quarantine_model() -> String {
     "claude".to_owned()
 }
 
+fn default_quarantine_timeout_ms() -> u64 {
+    30_000
+}
+
 impl Default for QuarantineConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             sources: default_quarantine_sources(),
             model: default_quarantine_model(),
+            timeout_ms: default_quarantine_timeout_ms(),
         }
     }
 }

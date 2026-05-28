@@ -20,6 +20,7 @@
 //! 4. Insert the summary (not the raw content) into message history.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
@@ -51,7 +52,10 @@ Do not include any preamble, explanations, or meta-commentary — only the extra
 pub enum QuarantineError {
     /// The quarantine LLM call failed (network error, provider error, etc.).
     #[error("quarantine LLM call failed: {0}")]
-    LlmError(#[from] zeph_llm::LlmError),
+    LlmError(zeph_llm::LlmError),
+    /// The quarantine LLM did not respond within the configured `timeout_ms`.
+    #[error("quarantine LLM call timed out")]
+    Timeout,
     /// The quarantine LLM returned an empty or whitespace-only response.
     #[error("quarantine response was empty")]
     EmptyResponse,
@@ -86,6 +90,7 @@ pub enum QuarantineError {
 pub struct QuarantinedSummarizer {
     provider: AnyProvider,
     enabled_sources: HashSet<ContentSourceKind>,
+    timeout: Duration,
 }
 
 impl QuarantinedSummarizer {
@@ -120,6 +125,7 @@ impl QuarantinedSummarizer {
         Self {
             provider,
             enabled_sources,
+            timeout: Duration::from_millis(config.timeout_ms),
         }
     }
 
@@ -147,10 +153,15 @@ impl QuarantinedSummarizer {
     /// If injection patterns are found in the quarantine output, they are recorded as
     /// flags in the re-spotlighted result.
     ///
+    /// The call is bounded by the `timeout_ms` field from [`QuarantineConfig`].  When
+    /// the LLM provider does not respond within that window the method returns
+    /// [`QuarantineError::Timeout`] so the agent can recover rather than stalling.
+    ///
     /// # Errors
     ///
-    /// Returns `QuarantineError::LlmError` if the provider call fails, or
-    /// `QuarantineError::EmptyResponse` if the provider returns an empty string.
+    /// - [`QuarantineError::Timeout`] — the provider did not respond within `timeout_ms`.
+    /// - [`QuarantineError::LlmError`] — the provider call failed (network error, etc.).
+    /// - [`QuarantineError::EmptyResponse`] — the provider returned an empty string.
     pub async fn extract_facts(
         &self,
         input: &SanitizedContent,
@@ -164,7 +175,16 @@ impl QuarantinedSummarizer {
             Message::from_legacy(Role::User, raw),
         ];
 
-        let response = self.provider.chat(&messages).await?;
+        let response = tokio::time::timeout(self.timeout, self.provider.chat(&messages))
+            .await
+            .map_err(|_| {
+                tracing::warn!(
+                    timeout_ms = self.timeout.as_millis(),
+                    "quarantine LLM call timed out"
+                );
+                QuarantineError::Timeout
+            })?
+            .map_err(QuarantineError::LlmError)?;
         let facts = response.trim().to_owned();
 
         if facts.is_empty() {
@@ -255,6 +275,7 @@ mod tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.sources, vec!["web_scrape", "a2a_message"]);
         assert_eq!(cfg.model, "claude");
+        assert_eq!(cfg.timeout_ms, 30_000);
     }
 
     #[test]
@@ -263,6 +284,7 @@ mod tests {
             enabled: true,
             sources: vec!["web_scrape".to_owned(), "mcp_response".to_owned()],
             model: "ollama".to_owned(),
+            timeout_ms: 15_000,
         };
         let toml_str = toml::to_string(&cfg).expect("serialize");
         let back: QuarantineConfig = toml::from_str(&toml_str).expect("deserialize");
@@ -474,6 +496,32 @@ spotlight_untrusted = true
         assert!(qs.should_quarantine(ContentSourceKind::WebScrape));
         // bogus_source was skipped — nothing else should match
         assert!(!qs.should_quarantine(ContentSourceKind::A2aMessage));
+    }
+
+    // --- timeout ---
+
+    #[tokio::test]
+    async fn extract_facts_returns_timeout_on_stalled_provider() {
+        use zeph_llm::mock::MockProvider;
+
+        // Provider delays 2 s; quarantine timeout is 50 ms — must return Timeout.
+        let provider = AnyProvider::Mock(MockProvider::default().with_delay(2_000));
+        let cfg = QuarantineConfig {
+            timeout_ms: 50,
+            ..Default::default()
+        };
+        let qs = QuarantinedSummarizer::new(provider, &cfg);
+        let sanitized = default_sanitizer()
+            .sanitize("content", ContentSource::new(ContentSourceKind::WebScrape));
+        let content_sanitizer = default_sanitizer();
+        let err = qs
+            .extract_facts(&sanitized, &content_sanitizer)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QuarantineError::Timeout),
+            "expected Timeout, got {err:?}"
+        );
     }
 
     // --- from_str_opt ---

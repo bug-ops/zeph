@@ -186,6 +186,7 @@ async fn sanitize_tool_output_quarantine_web_scrape_invoked() {
         enabled: true,
         sources: vec!["web_scrape".to_owned()],
         model: "claude".to_owned(),
+        timeout_ms: 30_000,
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -243,6 +244,7 @@ async fn sanitize_tool_output_quarantine_fallback_on_error() {
         enabled: true,
         sources: vec!["web_scrape".to_owned()],
         model: "claude".to_owned(),
+        timeout_ms: 30_000,
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
@@ -300,6 +302,7 @@ async fn sanitize_tool_output_quarantine_skips_shell_tool() {
         enabled: true,
         sources: vec!["web_scrape".to_owned()], // only web_scrape, NOT shell
         model: "claude".to_owned(),
+        timeout_ms: 30_000,
     };
     let qs = QuarantinedSummarizer::new(quarantine_provider, &qcfg);
 
