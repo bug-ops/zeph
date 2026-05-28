@@ -387,6 +387,7 @@ async fn run_turn(
     let response_text = match &response {
         ChatResponse::Text(t) => t.clone(),
         ChatResponse::ToolUse { text, .. } => text.as_deref().unwrap_or_default().to_owned(),
+        _ => String::new(),
     };
 
     *turns += 1;
@@ -601,6 +602,7 @@ async fn handle_tool_step(
             messages.push(Message::from_parts(Role::User, result_parts));
             false
         }
+        _ => true,
     }
 }
 

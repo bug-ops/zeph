@@ -696,6 +696,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     }
                     messages.push(Message::from_parts(Role::User, result_parts));
                 }
+                _ => {}
             }
         }
 

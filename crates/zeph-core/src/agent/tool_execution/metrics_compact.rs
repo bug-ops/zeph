@@ -57,6 +57,7 @@ impl<C: Channel> Agent<C> {
                     .sum();
                 (text_tokens + calls_tokens) as u64
             }
+            _ => 0,
         };
         let (final_prompt, final_completion) = self
             .provider

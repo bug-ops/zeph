@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 /// Errors that can occur during plugin install, remove, or list operations.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum PluginError {
     /// The plugin manifest (`plugin.toml`) is missing or cannot be parsed.

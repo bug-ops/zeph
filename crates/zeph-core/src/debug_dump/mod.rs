@@ -581,7 +581,6 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
         {
             None
         }
-        MessagePart::ThinkingBlock { .. } | MessagePart::RedactedThinkingBlock { .. } => None,
         MessagePart::Compaction { summary } => {
             Some(serde_json::json!({ "type": "compaction", "summary": summary }))
         }
@@ -593,6 +592,7 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
                 "data": base64::engine::general_purpose::STANDARD.encode(&img.data),
             },
         })),
+        _ => None,
     }
 }
 

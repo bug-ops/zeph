@@ -204,7 +204,7 @@ impl<C: Channel> Agent<C> {
             .await
         {
             zeph_skills::MatchResult::Scored(v) => v,
-            zeph_skills::MatchResult::InfraError => Vec::new(),
+            _ => Vec::new(),
         };
         if let Some(best) = scored.first()
             && best.score > 0.85

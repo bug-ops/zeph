@@ -322,15 +322,18 @@ impl<C: Channel> Agent<C> {
         {
             let mut thinking_parts: Vec<MessagePart> = blocks
                 .into_iter()
-                .map(|b| match b {
+                .filter_map(|b| match b {
                     ThinkingBlock::Thinking {
                         thinking,
                         signature,
-                    } => MessagePart::ThinkingBlock {
+                    } => Some(MessagePart::ThinkingBlock {
                         thinking,
                         signature,
-                    },
-                    ThinkingBlock::Redacted { data } => MessagePart::RedactedThinkingBlock { data },
+                    }),
+                    ThinkingBlock::Redacted { data } => {
+                        Some(MessagePart::RedactedThinkingBlock { data })
+                    }
+                    _ => None,
                 })
                 .collect();
             // Thinking blocks must appear before text/tool_use in the assistant message.

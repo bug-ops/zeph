@@ -572,8 +572,8 @@ impl<C: Channel> Agent<C> {
                 )
                 .await;
             let (mut scored, infra_error) = match match_result {
-                zeph_skills::MatchResult::InfraError => (Vec::new(), true),
                 zeph_skills::MatchResult::Scored(v) => (v, false),
+                _ => (Vec::new(), true),
             };
 
             if !scored.is_empty() {

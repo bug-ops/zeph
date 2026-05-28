@@ -99,6 +99,7 @@ static UNICODE_BYPASS_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// assert_eq!(events.len(), 1);
 /// assert!(matches!(&events[0], ExfiltrationEvent::MarkdownImageBlocked { url } if url.contains("evil.com")));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExfiltrationEvent {
     /// A markdown image with an external URL was stripped from LLM output.

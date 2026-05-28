@@ -40,6 +40,7 @@ pub use traits::agent::{AgentAccess, NullAgent};
 ///
 /// Mirrors `zeph_core::goal::GoalStatus`. Defined here to avoid a dependency cycle
 /// (`zeph-commands` cannot depend on `zeph-core`).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalStatusView {
@@ -93,6 +94,7 @@ use std::pin::Pin;
 ///
 /// Replaces the heterogeneous return types of earlier command dispatch with a unified,
 /// exhaustive enum.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum CommandOutput {
     /// Send a message to the user via the channel.

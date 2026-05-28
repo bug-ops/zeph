@@ -390,7 +390,7 @@ mod tests {
                 assert_eq!(tool_calls[0].id, "toolu_01");
                 assert_eq!(tool_calls[0].name, "bash");
             }
-            other @ ChatResponse::Text(_) => panic!("expected ToolUse, got {other:?}"),
+            other => panic!("expected ToolUse, got {other:?}"),
         }
     }
 

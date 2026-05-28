@@ -946,6 +946,7 @@ impl DebugState {
                     text.as_deref().unwrap_or("")
                 )
             }
+            _ => String::new(),
         };
         let text = if pii_filter.is_enabled() {
             pii_filter.scrub(&raw).into_owned()

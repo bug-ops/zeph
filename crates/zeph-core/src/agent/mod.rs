@@ -1231,18 +1231,16 @@ impl<C: Channel> Agent<C> {
                 let _ = self.channel.flush_chunks().await;
                 DispatchFlow::Break
             }
-            Some(Ok(
-                zeph_commands::CommandOutput::Continue | zeph_commands::CommandOutput::Silent,
-            )) => {
-                let _ = self.channel.flush_chunks().await;
-                DispatchFlow::Continue
-            }
             Some(Ok(zeph_commands::CommandOutput::Message(msg))) => {
                 let _ = self.channel.send(&msg).await;
                 let _ = self.channel.flush_chunks().await;
                 if with_learning {
                     self.maybe_trigger_post_command_learning(command).await;
                 }
+                DispatchFlow::Continue
+            }
+            Some(Ok(_)) => {
+                let _ = self.channel.flush_chunks().await;
                 DispatchFlow::Continue
             }
             Some(Err(e)) => {
@@ -3774,6 +3772,7 @@ pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
             } => 50 + thinking.len() + signature.len(),
             MessagePart::RedactedThinkingBlock { data } => data.len(),
             MessagePart::Compaction { summary } => summary.len(),
+            _ => 0,
         })
         .sum()
 }

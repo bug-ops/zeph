@@ -109,6 +109,7 @@ impl ChatExtras {
 ///
 /// Consumers should match all variants: future providers may emit non-`Content` chunks
 /// that callers must not silently drop (e.g. thinking blocks that must be echoed back).
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
     /// Regular response text.
@@ -148,6 +149,7 @@ pub struct ToolUseRequest {
 /// Both variants must be echoed verbatim in the next turn's `assistant` message so
 /// the API can correctly attribute reasoning across turns. Never modify or discard
 /// these blocks between turns.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ThinkingBlock {
     /// Visible reasoning token with its cryptographic signature.
@@ -167,6 +169,7 @@ pub const MAX_TOKENS_TRUNCATION_MARKER: &str = "max_tokens limit reached";
 /// 2. Append an `assistant` message with the original `tool_calls` and any `thinking_blocks`.
 /// 3. Append a `user` message containing [`MessagePart::ToolResult`] entries.
 /// 4. Call `chat_with_tools` again to continue the conversation.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ChatResponse {
     /// Model produced text output only.
@@ -265,6 +268,7 @@ pub enum Role {
 ///   multi-turn requests so the API can correctly attribute reasoning.
 /// - `Compaction` parts must be preserved verbatim; the API uses them to prune
 ///   prior history on subsequent turns (Claude compact-2026-01-12 beta).
+#[non_exhaustive]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessagePart {

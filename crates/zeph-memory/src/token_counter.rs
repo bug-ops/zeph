@@ -191,6 +191,9 @@ impl TokenCounter {
 
             // Compaction summary is sent back verbatim to the API.
             MessagePart::Compaction { summary } => self.count_tokens(summary),
+
+            // Forward-compatibility: unknown future variants have no known token count.
+            _ => 0,
         }
     }
 

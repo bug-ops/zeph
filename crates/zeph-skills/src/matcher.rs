@@ -77,6 +77,7 @@ pub struct ScoredMatch {
 /// - [`MatchResult::Scored`] — matcher produced candidates (the vec may be empty when no skills
 ///   are loaded or all fall below the caller's threshold); the `min_injection_score` gate must be
 ///   respected.
+#[non_exhaustive]
 #[must_use]
 pub enum MatchResult {
     /// Infrastructure failure — embedding call timed out or backend returned an error.
@@ -559,6 +560,7 @@ impl SkillMatcher {
 ///
 /// `InMemory` uses a pre-computed in-process embedding index; `Qdrant` delegates to a
 /// remote Qdrant vector store and requires the `qdrant` feature to be enabled.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum SkillMatcherBackend {
     /// In-process embedding index built at startup from skill descriptions.

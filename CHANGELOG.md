@@ -27,6 +27,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   propagated through `parse_frontmatter`, `load_skill_meta_from_str`, and `load_skill_meta`.
 - CLI: `zeph skills promote-heuristics [--skill <name>]` subcommand for manual promotion dry-run.
 
+### Changed
+
+- `zeph-llm`: mark `StreamChunk`, `ThinkingBlock`, `ChatResponse`, `MessagePart`, and `LlmError`
+  as `#[non_exhaustive]` — adding new variants in the future will not be a breaking change for
+  downstream crates (closes #4515, #4517).
+- `zeph-commands`: mark `CommandOutput` and `GoalStatusView` as `#[non_exhaustive]` (closes #4517).
+- `zeph-plugins`: mark `PluginError` as `#[non_exhaustive]` (closes #4517).
+- `zeph-sanitizer`: mark `ExfiltrationEvent` as `#[non_exhaustive]` (closes #4517).
+- `zeph-skills`: mark `MatchResult` and `SkillMatcherBackend` as `#[non_exhaustive]` (closes #4520).
+
 ### Fixed
 
 - `zeph-tools`: convert remaining 6 `FileExecutor` handlers from blocking `std::fs` to non-blocking

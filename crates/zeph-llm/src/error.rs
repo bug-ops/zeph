@@ -10,6 +10,7 @@
 /// [`is_invalid_input`](Self::is_invalid_input),
 /// [`is_beta_header_rejected`](Self::is_beta_header_rejected)) to classify errors
 /// before deciding whether to retry, fall back, or propagate.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
     /// Underlying HTTP transport error (connection refused, TLS failure, etc.).
