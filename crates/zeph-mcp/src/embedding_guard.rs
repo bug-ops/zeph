@@ -13,6 +13,7 @@
 //! first-line defense (regex patterns in `sanitize.rs` cover that case).
 
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use zeph_common::ToolName;
 
@@ -56,6 +57,9 @@ struct CentroidState {
     sample_count: usize,
 }
 
+/// Default timeout for embedding computation inside the background anomaly-check task.
+const DEFAULT_EMBED_TIMEOUT_MS: u64 = 5000;
+
 /// Detects anomalous MCP tool output via embedding distance from a per-server centroid.
 ///
 /// `check_async()` is fire-and-forget: it returns immediately and sends results via
@@ -70,6 +74,8 @@ pub struct EmbeddingAnomalyGuard {
     /// Caps the per-sample update rate once the centroid is established, preventing
     /// slow boiling-frog drift attacks. Default: 0.01 (1% shift per clean sample max).
     ema_floor: f32,
+    /// Maximum milliseconds to wait for the embedding computation. `0` means no timeout.
+    embed_timeout_ms: u64,
     result_tx: mpsc::UnboundedSender<EmbeddingGuardEvent>,
 }
 
@@ -79,6 +85,7 @@ impl std::fmt::Debug for EmbeddingAnomalyGuard {
             .field("threshold", &self.threshold)
             .field("min_samples", &self.min_samples)
             .field("ema_floor", &self.ema_floor)
+            .field("embed_timeout_ms", &self.embed_timeout_ms)
             .finish_non_exhaustive()
     }
 }
@@ -106,9 +113,17 @@ impl EmbeddingAnomalyGuard {
             threshold,
             min_samples,
             ema_floor,
+            embed_timeout_ms: DEFAULT_EMBED_TIMEOUT_MS,
             result_tx: tx,
         };
         (guard, rx)
+    }
+
+    /// Override the embedding timeout. `0` disables the timeout.
+    #[must_use]
+    pub fn with_embed_timeout(mut self, timeout_ms: u64) -> Self {
+        self.embed_timeout_ms = timeout_ms;
+        self
     }
 
     /// Fire-and-forget anomaly check.
@@ -148,13 +163,31 @@ impl EmbeddingAnomalyGuard {
 
         let embed_fn = Arc::clone(&self.embed_fn);
         let threshold = self.threshold;
+        let embed_timeout_ms = self.embed_timeout_ms;
         let tx = self.result_tx.clone();
         let server_id = server_id.to_owned();
         let tool_name: ToolName = tool_name.into();
         let output = tool_output.to_owned();
 
         tokio::spawn(async move {
-            match (embed_fn)(&output).await {
+            let embed_result = if embed_timeout_ms > 0 {
+                let timeout = Duration::from_millis(embed_timeout_ms);
+                if let Ok(r) = tokio::time::timeout(timeout, (embed_fn)(&output)).await {
+                    r
+                } else {
+                    // Fail-open: timeout does not block the tool output path.
+                    tracing::debug!(
+                        server_id,
+                        tool_name = %tool_name,
+                        timeout_ms = embed_timeout_ms,
+                        "embedding guard: computation timed out"
+                    );
+                    return;
+                }
+            } else {
+                (embed_fn)(&output).await
+            };
+            match embed_result {
                 Ok(embedding) => {
                     let distance = cosine_distance(&embedding, &centroid);
                     let result = if distance > threshold {
@@ -453,6 +486,58 @@ mod tests {
             state.centroid[1].abs() < 1e-5,
             "cold-start must converge to [1.0, 0.0]: centroid[1]={}",
             state.centroid[1]
+        );
+    }
+
+    /// Regression for #4566: when embed computation exceeds `embed_timeout_ms`, the task
+    /// returns early (fail-open) and no event is sent to the result channel.
+    #[tokio::test]
+    async fn check_async_embed_timeout_is_fail_open() {
+        // embed_fn sleeps 200 ms — well above the 10 ms timeout.
+        let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> = Arc::new(|_| {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                Ok(vec![1.0f32, 0.0])
+            })
+        });
+        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 2, 0.01);
+        // Set a 10 ms timeout so the 200 ms embed always expires.
+        let guard = guard.with_embed_timeout(10);
+
+        // Warm up centroid so the guard takes the embedding path (not regex fallback).
+        guard.record_clean("srv", &[1.0f32, 0.0]);
+        guard.record_clean("srv", &[1.0f32, 0.0]);
+
+        guard.check_async("srv", "tool", "some output");
+
+        // Wait long enough for the task to run and hit the timeout.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Fail-open: no event should arrive when the embed computation timed out.
+        assert!(
+            rx.try_recv().is_err(),
+            "embed timeout must not produce an event — fail-open behaviour expected"
+        );
+    }
+
+    /// `with_embed_timeout(0)` disables the timeout: embed runs to completion.
+    #[tokio::test]
+    async fn check_async_zero_timeout_disables_timeout() {
+        let embed_fn: Arc<dyn Fn(&str) -> EmbedFuture + Send + Sync> =
+            Arc::new(|_| Box::pin(async { Ok(vec![1.0f32, 0.0]) }));
+        let (guard, mut rx) = EmbeddingAnomalyGuard::new(embed_fn, 0.35, 2, 0.01);
+        let guard = guard.with_embed_timeout(0); // disabled
+
+        guard.record_clean("srv", &[1.0f32, 0.0]);
+        guard.record_clean("srv", &[1.0f32, 0.0]);
+
+        guard.check_async("srv", "tool", "output");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            rx.try_recv().is_ok(),
+            "timeout=0 must allow embed to complete and produce a result"
         );
     }
 }

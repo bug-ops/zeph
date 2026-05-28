@@ -1446,20 +1446,38 @@ impl RouterProvider {
         let router = self.clone();
         let window_size = asi_cfg.window;
         let provider_name = provider.to_owned();
+        let embed_timeout_ms = self.embed_timeout_ms;
         tokio::spawn(async move {
-            let emb = match precomputed_embedding {
-                Some(e) => e,
-                None => match router.embed(&response).await {
-                    Ok(e) => e,
-                    Err(e) => {
+            let emb = if let Some(e) = precomputed_embedding {
+                e
+            } else {
+                let embed_fut = router.embed(&response);
+                let embed_result = if embed_timeout_ms > 0 {
+                    let timeout = std::time::Duration::from_millis(embed_timeout_ms);
+                    if let Ok(r) = tokio::time::timeout(timeout, embed_fut).await {
+                        r
+                    } else {
                         tracing::debug!(
                             provider = provider_name,
-                            error = %e,
+                            timeout_ms = embed_timeout_ms,
+                            "asi: embed timed out, skipping coherence update"
+                        );
+                        return;
+                    }
+                } else {
+                    embed_fut.await
+                };
+                match embed_result {
+                    Ok(e) => e,
+                    Err(err) => {
+                        tracing::debug!(
+                            provider = provider_name,
+                            error = %err,
                             "asi: embed failed, skipping coherence update"
                         );
                         return;
                     }
-                },
+                }
             };
             let mut state = asi.lock();
             state.push_embedding(&provider_name, emb, window_size);
@@ -3935,5 +3953,50 @@ mod tests {
     async fn blocking_load_runs_closure_on_current_thread_runtime() {
         let result = super::blocking_load(|| 42_u32);
         assert_eq!(result, 42, "blocking_load must return the closure result");
+    }
+
+    // ── spawn_asi_update timeout regression (#4566) ───────────────────────────
+
+    /// Regression for #4566: when `embed()` inside `spawn_asi_update` exceeds `embed_timeout_ms`,
+    /// the ASI coherence window must NOT be updated (task returns early without pushing embedding).
+    #[tokio::test]
+    async fn spawn_asi_update_embed_timeout_does_not_update_asi() {
+        use crate::mock::MockProvider;
+        use std::sync::atomic::Ordering;
+
+        // Provider that takes 200 ms to embed — well above the 10 ms timeout.
+        let mut m = MockProvider::with_responses(vec!["ok".to_owned()]);
+        m.supports_embeddings = true;
+        m.embedding = vec![1.0, 0.0];
+        m.embed_delay_ms = 200;
+        let provider_embed_calls = Arc::clone(&m.embed_call_count);
+
+        let r = RouterProvider::new(vec![AnyProvider::Mock(m)])
+            .with_asi(AsiRouterConfig::default())
+            .with_embed_timeout(10);
+
+        // Inject a sentinel turn id so the debounce does not fire.
+        r.state.asi_last_turn.store(u64::MAX, Ordering::SeqCst);
+
+        // No precomputed embedding → router will attempt to call embed().
+        r.spawn_asi_update("p1", "response".to_owned(), 1u64, None);
+
+        // Wait long enough for the spawned task to reach its timeout and return.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        // embed() was called (the call was made before the timeout fired).
+        assert!(
+            provider_embed_calls.load(Ordering::Relaxed) >= 1,
+            "embed() must have been attempted"
+        );
+
+        // ASI window must be empty — timeout fired before push_embedding could run.
+        let asi = r.asi.as_ref().unwrap().lock();
+        let coherence = asi.coherence("p1");
+        // coherence() returns 1.0 when the provider is unknown (no entries in the window).
+        assert!(
+            (coherence - 1.0).abs() < f32::EPSILON,
+            "ASI window must be empty after embed timeout; coherence={coherence}"
+        );
     }
 }

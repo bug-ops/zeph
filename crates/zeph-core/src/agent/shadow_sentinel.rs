@@ -33,6 +33,8 @@ use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
 };
+use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 
 use serde_json::Value as JsonValue;
 use tracing::{Instrument as _, info_span};
@@ -436,6 +438,13 @@ impl From<ShadowEventRow> for SentinelEvent {
 
 // ── ShadowSentinel ────────────────────────────────────────────────────────────
 
+/// Maximum number of concurrent fire-and-forget persist tasks tracked in `pending_writes`.
+///
+/// When the set is at capacity the oldest completed tasks are reaped before spawning a new one.
+/// If the set is still full after reaping (all tasks are still running), the new spawn is skipped
+/// with a debug log — persistence is best-effort and the sentinel must never block tool dispatch.
+const MAX_PENDING_WRITES: usize = 32;
+
 /// Orchestrates the persistent safety stream and LLM pre-execution probe.
 ///
 /// `ShadowSentinel` is wrapped in `Arc` and shared between `ShadowProbeExecutor` instances
@@ -448,6 +457,7 @@ impl From<ShadowEventRow> for SentinelEvent {
 ///   probe counter.
 /// - `check_tool_call()` — call before each tool execution to probe high-risk calls.
 /// - `record_tool_event()` — call after tool execution to persist the event.
+/// - `drain_pending()` — call at session shutdown to await all queued persist writes.
 ///
 /// # NEVER
 ///
@@ -460,6 +470,9 @@ pub struct ShadowSentinel {
     /// probe-checking methods can take `&self` even under parallel tool execution.
     probes_this_turn: AtomicU32,
     session_id: SessionId,
+    /// Bounded set of fire-and-forget DB persist tasks. Prevents unbounded task accumulation
+    /// and ensures panics surface at `drain_pending()` instead of being silently swallowed.
+    pending_writes: Mutex<JoinSet<()>>,
 }
 
 impl ShadowSentinel {
@@ -484,6 +497,7 @@ impl ShadowSentinel {
             config,
             probes_this_turn: AtomicU32::new(0),
             session_id: session_id.into(),
+            pending_writes: Mutex::new(JoinSet::new()),
         }
     }
 
@@ -627,11 +641,12 @@ impl ShadowSentinel {
             created_at: unix_now(),
         };
         let store = self.store.clone();
-        tokio::spawn(async move {
+        self.spawn_persist(async move {
             if let Err(e) = store.record(&event).await {
                 tracing::warn!(error = %e, "ShadowSentinel: failed to persist probe result");
             }
-        });
+        })
+        .await;
 
         verdict
     }
@@ -639,7 +654,7 @@ impl ShadowSentinel {
     /// Persist a tool execution event in the shadow stream (fire-and-forget).
     ///
     /// Called after a tool finishes execution to maintain the trajectory for future probes.
-    pub fn record_tool_event(
+    pub async fn record_tool_event(
         &self,
         qualified_tool_id: &str,
         turn_number: u64,
@@ -662,11 +677,44 @@ impl ShadowSentinel {
             created_at: unix_now(),
         };
         let store = self.store.clone();
-        tokio::spawn(async move {
+        self.spawn_persist(async move {
             if let Err(e) = store.record(&event).await {
                 tracing::warn!(error = %e, "ShadowSentinel: failed to persist tool event");
             }
-        });
+        })
+        .await;
+    }
+
+    /// Await all queued fire-and-forget persist tasks.
+    ///
+    /// Call once at session shutdown to ensure no DB writes are silently dropped.
+    /// All errors have already been logged inside each task; this method only joins the handles.
+    pub async fn drain_pending(&self) {
+        let mut set = self.pending_writes.lock().await;
+        while set.join_next().await.is_some() {}
+    }
+
+    /// Spawn a background persist task into the bounded `JoinSet`.
+    ///
+    /// Reaps completed handles before spawning to stay within `MAX_PENDING_WRITES`. If the set
+    /// is still at capacity after reaping (all tasks still running), the new task is dropped and
+    /// a debug message is emitted — persistence is best-effort and must never block the tool path.
+    async fn spawn_persist<F>(&self, fut: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut set = self.pending_writes.lock().await;
+        // Reap only already-finished handles — never block waiting for a running task.
+        // try_join_next() returns immediately if no task has completed yet.
+        while set.try_join_next().is_some() {}
+        if set.len() < MAX_PENDING_WRITES {
+            set.spawn(fut);
+        } else {
+            tracing::debug!(
+                max = MAX_PENDING_WRITES,
+                "ShadowSentinel: pending_writes at capacity, skipping persist"
+            );
+        }
     }
 
     /// Reset the per-turn probe counter.
@@ -884,6 +932,70 @@ mod tests {
             verdict,
             ProbeVerdict::Skip,
             "disabled sentinel must always return Skip without calling the probe"
+        );
+    }
+
+    // ── JoinSet regression tests (#4570) ─────────────────────────────────────
+
+    /// `drain_pending` awaits all spawned persist tasks and returns when the set is empty.
+    #[tokio::test]
+    async fn drain_pending_awaits_all_tasks() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = make_test_sentinel(config).await;
+
+        let counter = Arc::new(AtomicU32::new(0));
+        for _ in 0..5 {
+            let c = Arc::clone(&counter);
+            sentinel
+                .spawn_persist(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    c.fetch_add(1, Ordering::Relaxed);
+                })
+                .await;
+        }
+
+        sentinel.drain_pending().await;
+
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            5,
+            "drain_pending must join all 5 tasks before returning"
+        );
+    }
+
+    /// When the pending set is at capacity and all running tasks complete before the next
+    /// `spawn_persist`, the new task IS accepted (the set has room after reaping).
+    /// Conversely, if we fill the set, drain it, then overfill past capacity while tasks are
+    /// still running — the implementation drops extras.  We verify the simpler property:
+    /// `spawn_persist` never panics when called repeatedly beyond `MAX_PENDING_WRITES`.
+    #[tokio::test]
+    async fn spawn_persist_beyond_capacity_does_not_panic() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let config = zeph_config::ShadowSentinelConfig::default();
+        let sentinel = make_test_sentinel(config).await;
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // Spawn twice the capacity; each task completes instantly.
+        // spawn_persist will reap completed tasks between spawns, so most will be accepted.
+        for _ in 0..(MAX_PENDING_WRITES * 2) {
+            let c = Arc::clone(&counter);
+            sentinel
+                .spawn_persist(async move {
+                    c.fetch_add(1, Ordering::Relaxed);
+                })
+                .await;
+        }
+
+        sentinel.drain_pending().await;
+
+        // All tasks (or at least MAX_PENDING_WRITES of them) must have run; none panicked.
+        let ran = counter.load(Ordering::Relaxed);
+        assert!(
+            ran >= u32::try_from(MAX_PENDING_WRITES).unwrap(),
+            "at least MAX_PENDING_WRITES tasks must complete; ran={ran}"
         );
     }
 

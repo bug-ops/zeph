@@ -777,6 +777,11 @@ impl<C: Channel> Agent<C> {
             h.abort();
         }
 
+        // Drain pending shadow sentinel DB writes before final teardown.
+        if let Some(ref sentinel) = self.services.security.shadow_sentinel {
+            sentinel.drain_pending().await;
+        }
+
         // Allow cancelled tasks to release their HTTP connections before the summary LLM call.
         // abort_all() posts cancellation signals but does not drain tasks; aborted futures only
         // observe cancellation at their next .await point. Without yielding here the summary
