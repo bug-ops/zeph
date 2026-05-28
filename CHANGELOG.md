@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm`, `zeph-mcp`: embed calls inside fire-and-forget tasks (`RouterProvider::spawn_asi_update`
+  and `EmbeddingAnomalyGuard::check_async`) are now bounded by `embed_timeout_ms` (default 5 s) via
+  `tokio::time::timeout`. On timeout the task returns early — same as the existing embed-error path —
+  preventing indefinite task accumulation when the embedding provider stalls (closes #4566).
+  `EmbeddingAnomalyGuard` gains an `embed_timeout_ms` field and `with_embed_timeout()` builder.
+- `zeph-core`: `ShadowSentinel` no longer drops `JoinHandle`s from its two fire-and-forget persist
+  tasks. Both spawn sites now route through a bounded `Mutex<JoinSet<()>>` (capacity 32). Completed
+  handles are reaped non-blockingly with `try_join_next()` before each spawn; if the set is still at
+  capacity the new task is skipped with a debug log. `drain_pending()` awaits all remaining writes at
+  session shutdown via `Agent::shutdown()` (closes #4570).
 - `zeph-core`: `select_messages_for_compression` now sorts indices before building `to_compress`,
   ensuring messages are passed to the compression LLM in chronological (ascending index) order.
   Previously, iterating a raw `HashSet<usize>` produced non-deterministic ordering (closes #4558).
