@@ -2158,7 +2158,7 @@ mod tests {
         .unwrap();
     }
 
-    /// Regression test for #4531: NULL skill_name heuristics must be excluded from
+    /// Regression test for #4531: `NULL` `skill_name` heuristics must be excluded from
     /// `count_heuristics_by_skill` so sqlx does not encounter a non-null column mismatch.
     #[tokio::test]
     async fn count_heuristics_by_skill_excludes_null_skill_name() {
