@@ -544,7 +544,7 @@ impl ContentSanitizer {
     fn regex_verdict(&self) -> InjectionVerdict {
         match self.enforcement_mode {
             zeph_config::InjectionEnforcementMode::Block => InjectionVerdict::Blocked,
-            zeph_config::InjectionEnforcementMode::Warn => InjectionVerdict::Suspicious,
+            _ => InjectionVerdict::Suspicious,
         }
     }
 
@@ -584,7 +584,7 @@ impl ContentSanitizer {
             // enforcement_mode determines whether hard threshold blocks or just warns
             match self.enforcement_mode {
                 zeph_config::InjectionEnforcementMode::Block => InjectionVerdict::Blocked,
-                zeph_config::InjectionEnforcementMode::Warn => InjectionVerdict::Suspicious,
+                _ => InjectionVerdict::Suspicious,
             }
         } else if is_positive && score >= self.injection_threshold_soft {
             tracing::warn!(score = score, "injection_classifier soft_signal");
