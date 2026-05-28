@@ -493,7 +493,16 @@ async fn add_merge_discard_decision(
         };
 
         // Load and embed existing skills from the managed directory.
-        let registry = zeph_skills::registry::SkillRegistry::load(&[output_dir.to_path_buf()]);
+        // SkillRegistry::load uses std::fs blocking I/O; run it off the async thread.
+        let output_dir_clone = output_dir.to_path_buf();
+        let registry = tokio::task::spawn_blocking(move || {
+            zeph_skills::registry::SkillRegistry::load(&[output_dir_clone])
+        })
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!("heuristic_promotion: spawn_blocking for SkillRegistry::load panicked, using empty registry");
+            zeph_skills::registry::SkillRegistry::default()
+        });
         let existing_meta: Vec<_> = registry.all_meta().into_iter().cloned().collect();
 
         let mut existing_embeddings: Vec<(zeph_skills::loader::SkillMeta, SkillEmbedding)> =
@@ -635,7 +644,57 @@ fn patch_version(skill_md: &str, new_version: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_skills::generator::GeneratedSkill;
+    use zeph_skills::loader::SkillMeta;
+    use zeph_skills::merger::MergeDecision;
+
     use super::*;
+
+    fn mock_embed_provider() -> AnyProvider {
+        AnyProvider::Mock(MockProvider::default().with_embedding(vec![0.1_f32; 384]))
+    }
+
+    fn dummy_candidate(name: &str) -> GeneratedSkill {
+        GeneratedSkill {
+            name: name.to_string(),
+            content: format!("---\nname: {name}\ndescription: Test skill.\n---\n\n# Body\n"),
+            meta: SkillMeta {
+                name: name.to_string(),
+                description: "Test skill.".to_string(),
+                ..SkillMeta::default()
+            },
+            warnings: vec![],
+            has_injection_patterns: false,
+        }
+    }
+
+    /// Regression test for #4530: `add_merge_discard_decision` must call
+    /// `spawn_blocking` for `SkillRegistry::load` without panicking.
+    /// With an empty managed directory there are no existing skills, so the
+    /// function should return `MergeDecision::Add`.
+    #[tokio::test]
+    async fn add_merge_discard_decision_empty_dir_returns_add() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let provider = mock_embed_provider();
+        let candidate = dummy_candidate("new-skill");
+
+        let decision = add_merge_discard_decision(
+            &provider,
+            tmp.path(),
+            &candidate,
+            0.9,  // merge_threshold
+            0.98, // dedup_threshold
+            true, // merge_enabled
+        )
+        .await;
+
+        assert!(
+            matches!(decision, MergeDecision::Add),
+            "expected MergeDecision::Add for empty directory, got {decision:?}"
+        );
+    }
 
     #[test]
     fn patch_version_replaces_existing() {

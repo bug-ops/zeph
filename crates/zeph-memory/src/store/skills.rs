@@ -1196,7 +1196,7 @@ impl SqliteStore {
         let rows: Vec<(String, i64)> = zeph_db::query_as(sql!(
             "SELECT skill_name, COUNT(*) AS cnt \
              FROM skill_heuristics \
-             WHERE confidence >= ? \
+             WHERE confidence >= ? AND skill_name IS NOT NULL \
              GROUP BY skill_name \
              HAVING cnt >= ?"
         ))
@@ -2156,6 +2156,43 @@ mod tests {
         .execute(store.pool())
         .await
         .unwrap();
+    }
+
+    /// Regression test for #4531: NULL skill_name heuristics must be excluded from
+    /// `count_heuristics_by_skill` so sqlx does not encounter a non-null column mismatch.
+    #[tokio::test]
+    async fn count_heuristics_by_skill_excludes_null_skill_name() {
+        let store = test_store().await;
+
+        // Insert heuristics with NULL skill_name (general/unattributed).
+        store
+            .insert_skill_heuristic(None, "general tip 1", 0.9)
+            .await
+            .unwrap();
+        store
+            .insert_skill_heuristic(None, "general tip 2", 0.8)
+            .await
+            .unwrap();
+        store
+            .insert_skill_heuristic(None, "general tip 3", 0.7)
+            .await
+            .unwrap();
+
+        // NULL rows alone must not produce any results (no skill_name to group by).
+        let results = store.count_heuristics_by_skill(0.5, 2).await.unwrap();
+        assert!(
+            results.is_empty(),
+            "NULL skill_name heuristics must be excluded from count_heuristics_by_skill results"
+        );
+
+        // Verify that named skills are still counted correctly alongside NULL rows.
+        insert_heuristic(&store, "git", "use --no-pager", 0.8).await;
+        insert_heuristic(&store, "git", "check status first", 0.9).await;
+
+        let results = store.count_heuristics_by_skill(0.5, 2).await.unwrap();
+        assert_eq!(results.len(), 1, "only git should qualify");
+        assert_eq!(results[0].0, "git");
+        assert_eq!(results[0].1, 2, "git has exactly 2 qualifying heuristics");
     }
 
     #[tokio::test]
