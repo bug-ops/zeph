@@ -49,7 +49,7 @@ pub use zeph_config::{CustomPiiPattern, PiiFilterConfig};
 /// Known limitation: purely-alphabetic code-style patterns such as
 /// `decorator@factory.method` are not rejected because they are
 /// indistinguishable from a real hostname without a TLD allowlist.
-static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[a-zA-Z0-9._%+\-]{2,}@(?:[a-zA-Z]+\.)+[a-zA-Z]{2,6}").expect("valid EMAIL_RE")
 });
 
@@ -59,7 +59,7 @@ static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// US Social Security Number (NNN-NN-NNNN).
-static SSN_RE: LazyLock<Regex> =
+pub(crate) static SSN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("valid SSN_RE"));
 
 /// Credit card number: 16 digits in groups of 4 (space or dash separated, or bare).

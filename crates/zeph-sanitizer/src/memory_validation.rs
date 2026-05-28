@@ -16,27 +16,12 @@
 //!    after `GraphExtractor::extract()` returns. Checks entity count, edge count,
 //!    entity name length, fact text length, and PII in entity names.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
 use thiserror::Error;
 use zeph_memory::graph::extractor::ExtractionResult;
 
 pub use zeph_config::MemoryWriteValidationConfig;
 
-// ---------------------------------------------------------------------------
-// PII patterns for entity name scanning (subset — email and SSN only)
-// ---------------------------------------------------------------------------
-
-/// Email pattern kept in sync with `pii.rs`: domain labels must be purely alphabetic.
-static ENTITY_EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[a-zA-Z0-9._%+\-]{2,}@(?:[a-zA-Z]+\.)+[a-zA-Z]{2,6}")
-        .expect("valid ENTITY_EMAIL_RE")
-});
-
-/// SSN pattern for entity name scanning.
-static ENTITY_SSN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("valid ENTITY_SSN_RE"));
+use crate::pii::{EMAIL_RE, SSN_RE};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -206,7 +191,7 @@ impl MemoryWriteValidator {
                 });
             }
             // Guard against PII leaking into entity names (email and SSN).
-            if ENTITY_EMAIL_RE.is_match(&entity.name) || ENTITY_SSN_RE.is_match(&entity.name) {
+            if EMAIL_RE.is_match(&entity.name) || SSN_RE.is_match(&entity.name) {
                 return Err(MemoryValidationError::SuspiciousPiiInEntityName {
                     entity: entity.name.clone(),
                 });

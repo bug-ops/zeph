@@ -457,3 +457,59 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AgeVaultError
 pub(crate) fn write_private_file(path: &Path, data: &[u8]) -> Result<(), AgeVaultError> {
     zeph_common::fs_secure::write_private(path, data).map_err(AgeVaultError::KeyWrite)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn init_temp_vault(dir: &Path) -> (PathBuf, PathBuf) {
+        AgeVaultProvider::init_vault(dir).expect("init_vault failed");
+        (dir.join("vault-key.txt"), dir.join("secrets.age"))
+    }
+
+    #[test]
+    fn round_trip() {
+        let dir = tempdir().unwrap();
+        let (key_path, vault_path) = init_temp_vault(dir.path());
+
+        let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
+        vault.set_secret_mut("KEY".into(), "val".into());
+        vault.save().unwrap();
+
+        let loaded = AgeVaultProvider::load(&key_path, &vault_path).unwrap();
+        assert_eq!(loaded.get("KEY"), Some("val"));
+    }
+
+    #[test]
+    fn remove_secret() {
+        let dir = tempdir().unwrap();
+        let (key_path, vault_path) = init_temp_vault(dir.path());
+
+        let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
+        vault.set_secret_mut("KEY".into(), "val".into());
+
+        assert!(vault.remove_secret_mut("KEY"));
+        assert!(!vault.remove_secret_mut("KEY"));
+        assert_eq!(vault.get("KEY"), None);
+    }
+
+    #[test]
+    fn init_vault_creates_files() {
+        let dir = tempdir().unwrap();
+        AgeVaultProvider::init_vault(dir.path()).unwrap();
+
+        assert!(dir.path().join("vault-key.txt").exists());
+        assert!(dir.path().join("secrets.age").exists());
+    }
+
+    #[test]
+    fn load_missing_vault_errors() {
+        let dir = tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+
+        let result = AgeVaultProvider::load(&key_path, &vault_path);
+        assert!(result.is_err());
+    }
+}
