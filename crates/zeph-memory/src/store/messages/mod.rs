@@ -291,6 +291,7 @@ impl SqliteStore {
                         focus_pinned: false,
                         focus_marker_id: None,
                         db_id: Some(row_id),
+                        fidelity_tag: None,
                     },
                 }
             })
@@ -353,6 +354,7 @@ impl SqliteStore {
                         focus_pinned: false,
                         focus_marker_id: None,
                         db_id: Some(row_id),
+                        fidelity_tag: None,
                     },
                 }
             })
@@ -540,6 +542,7 @@ impl SqliteStore {
                     focus_pinned: false,
                     focus_marker_id: None,
                     db_id: None,
+                    fidelity_tag: None,
                 },
             }
         }))

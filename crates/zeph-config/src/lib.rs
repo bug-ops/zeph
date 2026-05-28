@@ -81,6 +81,7 @@ pub mod error;
 pub mod execution;
 pub mod experiment;
 pub mod features;
+pub mod fidelity;
 pub mod hooks;
 pub mod learning;
 mod loader;
@@ -132,6 +133,7 @@ pub use features::{
     SchedulerDaemonConfig, SchedulerSecurityConfig, SkillEvaluationConfig, SkillMiningConfig,
     SkillPromptMode, SkillsConfig, TraceConfig, VaultBackend, VaultConfig,
 };
+pub use fidelity::FidelityConfig;
 pub use hooks::{FileChangedConfig, HooksConfig};
 pub use learning::{DetectorMode, LearningConfig};
 pub use logging::{LogRotation, LoggingConfig};

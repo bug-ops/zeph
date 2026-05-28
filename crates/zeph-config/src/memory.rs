@@ -1037,6 +1037,30 @@ pub struct MemoryConfig {
     /// to weight `0.0`, preserving exact backward compatibility.
     #[serde(default)]
     pub five_signal: FiveSignalConfig,
+    /// Context-Adaptive Memory fidelity scoring (CAM Phase 1, #4547).
+    ///
+    /// When `fidelity.enabled = true`, the heuristic fidelity scorer runs after each
+    /// `apply_prepared_context()` call and assigns `Full / Compressed / Placeholder`
+    /// levels to historical messages. Default: disabled.
+    ///
+    /// # Example (TOML)
+    ///
+    /// ```toml
+    /// [memory.fidelity]
+    /// enabled = false
+    /// w_semantic = 0.3
+    /// w_temporal = 0.3
+    /// w_importance = 0.2
+    /// w_plan = 0.2
+    /// full_threshold = 0.7
+    /// compressed_threshold = 0.3
+    /// compressed_max_tokens = 50
+    /// regrade_threshold = 0.6
+    /// min_query_length = 8
+    /// max_scored_messages = 500
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fidelity: Option<crate::fidelity::FidelityConfig>,
 }
 
 // ── MemFlow tiered retrieval config (issue #3712) ──────────────────────────────

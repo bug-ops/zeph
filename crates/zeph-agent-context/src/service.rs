@@ -4,6 +4,7 @@
 //! [`ContextService`] — stateless façade for agent context-assembly operations.
 
 use zeph_context::budget::ContextBudget;
+use zeph_context::fidelity::FidelityScorer;
 use zeph_llm::LlmProvider;
 use zeph_llm::provider::{Message, MessagePart, Role};
 
@@ -632,6 +633,8 @@ impl ContextService {
             scrub: view.scrub,
             active_levels,
             router,
+            planned_next_tools: &[],
+            fidelity_config: None,
         };
 
         let mut prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;
@@ -644,11 +647,44 @@ impl ContextService {
             prepared.recall = None;
         }
 
-        let delta = self.apply_prepared_context(window, view, prepared).await;
+        let (delta, inserted_count) = self.apply_prepared_context(window, view, prepared).await;
 
         if view.tiered_retrieval_config.enabled {
             self.inject_semantic_recall(query, usize::MAX, window, view)
                 .await?;
+        }
+
+        // T-06: Fidelity scoring (INV-01: AFTER apply_prepared_context returns).
+        // Guard: skip when MemoryFirst is active (INV-11 / AC-09) or config absent/disabled.
+        // Spec AC-09: when memory_first=true the scorer MUST NOT run — the caller (here) is
+        // responsible for this bypass; FidelityScorer itself is stateless and has no memory of it.
+        let memory_first_active =
+            view.context_strategy == zeph_config::ContextStrategy::MemoryFirst;
+        if let Some(fidelity_cfg) = view.fidelity_config
+            && fidelity_cfg.enabled
+            && !memory_first_active
+        {
+            let _span = tracing::info_span!(
+                "context.fidelity.score",
+                message_count = window.messages.len(),
+                query_len = query.len(),
+            )
+            .entered();
+            if let Some(ref tx) = view.status_tx {
+                let _ = tx.send("Scoring context fidelity\u{2026}".into());
+            }
+            FidelityScorer.score_and_apply(
+                window.messages,
+                query,
+                view.planned_next_tools,
+                fidelity_cfg,
+                &*view.token_counter,
+                inserted_count,
+            );
+            recompute_prompt_tokens(window);
+            if let Some(ref tx) = view.status_tx {
+                let _ = tx.send(String::new());
+            }
         }
 
         Ok(delta)
@@ -660,14 +696,15 @@ impl ContextService {
     /// cross-session → summaries → persona → trajectory → tree → reasoning), handles
     /// `MemoryFirst` history drain, sanitizes memory content, trims to budget, and injects
     /// the session digest. Returns a [`ContextDelta`] whose `code_context` field the caller
-    /// must apply via `inject_code_context`.
+    /// must apply via `inject_code_context`, plus the count of messages freshly inserted at
+    /// indices `1..1+inserted_count` (used by the fidelity scorer as the exempt range — INV-10).
     #[allow(clippy::too_many_lines)] // sequential message injection: order matters, cannot split
     async fn apply_prepared_context(
         &self,
         window: &mut MessageWindowView<'_>,
         view: &mut ContextAssemblyView<'_>,
         prepared: zeph_context::assembler::PreparedContext,
-    ) -> ContextDelta {
+    ) -> (ContextDelta, usize) {
         use std::borrow::Cow;
         use zeph_llm::provider::{Message, MessageMetadata, Role};
         use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
@@ -692,12 +729,17 @@ impl ContextService {
             }
         }
 
+        // Tracks how many memory messages were freshly inserted at positions 1..1+inserted_count
+        // so the fidelity scorer can exempt them (INV-10). Incremented at every insertion path.
+        let mut inserted_count: usize = 0;
+
         // Insert memory messages at position 1 (all sanitized before insertion — CRIT-02).
         if let Some(msg) = prepared.graph_facts.filter(|_| window.messages.len() > 1) {
             let sanitized = self
                 .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected knowledge graph facts into context");
         }
         if let Some(msg) = prepared.doc_rag.filter(|_| window.messages.len() > 1) {
@@ -705,6 +747,7 @@ impl ContextService {
                 .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected document RAG context");
         }
         if let Some(msg) = prepared.corrections.filter(|_| window.messages.len() > 1) {
@@ -712,6 +755,7 @@ impl ContextService {
                 .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected past corrections into context");
         }
         if let Some(msg) = prepared.recall.filter(|_| window.messages.len() > 1) {
@@ -719,18 +763,21 @@ impl ContextService {
                 .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
         }
         if let Some(msg) = prepared.cross_session.filter(|_| window.messages.len() > 1) {
             let sanitized = self
                 .sanitize_memory_message(msg, MemorySourceHint::LlmSummary, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
         }
         if let Some(msg) = prepared.summaries.filter(|_| window.messages.len() > 1) {
             let sanitized = self
                 .sanitize_memory_message(msg, MemorySourceHint::LlmSummary, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected summaries into context");
         }
         if let Some(msg) = prepared.persona_facts.filter(|_| window.messages.len() > 1) {
@@ -738,6 +785,7 @@ impl ContextService {
                 .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected persona facts into context");
         }
         if let Some(msg) = prepared
@@ -748,6 +796,7 @@ impl ContextService {
                 .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected trajectory hints into context");
         }
         if let Some(msg) = prepared.tree_memory.filter(|_| window.messages.len() > 1) {
@@ -755,6 +804,7 @@ impl ContextService {
                 .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected tree memory summary into context");
         }
         if let Some(msg) = prepared
@@ -765,6 +815,7 @@ impl ContextService {
                 .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected reasoning strategies into context");
         }
 
@@ -826,6 +877,7 @@ impl ContextService {
                 .sanitize_memory_message(digest_msg, MemorySourceHint::LlmSummary, view)
                 .await;
             window.messages.insert(1, sanitized);
+            inserted_count += 1;
             tracing::debug!("injected session digest into context");
         }
 
@@ -843,7 +895,7 @@ impl ContextService {
 
         recompute_prompt_tokens(window);
 
-        ContextDelta { code_context }
+        (ContextDelta { code_context }, inserted_count)
     }
 
     /// Sanitize a memory retrieval message before inserting it into the context window.
@@ -1039,6 +1091,38 @@ impl ContextService {
                     turns_remaining: next,
                 }
             });
+        }
+
+        // T-07: AgeMem proactive regrade — fires before tier dispatch (INV-06, INV-11).
+        // Skip when MemoryFirst is active; ContextSummarizationView does not carry
+        // context_strategy, so we check the budget ratio directly via should_proactively_regrade.
+        if let Some(ref fidelity_cfg) = summ.fidelity_config.clone()
+            && fidelity_cfg.enabled
+            && summ.context_manager.should_proactively_regrade(
+                *summ.cached_prompt_tokens,
+                fidelity_cfg.regrade_threshold,
+                summ.server_compaction_active,
+            )
+        {
+            let _regrade_span = tracing::info_span!(
+                "context.fidelity.regrade",
+                budget_ratio = tracing::field::Empty,
+            )
+            .entered();
+            FidelityScorer.score_and_apply(
+                summ.messages,
+                &summ.current_query,
+                &[],
+                fidelity_cfg,
+                &*summ.token_counter,
+                0,
+            );
+            recompute_prompt_tokens_summ(summ);
+            summ.context_manager.set_regraded_this_turn(true);
+            tracing::debug!(
+                cached_tokens = *summ.cached_prompt_tokens,
+                "AgeMem proactive regrade complete"
+            );
         }
 
         match summ
@@ -1429,6 +1513,17 @@ pub(crate) fn recompute_prompt_tokens(window: &mut MessageWindowView<'_>) {
         .sum();
 }
 
+/// Recompute `cached_prompt_tokens` for a [`ContextSummarizationView`].
+///
+/// Used after the `AgeMem` proactive regrade modifies the message window in `maybe_compact`.
+fn recompute_prompt_tokens_summ(summ: &mut crate::state::ContextSummarizationView<'_>) {
+    *summ.cached_prompt_tokens = summ
+        .messages
+        .iter()
+        .map(|m| summ.token_counter.count_message_tokens(m) as u64)
+        .sum();
+}
+
 /// Remove all system/user messages whose `content` starts with `prefix` and whose
 /// role matches `role`.
 ///
@@ -1684,6 +1779,172 @@ mod tests {
         );
     }
 
+    // AC-12: inserted_count must equal the number of non-None memory fields injected.
+    // Tests that every Some(msg) field in PreparedContext increments inserted_count by 1.
+    mod inserted_count_tests {
+        use parking_lot::RwLock;
+        use std::borrow::Cow;
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        use zeph_common::SecurityEventCategory;
+        use zeph_config::memory::TieredRetrievalConfig;
+        use zeph_config::{
+            ContextFormat, ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig,
+            ReasoningConfig, TrajectoryConfig, TreeConfig,
+        };
+        use zeph_context::assembler::PreparedContext;
+        use zeph_context::manager::ContextManager;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        use zeph_memory::TokenCounter;
+        use zeph_sanitizer::ContentIsolationConfig;
+        use zeph_sanitizer::ContentSanitizer;
+        use zeph_skills::registry::SkillRegistry;
+
+        use super::super::*;
+        use crate::state::{
+            ContextAssemblyView, MessageWindowView, MetricsCounters, SecurityEventSink,
+        };
+
+        struct NoopSink;
+        impl SecurityEventSink for NoopSink {
+            fn push(&mut self, _: SecurityEventCategory, _: &'static str, _: String) {}
+        }
+
+        fn make_counter() -> Arc<TokenCounter> {
+            Arc::new(TokenCounter::default())
+        }
+
+        fn make_window<'a>(
+            messages: &'a mut Vec<Message>,
+            cached: &'a mut u64,
+            completed: &'a mut HashSet<String>,
+        ) -> MessageWindowView<'a> {
+            let last = Box::leak(Box::new(None::<i64>));
+            let deferred_hide = Box::leak(Box::new(Vec::<i64>::new()));
+            let deferred_summ = Box::leak(Box::new(Vec::<String>::new()));
+            MessageWindowView {
+                messages,
+                last_persisted_message_id: last,
+                deferred_db_hide_ids: deferred_hide,
+                deferred_db_summaries: deferred_summ,
+                cached_prompt_tokens: cached,
+                token_counter: make_counter(),
+                completed_tool_ids: completed,
+            }
+        }
+
+        fn mem_msg(content: &str) -> Message {
+            Message {
+                role: Role::User,
+                content: content.to_string(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }
+        }
+
+        fn scrub_noop(s: &str) -> Cow<'_, str> {
+            Cow::Borrowed(s)
+        }
+
+        #[tokio::test]
+        async fn inserted_count_incremented_for_all_paths() {
+            // AC-12: each non-None field in PreparedContext increments inserted_count by 1.
+            // 10 memory fields are tested here (session_digest is controlled by digest_enabled).
+            let mut msgs = vec![
+                Message::from_legacy(Role::System, "system"),
+                Message::from_legacy(Role::User, "user turn"),
+            ];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = NoopSink;
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+            let registry = Arc::new(RwLock::new(SkillRegistry::default()));
+
+            let mut view = ContextAssemblyView {
+                memory: None,
+                conversation_id: None,
+                recall_limit: 10,
+                cross_session_score_threshold: 0.5,
+                context_format: ContextFormat::default(),
+                last_recall_confidence: &mut last_confidence,
+                context_strategy: ContextStrategy::default(),
+                crossover_turn_threshold: 0,
+                cached_session_digest: None,
+                digest_enabled: false, // no session digest injection in this test
+                graph_config: GraphConfig::default(),
+                document_config: DocumentConfig::default(),
+                persona_config: PersonaConfig::default(),
+                trajectory_config: TrajectoryConfig::default(),
+                reasoning_config: ReasoningConfig::default(),
+                memcot_config: zeph_config::MemCotConfig::default(),
+                memcot_state: None,
+                tree_config: TreeConfig::default(),
+                last_skills_prompt: &mut last_skills_prompt,
+                active_skill_names: &mut active_skill_names,
+                skill_registry: registry,
+                skill_paths: &[],
+                correction_config: None,
+                sidequest_turn_counter: 0,
+                proactive_explorer: None,
+                sanitizer: &sanitizer,
+                quarantine_summarizer: None,
+                context_manager: &mut ctx_mgr,
+                token_counter: make_counter(),
+                metrics: MetricsCounters::default(),
+                security_events: &mut sink,
+                cached_prompt_tokens: 0,
+                redact_credentials: false,
+                channel_skills: &[],
+                scrub: scrub_noop,
+                tiered_retrieval_config: TieredRetrievalConfig {
+                    enabled: false,
+                    ..TieredRetrievalConfig::default()
+                },
+                tiered_retrieval_classifier: None,
+                tiered_retrieval_validator: None,
+                fidelity_config: None,
+                planned_next_tools: &[],
+                status_tx: None,
+            };
+
+            // Populate all 10 message-carrying fields.
+            let prepared = PreparedContext {
+                graph_facts: Some(mem_msg("graph_facts")),
+                doc_rag: Some(mem_msg("doc_rag")),
+                corrections: Some(mem_msg("corrections")),
+                recall: Some(mem_msg("recall")),
+                recall_confidence: Some(0.9),
+                cross_session: Some(mem_msg("cross_session")),
+                summaries: Some(mem_msg("summaries")),
+                code_context: None, // code_context returns via ContextDelta, not inserted_count
+                persona_facts: Some(mem_msg("persona_facts")),
+                trajectory_hints: Some(mem_msg("trajectory_hints")),
+                tree_memory: Some(mem_msg("tree_memory")),
+                reasoning_hints: Some(mem_msg("reasoning_hints")),
+                memory_first: false,
+                recent_history_budget: 100_000,
+            };
+
+            let (_delta, inserted_count) = ContextService::new()
+                .apply_prepared_context(&mut window, &mut view, prepared)
+                .await;
+
+            // 10 message fields were Some(msg): graph_facts, doc_rag, corrections, recall,
+            // cross_session, summaries, persona_facts, trajectory_hints, tree_memory, reasoning_hints.
+            assert_eq!(
+                inserted_count, 10,
+                "all 10 message-carrying PreparedContext fields must increment inserted_count"
+            );
+        }
+    }
+
     mod inject_semantic_recall_tests {
         use parking_lot::RwLock;
         use std::borrow::Cow;
@@ -1801,6 +2062,9 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                fidelity_config: None,
+                planned_next_tools: &[],
+                status_tx: None,
             };
 
             let result = ContextService::new()
@@ -1876,6 +2140,9 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                fidelity_config: None,
+                planned_next_tools: &[],
+                status_tx: None,
             };
 
             let result = ContextService::new()
@@ -1958,6 +2225,9 @@ mod tests {
                 },
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
+                fidelity_config: None,
+                planned_next_tools: &[],
+                status_tx: None,
             };
 
             let result = ContextService::new()

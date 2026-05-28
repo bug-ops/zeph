@@ -43,6 +43,10 @@ pub(crate) struct MemoryCompactionState {
     pub(crate) context_strategy: crate::config::ContextStrategy,
     /// Turn threshold for `Adaptive` strategy crossover (#2288).
     pub(crate) crossover_turn_threshold: u32,
+    /// CAM fidelity scoring configuration (#4547).
+    ///
+    /// `None` means fidelity scoring is not configured (disabled).
+    pub(crate) fidelity_config: Option<zeph_config::FidelityConfig>,
 }
 
 impl Default for MemoryCompactionState {
@@ -62,6 +66,7 @@ impl Default for MemoryCompactionState {
             cached_session_digest: None,
             context_strategy: crate::config::ContextStrategy::default(),
             crossover_turn_threshold: 20,
+            fidelity_config: None,
         }
     }
 }

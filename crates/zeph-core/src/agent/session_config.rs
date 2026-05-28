@@ -123,6 +123,9 @@ pub struct AgentSessionConfig {
     /// the wrapper prevents accidental duplication. Iteration produces new `Secret`
     /// values via `Secret::new(v.expose())` on the consumption side.
     pub secrets: Arc<[(String, Secret)]>,
+
+    /// CAM fidelity scoring configuration (#4547). `None` → scoring disabled.
+    pub fidelity_config: Option<zeph_config::FidelityConfig>,
 }
 
 impl AgentSessionConfig {
@@ -193,6 +196,15 @@ impl AgentSessionConfig {
             recap: config.session.recap.clone(),
             loop_min_interval_secs: config.cli.loop_.min_interval_secs,
             goal_config: config.goals.clone(),
+            fidelity_config: {
+                let fc = config.memory.fidelity.clone();
+                if let Some(ref cfg) = fc
+                    && let Err(e) = cfg.validate()
+                {
+                    tracing::warn!("fidelity config invalid, scoring disabled: {e}");
+                }
+                fc
+            },
         }
     }
 }
@@ -295,5 +307,9 @@ mod tests {
         assert_eq!(sc.recap.max_tokens, config.session.recap.max_tokens);
         assert_eq!(sc.goal_config.enabled, config.goals.enabled);
         assert_eq!(sc.goal_config.max_text_chars, config.goals.max_text_chars);
+        assert_eq!(
+            sc.fidelity_config.is_some(),
+            config.memory.fidelity.is_some()
+        );
     }
 }

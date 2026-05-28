@@ -11,10 +11,13 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use zeph_common::PlannedToolHint;
 use zeph_common::memory::{CompressionLevel, ContextMemoryBackend};
 use zeph_config::{
     DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig, TreeConfig,
 };
+
+use crate::fidelity::FidelityConfig;
 
 use crate::manager::ContextManager;
 
@@ -59,6 +62,12 @@ pub struct ContextAssemblyInput<'a> {
     /// Pre-built memory router for this turn. Built by `zeph-core` via `build_memory_router()`
     /// and passed in to avoid a `zeph-memory` dependency inside `zeph-context`.
     pub router: Box<dyn zeph_common::memory::AsyncMemoryRouter + Send + Sync>,
+    /// Lookahead hints from the orchestration DAG for plan-aware scoring.
+    ///
+    /// Pass `&[]` when no DAG context is available (PAACE data structure only in MVP).
+    pub planned_next_tools: &'a [PlannedToolHint],
+    /// Fidelity scorer configuration. `None` disables all fidelity scoring for this turn.
+    pub fidelity_config: Option<&'a FidelityConfig>,
 }
 
 /// Configuration extracted from `LearningEngine` needed by correction recall.

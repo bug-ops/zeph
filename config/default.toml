@@ -348,6 +348,22 @@ autosave_assistant = true
 # Maximum recent messages to include in the shutdown summary LLM prompt
 # shutdown_summary_max_messages = 20
 
+# ── Context-Adaptive Memory (CAM) fidelity scoring (#4547) ──────────────────
+# Assigns Full / Compressed / Placeholder levels to historical messages to
+# reduce token usage without hard compaction. Off by default for v0.21.
+# [memory.fidelity]
+# enabled = false
+# w_semantic = 0.3
+# w_temporal = 0.3
+# w_importance = 0.2
+# w_plan = 0.2
+# full_threshold = 0.7
+# compressed_threshold = 0.3
+# compressed_max_tokens = 50
+# regrade_threshold = 0.6
+# min_query_length = 8
+# max_scored_messages = 500
+
 [memory.sessions]
 # Maximum number of sessions returned by list operations (0 = unlimited)
 max_history = 100

@@ -2088,6 +2088,7 @@ impl<C: Channel> Agent<C> {
             recap,
             loop_min_interval_secs,
             goal_config,
+            fidelity_config,
         } = cfg;
 
         self.tool_orchestrator.apply_config(
@@ -2171,6 +2172,7 @@ impl<C: Channel> Agent<C> {
         let turn_delay =
             tokio::time::Duration::from_millis(goal_config.autonomous_turn_delay_ms.max(1));
         self.services.autonomous = crate::goal::AutonomousDriver::new(turn_delay);
+        self.services.memory.compaction.fidelity_config = fidelity_config;
 
         self.runtime.debug.reasoning_model_warning = anomaly_config.reasoning_model_warning;
         if anomaly_config.enabled {

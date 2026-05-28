@@ -12,6 +12,7 @@
 pub mod audit;
 pub mod config;
 pub mod error_taxonomy;
+pub mod fidelity;
 pub mod fs_secure;
 pub mod hash;
 #[cfg(feature = "http-middleware")]
@@ -37,6 +38,7 @@ pub mod types;
 /// Format: `[full output stored — ID: {uuid} — {bytes} bytes, use read_overflow tool to retrieve]`
 pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
 
+pub use fidelity::{ContextFidelity, PlannedToolHint};
 pub use math::{EmbeddingVector, Normalized, Unnormalized};
 pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
 pub use security_event::SecurityEventCategory;

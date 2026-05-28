@@ -10828,6 +10828,7 @@ name = "zeph-context"
 version = "0.21.2"
 dependencies = [
  "blake3",
+ "criterion",
  "futures",
  "parking_lot",
  "regex",

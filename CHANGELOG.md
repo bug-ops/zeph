@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `request_compaction` internal tool: agent-initiated context compaction on demand (ARC #4020).
   Config: `[memory.compression.arc]`. Rate-limited to one compaction per turn via `CompactionState`.
 
+- Context-Adaptive Memory (CAM) Phase 1 MVP (`zeph-common`, `zeph-llm`, `zeph-context`,
+  `zeph-agent-context`, `zeph-config`): three-level fidelity scoring for context messages
+  (Full/Compressed/Placeholder) with heuristic `FidelityScorer` (temporal decay, role importance,
+  keyword overlap, plan-tool relevance), proactive AgeMem regrade trigger in `maybe_compact()`,
+  Placeholder exclusion from hard compaction summarizer input, `[context.fidelity]` config section
+  with `enabled = false` default (no behavioral change when disabled). Closes #4547.
+
 - `zeph-skills`: `promoter` module — pure-logic helpers for `AutoSkill A6` heuristic promotion:
   `compute_batch_hash` (BLAKE3, order-independent), `build_promotion_prompt`, `parse_promotion_response`,
   `PromotionRecommendation` enum (`BodyEnrichment`, `NewSkill`, `None`). No async/DB/LLM dependencies.

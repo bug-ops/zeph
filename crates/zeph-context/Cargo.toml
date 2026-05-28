@@ -28,7 +28,12 @@ zeph-config.workspace = true
 zeph-llm.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 tempfile.workspace = true
+
+[[bench]]
+name = "fidelity_scorer"
+harness = false
 
 [lints]
 workspace = true

@@ -127,6 +127,8 @@ impl<C: Channel> Agent<C> {
             persistence: None,
             metrics: None,
             typed_pages: None,
+            fidelity_config: self.services.memory.compaction.fidelity_config.clone(),
+            current_query: String::new(),
         }
     }
 
@@ -460,6 +462,9 @@ impl<C: Channel> Agent<C> {
                 .persistence
                 .tiered_retrieval_validator
                 .clone(),
+            fidelity_config: self.services.memory.compaction.fidelity_config.as_ref(),
+            planned_next_tools: &[],
+            status_tx: self.services.session.status_tx.clone(),
         };
         let _ = self.channel.send_status("recalling context...").await;
         let result = svc.prepare_context(query, &mut window, &mut view).await;

@@ -192,6 +192,14 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
     strategy_options[strategy_idx].clone_into(&mut state.context_strategy);
 
+    state.fidelity_enabled = Confirm::new()
+        .with_prompt(
+            "Enable Context-Adaptive Memory (CAM) fidelity scoring? (assigns Full/Compressed/\
+             Placeholder levels to historical messages to reduce context token usage)",
+        )
+        .default(false)
+        .interact()?;
+
     println!();
     Ok(())
 }

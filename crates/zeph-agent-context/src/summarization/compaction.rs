@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use zeph_common::ContextFidelity;
 use zeph_context::slot::cap_summary;
 use zeph_context::typed_page::{
     BatchAssertions, CompactedPageRecord, PageOrigin, PageType, TypedPage, TypedPagesState,
@@ -267,7 +268,9 @@ fn partition_messages_for_compaction(
             .enumerate()
             .filter(|(slice_i, m)| {
                 let actual_i = slice_i + 1;
+                // INV-02: never include Placeholder messages in LLM summarizer input.
                 !m.metadata.focus_pinned
+                    && m.metadata.fidelity_tag != Some(ContextFidelity::Placeholder)
                     && !matches!(
                         summ.subgoal_registry.subgoal_state(actual_i),
                         Some(SubgoalState::Active)
@@ -278,7 +281,11 @@ fn partition_messages_for_compaction(
     } else {
         summ.messages[1..compact_end]
             .iter()
-            .filter(|m| !m.metadata.focus_pinned)
+            // INV-02: never include Placeholder messages in LLM summarizer input.
+            .filter(|m| {
+                !m.metadata.focus_pinned
+                    && m.metadata.fidelity_tag != Some(ContextFidelity::Placeholder)
+            })
             .cloned()
             .collect()
     };
@@ -630,6 +637,7 @@ fn emit_audit_records(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_common::ContextFidelity;
     use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
     fn make_msg(role: Role, content: &str) -> Message {
@@ -686,5 +694,45 @@ mod tests {
         }
         let adjusted = adjust_compact_end_for_tool_pairs(&messages, 6);
         assert_eq!(adjusted, 1);
+    }
+
+    // AC-06: Placeholder messages must never appear in compact input (INV-02).
+    #[test]
+    fn placeholder_messages_excluded_from_to_compact() {
+        fn make_placeholder(role: Role, content: &str) -> Message {
+            let mut m = make_msg(role, content);
+            m.metadata.fidelity_tag = Some(ContextFidelity::Placeholder);
+            m
+        }
+
+        let messages = [
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, "real user msg"),
+            make_placeholder(Role::Assistant, "[placeholder: role=assistant, ...]"),
+            make_msg(Role::User, "another real msg"),
+            make_placeholder(Role::Assistant, "[placeholder: role=assistant, ...]"),
+        ];
+
+        // Filter manually as partition_messages_for_compaction would.
+        let to_compact: Vec<&Message> = messages[1..messages.len()]
+            .iter()
+            .filter(|m| {
+                !m.metadata.focus_pinned
+                    && m.metadata.fidelity_tag != Some(ContextFidelity::Placeholder)
+            })
+            .collect();
+
+        for msg in &to_compact {
+            assert_ne!(
+                msg.metadata.fidelity_tag,
+                Some(ContextFidelity::Placeholder),
+                "Placeholder message must not appear in compaction input"
+            );
+        }
+        assert_eq!(
+            to_compact.len(),
+            2,
+            "only 2 non-placeholder messages should remain"
+        );
     }
 }

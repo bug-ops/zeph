@@ -248,6 +248,9 @@ pub(crate) struct WizardState {
     pub(crate) cocoon_client_url: Option<String>,
     /// `true` when the user confirmed they have an access hash stored in the vault.
     pub(crate) cocoon_wants_access_hash: bool,
+    // CAM fidelity (#4547)
+    /// Enable heuristic fidelity scoring (Full/Compressed/Placeholder).
+    pub(crate) fidelity_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -421,6 +424,7 @@ impl Default for WizardState {
             gonka_nodes: Vec::new(),
             cocoon_client_url: None,
             cocoon_wants_access_hash: false,
+            fidelity_enabled: false,
         }
     }
 }
@@ -779,6 +783,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         "adaptive" => zeph_core::config::ContextStrategy::Adaptive,
         _ => zeph_core::config::ContextStrategy::FullHistory,
     };
+
+    if state.fidelity_enabled {
+        config.memory.fidelity = Some(zeph_config::FidelityConfig {
+            enabled: true,
+            ..Default::default()
+        });
+    }
 
     // MM-F1/F2/F5 retrieval tuning defaults — no interactive question needed;
     // all fields have sensible defaults. Surfaced here per CLAUDE.md rule #4.

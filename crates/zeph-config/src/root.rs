@@ -292,6 +292,7 @@ impl Default for Config {
                 episodic_consolidation: crate::memory::EpisodicConsolidationConfig::default(),
                 shadow_memory: crate::memory::TrajectoryRiskAccumulatorConfig::default(),
                 five_signal: crate::memory::FiveSignalConfig::default(),
+                fidelity: None,
             },
             telegram: None,
             discord: None,

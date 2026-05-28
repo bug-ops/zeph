@@ -166,6 +166,10 @@ pub struct ContextManager {
     /// `None` = no hard compaction has occurred yet in this session.
     /// `Some(n)` = n turns have elapsed since the last hard compaction.
     pub(crate) turns_since_last_hard_compaction: Option<u64>,
+    /// Whether a proactive fidelity regrade has already fired this turn (INV-06).
+    ///
+    /// Reset to `false` by `advance_turn()` at each turn boundary.
+    pub(crate) regraded_this_turn: bool,
 }
 
 impl ContextManager {
@@ -184,6 +188,7 @@ impl ContextManager {
             compaction: CompactionState::Ready,
             compaction_cooldown_turns: 2,
             turns_since_last_hard_compaction: None,
+            regraded_this_turn: false,
         }
     }
 
@@ -348,6 +353,99 @@ impl ContextManager {
     /// Sets the turns-since-last-hard-compaction counter.
     pub fn set_turns_since_last_hard_compaction(&mut self, value: Option<u64>) {
         self.turns_since_last_hard_compaction = value;
+    }
+
+    /// Reset the per-turn regrade flag at the start of a new user turn.
+    ///
+    /// Must be called alongside `CompactionState::advance_turn()` at each turn boundary.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_context::manager::ContextManager;
+    ///
+    /// let mut cm = ContextManager::new();
+    /// cm.regraded_this_turn = true;
+    /// cm.advance_turn();
+    /// assert!(!cm.regraded_this_turn);
+    /// ```
+    pub fn advance_turn(&mut self) {
+        self.regraded_this_turn = false;
+        self.compaction = self.compaction.advance_turn();
+    }
+
+    /// Mark that a proactive fidelity regrade has fired this turn (INV-06).
+    ///
+    /// Called by the caller after `should_proactively_regrade` returns `true` and the scorer
+    /// has been applied. Prevents a second regrade in the same turn.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_context::manager::ContextManager;
+    /// use zeph_context::budget::ContextBudget;
+    ///
+    /// let mut cm = ContextManager::new();
+    /// cm.set_regraded_this_turn(true);
+    /// assert!(!cm.should_proactively_regrade(0, 0.6, false)); // guarded by regraded flag
+    /// cm.advance_turn();
+    /// assert!(!cm.should_proactively_regrade(0, 0.6, false)); // resets after advance_turn
+    /// ```
+    pub fn set_regraded_this_turn(&mut self, value: bool) {
+        self.regraded_this_turn = value;
+    }
+
+    /// Whether a proactive fidelity regrade should fire for the current context state.
+    ///
+    /// Returns `true` only when all of the following hold:
+    /// 1. No regrade has fired this turn yet (`regraded_this_turn == false`).
+    /// 2. The compaction subsystem is not exhausted.
+    /// 3. If server compaction is active, budget usage is below 95%.
+    /// 4. Budget usage exceeds `regrade_threshold`.
+    ///
+    /// # Parameters
+    ///
+    /// - `cached_tokens` — current token count in the message window.
+    /// - `regrade_threshold` — fraction of max tokens at which regrade triggers (e.g. `0.6`).
+    /// - `server_compaction_active` — whether Claude server-side compaction is in use.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_context::manager::ContextManager;
+    /// use zeph_context::budget::ContextBudget;
+    ///
+    /// let mut cm = ContextManager::new();
+    /// cm.budget = Some(ContextBudget::new(100_000, 0.1));
+    /// // At 70% budget with threshold 0.6 → should regrade.
+    /// assert!(cm.should_proactively_regrade(70_000, 0.6, false));
+    /// ```
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn should_proactively_regrade(
+        &self,
+        cached_tokens: u64,
+        regrade_threshold: f32,
+        server_compaction_active: bool,
+    ) -> bool {
+        if self.regraded_this_turn {
+            return false;
+        }
+        if self.compaction.is_exhausted() {
+            return false;
+        }
+        let Some(ref budget) = self.budget else {
+            return false;
+        };
+        let max = budget.max_tokens() as f64;
+        if max <= 0.0 {
+            return false;
+        }
+        let ratio = cached_tokens as f64 / max;
+        if server_compaction_active && ratio < 0.95 {
+            return false;
+        }
+        ratio > f64::from(regrade_threshold)
     }
 
     /// Will return `None` if compaction already happened this turn (CRIT-03 fix).
@@ -517,5 +615,82 @@ mod tests {
         cm.compression.strategy = CompressionStrategy::Focus;
         // No budget set → cannot compute threshold → None.
         assert!(cm.should_proactively_compress(999_999).is_none());
+    }
+
+    // AC-07: regraded_this_turn resets to false after advance_turn().
+    #[test]
+    fn advance_turn_resets_regraded_this_turn() {
+        let mut cm = ContextManager::new();
+        cm.regraded_this_turn = true;
+        cm.advance_turn();
+        assert!(
+            !cm.regraded_this_turn,
+            "regraded_this_turn must reset after advance_turn"
+        );
+    }
+
+    // AC-08: should_proactively_regrade returns false if already regraded this turn.
+    #[test]
+    fn regrade_blocked_if_already_regraded_this_turn() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        cm.regraded_this_turn = true;
+        assert!(
+            !cm.should_proactively_regrade(70_000, 0.6, false),
+            "must not regrade twice in the same turn"
+        );
+    }
+
+    #[test]
+    fn regrade_fires_above_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        assert!(
+            cm.should_proactively_regrade(70_000, 0.6, false),
+            "must fire when budget ratio > threshold"
+        );
+    }
+
+    #[test]
+    fn regrade_does_not_fire_below_threshold() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        assert!(
+            !cm.should_proactively_regrade(50_000, 0.6, false),
+            "must not fire when budget ratio <= threshold"
+        );
+    }
+
+    #[test]
+    fn regrade_blocked_when_exhausted() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        cm.compaction = CompactionState::Exhausted { warned: false };
+        assert!(
+            !cm.should_proactively_regrade(80_000, 0.6, false),
+            "must not fire when compaction is exhausted"
+        );
+    }
+
+    #[test]
+    fn regrade_blocked_by_server_compaction_at_sub_95() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // 80% budget, server_compaction_active=true → ratio < 0.95 → blocked.
+        assert!(
+            !cm.should_proactively_regrade(80_000, 0.6, true),
+            "must not fire with server compaction active below 95%"
+        );
+    }
+
+    #[test]
+    fn regrade_fires_with_server_compaction_at_95() {
+        let mut cm = ContextManager::new();
+        cm.budget = Some(ContextBudget::new(100_000, 0.1));
+        // 96% budget, server_compaction_active=true → ratio >= 0.95 → fires.
+        assert!(
+            cm.should_proactively_regrade(96_000, 0.6, true),
+            "must fire with server compaction active at >= 95%"
+        );
     }
 }

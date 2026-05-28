@@ -25,6 +25,7 @@ pub mod assembler;
 pub mod budget;
 pub mod compression_feedback;
 pub mod error;
+pub mod fidelity;
 pub mod input;
 pub mod manager;
 pub mod microcompact;

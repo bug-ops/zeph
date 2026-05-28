@@ -19,8 +19,10 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use zeph_common::PlannedToolHint;
 use zeph_common::SecurityEventCategory;
 use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
+use zeph_config::FidelityConfig;
 use zeph_config::{
     ContextStrategy, DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig,
     TreeConfig,
@@ -228,6 +230,23 @@ pub struct ContextAssemblyView<'a> {
     /// Resolved from `tiered_retrieval.validator_provider` at agent construction.
     /// `None` means validation is skipped (evidence accepted as-is).
     pub tiered_retrieval_validator: Option<Arc<zeph_llm::any::AnyProvider>>,
+
+    // ── CAM: Context-Adaptive Memory (#4547) ─────────────────────────────────
+    /// Fidelity scoring configuration resolved from `[context.fidelity]`.
+    ///
+    /// `None` when fidelity scoring is not configured (treated as `enabled = false`).
+    /// `Some(&cfg)` with `cfg.enabled = false` is also a no-op (early-return inside scorer).
+    pub fidelity_config: Option<&'a FidelityConfig>,
+    /// Lookahead tool hints derived from the orchestration DAG.
+    ///
+    /// Empty slice when no DAG lookahead is available (PAACE deferred to P2). The scorer
+    /// simply zeroes the plan signal when the slice is empty.
+    pub planned_next_tools: &'a [PlannedToolHint],
+    /// TUI status channel for spinner updates during fidelity scoring.
+    ///
+    /// Mirrors the channel wired in `ContextSummarizationView::status_tx`. `None` in
+    /// non-TUI modes; the service skips sending when the sender is absent.
+    pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 /// Values produced by [`crate::service::ContextService::prepare_context`] that must be applied by the caller.
@@ -350,6 +369,17 @@ pub struct ContextSummarizationView<'a> {
     /// `None` when `[memory.compression.typed_pages] enabled = false`.
     /// Populated by `CompactionAdapters::populate` in `zeph-core`.
     pub typed_pages: Option<Arc<TypedPagesState>>,
+
+    // ── CAM: proactive regrade (AgeMem, #4547) ────────────────────────────────
+    /// Fidelity scoring config for proactive regrade in `maybe_compact`.
+    ///
+    /// `None` → proactive regrade is skipped (scoring disabled or config absent).
+    pub fidelity_config: Option<FidelityConfig>,
+    /// Most recent user query — passed to the scorer as the semantic signal source.
+    ///
+    /// Empty string when no query is available (`AgeMem` degrades gracefully to
+    /// temporal + importance signals only).
+    pub current_query: String,
 }
 
 impl ContextSummarizationView<'_> {

@@ -468,6 +468,12 @@ pub struct MessageMetadata {
     /// Never serialized — always re-populated from the database on load.
     #[serde(skip)]
     pub db_id: Option<i64>,
+    /// Fidelity level assigned by `FidelityScorer` during context assembly.
+    ///
+    /// `None` when fidelity scoring is disabled or the message has not yet been scored.
+    /// Used for debug tracing and compaction input filtering (INV-02).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fidelity_tag: Option<zeph_common::ContextFidelity>,
 }
 
 impl Default for MessageMetadata {
@@ -479,6 +485,7 @@ impl Default for MessageMetadata {
             focus_pinned: false,
             focus_marker_id: None,
             db_id: None,
+            fidelity_tag: None,
         }
     }
 }
@@ -494,6 +501,7 @@ impl MessageMetadata {
             focus_pinned: false,
             focus_marker_id: None,
             db_id: None,
+            fidelity_tag: None,
         }
     }
 
@@ -507,6 +515,7 @@ impl MessageMetadata {
             focus_pinned: false,
             focus_marker_id: None,
             db_id: None,
+            fidelity_tag: None,
         }
     }
 
@@ -520,6 +529,7 @@ impl MessageMetadata {
             focus_pinned: true,
             focus_marker_id: None,
             db_id: None,
+            fidelity_tag: None,
         }
     }
 }
