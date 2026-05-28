@@ -44,6 +44,11 @@ pub(crate) struct LearningEngine {
     /// Set by `maybe_extract_skills_from_trace`; awaited at shutdown so the extraction
     /// task is not silently dropped if the agent exits before it completes.
     pub(crate) trace_extraction_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle for the periodic heuristic promotion background task (`AutoSkill A6`, spec 061).
+    ///
+    /// Set by `maybe_start_heuristic_promotion` at agent startup when
+    /// `heuristic_promotion_enabled = true`. Aborted at shutdown.
+    pub(crate) heuristic_promotion_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl LearningEngine {
@@ -59,6 +64,7 @@ impl LearningEngine {
             last_analyzed_correction_id: 0,
             learning_tasks: tokio::task::JoinSet::new(),
             trace_extraction_handle: None,
+            heuristic_promotion_handle: None,
         }
     }
 

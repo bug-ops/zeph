@@ -115,6 +115,15 @@ impl DbStore {
         Ok(Self { pool })
     }
 
+    /// Create a store from an already-open pool (no migrations run).
+    ///
+    /// Use this when the pool was obtained from an existing store (e.g. the main
+    /// agent memory store) to avoid redundant migration runs.
+    #[must_use]
+    pub fn from_pool(pool: DbPool) -> Self {
+        Self { pool }
+    }
+
     /// Expose the underlying pool for shared access by other stores.
     #[must_use]
     pub fn pool(&self) -> &DbPool {

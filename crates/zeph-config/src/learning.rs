@@ -144,6 +144,14 @@ fn default_skill_merge_enabled() -> bool {
     true
 }
 
+fn default_heuristic_promotion_threshold() -> u32 {
+    5
+}
+
+fn default_heuristic_promotion_interval_hours() -> u64 {
+    24
+}
+
 /// Strategy for detecting implicit user corrections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -380,6 +388,28 @@ pub struct LearningConfig {
     /// Must be strictly greater than `merge_threshold` (validated at startup).
     #[serde(default = "default_dedup_threshold")]
     pub dedup_threshold: f32,
+
+    // --- AutoSkill A6: Heuristic promotion from ERL (spec 061) ---
+    /// Enable periodic heuristic promotion from ERL to full skills. Default: `false`.
+    ///
+    /// When `true`, a background task runs every `heuristic_promotion_interval_hours` hours
+    /// and evaluates whether accumulated ERL heuristics are substantial enough for promotion.
+    #[serde(default)]
+    pub heuristic_promotion_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for heuristic promotion LLM calls.
+    ///
+    /// Use a quality provider — promotion is an offline, non-latency-sensitive analysis.
+    /// Empty = fall back to the primary provider.
+    #[serde(default)]
+    pub heuristic_promotion_provider: ProviderName,
+    /// Minimum heuristic count per skill to trigger promotion evaluation. Default: `5`.
+    ///
+    /// Skills with fewer heuristics (above `erl_min_confidence`) are skipped.
+    #[serde(default = "default_heuristic_promotion_threshold")]
+    pub heuristic_promotion_threshold: u32,
+    /// Interval in hours between promotion evaluation runs. Default: `24`.
+    #[serde(default = "default_heuristic_promotion_interval_hours")]
+    pub heuristic_promotion_interval_hours: u64,
 }
 
 impl Default for LearningConfig {
@@ -439,6 +469,10 @@ impl Default for LearningConfig {
             skill_merge_provider: ProviderName::default(),
             merge_threshold: default_merge_threshold(),
             dedup_threshold: default_dedup_threshold(),
+            heuristic_promotion_enabled: false,
+            heuristic_promotion_provider: ProviderName::default(),
+            heuristic_promotion_threshold: default_heuristic_promotion_threshold(),
+            heuristic_promotion_interval_hours: default_heuristic_promotion_interval_hours(),
         }
     }
 }
@@ -684,5 +718,37 @@ domain_success_gate = true
         let cfg: LearningConfig =
             toml::from_str(r#"trace_extraction_embed_provider = "embed-fast""#).unwrap();
         assert_eq!(cfg.trace_extraction_embed_provider, "embed-fast");
+    }
+
+    #[test]
+    fn heuristic_promotion_defaults() {
+        let cfg = LearningConfig::default();
+        assert!(!cfg.heuristic_promotion_enabled);
+        assert!(cfg.heuristic_promotion_provider.is_empty());
+        assert_eq!(cfg.heuristic_promotion_threshold, 5);
+        assert_eq!(cfg.heuristic_promotion_interval_hours, 24);
+    }
+
+    #[test]
+    fn heuristic_promotion_serde_roundtrip() {
+        let toml = r#"
+heuristic_promotion_enabled = true
+heuristic_promotion_provider = "quality"
+heuristic_promotion_threshold = 10
+heuristic_promotion_interval_hours = 48
+"#;
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.heuristic_promotion_enabled);
+        assert_eq!(cfg.heuristic_promotion_provider, "quality");
+        assert_eq!(cfg.heuristic_promotion_threshold, 10);
+        assert_eq!(cfg.heuristic_promotion_interval_hours, 48);
+    }
+
+    #[test]
+    fn heuristic_promotion_empty_section_uses_defaults() {
+        let cfg: LearningConfig = toml::from_str("").unwrap();
+        assert!(!cfg.heuristic_promotion_enabled);
+        assert_eq!(cfg.heuristic_promotion_threshold, 5);
+        assert_eq!(cfg.heuristic_promotion_interval_hours, 24);
     }
 }

@@ -622,6 +622,12 @@ pub(crate) enum SkillCommand {
         #[arg(long)]
         args: Option<String>,
     },
+    /// Trigger heuristic promotion evaluation manually (`AutoSkill A6`)
+    PromoteHeuristics {
+        /// Evaluate only this skill (omit to evaluate all qualifying skills)
+        #[arg(long)]
+        skill: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

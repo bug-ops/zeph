@@ -37,6 +37,7 @@
 //!     git_hash: None,
 //!     category: None,
 //!     triggers: vec![],
+//!     parent_skill: None,
 //! };
 //!
 //! let decision = decide(0.80, 0.75, 0.90, true, &meta);
@@ -102,6 +103,7 @@ pub enum MergeDecision {
 ///     source_url: None,
 ///     git_hash: None,
 ///     category: None,
+///     parent_skill: None,
 /// };
 ///
 /// // Near-duplicate → Discard
@@ -164,6 +166,7 @@ pub fn decide(
 ///     source_url: None,
 ///     git_hash: None,
 ///     category: None,
+///     parent_skill: None,
 /// };
 /// let emb = SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]);
 /// let candidate = SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]);
@@ -211,6 +214,7 @@ mod tests {
             git_hash: None,
             category: None,
             triggers: vec![],
+            parent_skill: None,
         }
     }
 

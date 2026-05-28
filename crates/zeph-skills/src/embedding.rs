@@ -99,7 +99,7 @@ impl SkillEmbedding {
     /// assert_eq!(emb.dim(), 3);
     /// ```
     #[must_use]
-    pub(crate) fn from_raw(vec: Vec<f32>) -> Self {
+    pub fn from_raw(vec: Vec<f32>) -> Self {
         Self(vec)
     }
 

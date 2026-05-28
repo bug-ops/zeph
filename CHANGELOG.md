@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-skills`: `promoter` module — pure-logic helpers for `AutoSkill A6` heuristic promotion:
+  `compute_batch_hash` (BLAKE3, order-independent), `build_promotion_prompt`, `parse_promotion_response`,
+  `PromotionRecommendation` enum (`BodyEnrichment`, `NewSkill`, `None`). No async/DB/LLM dependencies.
+- `zeph-core`: periodic heuristic promotion background task (`AutoSkill A6`, spec 061) — when
+  `heuristic_promotion_enabled = true`, a tokio task scans `skill_heuristics` for qualifying skills
+  (count ≥ `heuristic_promotion_threshold`), calls the LLM to evaluate, and writes quarantined
+  drafts. Idempotency via `skill_heuristic_promotions` `(skill_name, batch_hash)` primary key.
+  60-second initial delay, configurable interval (default 24 h). Aborted at agent shutdown.
+- `zeph-config`: four new `[skills.learning]` fields: `heuristic_promotion_enabled` (default `false`),
+  `heuristic_promotion_provider` (empty = primary), `heuristic_promotion_threshold` (default `5`),
+  `heuristic_promotion_interval_hours` (default `24`).
+- `zeph-memory`: `count_heuristics_by_skill`, `load_heuristic_texts_for_promotion`,
+  `promotion_already_evaluated`, `record_promotion_evaluation` DB helpers; `DbStore::from_pool`
+  constructor for pool-reuse without re-running migrations.
+- DB migration 093 (SQLite) / 092 (PostgreSQL): `skill_heuristic_promotions` table for idempotency.
+- `zeph-skills`: `parent_skill: Option<String>` field in `SkillMeta` and SKILL.md frontmatter;
+  propagated through `parse_frontmatter`, `load_skill_meta_from_str`, and `load_skill_meta`.
+- CLI: `zeph skills promote-heuristics [--skill <name>]` subcommand for manual promotion dry-run.
+
 ### Fixed
 
 - `zeph-tools`: convert remaining 6 `FileExecutor` handlers from blocking `std::fs` to non-blocking

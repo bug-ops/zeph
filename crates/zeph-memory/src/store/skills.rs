@@ -1176,6 +1176,124 @@ impl SqliteStore {
         .await?;
         Ok(())
     }
+
+    // --- AutoSkill A6: Heuristic promotion helpers (spec 061) ---
+
+    /// Return skills where the count of heuristics (above `min_confidence`) meets
+    /// `min_count`. Each entry is `(skill_name, heuristic_count)`.
+    ///
+    /// Used by the promotion background task to find qualifying skills.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.count_heuristics_by_skill")]
+    pub async fn count_heuristics_by_skill(
+        &self,
+        min_confidence: f64,
+        min_count: u32,
+    ) -> Result<Vec<(String, i64)>, MemoryError> {
+        let rows: Vec<(String, i64)> = zeph_db::query_as(sql!(
+            "SELECT skill_name, COUNT(*) AS cnt \
+             FROM skill_heuristics \
+             WHERE confidence >= ? \
+             GROUP BY skill_name \
+             HAVING cnt >= ?"
+        ))
+        .bind(min_confidence)
+        .bind(i64::from(min_count))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Load all heuristic texts for a specific skill above `min_confidence`.
+    ///
+    /// Returns heuristic texts sorted alphabetically (deterministic batch hash).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.load_heuristic_texts_for_promotion")]
+    pub async fn load_heuristic_texts_for_promotion(
+        &self,
+        skill_name: &str,
+        min_confidence: f64,
+    ) -> Result<Vec<String>, MemoryError> {
+        let rows: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT heuristic_text \
+             FROM skill_heuristics \
+             WHERE skill_name = ? AND confidence >= ? \
+             ORDER BY heuristic_text ASC"
+        ))
+        .bind(skill_name)
+        .bind(min_confidence)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    /// Check whether `(skill_name, batch_hash)` already exists in `skill_heuristic_promotions`.
+    ///
+    /// Returns `true` when the batch was already evaluated — the promotion loop should skip it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.promotion_already_evaluated")]
+    pub async fn promotion_already_evaluated(
+        &self,
+        skill_name: &str,
+        batch_hash: &str,
+    ) -> Result<bool, MemoryError> {
+        let count: i64 = zeph_db::query_scalar(sql!(
+            "SELECT COUNT(*) FROM skill_heuristic_promotions \
+             WHERE skill_name = ? AND batch_hash = ?"
+        ))
+        .bind(skill_name)
+        .bind(batch_hash)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    /// Record a promotion evaluation result in `skill_heuristic_promotions`.
+    ///
+    /// Uses `INSERT OR IGNORE` so concurrent callers are safe (`batch_hash` is part of
+    /// the primary key).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    #[tracing::instrument(skip_all, name = "memory.skills.record_promotion_evaluation")]
+    pub async fn record_promotion_evaluation(
+        &self,
+        skill_name: &str,
+        batch_hash: &str,
+        recommendation: &str,
+        draft_skill_name: Option<&str>,
+    ) -> Result<(), MemoryError> {
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX);
+        zeph_db::query(sql!(
+            "INSERT OR IGNORE INTO skill_heuristic_promotions \
+             (skill_name, batch_hash, evaluated_at, recommendation, draft_skill_name) \
+             VALUES (?, ?, ?, ?, ?)"
+        ))
+        .bind(skill_name)
+        .bind(batch_hash)
+        .bind(now)
+        .bind(recommendation)
+        .bind(draft_skill_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ mod corrections;
 pub mod error;
 mod experiment_cmd;
 pub(crate) mod focus;
+mod heuristic_promotion;
 mod index;
 mod learning;
 pub(crate) mod learning_engine;
@@ -765,6 +766,17 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // Abort the heuristic promotion loop (periodic task; abort is safe because
+        // promotion_already_evaluated ensures idempotent retry on next startup).
+        if let Some(h) = self
+            .services
+            .learning_engine
+            .heuristic_promotion_handle
+            .take()
+        {
+            h.abort();
+        }
+
         // Allow cancelled tasks to release their HTTP connections before the summary LLM call.
         // abort_all() posts cancellation signals but does not drain tasks; aborted futures only
         // observe cancellation at their next .await point. Without yielding here the summary
@@ -1183,6 +1195,17 @@ impl<C: Channel> Agent<C> {
 
         // AutoSkill A1: extract skill candidates from the completed session trace (spec 056).
         self.maybe_extract_skills_from_trace().await;
+
+        // AutoSkill A6: start periodic heuristic promotion task if not yet running (spec 061).
+        // Idempotent: re-calling after first run is a no-op because the handle is already set.
+        if self
+            .services
+            .learning_engine
+            .heuristic_promotion_handle
+            .is_none()
+        {
+            self.maybe_start_heuristic_promotion();
+        }
 
         // Flush trace collector on normal exit (C-04: Drop handles error/panic paths).
         if let Some(ref mut tc) = self.runtime.debug.trace_collector {

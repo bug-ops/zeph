@@ -66,6 +66,7 @@ pub mod matcher;
 pub mod merger;
 pub mod miner;
 pub mod proactive;
+pub mod promoter;
 pub mod prompt;
 #[cfg(feature = "qdrant")]
 pub mod qdrant_matcher;
@@ -89,4 +90,7 @@ pub use generator::{GeneratedSkill, SkillGenerationRequest, SkillGenerator};
 pub use group::{GroupResult, SkillGroup, SkillRole, group_skills};
 pub use matcher::{IntentClassification, MatchResult, ScoredMatch};
 pub use proactive::{DomainLabel, ProactiveExplorer};
+pub use promoter::{
+    PromotionRecommendation, build_promotion_prompt, compute_batch_hash, parse_promotion_response,
+};
 pub use trust::{SkillSource, SkillTrust, SkillTrustLevel, compute_skill_hash};

@@ -256,6 +256,12 @@ cooldown_minutes = 60
 # trace_extraction_max_sessions_queued = 10
 # trace_extraction_max_input_bytes = 32768
 
+# A6: Heuristic promotion from ERL to full skills (spec 061). Off by default.
+# heuristic_promotion_enabled = false
+# heuristic_promotion_provider = ""         # Quality provider recommended. Empty = primary.
+# heuristic_promotion_threshold = 5         # Minimum heuristic count per skill to trigger evaluation.
+# heuristic_promotion_interval_hours = 24   # Hours between promotion scans.
+
 # Provider name for `/skill create` NL skill generation. Empty = primary provider.
 # generation_provider = "quality"
 # Directory where generated skills are saved. Defaults to first entry in paths.

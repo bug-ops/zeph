@@ -337,6 +337,86 @@ pub(crate) async fn handle_skill_command(
                 None => println!("{body}"),
             }
         }
+
+        SkillCommand::PromoteHeuristics { skill } => {
+            use zeph_skills::promoter::{build_promotion_prompt, compute_batch_hash};
+
+            let store = zeph_memory::store::SqliteStore::new(&sqlite_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
+
+            let erl_min_confidence = config.skills.learning.erl_min_confidence;
+            let threshold = config.skills.learning.heuristic_promotion_threshold;
+
+            let candidates: Vec<(String, i64)> = if let Some(ref name) = skill {
+                // Single skill: load count directly.
+                let texts = store
+                    .load_heuristic_texts_for_promotion(name, erl_min_confidence)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let count = u32::try_from(texts.len()).unwrap_or(u32::MAX);
+                if count < threshold {
+                    println!(
+                        "Skill \"{name}\" has {} heuristics (threshold: {threshold}), skipping.",
+                        texts.len()
+                    );
+                    return Ok(());
+                }
+                vec![(name.clone(), i64::try_from(texts.len()).unwrap_or(i64::MAX))]
+            } else {
+                store
+                    .count_heuristics_by_skill(erl_min_confidence, threshold)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            };
+
+            if candidates.is_empty() {
+                println!("No skills qualify for heuristic promotion (threshold: {threshold}).");
+                return Ok(());
+            }
+
+            println!("Qualifying skills: {}", candidates.len());
+            for (skill_name, count) in &candidates {
+                let heuristics = store
+                    .load_heuristic_texts_for_promotion(skill_name, erl_min_confidence)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let batch_hash = compute_batch_hash(&heuristics);
+
+                let already = store
+                    .promotion_already_evaluated(skill_name, &batch_hash)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+                if already {
+                    println!(
+                        "  {skill_name}: already evaluated (batch_hash={batch_hash:.8}…), skipping."
+                    );
+                    continue;
+                }
+
+                let skill_md_path = managed_dir.join(skill_name).join("SKILL.md");
+                let parent_body = match tokio::fs::read_to_string(&skill_md_path).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        println!("  {skill_name}: skill file not found ({e}), skipping.");
+                        continue;
+                    }
+                };
+
+                let prompt = build_promotion_prompt(&parent_body, &heuristics);
+                println!(
+                    "  {skill_name}: {count} heuristics, batch_hash={batch_hash:.8}…\n  Prompt preview (first 200 chars): {}…",
+                    &prompt[..prompt.len().min(200)]
+                );
+
+                // Dry-run: show what would be evaluated. A live LLM call requires
+                // the agent (use `zeph run` with `heuristic_promotion_enabled = true`).
+                println!(
+                    "  → Use `zeph run` with heuristic_promotion_enabled=true to trigger live LLM evaluation."
+                );
+            }
+        }
     }
 
     Ok(())
