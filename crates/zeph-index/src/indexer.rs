@@ -907,6 +907,8 @@ mod tests {
     ///
     /// Uses `tokio::time::pause` + `advance` to avoid a real 15-second wall-clock wait.
     /// DB is initialised before pausing time to avoid SQLite pool timeout under paused clock.
+    /// Must run serially — `tokio::time::pause` is process-global and breaks parallel tests.
+    #[serial_test::serial]
     #[tokio::test]
     async fn ensure_collection_timeout_returns_embed_timeout_error() {
         use std::sync::Arc;

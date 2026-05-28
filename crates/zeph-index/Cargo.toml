@@ -43,6 +43,7 @@ zeph-memory.workspace = true
 zeph-tools.workspace = true
 
 [dev-dependencies]
+serial_test.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
