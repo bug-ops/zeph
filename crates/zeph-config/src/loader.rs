@@ -361,6 +361,10 @@ impl Config {
                 &self.memory.memcot.fast_tier_models,
             );
         }
+        self.skills
+            .learning
+            .validate()
+            .map_err(ConfigError::Validation)?;
         // Skill evaluation weight-sum validation (#3319).
         if self.skills.evaluation.enabled {
             let weight_sum = self.skills.evaluation.weight_correctness

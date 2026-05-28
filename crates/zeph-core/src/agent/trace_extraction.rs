@@ -72,8 +72,7 @@ impl<C: Channel> super::Agent<C> {
         let max_input_bytes = learning_cfg.trace_extraction_max_input_bytes;
         let merge_threshold = learning_cfg.merge_threshold;
         let merge_enabled = learning_cfg.skill_merge_enabled;
-        // dedup_threshold lives in SkillsConfig; 0.90 is the spec 057 default.
-        let dedup_threshold: f32 = 0.90;
+        let dedup_threshold = learning_cfg.dedup_threshold;
 
         let existing_meta: Vec<SkillMeta> = self
             .services

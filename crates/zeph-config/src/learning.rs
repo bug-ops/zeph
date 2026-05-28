@@ -136,6 +136,10 @@ fn default_merge_threshold() -> f32 {
     0.75
 }
 
+fn default_dedup_threshold() -> f32 {
+    0.90
+}
+
 fn default_skill_merge_enabled() -> bool {
     true
 }
@@ -367,6 +371,11 @@ pub struct LearningConfig {
     /// Must be strictly less than `dedup_threshold` (validated at startup).
     #[serde(default = "default_merge_threshold")]
     pub merge_threshold: f32,
+    /// Minimum cosine similarity to discard a candidate as a near-exact duplicate. Default: 0.90.
+    ///
+    /// Must be strictly greater than `merge_threshold` (validated at startup).
+    #[serde(default = "default_dedup_threshold")]
+    pub dedup_threshold: f32,
 }
 
 impl Default for LearningConfig {
@@ -424,7 +433,25 @@ impl Default for LearningConfig {
             skill_merge_enabled: default_skill_merge_enabled(),
             skill_merge_provider: ProviderName::default(),
             merge_threshold: default_merge_threshold(),
+            dedup_threshold: default_dedup_threshold(),
         }
+    }
+}
+
+impl LearningConfig {
+    /// Validate invariants that cannot be expressed through serde defaults alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if `merge_threshold >= dedup_threshold`.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.merge_threshold >= self.dedup_threshold {
+            return Err(format!(
+                "skills.learning.merge_threshold ({}) must be strictly less than dedup_threshold ({})",
+                self.merge_threshold, self.dedup_threshold
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -575,6 +602,53 @@ erl_min_confidence = 0.6
         assert!(!cfg.arise_enabled);
         assert!(!cfg.stem_enabled);
         assert!(!cfg.erl_enabled);
+    }
+
+    #[test]
+    fn autoskill_a2_defaults() {
+        let cfg = LearningConfig::default();
+        assert!(cfg.skill_merge_enabled);
+        assert!(cfg.skill_merge_provider.is_empty());
+        assert!((cfg.merge_threshold - 0.75_f32).abs() < f32::EPSILON);
+        assert!((cfg.dedup_threshold - 0.90_f32).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn validate_merge_lt_dedup_ok() {
+        let cfg = LearningConfig::default(); // merge=0.75, dedup=0.90
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_merge_eq_dedup_err() {
+        let mut cfg = LearningConfig::default();
+        cfg.merge_threshold = 0.90;
+        cfg.dedup_threshold = 0.90;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.contains("merge_threshold") && err.contains("dedup_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_merge_gt_dedup_err() {
+        let mut cfg = LearningConfig::default();
+        cfg.merge_threshold = 0.95;
+        cfg.dedup_threshold = 0.90;
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.contains("merge_threshold") && err.contains("dedup_threshold"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn autoskill_a2_dedup_threshold_default_and_roundtrip() {
+        let cfg = LearningConfig::default();
+        assert!((cfg.dedup_threshold - 0.90_f32).abs() < f32::EPSILON);
+        let cfg: LearningConfig = toml::from_str("dedup_threshold = 0.95").unwrap();
+        assert!((cfg.dedup_threshold - 0.95_f32).abs() < f32::EPSILON);
     }
 
     #[test]

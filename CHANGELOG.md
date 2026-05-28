@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-config`: add `dedup_threshold: f32` field to `LearningConfig` (AutoSkill A2, spec 057)
+  with default 0.90, startup validation that `merge_threshold < dedup_threshold` via
+  `LearningConfig::validate()` wired into `Config::validate_llm_and_skills` (closes #4474).
+- `zeph-skills`: replace binary novel/duplicate dedup in `SkillMiner::process_repo` with the
+  three-way `Add/Merge/Discard` flow via `merger::decide()`, mirroring `TraceExtractor`; adds
+  `merge_threshold` (0.75) and `merge_enabled` (true) fields to `MiningConfig`; adds
+  `embed_candidate` and `merge_candidate` methods to `SkillMiner` (AutoSkill A2, closes #4475).
+
 - `zeph-acp`: add `unstable-elicitation` feature — per-session elicitation bridge task
   (`spawn_elicitation_bridge`) with `Arc<Notify>` cancel signal, bounded mpsc channel, and
   `ElicitationBridge::elicit()` helper; bridge task is spawned in `do_new_session` when the IDE
