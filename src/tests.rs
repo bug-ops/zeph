@@ -475,6 +475,9 @@ async fn a2a_response_shift_drain_until_flush_prevents_leak() {
                 input_tokens: 10,
                 output_tokens: 5,
                 context_window: 8192,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_cents: 0.0,
             })
             .await;
         let _ = tx2.send(LoopbackEvent::Flush).await;
@@ -533,6 +536,9 @@ async fn a2a_drain_completes_on_flush_within_timeout() {
                 input_tokens: 10,
                 output_tokens: 5,
                 context_window: 8192,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_cents: 0.0,
             })
             .await;
         let _ = tx2.send(LoopbackEvent::Flush).await;

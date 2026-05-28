@@ -2195,6 +2195,9 @@ fn loopback_usage_maps_to_usage_update() {
         input_tokens: 100,
         output_tokens: 50,
         context_window: 200_000,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_cents: 0.0,
     };
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);

@@ -98,6 +98,7 @@ impl ConnectionHandle {
 
 /// Serializable session metadata returned by `GET /sessions`.
 #[cfg(feature = "acp-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "acp-http")))]
 #[derive(Serialize)]
 pub struct SessionSummary {
     /// ACP session UUID.
@@ -127,6 +128,7 @@ impl From<AcpSessionInfo> for SessionSummary {
 
 /// A single persisted ACP event returned by `GET /sessions/{id}/messages`.
 #[cfg(feature = "acp-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "acp-http")))]
 #[derive(Serialize)]
 pub struct SessionEventDto {
     /// Event type tag (e.g. `"user_message"`, `"agent_message"`, `"tool_call"`).
@@ -139,6 +141,7 @@ pub struct SessionEventDto {
 
 /// Liveness payload returned by `GET /health`.
 #[cfg(feature = "acp-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "acp-http")))]
 #[derive(Serialize)]
 pub struct HealthStatus {
     /// `"ok"` when the server is ready, `"starting"` otherwise.
@@ -172,6 +175,7 @@ pub struct HealthStatus {
 /// # }
 /// ```
 #[cfg(feature = "acp-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "acp-http")))]
 #[derive(Clone)]
 pub struct AcpHttpState {
     pub(crate) connections: Arc<DashMap<String, Arc<ConnectionHandle>>>,

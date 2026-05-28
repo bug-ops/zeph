@@ -39,8 +39,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: `AgentError::Db` now wraps `zeph_db::DbError` via `#[from]` instead of
   erasing it to `String`, preserving the full error chain for structured handling and
   observability (closes #4496).
+- `zeph-acp`, `zeph-gateway`: add `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]` annotations to
+  all feature-gated public items so docs.rs renders them with the correct feature badge (closes #4497).
 
 ### Added
+
+- `zeph-acp`: implement `session/usage` ACP message — `UsageUpdate` notifications are now sent after
+  each LLM call with per-turn input/output/cache token counts and cost estimate; a cumulative session
+  summary is sent on `session/close`. Feature-gated behind `unstable-session-usage`. Reuses existing
+  internal cost tracker and `LoopbackEvent::Usage` — no duplicate counters (closes #4457).
 
 - `zeph-config`: add `dedup_threshold: f32` field to `LearningConfig` (AutoSkill A2, spec 057)
   with default 0.90, startup validation that `merge_threshold < dedup_threshold` via

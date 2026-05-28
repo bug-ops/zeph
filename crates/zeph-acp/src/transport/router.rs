@@ -84,6 +84,7 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 /// # }
 /// ```
 #[cfg(feature = "acp-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "acp-http")))]
 pub fn acp_router(state: AcpHttpState) -> Router {
     let acp_routes = Router::new()
         .route("/acp", post(post_handler).get(get_handler))

@@ -358,6 +358,7 @@ pub type AgentSpawner = Arc<
 /// `axum::State` requirements (`Send + Sync`). In practice this is the same type
 /// alias — the distinction exists to make the intent clear at call sites.
 #[cfg(feature = "acp-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "acp-http")))]
 pub type SendAgentSpawner = AgentSpawner;
 
 /// Sender half for delivering session notifications to the per-session drainer.
@@ -367,6 +368,75 @@ pub(crate) type NotifySender =
 /// Receiver half paired with [`NotifySender`].
 pub(crate) type NotifyReceiver =
     mpsc::Receiver<(acp::schema::SessionNotification, oneshot::Sender<()>)>;
+
+/// Per-turn token totals accumulated inside `drain_agent_events` for `PromptResponse.usage`.
+///
+/// Holds the sum of all `LoopbackEvent::Usage` events received within a single prompt turn.
+#[cfg(feature = "unstable-session-usage")]
+#[allow(clippy::struct_field_names)] // all fields intentionally share `_tokens` postfix for clarity
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct TurnUsage {
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) cache_read_tokens: u64,
+    pub(crate) cache_write_tokens: u64,
+}
+
+/// Return value of [`ZephAcpAgentState::drain_agent_events`].
+///
+/// Bundles cancelled flag, stop hint, recycled receiver, and per-turn usage totals.
+/// The `turn_usage` field is only present when `unstable-session-usage` is enabled.
+struct DrainResult {
+    cancelled: bool,
+    stop_hint: Option<StopHint>,
+    rx: tokio::sync::mpsc::Receiver<LoopbackEvent>,
+    #[cfg(feature = "unstable-session-usage")]
+    turn_usage: TurnUsage,
+}
+
+/// Per-session token and cost totals used to populate the session-close usage summary.
+///
+/// Token fields accumulate per-call deltas. `last_cost_cents` and `last_context_window`
+/// are overwritten on each update (already-cumulative / most-recent-valid values from
+/// `LoopbackEvent::Usage`).
+#[cfg(feature = "unstable-session-usage")]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SessionUsageAccumulator {
+    pub(crate) total_input_tokens: u64,
+    pub(crate) total_output_tokens: u64,
+    pub(crate) total_cache_read_tokens: u64,
+    pub(crate) total_cache_write_tokens: u64,
+    /// Cumulative cost in USD cents — overwrite on each update, do not sum.
+    pub(crate) last_cost_cents: f64,
+    /// Most recent context window size in tokens — overwrite on each update.
+    pub(crate) last_context_window: u64,
+}
+
+#[cfg(feature = "unstable-session-usage")]
+impl SessionUsageAccumulator {
+    /// Record one LLM call's token deltas, latest cumulative cost, and context window size.
+    pub(crate) fn record(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        cost_cents: f64,
+        context_window: u64,
+    ) {
+        self.total_input_tokens = self.total_input_tokens.saturating_add(input_tokens);
+        self.total_output_tokens = self.total_output_tokens.saturating_add(output_tokens);
+        self.total_cache_read_tokens = self
+            .total_cache_read_tokens
+            .saturating_add(cache_read_tokens);
+        self.total_cache_write_tokens = self
+            .total_cache_write_tokens
+            .saturating_add(cache_write_tokens);
+        // cost_cents and context_window are snapshot values — overwrite, do not accumulate.
+        self.last_cost_cents = cost_cents;
+        self.last_context_window = context_window;
+    }
+}
 
 pub(crate) struct SessionEntry {
     pub(crate) input_tx: mpsc::Sender<ChannelMessage>,
@@ -414,6 +484,9 @@ pub(crate) struct SessionEntry {
     /// did not advertise elicitation capability or the feature is not enabled.
     #[cfg(feature = "unstable-elicitation")]
     pub(crate) elicitation_bridge_handle: Option<JoinHandle<()>>,
+    /// Lifetime token and cost totals for the session-close usage summary.
+    #[cfg(feature = "unstable-session-usage")]
+    pub(crate) usage_accumulator: Mutex<SessionUsageAccumulator>,
 }
 
 impl Drop for SessionEntry {
@@ -600,6 +673,7 @@ impl ZephAcpAgentState {
     /// and `protocol` is the wire type used to build the default `current` config.
     /// Vault-resolved API keys are never passed here.
     #[cfg(feature = "unstable-llm-providers")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-llm-providers")))]
     #[must_use]
     pub fn with_provider_names(
         mut self,
@@ -682,6 +756,9 @@ impl ZephAcpAgentState {
     /// The task runs until the agent's `reaper_cancel` token is cancelled.
     /// Tracked via a `tokio::spawn` (not `cx.spawn`) because it must survive
     /// individual connection teardowns in HTTP/WS mode.
+    ///
+    /// Note: sessions evicted by the idle reaper are forcibly removed without sending a
+    /// cumulative usage summary. Only graceful `do_close_session` emits a final `UsageUpdate`.
     pub fn start_idle_reaper(&self) {
         let sessions = Arc::clone(&self.sessions);
         let idle_timeout = self.idle_timeout;
@@ -1443,19 +1520,19 @@ impl ZephAcpAgentState {
             .map(|e| Arc::clone(&e.cancel_signal));
 
         // Block until the agent finishes this turn (signals via Flush or channel close).
-        let (cancelled, stop_hint, rx) = self
+        let drain = self
             .drain_agent_events(&args.session_id, output_rx, cancel_signal)
             .await;
 
         // Return the receiver so future prompt() calls on this session can proceed.
         if let Some(entry) = self.sessions.lock().get(&args.session_id) {
-            *entry.output_rx.lock() = Some(rx);
+            *entry.output_rx.lock() = Some(drain.rx);
         }
 
-        let stop_reason = compute_stop_reason(cancelled, stop_hint);
+        let stop_reason = compute_stop_reason(drain.cancelled, drain.stop_hint);
 
         // Generate session title after first successful agent response (fire-and-forget).
-        if !cancelled {
+        if !drain.cancelled {
             self.maybe_generate_session_title(&args.session_id, &text);
         }
 
@@ -1472,6 +1549,8 @@ impl ZephAcpAgentState {
             #[cfg(feature = "unstable-message-id")]
             turn_message_id.as_deref(),
             stop_reason,
+            #[cfg(feature = "unstable-session-usage")]
+            drain.turn_usage,
         ))
     }
 
@@ -1486,13 +1565,39 @@ impl ZephAcpAgentState {
     }
 
     #[cfg(feature = "unstable-session-delete")]
-    #[allow(clippy::unused_async, dead_code)]
+    #[allow(dead_code)]
     #[tracing::instrument(skip_all, name = "acp.handler.close_session", fields(session_id = %args.session_id))]
     pub(crate) async fn do_close_session(
         &self,
         args: acp::schema::CloseSessionRequest,
     ) -> acp::Result<acp::schema::CloseSessionResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP session closed");
+        // Send cumulative usage summary BEFORE removing the session so the notify_tx is still live.
+        #[cfg(feature = "unstable-session-usage")]
+        {
+            use acp::schema::{Cost, SessionNotification, SessionUpdate, UsageUpdate};
+            let snapshot = self
+                .sessions
+                .lock()
+                .get(&args.session_id)
+                .map(|e| e.usage_accumulator.lock().clone());
+            if let Some(acc) = snapshot {
+                let used = acc
+                    .total_input_tokens
+                    .saturating_add(acc.total_output_tokens);
+                let mut update = UsageUpdate::new(used, acc.last_context_window);
+                if acc.last_cost_cents > 0.0 {
+                    update = update.cost(Cost::new(acc.last_cost_cents / 100.0, "USD"));
+                }
+                let notification = SessionNotification::new(
+                    args.session_id.clone(),
+                    SessionUpdate::UsageUpdate(update),
+                );
+                if let Err(e) = self.send_notification(&args.session_id, notification).await {
+                    tracing::warn!(error = %e, "failed to send session-close usage notification");
+                }
+            }
+        }
         if let Some(entry) = self.sessions.lock().remove(&args.session_id) {
             entry.cancel_signal.notify_one();
         }
@@ -1507,6 +1612,8 @@ impl ZephAcpAgentState {
         args: acp::schema::DeleteSessionRequest,
     ) -> acp::Result<acp::schema::DeleteSessionResponse> {
         tracing::debug!(session_id = %args.session_id, "ACP session deleted");
+        // Permanent deletion — no usage summary is sent. See do_close_session for graceful
+        // close that emits a cumulative UsageUpdate before removing the session.
         if let Some(entry) = self.sessions.lock().remove(&args.session_id) {
             entry.cancel_signal.notify_one();
         }
@@ -2417,20 +2524,21 @@ impl ZephAcpAgentState {
     }
 
     /// Drain events from `rx` until `Flush` or channel close, forwarding each as an ACP
-    /// notification. Returns `(cancelled, stop_hint, rx)`.
+    /// notification. Returns a [`DrainResult`] with cancelled flag, stop hint, recycled
+    /// receiver, and per-turn token totals for `PromptResponse.usage`.
+    #[allow(clippy::too_many_lines)] // dispatcher with multiple cfg-gated feature branches
     async fn drain_agent_events(
         &self,
         session_id: &acp::schema::SessionId,
         output_rx: tokio::sync::mpsc::Receiver<LoopbackEvent>,
         cancel_signal: Option<std::sync::Arc<tokio::sync::Notify>>,
-    ) -> (
-        bool,
-        Option<StopHint>,
-        tokio::sync::mpsc::Receiver<LoopbackEvent>,
-    ) {
+    ) -> DrainResult {
         let mut rx = output_rx;
         let mut cancelled = false;
         let mut stop_hint: Option<StopHint> = None;
+        // Per-turn token totals for PromptResponse.usage (separate from session accumulator).
+        #[cfg(feature = "unstable-session-usage")]
+        let mut turn_usage = TurnUsage::default();
         // Capture turn message_id once per drain to avoid re-locking sessions per event.
         #[cfg(feature = "unstable-message-id")]
         let turn_mid: Option<String> = self
@@ -2451,6 +2559,59 @@ impl ZephAcpAgentState {
             let Some(event) = event else { break };
             if let LoopbackEvent::Stop(hint) = event {
                 stop_hint = Some(hint);
+                continue;
+            }
+            // Before converting to ACP updates, capture token/cost data for accumulators.
+            #[cfg(feature = "unstable-session-usage")]
+            if let LoopbackEvent::Usage {
+                input_tokens,
+                output_tokens,
+                context_window,
+                cache_read_tokens,
+                cache_write_tokens,
+                cost_cents,
+            } = event
+            {
+                turn_usage.input_tokens = turn_usage.input_tokens.saturating_add(input_tokens);
+                turn_usage.output_tokens = turn_usage.output_tokens.saturating_add(output_tokens);
+                turn_usage.cache_read_tokens = turn_usage
+                    .cache_read_tokens
+                    .saturating_add(cache_read_tokens);
+                turn_usage.cache_write_tokens = turn_usage
+                    .cache_write_tokens
+                    .saturating_add(cache_write_tokens);
+                // Update session-lifetime accumulator (cost/context_window: overwrite, tokens: sum).
+                if let Some(entry) = self.sessions.lock().get(session_id) {
+                    entry.usage_accumulator.lock().record(
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        cost_cents,
+                        context_window,
+                    );
+                }
+                // Reconstruct the event so loopback_event_to_updates can forward it as
+                // a UsageUpdate notification (with cost and context window) to the IDE.
+                let event = LoopbackEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                    context_window,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    cost_cents,
+                };
+                for update in loopback_event_to_updates(event) {
+                    #[cfg(feature = "unstable-message-id")]
+                    let update = apply_message_id_to_chunk(update, turn_mid.as_deref());
+                    #[cfg(not(feature = "unstable-message-id"))]
+                    let update = update;
+                    let notification =
+                        acp::schema::SessionNotification::new(session_id.clone(), update);
+                    if let Err(e) = self.send_notification(session_id, notification).await {
+                        tracing::warn!(error = %e, "failed to send usage notification");
+                    }
+                }
                 continue;
             }
             let is_flush = matches!(event, LoopbackEvent::Flush);
@@ -2497,7 +2658,13 @@ impl ZephAcpAgentState {
                 break;
             }
         }
-        (cancelled, stop_hint, rx)
+        DrainResult {
+            cancelled,
+            stop_hint,
+            rx,
+            #[cfg(feature = "unstable-session-usage")]
+            turn_usage,
+        }
     }
 
     /// Create a forked conversation for `new_id` from `source_id`.
@@ -2676,6 +2843,8 @@ impl ZephAcpAgentState {
             current_message_id: std::sync::Mutex::new(None),
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge_handle: None,
+            #[cfg(feature = "unstable-session-usage")]
+            usage_accumulator: Mutex::new(SessionUsageAccumulator::default()),
         }
     }
 
@@ -2988,16 +3157,36 @@ fn compute_stop_reason(cancelled: bool, stop_hint: Option<StopHint>) -> acp::sch
     }
 }
 
-/// Construct the `PromptResponse`, optionally echoing `turn_message_id`.
+/// Construct the `PromptResponse`, optionally echoing `turn_message_id` and attaching
+/// per-turn token usage when the `unstable-session-usage` feature is enabled.
 fn build_prompt_response(
     #[cfg(feature = "unstable-message-id")] turn_message_id: Option<&str>,
     stop_reason: acp::schema::StopReason,
+    #[cfg(feature = "unstable-session-usage")] turn_usage: TurnUsage,
 ) -> acp::schema::PromptResponse {
     let r = acp::schema::PromptResponse::new(stop_reason);
     #[cfg(feature = "unstable-message-id")]
-    if let Some(mid) = turn_message_id {
-        return r.user_message_id(mid.to_owned());
-    }
+    let r = if let Some(mid) = turn_message_id {
+        r.user_message_id(mid.to_owned())
+    } else {
+        r
+    };
+    #[cfg(feature = "unstable-session-usage")]
+    let r = {
+        let total = turn_usage
+            .input_tokens
+            .saturating_add(turn_usage.output_tokens);
+        let usage =
+            acp::schema::Usage::new(total, turn_usage.input_tokens, turn_usage.output_tokens)
+                // thought_tokens: not tracked for MVP — provider may fold them into output_tokens
+                .cached_read_tokens(
+                    (turn_usage.cache_read_tokens > 0).then_some(turn_usage.cache_read_tokens),
+                )
+                .cached_write_tokens(
+                    (turn_usage.cache_write_tokens > 0).then_some(turn_usage.cache_write_tokens),
+                );
+        r.usage(usage)
+    };
     r
 }
 
@@ -3426,5 +3615,74 @@ mod message_id_tests {
         } else {
             panic!("expected AgentMessageChunk");
         }
+    }
+}
+
+#[cfg(all(test, feature = "unstable-session-usage"))]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn session_accumulator_sums_tokens_and_overwrites_cost_and_context_window() {
+        let mut acc = SessionUsageAccumulator::default();
+        acc.record(100, 50, 10, 5, 1.5, 128_000);
+        acc.record(200, 80, 0, 0, 3.0, 64_000); // cost and context_window must overwrite
+        assert_eq!(acc.total_input_tokens, 300);
+        assert_eq!(acc.total_output_tokens, 130);
+        assert_eq!(acc.total_cache_read_tokens, 10);
+        assert_eq!(acc.total_cache_write_tokens, 5);
+        assert!((acc.last_cost_cents - 3.0).abs() < f64::EPSILON);
+        assert_eq!(acc.last_context_window, 64_000);
+    }
+
+    #[test]
+    fn session_accumulator_default_is_zero() {
+        let acc = SessionUsageAccumulator::default();
+        assert_eq!(acc.total_input_tokens, 0);
+        assert_eq!(acc.last_cost_cents, 0.0);
+        assert_eq!(acc.last_context_window, 0);
+    }
+
+    #[test]
+    fn build_prompt_response_attaches_usage() {
+        let turn_usage = TurnUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 10,
+            cache_write_tokens: 0,
+        };
+        let resp = build_prompt_response(
+            #[cfg(feature = "unstable-message-id")]
+            None,
+            acp::schema::StopReason::EndTurn,
+            turn_usage,
+        );
+        let u = resp.usage.expect("usage should be set");
+        assert_eq!(u.total_tokens, 150);
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.output_tokens, 50);
+        // cache_read_tokens > 0 → field should be set
+        assert_eq!(u.cached_read_tokens, Some(10));
+        // cache_write_tokens == 0 → field should be None
+        assert_eq!(u.cached_write_tokens, None);
+        // thought_tokens not tracked for MVP
+        assert_eq!(u.thought_tokens, None);
+    }
+
+    #[test]
+    fn build_prompt_response_zero_usage_still_attaches() {
+        let turn_usage = TurnUsage::default();
+        let resp = build_prompt_response(
+            #[cfg(feature = "unstable-message-id")]
+            None,
+            acp::schema::StopReason::EndTurn,
+            turn_usage,
+        );
+        let u = resp
+            .usage
+            .expect("usage should be set even for zero tokens");
+        assert_eq!(u.total_tokens, 0);
+        assert_eq!(u.cached_read_tokens, None);
+        assert_eq!(u.cached_write_tokens, None);
     }
 }

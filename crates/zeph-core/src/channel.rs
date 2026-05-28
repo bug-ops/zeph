@@ -321,6 +321,9 @@ pub trait Channel: Send {
 
     /// Send token usage after an LLM call. No-op by default.
     ///
+    /// `cost_cents` is the **cumulative** session cost in USD cents as tracked by the
+    /// internal cost tracker (already-cumulative value — do not sum across calls).
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
@@ -329,6 +332,9 @@ pub trait Channel: Send {
         _input_tokens: u64,
         _output_tokens: u64,
         _context_window: u64,
+        _cache_read_tokens: u64,
+        _cache_write_tokens: u64,
+        _cost_cents: f64,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
@@ -552,11 +558,23 @@ pub enum LoopbackEvent {
     /// Emitted immediately before tool execution begins.
     ToolStart(Box<ToolStartEvent>),
     ToolOutput(Box<ToolOutputEvent>),
-    /// Token usage from the last LLM turn.
+    /// Token usage from the last LLM call.
+    ///
+    /// `cost_cents` is the **cumulative** session cost in USD cents at the time of emission;
+    /// receivers should overwrite (not sum) their stored cost field.
+    ///
+    /// This variant is only produced by `Agent::emit_usage_event` in `metrics_compact.rs`
+    /// after a verified LLM response — it is never constructed from external input.
     Usage {
         input_tokens: u64,
         output_tokens: u64,
         context_window: u64,
+        /// Cache read tokens for this LLM call.
+        cache_read_tokens: u64,
+        /// Cache write tokens for this LLM call.
+        cache_write_tokens: u64,
+        /// Cumulative session cost in USD cents (overwrite, do not sum).
+        cost_cents: f64,
     },
     /// Generated session title (emitted after the first agent response).
     SessionTitle(String),
@@ -687,12 +705,18 @@ impl Channel for LoopbackChannel {
         input_tokens: u64,
         output_tokens: u64,
         context_window: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        cost_cents: f64,
     ) -> Result<(), ChannelError> {
         self.output_tx
             .send(LoopbackEvent::Usage {
                 input_tokens,
                 output_tokens,
                 context_window,
+                cache_read_tokens,
+                cache_write_tokens,
+                cost_cents,
             })
             .await
             .map_err(|_| ChannelError::ChannelClosed)
@@ -1052,17 +1076,26 @@ mod tests {
     #[tokio::test]
     async fn loopback_send_usage_produces_usage_event() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
-        channel.send_usage(100, 50, 200_000).await.unwrap();
+        channel
+            .send_usage(100, 50, 200_000, 10, 5, 1.5)
+            .await
+            .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
         match event {
             LoopbackEvent::Usage {
                 input_tokens,
                 output_tokens,
                 context_window,
+                cache_read_tokens,
+                cache_write_tokens,
+                cost_cents,
             } => {
                 assert_eq!(input_tokens, 100);
                 assert_eq!(output_tokens, 50);
                 assert_eq!(context_window, 200_000);
+                assert_eq!(cache_read_tokens, 10);
+                assert_eq!(cache_write_tokens, 5);
+                assert!((cost_cents - 1.5).abs() < f64::EPSILON);
             }
             _ => panic!("expected Usage event"),
         }
@@ -1072,7 +1105,7 @@ mod tests {
     async fn loopback_send_usage_error_when_closed() {
         let (mut channel, handle) = LoopbackChannel::pair(8);
         drop(handle);
-        let result = channel.send_usage(1, 2, 3).await;
+        let result = channel.send_usage(1, 2, 3, 0, 0, 0.0).await;
         assert!(matches!(result, Err(ChannelError::ChannelClosed)));
     }
 

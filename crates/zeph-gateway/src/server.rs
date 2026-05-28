@@ -276,6 +276,7 @@ impl GatewayServer {
     /// # }
     /// ```
     #[cfg(feature = "prometheus")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
     #[must_use]
     pub fn with_metrics_registry(
         mut self,

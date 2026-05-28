@@ -340,6 +340,9 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         input_tokens: u64,
         output_tokens: u64,
         context_window: u64,
+        _cache_read_tokens: u64,
+        _cache_write_tokens: u64,
+        _cost_cents: f64,
     ) -> Result<(), ChannelError> {
         self.pending_input_tokens = input_tokens;
         self.pending_output_tokens = output_tokens;
@@ -427,7 +430,7 @@ mod tests {
     async fn send_usage_captured_on_send() {
         let mut ch = BenchmarkChannel::new(vec!["p".into()]);
         let _ = ch.recv().await.unwrap();
-        ch.send_usage(10, 20, 128_000).await.unwrap();
+        ch.send_usage(10, 20, 128_000, 0, 0, 0.0).await.unwrap();
         ch.send("answer").await.unwrap();
         let r = &ch.responses()[0];
         assert_eq!(r.input_tokens, 10);

@@ -225,6 +225,9 @@ impl Channel for JsonCliChannel {
         _input_tokens: u64,
         _output_tokens: u64,
         _context_window: u64,
+        _cache_read_tokens: u64,
+        _cache_write_tokens: u64,
+        _cost_cents: f64,
     ) -> Result<(), ChannelError> {
         Ok(())
     }
@@ -410,7 +413,7 @@ mod tests {
             .await
             .is_ok()
         );
-        assert!(ch.send_usage(100, 50, 200_000).await.is_ok());
+        assert!(ch.send_usage(100, 50, 200_000, 0, 0, 0.0).await.is_ok());
         assert!(ch.send_stop_hint(StopHint::MaxTokens).await.is_ok());
     }
 

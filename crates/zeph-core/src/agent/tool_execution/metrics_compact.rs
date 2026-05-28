@@ -86,14 +86,7 @@ impl<C: Channel> Agent<C> {
             recorder.observe_llm_latency(elapsed);
         }
 
-        if let Some((input_tokens, output_tokens)) = self.provider.last_usage() {
-            let context_window =
-                u64::try_from(self.provider.context_window().unwrap_or(0)).unwrap_or(0);
-            let _ = self
-                .channel
-                .send_usage(input_tokens, output_tokens, context_window)
-                .await;
-        }
+        self.emit_usage_event().await;
 
         // C2: server-side compaction — prune old messages and insert synthetic compaction message.
         if let Some(raw_summary) = self.provider.take_compaction_summary() {
@@ -136,5 +129,34 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(())
+    }
+
+    /// Emit `send_usage` with token counts and cumulative cost from the last LLM call.
+    async fn emit_usage_event(&mut self) {
+        let Some((input_tokens, output_tokens)) = self.provider.last_usage() else {
+            return;
+        };
+        let context_window =
+            u64::try_from(self.provider.context_window().unwrap_or(0)).unwrap_or(0);
+        let (cache_read_tokens, cache_write_tokens) =
+            self.provider.last_cache_usage().unwrap_or((0, 0));
+        // Read cumulative cost after record_cost_and_cache updated the metrics snapshot.
+        let cost_cents = self
+            .runtime
+            .metrics
+            .metrics_tx
+            .as_ref()
+            .map_or(0.0, |tx| tx.borrow().cost_spent_cents);
+        let _ = self
+            .channel
+            .send_usage(
+                input_tokens,
+                output_tokens,
+                context_window,
+                cache_read_tokens,
+                cache_write_tokens,
+                cost_cents,
+            )
+            .await;
     }
 }

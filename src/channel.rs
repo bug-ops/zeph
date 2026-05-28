@@ -104,13 +104,19 @@ impl Channel for AppChannel {
         input_tokens: u64,
         output_tokens: u64,
         context_window: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        cost_cents: f64,
     ) -> Result<(), ChannelError> {
         dispatch_app_channel!(
             self,
             send_usage,
             input_tokens,
             output_tokens,
-            context_window
+            context_window,
+            cache_read_tokens,
+            cache_write_tokens,
+            cost_cents
         )
     }
 
@@ -281,7 +287,7 @@ mod tests {
     #[tokio::test]
     async fn app_channel_sends_usage() {
         let mut ch = make_app_channel();
-        assert!(ch.send_usage(100, 50, 200_000).await.is_ok());
+        assert!(ch.send_usage(100, 50, 200_000, 0, 0, 0.0).await.is_ok());
     }
 
     #[tokio::test]
@@ -332,7 +338,7 @@ mod tests {
         // 10. send_queue_count
         ch.send_queue_count(3).await.unwrap();
         // 11. send_usage
-        ch.send_usage(10, 5, 8192).await.unwrap();
+        ch.send_usage(10, 5, 8192, 0, 0, 0.0).await.unwrap();
         // 12. send_diff
         ch.send_diff(
             zeph_core::DiffData {
