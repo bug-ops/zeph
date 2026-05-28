@@ -24,10 +24,42 @@ use zeroize::Zeroizing;
 pub struct Secret(Zeroizing<String>);
 
 impl Secret {
+    /// Create a new secret from a string-like value.
+    ///
+    /// The inner string is wrapped in [`Zeroizing`], which overwrites the memory when the
+    /// secret is dropped. This constructor is marked `#[must_use]` to encourage explicit
+    /// handling of the returned secret value rather than accidental discarding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::secret::Secret;
+    ///
+    /// let secret = Secret::new("my_api_key");
+    /// assert_eq!(secret.expose(), "my_api_key");
+    /// // Memory is zeroized when secret is dropped
+    /// ```
+    #[must_use]
     pub fn new(s: impl Into<String>) -> Self {
         Self(Zeroizing::new(s.into()))
     }
 
+    /// Expose the inner secret string as a borrowed reference.
+    ///
+    /// Use this method to access the secret for API calls or comparisons. The reference
+    /// is bounded by the secret's lifetime, so the underlying string cannot be dropped
+    /// while the reference is in use. Note that the string itself is not zeroized on
+    /// reference — zeroization occurs only when the containing [`Secret`] is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::secret::Secret;
+    ///
+    /// let secret = Secret::new("password123");
+    /// let exposed = secret.expose();
+    /// println!("Length: {}", exposed.len());
+    /// ```
     #[must_use]
     pub fn expose(&self) -> &str {
         self.0.as_str()

@@ -19,6 +19,14 @@ pub fn sanitize_fts_query(query: &str) -> String {
         .join(" ")
 }
 
+/// Sanitize a user query string for safe FTS usage.
+///
+/// `SQLite`: strip FTS5 special characters by splitting on non-alphanumeric
+/// characters and joining with spaces. This prevents syntax errors in
+/// `MATCH` clauses from special FTS5 operators.
+///
+/// `PostgreSQL`: `plainto_tsquery` handles most sanitization; strip obvious
+/// injection attempts (single quotes).
 #[must_use]
 #[cfg(feature = "postgres")]
 pub fn sanitize_fts_query(query: &str) -> String {

@@ -225,9 +225,41 @@ impl ContextManager {
 
     /// Determine which compaction tier applies for the given token count.
     ///
-    /// - `Hard` when `cached_tokens > budget * hard_compaction_threshold`
-    /// - `Soft` when `cached_tokens > budget * soft_compaction_threshold`
-    /// - `None` otherwise (or when no budget is set)
+    /// Compares the current cached token count against the configured thresholds to decide
+    /// whether hard compaction, soft compaction, or no compaction should be triggered.
+    /// This method is typically called by the context assembler during a turn to proactively
+    /// compress older messages if token usage grows too large.
+    ///
+    /// - `Hard` when `cached_tokens > budget * hard_compaction_threshold` — triggers
+    ///   aggressive summarization and compaction
+    /// - `Soft` when `cached_tokens > budget * soft_compaction_threshold` — triggers
+    ///   lighter compaction without full summarization
+    /// - `None` otherwise (or when no budget is set) — no compaction needed
+    ///
+    /// # Parameters
+    ///
+    /// * `cached_tokens` — current token count in the cached context (e.g., message history)
+    ///
+    /// # Returns
+    ///
+    /// The compaction tier that should be applied (`Hard`, `Soft`, or `None`).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_context::manager::ContextManager;
+    /// use zeph_context::budget::ContextBudget;
+    ///
+    /// let budget = ContextBudget::new(128_000, 0.15);
+    /// let mut manager = ContextManager::new();
+    /// manager.soft_compaction_threshold = 0.6;
+    /// manager.hard_compaction_threshold = 0.8;
+    /// manager.budget = Some(budget);
+    ///
+    /// // Check tier for 96k cached tokens (75% of 128k)
+    /// let tier = manager.compaction_tier(96_000);
+    /// // Returns Soft (75% is between 60% and 80%)
+    /// ```
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,

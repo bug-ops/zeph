@@ -140,11 +140,49 @@ impl ContextBudget {
 
     /// Allocate context budget with optional digest pre-reservation and `MemoryFirst` mode.
     ///
-    /// `digest_tokens` — pre-counted tokens for the session digest block; deducted from
-    /// available tokens BEFORE percentage splits so it does not silently crowd out other slots.
+    /// This method provides fine-grained control over token allocation by allowing callers
+    /// to pre-reserve tokens for session digests and toggle `MemoryFirst` mode. Use this
+    /// when digest blocks or memory-focused allocation is needed; otherwise, call
+    /// [`allocate`](Self::allocate) for simpler usage.
     ///
-    /// `memory_first` — when `true`, sets `recent_history` to 0 and redistributes those
-    /// tokens across `summaries`, `semantic_recall`, and `cross_session`.
+    /// # Parameters
+    ///
+    /// * `system_prompt` — the system prompt string; its token count is deducted from available tokens
+    /// * `skills_prompt` — the skills block; its token count is also deducted
+    /// * `tc` — a token counter implementing [`TokenCounting`] (e.g., the LLM provider)
+    /// * `graph_enabled` — when `true`, allocates 4% of available tokens to `graph_facts`
+    /// * `digest_tokens` — pre-counted tokens for the session digest block; deducted from
+    ///   available tokens BEFORE percentage splits so it does not silently crowd out other slots
+    /// * `memory_first` — when `true`, sets `recent_history` to 0 and redistributes those
+    ///   tokens across `summaries`, `semantic_recall`, and `cross_session`
+    ///
+    /// # Returns
+    ///
+    /// A [`BudgetAllocation`] with all context slots populated according to the budget strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_context::budget::ContextBudget;
+    /// # struct Tc;
+    /// # impl zeph_common::memory::TokenCounting for Tc {
+    /// #     fn count_tokens(&self, t: &str) -> usize { t.split_whitespace().count() }
+    /// #     fn count_tool_schema_tokens(&self, v: &serde_json::Value) -> usize { v.to_string().len() }
+    /// # }
+    ///
+    /// let budget = ContextBudget::new(128_000, 0.15);
+    /// let tc = Tc;
+    /// // Allocate with a pre-counted digest of 500 tokens in MemoryFirst mode
+    /// let alloc = budget.allocate_with_opts(
+    ///     "system prompt",
+    ///     "skills prompt",
+    ///     &tc,
+    ///     false,
+    ///     500,  // digest_tokens
+    ///     true, // memory_first
+    /// );
+    /// assert_eq!(alloc.recent_history, 0);
+    /// ```
     #[must_use]
     #[allow(
         clippy::cast_precision_loss,

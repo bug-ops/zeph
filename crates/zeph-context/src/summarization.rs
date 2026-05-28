@@ -494,11 +494,44 @@ pub fn build_tool_pair_summary_prompt(req: &Message, res: &Message) -> String {
 
 /// Remove a fraction of tool-response messages from a conversation using a middle-out strategy.
 ///
-/// `fraction` is in range `(0.0, 1.0]` — fraction of tool responses to replace with compact
-/// references. Tool outputs that have an overflow UUID are replaced with a `read_overflow`
-/// hint; others become `[compacted]`.
+/// This function compacts verbose tool outputs by selectively replacing them with placeholders,
+/// preserving critical initial and final exchanges while collapsing middle responses. The
+/// middle-out strategy ensures the model still sees the most recent (and thus most relevant)
+/// tool results, reducing token usage without destroying conversation flow.
 ///
-/// Returns the modified message list.
+/// # Parameters
+///
+/// * `messages` — the full message history
+/// * `fraction` — the fraction of tool responses to replace (range `(0.0, 1.0]`). For example,
+///   `0.5` means half of the tool responses will be compacted.
+///
+/// # Behavior
+///
+/// - Identifies all messages containing `ToolResult` or `ToolOutput` parts
+/// - Selects which ones to compact using middle-out heuristic (starting near the center,
+///   spiraling outward)
+/// - Tool outputs with an overflow UUID are replaced with a `read_overflow` hint; others become `[compacted]`
+/// - Returns the modified message list with compacted responses in place
+///
+/// # Returns
+///
+/// A new message list with selected tool responses replaced by compact references.
+///
+/// # Examples
+///
+/// ```text
+/// // Given a message history with several ToolResult/ToolOutput parts:
+/// // [assistant] Let me search...
+/// // [user] ToolResult { content: "..." }
+/// // [assistant] Found it, now querying the database...
+/// // [user] ToolResult { content: "..." }
+/// // [assistant] Processing...
+/// // [user] ToolResult { content: "..." }
+/// //
+/// // Calling remove_tool_responses_middle_out(messages, 0.5) compacts about
+/// // half the tool responses using a middle-out strategy — preserving the most
+/// // recent and oldest results while collapsing middle ones to [compacted].
+/// ```
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
