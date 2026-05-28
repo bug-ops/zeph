@@ -246,6 +246,7 @@ pub(crate) fn load_config_tasks(
             mode,
             kind,
             config: task.config.clone(),
+            provenance: zeph_scheduler::TaskProvenance::Static,
         };
         if tx.try_send(SchedulerMessage::Add(Box::new(desc))).is_err() {
             tracing::warn!(
@@ -309,7 +310,12 @@ pub(crate) async fn init_scheduler(
         .with_custom_task_sender(custom_tx.clone())
         .with_handler_timeout(std::time::Duration::from_secs(
             config.scheduler.daemon.handler_timeout_secs,
-        ));
+        ))
+        .with_reentry_defense(
+            config.scheduler.security.enabled,
+            config.scheduler.security.injection_pattern_check,
+            config.scheduler.security.attenuate_after_external_read,
+        );
 
     load_config_tasks(&config.scheduler.tasks, &task_tx);
 

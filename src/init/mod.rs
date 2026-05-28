@@ -8,8 +8,8 @@ use zeph_config::{GeminiThinkingLevel, ThinkingConfig, VaultBackend};
 use zeph_core::config::{
     AcpConfig, ChannelSkillsConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy,
     McpServerConfig, McpTrustLevel, MemoryConfig, OrchestrationConfig, ProviderEntry, ProviderKind,
-    ProviderName, PruningStrategy, SemanticConfig, SessionsConfig, SlackConfig, TelegramConfig,
-    TriggerPolicy, VaultConfig,
+    ProviderName, PruningStrategy, SchedulerSecurityConfig, SemanticConfig, SessionsConfig,
+    SlackConfig, TelegramConfig, TriggerPolicy, VaultConfig,
 };
 use zeph_subagent::def::{MemoryScope, PermissionMode};
 use zeroize::Zeroizing;
@@ -855,6 +855,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         max_tasks: state.scheduler_max_tasks,
         tasks: Vec::new(),
         daemon: zeph_core::config::SchedulerDaemonConfig::default(),
+        security: SchedulerSecurityConfig::default(),
     };
 
     config.agents.default_permission_mode = state.agents_default_permission_mode;

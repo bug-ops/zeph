@@ -238,6 +238,7 @@ impl SchedulerExecutor {
             },
             kind,
             config: params.config,
+            provenance: zeph_scheduler::TaskProvenance::UserAdded,
         };
 
         self.store
@@ -314,6 +315,7 @@ impl SchedulerExecutor {
             mode: TaskMode::OneShot { run_at },
             kind,
             config,
+            provenance: zeph_scheduler::TaskProvenance::UserAdded,
         };
 
         self.store

@@ -53,4 +53,26 @@ pub enum SchedulerError {
     #[cfg(unix)]
     #[error("daemon I/O error: {0}")]
     Io(String),
+
+    /// A task prompt matched an injection pattern and was blocked by the RTW-A defense.
+    ///
+    /// The task is skipped for this tick and logged at `WARN` level. No prompt is
+    /// forwarded to the agent loop.
+    #[error("prompt injection blocked in task '{task_name}': {reason}")]
+    PromptInjectionBlocked {
+        /// Name of the task whose prompt was blocked.
+        task_name: String,
+        /// Description of the pattern that triggered the block.
+        reason: String,
+    },
+
+    /// A task was quarantined by the RTW-A write-fence and skipped for this tick.
+    ///
+    /// Tasks written to the store in the same tick they would execute are held back
+    /// for one tick to prevent write-before-exposed-read re-entry attacks.
+    #[error("task '{task_name}' quarantined by write-fence (written this tick)")]
+    TaskQuarantined {
+        /// Name of the task that was quarantined.
+        task_name: String,
+    },
 }

@@ -60,6 +60,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-sanitizer`: mark `ExfiltrationEvent` as `#[non_exhaustive]` (closes #4517).
 - `zeph-skills`: mark `MatchResult` and `SkillMatcherBackend` as `#[non_exhaustive]` (closes #4520).
 
+### Security
+
+- `zeph-scheduler`: RTW-A temporal re-entry defense (#4026) — four mechanisms: (1) write-fence
+  tick quarantine for channel-added tasks (`UserAdded` provenance held for 1 tick), (2) sealed
+  config with `TaskProvenance` (`Static` / `UserAdded` / `External`) persisted to DB via migration
+  `094_scheduler_provenance`, (3) injection pattern detection in `sanitize_task_prompt_checked`
+  (14 markers, case-insensitive), (4) capability attenuation suppressing custom prompts after
+  external-read ticks (e.g. `UpdateCheck`). Configurable via `[scheduler.security]` TOML section
+  (`enabled`, `injection_pattern_check`, `attenuate_after_external_read`).
+
 ### Fixed
 
 - `zeph-core`: `maybe_start_heuristic_promotion()` moved from post-loop cleanup to agent startup

@@ -974,6 +974,52 @@ impl Default for SchedulerDaemonConfig {
     }
 }
 
+/// RTW-A temporal re-entry defense configuration for the scheduler.
+///
+/// Controls the four RTW-A mechanisms that protect the scheduler tick boundary
+/// from prompt-injection attacks originating from the database.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [scheduler.security]
+/// enabled = true
+/// injection_pattern_check = true
+/// attenuate_after_external_read = true
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SchedulerSecurityConfig {
+    /// Enable all RTW-A re-entry defense mechanisms. Default: `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Mechanism 3: scan `task_data` for injection patterns before forwarding to the LLM.
+    ///
+    /// When enabled, prompts matching known injection markers are blocked and a
+    /// [`SchedulerError::PromptInjectionBlocked`](zeph_scheduler::SchedulerError) is emitted.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub injection_pattern_check: bool,
+
+    /// Mechanism 4: suppress `custom_task_tx` prompt injection after an external-read tick.
+    ///
+    /// When enabled, any tick that includes an `UpdateCheck` (or future network-reading)
+    /// handler will not forward custom task prompts to the agent loop for that tick.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub attenuate_after_external_read: bool,
+}
+
+impl Default for SchedulerSecurityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            injection_pattern_check: true,
+            attenuate_after_external_read: true,
+        }
+    }
+}
+
 /// Cron-based task scheduler configuration, nested under `[scheduler]` in TOML.
 ///
 /// When `enabled = true`, the scheduler runs periodic tasks on a cron schedule.
@@ -1010,6 +1056,9 @@ pub struct SchedulerConfig {
     /// Daemon lifecycle settings used by `zeph serve` / `zeph stop` / `zeph status`.
     #[serde(default)]
     pub daemon: SchedulerDaemonConfig,
+    /// RTW-A re-entry defense settings.
+    #[serde(default)]
+    pub security: SchedulerSecurityConfig,
 }
 
 impl Default for SchedulerConfig {
@@ -1020,6 +1069,7 @@ impl Default for SchedulerConfig {
             max_tasks: default_scheduler_max_tasks(),
             tasks: Vec::new(),
             daemon: SchedulerDaemonConfig::default(),
+            security: SchedulerSecurityConfig::default(),
         }
     }
 }

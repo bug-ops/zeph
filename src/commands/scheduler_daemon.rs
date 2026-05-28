@@ -121,6 +121,11 @@ async fn run_foreground(
     });
 
     let (mut scheduler, ctrl_tx) = zeph_scheduler::Scheduler::new(store, shutdown_rx);
+    scheduler = scheduler.with_reentry_defense(
+        config.scheduler.security.enabled,
+        config.scheduler.security.injection_pattern_check,
+        config.scheduler.security.attenuate_after_external_read,
+    );
 
     // Register built-in handlers available without a live agent session.
     // `UpdateCheckHandler` is self-contained (HTTP only); other handlers that

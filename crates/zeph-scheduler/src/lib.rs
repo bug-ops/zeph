@@ -95,11 +95,12 @@ pub mod pidfile;
 
 pub use error::SchedulerError;
 pub use handlers::CustomTaskHandler;
-pub use sanitize::sanitize_task_prompt;
+pub use sanitize::{sanitize_task_prompt, sanitize_task_prompt_checked};
 pub use scheduler::{Scheduler, SchedulerMessage};
 pub use store::{JobStore, ScheduledTaskInfo, ScheduledTaskRecord};
 pub use task::{
-    ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode, normalize_cron_expr,
+    ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode, TaskProvenance,
+    normalize_cron_expr,
 };
 
 #[cfg(all(unix, feature = "daemon"))]

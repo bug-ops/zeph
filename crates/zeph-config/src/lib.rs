@@ -129,8 +129,8 @@ pub use experiment::{
 pub use features::{
     CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig,
     ProactiveExplorationConfig, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig,
-    SchedulerDaemonConfig, SkillEvaluationConfig, SkillMiningConfig, SkillPromptMode, SkillsConfig,
-    TraceConfig, VaultBackend, VaultConfig,
+    SchedulerDaemonConfig, SchedulerSecurityConfig, SkillEvaluationConfig, SkillMiningConfig,
+    SkillPromptMode, SkillsConfig, TraceConfig, VaultBackend, VaultConfig,
 };
 pub use hooks::{FileChangedConfig, HooksConfig};
 pub use learning::{DetectorMode, LearningConfig};

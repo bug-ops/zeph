@@ -38,6 +38,102 @@ pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
     }
 }
 
+/// Trust level assigned to a scheduled task, used by the RTW-A re-entry defense.
+///
+/// Provenance determines how strictly the tick-fence and injection-detection
+/// mechanisms are applied when a task is dispatched.
+///
+/// # Invariants
+///
+/// - `Static` tasks have their config set at binary startup and are never
+///   overwritten by DB writes between ticks.
+/// - `External` tasks originate from out-of-process writes (CLI, direct SQL)
+///   and are subject to the full quarantine and injection-detection pipeline.
+/// - `UserAdded` tasks are user-initiated via the control channel and
+///   receive a single-tick quarantine before their prompt enters the LLM.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_scheduler::TaskProvenance;
+///
+/// assert_eq!(TaskProvenance::Static.as_str(), "static");
+/// assert_eq!(TaskProvenance::from_provenance_str("external"), TaskProvenance::External);
+/// assert_eq!(TaskProvenance::from_provenance_str("unknown_value"), TaskProvenance::External);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskProvenance {
+    /// Registered at binary startup via [`crate::Scheduler::add_task`] — config is immutable.
+    Static,
+    /// Added via the runtime control channel (e.g. CLI `zeph schedule add`) — user-originated.
+    UserAdded,
+    /// Loaded from the DB on hydration or written by an external process — untrusted.
+    External,
+}
+
+impl TaskProvenance {
+    /// Return the stable persistence string for this provenance level.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_scheduler::TaskProvenance;
+    ///
+    /// assert_eq!(TaskProvenance::Static.as_str(), "static");
+    /// assert_eq!(TaskProvenance::UserAdded.as_str(), "user_added");
+    /// assert_eq!(TaskProvenance::External.as_str(), "external");
+    /// ```
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Static => "static",
+            Self::UserAdded => "user_added",
+            Self::External => "external",
+        }
+    }
+
+    /// Parse a provenance string from the database.
+    ///
+    /// Unknown strings default to [`TaskProvenance::External`] — the most restrictive
+    /// level — so future schema additions degrade safely.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_scheduler::TaskProvenance;
+    ///
+    /// assert_eq!(TaskProvenance::from_provenance_str("static"), TaskProvenance::Static);
+    /// assert_eq!(TaskProvenance::from_provenance_str("user_added"), TaskProvenance::UserAdded);
+    /// assert_eq!(TaskProvenance::from_provenance_str("external"), TaskProvenance::External);
+    /// // Unknown values fall back to External (most restrictive).
+    /// assert_eq!(TaskProvenance::from_provenance_str("hydrated"), TaskProvenance::External);
+    /// ```
+    #[must_use]
+    pub fn from_provenance_str(s: &str) -> Self {
+        match s {
+            "static" => Self::Static,
+            "user_added" => Self::UserAdded,
+            _ => Self::External,
+        }
+    }
+
+    /// Returns `true` if this task originated from a potentially untrusted external source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_scheduler::TaskProvenance;
+    ///
+    /// assert!(TaskProvenance::External.is_external());
+    /// assert!(!TaskProvenance::Static.is_external());
+    /// assert!(!TaskProvenance::UserAdded.is_external());
+    /// ```
+    #[must_use]
+    pub fn is_external(&self) -> bool {
+        matches!(self, Self::External)
+    }
+}
+
 /// Identifies what type of work a scheduled task performs.
 ///
 /// Built-in variants map to well-known agent subsystems. [`TaskKind::Custom`]
@@ -163,6 +259,10 @@ pub struct TaskDescriptor {
     pub kind: TaskKind,
     /// Arbitrary JSON configuration forwarded to the [`TaskHandler`] at execution time.
     pub config: serde_json::Value,
+    /// Trust level for RTW-A re-entry defense.
+    ///
+    /// Tasks sent via the runtime channel default to [`TaskProvenance::UserAdded`].
+    pub provenance: TaskProvenance,
 }
 
 /// A task held in memory by the [`crate::Scheduler`].
@@ -195,10 +295,14 @@ pub struct ScheduledTask {
     pub kind: TaskKind,
     /// Arbitrary JSON configuration forwarded to the [`TaskHandler`] at execution time.
     pub config: serde_json::Value,
+    /// Trust level for RTW-A re-entry defense.
+    pub provenance: TaskProvenance,
 }
 
 impl ScheduledTask {
     /// Create a new periodic task from a cron expression string.
+    ///
+    /// The resulting task has [`TaskProvenance::Static`] provenance.
     ///
     /// # Errors
     ///
@@ -214,6 +318,9 @@ impl ScheduledTask {
 
     /// Create a periodic task from a cron expression.
     ///
+    /// The resulting task has [`TaskProvenance::Static`] provenance. To create a task with
+    /// different provenance, use [`ScheduledTask::periodic_with_provenance`].
+    ///
     /// # Errors
     ///
     /// Returns `SchedulerError::InvalidCron` if the expression is not valid.
@@ -222,6 +329,21 @@ impl ScheduledTask {
         cron_expr: &str,
         kind: TaskKind,
         config: serde_json::Value,
+    ) -> Result<Self, SchedulerError> {
+        Self::periodic_with_provenance(name, cron_expr, kind, config, TaskProvenance::Static)
+    }
+
+    /// Create a periodic task from a cron expression with explicit provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SchedulerError::InvalidCron` if the expression is not valid.
+    pub fn periodic_with_provenance(
+        name: impl Into<String>,
+        cron_expr: &str,
+        kind: TaskKind,
+        config: serde_json::Value,
+        provenance: TaskProvenance,
     ) -> Result<Self, SchedulerError> {
         let normalized = normalize_cron_expr(cron_expr);
         let schedule = CronSchedule::from_str(&normalized)
@@ -233,10 +355,13 @@ impl ScheduledTask {
             },
             kind,
             config,
+            provenance,
         })
     }
 
     /// Create a one-shot task that runs at a specific point in time.
+    ///
+    /// The resulting task has [`TaskProvenance::Static`] provenance.
     #[must_use]
     pub fn oneshot(
         name: impl Into<String>,
@@ -249,6 +374,7 @@ impl ScheduledTask {
             mode: TaskMode::OneShot { run_at },
             kind,
             config,
+            provenance: TaskProvenance::Static,
         }
     }
 
@@ -451,5 +577,61 @@ mod tests {
         .unwrap();
         assert_eq!(task.task_mode_str(), "periodic");
         assert!(task.cron_schedule().is_some());
+    }
+
+    #[test]
+    fn task_provenance_roundtrip() {
+        assert_eq!(
+            TaskProvenance::from_provenance_str("static"),
+            TaskProvenance::Static
+        );
+        assert_eq!(
+            TaskProvenance::from_provenance_str("user_added"),
+            TaskProvenance::UserAdded
+        );
+        assert_eq!(
+            TaskProvenance::from_provenance_str("external"),
+            TaskProvenance::External
+        );
+        // Unknown values fall back to External (most restrictive fail-safe).
+        assert_eq!(
+            TaskProvenance::from_provenance_str("hydrated"),
+            TaskProvenance::External
+        );
+        assert_eq!(TaskProvenance::Static.as_str(), "static");
+        assert_eq!(TaskProvenance::UserAdded.as_str(), "user_added");
+        assert_eq!(TaskProvenance::External.as_str(), "external");
+    }
+
+    #[test]
+    fn task_provenance_is_external() {
+        assert!(TaskProvenance::External.is_external());
+        assert!(!TaskProvenance::Static.is_external());
+        assert!(!TaskProvenance::UserAdded.is_external());
+    }
+
+    #[test]
+    fn new_task_has_static_provenance() {
+        let task = ScheduledTask::new(
+            "test",
+            "0 * * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(task.provenance, TaskProvenance::Static);
+    }
+
+    #[test]
+    fn periodic_with_provenance_sets_provenance() {
+        let task = ScheduledTask::periodic_with_provenance(
+            "ext",
+            "0 * * * * *",
+            TaskKind::HealthCheck,
+            serde_json::Value::Null,
+            TaskProvenance::External,
+        )
+        .unwrap();
+        assert_eq!(task.provenance, TaskProvenance::External);
     }
 }

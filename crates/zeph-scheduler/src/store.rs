@@ -64,6 +64,8 @@ pub struct ScheduledTaskInfo {
     pub task_data: String,
     /// Current job status: `"pending"`, `"completed"`, `"done"`, or `"error"`.
     pub status: String,
+    /// RTW-A provenance tag: `"static"`, `"user_added"`, or `"external"`.
+    pub provenance: String,
 }
 
 /// Persistent storage layer for scheduled jobs.
@@ -164,15 +166,38 @@ impl JobStore {
         run_at: Option<&str>,
         task_data: &str,
     ) -> Result<(), SchedulerError> {
+        self.upsert_job_with_provenance(
+            name, cron_expr, kind, task_mode, run_at, task_data, "static",
+        )
+        .await
+    }
+
+    /// Upsert a job definition with explicit `task_mode`, `task_data`, and RTW-A `provenance`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL statement fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_job_with_provenance(
+        &self,
+        name: &str,
+        cron_expr: &str,
+        kind: &str,
+        task_mode: &str,
+        run_at: Option<&str>,
+        task_data: &str,
+        provenance: &str,
+    ) -> Result<(), SchedulerError> {
         zeph_db::query(sql!(
-            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at, task_data)
-             VALUES (?, ?, ?, ?, ?, ?)
+            "INSERT INTO scheduled_jobs (name, cron_expr, kind, task_mode, run_at, task_data, provenance)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(name) DO UPDATE SET
                cron_expr = excluded.cron_expr,
                kind = excluded.kind,
                task_mode = excluded.task_mode,
                run_at = excluded.run_at,
-               task_data = excluded.task_data"
+               task_data = excluded.task_data,
+               provenance = excluded.provenance"
         ))
         .bind(name)
         .bind(cron_expr)
@@ -180,6 +205,7 @@ impl JobStore {
         .bind(task_mode)
         .bind(run_at)
         .bind(task_data)
+        .bind(provenance)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -369,9 +395,9 @@ impl JobStore {
     /// Returns an error if the SQL query fails.
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
         #[allow(clippy::type_complexity)]
-        let rows: Vec<(String, String, String, String, Option<String>, String, String)> =
+        let rows: Vec<(String, String, String, String, Option<String>, String, String, String)> =
             zeph_db::query_as(sql!(
-                "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data, status \
+                "SELECT name, kind, task_mode, cron_expr, COALESCE(next_run, run_at), task_data, status, provenance \
                  FROM scheduled_jobs WHERE status != 'done' ORDER BY name"
             ))
             .fetch_all(&self.pool)
@@ -379,7 +405,7 @@ impl JobStore {
         Ok(rows
             .into_iter()
             .map(
-                |(name, kind, task_mode, cron_expr, next_run, task_data, status)| {
+                |(name, kind, task_mode, cron_expr, next_run, task_data, status, provenance)| {
                     ScheduledTaskInfo {
                         name,
                         kind,
@@ -388,6 +414,7 @@ impl JobStore {
                         next_run: next_run.unwrap_or_default(),
                         task_data,
                         status,
+                        provenance,
                     }
                 },
             )
