@@ -3554,13 +3554,13 @@ mod tests {
 
     #[test]
     fn connect_retry_backoff_respects_custom_base_ms() {
-        // base_ms = 1000 (default config value): 1000, 2000, 4000, 8000, …
-        assert_eq!(connect_retry_backoff(1, 1000), Duration::from_millis(1000));
-        assert_eq!(connect_retry_backoff(2, 1000), Duration::from_millis(2000));
-        assert_eq!(connect_retry_backoff(3, 1000), Duration::from_millis(4000));
-        assert_eq!(connect_retry_backoff(4, 1000), Duration::from_millis(8000));
+        // base_ms = 1000 (default config value): 1s, 2s, 4s, 8s, …
+        assert_eq!(connect_retry_backoff(1, 1000), Duration::from_secs(1));
+        assert_eq!(connect_retry_backoff(2, 1000), Duration::from_secs(2));
+        assert_eq!(connect_retry_backoff(3, 1000), Duration::from_secs(4));
+        assert_eq!(connect_retry_backoff(4, 1000), Duration::from_secs(8));
         // cap enforced at 8 s regardless of attempt
-        assert_eq!(connect_retry_backoff(10, 1000), Duration::from_millis(8000));
+        assert_eq!(connect_retry_backoff(10, 1000), Duration::from_secs(8));
     }
 
     // ── Error classifier ───────────────────────────────────────────────────────────────────────
