@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-plugins`: `read_plugin_source` in `update_one_plugin` now uses `tokio::fs::read_to_string`
+  instead of `std::fs::read_to_string`, preventing the async executor thread from blocking during
+  plugin auto-update sidecar reads (closes #4589).
+- `zeph-core`: `AgentBuilder::apply_tool_schema_filter` wraps `provider.embed()` with a 15-second
+  `tokio::time::timeout`. On timeout the filter is silently disabled (graceful degradation) rather
+  than hanging agent startup indefinitely (closes #4585).
+- `zeph-index`: `CodeIndexer::ensure_collection_for_provider` wraps `provider.embed("probe")` with
+  a 15-second `tokio::time::timeout`, mapping a stall to `IndexError::EmbedTimeout` so index
+  initialization fails fast with a clear diagnostic (closes #4585).
 - `zeph-llm`, `zeph-mcp`: embed calls inside fire-and-forget tasks (`RouterProvider::spawn_asi_update`
   and `EmbeddingAnomalyGuard::check_async`) are now bounded by `embed_timeout_ms` (default 5 s) via
   `tokio::time::timeout`. On timeout the task returns early — same as the existing embed-error path —
