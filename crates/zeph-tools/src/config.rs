@@ -371,6 +371,15 @@ mod tests {
     }
 
     #[test]
+    fn adversarial_policy_default_exempt_tools_contains_scheduler_read_only() {
+        let exempt = AdversarialPolicyConfig::default_exempt_tools();
+        assert!(
+            exempt.contains(&"list_tasks".to_string()),
+            "default exempt_tools must contain list_tasks (read-only scheduler intrinsic)"
+        );
+    }
+
+    #[test]
     fn utility_scoring_default_exempt_tools_contains_skill_ops() {
         let cfg = UtilityScoringConfig::default();
         assert!(

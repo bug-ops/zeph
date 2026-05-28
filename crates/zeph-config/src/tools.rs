@@ -784,6 +784,9 @@ impl AdversarialPolicyConfig {
             "load_skill".into(),
             "invoke_skill".into(),
             "schedule_deferred".into(),
+            // Read-only scheduler intrinsic must never be blocked by the adversarial
+            // probe: it carries no side-effects and the embed provider may be unavailable.
+            "list_tasks".into(),
         ]
     }
 }
