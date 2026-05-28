@@ -939,13 +939,10 @@ mod tests {
         let store = crate::store::CodeStore::with_ops(ops, pool);
         let indexer = CodeIndexer::new(store, slow_provider, IndexerConfig::default());
 
-        // Advance mock time past the 15-second timeout so tokio::time::timeout fires.
-        let drive = tokio::spawn(async {
-            tokio::time::advance(std::time::Duration::from_secs(16)).await;
-        });
-
-        let result = indexer.ensure_collection_for_provider().await;
-        drive.await.unwrap();
+        // Spawn the operation so we can advance mock time from the test body.
+        let handle = tokio::spawn(async move { indexer.ensure_collection_for_provider().await });
+        tokio::time::advance(std::time::Duration::from_secs(16)).await;
+        let result = handle.await.unwrap();
 
         match result {
             Err(crate::error::IndexError::EmbedTimeout(secs)) => {

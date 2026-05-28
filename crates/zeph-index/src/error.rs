@@ -90,8 +90,9 @@ pub enum IndexError {
 
     /// Embedding call timed out.
     ///
-    /// Raised by [`crate::retriever::CodeRetriever`] when `provider.embed()` does not
-    /// complete within the configured `embed_timeout_secs`.
+    /// Raised by [`crate::retriever::CodeRetriever`] and
+    /// [`crate::indexer::CodeIndexer`] when `provider.embed()` does not complete
+    /// within the configured timeout.
     #[error("embedding timed out after {0}s")]
     EmbedTimeout(u64),
 
