@@ -1261,15 +1261,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     }
 
-    // Spawn deferred OAuth connections now that the UI channel is ready and can
-    // display the authorization URL. Non-OAuth tools are already available from
-    // connect_all(); OAuth tools arrive via tools_watch_tx when authorized.
-    if !exec_mode.bare && tool_setup.mcp_manager.has_oauth_servers() {
-        let mgr = std::sync::Arc::clone(&tool_setup.mcp_manager);
-        tokio::spawn(async move {
-            mgr.connect_oauth_deferred().await;
-        });
-    }
+    // oauth_deferred_handle is initialised below, after shutdown_rx is created, so it can
+    // be aborted on shutdown. Declared here to keep scope visible at the abort site.
+    let oauth_deferred_handle: Option<tokio::task::JoinHandle<()>>;
 
     #[cfg(feature = "tui")]
     let is_cli =
@@ -1447,6 +1441,25 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             cancel.cancel();
         });
     }
+
+    // Spawn deferred OAuth connections now that the UI channel is ready and can display the
+    // authorization URL. Non-OAuth tools are already available from connect_all(); OAuth tools
+    // arrive via tools_watch_tx when authorized. The handle is stored so it can be aborted
+    // when the shutdown signal fires (prevents the task from outliving the runtime).
+    oauth_deferred_handle = if !exec_mode.bare && tool_setup.mcp_manager.has_oauth_servers() {
+        let mgr = std::sync::Arc::clone(&tool_setup.mcp_manager);
+        let mut shutdown = shutdown_rx.clone();
+        Some(tokio::spawn(async move {
+            tokio::select! {
+                () = mgr.connect_oauth_deferred() => {}
+                _ = shutdown.changed() => {
+                    tracing::debug!("oauth deferred connect aborted: shutdown signal received");
+                }
+            }
+        }))
+    } else {
+        None
+    };
 
     #[cfg(feature = "profiling")]
     let _sysinfo_handle = zeph_core::system_metrics::spawn_system_metrics_task(
@@ -3334,6 +3347,11 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             Err(e) => Err(anyhow::anyhow!("{e}")),
         };
         crate::fleet_session::end_session(memory.sqlite(), &fleet_session_id, &fleet_result).await;
+    }
+    // Abort the OAuth deferred connect task before shutting down MCP connections so that the
+    // task does not race with McpManager teardown (which closes the underlying transports).
+    if let Some(h) = oauth_deferred_handle {
+        h.abort();
     }
     // Explicitly shut down MCP connections before agent.shutdown() so that child processes
     // are killed while the tokio runtime is still active (#2693).

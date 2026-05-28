@@ -333,7 +333,10 @@ impl<C: Channel> Agent<C> {
                     ThinkingBlock::Redacted { data } => {
                         Some(MessagePart::RedactedThinkingBlock { data })
                     }
-                    _ => None,
+                    unknown => {
+                        tracing::debug!(variant = ?unknown, "discarding unknown ThinkingBlock variant");
+                        None
+                    }
                 })
                 .collect();
             // Thinking blocks must appear before text/tool_use in the assistant message.
