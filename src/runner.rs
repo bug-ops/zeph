@@ -954,6 +954,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             // dropped at the end of bootstrap. The TUI thread observes the channel close and
             // shuts down independently, so explicit abort is not needed. Dropping the handle
             // is intentional — we have no cleanup to do on the bootstrap error path here.
+            // EXEMPT: self-terminating on channel close — handle dropped intentionally at block end
             let _early_status_forwarder = tokio::spawn(crate::tui_bridge::forward_status_to_tui(
                 status_rx,
                 early.agent_tx.clone(),
@@ -2459,6 +2460,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         config.llm.response_cache_ttl_secs,
         config.llm.semantic_cache_enabled,
         crate::bootstrap::effective_embedding_model(config),
+        mem_cancel.child_token(),
     );
     let agent = agent_setup::apply_cost_tracker(agent, config);
     let agent = agent_setup::apply_summary_provider(agent, summary_provider);

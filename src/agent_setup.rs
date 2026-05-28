@@ -668,6 +668,7 @@ pub(crate) fn apply_response_cache<C: Channel>(
     ttl_secs: u64,
     semantic_cache_enabled: bool,
     embed_model: String,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Agent<C> {
     if !enabled {
         if semantic_cache_enabled {
@@ -681,11 +682,18 @@ pub(crate) fn apply_response_cache<C: Channel>(
         let mut interval = tokio::time::interval(std::time::Duration::from_hours(1));
         interval.tick().await; // skip immediate first tick
         loop {
-            interval.tick().await;
-            match cache_clone.cleanup(&embed_model).await {
-                Ok(n) if n > 0 => tracing::debug!("cleaned up {n} cache entries"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("response cache cleanup failed: {e:#}"),
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    tracing::debug!("response cache cleanup loop: shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    match cache_clone.cleanup(&embed_model).await {
+                        Ok(n) if n > 0 => tracing::debug!("cleaned up {n} cache entries"),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("response cache cleanup failed: {e:#}"),
+                    }
+                }
             }
         }
     });
@@ -1702,7 +1710,9 @@ mod tests {
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
-        let result = apply_response_cache(agent, false, pool, 300, false, "embed-model".into());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let result =
+            apply_response_cache(agent, false, pool, 300, false, "embed-model".into(), cancel);
         drop(result);
     }
 
@@ -1712,7 +1722,9 @@ mod tests {
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
-        let result = apply_response_cache(agent, true, pool, 300, false, "embed-model".into());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let result =
+            apply_response_cache(agent, true, pool, 300, false, "embed-model".into(), cancel);
         drop(result);
     }
 
