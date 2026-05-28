@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use parking_lot::Mutex;
 
@@ -64,7 +64,10 @@ pub struct RouterState {
     /// Set by the agent via `RouterProvider::set_memory_confidence` before each
     /// `chat` / `chat_stream` call. Read by `bandit_select_provider` to bias toward
     /// cheaper providers when memory recall confidence is high.
-    pub last_memory_confidence: Arc<Mutex<Option<f32>>>,
+    ///
+    /// `u32::MAX` is the sentinel for "no confidence value set" — it maps to a NaN
+    /// bit pattern in IEEE 754, which is never a valid confidence value.
+    pub last_memory_confidence: Arc<AtomicU32>,
 
     /// Monotonically increasing per-turn counter.
     ///
@@ -105,7 +108,7 @@ impl RouterState {
             provider_models: Arc::new(provider_models),
             provider_order: Arc::new(Mutex::new((0..n).collect())),
             last_active_provider: Arc::new(Mutex::new(None)),
-            last_memory_confidence: Arc::new(Mutex::new(None)),
+            last_memory_confidence: Arc::new(AtomicU32::new(u32::MAX)),
             turn_counter: Arc::new(AtomicU64::new(0)),
             asi_last_turn: Arc::new(AtomicU64::new(u64::MAX)),
             embed_semaphore: None,

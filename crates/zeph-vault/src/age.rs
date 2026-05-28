@@ -512,4 +512,66 @@ mod tests {
         let result = AgeVaultProvider::load(&key_path, &vault_path);
         assert!(result.is_err());
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn key_file_has_restricted_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempdir().unwrap();
+        let (key_path, _) = init_temp_vault(dir.path());
+
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "vault-key.txt must have mode 0600, got {mode:o}"
+        );
+    }
+
+    #[test]
+    fn load_blank_key_returns_key_parse_error() {
+        let dir = tempdir().unwrap();
+        let key_path = dir.path().join("vault-key.txt");
+        let vault_path = dir.path().join("secrets.age");
+
+        // Key file with only comments and blank lines — no valid identity line.
+        std::fs::write(&key_path, "# comment\n\n# another comment\n").unwrap();
+        // Vault file must exist so the error comes from key parsing, not vault read.
+        std::fs::write(&vault_path, b"").unwrap();
+
+        let result = AgeVaultProvider::load(&key_path, &vault_path);
+        assert!(
+            matches!(result, Err(AgeVaultError::KeyParse(_))),
+            "expected KeyParse, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn decrypt_corrupted_ciphertext_returns_decrypt_error() {
+        let dir = tempdir().unwrap();
+        let (key_path, vault_path) = init_temp_vault(dir.path());
+
+        // Overwrite the encrypted vault with random garbage.
+        std::fs::write(&vault_path, b"not valid age ciphertext at all").unwrap();
+
+        let result = AgeVaultProvider::load(&key_path, &vault_path);
+        assert!(
+            matches!(result, Err(AgeVaultError::Decrypt(_))),
+            "expected Decrypt, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn save_leaves_no_tmp_file() {
+        let dir = tempdir().unwrap();
+        let (key_path, vault_path) = init_temp_vault(dir.path());
+
+        let mut vault = AgeVaultProvider::new(&key_path, &vault_path).unwrap();
+        vault.set_secret_mut("TMP_TEST".into(), "value".into());
+        vault.save().unwrap();
+
+        let tmp_path = vault_path.with_added_extension("tmp");
+        assert!(!tmp_path.exists(), ".age.tmp must not exist after save()");
+        assert!(vault_path.exists(), "secrets.age must exist after save()");
+    }
 }

@@ -12,7 +12,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role}; // Role needed for plan_wi
 use super::adaptorch::TopologyHint;
 use super::dag;
 use super::error::OrchestrationError;
-use super::graph::{ExecutionMode, FailureStrategy, TaskGraph, TaskId, TaskNode};
+use super::graph::{ExecutionMode, FailureStrategy, PlanSlug, TaskGraph, TaskId, TaskNode};
 use super::verify_predicate::VerifyPredicate;
 use zeph_config::OrchestrationConfig;
 use zeph_subagent::{SubAgentDef, ToolPolicy};
@@ -138,13 +138,13 @@ pub(crate) struct PlannerResponse {
 /// A single task in the raw LLM planner response. Internal parsing type.
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub(crate) struct PlannedTask {
-    pub task_id: String,
+    pub task_id: PlanSlug,
     pub title: String,
     pub description: String,
     #[serde(default)]
     pub agent_hint: Option<String>,
     #[serde(default)]
-    pub depends_on: Vec<String>,
+    pub depends_on: Vec<PlanSlug>,
     #[serde(default, deserialize_with = "failure_strategy_opt::deserialize")]
     pub failure_strategy: Option<FailureStrategy>,
     /// LLM-annotated execution mode. Absent or `null` defaults to `Parallel`.
@@ -344,7 +344,7 @@ fn convert_response(
 
     // Validate task_id format and build string -> index map
     for pt in &planned {
-        if !is_valid_task_id(&pt.task_id) {
+        if !is_valid_task_id(pt.task_id.as_str()) {
             return Err(OrchestrationError::PlanningFailed(format!(
                 "invalid task_id '{}': must match ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
                 pt.task_id
@@ -464,11 +464,11 @@ mod tests {
         agent_hint: Option<&str>,
     ) -> PlannedTask {
         PlannedTask {
-            task_id: task_id.to_string(),
+            task_id: PlanSlug::from(task_id),
             title: title.to_string(),
             description: format!("do {title}"),
             agent_hint: agent_hint.map(std::string::ToString::to_string),
-            depends_on: deps.iter().map(std::string::ToString::to_string).collect(),
+            depends_on: deps.iter().map(|s| PlanSlug::from(*s)).collect(),
             failure_strategy: None,
             execution_mode: None,
             verify_criteria: None,
@@ -603,7 +603,7 @@ mod tests {
         for bad_id in cases {
             let response = PlannerResponse {
                 tasks: vec![PlannedTask {
-                    task_id: bad_id.to_string(),
+                    task_id: PlanSlug::from(bad_id),
                     title: "T".to_string(),
                     description: "d".to_string(),
                     agent_hint: None,
@@ -788,7 +788,7 @@ mod tests {
     fn convert_execution_mode_parallel() {
         let response = PlannerResponse {
             tasks: vec![PlannedTask {
-                task_id: "t1".to_string(),
+                task_id: PlanSlug::from("t1"),
                 title: "T1".to_string(),
                 description: "d".to_string(),
                 agent_hint: None,
@@ -806,7 +806,7 @@ mod tests {
     fn convert_execution_mode_sequential() {
         let response = PlannerResponse {
             tasks: vec![PlannedTask {
-                task_id: "t1".to_string(),
+                task_id: PlanSlug::from("t1"),
                 title: "T1".to_string(),
                 description: "d".to_string(),
                 agent_hint: None,

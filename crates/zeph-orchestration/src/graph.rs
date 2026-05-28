@@ -51,6 +51,55 @@ impl fmt::Display for TaskId {
     }
 }
 
+/// Stable kebab-case identifier assigned to a task in a [`PlanTemplate`] or LLM planner response.
+///
+/// A `PlanSlug` is a human-readable string of the form `[a-z0-9]([a-z0-9-]*[a-z0-9])?`
+/// (e.g. `"fetch-data"`, `"deploy-service"`). It is distinct from [`TaskId`], which is a
+/// dense numeric index used for in-memory graph traversal. `PlanSlug` values appear in LLM
+/// JSON responses and cached plan templates; they are resolved to `TaskId` during graph
+/// construction.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::PlanSlug;
+///
+/// let slug = PlanSlug::from("fetch-data");
+/// assert_eq!(slug.to_string(), "fetch-data");
+/// assert_eq!(slug.as_str(), "fetch-data");
+/// ```
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[schemars(transparent)]
+pub struct PlanSlug(pub String);
+
+impl PlanSlug {
+    /// Returns the inner string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PlanSlug {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for PlanSlug {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl fmt::Display for PlanSlug {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Unique identifier for a [`TaskGraph`].
 ///
 /// Backed by a UUID v4. Implements `FromStr` / `Display` for serialization and

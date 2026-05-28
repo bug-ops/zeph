@@ -19,7 +19,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use super::dag;
 use super::error::OrchestrationError;
-use super::graph::{FailureStrategy, TaskGraph};
+use super::graph::{FailureStrategy, PlanSlug, TaskGraph};
 use super::planner::{PlannerResponse, convert_response_pub};
 use zeph_subagent::SubAgentDef;
 
@@ -35,14 +35,14 @@ pub struct TemplateTask {
     /// Preferred agent name, if specified by the original planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_hint: Option<String>,
-    /// Kebab-case `task_id` strings of tasks this task depends on.
+    /// Kebab-case slugs of tasks this task depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<String>,
+    pub depends_on: Vec<PlanSlug>,
     /// Failure strategy override for this task, if set by the original planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_strategy: Option<FailureStrategy>,
-    /// Stable kebab-case `task_id` assigned during template extraction.
-    pub task_id: String,
+    /// Stable kebab-case slug assigned during template extraction.
+    pub task_id: PlanSlug,
 }
 
 /// Reusable plan skeleton extracted from a successfully completed [`TaskGraph`].
@@ -83,11 +83,11 @@ impl PlanTemplate {
             ));
         }
 
-        // Build task_id strings indexed by position for depends_on reconstruction.
-        let id_to_slug: Vec<String> = graph
+        // Build PlanSlug indexed by position for depends_on reconstruction.
+        let id_to_slug: Vec<PlanSlug> = graph
             .tasks
             .iter()
-            .map(|n| slugify_title(&n.title, n.id.as_u32()))
+            .map(|n| PlanSlug::from(slugify_title(&n.title, n.id.as_u32())))
             .collect();
 
         let tasks = graph

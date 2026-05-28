@@ -93,8 +93,8 @@ pub use cascade::{AbortDecision, CascadeConfig, CascadeDetector, RegionHealth};
 pub use command::PlanCommand;
 pub use error::OrchestrationError;
 pub use graph::{
-    ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, TaskGraph, TaskId,
-    TaskNode, TaskResult, TaskStatus,
+    ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, PlanSlug, TaskGraph,
+    TaskId, TaskNode, TaskResult, TaskStatus,
 };
 pub use lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error};
 pub use plan_cache::{

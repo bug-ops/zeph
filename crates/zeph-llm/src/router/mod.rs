@@ -399,7 +399,10 @@ impl RouterProvider {
     /// Must be called before `chat` / `chat_stream` to influence bandit provider selection.
     /// Pass `None` to disable MAR for this turn.
     pub fn set_memory_confidence(&self, confidence: Option<f32>) {
-        *self.state.last_memory_confidence.lock() = confidence;
+        let raw = confidence.map_or(u32::MAX, f32::to_bits);
+        self.state
+            .last_memory_confidence
+            .store(raw, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Enable EMA-based adaptive provider ordering.
@@ -899,7 +902,15 @@ impl RouterProvider {
 
         // Try LinUCB selection with feature vector.
         if let Some(features) = self.bandit_features(query).await {
-            let memory_confidence = self.state.last_memory_confidence.lock().as_ref().copied();
+            let raw = self
+                .state
+                .last_memory_confidence
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let memory_confidence = if raw == u32::MAX {
+                None
+            } else {
+                Some(f32::from_bits(raw))
+            };
             let selected = {
                 let state = bandit_arc.lock();
                 state.select(
