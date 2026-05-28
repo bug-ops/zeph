@@ -1592,3 +1592,35 @@ fn test_openai_stub_used_when_schema_exceeds_1024_bytes() {
         "schema exceeding 1024 bytes must use stub with default budget"
     );
 }
+
+#[test]
+fn completion_tokens_o_series_uses_max_completion_tokens() {
+    for model in &["o1", "o1-mini", "o1-pro", "o3", "o3-mini", "o4-mini"] {
+        let ct = CompletionTokens::for_model(model, 512);
+        let json = serde_json::to_string(&ct).unwrap();
+        assert!(
+            json.contains("\"max_completion_tokens\":512"),
+            "{model} must use max_completion_tokens"
+        );
+        assert!(
+            !json.contains("\"max_tokens\""),
+            "{model} must not use max_tokens"
+        );
+    }
+}
+
+#[test]
+fn completion_tokens_legacy_models_use_max_tokens() {
+    for model in &["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"] {
+        let ct = CompletionTokens::for_model(model, 256);
+        let json = serde_json::to_string(&ct).unwrap();
+        assert!(
+            json.contains("\"max_tokens\":256"),
+            "{model} must use max_tokens"
+        );
+        assert!(
+            !json.contains("\"max_completion_tokens\""),
+            "{model} must not use max_completion_tokens"
+        );
+    }
+}

@@ -1488,7 +1488,13 @@ enum CompletionTokens {
 
 impl CompletionTokens {
     fn for_model(model: &str, max_tokens: u32) -> Self {
-        if model.starts_with("gpt-5") {
+        // o-series models (o1, o3, o4-mini, …) and gpt-5 require max_completion_tokens;
+        // all other models use the legacy max_tokens field.
+        if model.starts_with("gpt-5")
+            || model.starts_with("o1")
+            || model.starts_with("o3")
+            || model.starts_with("o4")
+        {
             Self::MaxCompletionTokens {
                 max_completion_tokens: max_tokens,
             }

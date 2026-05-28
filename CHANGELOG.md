@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handles are reaped non-blockingly with `try_join_next()` before each spawn; if the set is still at
   capacity the new task is skipped with a debug log. `drain_pending()` awaits all remaining writes at
   session shutdown via `Agent::shutdown()` (closes #4570).
+- `zeph-llm`: `ClaudeProvider::send_request` and `send_stream_request` now retry the request
+  transparently after receiving a `BetaHeaderRejected` error for the `compact-2026-01-12` beta
+  header. Previously, the first request in a session with server compaction enabled would always
+  fail when the API rejects the header; the flag is now set and the call retried in the same path
+  without surfacing an error to the caller (closes #4580).
+- `zeph-llm`: `CompletionTokens::for_model` now returns `max_completion_tokens` for OpenAI
+  o-series models (`o1`, `o1-mini`, `o1-pro`, `o3`, `o3-mini`, `o4-mini`). Previously only
+  `gpt-5*` models used this field; o-series models fell through to the legacy `max_tokens` field,
+  causing 400 Bad Request errors from the API (closes #4579).
 - `zeph-core`: `select_messages_for_compression` now sorts indices before building `to_compress`,
   ensuring messages are passed to the compression LLM in chronological (ascending index) order.
   Previously, iterating a raw `HashSet<usize>` produced non-deterministic ordering (closes #4558).

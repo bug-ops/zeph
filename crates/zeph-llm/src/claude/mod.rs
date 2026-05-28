@@ -815,70 +815,73 @@ impl ClaudeProvider {
     }
 
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-            self.build_request(messages, false).send()
-        })
-        .await?;
+        let mut retried = false;
+        loop {
+            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+                self.build_request(messages, false).send()
+            })
+            .await?;
 
-        let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+            let status = response.status();
+            let text = response.text().await.map_err(LlmError::Http)?;
 
-        if !status.is_success() {
-            if Self::is_compact_beta_rejection(status, &text) {
-                self.server_compaction_rejected
-                    .store(true, Ordering::Relaxed);
-                tracing::warn!(
-                    "compact-2026-01-12 beta header rejected by Claude API; \
-                    disabling server-side compaction for this session. \
-                    Update your config to set `server_compaction = false`."
-                );
-                return Err(LlmError::BetaHeaderRejected {
-                    header: ANTHROPIC_BETA_COMPACT.into(),
+            if !status.is_success() {
+                if !retried && Self::is_compact_beta_rejection(status, &text) {
+                    self.server_compaction_rejected
+                        .store(true, Ordering::Relaxed);
+                    tracing::warn!(
+                        "compact-2026-01-12 beta header rejected by Claude API; \
+                        disabling server-side compaction for this session. \
+                        Update your config to set `server_compaction = false`."
+                    );
+                    retried = true;
+                    continue;
+                }
+                tracing::error!("Claude API error {status}: {text}");
+                if status == reqwest::StatusCode::BAD_REQUEST
+                    && crate::error::body_is_context_length_error(&text)
+                {
+                    return Err(LlmError::ContextLengthExceeded);
+                }
+                return Err(LlmError::ApiError {
+                    provider: "claude".into(),
+                    status: status.as_u16(),
                 });
             }
-            tracing::error!("Claude API error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "claude".into(),
-                status: status.as_u16(),
-            });
-        }
 
-        if Self::has_image_parts(messages) {
-            let resp: ToolApiResponse = serde_json::from_str(&text)?;
+            if Self::has_image_parts(messages) {
+                let resp: ToolApiResponse = serde_json::from_str(&text)?;
+                if let Some(ref usage) = resp.usage {
+                    log_cache_usage(usage);
+                    self.store_cache_usage(usage);
+                }
+                let extracted = resp.content.into_iter().find_map(|b| {
+                    if let AnthropicContentBlock::Text { text, .. } = b {
+                        Some(text)
+                    } else {
+                        None
+                    }
+                });
+                return extracted.ok_or(LlmError::EmptyResponse {
+                    provider: "claude".into(),
+                });
+            }
+
+            let resp: types::ApiResponse = serde_json::from_str(&text)?;
+
             if let Some(ref usage) = resp.usage {
                 log_cache_usage(usage);
                 self.store_cache_usage(usage);
             }
-            let extracted = resp.content.into_iter().find_map(|b| {
-                if let AnthropicContentBlock::Text { text, .. } = b {
-                    Some(text)
-                } else {
-                    None
-                }
-            });
-            return extracted.ok_or(LlmError::EmptyResponse {
-                provider: "claude".into(),
-            });
+
+            return resp
+                .content
+                .first()
+                .map(|c| c.text.clone())
+                .ok_or(LlmError::EmptyResponse {
+                    provider: "claude".into(),
+                });
         }
-
-        let resp: types::ApiResponse = serde_json::from_str(&text)?;
-
-        if let Some(ref usage) = resp.usage {
-            log_cache_usage(usage);
-            self.store_cache_usage(usage);
-        }
-
-        resp.content
-            .first()
-            .map(|c| c.text.clone())
-            .ok_or(LlmError::EmptyResponse {
-                provider: "claude".into(),
-            })
     }
 
     /// Send a streaming tool-use request and return a [`crate::sse::ToolSseStream`].
@@ -978,39 +981,41 @@ impl ClaudeProvider {
         &self,
         messages: &[Message],
     ) -> Result<reqwest::Response, LlmError> {
-        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-            self.build_request(messages, true).send()
-        })
-        .await?;
+        let mut retried = false;
+        loop {
+            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+                self.build_request(messages, true).send()
+            })
+            .await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.map_err(LlmError::Http)?;
-            if Self::is_compact_beta_rejection(status, &text) {
-                self.server_compaction_rejected
-                    .store(true, Ordering::Relaxed);
-                tracing::warn!(
-                    "compact-2026-01-12 beta header rejected by Claude API (streaming); \
-                    disabling server-side compaction for this session. \
-                    Update your config to set `server_compaction = false`."
-                );
-                return Err(LlmError::BetaHeaderRejected {
-                    header: ANTHROPIC_BETA_COMPACT.into(),
+            let status = response.status();
+            if !status.is_success() {
+                let text = response.text().await.map_err(LlmError::Http)?;
+                if !retried && Self::is_compact_beta_rejection(status, &text) {
+                    self.server_compaction_rejected
+                        .store(true, Ordering::Relaxed);
+                    tracing::warn!(
+                        "compact-2026-01-12 beta header rejected by Claude API (streaming); \
+                        disabling server-side compaction for this session. \
+                        Update your config to set `server_compaction = false`."
+                    );
+                    retried = true;
+                    continue;
+                }
+                tracing::error!("Claude API streaming request error {status}: {text}");
+                if status == reqwest::StatusCode::BAD_REQUEST
+                    && crate::error::body_is_context_length_error(&text)
+                {
+                    return Err(LlmError::ContextLengthExceeded);
+                }
+                return Err(LlmError::ApiError {
+                    provider: "claude".into(),
+                    status: status.as_u16(),
                 });
             }
-            tracing::error!("Claude API streaming request error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "claude".into(),
-                status: status.as_u16(),
-            });
-        }
 
-        Ok(response)
+            return Ok(response);
+        }
     }
 }
 
