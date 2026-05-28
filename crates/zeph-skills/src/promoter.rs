@@ -159,19 +159,19 @@ pub fn parse_promotion_response(response: &str) -> (PromotionRecommendation, Opt
     let trimmed = response.trim();
 
     if trimmed.eq_ignore_ascii_case("none") {
-        return (PromotionRecommendation::None, Option::None);
+        return (PromotionRecommendation::None, None);
     }
 
     if let Some(rest) = trimmed.strip_prefix("body_enrichment") {
         let body = rest.trim().to_string();
         if body.is_empty() {
-            return (PromotionRecommendation::None, Option::None);
+            return (PromotionRecommendation::None, None);
         }
         return (
             PromotionRecommendation::BodyEnrichment {
                 integrated_body: body,
             },
-            Option::None,
+            None,
         );
     }
 
@@ -189,7 +189,7 @@ pub fn parse_promotion_response(response: &str) -> (PromotionRecommendation, Opt
         };
 
         if name_part.is_empty() || body_part.is_empty() {
-            return (PromotionRecommendation::None, Option::None);
+            return (PromotionRecommendation::None, None);
         }
 
         let name = name_part.to_string();
@@ -202,7 +202,7 @@ pub fn parse_promotion_response(response: &str) -> (PromotionRecommendation, Opt
         );
     }
 
-    (PromotionRecommendation::None, Option::None)
+    (PromotionRecommendation::None, None)
 }
 
 #[cfg(test)]

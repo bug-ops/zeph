@@ -397,8 +397,10 @@ async fn write_draft(
         }
 
         PromotionRecommendation::NewSkill { name, body } => {
-            // Inject required frontmatter fields before dedup check.
-            let patched_body = patch_frontmatter(body, "heuristic_promotion", skill_name);
+            // Spec 061: new skills start at version 0. Inject required frontmatter fields.
+            let versioned_body = patch_version(body, 0);
+            let patched_body =
+                patch_frontmatter(&versioned_body, "heuristic_promotion", skill_name);
             let draft_skill = build_generated_skill(name, &patched_body)?;
 
             // FR-005: run Add/Merge/Discard (spec 057) before quarantine write.
