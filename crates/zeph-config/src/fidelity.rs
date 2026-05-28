@@ -47,6 +47,13 @@ pub struct FidelityConfig {
     pub min_query_length: usize,
     /// Maximum number of messages scored per turn (performance cap).
     pub max_scored_messages: usize,
+    /// Number of the newest messages exempt from scoring when the window exceeds
+    /// `max_scored_messages`. These messages default to `Full` fidelity.
+    ///
+    /// A value of `0` (the default) means no tail exemption beyond the hard
+    /// `max_scored_messages` cap.
+    #[serde(default)]
+    pub exempt_tail_messages: usize,
 }
 
 impl FidelityConfig {
@@ -102,6 +109,7 @@ impl Default for FidelityConfig {
             regrade_threshold: 0.6,
             min_query_length: 8,
             max_scored_messages: 500,
+            exempt_tail_messages: 0,
         }
     }
 }

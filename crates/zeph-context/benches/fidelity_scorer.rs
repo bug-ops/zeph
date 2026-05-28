@@ -54,6 +54,7 @@ fn bench_score_500(c: &mut Criterion) {
         regrade_threshold: 0.6,
         min_query_length: 5,
         max_scored_messages: 500,
+        exempt_tail_messages: 0,
     };
     let tc = CharDivTc(4);
     let base_messages = make_synthetic_messages(500);

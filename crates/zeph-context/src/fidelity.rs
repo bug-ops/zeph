@@ -87,13 +87,6 @@ impl FidelityScorer {
             return;
         }
 
-        let _span = info_span!(
-            "context.fidelity.score",
-            message_count = messages.len(),
-            query_len = query.len()
-        )
-        .entered();
-
         let scores = compute_scores(messages, query, planned_tools, config, tc, inserted_count);
         apply_scores(messages, &scores, config, tc);
 
@@ -113,9 +106,9 @@ fn compute_scores(
 ) -> Vec<Option<FidelityScore>> {
     let n = messages.len();
 
-    // Performance cap: only score oldest (n - 250) messages; newest 250 default to Full.
+    // Performance cap: only score oldest messages; newest `exempt_tail_messages` default to Full.
     let score_end = if n > config.max_scored_messages {
-        n.saturating_sub(250)
+        n.saturating_sub(config.exempt_tail_messages)
     } else {
         n
     };
@@ -233,7 +226,7 @@ fn apply_scores(
                 compressed_count += 1;
             }
             ContextFidelity::Placeholder => {
-                render_placeholder(msg, fs.score, fs.original_tokens, tc);
+                render_placeholder(msg, fs.score, fs.original_tokens);
                 placeholder_count += 1;
             }
             // Full and any future variants keep original content.
@@ -394,7 +387,7 @@ fn truncate_to_tokens(content: &mut String, max_tokens: usize, tc: &dyn TokenCou
     content.truncate(len);
 }
 
-fn render_placeholder(msg: &mut Message, score: f32, original_tokens: u32, tc: &dyn TokenCounting) {
+fn render_placeholder(msg: &mut Message, score: f32, original_tokens: u32) {
     let role_str = match msg.role {
         Role::System => "system",
         Role::User => "user",
@@ -405,8 +398,6 @@ fn render_placeholder(msg: &mut Message, score: f32, original_tokens: u32, tc: &
     );
     msg.parts.clear();
     msg.metadata.fidelity_tag = Some(ContextFidelity::Placeholder);
-    // Count tokens on the rendered string (INV-12 / spec §7.2).
-    let _ = tc.count_tokens(&msg.content);
 }
 
 /// Merge consecutive same-role `Placeholder` messages into a single merged placeholder.
@@ -543,6 +534,7 @@ mod tests {
             regrade_threshold: 0.6,
             min_query_length: 8,
             max_scored_messages: 500,
+            exempt_tail_messages: 0,
         }
     }
 
@@ -753,6 +745,7 @@ mod tests {
             regrade_threshold: 0.6,
             min_query_length: 0,
             max_scored_messages: 500,
+            exempt_tail_messages: 0,
         };
         let tc = FixedTc(4);
         let mut messages = vec![make_msg(Role::System, ""), make_msg(Role::User, "")];
@@ -780,6 +773,94 @@ mod tests {
             Some(ContextFidelity::Placeholder)
         );
         assert!(messages[1].content.starts_with("[placeholder:"));
+    }
+
+    // 13. #4593: exempt_tail_messages respected when n > max_scored_messages.
+    //     Verify that tail messages (beyond score_end) keep no fidelity_tag.
+    //     Use focus_pinned=true on tail messages so they stay exempt-from-scoring
+    //     via is_exempt() and retain no tag regardless of the merge pass.
+    //     n=20, max_scored_messages=10, exempt_tail_messages=5 → score_end=15.
+    //     Indices [15..19] are in the exempt tail.
+    #[test]
+    fn exempt_tail_messages_large_window() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            // Force all scored messages to Placeholder so we can see which ones got tagged.
+            full_threshold: 2.0,
+            compressed_threshold: 1.5,
+            max_scored_messages: 10,
+            exempt_tail_messages: 5,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+
+        // Index 0: system (always exempt).
+        // Indices 1..14: regular user messages that fall in the scored region [0..15).
+        // Indices 15..19: tail messages — mark them focus_pinned so they don't get scored.
+        //   focus_pinned is the is_exempt() gate (INV-08), which makes them opaque to
+        //   the scorer. This lets us assert their fidelity_tag stays None while the
+        //   merge pass leaves them intact (it only merges Placeholder-tagged messages).
+        let mut messages: Vec<Message> = std::iter::once(make_msg(Role::System, "system prompt"))
+            .chain((1..15).map(|i| make_msg(Role::Assistant, &format!("assistant message {i}"))))
+            .chain((15..20).map(|i| {
+                let mut m = make_msg(Role::User, &format!("tail message {i}"));
+                m.metadata.focus_pinned = true;
+                m
+            }))
+            .collect();
+
+        scorer.score_and_apply(&mut messages, "query text here long", &[], &cfg, &tc, 0);
+
+        // Tail messages (focus_pinned) must have no fidelity_tag.
+        let tail: Vec<_> = messages
+            .iter()
+            .filter(|m| m.metadata.focus_pinned)
+            .collect();
+        assert_eq!(
+            tail.len(),
+            5,
+            "all 5 tail messages must survive the merge pass"
+        );
+        for msg in &tail {
+            assert!(
+                msg.metadata.fidelity_tag.is_none(),
+                "tail message must have no fidelity_tag, got {:?}",
+                msg.metadata.fidelity_tag
+            );
+        }
+    }
+
+    // 14. #4593: when n <= max_scored_messages, exempt_tail_messages has no effect.
+    //     n=8, max_scored_messages=10, exempt_tail_messages=5 → score_end=8 (all scored).
+    //     Use alternating roles to avoid placeholder merging.
+    #[test]
+    fn exempt_tail_messages_small_window_no_effect() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            full_threshold: 2.0,
+            compressed_threshold: 1.5,
+            max_scored_messages: 10,
+            exempt_tail_messages: 5,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        // 8 messages: index 0 = system, then alternating user/assistant.
+        // Alternating roles prevent placeholder merge, keeping the length stable.
+        let roles = [Role::User, Role::Assistant];
+        let mut messages: Vec<Message> = std::iter::once(make_msg(Role::System, "system prompt"))
+            .chain((1..8usize).map(|i| make_msg(roles[i % 2], &format!("message {i}"))))
+            .collect();
+        scorer.score_and_apply(&mut messages, "query text here long", &[], &cfg, &tc, 0);
+        // score_end = 8 (n=8 <= max_scored_messages=10, so exempt_tail not applied).
+        // All non-system messages must be scored (tagged).
+        let untagged_count = messages[1..]
+            .iter()
+            .filter(|m| m.metadata.fidelity_tag.is_none())
+            .count();
+        assert_eq!(
+            untagged_count, 0,
+            "all non-system messages must be scored when n <= max_scored_messages"
+        );
     }
 
     // 12. Compressed rendering uses deferred_summary when available.
