@@ -1675,4 +1675,33 @@ mod tests {
         let meta = load_skill_meta(&path).unwrap();
         assert_eq!(meta.triggers, vec!["run shell command", "execute bash"]);
     }
+
+    #[test]
+    fn parent_skill_parsed_from_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "git-v2",
+            "---\nname: git-v2\ndescription: Enhanced git skill.\nsource: heuristic_promotion\nparent_skill: git\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert_eq!(
+            meta.parent_skill.as_deref(),
+            Some("git"),
+            "parent_skill must be parsed from frontmatter"
+        );
+        assert_eq!(meta.source, "heuristic_promotion");
+    }
+
+    #[test]
+    fn parent_skill_absent_when_not_in_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "regular-skill",
+            "---\nname: regular-skill\ndescription: A normal skill.\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert!(meta.parent_skill.is_none());
+    }
 }

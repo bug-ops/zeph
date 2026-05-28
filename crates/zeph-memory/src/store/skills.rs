@@ -2191,7 +2191,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(texts.len(), 3);
-        assert_eq!(texts, vec!["alpha", "middle", "zebra"], "must be sorted ASC");
+        assert_eq!(
+            texts,
+            vec!["alpha", "middle", "zebra"],
+            "must be sorted ASC"
+        );
     }
 
     #[tokio::test]
@@ -2243,6 +2247,9 @@ mod tests {
         .fetch_one(store.pool())
         .await
         .unwrap();
-        assert_eq!(rec.0, "body_enrichment", "first insert wins (INSERT OR IGNORE)");
+        assert_eq!(
+            rec.0, "body_enrichment",
+            "first insert wins (INSERT OR IGNORE)"
+        );
     }
 }
