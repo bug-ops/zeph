@@ -36,6 +36,7 @@
 //!     source_url: None,
 //!     git_hash: None,
 //!     category: None,
+//!     triggers: vec![],
 //! };
 //!
 //! let decision = decide(0.80, 0.75, 0.90, true, &meta);
