@@ -51,7 +51,7 @@ impl fmt::Display for TaskId {
     }
 }
 
-/// Stable kebab-case identifier assigned to a task in a [`PlanTemplate`] or LLM planner response.
+/// Stable kebab-case identifier assigned to a task in a plan template or LLM planner response.
 ///
 /// A `PlanSlug` is a human-readable string of the form `[a-z0-9]([a-z0-9-]*[a-z0-9])?`
 /// (e.g. `"fetch-data"`, `"deploy-service"`). It is distinct from [`TaskId`], which is a
