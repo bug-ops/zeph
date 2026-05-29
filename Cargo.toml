@@ -341,7 +341,7 @@ serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 zeph-core.workspace = true
-zeph-llm.workspace = true
+zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true
 zeph-skills.workspace = true
 # Features are declared by the crates that use them, see workspace dependencies
