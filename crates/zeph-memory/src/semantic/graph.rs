@@ -641,7 +641,6 @@ impl SemanticMemory {
                 "graph extraction using override provider (quality_gate bypassed)"
             );
         }
-        let cancel = CancellationToken::new();
         *self
             .graph_cancel
             .lock()
