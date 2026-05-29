@@ -1635,7 +1635,7 @@ mod tests {
                 false
             }
 
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "mock"
             }
         }
@@ -1752,19 +1752,19 @@ mod tests {
     fn cosine_similarity_zero_vector() {
         let a = vec![0.0f32, 0.0, 0.0];
         let b = vec![1.0f32, 0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() < f32::EPSILON);
     }
 
     #[test]
     fn cosine_similarity_empty() {
-        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+        assert!(cosine_similarity(&[], &[]).abs() < f32::EPSILON);
     }
 
     #[test]
     fn cosine_similarity_dimension_mismatch() {
         let a = vec![1.0f32, 0.0];
         let b = vec![1.0f32, 0.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert!(cosine_similarity(&a, &b).abs() < f32::EPSILON);
     }
 
     // 18. semantic_scoring_higher_for_similar_messages.
@@ -1810,7 +1810,7 @@ mod tests {
             fn supports_embeddings(&self) -> bool {
                 true
             }
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "embed-mock"
             }
         }
