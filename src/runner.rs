@@ -1779,33 +1779,35 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
-    // Load ephemeral plugin from --plugin-url before building the skill registry.
-    let ephemeral_plugin_dir: Option<tempfile::TempDir> = if let Some(ref url) = cli.plugin_url {
-        let sha256 = cli.plugin_sha256.as_deref();
+    // Load ephemeral plugins from --plugin-url (may be repeated) before building the skill registry.
+    let mut ephemeral_plugin_dirs: Vec<tempfile::TempDir> = Vec::new();
+    if !cli.plugin_url.is_empty() {
         let mgr = zeph_plugins::PluginManager::new(
             crate::bootstrap::plugins_dir(),
             crate::bootstrap::managed_skills_dir(),
             config.mcp.allowed_commands.clone(),
             config.tools.shell.allowed_commands.clone(),
         );
-        match mgr.add_remote_ephemeral(url, sha256).await {
-            Ok(tmp) => {
-                tracing::info!(url, "ephemeral plugin loaded for this session");
-                Some(tmp)
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "failed to load ephemeral plugin from {url}: {e}"
-                ));
+        for raw in &cli.plugin_url {
+            // Accept both plain URLs and `url@sha256` pairs.
+            let (url, sha256) = parse_plugin_url_arg(raw);
+            match mgr.add_remote_ephemeral(url, sha256).await {
+                Ok(tmp) => {
+                    tracing::info!(url, "ephemeral plugin loaded for this session");
+                    ephemeral_plugin_dirs.push(tmp);
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "failed to load ephemeral plugin from {url}: {e}"
+                    ));
+                }
             }
         }
-    } else {
-        None
-    };
+    }
 
     let mut skill_paths = app.skill_paths_for_registry();
     // Include ephemeral plugin skill dirs in the registry.
-    if let Some(ref tmp) = ephemeral_plugin_dir {
+    for tmp in &ephemeral_plugin_dirs {
         let manifest_path = tmp.path().join("plugin.toml");
         if let Ok(manifest_str) = std::fs::read_to_string(&manifest_path)
             && let Ok(manifest) = toml::from_str::<zeph_plugins::PluginManifest>(&manifest_str)
@@ -2332,10 +2334,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .await;
 
     // Hold ephemeral plugin TempDir handles in the agent for the session lifetime.
-    let agent = if let Some(tmp) = ephemeral_plugin_dir {
-        agent.with_ephemeral_plugins(vec![tmp])
-    } else {
+    let agent = if ephemeral_plugin_dirs.is_empty() {
         agent
+    } else {
+        agent.with_ephemeral_plugins(ephemeral_plugin_dirs)
     };
 
     // Wire JsonEventLayer when --json is active so tool_call / tool_result events
@@ -3671,10 +3673,64 @@ fn parse_thinking_arg(s: &str) -> anyhow::Result<ThinkingConfig> {
     )
 }
 
+/// Split a `--plugin-url` argument into `(url, sha256)`.
+///
+/// Accepts either a plain URL (`https://host/plugin.tar.gz`) or an inline
+/// `url@sha256` pair (`https://host/p.tar.gz@abc123def...`).  The split point
+/// is the *last* `@` in the string, which avoids confusing `user@host` in
+/// hypothetical non-HTTPS URLs while still working for typical HTTPS archives.
+fn parse_plugin_url_arg(raw: &str) -> (&str, Option<&str>) {
+    match raw.rfind('@') {
+        Some(pos) => (&raw[..pos], Some(&raw[pos + 1..])),
+        None => (raw, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // --- parse_plugin_url_arg ---
+
+    #[test]
+    fn parse_plugin_url_plain_url() {
+        let (url, sha256) = parse_plugin_url_arg("https://example.com/plugin.tar.gz");
+        assert_eq!(url, "https://example.com/plugin.tar.gz");
+        assert_eq!(sha256, None);
+    }
+
+    #[test]
+    fn parse_plugin_url_with_sha256() {
+        let (url, sha256) = parse_plugin_url_arg("https://example.com/plugin.tar.gz@abc123def456");
+        assert_eq!(url, "https://example.com/plugin.tar.gz");
+        assert_eq!(sha256, Some("abc123def456"));
+    }
+
+    #[test]
+    fn parse_plugin_url_multiple_at_signs_splits_on_last() {
+        // URL-like strings with multiple '@' — split on the LAST one (rfind semantics).
+        let (url, sha256) =
+            parse_plugin_url_arg("https://user@host.example.com/plugin.tar.gz@deadbeef");
+        assert_eq!(url, "https://user@host.example.com/plugin.tar.gz");
+        assert_eq!(sha256, Some("deadbeef"));
+    }
+
+    #[test]
+    fn parse_plugin_url_at_only_yields_empty_sha256_part() {
+        // A bare '@' at the end produces an empty digest string, not None.
+        let (url, sha256) = parse_plugin_url_arg("https://example.com/plugin.tar.gz@");
+        assert_eq!(url, "https://example.com/plugin.tar.gz");
+        assert_eq!(sha256, Some(""));
+    }
+
+    #[test]
+    fn parse_plugin_url_empty_string() {
+        // Empty input should return empty url and no sha256.
+        let (url, sha256) = parse_plugin_url_arg("");
+        assert_eq!(url, "");
+        assert_eq!(sha256, None);
+    }
 
     // --- resolve_logging_config ---
 

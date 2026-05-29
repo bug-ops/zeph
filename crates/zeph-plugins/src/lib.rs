@@ -23,6 +23,7 @@ pub(crate) mod integrity;
 pub mod manager;
 pub mod manifest;
 pub mod overlay;
+pub mod types;
 
 pub use error::PluginError;
 pub use manager::{
@@ -32,3 +33,4 @@ pub use manager::{
 };
 pub use manifest::PluginManifest;
 pub use overlay::{ResolvedOverlay, apply_plugin_config_overlays};
+pub use types::PluginName;

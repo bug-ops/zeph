@@ -254,18 +254,16 @@ pub(crate) struct Cli {
 
     /// URL of an ephemeral plugin archive to load for this session only (HTTPS required).
     ///
+    /// May be repeated to load multiple plugins. Each value is either a plain URL or a
+    /// `url@sha256` pair for integrity pinning, e.g.:
+    ///
+    ///   `--plugin-url https://example.com/p.tar.gz@abc123...`
+    ///
     /// The archive is downloaded, scanned for injection patterns, and loaded into a temporary
     /// directory that is cleaned up on process exit. The plugin is never written to the
-    /// permanent plugins store. Pair with `--plugin-sha256` for integrity verification.
-    #[arg(long)]
-    pub(crate) plugin_url: Option<String>,
-
-    /// Expected SHA-256 hex digest of the plugin archive at `--plugin-url`.
-    ///
-    /// When provided, the downloaded archive is verified before extraction. The session aborts
-    /// if the digest does not match. Requires `--plugin-url`.
-    #[arg(long, requires = "plugin_url")]
-    pub(crate) plugin_sha256: Option<String>,
+    /// permanent plugins store.
+    #[arg(long, action = clap::ArgAction::Append)]
+    pub(crate) plugin_url: Vec<String>,
 
     #[command(subcommand)]
     pub(crate) command: Option<Command>,

@@ -55,6 +55,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   optional SHA-256 digest, scanned for injection patterns (blocking), and loaded into a temporary
   directory that is cleaned up on process exit. The plugin is never written to the permanent
   plugins store and its config overlays are never applied.
+- `--plugin-url` now accepts multiple values (pass the flag once per URL; closes #4675). Each
+  value can be a plain `https://…` URL or an inline `https://…@sha256hex` pair for integrity
+  pinning. The separate `--plugin-sha256` flag has been removed; use the `url@sha256` syntax
+  instead.
+- `zeph-plugins`: `PluginName` newtype (closes #4674). `AddResult::name`,
+  `InstalledPlugin::name`, and `AutoUpdateResult::name` now carry a `PluginName` instead of a
+  plain `String`. Construct via `PluginName::try_from("name")` — the conversion delegates to
+  `validate_plugin_name` and returns `PluginError::InvalidName` on failure. `PluginName`
+  implements `Display`, `AsRef<str>`, `Ord`, `serde::Serialize` (transparent), and
+  `serde::Deserialize` (validating — rejects names that fail `validate_plugin_name`).
 
 ### Fixed
 

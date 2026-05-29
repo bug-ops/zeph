@@ -13,6 +13,7 @@ use zeph_skills::scanner::scan_skill_body;
 
 use crate::PluginError;
 use crate::manifest::{PluginManifest, PluginMcpServer};
+use crate::types::PluginName;
 
 /// Maximum number of entries allowed in `plugin.dependencies`.
 ///
@@ -32,7 +33,7 @@ const CONFIG_SAFELIST: &[&str] = &[
 #[derive(Debug)]
 pub struct AddResult {
     /// Installed plugin name.
-    pub name: String,
+    pub name: PluginName,
     /// Absolute path to the installed plugin root.
     ///
     /// Callers should pass each entry in `installed_skill_dirs` to
@@ -80,7 +81,7 @@ pub struct DisableResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPlugin {
     /// Plugin name.
-    pub name: String,
+    pub name: PluginName,
     /// Plugin version.
     pub version: String,
     /// Plugin description.
@@ -121,7 +122,7 @@ pub struct PluginSource {
 #[derive(Debug)]
 pub struct AutoUpdateResult {
     /// Plugin name.
-    pub name: String,
+    pub name: PluginName,
     /// Specific outcome for this plugin.
     pub status: AutoUpdateStatus,
 }
@@ -357,7 +358,8 @@ impl PluginManager {
         );
 
         Ok(AddResult {
-            name: manifest.plugin.name,
+            // validate_plugin_name already verified the name above; TryFrom is infallible here.
+            name: PluginName::try_from(manifest.plugin.name)?,
             plugin_root: dest,
             installed_skills: skill_names,
             mcp_server_ids,
@@ -503,7 +505,7 @@ impl PluginManager {
         };
         let source_path = self
             .plugins_dir
-            .join(&result.name)
+            .join(result.name.as_str())
             .join(".plugin-source.toml");
         match toml::to_string(&source) {
             Ok(toml_str) => {
@@ -628,8 +630,11 @@ impl PluginManager {
             };
             let skill_names = collect_skill_names(&path, &manifest);
             let auto_update = manifest.plugin.auto_update;
+            let Ok(name) = PluginName::try_from(manifest.plugin.name) else {
+                continue;
+            };
             plugins.push(InstalledPlugin {
-                name: manifest.plugin.name,
+                name,
                 version: manifest.plugin.version,
                 description: manifest.plugin.description,
                 path,
@@ -795,7 +800,7 @@ impl PluginManager {
         let staging = self.plugins_dir.join(format!(".staging-{}", plugin.name));
         let backup = self.plugins_dir.join(format!(".backup-{}", plugin.name));
         let dest = plugin.path.clone();
-        let plugin_name = plugin.name.clone();
+        let plugin_name = plugin.name.as_str().to_owned();
 
         // Offload all blocking filesystem operations to a dedicated thread.
         let mcp_allowed = self.mcp_allowed_commands.clone();
@@ -1251,11 +1256,11 @@ impl PluginManager {
         let mut other_plugin_skills: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for plugin in &installed {
-            if plugin.name == this_plugin {
+            if plugin.name.as_str() == this_plugin {
                 continue;
             }
             for name in &plugin.skill_names {
-                other_plugin_skills.insert(name.clone(), plugin.name.clone());
+                other_plugin_skills.insert(name.clone(), plugin.name.as_str().to_owned());
             }
         }
 
