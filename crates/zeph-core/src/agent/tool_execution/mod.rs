@@ -374,7 +374,6 @@ impl<C: Channel> Agent<C> {
         let result = self.services.security.response_verifier.verify(&ctx);
 
         match result {
-            ResponseVerificationResult::Clean => false,
             ResponseVerificationResult::Flagged { matched } => {
                 let detail = matched.join(", ");
                 tracing::warn!(patterns = %detail, "response verification: injection patterns in LLM output");
@@ -395,6 +394,7 @@ impl<C: Channel> Agent<C> {
                 );
                 true
             }
+            _ => false,
         }
     }
 

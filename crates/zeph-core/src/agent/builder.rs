@@ -57,8 +57,8 @@ use super::session_config::{AgentSessionConfig, CONTEXT_BUDGET_RESERVE_RATIO};
 use crate::agent::state::ProviderConfigSnapshot;
 use crate::channel::Channel;
 use crate::config::{
-    CompressionConfig, LearningConfig, ProviderEntry, SecurityConfig, StoreRoutingConfig,
-    TimeoutConfig,
+    CompressionConfig, LearningConfig, ProviderEntry, ProviderName, SecurityConfig,
+    StoreRoutingConfig, TimeoutConfig,
 };
 use crate::config_watcher::ConfigEvent;
 use crate::context::ContextBudget;
@@ -2183,13 +2183,17 @@ impl<C: Channel> Agent<C> {
         // Resolve fidelity semantic (embed) provider by name when config specifies one.
         self.services.memory.compaction.fidelity_semantic_provider = fidelity_config
             .as_ref()
-            .and_then(|c| c.semantic_scoring_provider.as_deref())
+            .and_then(|c| {
+                c.semantic_scoring_provider
+                    .as_ref()
+                    .map(ProviderName::as_str)
+            })
             .filter(|name| !name.is_empty())
             .map(|name| Arc::new(self.resolve_background_provider(name)));
         // Resolve fidelity compress provider by name when config specifies one.
         self.services.memory.compaction.fidelity_compress_provider = fidelity_config
             .as_ref()
-            .and_then(|c| c.compress_provider.as_deref())
+            .and_then(|c| c.compress_provider.as_ref().map(ProviderName::as_str))
             .filter(|name| !name.is_empty())
             .map(|name| Arc::new(self.resolve_background_provider(name)));
         self.services.memory.compaction.fidelity_config = fidelity_config;

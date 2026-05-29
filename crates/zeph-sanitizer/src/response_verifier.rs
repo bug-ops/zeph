@@ -61,6 +61,7 @@ static RESPONSE_PATTERNS: LazyLock<Vec<CompiledResponsePattern>> = LazyLock::new
 /// assert!(verifier.verify(&ctx).is_clean());
 /// ```
 #[must_use]
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseVerificationResult {
     /// No injection patterns detected in the LLM response.

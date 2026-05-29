@@ -6,6 +6,7 @@
 //! [`FidelityConfig`] is serialised from the `[context.fidelity]` section in `config.toml`.
 //! When `enabled = false` (the default) the fidelity scorer is a complete no-op.
 
+use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
 fn fidelity_lookahead_depth_default() -> u8 {
@@ -64,11 +65,11 @@ pub struct FidelityConfig {
     /// LLM provider name (from `[[llm.providers]]`) used to summarize messages during
     /// `Compressed` rendering. When `None`, truncation is used instead.
     #[serde(default)]
-    pub compress_provider: Option<String>,
+    pub compress_provider: Option<ProviderName>,
     /// Embedding provider name (from `[[llm.providers]]`) used for semantic similarity scoring.
     /// When `None`, keyword overlap is used instead.
     #[serde(default)]
-    pub semantic_scoring_provider: Option<String>,
+    pub semantic_scoring_provider: Option<ProviderName>,
     /// Maximum BFS depth for PAACE lookahead hints derived from the orchestration DAG.
     ///
     /// Controls how many steps ahead in the active task graph are converted to
@@ -237,7 +238,12 @@ mod tests {
             semantic_scoring_provider = "embed-fast"
         "#;
         let cfg: FidelityConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.semantic_scoring_provider.as_deref(), Some("embed-fast"));
+        assert_eq!(
+            cfg.semantic_scoring_provider
+                .as_ref()
+                .map(ProviderName::as_str),
+            Some("embed-fast")
+        );
     }
 
     #[test]

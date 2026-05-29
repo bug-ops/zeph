@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `embed_timeout_secs` / `compress_timeout_secs` in `[memory.fidelity]` config (closes #4645, #4651).
   Both fields default to 30 seconds to preserve existing behaviour; config migration step 51 adds
   commented-out hints for existing configs that contain a `[memory.fidelity]` section.
+- `zeph-config`: `FidelityConfig.compress_provider` and `semantic_scoring_provider` now use
+  `Option<ProviderName>` instead of `Option<String>`, consistent with all other provider-reference
+  fields in the config layer. Existing TOML configs are unaffected (deserialization is transparent).
+- `zeph-sanitizer`: `GuardrailVerdict` and `ResponseVerificationResult` are now `#[non_exhaustive]`,
+  allowing new verdict variants to be added without breaking downstream exhaustive matches.
+- `zeph-context`: `CompressionMethod` is now `#[non_exhaustive]`, allowing new compression methods
+  to be added without breaking downstream exhaustive matches.
 
 ## [0.21.3] - 2026-05-29
 

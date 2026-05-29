@@ -70,6 +70,7 @@ pub struct ToolResultEntry<'a> {
 ///
 /// Does NOT include a `Summarized` variant — LLM summarization is the caller's
 /// responsibility in `zeph-core` before calling these methods.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionMethod {
     /// Result was within `passthrough_threshold` — returned unchanged.

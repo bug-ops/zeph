@@ -2012,7 +2012,7 @@ impl<C: Channel> Agent<C> {
                     }
                     tracing::warn!(%error, "guardrail check failed (fail_strategy=open), allowing input");
                 }
-                GuardrailVerdict::Safe => {}
+                _ => {}
             }
         }
 

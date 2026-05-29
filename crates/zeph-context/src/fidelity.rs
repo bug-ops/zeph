@@ -890,6 +890,7 @@ fn parse_placeholder_importance(content: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_common::ProviderName;
     use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
     struct FixedTc(usize);
@@ -1828,7 +1829,7 @@ mod tests {
             full_threshold: 2.0,
             compressed_threshold: 0.0,
             compressed_max_tokens: 5,
-            compress_provider: Some("mock".to_string()),
+            compress_provider: Some(ProviderName::new("mock")),
             ..make_cfg()
         };
         // Use tc with chars-per-token=1 so a long string has more than 5*2=10 tokens.
@@ -1879,7 +1880,7 @@ mod tests {
             full_threshold: 2.0,
             compressed_threshold: 0.0,
             compressed_max_tokens: 5,
-            compress_provider: Some("mock".to_string()),
+            compress_provider: Some(ProviderName::new("mock")),
             ..make_cfg()
         };
         let tc = FixedTc(1);
@@ -2005,7 +2006,7 @@ mod tests {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             enabled: true,
-            semantic_scoring_provider: Some("embed-mock".to_string()),
+            semantic_scoring_provider: Some(ProviderName::new("embed-mock")),
             // Only semantic + temporal active; force Full for all so we can inspect scores
             // by checking which messages survive with Full vs not.
             // Use extreme thresholds so all messages pass through as Full.
