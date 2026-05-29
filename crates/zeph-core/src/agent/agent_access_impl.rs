@@ -42,6 +42,71 @@ impl<C: Channel + Send + 'static> Agent<C> {
     }
 }
 
+/// Run Stage-2 LLM semantic scan for all skills in the plugin at `source`.
+///
+/// Returns `Some(err_msg)` when a skill is blocked, `None` when all skills pass.
+async fn semantic_scan_plugin_add(
+    scanner: &zeph_skills::semantic_scanner::SkillSemanticScanner,
+    source: &str,
+    managed_dir: Option<std::path::PathBuf>,
+    mcp_allowed: Vec<String>,
+    base_shell_allowed: Vec<String>,
+) -> Result<Option<String>, CommandError> {
+    use zeph_skills::semantic_scanner::ScanVerdict;
+
+    let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
+    let mgr_dir =
+        managed_dir.unwrap_or_else(|| zeph_config::defaults::default_vault_dir().join("skills"));
+    let mgr =
+        zeph_plugins::PluginManager::new(plugins_dir, mgr_dir, mcp_allowed, base_shell_allowed);
+
+    let source_owned = source.to_owned();
+    let scan_inputs = tokio::task::spawn_blocking(move || mgr.scan_targets(&source_owned))
+        .await
+        .map_err(|e| CommandError(format!("plugin scan_targets panicked: {e}")))?
+        .map_err(|e| CommandError(format!("plugin add failed: {e}")))?;
+
+    tracing::info!(
+        plugin.source = %source,
+        skills_count = scan_inputs.len(),
+        "plugins.add: running Stage-2 semantic scan"
+    );
+
+    for input in &scan_inputs {
+        let verdict = scanner
+            .scan(&input.skill_name, &input.declared_purpose, &input.skill_md)
+            .await
+            .map_err(|e| {
+                CommandError(format!(
+                    "plugin add failed: semantic scan error for skill {:?}: {e}",
+                    input.skill_name
+                ))
+            })?;
+        match verdict {
+            ScanVerdict::Allow => {
+                tracing::debug!(
+                    skill = %input.skill_name,
+                    "plugins.add: skill passed semantic scan"
+                );
+            }
+            ScanVerdict::Warn(ref reason) => {
+                tracing::warn!(
+                    skill = %input.skill_name,
+                    reason = %reason,
+                    "plugins.add: skill passed with warning"
+                );
+            }
+            ScanVerdict::Block(reason) => {
+                return Ok(Some(format!(
+                    "plugin add failed: skill {:?} rejected by semantic scan: {}",
+                    input.skill_name, reason
+                )));
+            }
+        }
+    }
+    Ok(None)
+}
+
 impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
     // ----- /memory -----
 
@@ -987,7 +1052,43 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     .map(|m| m.plugin.name)
             })
             .collect();
+
+        // Resolve scanner once, before the async block captures `self`.
+        let semantic_scan_enabled = self.services.skill.semantic_scan;
+        let maybe_scanner: Option<zeph_skills::semantic_scanner::SkillSemanticScanner> =
+            if semantic_scan_enabled {
+                let provider = self.resolve_background_provider(
+                    self.services.skill.semantic_scan_provider.as_str(),
+                );
+                Some(zeph_skills::semantic_scanner::SkillSemanticScanner::new(
+                    provider,
+                ))
+            } else {
+                None
+            };
+
         Box::pin(async move {
+            let (subcmd, source) = args_owned
+                .trim()
+                .split_once(' ')
+                .unwrap_or((args_owned.trim(), ""));
+
+            // Stage-2 LLM semantic scan runs before the blocking add(), fail-closed.
+            if subcmd == "add"
+                && !source.trim().is_empty()
+                && let Some(ref scanner) = maybe_scanner
+                && let Some(err) = semantic_scan_plugin_add(
+                    scanner,
+                    source.trim(),
+                    managed_dir.clone(),
+                    mcp_allowed.clone(),
+                    base_shell_allowed.clone(),
+                )
+                .await?
+            {
+                return Ok(err);
+            }
+
             // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all,
             // read_dir). Run on a blocking thread to avoid stalling the tokio worker.
             tokio::task::spawn_blocking(move || {

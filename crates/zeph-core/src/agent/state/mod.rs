@@ -79,6 +79,7 @@ pub(crate) struct MemoryState {
     pub(crate) subsystems: MemorySubsystemState,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct SkillState {
     pub(crate) registry: Arc<RwLock<SkillRegistry>>,
     /// Per-turn trust snapshot written by `prepare_context` after `build_skill_trust_map`.
@@ -147,6 +148,10 @@ pub(crate) struct SkillState {
     pub(crate) group_structured: bool,
     /// Inter-skill cosine similarity threshold for `GoSkills` grouping.
     pub(crate) support_similarity_threshold: f32,
+    /// Whether Stage-2 LLM semantic compliance scan is enabled on `plugin add`.
+    pub(crate) semantic_scan: bool,
+    /// Provider name for the semantic scan LLM. Empty = use primary provider.
+    pub(crate) semantic_scan_provider: String,
 }
 
 pub(crate) struct McpState {
@@ -1186,6 +1191,8 @@ impl SkillState {
             eval_threshold: 0.60,
             group_structured: false,
             support_similarity_threshold: 0.50,
+            semantic_scan: false,
+            semantic_scan_provider: String::new(),
         }
     }
 }

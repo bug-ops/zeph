@@ -3221,6 +3221,12 @@ impl<C: Channel> Agent<C> {
             .as_str()
             .clone_into(&mut self.services.skill.disambiguate_provider_name);
         self.services.skill.generation_timeout_ms = config.skills.generation_timeout_ms;
+        self.services.skill.semantic_scan = config.skills.semantic_scan;
+        config
+            .skills
+            .semantic_scan_provider
+            .as_str()
+            .clone_into(&mut self.services.skill.semantic_scan_provider);
         self.services.skill.generation_output_dir =
             config.skills.generation_output_dir.as_deref().map(|p| {
                 if let Some(stripped) = p.strip_prefix("~/") {

@@ -365,9 +365,10 @@ pub struct SkillsConfig {
     /// Enable LLM-backed semantic SKILL.md compliance scan on `plugin add`.
     ///
     /// When `true`, the agent asks an LLM whether the skill's declared purpose is
-    /// consistent with its actual content. Non-compliant skills are rejected with
-    /// `PluginError::SemanticViolation`. Stage-1 regex scan always runs and is
-    /// advisory regardless of this setting.
+    /// consistent with its actual content. Non-compliant skills are rejected with a
+    /// user-facing error message. `PluginError::SemanticViolation` is used only by the
+    /// Stage-1 ephemeral path. Stage-1 regex scan always runs and is advisory regardless
+    /// of this setting.
     ///
     /// Default: `false`.
     #[serde(default)]
@@ -375,8 +376,7 @@ pub struct SkillsConfig {
 
     /// Provider name (from `[[llm.providers]]`) used for the semantic scan.
     ///
-    /// When empty (the default), the primary/main provider is used. If no provider
-    /// is configured at all, the semantic scan is skipped with a warning.
+    /// When empty (the default), the primary/main provider is used.
     #[serde(default)]
     pub semantic_scan_provider: ProviderName,
 

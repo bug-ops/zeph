@@ -30,6 +30,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-skills`: new `SkillSemanticScanner` module (`semantic_scanner.rs`) implementing LLM-based
+  Stage-2 semantic compliance check for third-party SKILL.md files. Detects Semantic Compliance
+  Hijacking (SCH) attacks (arXiv:2605.14460) where malicious skills encode behavior through natural
+  language instructions. The scanner uses `chat_typed_erased` with a fast/cheap provider, enforces
+  an 8 KiB content limit with head+tail sampling, neutralizes `</skill_content>` delimiter-escape
+  injection, and returns `ScanVerdict::{Allow, Warn, Block}`. Opt-in via `[skill]
+  semantic_scan = true` and `semantic_scan_provider` in config.
+- `zeph-plugins`: `scan_targets()` method on `PluginManager` extracts SKILL.md candidates and
+  parsed metadata from an archive for pre-installation semantic scanning, keeping the plugins crate
+  LLM-free. Includes a path-traversal guard (`canonicalize + starts_with`) mirroring `add()`.
+- `zeph-core`: `semantic_scan_plugin_add` async function performs Stage-2 scan before plugin
+  installation when `semantic_scan = true`. Fail-closed on `Block` verdict; logs `Warn` and
+  continues on `Warn` verdict; returns a config error if `semantic_scan_provider` is empty. Closes #3947.
+
 - `zeph-config`: new `[cocoon]` section with `show_balance: bool` (default `true`). When set to
   `false`, the TON balance in the TUI status bar is rendered as `*** TON` instead of the real
   value. Implements the redaction option from spec §15.2. Default `true` preserves current

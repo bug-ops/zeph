@@ -69,11 +69,11 @@ pub enum PluginError {
     #[error("TOML serialization error: {0}")]
     TomlSer(#[from] toml::ser::Error),
 
-    /// The SKILL.md semantic scan determined the skill is non-compliant.
+    /// The SKILL.md semantic compliance scan rejected the skill.
     ///
-    /// Only raised when `skill.semantic_scan = true` in agent config and the LLM
-    /// classifier returns `compliant: false`. Stage-1 regex matches are advisory
-    /// (warnings) and never produce this error.
+    /// Raised for Stage-1 regex matches treated as blocking in the ephemeral install
+    /// context (`add_remote_ephemeral`). Stage-2 LLM scan returns a string error
+    /// via the command layer, not this variant.
     #[error("skill {skill:?} failed semantic compliance scan: {reason}")]
     SemanticViolation { skill: String, reason: String },
 

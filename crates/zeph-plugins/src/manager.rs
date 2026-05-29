@@ -77,6 +77,21 @@ pub struct DisableResult {
     pub forced_over_dependents: Vec<String>,
 }
 
+/// Plain-data input for the Stage-2 LLM semantic scanner.
+///
+/// Collected by [`PluginManager::scan_targets`] from a plugin source tree before any files
+/// are copied. The caller (core/commands layer) runs the async LLM scan and only proceeds
+/// with installation when all verdicts are non-blocking.
+#[derive(Debug, Clone)]
+pub struct SkillScanInput {
+    /// Skill name as declared in `SKILL.md` frontmatter, or the manifest path as fallback.
+    pub skill_name: String,
+    /// One-sentence description from `SKILL.md` frontmatter; represents the declared purpose.
+    pub declared_purpose: String,
+    /// Full SKILL.md body (frontmatter + content).
+    pub skill_md: String,
+}
+
 /// Installed plugin metadata as returned by `plugin list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPlugin {
@@ -527,6 +542,96 @@ impl PluginManager {
         }
 
         Ok(result)
+    }
+
+    /// Collect [`SkillScanInput`] entries for each skill in the plugin at `source`.
+    ///
+    /// Validates the manifest and skill paths without copying any files. The returned
+    /// inputs are passed to `SkillSemanticScanner::scan` by the caller (core/commands
+    /// layer) before the blocking `add()` call proceeds. This keeps `zeph-plugins`
+    /// free of any LLM dependency.
+    ///
+    /// Missing `SKILL.md` files return [`PluginError::SkillEntryMissing`] — a manifest
+    /// entry with no body is suspicious and treated as a blocking error, not a warning.
+    ///
+    /// # Errors
+    ///
+    /// - [`PluginError::InvalidSource`] — `source` does not exist or `plugin.toml` is missing/invalid.
+    /// - [`PluginError::SkillEntryMissing`] — a `[[skills]]` entry has no `SKILL.md`.
+    /// - [`PluginError::Io`] — filesystem error while reading `SKILL.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use zeph_plugins::PluginManager;
+    ///
+    /// fn collect(mgr: &PluginManager, source: &str) -> Result<(), zeph_plugins::PluginError> {
+    ///     let inputs = mgr.scan_targets(source)?;
+    ///     for input in &inputs {
+    ///         println!("skill: {} — {}", input.skill_name, input.declared_purpose);
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn scan_targets(&self, source: &str) -> Result<Vec<SkillScanInput>, PluginError> {
+        let source_path = std::path::PathBuf::from(source);
+        if !source_path.exists() {
+            return Err(PluginError::InvalidSource {
+                path: source.to_owned(),
+                reason: "path does not exist".to_owned(),
+            });
+        }
+
+        let manifest_path = source_path.join("plugin.toml");
+        let manifest_str =
+            std::fs::read_to_string(&manifest_path).map_err(|e| PluginError::Io {
+                path: manifest_path.clone(),
+                source: e,
+            })?;
+        let manifest: crate::manifest::PluginManifest = toml::from_str(&manifest_str)
+            .map_err(|e| PluginError::InvalidManifest(e.to_string()))?;
+
+        let canonical_source = source_path.canonicalize().map_err(|e| PluginError::Io {
+            path: source_path.clone(),
+            source: e,
+        })?;
+
+        let mut inputs = Vec::with_capacity(manifest.skills.len());
+        for entry in &manifest.skills {
+            let skill_dir = source_path.join(&entry.path);
+            let skill_md_path = skill_dir.join("SKILL.md");
+
+            if !skill_md_path.is_file() {
+                return Err(PluginError::SkillEntryMissing { path: skill_dir });
+            }
+
+            // Reject path traversal: resolved SKILL.md path must stay within source root.
+            let canonical_skill = skill_md_path.canonicalize().map_err(|e| PluginError::Io {
+                path: skill_md_path.clone(),
+                source: e,
+            })?;
+            if !canonical_skill.starts_with(&canonical_source) {
+                return Err(PluginError::InvalidSource {
+                    path: entry.path.clone(),
+                    reason: "skill path escapes plugin source root".to_owned(),
+                });
+            }
+
+            let content = std::fs::read_to_string(&skill_md_path).map_err(|e| PluginError::Io {
+                path: skill_md_path.clone(),
+                source: e,
+            })?;
+
+            // Extract name and description from frontmatter; fall back to manifest path on error.
+            let (skill_name, declared_purpose) = parse_frontmatter_meta(&content, &entry.path);
+
+            inputs.push(SkillScanInput {
+                skill_name,
+                declared_purpose,
+                skill_md: content,
+            });
+        }
+        Ok(inputs)
     }
 
     /// Remove an installed plugin by name.
@@ -1943,6 +2048,43 @@ fn load_installed_manifest(plugin_dir: &Path) -> Result<PluginManifest, PluginEr
     toml::from_str(&text).map_err(|e| PluginError::InvalidManifest(format!("{e}")))
 }
 
+/// Extract `name` and `description` from a SKILL.md YAML frontmatter block.
+///
+/// Returns the parsed values on success or `(fallback_path.to_owned(), String::new())` on
+/// any parse failure. The caller surfaces these as `skill_name` and `declared_purpose` in
+/// [`SkillScanInput`].
+fn parse_frontmatter_meta(content: &str, fallback_path: &str) -> (String, String) {
+    // SKILL.md frontmatter is delimited by `---` lines.
+    let after_open = content.strip_prefix("---").and_then(|s| {
+        // Allow `---\n` or `--- \n`.
+        s.strip_prefix('\n')
+            .or_else(|| s.strip_prefix(" \n"))
+            .or_else(|| s.strip_prefix('\r'))
+    });
+    let Some(rest) = after_open else {
+        return (fallback_path.to_owned(), String::new());
+    };
+    let Some(end) = rest.find("\n---") else {
+        return (fallback_path.to_owned(), String::new());
+    };
+    let frontmatter = &rest[..end];
+
+    let mut name = fallback_path.to_owned();
+    let mut description = String::new();
+    for line in frontmatter.lines() {
+        if let Some(v) = line.strip_prefix("name:") {
+            v.trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .clone_into(&mut name);
+        } else if let Some(v) = line.strip_prefix("description:") {
+            v.trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .clone_into(&mut description);
+        }
+    }
+    (name, description)
+}
+
 /// Plugin skills are third-party and must never be treated as bundled by the scanner.
 fn strip_bundled_markers(root: &Path) {
     for entry in WalkDir::new(root).into_iter().flatten() {
@@ -2249,6 +2391,43 @@ path = "../outside-skill"
         assert!(
             matches!(err, PluginError::InvalidSource { .. }),
             "expected InvalidSource for path traversal, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn scan_targets_path_traversal_in_skill_path_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real_tmp = tmp.path().canonicalize().unwrap();
+        let source = real_tmp.join("source");
+        let outside = real_tmp.join("outside-skill");
+
+        std::fs::create_dir_all(&outside).unwrap();
+        // Place a real SKILL.md outside the source root so canonicalize succeeds.
+        std::fs::write(outside.join("SKILL.md"), "---\nname: evil\n---\nbody").unwrap();
+
+        // Manifest references ../outside-skill which resolves outside source root.
+        let manifest = r#"[plugin]
+name = "traversal-scan-test"
+version = "0.1.0"
+description = "test"
+
+[[skills]]
+path = "../outside-skill"
+"#;
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("plugin.toml"), manifest).unwrap();
+
+        let mgr = PluginManager::new(
+            real_tmp.join("plugins"),
+            real_tmp.join("managed"),
+            vec![],
+            vec![],
+        );
+
+        let err = mgr.scan_targets(source.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { .. }),
+            "expected InvalidSource for path traversal in scan_targets, got {err:?}"
         );
     }
 

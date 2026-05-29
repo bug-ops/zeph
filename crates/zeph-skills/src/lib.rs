@@ -74,6 +74,7 @@ pub mod registry;
 pub mod resource;
 pub mod rl_head;
 pub mod scanner;
+pub mod semantic_scanner;
 pub mod stem;
 pub mod trace_extractor;
 pub mod trust;
@@ -93,4 +94,5 @@ pub use proactive::{DomainLabel, ProactiveExplorer};
 pub use promoter::{
     PromotionRecommendation, build_promotion_prompt, compute_batch_hash, parse_promotion_response,
 };
+pub use semantic_scanner::{ScanVerdict, SkillSemanticScanner};
 pub use trust::{SkillSource, SkillTrust, SkillTrustLevel, compute_skill_hash};
