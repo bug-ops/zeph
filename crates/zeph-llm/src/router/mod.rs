@@ -1457,6 +1457,8 @@ impl RouterProvider {
         };
 
         let mut tasks = self.asi_tasks.lock();
+        // Drain finished tasks so completed handles don't count toward the cap.
+        while tasks.try_join_next().is_some() {}
         if tasks.len() >= MAX_ASI_TASKS {
             tracing::debug!("asi: task limit reached, skipping coherence update");
             return;
@@ -3973,6 +3975,66 @@ mod tests {
     async fn blocking_load_runs_closure_on_current_thread_runtime() {
         let result = super::blocking_load(|| 42_u32);
         assert_eq!(result, 42, "blocking_load must return the closure result");
+    }
+
+    // ── spawn_asi_update JoinSet reap regression (#4644) ─────────────────────
+
+    /// Regression for #4644: completed tasks in `asi_tasks` must be reaped before the cap
+    /// check so that a full-but-finished JoinSet does not permanently block new spawns.
+    #[tokio::test]
+    async fn spawn_asi_update_reaped_after_cap_full() {
+        use crate::mock::MockProvider;
+        use std::sync::atomic::Ordering;
+
+        let mut m = MockProvider::with_responses(vec!["ok".to_owned()]);
+        m.supports_embeddings = true;
+        m.embedding = vec![1.0, 0.0];
+        let embed_calls = Arc::clone(&m.embed_call_count);
+
+        let r =
+            RouterProvider::new(vec![AnyProvider::Mock(m)]).with_asi(AsiRouterConfig::default());
+        r.state.asi_last_turn.store(u64::MAX, Ordering::SeqCst);
+
+        // Spawn exactly MAX_ASI_TASKS tasks and wait for all to complete.
+        for i in 0..super::MAX_ASI_TASKS {
+            r.spawn_asi_update("p1", format!("resp{i}"), i as u64, Some(vec![0.5, 0.5]));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // After all tasks finish the JoinSet is full of completed handles.
+        // Without the drain fix this next call would be silently skipped.
+        r.spawn_asi_update(
+            "p1",
+            "extra".to_owned(),
+            super::MAX_ASI_TASKS as u64,
+            Some(vec![0.9, 0.1]),
+        );
+
+        // Give the newly spawned task time to complete.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // embed() must never have been called — all calls used a precomputed embedding.
+        assert_eq!(
+            embed_calls.load(Ordering::Relaxed),
+            0,
+            "embed() must not be called when precomputed_embedding is Some"
+        );
+
+        // Trigger one more spawn — the drain inside will reap the last completed task,
+        // proving the extra spawn was not permanently blocked by the full JoinSet.
+        r.spawn_asi_update(
+            "p1",
+            "probe".to_owned(),
+            (super::MAX_ASI_TASKS + 1) as u64,
+            Some(vec![0.1, 0.9]),
+        );
+
+        // All previously finished tasks must have been reaped; only the probe may remain.
+        let remaining = r.asi_tasks.lock().len();
+        assert!(
+            remaining <= 1,
+            "completed tasks must be reaped; at most 1 in-flight task expected, got {remaining}"
+        );
     }
 
     // ── spawn_asi_update timeout regression (#4566) ───────────────────────────
