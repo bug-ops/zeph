@@ -389,8 +389,8 @@ impl SqliteStore {
 
     /// Batch-update fidelity tags for messages by their database IDs.
     ///
-    /// Called after [`zeph_context::fidelity::FidelityScorer::score_and_apply`] to persist
-    /// the assigned fidelity levels so subsequent turns see the persisted floor invariant.
+    /// Called after fidelity scoring to persist the assigned fidelity levels so subsequent
+    /// turns see the persisted floor invariant.
     ///
     /// All updates are committed in a single transaction for atomicity. The operation is
     /// a no-op when `updates` is empty.
