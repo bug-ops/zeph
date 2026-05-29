@@ -74,6 +74,13 @@ use thompson::ThompsonState;
 
 /// Rate-limits the ASI coherence WARN to at most once per 60 seconds process-wide.
 static ASI_WARN_LAST_SECS: AtomicU64 = AtomicU64::new(0);
+
+/// Maximum number of concurrent fire-and-forget ASI coherence update tasks.
+///
+/// When the `JoinSet` reaches this limit, new spawns are skipped (not aborted) to
+/// preserve in-flight work. ASI tasks are analytics-only and do not affect
+/// memory persistence.
+const MAX_ASI_TASKS: usize = 8;
 use zeph_common::math::cosine_similarity;
 
 /// Runs `f` without blocking the Tokio executor.
@@ -328,6 +335,11 @@ pub struct RouterProvider {
     /// Per-call timeout for `embed()` across all non-bandit providers (milliseconds).
     /// Defaults to 5000 ms. A stalled provider is skipped and the next one is tried.
     embed_timeout_ms: u64,
+    /// Bounded set of fire-and-forget ASI coherence update tasks.
+    ///
+    /// Shared across all clones via `Arc`; capped at [`MAX_ASI_TASKS`]. New spawns are
+    /// skipped (not aborted) when the cap is reached to preserve in-flight work.
+    asi_tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
 }
 
 impl RouterProvider {
@@ -361,6 +373,7 @@ impl RouterProvider {
             quality_gate: None,
             coe: None,
             embed_timeout_ms: 5000,
+            asi_tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
         }
     }
 
@@ -1442,12 +1455,19 @@ impl RouterProvider {
         let Some(ref asi_cfg) = self.asi_config else {
             return;
         };
+
+        let mut tasks = self.asi_tasks.lock();
+        if tasks.len() >= MAX_ASI_TASKS {
+            tracing::debug!("asi: task limit reached, skipping coherence update");
+            return;
+        }
+
         let asi = Arc::clone(asi_arc);
         let router = self.clone();
         let window_size = asi_cfg.window;
         let provider_name = provider.to_owned();
         let embed_timeout_ms = self.embed_timeout_ms;
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let emb = if let Some(e) = precomputed_embedding {
                 e
             } else {

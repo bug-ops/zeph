@@ -389,6 +389,12 @@ pub struct SemanticMemory {
     ///
     /// Configurable via `[memory.semantic] embed_timeout_secs`. Default: 5 s.
     pub(crate) embed_timeout: std::time::Duration,
+    /// Cancellation token for the most recent background graph-extraction task.
+    ///
+    /// Replaced on every call to [`SemanticMemory::spawn_graph_extraction`]. Call
+    /// [`SemanticMemory::cancel_graph_extraction`] to signal cooperative cancellation
+    /// before hard-aborting the task via the supervisor.
+    pub(crate) graph_cancel: Mutex<Option<tokio_util::sync::CancellationToken>>,
 }
 
 impl SemanticMemory {
@@ -524,6 +530,7 @@ impl SemanticMemory {
             query_sensitive_cost: false,
             five_signal: None,
             embed_timeout: std::time::Duration::from_secs(5),
+            graph_cancel: Mutex::new(None),
         })
     }
 
@@ -591,6 +598,7 @@ impl SemanticMemory {
             query_sensitive_cost: false,
             five_signal: None,
             embed_timeout: std::time::Duration::from_secs(5),
+            graph_cancel: Mutex::new(None),
         })
     }
 
@@ -1149,6 +1157,7 @@ impl SemanticMemory {
             query_sensitive_cost: false,
             five_signal: None,
             embed_timeout: std::time::Duration::from_secs(5),
+            graph_cancel: Mutex::new(None),
         }
     }
 
@@ -1235,6 +1244,7 @@ impl SemanticMemory {
             query_sensitive_cost: false,
             five_signal: None,
             embed_timeout: std::time::Duration::from_secs(5),
+            graph_cancel: Mutex::new(None),
         })
     }
 

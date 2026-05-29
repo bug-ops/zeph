@@ -255,6 +255,13 @@ pub struct ContextAssemblyView<'a> {
     /// Mirrors the channel wired in `ContextSummarizationView::status_tx`. `None` in
     /// non-TUI modes; the service skips sending when the sender is absent.
     pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Background task supervisor for registering `JoinHandle`s produced during context
+    /// assembly (e.g. `mark_reasoning_used` in `fetch_reasoning_strategies`).
+    ///
+    /// Handles drained from [`PreparedContext::background_tasks`] are wrapped and
+    /// registered here so they remain tracked and abortable instead of being silently
+    /// dropped when `PreparedContext` goes out of scope.
+    pub task_supervisor: Arc<TaskSupervisor>,
 }
 
 /// Values produced by [`crate::service::ContextService::prepare_context`] that must be applied by the caller.

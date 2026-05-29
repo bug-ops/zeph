@@ -30,6 +30,9 @@ zeph-memory.workspace = true
 zeph-sanitizer.workspace = true
 zeph-skills.workspace = true
 
+[dev-dependencies]
+tokio-util.workspace = true
+
 [features]
 sqlite = ["zeph-memory/sqlite"]
 postgres = ["zeph-memory/postgres"]

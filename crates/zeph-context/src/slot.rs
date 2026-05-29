@@ -37,7 +37,10 @@ pub enum ContextSlot {
     /// `TiMem` tree summary nodes recalled for context (#2262).
     TreeMemory(Option<Message>),
     /// Distilled reasoning strategies recalled for the current turn (#3343).
-    ReasoningStrategies(Option<Message>),
+    ///
+    /// The second field carries the `JoinHandle` for the background `mark_reasoning_used` task
+    /// spawned after injection. Callers must store it in `PreparedContext::background_tasks`.
+    ReasoningStrategies(Option<Message>, Option<tokio::task::JoinHandle<()>>),
 }
 
 /// Return type from `compact_context()` that distinguishes between successful compaction,

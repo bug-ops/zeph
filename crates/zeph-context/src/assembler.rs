@@ -60,6 +60,7 @@ pub const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
 ///
 /// All source fields are `Option` — `None` means disabled, empty, or budget-exhausted.
 /// `session_digest` is excluded: it is a cached value injected by `Agent::apply_prepared_context`.
+#[derive(Default)]
 pub struct PreparedContext {
     /// Knowledge graph fact recall.
     pub graph_facts: Option<Message>,
@@ -89,6 +90,11 @@ pub struct PreparedContext {
     pub memory_first: bool,
     /// Token budget for recent conversation history (passed to trim step in apply).
     pub recent_history_budget: usize,
+    /// Background tasks spawned during context assembly that must be tracked to completion.
+    ///
+    /// Callers are responsible for awaiting or aborting these handles at an appropriate boundary
+    /// (e.g., turn end). See async discipline rule: fire-and-forget tasks MUST be tracked.
+    pub background_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// Stateless coordinator for parallel context fetching.
@@ -99,25 +105,8 @@ pub struct ContextAssembler;
 type CtxFuture<'a> = Pin<Box<dyn Future<Output = Result<ContextSlot, AssemblerError>> + Send + 'a>>;
 
 fn empty_prepared_context() -> PreparedContext {
-    PreparedContext {
-        graph_facts: None,
-        doc_rag: None,
-        corrections: None,
-        recall: None,
-        recall_confidence: None,
-        cross_session: None,
-        summaries: None,
-        code_context: None,
-        persona_facts: None,
-        trajectory_hints: None,
-        tree_memory: None,
-        reasoning_hints: None,
-        memory_first: false,
-        recent_history_budget: 0,
-    }
+    PreparedContext::default()
 }
-
-// TODO(critic): consider impl Default for PreparedContext to make this constructor obsolete (#3442 follow-up).
 
 fn resolve_effective_strategy(
     memory: &crate::input::ContextMemoryView,
@@ -258,7 +247,7 @@ fn schedule_context_fetchers<'r>(
             let top_k = memory.reasoning_config.top_k;
             fetch_reasoning_strategies(memory, query, rbudget, top_k, tc)
                 .await
-                .map(ContextSlot::ReasoningStrategies)
+                .map(|(msg, handle)| ContextSlot::ReasoningStrategies(msg, handle))
         }));
     }
 
@@ -285,7 +274,12 @@ async fn drive_fetchers(
                 ContextSlot::PersonaFacts(msg) => prepared.persona_facts = msg,
                 ContextSlot::TrajectoryHints(msg) => prepared.trajectory_hints = msg,
                 ContextSlot::TreeMemory(msg) => prepared.tree_memory = msg,
-                ContextSlot::ReasoningStrategies(msg) => prepared.reasoning_hints = msg,
+                ContextSlot::ReasoningStrategies(msg, handle) => {
+                    prepared.reasoning_hints = msg;
+                    if let Some(h) = handle {
+                        prepared.background_tasks.push(h);
+                    }
+                }
             },
             Err(e) => return Err(e),
         }
@@ -678,14 +672,14 @@ pub(crate) async fn fetch_reasoning_strategies(
     budget_tokens: usize,
     top_k: usize,
     tc: &dyn TokenCounting,
-) -> Result<Option<Message>, AssemblerError> {
+) -> Result<(Option<Message>, Option<tokio::task::JoinHandle<()>>), AssemblerError> {
     // S1: enforce the ≤500-token spec cap documented in ReasoningConfig.
     let budget_tokens = budget_tokens.min(500);
     if budget_tokens == 0 {
-        return Ok(None);
+        return Ok((None, None));
     }
     let Some(ref mem) = memory.memory else {
-        return Ok(None);
+        return Ok((None, None));
     };
 
     let strategies = mem
@@ -694,7 +688,7 @@ pub(crate) async fn fetch_reasoning_strategies(
         .map_err(AssemblerError::Memory)?;
 
     if strategies.is_empty() {
-        return Ok(None);
+        return Ok((None, None));
     }
 
     let mut body = String::from(crate::slot::REASONING_PREFIX);
@@ -716,21 +710,24 @@ pub(crate) async fn fetch_reasoning_strategies(
     }
 
     if body == crate::slot::REASONING_PREFIX {
-        return Ok(None);
+        return Ok((None, None));
     }
 
     // C4 split: mark_used only for strategies that made it past budget truncation.
-    // P2-1: fire-and-forget — mark_used does not need to block the context build path.
-    if !injected_ids.is_empty() {
+    // Spawn the task and return the handle so the caller can track it (async discipline rule:
+    // fire-and-forget tasks MUST be tracked; handle stored in PreparedContext::background_tasks).
+    let handle = if injected_ids.is_empty() {
+        None
+    } else {
         let mem_clone = mem.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             if let Err(e) = mem_clone.mark_reasoning_used(&injected_ids).await {
                 tracing::warn!(error = %e, "reasoning: mark_used failed");
             }
-        });
-    }
+        }))
+    };
 
-    Ok(Some(Message::from_legacy(Role::System, body)))
+    Ok((Some(Message::from_legacy(Role::System, body)), handle))
 }
 
 #[tracing::instrument(name = "context.corrections", skip_all)]
@@ -1267,10 +1264,11 @@ mod tests {
         let mut view = empty_view();
         view.reasoning_config.enabled = true;
         let tc = NaiveTokenCounter;
-        let result = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc)
+        let (result, handle) = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc)
             .await
             .unwrap();
         assert!(result.is_none());
+        assert!(handle.is_none());
     }
 
     #[tokio::test]
@@ -1278,10 +1276,11 @@ mod tests {
         let mut view = empty_view();
         view.reasoning_config.enabled = true;
         let tc = NaiveTokenCounter;
-        let result = fetch_reasoning_strategies(&view, "query", 0, 3, &tc)
+        let (result, handle) = fetch_reasoning_strategies(&view, "query", 0, 3, &tc)
             .await
             .unwrap();
         assert!(result.is_none());
+        assert!(handle.is_none());
     }
 
     // ── MockMemoryBackend ─────────────────────────────────────────────────────
@@ -2041,7 +2040,7 @@ mod tests {
         view.reasoning_config.enabled = true;
         view.reasoning_config.context_budget_tokens = 1000;
         let tc = NaiveTokenCounter;
-        let result = fetch_reasoning_strategies(&view, "debug", 1000, 5, &tc)
+        let (result, handle) = fetch_reasoning_strategies(&view, "debug", 1000, 5, &tc)
             .await
             .unwrap();
         assert!(result.is_some());
@@ -2049,11 +2048,10 @@ mod tests {
         assert!(msg.content.starts_with(crate::slot::REASONING_PREFIX));
         assert!(msg.content.contains("break the problem"));
 
-        // B2: yield to let the spawned tokio::spawn task complete before asserting marked_ids.
-        // Two yields are sufficient under the default single-threaded #[tokio::test] runtime.
-        // If the flavor changes to multi_thread, replace with a short sleep or JoinHandle tracking.
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
+        // Await the returned JoinHandle to ensure mark_reasoning_used completes before assertion.
+        if let Some(h) = handle {
+            h.await.expect("mark_reasoning_used task panicked");
+        }
 
         let ids = marked_ids.marked_ids.lock().expect("marked_ids poisoned");
         assert!(
@@ -2245,7 +2243,7 @@ mod tests {
         let mut view = mock_view(mock);
         view.reasoning_config.enabled = true;
         let tc = NaiveTokenCounter;
-        let result = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc)
+        let (result, _handle) = fetch_reasoning_strategies(&view, "query", 1000, 3, &tc)
             .await
             .unwrap();
         assert!(result.is_some());

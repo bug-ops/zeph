@@ -110,6 +110,7 @@ async fn test_apply_query_bias_dimension_mismatch_returns_unchanged() {
         query_sensitive_cost: false,
         five_signal: None,
         embed_timeout: std::time::Duration::from_secs(5),
+        graph_cancel: std::sync::Mutex::new(None),
     };
 
     let embedding = vec![0.1_f32, 0.2, 0.3];

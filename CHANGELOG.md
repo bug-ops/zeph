@@ -66,6 +66,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   long-term memory store fidelity) and `ContextFidelity` (CAM, context-window fidelity) to prevent
   confusion between the two near-identical enum names (closes #4556).
 
+### Fixed
+
+- `zeph-context`: `build_reasoning_context` now tracks the `JoinHandle` for `mark_reasoning_used`
+  in `PreparedContext::background_tasks`; the handle is drained into `TaskSupervisor` in
+  `prepare_context` before `apply_prepared_context` consumes `PreparedContext`, eliminating the
+  untracked fire-and-forget spawn (closes #4631).
+- `zeph-memory`: `spawn_graph_extraction` now stores the `CancellationToken` in
+  `SemanticMemory::graph_cancel`; `cancel_graph_extraction()` fires the token cooperatively on
+  shutdown before `abort_all()` so in-progress DB writes can complete cleanly (closes #4630).
+- `zeph-llm`: `RouterProvider::spawn_asi_update` now pushes the `JoinHandle` into a bounded
+  `Arc<Mutex<JoinSet<()>>>` (`MAX_ASI_TASKS = 8`); new spawns are skipped when the cap is reached,
+  preventing unbounded task accumulation on high-throughput routing (closes #4625).
+
 ### Changed
 
 - `zeph-memory`: embed timeout is now configurable via `memory.semantic.embed_timeout_secs` (default

@@ -619,6 +619,11 @@ impl SemanticMemory {
     /// When `config.note_linking.enabled` is `true` and an embedding store is available,
     /// `link_memory_notes` runs after successful extraction inside the same task, bounded
     /// by `config.note_linking.timeout_secs`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `graph_cancel` mutex is poisoned (another thread panicked
+    /// while holding the lock).
     pub fn spawn_graph_extraction(
         &self,
         content: String,
@@ -636,6 +641,12 @@ impl SemanticMemory {
                 "graph extraction using override provider (quality_gate bypassed)"
             );
         }
+        let cancel = CancellationToken::new();
+        *self
+            .graph_cancel
+            .lock()
+            .expect("graph_cancel mutex poisoned") = Some(cancel.clone());
+
         let ctx = GraphExtractionTaskCtx {
             pool: self.sqlite.pool().clone(),
             provider,
@@ -653,6 +664,32 @@ impl SemanticMemory {
             post_extract_validator,
             ctx,
         ))
+    }
+
+    /// Signal cooperative cancellation to the current background graph-extraction task.
+    ///
+    /// Fires the [`CancellationToken`] stored by the most recent [`spawn_graph_extraction`]
+    /// call. The task checks the token at community-refresh boundaries, so it exits cleanly
+    /// rather than being hard-aborted. This should be called before the supervisor calls
+    /// `abort()` on the underlying `JoinHandle` to give the task a chance to flush state.
+    ///
+    /// No-op if no extraction has been spawned or the previous token has already fired.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `graph_cancel` mutex is poisoned (another thread panicked
+    /// while holding the lock).
+    ///
+    /// [`spawn_graph_extraction`]: SemanticMemory::spawn_graph_extraction
+    pub fn cancel_graph_extraction(&self) {
+        if let Some(token) = self
+            .graph_cancel
+            .lock()
+            .expect("graph_cancel mutex poisoned")
+            .as_ref()
+        {
+            token.cancel();
+        }
     }
 }
 

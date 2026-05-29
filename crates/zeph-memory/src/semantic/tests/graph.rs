@@ -384,6 +384,7 @@ async fn memory_with_in_memory_vector_store() -> (
         query_sensitive_cost: false,
         five_signal: None,
         embed_timeout: std::time::Duration::from_secs(5),
+        graph_cancel: std::sync::Mutex::new(None),
     };
 
     (memory, embedding_store)

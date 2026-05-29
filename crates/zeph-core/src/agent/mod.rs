@@ -734,6 +734,13 @@ impl<C: Channel> Agent<C> {
             h.abort();
         }
 
+        // Signal cooperative cancellation to the graph-extraction background task before the
+        // hard abort below. This lets the task exit at a clean checkpoint (e.g. after the
+        // community-refresh select arm fires) rather than being cut mid-write.
+        if let Some(memory) = self.services.memory.persistence.memory.as_ref() {
+            memory.cancel_graph_extraction();
+        }
+
         // Forcibly abort in-flight Enrichment and Telemetry tasks tracked by the supervisor.
         self.runtime.lifecycle.supervisor.abort_all();
 

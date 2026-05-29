@@ -489,6 +489,7 @@ impl<C: Channel> Agent<C> {
                 .clone(),
             planned_next_tools: &self.services.orchestration.cached_lookahead,
             status_tx: self.services.session.status_tx.clone(),
+            task_supervisor: Arc::clone(&self.runtime.lifecycle.task_supervisor),
         };
         let _ = self.channel.send_status("recalling context...").await;
         let result = svc.prepare_context(query, &mut window, &mut view).await;
