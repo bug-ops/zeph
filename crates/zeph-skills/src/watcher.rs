@@ -25,6 +25,7 @@
 //! while let Some(event) = rx.recv().await {
 //!     match event {
 //!         SkillEvent::Changed => println!("skills changed, reloading"),
+//!         _ => {}
 //!     }
 //! }
 //! # Ok(())
