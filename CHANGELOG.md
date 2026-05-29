@@ -55,6 +55,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph`: `apply_response_cache` now returns `Option<tokio::task::JoinHandle<()>>`; the caller
+  in `runner.rs` stores the handle and calls `abort()` during shutdown, ensuring the background
+  cache cleanup loop cannot outlive the agent lifecycle (closes #4612).
+- `zeph-agent-context`: removed `#![allow(clippy::unused_async)]` blanket allow from crate root;
+  `ContextService::reset_conversation` is now a plain `fn` (no `.await` calls); scaffold-phase
+  allow is no longer needed (closes #4567).
+- `zeph-core`: added `#[non_exhaustive]` to seven extensible `pub enum` types in the `quality`
+  and `shadow_sentinel` modules (`SkipReason`, `StageOutcome`, `VerdictStatus`, `TriggerPolicy`,
+  `QualityConfigError`, `ToolRiskCategory`, `ProbeVerdict`); consistent with the project-wide
+  convention from bba75144 (closes #4569).
+
 - `zeph-context`: removed dead `fidelity_config: Option<&'a FidelityConfig>` field from
   `ContextAssemblyInput`; the field was always `None` and never read after the CAM Phase 1
   refactor (closes #4595).

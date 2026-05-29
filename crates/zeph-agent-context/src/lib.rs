@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Allow async stubs during scaffold phase — async signatures are load-bearing for callers.
-#![allow(clippy::unused_async)]
 
 //! Agent context-assembly service for Zeph.
 //!

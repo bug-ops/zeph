@@ -996,7 +996,7 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if creating a new conversation in `SQLite` fails.
-    pub async fn reset_conversation(
+    pub fn reset_conversation(
         &self,
         window: &mut MessageWindowView<'_>,
         _view: &mut ContextAssemblyView<'_>,

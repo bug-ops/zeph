@@ -54,6 +54,7 @@ use crate::agent::error::AgentError;
 /// Only `Shell`, `FileWrite`, and `ExfilCapable` tools trigger a safety probe.
 /// `Low` tools bypass the probe entirely, adding zero latency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ToolRiskCategory {
     /// Shell execution — arbitrary commands, highest risk.
     Shell,
@@ -69,6 +70,7 @@ pub enum ToolRiskCategory {
 
 /// Result of a `SafetyProbe` evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProbeVerdict {
     /// Tool execution is safe to proceed.
     Allow,

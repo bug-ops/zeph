@@ -669,16 +669,16 @@ pub(crate) fn apply_response_cache<C: Channel>(
     semantic_cache_enabled: bool,
     embed_model: String,
     cancel: tokio_util::sync::CancellationToken,
-) -> Agent<C> {
+) -> (Agent<C>, Option<tokio::task::JoinHandle<()>>) {
     if !enabled {
         if semantic_cache_enabled {
             tracing::warn!("semantic_cache_enabled has no effect without response_cache_enabled");
         }
-        return agent;
+        return (agent, None);
     }
     let cache = std::sync::Arc::new(zeph_memory::ResponseCache::new(pool, ttl_secs));
     let cache_clone = std::sync::Arc::clone(&cache);
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_hours(1));
         interval.tick().await; // skip immediate first tick
         loop {
@@ -697,7 +697,7 @@ pub(crate) fn apply_response_cache<C: Channel>(
             }
         }
     });
-    agent.with_response_cache(cache)
+    (agent.with_response_cache(cache), Some(handle))
 }
 
 pub(crate) fn apply_cost_tracker<C: Channel>(
@@ -1711,8 +1711,12 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result =
+        let (result, handle) =
             apply_response_cache(agent, false, pool, 300, false, "embed-model".into(), cancel);
+        assert!(
+            handle.is_none(),
+            "disabled cache must not spawn a background task"
+        );
         drop(result);
     }
 
@@ -1723,17 +1727,15 @@ mod tests {
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
         let agent = make_agent();
         let cancel = tokio_util::sync::CancellationToken::new();
-        let result =
+        let (result, handle) =
             apply_response_cache(agent, true, pool, 300, false, "embed-model".into(), cancel);
+        assert!(handle.is_some(), "enabled cache must return a JoinHandle");
         drop(result);
+        drop(handle);
     }
 
     #[tokio::test]
     async fn apply_response_cache_cleanup_spawns_without_panic() {
-        // NOTE: apply_response_cache is sync and drops the inner JoinHandle internally.
-        // This test verifies the function does not panic and returns promptly when
-        // the token is cancelled during setup, but cannot verify the inner cleanup
-        // loop exits — that requires exposing the inner JoinHandle (tracked separately).
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().display());
         let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
@@ -1741,17 +1743,16 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let child = cancel.child_token();
 
-        let handle = tokio::spawn(async move {
-            apply_response_cache(agent, true, pool, 300, false, "embed-model".into(), child)
-        });
+        let (_, cleanup_handle) =
+            apply_response_cache(agent, true, pool, 300, false, "embed-model".into(), child);
+        let cleanup_handle = cleanup_handle.expect("enabled cache must return a JoinHandle");
 
-        tokio::task::yield_now().await;
         cancel.cancel();
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+        tokio::time::timeout(std::time::Duration::from_secs(1), cleanup_handle)
             .await
-            .expect("apply_response_cache did not complete within 1 s")
-            .expect("apply_response_cache panicked");
+            .expect("cleanup loop did not exit within 1 s after cancellation")
+            .expect("cleanup loop panicked");
     }
 
     #[tokio::test]

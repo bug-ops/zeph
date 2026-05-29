@@ -116,7 +116,7 @@ impl zeph_tools::ProbeGate for ShadowSentinelProbeGateAdapter {
             {
                 ProbeVerdict::Allow => ProbeOutcome::Allow,
                 ProbeVerdict::Deny { reason } => ProbeOutcome::Deny { reason },
-                ProbeVerdict::Skip => ProbeOutcome::Skip,
+                _ => ProbeOutcome::Skip,
             }
         })
     }
@@ -2456,7 +2456,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .with_instruction_blocks(instruction_blocks)
         .with_instruction_reload(instruction_reload_rx, instruction_reload_state);
 
-    let agent = agent_setup::apply_response_cache(
+    let (agent, cache_cleanup_handle) = agent_setup::apply_response_cache(
         agent,
         config.llm.response_cache_enabled,
         cache_pool,
@@ -3377,6 +3377,9 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     // are killed while the tokio runtime is still active (#2693).
     shutdown_mcp_manager.shutdown_all_shared().await;
     agent.shutdown().await;
+    if let Some(h) = cache_cleanup_handle {
+        h.abort();
+    }
     supervisor
         .shutdown_all(std::time::Duration::from_secs(10))
         .await;

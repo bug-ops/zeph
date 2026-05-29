@@ -19,6 +19,7 @@ pub struct Assertion {
 /// Verdict status for a single assertion returned by the Checker.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum VerdictStatus {
     /// Evidence directly confirms the claim.
     Supported,
@@ -48,6 +49,7 @@ pub struct AssertionVerdict {
 
 /// Reason the pipeline was skipped for this turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum SkipReason {
     /// No assistant message found in turn (tool-only turn or error bail-out).
     NoAssistantText,
@@ -65,6 +67,7 @@ pub enum SkipReason {
 
 /// Outcome of a single pipeline stage (Proposer or Checker call).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum StageOutcome {
     /// Stage completed successfully.
     Ok,

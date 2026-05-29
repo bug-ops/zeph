@@ -10,6 +10,7 @@ use zeph_config::providers::ProviderName;
 /// When to run the self-check pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TriggerPolicy {
     /// Run only when the turn has retrieved context (semantic recall, summaries, cross-session).
     #[default]
@@ -133,6 +134,7 @@ impl Default for QualityConfig {
 
 /// Errors returned by [`QualityConfig::validate`].
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum QualityConfigError {
     #[error("per_call_timeout_ms ({per_call}) × 2 must be ≤ latency_budget_ms ({budget})")]
     TimeoutExceedsBudget { per_call: u64, budget: u64 },
