@@ -25,7 +25,6 @@ pub type ToolFingerprint = String;
 /// to decide whether unexpected tools should be filtered or surfaced as warnings.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum AttestationResult {
     /// All actual tools are in the operator-declared expected set.
     /// Fingerprints are stored for drift detection on subsequent refreshes.

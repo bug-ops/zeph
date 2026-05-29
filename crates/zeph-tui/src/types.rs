@@ -37,7 +37,6 @@ pub struct PasteState {
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum InputMode {
     /// Navigation and command keybindings are active; typing does not insert text.
     Normal,
@@ -60,7 +59,6 @@ pub enum InputMode {
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum MessageRole {
     /// A message sent by the human user.
     User,

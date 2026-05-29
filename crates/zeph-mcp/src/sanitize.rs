@@ -214,7 +214,6 @@ fn sanitize_server_id(id: &str) -> String {
 /// (high-confidence attack surface indicator).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum CrossRefSeverity {
     /// Cross-reference only — no injection pattern on the same source tool.
     Info,

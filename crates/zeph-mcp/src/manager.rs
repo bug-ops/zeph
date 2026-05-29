@@ -50,7 +50,6 @@ const MAX_INJECTION_PENALTIES_PER_REGISTRATION: usize = 3;
 /// Transport type for MCP server connections.
 #[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
 pub enum McpTransport {
     /// Stdio: spawn child process with command + args.
     Stdio {

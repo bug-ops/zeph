@@ -498,6 +498,7 @@ pub(crate) async fn forward_tool_events_to_tui(
             } => zeph_tui::AgentEvent::Status(format!(
                 "Rolled back {restored_count} file(s), deleted {deleted_count} new file(s)"
             )),
+            _ => continue,
         };
         if tx.send(agent_event).await.is_err() {
             break;
