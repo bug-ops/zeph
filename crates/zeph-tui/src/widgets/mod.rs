@@ -15,6 +15,7 @@ pub mod input;
 pub mod memory;
 pub mod plan_view;
 pub mod resources;
+pub mod reverse_search;
 pub mod security;
 pub mod skills;
 pub mod slash_autocomplete;

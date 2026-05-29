@@ -20,6 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-config`: new `[cocoon]` section with `show_balance: bool` (default `true`). When set to
+  `false`, the TON balance in the TUI status bar is rendered as `*** TON` instead of the real
+  value. Implements the redaction option from spec §15.2. Default `true` preserves current
+  behaviour. Config migration step 53 appends a commented `[cocoon]` advisory notice to existing
+  configs; the field is optional so existing configs load without modification.
+- `--init` wizard: prompts "Show Cocoon TON balance in the TUI status bar?" in the Cocoon provider
+  step (default `true`).
+- TUI: Ctrl+R reverse-search over current-session prompt history. Opens a floating overlay above
+  the input area; typing filters by substring match (newest-first); Ctrl+R again cycles to the
+  next older match; Enter copies the selection into the input (no auto-submit); Esc cancels.
+  History is current-session only (populated on each submit, empty at startup).
 - `zeph-config`: `ProviderOverrides` struct — per-session LLM generation override parameters
   persisted across restarts (Phase 1: `reasoning_effort` only). Serialized as JSON and stored
   in the `channel_preferences` table under `pref_key = "provider_overrides"`. Uses

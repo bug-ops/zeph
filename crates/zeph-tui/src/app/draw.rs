@@ -49,6 +49,15 @@ impl App {
             widgets::slash_autocomplete::render(state, frame, layout.input);
         }
 
+        if let Some(state) = &self.reverse_search {
+            widgets::reverse_search::render(
+                state,
+                &self.sessions.current().input_history,
+                frame,
+                layout.input,
+            );
+        }
+
         if let Some(state) = &self.confirm_state {
             widgets::confirm::render(&state.prompt, frame, frame.area());
         }

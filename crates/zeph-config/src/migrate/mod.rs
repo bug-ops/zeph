@@ -3404,13 +3404,13 @@ pub trait Migration: Send + Sync {
 mod steps;
 use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateEgressConfig, MigrateEmbedProviderRename,
-    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
-    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
+    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateEgressConfig,
+    MigrateEmbedProviderRename, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
+    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
+    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
+    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
+    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
@@ -3634,6 +3634,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateFidelityTimeoutDefaults),
             // Step 52 — add persist_provider_overrides to [session] (#4654)
             Box::new(MigrateSessionPersistProviderOverrides),
+            // Step 53 — add [cocoon] show_balance advisory notice (#4649)
+            Box::new(MigrateCocoonShowBalance),
         ]
     });
 
@@ -3824,6 +3826,37 @@ pub fn migrate_fidelity_timeout_defaults(toml_src: &str) -> Result<MigrationResu
     }
 }
 
+/// Add a commented-out `[cocoon]` section with `show_balance` advisory notice (#4649).
+///
+/// Implements spec §15.2 opt-in redaction: when `show_balance = false`, the TUI
+/// status bar renders the TON balance as `*** TON` instead of the real value.
+/// The default remains `true` (visible), so existing configs are unaffected.
+///
+/// Idempotent: skipped if `show_balance` is already present (as an active key or comment).
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_cocoon_show_balance(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("show_balance") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let section = "\n[cocoon]\n\
+        # show_balance = true  \
+        # set to false to redact TON balance in TUI status bar (spec §15.2) (#4649)\n";
+    let output = format!("{toml_src}{section}");
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["cocoon".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3839,8 +3872,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            52,
-            "MIGRATIONS registry must contain all 52 sequential steps"
+            53,
+            "MIGRATIONS registry must contain all 53 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5427,7 +5460,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_fifty_entries() {
-        assert_eq!(MIGRATIONS.len(), 52);
+        assert_eq!(MIGRATIONS.len(), 53);
     }
 
     #[test]
@@ -5466,7 +5499,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–51).
+        // Names must follow the documented step order (steps 1–53).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -5520,6 +5553,7 @@ prompt_cache_ttl = "1h"
             "migrate_mcp_retry_and_tool_timeout",
             "migrate_fidelity_timeout_defaults",
             "migrate_session_persist_provider_overrides",
+            "migrate_cocoon_show_balance",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5948,5 +5982,41 @@ trace_extraction_embed_provider = \"live\"\n";
             1,
             "embed_timeout_secs must appear exactly once"
         );
+    }
+
+    // ── Step 53 — cocoon.show_balance advisory notice (#4649) ────────────────────────────────────
+
+    #[test]
+    fn migrate_cocoon_show_balance_adds_section_when_absent() {
+        let src = "[agent]\nname = \"Zeph\"\n";
+        let result = migrate_cocoon_show_balance(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("show_balance"),
+            "output must mention show_balance"
+        );
+        assert!(
+            result.output.contains("[cocoon]"),
+            "output must contain [cocoon] section"
+        );
+    }
+
+    #[test]
+    fn migrate_cocoon_show_balance_idempotent_when_key_present() {
+        let src = "[cocoon]\n# show_balance = true\n";
+        let result = migrate_cocoon_show_balance(src).expect("migrate");
+        assert_eq!(
+            result.changed_count, 0,
+            "must not modify config that already has show_balance"
+        );
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_cocoon_show_balance_idempotent_when_active_key_present() {
+        let src = "[cocoon]\nshow_balance = false\n";
+        let result = migrate_cocoon_show_balance(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
     }
 }

@@ -378,6 +378,7 @@ pub struct App {
     tool_expanded: bool,
     tool_density: ToolDensity,
     show_source_labels: bool,
+    show_balance: bool,
     throbber_state: throbber_widgets_tui::ThrobberState,
     confirm_state: Option<ConfirmState>,
     elicitation_state: Option<ElicitationState>,
@@ -386,6 +387,7 @@ pub struct App {
     file_picker_state: Option<FilePickerState>,
     file_index: Option<FileIndex>,
     slash_autocomplete: Option<SlashAutocompleteState>,
+    reverse_search: Option<crate::widgets::reverse_search::ReverseSearchState>,
     pub should_quit: bool,
     user_input_tx: mpsc::Sender<String>,
     agent_event_rx: mpsc::Receiver<AgentEvent>,
@@ -455,6 +457,7 @@ impl App {
             tool_expanded: false,
             tool_density: ToolDensity::default(),
             show_source_labels: false,
+            show_balance: true,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             confirm_state: None,
             elicitation_state: None,
@@ -463,6 +466,7 @@ impl App {
             file_picker_state: None,
             file_index: None,
             slash_autocomplete: None,
+            reverse_search: None,
             should_quit: false,
             user_input_tx,
             agent_event_rx,
@@ -1045,6 +1049,20 @@ impl App {
             self.show_source_labels = v;
             self.sessions.current_mut().render_cache.clear();
         }
+    }
+
+    /// Return `true` when the Cocoon TON balance should be shown in the status bar.
+    ///
+    /// Controlled by `[cocoon] show_balance` in config (default `true`). When `false`,
+    /// the balance is redacted to `*** TON` per spec §15.2.
+    #[must_use]
+    pub fn show_balance(&self) -> bool {
+        self.show_balance
+    }
+
+    /// Set whether the Cocoon TON balance is shown in the status bar.
+    pub fn set_show_balance(&mut self, v: bool) {
+        self.show_balance = v;
     }
 
     /// Replace the current hyperlink span list with `links`.

@@ -74,6 +74,7 @@ pub mod autonomous;
 pub mod channels;
 pub mod classifiers;
 pub mod cli;
+pub mod cocoon;
 pub mod defaults;
 pub mod dump_format;
 mod env;
@@ -115,6 +116,7 @@ pub use channels::{
     TrustCalibrationConfig, is_skill_allowed,
 };
 pub use cli::{CliConfig, LoopConfig};
+pub use cocoon::CocoonConfig;
 pub use defaults::{
     DEFAULT_DEBUG_DIR, DEFAULT_LOG_FILE, DEFAULT_SKILLS_DIR, DEFAULT_SQLITE_PATH,
     default_debug_dir, default_integrity_registry_path, default_log_file_path, default_skills_dir,

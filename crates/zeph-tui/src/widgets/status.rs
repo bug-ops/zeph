@@ -270,7 +270,7 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
             )],
         );
     }
-    if let Some(cocoon_seg) = build_cocoon_spans(metrics, theme) {
+    if let Some(cocoon_seg) = build_cocoon_spans(metrics, app.show_balance(), theme) {
         list.push(Priority::Low, cocoon_seg);
     }
     if metrics.bg_enrichment_inflight > 0 || metrics.bg_telemetry_inflight > 0 {
@@ -326,7 +326,11 @@ fn context_pct(context_tokens: u64, context_max_tokens: u64) -> u64 {
     pct
 }
 
-fn build_cocoon_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Option<Vec<Span<'static>>> {
+fn build_cocoon_spans(
+    metrics: &MetricsSnapshot,
+    show_balance: bool,
+    theme: &Theme,
+) -> Option<Vec<Span<'static>>> {
     match metrics.cocoon_connected {
         None => None,
         Some(true) => {
@@ -335,7 +339,11 @@ fn build_cocoon_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Option<Vec<Sp
                 metrics.cocoon_model_count, metrics.cocoon_worker_count,
             );
             if let Some(balance) = metrics.cocoon_ton_balance {
-                let _ = write!(text, ", {balance:.2} TON");
+                if show_balance {
+                    let _ = write!(text, ", {balance:.2} TON");
+                } else {
+                    text.push_str(", *** TON");
+                }
             }
             Some(vec![Span::styled(text, theme.status_bar)])
         }
@@ -696,7 +704,7 @@ mod tests {
     fn cocoon_segment_none_is_empty() {
         let metrics = MetricsSnapshot::default();
         let theme = Theme::default();
-        assert!(build_cocoon_spans(&metrics, &theme).is_none());
+        assert!(build_cocoon_spans(&metrics, true, &theme).is_none());
     }
 
     #[test]
@@ -709,7 +717,7 @@ mod tests {
             cocoon_ton_balance: Some(42.5),
             ..MetricsSnapshot::default()
         };
-        let spans = build_cocoon_spans(&metrics, &theme).expect("should be Some");
+        let spans = build_cocoon_spans(&metrics, true, &theme).expect("should be Some");
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("healthy"), "got: {text}");
         assert!(text.contains("3 models"), "got: {text}");
@@ -724,11 +732,30 @@ mod tests {
             cocoon_connected: Some(false),
             ..MetricsSnapshot::default()
         };
-        let spans = build_cocoon_spans(&metrics, &theme).expect("should be Some");
+        let spans = build_cocoon_spans(&metrics, true, &theme).expect("should be Some");
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             text.contains("unreachable"),
             "expected 'unreachable' in segment"
+        );
+    }
+
+    #[test]
+    fn cocoon_segment_balance_redacted_when_show_balance_false() {
+        let theme = Theme::default();
+        let metrics = MetricsSnapshot {
+            cocoon_connected: Some(true),
+            cocoon_worker_count: 4,
+            cocoon_model_count: 2,
+            cocoon_ton_balance: Some(99.9),
+            ..MetricsSnapshot::default()
+        };
+        let spans = build_cocoon_spans(&metrics, false, &theme).expect("should be Some");
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("*** TON"), "balance must be redacted: {text}");
+        assert!(
+            !text.contains("99.9"),
+            "real balance must not appear: {text}"
         );
     }
 

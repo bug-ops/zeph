@@ -907,6 +907,13 @@ impl App {
     }
 
     fn handle_insert_key(&mut self, key: KeyEvent) {
+        // Reverse-search dispatch is checked BEFORE slash-autocomplete so that
+        // printable chars (including '/') typed into the search query are not
+        // stolen by the autocomplete trigger (C4).
+        if self.reverse_search.is_some() {
+            self.handle_reverse_search_key(key);
+            return;
+        }
         if self.slash_autocomplete.is_some() {
             self.handle_slash_autocomplete_key(key);
             return;
@@ -1089,6 +1096,15 @@ impl App {
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.execute_command(TuiCommand::CopyLastAssistant);
             }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ignore Ctrl+R when slash autocomplete is open — mutual exclusion.
+                if self.slash_autocomplete.is_none() {
+                    let history = self.sessions.current().input_history.clone();
+                    self.reverse_search = Some(
+                        crate::widgets::reverse_search::ReverseSearchState::new(&history),
+                    );
+                }
+            }
             KeyCode::Char('@') => {
                 self.open_file_picker();
             }
@@ -1179,6 +1195,45 @@ impl App {
                     .is_none_or(|s| s.filtered.is_empty())
                 {
                     self.slash_autocomplete = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_reverse_search_key(&mut self, key: KeyEvent) {
+        let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let is_alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => {
+                self.reverse_search = None;
+            }
+            KeyCode::Enter => {
+                let selected = self.reverse_search.as_ref().and_then(|s| {
+                    let hist = &self.sessions.current().input_history;
+                    s.selected_entry(hist).map(str::to_owned)
+                });
+                self.reverse_search = None;
+                if let Some(text) = selected {
+                    self.sessions.current_mut().input = text;
+                    self.sessions.current_mut().cursor_position = self.char_count();
+                }
+            }
+            KeyCode::Char('r') if is_ctrl => {
+                if let Some(s) = self.reverse_search.as_mut() {
+                    s.select_next();
+                }
+            }
+            KeyCode::Backspace => {
+                let history = self.sessions.current().input_history.clone();
+                if let Some(s) = self.reverse_search.as_mut() {
+                    s.pop_char(&history);
+                }
+            }
+            KeyCode::Char(c) if !is_ctrl && !is_alt => {
+                let history = self.sessions.current().input_history.clone();
+                if let Some(s) = self.reverse_search.as_mut() {
+                    s.push_char(c, &history);
                 }
             }
             _ => {}

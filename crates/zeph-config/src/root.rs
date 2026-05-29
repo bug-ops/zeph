@@ -12,6 +12,7 @@ use crate::agent::{AgentConfig, FocusConfig, GoalConfig, SubAgentConfig};
 use crate::channels::{A2aServerConfig, DiscordConfig, McpConfig, SlackConfig, TelegramConfig};
 use crate::classifiers::ClassifiersConfig;
 use crate::cli::CliConfig;
+use crate::cocoon::CocoonConfig;
 use crate::defaults::{default_skill_paths, default_sqlite_path_field};
 use crate::execution::ExecutionConfig;
 use crate::experiment::{ExperimentConfig, OrchestrationConfig};
@@ -126,6 +127,9 @@ pub struct Config {
     /// Long-horizon goal lifecycle configuration.
     #[serde(default)]
     pub goals: GoalConfig,
+    /// Cocoon display and behaviour settings (independent of `[[llm.providers]]` Cocoon entry).
+    #[serde(default)]
+    pub cocoon: CocoonConfig,
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
@@ -327,6 +331,7 @@ impl Default for Config {
             quality: crate::quality::QualityConfig::default(),
             notifications: NotificationsConfig::default(),
             goals: GoalConfig::default(),
+            cocoon: CocoonConfig::default(),
             secrets: ResolvedSecrets::default(),
         }
     }

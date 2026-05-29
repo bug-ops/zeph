@@ -76,6 +76,7 @@ pub(crate) fn start_tui_early(
         .with_command_tx(tui_handle.command_tx.clone())
         .with_tool_density(config.tui.tool_density);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
+    tui_app.set_show_balance(config.cocoon.show_balance);
 
     let agent_tx = tui_handle.agent_tx.clone();
 
@@ -165,6 +166,7 @@ fn spawn_tui_thread(
     command_tx: tokio::sync::mpsc::Sender<zeph_tui::TuiCommand>,
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
     show_source_labels: bool,
+    show_balance: bool,
     tool_density: zeph_config::ToolDensity,
     metrics_rx: Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
     task_supervisor: Option<zeph_common::task_supervisor::TaskSupervisor>,
@@ -180,6 +182,7 @@ fn spawn_tui_thread(
         .with_command_tx(command_tx)
         .with_tool_density(tool_density);
     tui_app.set_show_source_labels(show_source_labels);
+    tui_app.set_show_balance(show_balance);
 
     if let Some(rx) = metrics_rx {
         tui_app = tui_app.with_metrics_rx(rx);
@@ -282,6 +285,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
             command_tx,
             agent.cancel_signal(),
             params.config.tui.show_source_labels,
+            params.config.cocoon.show_balance,
             params.config.tui.tool_density,
             params.metrics_rx.take(),
             params.task_supervisor.take(),

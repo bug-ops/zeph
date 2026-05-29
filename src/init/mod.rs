@@ -250,6 +250,8 @@ pub(crate) struct WizardState {
     pub(crate) cocoon_client_url: Option<String>,
     /// `true` when the user confirmed they have an access hash stored in the vault.
     pub(crate) cocoon_wants_access_hash: bool,
+    /// Show TON balance in TUI status bar (spec §15.2 opt-in redaction, #4649).
+    pub(crate) cocoon_show_balance: bool,
     // CAM fidelity (#4547)
     /// Enable heuristic fidelity scoring (Full/Compressed/Placeholder).
     pub(crate) fidelity_enabled: bool,
@@ -427,6 +429,7 @@ impl Default for WizardState {
             gonka_nodes: Vec::new(),
             cocoon_client_url: None,
             cocoon_wants_access_hash: false,
+            cocoon_show_balance: true,
             fidelity_enabled: false,
         }
     }
@@ -773,6 +776,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.digest.enabled = state.digest_enabled;
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.persist_provider_overrides = state.persist_provider_overrides;
+    config.cocoon.show_balance = state.cocoon_show_balance;
     config.mcp.elicitation_enabled = state.mcp_elicitation_enabled;
     config.mcp.elicitation_warn_sensitive_fields = state.mcp_elicitation_warn_sensitive;
     config.quality.self_check = state.quality_self_check;

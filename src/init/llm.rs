@@ -353,6 +353,11 @@ fn step_cocoon(state: &mut WizardState, use_age: bool) -> anyhow::Result<()> {
     }
     state.cocoon_wants_access_hash = wants_access_hash;
 
+    state.cocoon_show_balance = Confirm::new()
+        .with_prompt("Show Cocoon TON balance in the TUI status bar?")
+        .default(true)
+        .interact()?;
+
     Ok(())
 }
 
