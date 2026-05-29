@@ -118,6 +118,7 @@ pub struct FakeResponse {
 #[cfg(test)]
 impl FakeGitRunner {
     /// Creates a new `FakeGitRunner` with an empty response queue.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
@@ -126,6 +127,10 @@ impl FakeGitRunner {
     }
 
     /// Enqueues a successful response with the given stdout bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn push_ok(&self, stdout: impl Into<Vec<u8>>) {
         self.responses.lock().unwrap().push_back(FakeResponse {
             stdout: stdout.into(),
@@ -135,6 +140,10 @@ impl FakeGitRunner {
     }
 
     /// Enqueues a failing response with the given stderr bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned.
     pub fn push_err(&self, stderr: impl Into<Vec<u8>>) {
         self.responses.lock().unwrap().push_back(FakeResponse {
             stdout: vec![],
@@ -164,7 +173,7 @@ impl GitRunner for FakeGitRunner {
     async fn run(&self, args: &[&str], cwd: &Path) -> Result<Output, WorktreeError> {
         // Record the call for post-test assertions.
         self.calls.lock().unwrap().push((
-            args.iter().map(|s| s.to_string()).collect(),
+            args.iter().map(ToString::to_string).collect(),
             cwd.to_path_buf(),
         ));
 

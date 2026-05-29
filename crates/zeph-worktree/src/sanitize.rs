@@ -155,7 +155,7 @@ mod tests {
         let repo = dir.path();
         let canonical_repo = std::fs::canonicalize(repo).unwrap();
         let result = canonicalize_root(std::path::Path::new("worktrees"), repo);
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
         assert!(result.unwrap().starts_with(&canonical_repo));
     }
 

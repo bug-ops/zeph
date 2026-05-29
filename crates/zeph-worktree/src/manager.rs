@@ -847,7 +847,7 @@ mod tests {
         );
     }
 
-    /// MINOR-4: dirty-tree warning path — create() returns Ok even on a dirty tree.
+    /// MINOR-4: dirty-tree warning path — `create()` returns `Ok` even on a dirty tree.
     ///
     /// `check_dirty_tree` emits `tracing::warn!` but does not fail the operation.
     /// This test verifies the code path is exercised without panic and that the manager
