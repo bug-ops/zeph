@@ -1595,7 +1595,10 @@ fn test_openai_stub_used_when_schema_exceeds_1024_bytes() {
 
 #[test]
 fn completion_tokens_o_series_uses_max_completion_tokens() {
-    for model in &["o1", "o1-mini", "o1-pro", "o3", "o3-mini", "o4-mini"] {
+    // Covers o1, o2, o3, o4 families including sub-variants — regression for #4598/#4600/#4602.
+    for model in &[
+        "o1", "o1-mini", "o1-pro", "o2", "o2-mini", "o3", "o3-mini", "o4-mini",
+    ] {
         let ct = CompletionTokens::for_model(model, 512);
         let json = serde_json::to_string(&ct).unwrap();
         assert!(
@@ -1611,7 +1614,7 @@ fn completion_tokens_o_series_uses_max_completion_tokens() {
 
 #[test]
 fn completion_tokens_legacy_models_use_max_tokens() {
-    for model in &["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"] {
+    for model in &["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "claude-3-opus"] {
         let ct = CompletionTokens::for_model(model, 256);
         let json = serde_json::to_string(&ct).unwrap();
         assert!(
@@ -1621,6 +1624,35 @@ fn completion_tokens_legacy_models_use_max_tokens() {
         assert!(
             !json.contains("\"max_completion_tokens\""),
             "{model} must not use max_completion_tokens"
+        );
+    }
+}
+
+#[test]
+fn starts_with_o_digit_accepts_o_followed_by_digit() {
+    // Regression: o2 and o2-* were not matched before the starts_with_o_digit helper was added.
+    for model in &[
+        "o1",
+        "o2",
+        "o3",
+        "o4",
+        "o2-mini",
+        "o3-mini-deep",
+        "o9-future",
+    ] {
+        assert!(
+            starts_with_o_digit(model),
+            "{model} must be detected as o-series by starts_with_o_digit"
+        );
+    }
+}
+
+#[test]
+fn starts_with_o_digit_rejects_non_o_series() {
+    for model in &["gpt-4o", "ollama-llama3", "openai-gpt", "o-one", "oX", "o"] {
+        assert!(
+            !starts_with_o_digit(model),
+            "{model} must not be detected as o-series by starts_with_o_digit"
         );
     }
 }

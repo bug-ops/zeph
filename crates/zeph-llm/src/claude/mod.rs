@@ -919,8 +919,8 @@ impl ClaudeProvider {
         let system_blocks =
             system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
-        let beta = self.beta_header(!tools.is_empty());
-        let body = ToolRequestBody {
+        let has_tools = !tools.is_empty();
+        let mut body = ToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
             system: system_blocks,
@@ -933,48 +933,53 @@ impl ClaudeProvider {
             context_management: self.context_management(),
         };
 
-        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-            let mut req = self
-                .client
-                .post(API_URL)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION);
-            if let Some(ref b) = beta {
-                req = req.header("anthropic-beta", b);
-            }
-            req.header("content-type", "application/json")
-                .json(&body)
-                .send()
-        })
-        .await?;
+        let mut retried = false;
+        loop {
+            body.context_management = self.context_management();
+            let beta = self.beta_header(has_tools);
+            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+                let mut req = self
+                    .client
+                    .post(API_URL)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION);
+                if let Some(ref b) = beta {
+                    req = req.header("anthropic-beta", b);
+                }
+                req.header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+            })
+            .await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.map_err(LlmError::Http)?;
-            if Self::is_compact_beta_rejection(status, &text) {
-                self.server_compaction_rejected
-                    .store(true, Ordering::Relaxed);
-                tracing::warn!(
-                    "compact-2026-01-12 beta header rejected by Claude API (tool stream); \
-                    disabling server-side compaction for this session."
-                );
-                return Err(LlmError::BetaHeaderRejected {
-                    header: ANTHROPIC_BETA_COMPACT.into(),
+            let status = response.status();
+            if !status.is_success() {
+                let text = response.text().await.map_err(LlmError::Http)?;
+                if !retried && Self::is_compact_beta_rejection(status, &text) {
+                    self.server_compaction_rejected
+                        .store(true, Ordering::Relaxed);
+                    tracing::warn!(
+                        "compact-2026-01-12 beta header rejected by Claude API (tool stream); \
+                        disabling server-side compaction for this session. \
+                        Update your config to set `server_compaction = false`."
+                    );
+                    retried = true;
+                    continue;
+                }
+                tracing::error!("Claude API error {status}: {text}");
+                if status == reqwest::StatusCode::BAD_REQUEST
+                    && crate::error::body_is_context_length_error(&text)
+                {
+                    return Err(LlmError::ContextLengthExceeded);
+                }
+                return Err(LlmError::ApiError {
+                    provider: "claude".into(),
+                    status: status.as_u16(),
                 });
             }
-            tracing::error!("Claude API error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "claude".into(),
-                status: status.as_u16(),
-            });
-        }
 
-        Ok(claude_sse_to_tool_stream(response))
+            return Ok(claude_sse_to_tool_stream(response));
+        }
     }
 
     async fn send_stream_request(
@@ -1105,6 +1110,7 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
+    #[allow(clippy::too_many_lines)] // retry loop + body construction are tightly coupled; extracting would obscure control flow
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
         T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
@@ -1112,7 +1118,6 @@ impl LlmProvider for ClaudeProvider {
     {
         let (schema_value, _) = crate::provider::cached_schema::<T>()?;
         let type_name = crate::provider::short_type_name::<T>();
-
         let tool_name = format!("submit_{type_name}");
         let tool = ToolDefinition {
             name: tool_name.clone().into(),
@@ -1120,7 +1125,6 @@ impl LlmProvider for ClaudeProvider {
             parameters: schema_value,
             output_schema: None,
         };
-
         let (system, mut chat_messages) =
             split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
         let api_tool = AnthropicTool {
@@ -1128,7 +1132,6 @@ impl LlmProvider for ClaudeProvider {
             description: &tool.description,
             input_schema: &tool.parameters,
         };
-
         let (thinking_param, mut temperature, effort) = self.build_thinking_param();
         if thinking_param.is_none()
             && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
@@ -1139,81 +1142,80 @@ impl LlmProvider for ClaudeProvider {
         let system_blocks =
             system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         Self::cap_block_cache_controls(0, system_blocks.as_deref(), Some(&mut chat_messages));
-        let beta = self.beta_header(true);
-        let body = TypedToolRequestBody {
+        let tool_choice = ToolChoice {
+            r#type: "tool",
+            name: &tool_name,
+        };
+        let mut body = TypedToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
             system: system_blocks,
             messages: &chat_messages,
             tools: &[api_tool],
-            tool_choice: ToolChoice {
-                r#type: "tool",
-                name: &tool_name,
-            },
+            tool_choice,
             thinking: thinking_param,
             output_config,
             temperature,
-            context_management: self.context_management(),
+            context_management: None,
         };
-
-        let mut req = self
-            .client
-            .post(API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION);
-        if let Some(b) = beta {
-            req = req.header("anthropic-beta", b);
-        }
-        let response = req
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
+        let mut retried = false;
+        loop {
+            body.context_management = self.context_management();
+            let beta = self.beta_header(true);
+            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+                let mut req = self
+                    .client
+                    .post(API_URL)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION);
+                if let Some(ref b) = beta {
+                    req = req.header("anthropic-beta", b);
+                }
+                req.header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+            })
             .await?;
-
-        let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
-
-        if !status.is_success() {
-            if Self::is_compact_beta_rejection(status, &text) {
-                self.server_compaction_rejected
-                    .store(true, Ordering::Relaxed);
-                tracing::warn!(
-                    "compact-2026-01-12 beta header rejected by Claude API (typed); \
-                    disabling server-side compaction for this session. \
-                    Update your config to set `server_compaction = false`."
-                );
-                return Err(LlmError::BetaHeaderRejected {
-                    header: ANTHROPIC_BETA_COMPACT.into(),
+            let status = response.status();
+            let text = response.text().await.map_err(LlmError::Http)?;
+            if !status.is_success() {
+                if !retried && Self::is_compact_beta_rejection(status, &text) {
+                    self.server_compaction_rejected
+                        .store(true, Ordering::Relaxed);
+                    tracing::warn!(
+                        "compact-2026-01-12 beta header rejected by Claude API (typed); \
+                        disabling server-side compaction for this session. \
+                        Update your config to set `server_compaction = false`."
+                    );
+                    retried = true;
+                    continue;
+                }
+                tracing::error!("Claude API error {status}: {text}");
+                if status == reqwest::StatusCode::BAD_REQUEST
+                    && crate::error::body_is_context_length_error(&text)
+                {
+                    return Err(LlmError::ContextLengthExceeded);
+                }
+                return Err(LlmError::ApiError {
+                    provider: "claude".into(),
+                    status: status.as_u16(),
                 });
             }
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
+            let resp: ToolApiResponse = serde_json::from_str(&text)?;
+            if let Some(ref usage) = resp.usage {
+                log_cache_usage(usage);
+                self.store_cache_usage(usage);
             }
-            return Err(LlmError::ApiError {
-                provider: "claude".into(),
-                status: status.as_u16(),
-            });
-        }
-
-        let resp: ToolApiResponse = serde_json::from_str(&text)?;
-
-        if let Some(ref usage) = resp.usage {
-            log_cache_usage(usage);
-            self.store_cache_usage(usage);
-        }
-
-        for block in resp.content {
-            if let AnthropicContentBlock::ToolUse { input, .. } = block {
-                return serde_json::from_value::<T>(input)
-                    .map_err(|e| LlmError::StructuredParse(e.to_string()));
+            for block in resp.content {
+                if let AnthropicContentBlock::ToolUse { input, .. } = block {
+                    return serde_json::from_value::<T>(input)
+                        .map_err(|e| LlmError::StructuredParse(e.to_string()));
+                }
             }
+            return Err(LlmError::StructuredParse(
+                "no tool_use block in response".into(),
+            ));
         }
-
-        Err(LlmError::StructuredParse(
-            "no tool_use block in response".into(),
-        ))
     }
 
     fn supports_vision(&self) -> bool {
@@ -1333,8 +1335,8 @@ impl LlmProvider for ClaudeProvider {
         let system_blocks =
             system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         Self::cap_block_cache_controls(1, system_blocks.as_deref(), Some(&mut chat_messages));
-        let beta = self.beta_header(!tools.is_empty());
-        let body = ToolRequestBody {
+        let has_tools = !tools.is_empty();
+        let mut body = ToolRequestBody {
             model: &self.model,
             max_tokens: self.max_tokens,
             system: system_blocks,
@@ -1347,69 +1349,73 @@ impl LlmProvider for ClaudeProvider {
             context_management: self.context_management(),
         };
 
-        let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-            let mut req = self
-                .client
-                .post(API_URL)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION);
-            if let Some(ref b) = beta {
-                req = req.header("anthropic-beta", b);
-            }
-            req.header("content-type", "application/json")
-                .json(&body)
-                .send()
-        })
-        .await?;
+        let mut retried = false;
+        loop {
+            body.context_management = self.context_management();
+            let beta = self.beta_header(has_tools);
+            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
+                let mut req = self
+                    .client
+                    .post(API_URL)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION);
+                if let Some(ref b) = beta {
+                    req = req.header("anthropic-beta", b);
+                }
+                req.header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+            })
+            .await?;
 
-        let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+            let status = response.status();
+            let text = response.text().await.map_err(LlmError::Http)?;
 
-        if !status.is_success() {
-            if Self::is_compact_beta_rejection(status, &text) {
-                self.server_compaction_rejected
-                    .store(true, Ordering::Relaxed);
-                tracing::warn!(
-                    "compact-2026-01-12 beta header rejected by Claude API (tool use); \
-                    disabling server-side compaction for this session. \
-                    Update your config to set `server_compaction = false`."
-                );
-                return Err(LlmError::BetaHeaderRejected {
-                    header: ANTHROPIC_BETA_COMPACT.into(),
+            if !status.is_success() {
+                if !retried && Self::is_compact_beta_rejection(status, &text) {
+                    self.server_compaction_rejected
+                        .store(true, Ordering::Relaxed);
+                    tracing::warn!(
+                        "compact-2026-01-12 beta header rejected by Claude API (tool use); \
+                        disabling server-side compaction for this session. \
+                        Update your config to set `server_compaction = false`."
+                    );
+                    retried = true;
+                    continue;
+                }
+                tracing::error!("Claude API error {status}: {text}");
+                if status == reqwest::StatusCode::BAD_REQUEST
+                    && crate::error::body_is_context_length_error(&text)
+                {
+                    return Err(LlmError::ContextLengthExceeded);
+                }
+                return Err(LlmError::ApiError {
+                    provider: "claude".into(),
+                    status: status.as_u16(),
                 });
             }
-            tracing::error!("Claude API error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "claude".into(),
-                status: status.as_u16(),
-            });
-        }
 
-        let resp: ToolApiResponse = serde_json::from_str(&text)?;
-        tracing::debug!(
-            stop_reason = ?resp.stop_reason,
-            content_blocks = resp.content.len(),
-            "Claude chat_with_tools response"
-        );
-        if let Some(ref usage) = resp.usage {
-            log_cache_usage(usage);
-            self.store_cache_usage(usage);
-        }
-        let (parsed, compaction_summary) = parse_tool_response(resp);
-        if let Some(ref summary) = compaction_summary {
-            tracing::info!(
-                summary_len = summary.len(),
-                "storing server compaction summary"
+            let resp: ToolApiResponse = serde_json::from_str(&text)?;
+            tracing::debug!(
+                stop_reason = ?resp.stop_reason,
+                content_blocks = resp.content.len(),
+                "Claude chat_with_tools response"
             );
-            *self.last_compaction.lock() = compaction_summary;
+            if let Some(ref usage) = resp.usage {
+                log_cache_usage(usage);
+                self.store_cache_usage(usage);
+            }
+            let (parsed, compaction_summary) = parse_tool_response(resp);
+            if let Some(ref summary) = compaction_summary {
+                tracing::info!(
+                    summary_len = summary.len(),
+                    "storing server compaction summary"
+                );
+                *self.last_compaction.lock() = compaction_summary;
+            }
+            tracing::debug!(?parsed, "parsed ChatResponse");
+            return Ok(parsed);
         }
-        tracing::debug!(?parsed, "parsed ChatResponse");
-        Ok(parsed)
     }
 }
 

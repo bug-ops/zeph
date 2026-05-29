@@ -48,6 +48,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `runner`: TUI early-status-forwarder `JoinHandle` annotated as intentionally dropped at block
   end (self-terminating when the channel closes). Removes misleading bare `let _` and satisfies
   `clippy::let_underscore_future`. Closes #4571.
+- `zeph-llm`: `ClaudeProvider::chat_with_tools_stream`, `chat_typed`, and `chat_with_tools` now
+  apply the same `BetaHeaderRejected` retry loop that `send_request` and `send_stream_request`
+  already use. Previously these three paths returned `BetaHeaderRejected` to the caller without
+  retrying, meaning any session that started with server compaction enabled would always fail on
+  the first tool-stream, typed, or non-streaming tool call (closes #4598).
+- `zeph-llm`: `CompletionTokens::for_model` now uses a general `o`+digit prefix check instead of
+  enumerating `o1`/`o3`/`o4`. This covers all current and future o-series models (`o2`, `o5`, …)
+  without requiring per-model additions (closes #4600, #4602).
 
 ### Added
 
