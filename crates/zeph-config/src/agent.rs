@@ -599,8 +599,9 @@ pub struct SubAgentConfig {
     pub llm_timeout_secs: u64,
     /// Worktree isolation settings propagated from the top-level `[worktree]` section.
     ///
-    /// Passed to [`SubAgentManager::spawn`] so it can determine whether and how to
-    /// create a per-agent git worktree without needing a reference to the full `Config`.
+    /// Passed to the subagent manager's spawn function so it can determine whether
+    /// and how to create a per-agent git worktree without needing a reference to
+    /// the full `Config`.
     ///
     /// # Invariant
     ///
