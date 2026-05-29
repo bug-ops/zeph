@@ -3580,10 +3580,10 @@ mod tests {
         let d10 = connect_retry_backoff(10, 1000);
         assert!(d1 >= Duration::from_millis(750) && d1 <= Duration::from_secs(1));
         assert!(d2 >= Duration::from_millis(1500) && d2 <= Duration::from_secs(2));
-        assert!(d3 >= Duration::from_millis(3000) && d3 <= Duration::from_secs(4));
-        assert!(d4 >= Duration::from_millis(6000) && d4 <= Duration::from_secs(8));
+        assert!(d3 >= Duration::from_secs(3) && d3 <= Duration::from_secs(4));
+        assert!(d4 >= Duration::from_secs(6) && d4 <= Duration::from_secs(8));
         // cap enforced at 8 s regardless of attempt
-        assert!(d10 >= Duration::from_millis(6000) && d10 <= Duration::from_secs(8));
+        assert!(d10 >= Duration::from_secs(6) && d10 <= Duration::from_secs(8));
     }
 
     // ── Error classifier ───────────────────────────────────────────────────────────────────────
