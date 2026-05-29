@@ -11,6 +11,14 @@ use super::error;
 use super::shutdown_signal;
 use super::tool_execution;
 
+/// Returns the BFS depth to pass to `lookahead_tools` for a given fidelity configuration.
+///
+/// When fidelity is disabled (`None` or `enabled = false`) returns `0` so the BFS
+/// is skipped entirely — the resulting hints are never consumed in that state.
+fn lookahead_effective_depth(fidelity: Option<&zeph_config::FidelityConfig>) -> u8 {
+    fidelity.map_or(0, |c| if c.enabled { c.lookahead_depth } else { 0 })
+}
+
 /// Save a graph snapshot to persistent storage with a 5-second timeout.
 ///
 /// Fail-open: errors and timeouts are logged at `warn!` level and do not abort
@@ -301,18 +309,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             let actions = scheduler.tick();
 
             // Update lookahead cache so prepare_context can read PAACE hints between ticks.
-            let lookahead_depth = self
-                .services
-                .memory
-                .compaction
-                .fidelity_config
-                .as_ref()
-                .map_or(
-                    zeph_config::FidelityConfig::default_lookahead_depth(),
-                    |c| c.lookahead_depth,
-                );
+            // When fidelity scoring is disabled the hints are never consumed, so skip the BFS.
+            let effective_depth =
+                lookahead_effective_depth(self.services.memory.compaction.fidelity_config.as_ref());
             self.services.orchestration.cached_lookahead =
-                zeph_orchestration::lookahead_tools(scheduler.graph(), lookahead_depth);
+                zeph_orchestration::lookahead_tools(scheduler.graph(), effective_depth);
 
             let mut any_spawn_success = false;
             let mut any_concurrency_failure = false;
@@ -786,5 +787,35 @@ impl<C: crate::channel::Channel> Agent<C> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lookahead_effective_depth;
+
+    #[test]
+    fn fidelity_none_returns_zero() {
+        assert_eq!(lookahead_effective_depth(None), 0);
+    }
+
+    #[test]
+    fn fidelity_disabled_returns_zero() {
+        let cfg = zeph_config::FidelityConfig {
+            enabled: false,
+            lookahead_depth: 3,
+            ..zeph_config::FidelityConfig::default()
+        };
+        assert_eq!(lookahead_effective_depth(Some(&cfg)), 0);
+    }
+
+    #[test]
+    fn fidelity_enabled_returns_configured_depth() {
+        let cfg = zeph_config::FidelityConfig {
+            enabled: true,
+            lookahead_depth: 4,
+            ..zeph_config::FidelityConfig::default()
+        };
+        assert_eq!(lookahead_effective_depth(Some(&cfg)), 4);
     }
 }
