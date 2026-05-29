@@ -591,6 +591,11 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                             apex_mem_enabled: graph_cfg.apex_mem.enabled,
                             llm_timeout_secs: graph_cfg.llm_timeout_secs,
                             embed_timeout_secs,
+                            turn_index: None,
+                            write_gate_min_relevance: graph_cfg
+                                .write_gate
+                                .enabled
+                                .then_some(graph_cfg.write_gate.min_edge_relevance),
                         };
                         let pool = store.pool().clone();
                         match extract_and_store(

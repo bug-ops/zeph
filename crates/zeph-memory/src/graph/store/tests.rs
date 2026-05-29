@@ -4426,3 +4426,144 @@ async fn bfs_edges_at_depth_empty_when_no_edges() {
         .unwrap();
     assert!(facts.is_empty());
 }
+
+/// SYNAPSE Benna-Fusi: inserting an edge twice (non-APEX) produces diverged fast/slow variables.
+///
+/// After first insert: fast = slow = confidence = 0.5 (initialized equal).
+/// After second insert with confidence 0.9, fast_rate=0.5, slow_rate=0.05:
+///   new_fast = 0.5 + 0.5*(0.9 - 0.5) = 0.7
+///   new_slow = 0.5 + 0.05*(0.7 - 0.5) = 0.51
+#[tokio::test]
+async fn benna_fusi_update_diverges_fast_and_slow() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let gs = GraphStore::new(store.pool().clone()).with_benna_rates(0.5, 0.05);
+
+    let src = gs
+        .upsert_entity("BF_src", "BF_src", EntityType::Person, None)
+        .await
+        .unwrap()
+        .0;
+    let tgt = gs
+        .upsert_entity("BF_tgt", "BF_tgt", EntityType::Concept, None)
+        .await
+        .unwrap()
+        .0;
+
+    // First insert — fast = slow = 0.5.
+    gs.insert_edge_typed(
+        src,
+        tgt,
+        "knows",
+        "BF_src knows BF_tgt",
+        0.5,
+        None,
+        EdgeType::Semantic,
+    )
+    .await
+    .unwrap();
+
+    // Second call with higher confidence — triggers Benna-Fusi update.
+    gs.insert_edge_typed(
+        src,
+        tgt,
+        "knows",
+        "BF_src knows BF_tgt",
+        0.9,
+        None,
+        EdgeType::Semantic,
+    )
+    .await
+    .unwrap();
+
+    let (fast, slow): (f64, f64) = sqlx::query_as(
+        "SELECT confidence_fast, confidence_slow FROM graph_edges
+         WHERE source_entity_id = ? AND relation = 'knows' AND valid_to IS NULL LIMIT 1",
+    )
+    .bind(src)
+    .fetch_one(&gs.pool)
+    .await
+    .unwrap();
+
+    let fast_f32 = fast as f32;
+    let slow_f32 = slow as f32;
+    assert!(
+        (fast_f32 - 0.7_f32).abs() < 1e-4,
+        "expected fast ≈ 0.7, got {fast_f32}"
+    );
+    assert!(
+        (slow_f32 - 0.51_f32).abs() < 1e-4,
+        "expected slow ≈ 0.51, got {slow_f32}"
+    );
+    assert!(fast_f32 > slow_f32, "fast must converge faster than slow");
+}
+
+/// SYNAPSE Benna-Fusi: APEX reassertion path also updates confidence_fast/confidence_slow.
+#[tokio::test]
+async fn benna_fusi_update_applied_on_apex_reassertion() {
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let gs = GraphStore::new(store.pool().clone()).with_benna_rates(0.5, 0.05);
+
+    let src = gs
+        .upsert_entity("APX_src", "APX_src", EntityType::Person, None)
+        .await
+        .unwrap()
+        .0;
+    let tgt = gs
+        .upsert_entity("APX_tgt", "APX_tgt", EntityType::Concept, None)
+        .await
+        .unwrap()
+        .0;
+
+    // First APEX insert — fast = slow = confidence = 0.5.
+    let first_id = gs
+        .insert_or_supersede(
+            src,
+            tgt,
+            "relates_to",
+            "relates_to",
+            "src relates to tgt",
+            0.5,
+            None,
+            EdgeType::Semantic,
+            true,
+        )
+        .await
+        .unwrap();
+
+    // Byte-identical reassertion with new confidence — must update synaptic vars.
+    let second_id = gs
+        .insert_or_supersede(
+            src,
+            tgt,
+            "relates_to",
+            "relates_to",
+            "src relates to tgt",
+            0.9,
+            None,
+            EdgeType::Semantic,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(first_id, second_id, "reassertion must return the same id");
+
+    let (fast, slow): (f64, f64) =
+        sqlx::query_as("SELECT confidence_fast, confidence_slow FROM graph_edges WHERE id = ?")
+            .bind(first_id)
+            .fetch_one(&gs.pool)
+            .await
+            .unwrap();
+
+    let fast_f32 = fast as f32;
+    let slow_f32 = slow as f32;
+    // After update: fast = 0.5 + 0.5*(0.9-0.5) = 0.7, slow = 0.5 + 0.05*(0.7-0.5) = 0.51
+    assert!(
+        (fast_f32 - 0.7_f32).abs() < 1e-4,
+        "APEX reassertion must update fast ≈ 0.7, got {fast_f32}"
+    );
+    assert!(
+        (slow_f32 - 0.51_f32).abs() < 1e-4,
+        "APEX reassertion must update slow ≈ 0.51, got {slow_f32}"
+    );
+}

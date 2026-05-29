@@ -29,6 +29,10 @@ use super::types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType};
 /// Obtain an instance via [`GraphStore::new`] after running the `zeph-db` migrations.
 pub struct GraphStore {
     pool: DbPool,
+    /// Benna-Fusi fast-variable learning rate. Range: `(0.0, 1.0]`. Default: `0.5`.
+    benna_fast_rate: f32,
+    /// Benna-Fusi slow-variable learning rate. Range: `(0.0, 1.0]`. Default: `0.05`.
+    benna_slow_rate: f32,
 }
 
 impl GraphStore {
@@ -37,7 +41,21 @@ impl GraphStore {
     /// The pool must come from a database with the `zeph-db` migrations applied.
     #[must_use]
     pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            benna_fast_rate: 0.5,
+            benna_slow_rate: 0.05,
+        }
+    }
+
+    /// Set Benna-Fusi learning rates for the multi-timescale synaptic update (#3709).
+    ///
+    /// Call this after [`Self::new`] when the rates come from `[memory.graph.spreading_activation]`.
+    #[must_use]
+    pub fn with_benna_rates(mut self, fast_rate: f32, slow_rate: f32) -> Self {
+        self.benna_fast_rate = fast_rate;
+        self.benna_slow_rate = slow_rate;
+        self
     }
 
     /// Access the underlying database pool.
@@ -434,8 +452,8 @@ impl GraphStore {
         // support ON CONFLICT DO UPDATE against partial indexes, so we keep two statements.
         let mut tx = zeph_db::begin(&self.pool).await?;
 
-        let existing: Option<(i64, f64)> = zeph_db::query_as(sql!(
-            "SELECT id, confidence FROM graph_edges
+        let existing: Option<(i64, f64, f64, f64)> = zeph_db::query_as(sql!(
+            "SELECT id, confidence, confidence_fast, confidence_slow FROM graph_edges
              WHERE source_entity_id = ?
                AND target_entity_id = ?
                AND relation = ?
@@ -450,13 +468,26 @@ impl GraphStore {
         .fetch_optional(&mut *tx)
         .await?;
 
-        if let Some((existing_id, stored_conf)) = existing {
+        if let Some((existing_id, stored_conf, stored_fast, stored_slow)) = existing {
             let updated_conf = f64::from(confidence).max(stored_conf);
-            zeph_db::query(sql!("UPDATE graph_edges SET confidence = ? WHERE id = ?"))
-                .bind(updated_conf)
-                .bind(existing_id)
-                .execute(&mut *tx)
-                .await?;
+            // Benna-Fusi multi-timescale update (#3709):
+            // fast tracks incoming confidence at high plasticity; slow integrates fast at high retention.
+            // Clamp DB-read values to [0, 1] as defense-in-depth against corrupted rows.
+            #[allow(clippy::cast_possible_truncation)]
+            let stored_fast_f32 = (stored_fast as f32).clamp(0.0, 1.0);
+            #[allow(clippy::cast_possible_truncation)]
+            let stored_slow_f32 = (stored_slow as f32).clamp(0.0, 1.0);
+            let new_fast = stored_fast_f32 + self.benna_fast_rate * (confidence - stored_fast_f32);
+            let new_slow = stored_slow_f32 + self.benna_slow_rate * (new_fast - stored_slow_f32);
+            zeph_db::query(sql!(
+                "UPDATE graph_edges SET confidence = ?, confidence_fast = ?, confidence_slow = ? WHERE id = ?"
+            ))
+            .bind(updated_conf)
+            .bind(f64::from(new_fast))
+            .bind(f64::from(new_slow))
+            .bind(existing_id)
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
             return Ok(existing_id);
         }
@@ -464,14 +495,17 @@ impl GraphStore {
         let episode_raw: Option<i64> = episode_id.map(|m| m.0);
         let id: i64 = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_edges
-             (source_entity_id, target_entity_id, relation, fact, confidence, episode_id, edge_type)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+             (source_entity_id, target_entity_id, relation, fact, confidence,
+              confidence_fast, confidence_slow, episode_id, edge_type)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
         ))
         .bind(source_entity_id)
         .bind(target_entity_id)
         .bind(relation)
         .bind(fact)
+        .bind(f64::from(confidence))
+        .bind(f64::from(confidence))
         .bind(f64::from(confidence))
         .bind(episode_raw)
         .bind(edge_type_str)
@@ -587,7 +621,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))"
@@ -599,7 +633,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
                  FROM graph_edges
                  WHERE valid_to IS NULL
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))
@@ -640,7 +674,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
                AND (source_entity_id = ? OR target_entity_id = ?)"
@@ -667,7 +701,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE source_entity_id = ? OR target_entity_id = ?
              ORDER BY valid_from DESC
@@ -694,7 +728,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
                AND ((source_entity_id = ? AND target_entity_id = ?)
@@ -722,7 +756,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
                AND source_entity_id = ?
@@ -980,7 +1014,7 @@ impl GraphStore {
         zeph_db::query_as::<_, EdgeRow>(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
              ORDER BY id ASC"
@@ -1013,7 +1047,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL AND id > ?
              ORDER BY id ASC
@@ -1510,7 +1544,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?
@@ -1518,7 +1552,7 @@ impl GraphStore {
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?
@@ -1563,7 +1597,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1581,7 +1615,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1914,7 +1948,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -1992,7 +2026,7 @@ impl GraphStore {
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -2226,6 +2260,10 @@ struct EdgeRow {
     supersedes: Option<i64>,
     // Hebbian reinforcement weight (HL-F1, #3344). SQLite REAL maps to f64 via sqlx.
     weight: f64,
+    // SYNAPSE multi-timescale variables (#3709).
+    confidence_fast: f64,
+    confidence_slow: f64,
+    turn_index: Option<i64>,
 }
 
 fn edge_from_row(row: EdgeRow) -> Edge {
@@ -2258,6 +2296,12 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         supersedes: row.supersedes,
         #[allow(clippy::cast_possible_truncation)]
         weight: row.weight as f32,
+        #[allow(clippy::cast_possible_truncation)]
+        confidence_fast: row.confidence_fast as f32,
+        #[allow(clippy::cast_possible_truncation)]
+        confidence_slow: row.confidence_slow as f32,
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        turn_index: row.turn_index.map(|v| v as u32),
     }
 }
 
@@ -2401,6 +2445,45 @@ impl GraphStore {
         set_supersedes: bool,
         metrics: Option<&ApexMetrics>,
     ) -> Result<i64, MemoryError> {
+        self.insert_or_supersede_with_turn_index_and_metrics(
+            source_entity_id,
+            target_entity_id,
+            relation,
+            canonical_relation,
+            fact,
+            confidence,
+            episode_id,
+            edge_type,
+            set_supersedes,
+            metrics,
+            None,
+        )
+        .await
+    }
+
+    /// Insert or supersede an edge, recording turn-level provenance (#3710).
+    ///
+    /// `turn_index` is stored in the new edge row when a supersession chain is started.
+    /// Pass `None` to omit provenance (equivalent to [`Self::insert_or_supersede_with_metrics`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database transaction fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_or_supersede_with_turn_index_and_metrics(
+        &self,
+        source_entity_id: i64,
+        target_entity_id: i64,
+        relation: &str,
+        canonical_relation: &str,
+        fact: &str,
+        confidence: f32,
+        episode_id: Option<MessageId>,
+        edge_type: EdgeType,
+        set_supersedes: bool,
+        metrics: Option<&ApexMetrics>,
+        turn_index: Option<u32>,
+    ) -> Result<i64, MemoryError> {
         if source_entity_id == target_entity_id {
             return Err(MemoryError::InvalidInput(format!(
                 "self-loop edge rejected: source and target are the same entity (id={source_entity_id})"
@@ -2422,7 +2505,15 @@ impl GraphStore {
         )
         .await?
         {
-            record_reassertion(&mut tx, existing_id, episode_raw, confidence).await?;
+            record_reassertion(
+                &mut tx,
+                existing_id,
+                episode_raw,
+                confidence,
+                self.benna_fast_rate,
+                self.benna_slow_rate,
+            )
+            .await?;
             tx.commit().await?;
             return Ok(existing_id);
         }
@@ -2445,6 +2536,7 @@ impl GraphStore {
         }
 
         let supersedes_val: Option<i64> = if set_supersedes { prior_head } else { None };
+        let turn_index_raw: Option<i64> = turn_index.map(i64::from);
         let new_id = insert_new_edge(
             &mut tx,
             source_entity_id,
@@ -2456,6 +2548,7 @@ impl GraphStore {
             episode_raw,
             edge_type_str,
             supersedes_val,
+            turn_index_raw,
         )
         .await?;
 
@@ -2753,7 +2846,8 @@ impl GraphStore {
             "SELECT ge.id, ge.source_entity_id, ge.target_entity_id, ge.relation, ge.fact,
                     ge.confidence, ge.valid_from, ge.valid_to, ge.created_at, ge.expired_at,
                     ge.episode_id, ge.qdrant_point_id, ge.edge_type, ge.retrieval_count,
-                    ge.last_retrieved_at, ge.superseded_by, ge.canonical_relation, ge.supersedes, ge.weight
+                    ge.last_retrieved_at, ge.superseded_by, ge.canonical_relation, ge.supersedes,
+                    ge.weight, ge.confidence_fast, ge.confidence_slow, ge.turn_index
              FROM graph_edges ge
              WHERE ge.edge_type IN ({ph})
                AND ge.valid_to IS NULL
@@ -2863,12 +2957,18 @@ async fn find_identical_active_edge(
     .await?)
 }
 
-/// Record a reassertion event for an existing edge (FR-015).
+/// Record a reassertion event for an existing edge (FR-015) and apply the Benna-Fusi
+/// multi-timescale update to `confidence_fast`/`confidence_slow` in `graph_edges` (#3709).
+///
+/// This ensures SYNAPSE synaptic variables are updated on every reassertion, including the
+/// APEX append-only path where identical edges are not superseded but re-confirmed.
 async fn record_reassertion(
     tx: &mut Tx<'_>,
     head_id: i64,
     episode_raw: Option<i64>,
     confidence: f32,
+    benna_fast_rate: f32,
+    benna_slow_rate: f32,
 ) -> Result<(), MemoryError> {
     #[allow(clippy::cast_possible_wrap)]
     let asserted_at = std::time::SystemTime::now()
@@ -2885,6 +2985,32 @@ async fn record_reassertion(
     .bind(f64::from(confidence))
     .execute(&mut **tx)
     .await?;
+
+    // Apply Benna-Fusi update to the head edge's synaptic variables.
+    let existing: Option<(f64, f64)> = zeph_db::query_as(sql!(
+        "SELECT confidence_fast, confidence_slow FROM graph_edges WHERE id = ? LIMIT 1"
+    ))
+    .bind(head_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    if let Some((stored_fast, stored_slow)) = existing {
+        #[allow(clippy::cast_possible_truncation)]
+        let stored_fast_f32 = (stored_fast as f32).clamp(0.0, 1.0);
+        #[allow(clippy::cast_possible_truncation)]
+        let stored_slow_f32 = (stored_slow as f32).clamp(0.0, 1.0);
+        let new_fast = stored_fast_f32 + benna_fast_rate * (confidence - stored_fast_f32);
+        let new_slow = stored_slow_f32 + benna_slow_rate * (new_fast - stored_slow_f32);
+        zeph_db::query(sql!(
+            "UPDATE graph_edges SET confidence_fast = ?, confidence_slow = ? WHERE id = ?"
+        ))
+        .bind(f64::from(new_fast))
+        .bind(f64::from(new_slow))
+        .bind(head_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -2952,12 +3078,13 @@ async fn insert_new_edge(
     episode_raw: Option<i64>,
     edge_type_str: &str,
     supersedes_val: Option<i64>,
+    turn_index: Option<i64>,
 ) -> Result<i64, MemoryError> {
     Ok(zeph_db::query_scalar(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, canonical_relation, fact,
-          confidence, episode_id, edge_type, supersedes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          confidence, confidence_fast, confidence_slow, episode_id, edge_type, supersedes, turn_index)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id"
     ))
     .bind(src)
@@ -2966,9 +3093,12 @@ async fn insert_new_edge(
     .bind(canonical_relation)
     .bind(fact)
     .bind(f64::from(confidence))
+    .bind(f64::from(confidence))
+    .bind(f64::from(confidence))
     .bind(episode_raw)
     .bind(edge_type_str)
     .bind(supersedes_val)
+    .bind(turn_index)
     .fetch_one(&mut **tx)
     .await?)
 }

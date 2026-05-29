@@ -266,6 +266,12 @@ pub struct SpreadingActivationParams {
     pub seed_structural_weight: f32,
     /// Maximum seeds per community ID. `0` = unlimited. Default: `3`.
     pub seed_community_cap: usize,
+    /// SYNAPSE blend coefficient for Benna-Fusi fast/slow variables (#3709).
+    ///
+    /// Blends `confidence_fast` and `confidence_slow` for edge weight in spreading activation:
+    /// `blended = alpha * fast + (1 - alpha) * slow`.
+    /// Range: `[0.0, 1.0]`. Default: `0.3` (favors the stable slow variable).
+    pub alpha: f32,
 }
 
 // ── EdgeType ──────────────────────────────────────────────────────────────────

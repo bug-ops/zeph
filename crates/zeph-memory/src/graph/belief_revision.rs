@@ -275,6 +275,9 @@ mod tests {
             canonical_relation: relation.to_string(),
             supersedes: None,
             weight: 1.0,
+            confidence_fast: 1.0,
+            confidence_slow: 1.0,
+            turn_index: None,
         }
     }
 

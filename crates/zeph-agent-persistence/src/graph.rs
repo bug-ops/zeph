@@ -52,6 +52,11 @@ pub fn build_graph_extraction_config(
         apex_mem_enabled: cfg.apex_mem.enabled,
         llm_timeout_secs: cfg.llm_timeout_secs,
         embed_timeout_secs,
+        turn_index: None,
+        write_gate_min_relevance: cfg
+            .write_gate
+            .enabled
+            .then_some(cfg.write_gate.min_edge_relevance),
     }
 }
 

@@ -203,6 +203,26 @@ fn default_spreading_activation_recall_timeout_ms() -> u64 {
     1000
 }
 
+fn default_benna_alpha() -> f32 {
+    0.3
+}
+
+fn default_benna_fast_rate() -> f32 {
+    0.5
+}
+
+fn default_benna_slow_rate() -> f32 {
+    0.05
+}
+
+fn default_write_gate_min_edge_relevance() -> f32 {
+    0.3
+}
+
+fn default_conflict_recency_slow_threshold() -> f32 {
+    0.2
+}
+
 fn default_note_linking_similarity_threshold() -> f32 {
     0.85
 }
@@ -496,6 +516,31 @@ pub struct SpreadingActivationConfig {
     /// traversal completes within 200–400ms; 1000ms provides headroom for cold caches.
     #[serde(default = "default_spreading_activation_recall_timeout_ms")]
     pub recall_timeout_ms: u64,
+    /// SYNAPSE blend coefficient for Benna-Fusi fast/slow variables (#3709).
+    ///
+    /// `blended = alpha * confidence_fast + (1 - alpha) * confidence_slow`.
+    /// Range: `[0.0, 1.0]`. Default: `0.3`.
+    #[serde(
+        default = "default_benna_alpha",
+        deserialize_with = "validate_benna_alpha"
+    )]
+    pub alpha: f32,
+    /// Benna-Fusi fast-variable learning rate applied on each confidence merge (#3709).
+    ///
+    /// `fast' = fast + eta_f * (c - fast)`. Range: `(0.0, 1.0]`. Default: `0.5`.
+    #[serde(
+        default = "default_benna_fast_rate",
+        deserialize_with = "validate_benna_rate"
+    )]
+    pub benna_fast_rate: f32,
+    /// Benna-Fusi slow-variable learning rate applied on each confidence merge (#3709).
+    ///
+    /// `slow' = slow + eta_s * (fast' - slow)`. Range: `(0.0, 1.0]`. Default: `0.05`.
+    #[serde(
+        default = "default_benna_slow_rate",
+        deserialize_with = "validate_benna_rate"
+    )]
+    pub benna_slow_rate: f32,
 }
 
 fn validate_decay_lambda<'de, D>(deserializer: D) -> Result<f32, D::Error>
@@ -523,6 +568,52 @@ where
     let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
     if value == 0 {
         return Err(serde::de::Error::custom("max_hops must be >= 1"));
+    }
+    Ok(value)
+}
+
+fn validate_unit_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if !value.is_finite() {
+        return Err(serde::de::Error::custom("value must be a finite number"));
+    }
+    if !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom("value must be in [0.0, 1.0]"));
+    }
+    Ok(value)
+}
+
+fn validate_benna_alpha<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if !value.is_finite() {
+        return Err(serde::de::Error::custom("alpha must be a finite number"));
+    }
+    if !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom("alpha must be in [0.0, 1.0]"));
+    }
+    Ok(value)
+}
+
+fn validate_benna_rate<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    if !value.is_finite() {
+        return Err(serde::de::Error::custom(
+            "benna_fast_rate/benna_slow_rate must be a finite number",
+        ));
+    }
+    if !(value > 0.0 && value <= 1.0) {
+        return Err(serde::de::Error::custom(
+            "benna_fast_rate/benna_slow_rate must be in (0.0, 1.0]",
+        ));
     }
     Ok(value)
 }
@@ -564,6 +655,65 @@ impl Default for SpreadingActivationConfig {
             seed_structural_weight: default_seed_structural_weight(),
             seed_community_cap: default_seed_community_cap(),
             recall_timeout_ms: default_spreading_activation_recall_timeout_ms(),
+            alpha: default_benna_alpha(),
+            benna_fast_rate: default_benna_fast_rate(),
+            benna_slow_rate: default_benna_slow_rate(),
+        }
+    }
+}
+
+/// `MemORAI` write-gate prefilter configuration (#3709).
+///
+/// When `enabled = true`, low-signal edges (confidence below threshold + generic relation type)
+/// are silently dropped before write, reducing noise in the knowledge graph.
+///
+/// TOML path: `[memory.graph.write_gate]`
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct WriteGateConfig {
+    /// Enable write-gate prefilter. Default: `false` (opt-in).
+    pub enabled: bool,
+    /// Minimum edge confidence to pass the gate when the relation is low-signal. Default: `0.3`.
+    ///
+    /// Range: `[0.0, 1.0]`.
+    #[serde(
+        default = "default_write_gate_min_edge_relevance",
+        deserialize_with = "validate_unit_f32"
+    )]
+    pub min_edge_relevance: f32,
+}
+
+impl Default for WriteGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_edge_relevance: default_write_gate_min_edge_relevance(),
+        }
+    }
+}
+
+/// Recency fallback threshold for the conflict resolver (#3709).
+///
+/// TOML path: `[memory.graph.conflict]`
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct ConflictRecencyConfig {
+    /// Minimum `confidence_slow` for the recency strategy to prefer an edge. Default: `0.2`.
+    ///
+    /// When two cardinality-1 heads conflict and recency is the resolution strategy,
+    /// only edges with `confidence_slow >= recency_slow_threshold` are preferred by recency;
+    /// edges below the threshold fall back to `valid_from` comparison. Range: `[0.0, 1.0]`.
+    #[serde(
+        default = "default_conflict_recency_slow_threshold",
+        deserialize_with = "validate_unit_f32"
+    )]
+    pub recency_slow_threshold: f32,
+}
+
+impl Default for ConflictRecencyConfig {
+    fn default() -> Self {
+        Self {
+            recency_slow_threshold: default_conflict_recency_slow_threshold(),
         }
     }
 }
@@ -1148,6 +1298,13 @@ pub struct TieredRetrievalConfig {
     /// The final contribution is `tier_boost_weight * semantic_tier_boost` for semantic entries
     /// and `0.0` for episodic entries.
     pub semantic_tier_boost: f64,
+    /// Route the `DeepReasoning` tier graph step through query-conditioned recall (#3994).
+    ///
+    /// When `true`, the graph recall step for `IntentClass::DeepReasoning` uses
+    /// `recall_graph_hela` (HELA spreading activation) instead of static-weight BFS,
+    /// producing query-aligned results. Requires an embedding store. Default: `false` (opt-in).
+    #[serde(default)]
+    pub deep_reasoning_query_conditioned: bool,
 }
 
 impl Default for TieredRetrievalConfig {
@@ -1169,6 +1326,7 @@ impl Default for TieredRetrievalConfig {
             cognitive_signal_weight: 0.0,
             tier_boost_weight: 0.0,
             semantic_tier_boost: 1.0,
+            deep_reasoning_query_conditioned: false,
         }
     }
 }
@@ -2666,6 +2824,17 @@ pub struct GraphConfig {
     /// between graph edges and annotates SYNAPSE recall results accordingly.
     #[serde(default)]
     pub implicit_conflict: ImplicitConflictConfig,
+    /// `MemORAI` write-gate prefilter (#3709).
+    ///
+    /// When `write_gate.enabled = true`, low-signal edges are dropped before graph write,
+    /// reducing noise. Opt-in; default is `false`.
+    #[serde(default)]
+    pub write_gate: WriteGateConfig,
+    /// Conflict resolver recency-fallback threshold (#3709).
+    ///
+    /// Controls when the recency strategy is allowed to override `valid_from` comparison.
+    #[serde(default)]
+    pub conflict_recency: ConflictRecencyConfig,
 }
 
 /// Similarity method for implicit conflict detection.
@@ -2997,6 +3166,8 @@ impl Default for GraphConfig {
             llm_timeout_secs: default_graph_llm_timeout_secs(),
             query_sensitive_cost: false,
             implicit_conflict: ImplicitConflictConfig::default(),
+            write_gate: WriteGateConfig::default(),
+            conflict_recency: ConflictRecencyConfig::default(),
         }
     }
 }

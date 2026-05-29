@@ -202,7 +202,7 @@ async fn escalation_loop(
     let mut tier_escalated = false;
 
     loop {
-        let raw_candidates = retrieve_tier(memory, query, conversation_id, intent)
+        let raw_candidates = retrieve_tier(memory, query, conversation_id, intent, config)
             .instrument(tracing::debug_span!("memory.tiered.retrieve_tier", tier = %intent))
             .await?;
 
@@ -254,11 +254,15 @@ async fn escalation_loop(
 }
 
 /// Retrieve candidates for the given intent tier from `SemanticMemory`.
+///
+/// For `DeepReasoning` when `config.deep_reasoning_query_conditioned = true`, routes through
+/// query-conditioned graph recall (HELA spreading activation) instead of static-weight BFS (#3994).
 async fn retrieve_tier(
     memory: &SemanticMemory,
     query: &str,
     conversation_id: Option<ConversationId>,
     intent: IntentClass,
+    config: &TieredRetrievalConfig,
 ) -> Result<Vec<RecalledMessage>, MemoryError> {
     let top_k = intent.top_k();
     let heuristic = HeuristicRouter;
@@ -269,8 +273,47 @@ async fn retrieve_tier(
         category: None,
     });
 
-    // All tiers route through recall_routed; the heuristic router maps intent-appropriate
-    // routes. Graph traversal for DeepReasoning is left to the caller via recall_graph.
+    // DeepReasoning tier: optionally route through query-conditioned HELA recall (#3994).
+    if intent == IntentClass::DeepReasoning && config.deep_reasoning_query_conditioned {
+        use crate::graph::HelaSpreadParams;
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+        let params = HelaSpreadParams::default();
+        match memory.recall_graph_hela(query, top_k, params).await {
+            Ok(hela_facts) if !hela_facts.is_empty() => {
+                let messages: Vec<RecalledMessage> = hela_facts
+                    .into_iter()
+                    .map(|f| {
+                        let content = format!(
+                            "{} — {} — {}",
+                            f.edge.relation, f.edge.fact, f.edge.canonical_relation
+                        );
+                        RecalledMessage {
+                            message: Message {
+                                role: Role::Assistant,
+                                content,
+                                parts: vec![],
+                                metadata: MessageMetadata::default(),
+                            },
+                            score: f.score,
+                        }
+                    })
+                    .collect();
+                tracing::debug!(
+                    count = messages.len(),
+                    "tiered: DeepReasoning via query-conditioned HELA recall"
+                );
+                return Ok(messages);
+            }
+            Ok(_) => {
+                tracing::debug!("tiered: HELA returned no results, falling back to recall_routed");
+            }
+            Err(e) => {
+                tracing::warn!("tiered: HELA recall failed ({e:#}), falling back to recall_routed");
+            }
+        }
+    }
+
+    // All other tiers (and DeepReasoning fallback) route through recall_routed.
     memory
         .recall_routed(query, top_k, filter, &heuristic, None)
         .await

@@ -554,7 +554,20 @@ impl AppBuilder {
 
         // Clone the pool so ExperienceStore can share it when enabled.
         // sqlx Pool is cheaply cloneable (internally Arc-backed).
-        let store = Arc::new(GraphStore::new(graph_pool.clone()));
+        let store = Arc::new(
+            GraphStore::new(graph_pool.clone()).with_benna_rates(
+                self.config
+                    .memory
+                    .graph
+                    .spreading_activation
+                    .benna_fast_rate,
+                self.config
+                    .memory
+                    .graph
+                    .spreading_activation
+                    .benna_slow_rate,
+            ),
+        );
         let mut memory = memory.with_graph_store(store);
         tracing::info!(
             pool_size = self.config.memory.graph.pool_size,

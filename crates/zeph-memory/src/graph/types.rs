@@ -153,6 +153,20 @@ pub struct Edge {
     /// traversal when `[memory.hebbian] enabled = true`. Higher weight signals
     /// frequently co-activated relationships.
     pub weight: f32,
+    /// SYNAPSE fast synaptic variable — high plasticity, tracks recent evidence (#3709).
+    ///
+    /// Updated by the Benna-Fusi rule on each confidence merge:
+    /// `fast' = fast + η_f * (c - fast)` where `η_f` is `benna_fast_rate`.
+    pub confidence_fast: f32,
+    /// SYNAPSE slow synaptic variable — high retention, integrates the fast variable (#3709).
+    ///
+    /// Updated by the Benna-Fusi rule after fast: `slow' = slow + η_s * (fast' - slow)`
+    /// where `η_s` is `benna_slow_rate`.
+    pub confidence_slow: f32,
+    /// Turn index within the episode at which this edge was first committed (#3710).
+    ///
+    /// `None` for edges inserted before migration 096 (best-effort provenance).
+    pub turn_index: Option<u32>,
 }
 
 impl Edge {
@@ -186,6 +200,9 @@ impl Edge {
             canonical_relation: String::new(),
             supersedes: None,
             weight: 1.0,
+            confidence_fast: 1.0,
+            confidence_slow: 1.0,
+            turn_index: None,
         }
     }
 }

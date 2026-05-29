@@ -190,6 +190,7 @@ pub async fn fetch_graph_facts_raw(
                 temporal_decay_rate,
                 seed_structural_weight: sa_config.seed_structural_weight,
                 seed_community_cap: sa_config.seed_community_cap,
+                alpha: sa_config.alpha,
             };
             let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
             let t0 = Instant::now();
@@ -641,6 +642,7 @@ pub async fn fetch_graph_facts_raw(
                         temporal_decay_rate,
                         seed_structural_weight: sa_config.seed_structural_weight,
                         seed_community_cap: sa_config.seed_community_cap,
+                        alpha: sa_config.alpha,
                     };
                     match memory
                         .recall_graph_activated(query, recall_limit, sa_params, &edge_types)

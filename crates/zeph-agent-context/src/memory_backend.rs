@@ -272,6 +272,7 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
                     temporal_decay_rate: p.temporal_decay_rate,
                     seed_structural_weight: p.seed_structural_weight,
                     seed_community_cap: p.seed_community_cap,
+                    alpha: p.alpha,
                 }
             });
             let recalled = self

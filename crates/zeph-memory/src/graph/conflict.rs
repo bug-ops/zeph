@@ -332,6 +332,9 @@ mod tests {
             superseded_by: None,
             supersedes: None,
             weight: 1.0,
+            confidence_fast: confidence,
+            confidence_slow: confidence,
+            turn_index: None,
         }
     }
 

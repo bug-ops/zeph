@@ -436,6 +436,7 @@ pub(crate) async fn fetch_graph_facts(
             temporal_decay_rate,
             seed_structural_weight: sa_config.seed_structural_weight,
             seed_community_cap: sa_config.seed_community_cap,
+            alpha: sa_config.alpha,
         })
     } else {
         None

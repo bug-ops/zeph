@@ -43,6 +43,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: `semantic_scan_plugin_add` async function performs Stage-2 scan before plugin
   installation when `semantic_scan = true`. Fail-closed on `Block` verdict; logs `Warn` and
   continues on `Warn` verdict; returns a config error if `semantic_scan_provider` is empty. Closes #3947.
+- `zeph-memory`, `zeph-config`: SYNAPSE multi-timescale synaptic variables (#3709). Adds
+  `confidence_fast` and `confidence_slow` fields to every graph edge (migration 096). On each
+  confidence merge (`insert_edge_typed` max-merge branch), the Benna-Fusi rule updates both
+  variables: `fast' = fast + η_f*(c − fast)`, `slow' = slow + η_s*(fast' − slow)`. Spreading
+  activation uses a blended confidence `α*fast + (1−α)*slow` instead of raw confidence so that
+  recently reinforced edges receive higher activation than edges with only historical support.
+  Config keys: `[memory.graph.spreading_activation] alpha`, `benna_fast_rate`, `benna_slow_rate`.
+- `zeph-memory`, `zeph-config`: Turn-level provenance for graph edges (#3710). New `turn_index`
+  column (migration 096) stores the position within the episode at which an edge was first
+  committed. Threaded via `GraphExtractionConfig.turn_index`; `None` for pre-migration rows.
+- `zeph-memory`, `zeph-config`: `MemORAI` write-gate prefilter (#3710). When
+  `[memory.graph.write_gate] enabled = true`, edges below `min_edge_relevance` whose relation
+  matches a low-signal vocabulary (e.g. "related_to", "is") are dropped before graph write,
+  reducing noise accumulation. Opt-in, default disabled.
+- `zeph-config`: `ConflictRecencyConfig` — `[memory.graph.conflict] recency_slow_threshold`
+  controls when the recency conflict-resolution strategy is permitted to override `valid_from`
+  comparison (#3709). Default: 0.2.
+- `zeph-memory`, `zeph-config`: DeepReasoning tier query-conditioned routing (#3994). When
+  `[memory.tiered_retrieval] deep_reasoning_query_conditioned = true`, the `DeepReasoning`
+  tier routes through HELA spreading activation (`recall_graph_hela`) instead of static-weight
+  BFS, producing query-aligned graph recall results. Opt-in, default disabled.
+- `zeph-memory`: `GraphStore::with_benna_rates` builder for passing Benna-Fusi η rates from
+  config into the store at bootstrap time.
+- `zeph-memory`: `GraphStore::insert_or_supersede_with_turn_index_and_metrics` — APEX INSERT
+  path now records `turn_index` on new head edges.
 
 - `zeph-config`: new `[cocoon]` section with `show_balance: bool` (default `true`). When set to
   `false`, the TON balance in the TUI status bar is rendered as `*** TON` instead of the real

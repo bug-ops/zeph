@@ -62,6 +62,14 @@ pub struct GraphExtractionConfig {
     pub llm_timeout_secs: u64,
     /// Per-call timeout for every `embed()` invocation, in seconds. Default: `5`.
     pub embed_timeout_secs: u64,
+    /// Turn index within the episode for edges inserted during this extraction pass (#3710).
+    ///
+    /// `None` disables turn-level provenance recording for this pass.
+    pub turn_index: Option<u32>,
+    /// `MemORAI` write-gate prefilter: minimum confidence for low-signal-relation edges (#3709).
+    ///
+    /// `None` disables the gate (default behaviour, always writes).
+    pub write_gate_min_relevance: Option<f32>,
 }
 
 impl Default for GraphExtractionConfig {
@@ -85,6 +93,8 @@ impl Default for GraphExtractionConfig {
             apex_mem_enabled: false,
             llm_timeout_secs: 30,
             embed_timeout_secs: 5,
+            turn_index: None,
+            write_gate_min_relevance: None,
         }
     }
 }
@@ -481,9 +491,33 @@ async fn upsert_entities(
     (entity_name_to_id, entities_upserted)
 }
 
+/// Returns `true` when `relation` is a generic, low-information connector.
+///
+/// Used by the `MemORAI` write-gate to avoid storing vacuous edges (#3709).
+fn is_low_signal_relation(relation: &str) -> bool {
+    const LOW_SIGNAL: &[&str] = &[
+        "related_to",
+        "related to",
+        "is related to",
+        "associated_with",
+        "associated with",
+        "has",
+        "have",
+        "is",
+        "are",
+        "mentions",
+        "mentioned",
+        "involves",
+        "involved",
+    ];
+    let lower = relation.to_lowercase();
+    LOW_SIGNAL.iter().any(|&s| lower == s)
+}
+
 /// Insert extracted edges that have both endpoints in `name_to_id`.
 ///
 /// Returns the number of edges actually inserted.
+#[allow(clippy::too_many_lines)]
 async fn insert_edges(
     resolver: &crate::graph::EntityResolver<'_>,
     edges: &[crate::graph::extractor::ExtractedEdge],
@@ -492,6 +526,19 @@ async fn insert_edges(
 ) -> usize {
     let mut edges_inserted = 0usize;
     for edge in edges {
+        // MemORAI write-gate: drop low-signal edges below the relevance threshold (#3709).
+        if let Some(min_rel) = config.write_gate_min_relevance {
+            let conf = edge.confidence.unwrap_or(1.0);
+            if conf < min_rel && is_low_signal_relation(&edge.relation) {
+                tracing::debug!(
+                    relation = %edge.relation,
+                    confidence = conf,
+                    threshold = min_rel,
+                    "write-gate: skipping low-signal edge"
+                );
+                continue;
+            }
+        }
         let (Some(&src_id), Some(&tgt_id)) =
             (name_to_id.get(&edge.source), name_to_id.get(&edge.target))
         else {
@@ -535,7 +582,7 @@ async fn insert_edges(
             let normalized_fact = truncate_to_bytes_ref(&fact_clean, MAX_FACT_BYTES).to_owned();
             match resolver
                 .graph_store()
-                .insert_or_supersede(
+                .insert_or_supersede_with_turn_index_and_metrics(
                     src_id,
                     tgt_id,
                     &relation_display,
@@ -545,6 +592,8 @@ async fn insert_edges(
                     None,
                     edge_type,
                     true,
+                    None,
+                    config.turn_index,
                 )
                 .await
             {
@@ -1284,6 +1333,42 @@ mod tests {
             failure_counter.load(std::sync::atomic::Ordering::Relaxed),
             0,
             "no failures should be recorded when cancelled before any detection step"
+        );
+    }
+
+    #[test]
+    fn is_low_signal_known_values() {
+        assert!(
+            super::is_low_signal_relation("related_to"),
+            "related_to must be low-signal"
+        );
+        assert!(
+            super::is_low_signal_relation("related to"),
+            "related to (space) must be low-signal"
+        );
+        assert!(
+            super::is_low_signal_relation("IS"),
+            "IS (uppercase) must be low-signal (case-insensitive)"
+        );
+        assert!(
+            super::is_low_signal_relation("mentions"),
+            "mentions must be low-signal"
+        );
+    }
+
+    #[test]
+    fn is_low_signal_specific_relations_pass() {
+        assert!(
+            !super::is_low_signal_relation("causes"),
+            "causes must NOT be low-signal"
+        );
+        assert!(
+            !super::is_low_signal_relation("works_at"),
+            "works_at must NOT be low-signal"
+        );
+        assert!(
+            !super::is_low_signal_relation("born_in"),
+            "born_in must NOT be low-signal"
         );
     }
 }

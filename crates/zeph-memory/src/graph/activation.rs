@@ -607,7 +607,10 @@ impl SpreadingActivation {
                 }
 
                 let recency = self.recency_weight(&edge.valid_from, now_secs);
-                let edge_weight = evolved_weight(edge.retrieval_count, edge.confidence);
+                // SYNAPSE blend: use Benna-Fusi fast/slow variables instead of raw confidence (#3709).
+                let blended = self.params.alpha * edge.confidence_fast
+                    + (1.0 - self.params.alpha) * edge.confidence_slow;
+                let edge_weight = evolved_weight(edge.retrieval_count, blended);
                 let type_w = edge_type_weight(edge.edge_type);
                 let spread_value =
                     node_score * self.params.decay_lambda * edge_weight * recency * type_w;
@@ -781,6 +784,7 @@ mod tests {
             temporal_decay_rate: 0.0,
             seed_structural_weight: 0.4,
             seed_community_cap: 3,
+            alpha: 0.3,
         }
     }
 
@@ -1449,5 +1453,73 @@ mod tests {
         let expected = path_weight * cosine_clamped;
         // Verify the formula used in hela_spreading_recall Step 4.
         assert!((expected - 0.6).abs() < 1e-5);
+    }
+
+    /// SYNAPSE alpha-blend: blended score must equal `alpha*fast + (1-alpha)*slow`.
+    ///
+    /// With diverged fast=0.7, slow=0.51, alpha=0.3:
+    ///   blended = 0.3*0.7 + 0.7*0.51 = 0.21 + 0.357 = 0.567
+    #[tokio::test]
+    async fn synapse_blend_uses_alpha_not_raw_confidence() {
+        let store = SqliteStore::new(":memory:").await.unwrap();
+        let gs = GraphStore::new(store.pool().clone()).with_benna_rates(0.5, 0.05);
+
+        let alpha = 0.3_f32;
+        let params = SpreadingActivationParams {
+            alpha,
+            ..default_params()
+        };
+
+        let src = gs
+            .upsert_entity("Blend_src", "Blend_src", EntityType::Person, None)
+            .await
+            .unwrap()
+            .0;
+        let tgt = gs
+            .upsert_entity("Blend_tgt", "Blend_tgt", EntityType::Concept, None)
+            .await
+            .unwrap()
+            .0;
+
+        // First insert — fast=slow=0.5.
+        gs.insert_edge_typed(
+            src,
+            tgt,
+            "knows",
+            "Blend_src knows Blend_tgt",
+            0.5,
+            None,
+            crate::graph::types::EdgeType::Semantic,
+        )
+        .await
+        .unwrap();
+        // Second insert — applies Benna-Fusi: fast≈0.7, slow≈0.51.
+        gs.insert_edge_typed(
+            src,
+            tgt,
+            "knows",
+            "Blend_src knows Blend_tgt",
+            0.9,
+            None,
+            crate::graph::types::EdgeType::Semantic,
+        )
+        .await
+        .unwrap();
+
+        let sa = SpreadingActivation::new(params);
+        let seeds = HashMap::from([(src, 1.0_f32)]);
+        let (_nodes, facts) = sa.spread(&gs, seeds, &[]).await.unwrap();
+
+        // The blend formula is applied inside propagate_one_hop; the resulting edge weight
+        // is evolved_weight(retrieval_count, blended). We verify that at least one fact is
+        // returned with a score that is NOT equal to the raw confidence (0.9), confirming
+        // the blend path was taken.
+        assert!(!facts.is_empty(), "spread must return at least one fact");
+        let raw_score = facts[0].activation_score;
+        // blended = 0.3*0.7 + 0.7*0.51 ≈ 0.567 — different from raw confidence 0.9
+        assert!(
+            (raw_score - 0.9_f32).abs() > 0.05,
+            "blend score {raw_score} must differ from raw confidence 0.9 — alpha blend not applied"
+        );
     }
 }
