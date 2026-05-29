@@ -1934,8 +1934,8 @@ mod tests {
         }
     }
     // w_plan path: messages whose content overlaps planned tool keywords score higher.
-    #[test]
-    fn w_plan_produces_nonzero_score_for_matching_message() {
+    #[tokio::test]
+    async fn w_plan_produces_nonzero_score_for_matching_message() {
         use zeph_common::PlannedToolHint;
 
         let scorer = FidelityScorer;
@@ -1964,15 +1964,19 @@ mod tests {
             make_msg(Role::User, "what is the weather today"),
         ];
 
-        scorer.score_and_apply(
-            &mut messages,
-            "q", // short query to keep semantic inactive
-            &[hint],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "q", // short query to keep semantic inactive
+                &[hint],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
 
         // The matching message should be scored Full (plan overlap is high).
         assert_eq!(
