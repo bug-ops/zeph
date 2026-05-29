@@ -172,6 +172,16 @@ fn check_db_lock(db_path: &Path) -> anyhow::Result<()> {
     if !db_path.exists() {
         return Ok(());
     }
+    // flock(2)-based advisory locks are not enforced on NFS or certain APFS volumes.
+    // Warn the user so they understand the lock check may be a no-op in those environments.
+    if is_possibly_nonlocal_fs(db_path) {
+        tracing::warn!(
+            path = %db_path.display(),
+            "database path may be on a network or non-local filesystem; \
+             advisory lock (flock) is not enforced on NFS/APFS — \
+             concurrent access is not safe"
+        );
+    }
     let file = fs::File::open(db_path)
         .map_err(|e| anyhow::anyhow!("cannot open SQLite database {}: {e}", db_path.display()))?;
     if file.try_lock().is_err() {
@@ -184,6 +194,17 @@ fn check_db_lock(db_path: &Path) -> anyhow::Result<()> {
     // Release the lock before deletion.
     drop(file);
     Ok(())
+}
+
+/// Returns `true` if the path is likely on a non-local filesystem (NFS, SMB, or external volume).
+///
+/// This is a heuristic based on path prefixes common on macOS and Linux. False negatives are
+/// possible (e.g., local paths under `/Volumes/`), but false positives only cause a warning.
+fn is_possibly_nonlocal_fs(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    // macOS: /Volumes/ covers external drives, network mounts, and disk images.
+    // Linux: /net/, /nfs/, /mnt/nfs* are conventional NFS mount points.
+    s.starts_with("/Volumes/") || s.starts_with("/net/") || s.starts_with("/nfs/")
 }
 
 // ---------------------------------------------------------------------------

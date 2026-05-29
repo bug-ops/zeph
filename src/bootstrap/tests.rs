@@ -50,6 +50,7 @@ fn vault_args_uses_config_backend_as_fallback() {
 }
 
 #[test]
+#[serial_test::serial]
 fn vault_args_env_overrides_config() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.vault.backend = zeph_config::VaultBackend::Age;
@@ -72,6 +73,7 @@ fn vault_args_struct_construction() {
 }
 
 #[test]
+#[serial_test::serial]
 fn vault_args_cli_overrides_env_and_config() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.vault.backend = zeph_config::VaultBackend::Env;
@@ -89,6 +91,7 @@ fn vault_args_cli_overrides_env_and_config() {
 }
 
 #[test]
+#[serial_test::serial]
 fn vault_args_env_key_and_path_fallback() {
     let config = Config::load(Path::new("/nonexistent")).unwrap();
     unsafe { std::env::set_var("ZEPH_VAULT_KEY", "/env/key") };

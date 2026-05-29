@@ -65,7 +65,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `shadow_sentinel` modules (`SkipReason`, `StageOutcome`, `VerdictStatus`, `TriggerPolicy`,
   `QualityConfigError`, `ToolRiskCategory`, `ProbeVerdict`); consistent with the project-wide
   convention from bba75144 (closes #4569).
-
+- `zeph` (bootstrap): `vault_args_env_overrides_config`, `vault_args_cli_overrides_env_and_config`,
+  and `vault_args_env_key_and_path_fallback` tests now carry `#[serial_test::serial]` to prevent
+  data races when `nextest` runs them in parallel (closes #4617).
+- `zeph` (project): `check_db_lock` now emits a `tracing::warn!` when the database path appears to
+  reside on a network or non-local filesystem (`/Volumes/`, `/net/`, `/nfs/`), where `flock(2)`
+  advisory locking is not enforced (closes #4573).
 - `zeph-context`: removed dead `fidelity_config: Option<&'a FidelityConfig>` field from
   `ContextAssemblyInput`; the field was always `None` and never read after the CAM Phase 1
   refactor (closes #4595).
