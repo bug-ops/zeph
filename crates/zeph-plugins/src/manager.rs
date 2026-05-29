@@ -470,7 +470,7 @@ impl PluginManager {
             path: std::path::PathBuf::from(url),
             source: e,
         })?;
-        extract_archive(&bytes, tmp.path(), url)?;
+        extract_archive_safe(&bytes, tmp.path(), url)?;
 
         let plugins_dir = self.plugins_dir.clone();
         let managed_skills_dir = self.managed_skills_dir.clone();
@@ -1189,6 +1189,9 @@ impl PluginManager {
 
         download_and_extract(url, sha256, tmp.path(), self.download_timeout_secs).await?;
 
+        // Strip .bundled markers so ephemeral skills are visible to the registry.
+        strip_bundled_markers(tmp.path());
+
         // Read manifest to get skill entries for blocking scan.
         let manifest_path = tmp.path().join("plugin.toml");
         if manifest_path.exists() {
@@ -1821,6 +1824,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), PluginError> {
 ///
 /// Returns [`PluginError::InvalidSource`] when the archive format is unrecognized or extraction
 /// fails.
+#[cfg(test)]
 fn extract_archive(bytes: &[u8], dest: &Path, url: &str) -> Result<(), PluginError> {
     if !bytes.starts_with(&[0x1f, 0x8b]) {
         return Err(PluginError::InvalidSource {
@@ -3978,6 +3982,80 @@ path = "skills/injected"
         assert!(
             matches!(err, PluginError::IntegrityCheckFailed { .. }),
             "SHA-256 mismatch must return IntegrityCheckFailed, got {err:?}"
+        );
+    }
+
+    // --- regression: #4672 add_remote uses extract_archive_safe ---
+
+    #[tokio::test]
+    async fn add_remote_rejects_archive_with_symlink_entry() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Build a tar.gz with a symlink entry — extract_archive_safe must reject it.
+        let archive = {
+            let buf = Vec::new();
+            let gz = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
+            let mut tar = tar::Builder::new(gz);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_path("evil-link").unwrap();
+            header.set_link_name("/etc/passwd").unwrap();
+            header.set_size(0);
+            header.set_cksum();
+            tar.append(&header, std::io::empty()).unwrap();
+            let gz = tar.into_inner().unwrap();
+            gz.finish().unwrap()
+        };
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive)
+                    .append_header("Content-Type", "application/octet-stream"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = PluginManager::new(
+            tmp.path().join("plugins"),
+            tmp.path().join("managed"),
+            vec![],
+            vec![],
+        );
+        let url = format!("{}/evil.tar.gz", mock_server.uri());
+        let err = mgr.add_remote(&url, None).await.unwrap_err();
+        assert!(
+            matches!(err, PluginError::InvalidSource { ref reason, .. } if reason.contains("symlink")),
+            "add_remote must reject symlink entries via extract_archive_safe, got {err:?}"
+        );
+    }
+
+    // --- regression: #4673 add_remote_ephemeral strips .bundled markers ---
+
+    #[test]
+    fn strip_bundled_markers_removes_marker_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // Place a .bundled marker and a regular file alongside it.
+        let marker = skill_dir.join(".bundled");
+        let regular = skill_dir.join("SKILL.md");
+        std::fs::write(&marker, "").unwrap();
+        std::fs::write(&regular, "# My Skill\n").unwrap();
+
+        strip_bundled_markers(tmp.path());
+
+        assert!(
+            !marker.exists(),
+            ".bundled marker must be removed by strip_bundled_markers"
+        );
+        assert!(
+            regular.exists(),
+            "regular files must not be affected by strip_bundled_markers"
         );
     }
 }

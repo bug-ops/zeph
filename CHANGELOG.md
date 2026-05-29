@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-plugins`: `add_remote` now uses `extract_archive_safe` instead of the unguarded
+  `extract_archive`, closing a tar-slip path-traversal vulnerability where a crafted archive
+  could write files outside the plugins directory (absolute paths, `../` components, or symlink
+  entries). Consistent with `add_remote_ephemeral` and `check_auto_updates` which already used
+  the safe extractor. Closes #4672.
+- `zeph-plugins`: `add_remote_ephemeral` now calls `strip_bundled_markers` after archive
+  extraction, matching the invariant enforced by the permanent `add()` path. Without this, a
+  remote plugin archive containing `.bundled` marker files would cause ephemeral skills to be
+  misclassified as compile-time bundled by the `SkillRegistry` (wrong trust model). Closes #4673.
+
 ### Added
 
 - `zeph-config`: `ProviderOverrides` struct — per-session LLM generation override parameters
