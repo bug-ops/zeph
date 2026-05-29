@@ -2043,6 +2043,7 @@ impl<C: Channel> Agent<C> {
                     tracing::warn!("injection_classifier soft_signal on user input");
                 }
                 zeph_sanitizer::InjectionVerdict::Clean => {}
+                _ => {}
             }
         }
         #[cfg(feature = "classifiers")]
