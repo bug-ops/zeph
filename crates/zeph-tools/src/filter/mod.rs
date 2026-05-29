@@ -54,6 +54,7 @@ impl FilterResult {
 // CommandMatcher (#439)
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 pub enum CommandMatcher {
     Exact(Arc<str>),
     Prefix(Arc<str>),

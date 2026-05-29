@@ -44,6 +44,7 @@ use super::error::OrchestrationError;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum VerifyPredicate {
     /// Free-form natural-language criterion evaluated by the LLM judge.
     Natural(String),

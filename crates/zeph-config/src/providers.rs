@@ -28,6 +28,7 @@ pub enum ThinkingConfig {
 /// Effort level for adaptive thinking.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ThinkingEffort {
     /// Minimal thinking; fastest responses.
     Low,
@@ -73,6 +74,7 @@ impl CacheTtl {
 /// Valid for Gemini 3+ models. For Gemini 2.5, use `thinking_budget` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum GeminiThinkingLevel {
     /// Minimal reasoning pass.
     Minimal,

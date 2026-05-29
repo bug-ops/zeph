@@ -31,6 +31,7 @@ use super::graph::{TaskGraph, TaskId};
 /// assert!(matches!(decision, AbortDecision::None));
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum AbortDecision {
     /// No abort warranted; continue normal execution.
     None,

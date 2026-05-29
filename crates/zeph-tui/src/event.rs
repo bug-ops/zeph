@@ -100,6 +100,7 @@ impl EventSource for CrosstermEventSource {
 /// ```
 #[non_exhaustive]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AppEvent {
     /// A keyboard event from crossterm.
     Key(KeyEvent),
@@ -132,6 +133,7 @@ pub enum AppEvent {
 /// ```
 #[non_exhaustive]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AgentEvent {
     /// A streaming text chunk from the LLM — appended to the current message.
     Chunk(String),

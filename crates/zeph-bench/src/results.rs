@@ -29,6 +29,7 @@ use crate::error::BenchError;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RunStatus {
     /// All scenarios finished successfully.
     Completed,

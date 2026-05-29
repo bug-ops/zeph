@@ -21,6 +21,7 @@ use crate::provider::{
 /// Complexity tier for input classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ComplexityTier {
     #[default]
     Simple,

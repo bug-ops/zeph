@@ -45,6 +45,7 @@ pub trait ProbeGate: Send + Sync {
 
 /// Result of a probe gate evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProbeOutcome {
     /// Tool execution may proceed.
     Allow,

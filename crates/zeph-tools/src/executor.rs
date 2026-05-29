@@ -154,6 +154,7 @@ impl FilterStats {
 /// `None` means the source is unspecified (pass-through code, mocks, tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ClaimSource {
     /// Local shell command execution.
     Shell,
@@ -292,6 +293,7 @@ pub fn truncate_tool_output_at(output: &str, max_chars: usize) -> String {
 /// Sent over the [`ToolEventTx`] channel to the TUI or channel adapter.
 /// Each event variant corresponds to a phase in the tool execution lifecycle.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ToolEvent {
     /// The tool has started. Displayed in the TUI as a spinner with the command text.
     Started {
@@ -359,6 +361,7 @@ pub const TOOL_EVENT_CHANNEL_CAP: usize = 1024;
 /// Transient errors may succeed on retry (network blips, race conditions).
 /// Permanent errors will not succeed regardless of retries (policy, bad args, not found).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[non_exhaustive]
 pub enum ErrorKind {
     Transient,
     Permanent,

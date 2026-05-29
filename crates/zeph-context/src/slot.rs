@@ -15,6 +15,7 @@ use zeph_llm::provider::Message;
 ///
 /// Using an enum instead of a tuple allows individual sources to be added or
 /// removed (including cfg-gated ones) without rewriting the join combinator.
+#[non_exhaustive]
 pub enum ContextSlot {
     /// Past-session summaries (contextual recall).
     Summaries(Option<Message>),

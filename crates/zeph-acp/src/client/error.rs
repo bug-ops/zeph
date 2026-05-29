@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// Step in the ACP handshake sequence at which a failure occurred.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HandshakeStep {
     /// The `initialize` request round-trip failed.
     Initialize,

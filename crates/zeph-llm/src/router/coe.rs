@@ -90,6 +90,7 @@ pub async fn inter_divergence(
 }
 
 /// `CoE` decision result for a single turn.
+#[non_exhaustive]
 pub enum CoeDecision {
     /// Keep the primary response.
     KeepPrimary,

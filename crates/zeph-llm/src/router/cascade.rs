@@ -41,6 +41,7 @@ use crate::provider_dyn::LlmProviderDyn;
 /// Use `Judge` when semantic quality matters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ClassifierMode {
     /// Zero-cost heuristic classifier. Detects degenerate outputs only.
     /// Fast, no LLM calls, but cannot detect semantic failures.

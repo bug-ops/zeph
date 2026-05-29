@@ -165,6 +165,7 @@ impl TurnEmbedCache {
 
 /// Routing strategy used by [`RouterProvider`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum RouterStrategy {
     /// Exponential moving average-based latency-aware ordering.
     #[default]

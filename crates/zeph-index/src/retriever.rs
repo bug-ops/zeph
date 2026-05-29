@@ -46,6 +46,7 @@ use zeph_memory::TokenCounter;
 /// assert_eq!(classify_query("where is MyHandler used?"), RetrievalStrategy::Hybrid);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RetrievalStrategy {
     /// Vector similarity search for conceptual or descriptive queries.
     ///

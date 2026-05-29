@@ -55,6 +55,7 @@ pub fn is_low_value_tool(tool_name: &str) -> bool {
 
 /// Index into a message's parts list identifying which part to compact.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CompactTarget {
     /// A `ToolOutput` part at the given index.
     Output(usize),

@@ -50,6 +50,7 @@ use crate::budget::ContextBudget;
 /// `turns_since_last_hard_compaction` is a **metric counter**, not part of this state machine,
 /// and remains a separate field on `ContextManager`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CompactionState {
     /// Normal state — compaction may fire if context exceeds thresholds.
     Ready,

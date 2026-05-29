@@ -34,6 +34,7 @@ static INJECTION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// Result of an embedding anomaly check.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum EmbeddingGuardResult {
     /// Output is within the expected distribution.
     Normal { distance: f64 },

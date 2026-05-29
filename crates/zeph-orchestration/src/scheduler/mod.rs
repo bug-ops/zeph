@@ -136,6 +136,7 @@ pub struct TaskEvent {
 ///
 /// Returned inside a [`TaskEvent`] and processed by [`DagScheduler::tick`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TaskOutcome {
     /// Agent completed successfully.
     Completed {

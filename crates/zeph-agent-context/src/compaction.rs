@@ -450,6 +450,7 @@ impl SubgoalRegistry {
 
 /// Density classification for a message or segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContentDensity {
     /// More than 50% of lines are structured (code fences, JSON, lists, shell output).
     High,

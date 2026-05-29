@@ -65,6 +65,7 @@ impl std::fmt::Display for PageType {
 /// Provenance of a [`TypedPage`], serialised into audit records.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PageOrigin {
     /// Tool request/response pair.
     ToolPair {
@@ -95,6 +96,7 @@ pub enum PageOrigin {
 /// Used by the invariant to select the correct structured-summary prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SchemaHint {
     /// Body is valid JSON (object or array).
     Json,

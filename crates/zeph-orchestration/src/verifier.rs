@@ -41,6 +41,7 @@ const MAX_GAP_DESCRIPTION_LEN: usize = 500;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GapSeverity {
     /// Must be addressed — blocks downstream tasks from having correct input.
     Critical,

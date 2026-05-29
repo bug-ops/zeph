@@ -252,6 +252,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-memory`, `zeph-common`, `zeph-config`, `zeph-channels`, `zeph-commands`, `zeph-gateway`,
   `zeph-a2a`: add `#[non_exhaustive]` to all extensible `pub enum` types — adding new variants
   in future releases will not be a breaking change for downstream crates (closes #4513, #4514, #4532).
+- `zeph-acp`, `zeph-agent-context`, `zeph-bench`, `zeph-config`, `zeph-context`, `zeph-index`,
+  `zeph-llm`, `zeph-mcp`, `zeph-orchestration`, `zeph-sanitizer`, `zeph-tools`, `zeph-tui`:
+  add `#[non_exhaustive]` to all remaining extensible `pub enum` types across the workspace —
+  completing workspace-wide coverage started in PRs #4616 and #4620 (closes #4623).
 - `zeph-llm`: mark `StreamChunk`, `ThinkingBlock`, `ChatResponse`, `MessagePart`, and `LlmError`
   as `#[non_exhaustive]` — adding new variants in the future will not be a breaking change for
   downstream crates (closes #4515, #4517).

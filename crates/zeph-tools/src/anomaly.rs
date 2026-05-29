@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 
 /// Severity of a detected anomaly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AnomalySeverity {
     Warning,
     Critical,

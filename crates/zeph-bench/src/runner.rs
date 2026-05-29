@@ -51,6 +51,7 @@ use crate::scenario::{DatasetLoader, Evaluator, Scenario};
 /// Used by [`BenchRunner::run_one_with_executor`] to select the appropriate
 /// system prompt and post-processing behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResponseMode {
     /// Inject a "shortest possible answer" system prompt and strip markdown from the response.
     ///
@@ -72,6 +73,7 @@ pub enum ResponseMode {
 /// assert_eq!(MemoryMode::default(), MemoryMode::Off);
 /// ```
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MemoryMode {
     /// No `SemanticMemory` — current default behaviour.
     #[default]

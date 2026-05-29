@@ -175,6 +175,7 @@ impl ContentSourceKind {
 /// known injection strings on the write path. This risk is pre-existing and is not worsened
 /// by the hint mechanism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MemorySourceHint {
     /// Prior user/assistant conversation turns (semantic recall, corrections).
     ///
@@ -339,6 +340,7 @@ pub struct InjectionFlag {
 /// ```
 #[cfg(feature = "classifiers")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InjectionVerdict {
     /// Score below soft threshold — no injection signal detected.
     Clean,
@@ -359,6 +361,7 @@ pub enum InjectionVerdict {
 /// `ContentSanitizer::with_three_class_backend`].
 #[cfg(feature = "classifiers")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InstructionClass {
     /// Content contains no instruction-like text.
     NoInstruction,

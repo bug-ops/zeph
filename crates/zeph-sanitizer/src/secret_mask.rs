@@ -45,6 +45,7 @@ pub const MIN_SECRET_LEN: usize = 8;
 
 /// Category of a masked secret, encoded in the placeholder token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SecretCategory {
     /// API key (vault key name contains `api_key` or `apikey`).
     ApiKey,

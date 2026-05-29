@@ -553,6 +553,7 @@ impl CompactionOutcome {
 /// (score, `category_scores`, thresholds) through [`MetricsCallback`] and for calling
 /// `dump_compaction_probe` before returning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProbeOutcome {
     /// Probe accepted the summary; pipeline continues normally.
     Pass,

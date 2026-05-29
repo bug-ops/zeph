@@ -38,6 +38,7 @@ use crate::error::LlmError;
 
 /// Identifies the type of classifier task for metrics labeling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ClassifierTask {
     /// Sequence classification: whole-text label (INJECTION / SAFE).
     Injection,

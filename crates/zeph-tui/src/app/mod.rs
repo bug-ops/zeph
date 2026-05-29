@@ -43,6 +43,7 @@ const MAX_VISIBLE_INPUT_LINES: u16 = 3;
 /// assert_eq!(panel, Panel::Chat);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Panel {
     /// The main chat / transcript area.
     Chat,
@@ -77,6 +78,7 @@ pub enum Panel {
 /// assert_eq!(sub.subagent_id(), Some("sa-1"));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AgentViewTarget {
     /// Displaying the main agent conversation.
     Main,

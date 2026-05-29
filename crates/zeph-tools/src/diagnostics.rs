@@ -14,6 +14,7 @@ use crate::registry::{InvocationHint, ToolDef};
 /// Cargo diagnostics level.
 #[derive(Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum DiagnosticsLevel {
     /// Run `cargo check`
     #[default]

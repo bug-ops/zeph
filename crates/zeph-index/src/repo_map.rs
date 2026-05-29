@@ -38,6 +38,7 @@ pub struct SymbolInfo {
 /// Mapped from tree-sitter node kinds via `SymbolKind::from_node_kind`.
 /// The short string representation (e.g. `"fn"`, `"struct"`) is used in repo map output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SymbolKind {
     /// Function or free function (`fn`, `def`, `function`).
     Function,
@@ -71,6 +72,7 @@ pub enum SymbolKind {
 
 /// Visibility of a symbol, derived from its Rust `pub` modifier or Python/JS conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Visibility {
     /// `pub` — visible everywhere.
     Public,

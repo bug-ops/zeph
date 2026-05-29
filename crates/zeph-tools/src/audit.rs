@@ -237,6 +237,7 @@ pub enum VigilRiskLevel {
 /// ```
 #[derive(serde::Serialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum AuditResult {
     /// The tool executed successfully.
     #[serde(rename = "success")]

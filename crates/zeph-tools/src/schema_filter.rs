@@ -23,6 +23,7 @@ pub struct ToolEmbedding {
 
 /// Reason a tool was included in the filtered set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InclusionReason {
     /// Tool is in the always-on config list.
     AlwaysOn,

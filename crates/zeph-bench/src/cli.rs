@@ -24,6 +24,7 @@
 /// assert!(matches!(cmd, BenchCommand::List));
 /// ```
 #[derive(clap::Subcommand, Debug)]
+#[non_exhaustive]
 pub enum BenchCommand {
     /// List available benchmark datasets and their cache status
     List,

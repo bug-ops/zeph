@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// tau2-bench domain selector for routing loader and env construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Domain {
     /// Customer-service retail domain.
     Retail,
@@ -61,6 +62,7 @@ pub struct UserScenario {
 /// or synthetic tasks may provide a plain string.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum UserInstructions {
     /// Structured object with individual fields.
     Structured(StructuredUserInstructions),

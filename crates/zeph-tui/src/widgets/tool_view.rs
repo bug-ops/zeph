@@ -26,6 +26,7 @@ pub use zeph_config::ToolDensity;
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ToolKind {
     /// Shell / command execution tools (`bash`, `shell`, `run_command`).
     Run,
@@ -130,6 +131,7 @@ impl ToolKind {
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ToolStatus {
     /// Tool is currently executing (spinner visible).
     Running,
