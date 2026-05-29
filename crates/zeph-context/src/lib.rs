@@ -19,6 +19,9 @@
 //! - [`turn_context`] — [`turn_context::TurnId`], [`turn_context::TurnContext`] per-turn carrier
 //! - [`compression_feedback`] — context-loss detection and failure classification
 //! - [`microcompact`] — low-value tool detection helpers for time-based microcompact
+//! - [`fidelity`] — heuristic fidelity scorer for Context-Adaptive Memory (CAM)
+//! - [`tool_result_compress`] — per-result and batch-level token budget enforcement for tool outputs
+//! - [`typed_page`] — typed page classification and minimum-fidelity invariants for compaction
 //! - [`error`] — [`error::AssemblerError`]
 
 pub mod assembler;
