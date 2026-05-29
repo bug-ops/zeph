@@ -10,7 +10,8 @@
 //! steps 47–48 add trace metadata and five-signal SYNAPSE config; step 49 renames
 //! `embed_provider` → `embedding_provider` (#4480); step 50 adds MCP
 //! `startup_retry_backoff_ms` and `tool_timeout_secs` (#4004); step 51 adds
-//! `embed_timeout_secs` and `compress_timeout_secs` to `[memory.fidelity]` (#4645, #4651).
+//! `embed_timeout_secs` and `compress_timeout_secs` to `[memory.fidelity]` (#4645, #4651);
+//! step 52 adds `[session] persist_provider_overrides` (#4654).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -34,10 +35,10 @@ use super::{
     migrate_otel_filter, migrate_planner_model_to_provider, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
     migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
-    migrate_session_provider_persistence, migrate_session_recap_config,
-    migrate_shell_transactional, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telemetry_config, migrate_tools_compression_config, migrate_trace_metadata,
-    migrate_vigil_config,
+    migrate_session_persist_provider_overrides, migrate_session_provider_persistence,
+    migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
+    migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
+    migrate_trace_metadata, migrate_vigil_config,
 };
 
 // ── Wrapper structs for all 51 sequential migration steps ───────────────────────────────────────
@@ -600,5 +601,16 @@ impl Migration for MigrateFidelityTimeoutDefaults {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_fidelity_timeout_defaults(toml_src)
+    }
+}
+
+pub(super) struct MigrateSessionPersistProviderOverrides;
+impl Migration for MigrateSessionPersistProviderOverrides {
+    fn name(&self) -> &'static str {
+        "migrate_session_persist_provider_overrides"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_session_persist_provider_overrides(toml_src)
     }
 }

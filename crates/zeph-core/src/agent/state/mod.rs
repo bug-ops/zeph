@@ -296,6 +296,17 @@ pub(crate) struct RuntimeConfig {
     /// Controlled by `[session] provider_persistence = true` (the default). When `false`,
     /// the stored provider preference is never read or written.
     pub(crate) provider_persistence_enabled: bool,
+    /// Whether per-session provider override params (e.g. `reasoning_effort`) should be
+    /// persisted alongside the provider name (#4654).
+    ///
+    /// Only meaningful when `provider_persistence_enabled` is also `true`.
+    pub(crate) persist_provider_overrides_enabled: bool,
+    /// Guards against re-persisting during `restore_channel_provider` (#4654, F1).
+    ///
+    /// Set to `true` immediately before calling `provider_switch_as_string` inside the restore
+    /// path, cleared on every branch after the call. While `true`, `persist_channel_provider`
+    /// returns early without writing anything.
+    pub(crate) restoring_provider: bool,
     /// Goal lifecycle feature configuration.
     pub(crate) goals: GoalRuntimeConfig,
 }
@@ -1108,6 +1119,8 @@ impl Default for RuntimeConfig {
             acp_subagent_spawn_fn: None,
             channel_type: String::new(),
             provider_persistence_enabled: true,
+            persist_provider_overrides_enabled: true,
+            restoring_provider: false,
             goals: GoalRuntimeConfig::default(),
         }
     }

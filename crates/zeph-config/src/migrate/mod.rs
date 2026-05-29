@@ -3078,6 +3078,47 @@ pub fn migrate_session_provider_persistence(
     })
 }
 
+/// Splice `persist_provider_overrides = true` into an existing `[session]` block (#4654).
+///
+/// `SessionConfig` uses `#[serde(default)]` so existing configs without this key parse
+/// fine (the field defaults to `true`). This step is discoverability-only: it adds the
+/// commented-out key so users can see the option when they open their config file.
+///
+/// Idempotent: skipped when the key is already present (commented or live) or when there
+/// is no `[session]` section (a `migrate_session_provider_persistence` will add the full
+/// block on future runs).
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_session_persist_provider_overrides(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("persist_provider_overrides") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+    if !toml_src.lines().any(|l| l.trim() == "[session]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# persist_provider_overrides = true  \
+        # persist generation overrides (e.g. reasoning_effort) alongside provider name (#4654)\n";
+    let output = toml_src.replacen("[session]\n", &format!("[session]\n{comment}"), 1);
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["session".to_owned()],
+    })
+}
+
 /// Add `[memory.retrieval]` with `query_bias_correction = true` if the section is absent.
 ///
 /// `query_bias_correction` shifts first-person queries toward the user profile centroid
@@ -3375,10 +3416,10 @@ use steps::{
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
     MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
     MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionProviderPersistence,
-    MigrateSessionRecapConfig, MigrateShellTransactional, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateTraceMetadata, MigrateVigilConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig,
 };
 
 /// Step 45: add an advisory comment above `GonkaGate` provider entries pointing users to
@@ -3591,6 +3632,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateMcpRetryAndToolTimeout),
             // Step 51 — add embed_timeout_secs and compress_timeout_secs to [memory.fidelity] (#4645, #4651)
             Box::new(MigrateFidelityTimeoutDefaults),
+            // Step 52 — add persist_provider_overrides to [session] (#4654)
+            Box::new(MigrateSessionPersistProviderOverrides),
         ]
     });
 
@@ -5476,6 +5519,7 @@ prompt_cache_ttl = "1h"
             "migrate_embed_provider_rename",
             "migrate_mcp_retry_and_tool_timeout",
             "migrate_fidelity_timeout_defaults",
+            "migrate_session_persist_provider_overrides",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);

@@ -24,6 +24,12 @@ pub struct SessionConfig {
     ///
     /// Set to `false` to always start with the configured primary provider.
     pub provider_persistence: bool,
+    /// Whether to persist per-session provider override parameters across restarts (#4654).
+    ///
+    /// Currently persists `reasoning_effort` only (Phase 1). Only takes effect when
+    /// `provider_persistence` is also `true` — overrides are meaningless without a persisted
+    /// provider to apply them to. Default: `true`.
+    pub persist_provider_overrides: bool,
 }
 
 impl Default for SessionConfig {
@@ -31,6 +37,7 @@ impl Default for SessionConfig {
         Self {
             recap: RecapConfig::default(),
             provider_persistence: true,
+            persist_provider_overrides: true,
         }
     }
 }

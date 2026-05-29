@@ -186,6 +186,8 @@ pub(crate) struct WizardState {
     pub(crate) digest_enabled: bool,
     // Session recap on resume (#3064)
     pub(crate) recap_on_resume: bool,
+    // Provider override persistence (#4654)
+    pub(crate) persist_provider_overrides: bool,
     // MCP elicitation (#3141)
     pub(crate) mcp_elicitation_enabled: bool,
     pub(crate) mcp_elicitation_warn_sensitive: bool,
@@ -385,6 +387,7 @@ impl Default for WizardState {
             retry_parameter_reformat_provider: String::new(),
             digest_enabled: false,
             recap_on_resume: true,
+            persist_provider_overrides: true,
             mcp_elicitation_enabled: false,
             mcp_elicitation_warn_sensitive: true,
             quality_self_check: false,
@@ -769,6 +772,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.shutdown_summary = state.shutdown_summary;
     config.memory.digest.enabled = state.digest_enabled;
     config.session.recap.on_resume = state.recap_on_resume;
+    config.session.persist_provider_overrides = state.persist_provider_overrides;
     config.mcp.elicitation_enabled = state.mcp_elicitation_enabled;
     config.mcp.elicitation_warn_sensitive_fields = state.mcp_elicitation_warn_sensitive;
     config.quality.self_check = state.quality_self_check;
@@ -1507,6 +1511,13 @@ fn step_session_recap(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Session Recap & MCP Elicitation ==\n");
     state.recap_on_resume = Confirm::new()
         .with_prompt("Show a recap when resuming a conversation? [Y/n]")
+        .default(true)
+        .interact()?;
+
+    state.persist_provider_overrides = Confirm::new()
+        .with_prompt(
+            "Persist provider generation overrides (e.g. reasoning_effort) across restarts? [Y/n]",
+        )
         .default(true)
         .interact()?;
 

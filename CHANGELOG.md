@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-config`: `ProviderOverrides` struct — per-session LLM generation override parameters
+  persisted across restarts (Phase 1: `reasoning_effort` only). Serialized as JSON and stored
+  in the `channel_preferences` table under `pref_key = "provider_overrides"`. Uses
+  `#[serde(default)]` for forward-compatible deserialization (unknown fields from future phases
+  are silently ignored). **Note**: the issue acceptance criteria specified
+  `#[serde(deny_unknown_fields)]`; this was intentionally relaxed to `#[serde(default)]` so
+  older binaries can read blobs written by newer ones without losing the known params.
+- `zeph-config`: `SessionConfig` gains `persist_provider_overrides: bool` (default `true`). Only
+  takes effect when `provider_persistence` is also `true`.
+- `zeph-core`: `persist_channel_provider` now persists a `ProviderOverrides` blob alongside the
+  provider name. A `restoring_provider` guard prevents clobbering the stored blob during the
+  restore path (F1 fix). Fire-and-forget under `TaskClass::Telemetry`; write-side 1 KB size cap.
+- `zeph-core`: `restore_channel_provider` now loads and validates the persisted overrides blob on
+  successful provider name restore (M3 guard: skipped when name restore fails). Read-side 1 KB
+  size cap; deserialization errors and inapplicable params are logged as warnings.
+- `--init` wizard: prompts for `persist_provider_overrides`.
+- Config migration step 52: splices `persist_provider_overrides = true` (commented, discoverability
+  only) into existing `[session]` blocks. `SessionConfig` already defaults the field to `true`
+  so existing configs load fine without the key.
+
 ### Changed
 
 - refactor(context): make embed and compress timeouts in `FidelityScorer` configurable via

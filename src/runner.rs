@@ -3071,6 +3071,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         .with_channel_identity(
             active_channel_name.clone(),
             config.session.provider_persistence,
+            config.session.persist_provider_overrides,
         );
 
     #[cfg(feature = "prometheus")]

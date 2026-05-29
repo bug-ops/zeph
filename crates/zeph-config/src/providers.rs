@@ -1720,6 +1720,56 @@ impl ProviderEntry {
     }
 }
 
+/// Per-session LLM generation override parameters persisted across restarts (#4654).
+///
+/// Phase 1 captures `reasoning_effort` only. Serialized to JSON and stored in the
+/// `channel_preferences` table under `pref_key = "provider_overrides"`.
+///
+/// `#[serde(default)]` makes deserialization forward-compatible: a blob written by a newer
+/// binary with additional fields is accepted, unknown fields are ignored, so the known params
+/// still apply. (Issue #4654 originally specified `deny_unknown_fields`; this was intentionally
+/// relaxed for forward compatibility — see PR and CHANGELOG.)
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::ProviderOverrides;
+///
+/// let overrides = ProviderOverrides {
+///     reasoning_effort: Some("high".to_owned()),
+/// };
+/// assert!(!overrides.is_empty());
+///
+/// let empty = ProviderOverrides::default();
+/// assert!(empty.is_empty());
+/// ```
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderOverrides {
+    /// `OpenAI` reasoning effort: `"low"`, `"medium"`, or `"high"`. `None` = provider default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+impl ProviderOverrides {
+    /// Returns `true` when no override is set.
+    ///
+    /// Used by the persistence layer to skip writing an empty blob.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::ProviderOverrides;
+    ///
+    /// assert!(ProviderOverrides::default().is_empty());
+    /// assert!(!ProviderOverrides { reasoning_effort: Some("low".into()) }.is_empty());
+    /// ```
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.reasoning_effort.is_none()
+    }
+}
+
 /// Validate a pool of `ProviderEntry` items.
 ///
 /// # Errors

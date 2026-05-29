@@ -567,20 +567,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Configure channel identity for per-channel UX preference persistence (#3308).
+    /// Configure channel identity for per-channel UX preference persistence (#3308, #4654).
     ///
     /// `channel_type` must match the active I/O channel name (`"cli"`, `"tui"`, `"telegram"`,
     /// `"discord"`, etc.). `provider_persistence` controls whether the last-used provider is
     /// stored in `SQLite` after each `/provider` switch and restored on the next startup.
+    /// `persist_provider_overrides` controls whether generation params (e.g. `reasoning_effort`)
+    /// are persisted alongside the provider name.
     ///
-    /// When `provider_persistence` is `false`, the stored preference is never read or written.
-    /// When `channel_type` is empty (the default), persistence is skipped silently.
+    /// When `provider_persistence` is `false`, neither the provider name nor overrides are
+    /// read or written. When `channel_type` is empty (the default), persistence is skipped silently.
     ///
     /// # Examples
     ///
     /// ```ignore
     /// let agent = Agent::new(provider, channel, registry, None, 5, executor)
-    ///     .with_channel_identity("cli", true)
+    ///     .with_channel_identity("cli", true, true)
     ///     .build()?;
     /// ```
     #[must_use]
@@ -588,9 +590,11 @@ impl<C: Channel> Agent<C> {
         mut self,
         channel_type: impl Into<String>,
         provider_persistence: bool,
+        persist_provider_overrides: bool,
     ) -> Self {
         self.runtime.config.channel_type = channel_type.into();
         self.runtime.config.provider_persistence_enabled = provider_persistence;
+        self.runtime.config.persist_provider_overrides_enabled = persist_provider_overrides;
         self
     }
 
