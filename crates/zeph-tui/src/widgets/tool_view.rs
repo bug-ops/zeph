@@ -24,6 +24,7 @@ pub use zeph_config::ToolDensity;
 /// assert_eq!(ToolKind::classify("mcp__github__list_prs"), ToolKind::Mcp);
 /// assert_eq!(ToolKind::classify("unknown_tool"), ToolKind::Other);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
     /// Shell / command execution tools (`bash`, `shell`, `run_command`).
@@ -127,6 +128,7 @@ impl ToolKind {
 /// let s = ToolStatus::from_streaming_and_success(true, None);
 /// assert_eq!(s, ToolStatus::Running);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
     /// Tool is currently executing (spinner visible).

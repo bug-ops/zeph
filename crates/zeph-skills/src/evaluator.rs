@@ -108,6 +108,7 @@ impl Default for EvaluationWeights {
 }
 
 /// The outcome of an evaluation run.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum SkillVerdict {
     /// Skill meets the quality threshold.

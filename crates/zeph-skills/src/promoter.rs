@@ -26,6 +26,7 @@
 ///
 /// Returned by [`parse_promotion_response`]. Callers use this to decide what
 /// quarantined draft (if any) to write to disk.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromotionRecommendation {
     /// The LLM recommends integrating the heuristics into the existing parent skill body.

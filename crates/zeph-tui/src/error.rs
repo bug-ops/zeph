@@ -19,6 +19,7 @@
 /// let tui_err = TuiError::from(io_err);
 /// assert!(check(&tui_err));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum TuiError {
     /// A terminal I/O operation failed (e.g. enabling raw mode or drawing).

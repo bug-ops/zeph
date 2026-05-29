@@ -44,6 +44,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `zeph-agent-feedback`, `zeph-experiments`, `zeph-plugins`, `zeph-skills`, `zeph-tui`: added
+  `#[non_exhaustive]` to all extensible `pub enum` types missed by the sweep in #4545. Wildcard
+  match arms added in `zeph-core` and the `zeph` binary where required to preserve exhaustive
+  pattern coverage (closes #4561, #4563, #4565).
+
 - `zeph-llm`: deduplicated `build_tool_description` into `crates/zeph-llm/src/tool_desc.rs`; both
   `claude` and `openai` backends now share a single implementation with a common `static WARNED`
   guard for once-per-session schema-overflow warnings (closes #4577).

@@ -32,6 +32,7 @@ use zeph_common::ToolName;
 /// let kind2 = FailureKind::from_error("permission denied");
 /// assert_eq!(kind2, FailureKind::PermissionDenied);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     /// Process exited with a non-zero status code.
@@ -133,6 +134,7 @@ pub struct StepCorrection {
 ///
 /// Stored in `skill_usage_log` for Bayesian success-rate estimation used in
 /// [`crate::trust_score`] re-ranking.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum SkillOutcome {
     /// The skill completed its task successfully.

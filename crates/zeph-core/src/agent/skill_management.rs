@@ -50,7 +50,7 @@ impl<C: Channel> Agent<C> {
                             None,
                             Some(path.to_string_lossy().into_owned()),
                         ),
-                        SkillSource::Local => (SourceKind::Local, None, None),
+                        _ => (SourceKind::Local, None, None),
                     };
                     if let Err(e) = memory
                         .sqlite()

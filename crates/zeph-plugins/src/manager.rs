@@ -127,6 +127,7 @@ pub struct AutoUpdateResult {
 }
 
 /// Status of an individual auto-update attempt.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum AutoUpdateStatus {
     /// Plugin was successfully updated.

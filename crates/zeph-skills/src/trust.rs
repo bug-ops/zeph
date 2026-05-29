@@ -39,6 +39,7 @@ pub use zeph_common::SkillTrustLevel;
 // `Bundled` variant — bundled skills are indistinguishable at the install API level. The trust DB
 // layer (`zeph-memory::store::SourceKind`) has the `Bundled` variant and is the authoritative
 // source. Align these enums if `SkillSource` ever gains first-class bundled-skill support.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SkillSource {

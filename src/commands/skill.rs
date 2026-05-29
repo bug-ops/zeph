@@ -52,6 +52,7 @@ pub(crate) async fn handle_skill_command(
                 zeph_skills::SkillSource::Local => {
                     (zeph_memory::store::SourceKind::Local, None, None)
                 }
+                _ => (zeph_memory::store::SourceKind::Local, None, None),
             };
             store
                 .upsert_skill_trust(

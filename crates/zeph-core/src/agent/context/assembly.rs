@@ -1012,6 +1012,7 @@ impl<C: Channel> Agent<C> {
                         );
                         format_skills_prompt(&active_skills, &trust_levels, &health_map)
                     }
+                    _ => format_skills_prompt(&active_skills, &trust_levels, &health_map),
                 }
             } else {
                 format_skills_prompt(&active_skills, &trust_levels, &health_map)
@@ -2045,6 +2046,7 @@ mod tests {
         let prompt = match &group_result {
             GroupResult::Grouped(g) => format_grouped_skills_prompt(g, &trust, &HashMap::new()),
             GroupResult::Flat(_) => panic!("expected Grouped"),
+            _ => unreachable!(),
         };
 
         assert!(

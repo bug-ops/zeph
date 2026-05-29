@@ -290,6 +290,7 @@ impl AgentFormState {
 }
 
 /// States of the agent definition manager panel.
+#[non_exhaustive]
 pub enum AgentManagerState {
     /// Shows a scrollable list of all definitions.
     List {

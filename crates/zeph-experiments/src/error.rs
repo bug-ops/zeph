@@ -19,6 +19,7 @@
 /// let err = EvalError::InvalidRadius { radius: -1.0 };
 /// assert!(err.to_string().contains("finite and positive"));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum EvalError {
     /// The benchmark TOML file could not be opened or read.

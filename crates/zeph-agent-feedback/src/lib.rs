@@ -360,6 +360,7 @@ fn build_self_correction_patterns() -> Vec<(Regex, f32)> {
 // ── Core types ────────────────────────────────────────────────────────────────
 
 /// Classification of a detected correction.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CorrectionKind {
     ExplicitRejection,
@@ -581,6 +582,7 @@ impl JudgeVerdict {
 }
 
 /// Error variants for judge detector failures.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum JudgeError {
     #[error("LLM call failed: {0}")]

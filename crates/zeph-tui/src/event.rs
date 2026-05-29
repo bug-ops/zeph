@@ -98,6 +98,7 @@ impl EventSource for CrosstermEventSource {
 /// let ev = AppEvent::Tick;
 /// assert!(matches!(ev, AppEvent::Tick));
 /// ```
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum AppEvent {
     /// A keyboard event from crossterm.
@@ -129,6 +130,7 @@ pub enum AppEvent {
 /// let ev = AgentEvent::Chunk("partial response".to_string());
 /// assert!(matches!(ev, AgentEvent::Chunk(_)));
 /// ```
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum AgentEvent {
     /// A streaming text chunk from the LLM — appended to the current message.

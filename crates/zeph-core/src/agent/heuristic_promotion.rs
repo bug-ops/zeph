@@ -345,6 +345,7 @@ async fn evaluate_skill(
         PromotionRecommendation::BodyEnrichment { .. } => "body_enrichment",
         PromotionRecommendation::NewSkill { .. } => "new_skill",
         PromotionRecommendation::None => "none",
+        _ => "unknown",
     };
 
     let final_draft_name = written_draft.as_deref().or(draft_name.as_deref());
@@ -443,7 +444,7 @@ async fn write_draft(
                         "heuristic_promotion: new_skill candidate merged, writing quarantined draft"
                     );
                 }
-                MergeDecision::Add => {}
+                _ => {}
             }
 
             match generator.write_quarantined(&draft_skill).await {
@@ -462,7 +463,7 @@ async fn write_draft(
             }
         }
 
-        PromotionRecommendation::None => None,
+        _ => None,
     }
 }
 

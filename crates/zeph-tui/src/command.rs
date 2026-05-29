@@ -15,6 +15,7 @@
 /// let cmd = TuiCommand::SkillList;
 /// assert_eq!(cmd, TuiCommand::SkillList);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiCommand {
     // Existing view commands

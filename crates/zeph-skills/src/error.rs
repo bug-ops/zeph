@@ -20,6 +20,7 @@
 /// assert!(check("").is_err());
 /// assert!(check("my-skill").is_ok());
 /// ```
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
     /// Filesystem or IO failure.

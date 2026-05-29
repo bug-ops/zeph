@@ -26,6 +26,7 @@ use crate::loader::Skill;
 ///
 /// `Context` is reserved for future use (e.g., background reference skills) and is
 /// not assigned by the MVP grouping algorithm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillRole {
     /// The primary skill that directly handles the user's intent.
@@ -55,6 +56,7 @@ pub struct SkillGroup {
 }
 
 /// Outcome of the grouping step: a formed group or a flat fallback.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum GroupResult {
     /// At least one support skill exceeded the similarity threshold.

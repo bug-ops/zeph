@@ -35,6 +35,7 @@ pub struct PasteState {
 /// let mode = InputMode::Insert;
 /// assert_eq!(mode, InputMode::Insert);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     /// Navigation and command keybindings are active; typing does not insert text.
@@ -56,6 +57,7 @@ pub enum InputMode {
 /// let role = MessageRole::User;
 /// assert_eq!(role, MessageRole::User);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageRole {
     /// A message sent by the human user.

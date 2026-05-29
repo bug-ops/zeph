@@ -1905,6 +1905,7 @@ async fn run_plugin_auto_updates(config: &zeph_core::config::Config) {
             AutoUpdateStatus::Failed(reason) => {
                 tracing::warn!(plugin = %result.name, %reason, "plugin auto-update failed");
             }
+            _ => {}
         }
     }
 }

@@ -251,6 +251,7 @@ pub struct ExperimentResult {
 /// assert_eq!(ExperimentSource::Manual.as_str(), "manual");
 /// assert_eq!(ExperimentSource::Scheduled.to_string(), "scheduled");
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExperimentSource {

@@ -47,6 +47,7 @@
 use crate::loader::SkillMeta;
 
 /// Outcome of the Add/Merge/Discard similarity evaluation.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MergeDecision {
     /// Candidate is novel — create a new quarantined skill with `version = 0`.
