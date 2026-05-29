@@ -3839,8 +3839,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            51,
-            "MIGRATIONS registry must contain all 51 sequential steps"
+            52,
+            "MIGRATIONS registry must contain all 52 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5427,7 +5427,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_fifty_entries() {
-        assert_eq!(MIGRATIONS.len(), 51);
+        assert_eq!(MIGRATIONS.len(), 52);
     }
 
     #[test]
