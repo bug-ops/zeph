@@ -1707,12 +1707,11 @@ impl SubAgentManager {
     ///
     /// Returns `(new_task_id, def_name)` on success so the caller can resolve skills by name.
     ///
-    /// # Known limitation: constraint propagation not applied
-    ///
-    /// Unlike [`spawn`][Self::spawn], `resume()` does not accept a [`SpawnContext`] and
-    /// therefore does not apply `max_trust_level` or `inherited_tool_allowlist` constraints.
-    /// Resumed sessions inherit the definition's static policy only. If constraint enforcement
-    /// is required on a resumed session, cancel and re-spawn instead of resuming.
+    /// When `spawn_context` is `Some`, constraint propagation is applied identically to
+    /// [`spawn`][Self::spawn]: `max_trust_level` and `inherited_tool_allowlist` are enforced
+    /// on the resumed session so resumed agents cannot receive higher privileges than the
+    /// orchestration policy originally allowed.  Pass `None` to skip constraint propagation
+    /// (equivalent to the previous behavior before this fix).
     ///
     /// # Errors
     ///
@@ -1730,6 +1729,7 @@ impl SubAgentManager {
         tool_executor: Arc<dyn ErasedToolExecutor>,
         skills: Option<Vec<String>>,
         config: &SubAgentConfig,
+        spawn_context: Option<&SpawnContext>,
     ) -> Result<(String, String), SubAgentError> {
         let dir = self.effective_transcript_dir(config);
         // Resolve full original ID first so the StillRunning check is precise
@@ -1787,6 +1787,10 @@ impl SubAgentManager {
                 "sub-agent '{}' requests bypass_permissions mode but it is not allowed by config",
                 def.name
             )));
+        }
+
+        if let Some(ctx) = spawn_context {
+            apply_constraint_propagation(&mut def, ctx);
         }
 
         // Check concurrency limit.
@@ -3154,6 +3158,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap_err();
         assert!(matches!(err, SubAgentError::NotFound(_)));
@@ -3180,6 +3185,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap_err();
         assert!(matches!(err, SubAgentError::AmbiguousId(_, 2)));
@@ -3237,6 +3243,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap_err();
         assert!(matches!(err, SubAgentError::StillRunning(_)));
@@ -3264,6 +3271,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap_err();
         assert!(matches!(err, SubAgentError::NotFound(_)));
@@ -3293,6 +3301,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap_err();
         assert!(
@@ -3322,6 +3331,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap();
 
@@ -3358,6 +3368,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap();
 
@@ -3368,6 +3379,56 @@ mod tests {
             Some(original_id),
             "resumed_from must point to original agent id"
         );
+
+        mgr.cancel(&new_id).unwrap();
+    }
+
+    #[test]
+    fn resume_with_spawn_context_applies_constraint_propagation() {
+        // Verify that passing Some(SpawnContext) to resume() narrows the agent's tool allowlist
+        // via apply_constraint_propagation, matching spawn() behavior.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "c0de0000-0000-0000-0000-000000000000";
+
+        // Agent definition allows shell, web, and read.
+        let def = def_with_allow_list(&["shell", "web", "read"]);
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(def);
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        // Parent context only permits shell and read — web must be removed.
+        let ctx = ctx_with_allowlist(&["shell", "read"]);
+        let (new_id, _) = mgr
+            .resume(
+                "c0de0000",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                Some(&ctx),
+            )
+            .unwrap();
+
+        // The resumed handle is live; inspect the def stored in the active handle.
+        let handle = mgr.agents.get(&new_id).expect("handle must be registered");
+        match &handle.def.tools {
+            ToolPolicy::AllowList(v) => {
+                assert!(v.contains(&"shell".to_owned()), "shell must remain");
+                assert!(v.contains(&"read".to_owned()), "read must remain");
+                assert!(
+                    !v.contains(&"web".to_owned()),
+                    "web must be removed by constraint propagation"
+                );
+                assert_eq!(v.len(), 2, "narrowed to parent intersection");
+            }
+            other => panic!("expected AllowList after constraint propagation, got {other:?}"),
+        }
 
         mgr.cancel(&new_id).unwrap();
     }
@@ -4873,6 +4934,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap();
 
@@ -4918,6 +4980,7 @@ mod tests {
                 noop_executor(),
                 None,
                 &cfg,
+                None,
             )
             .unwrap();
 

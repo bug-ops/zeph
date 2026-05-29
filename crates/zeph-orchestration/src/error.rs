@@ -35,6 +35,7 @@ use super::lineage::LineageEntry;
 /// assert_eq!(describe(&err), "graph has a cycle");
 /// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum OrchestrationError {
     /// Orchestration is disabled in configuration.
     #[error("orchestration is disabled")]

@@ -298,7 +298,9 @@ impl CascadeDetector {
                 "forward_adjacency stale: graph.tasks was mutated without CascadeDetector::reset()"
             );
         }
-        self.forward_adjacency.as_deref().unwrap()
+        self.forward_adjacency
+            .as_deref()
+            .expect("ensure_adjacency was called")
     }
 
     /// Compute the "heaviest" root for `task_id` using the cached forward adjacency.
@@ -322,7 +324,10 @@ impl CascadeDetector {
         // by pre-collecting children into a local work-list to avoid a long-lived
         // borrow of `self` that would conflict with the mutable `ensure_adjacency`.
         self.ensure_adjacency(graph);
-        let fwd = self.forward_adjacency.as_ref().unwrap();
+        let fwd = self
+            .forward_adjacency
+            .as_ref()
+            .expect("ensure_adjacency was called");
 
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();

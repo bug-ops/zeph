@@ -109,10 +109,7 @@ mod orchestration_integration {
                     SchedulerAction::Done { status } => {
                         done_status = Some(status);
                     }
-                    SchedulerAction::Cancel { .. }
-                    | SchedulerAction::RunInline { .. }
-                    | SchedulerAction::Verify { .. }
-                    | SchedulerAction::VerifyPredicate { .. } => {}
+                    _ => {}
                 }
             }
 
@@ -337,10 +334,7 @@ mod orchestration_integration {
                     SchedulerAction::Done { status } => {
                         done = Some(status);
                     }
-                    SchedulerAction::Cancel { .. }
-                    | SchedulerAction::RunInline { .. }
-                    | SchedulerAction::Verify { .. }
-                    | SchedulerAction::VerifyPredicate { .. } => {}
+                    _ => {}
                 }
             }
 

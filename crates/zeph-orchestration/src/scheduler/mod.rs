@@ -57,6 +57,7 @@ use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 /// }
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SchedulerAction {
     /// Spawn a sub-agent for the given task using the named agent definition.
     Spawn {

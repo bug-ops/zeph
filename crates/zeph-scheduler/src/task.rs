@@ -62,6 +62,7 @@ pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
 /// assert_eq!(TaskProvenance::from_provenance_str("unknown_value"), TaskProvenance::External);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TaskProvenance {
     /// Registered at binary startup via [`crate::Scheduler::add_task`] — config is immutable.
     Static,

@@ -2734,7 +2734,8 @@ impl<C: Channel> Agent<C> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
-        let (task_id, _) = match mgr.resume(id, prompt, provider, tool_executor, skills, &cfg) {
+        let (task_id, _) = match mgr.resume(id, prompt, provider, tool_executor, skills, &cfg, None)
+        {
             Ok(pair) => pair,
             Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
         };

@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// Errors that can occur inside the scheduler subsystem.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SchedulerError {
     /// The provided cron expression could not be parsed.
     ///
