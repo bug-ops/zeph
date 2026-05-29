@@ -45,6 +45,7 @@ Spec IDs (001–044) follow a logical grouping:
 - **053**: SpeculationEngine — speculative tool execution (SSE decoding path, PASTE skill activation, ToolStartEvent{speculative:true})
 - **055**: Cocoon distributed compute integration — CocoonProvider, CocoonClient, `zeph cocoon doctor`, TUI palette entries, vault key ZEPH_COCOON_ACCESS_HASH
 - **062**: Context-Adaptive Memory (CAM) — three-level fidelity (Full/Compressed/Placeholder), heuristic FidelityScorer, proactive AgeMem regrade, PlannedToolHint for PAACE; GitHub #4016, #4017, #4018
+- **parity-claude-code-3918**: Claude Code v2.1.141–v2.1.143 parity — `--plugin-url` ephemeral loading, provider override persistence; GitHub #3918
 
 ---
 
@@ -144,3 +145,4 @@ Spec IDs (001–044) follow a logical grouping:
 | `060-autoskill-trigger-sets/spec.md` | AutoSkill A5: embed `triggers` SKILL.md frontmatter entries as additional retrieval vectors; max-cosine aggregation across triggers; `trigger_weight` blends trigger and description scores; `max_triggers_per_skill` cap; in-memory only (v1); GitHub #4451 | `zeph-skills` |
 | `061-autoskill-heuristic-promotion/spec.md` | AutoSkill A6: periodic background job promotes ERL heuristics to quarantined SKILL.md drafts when heuristic count ≥ `heuristic_promotion_threshold`; LLM evaluates body-enrichment vs. new-skill vs. none; idempotency via `skill_heuristic_promotions` table; `heuristic_promotion_provider` config field; GitHub #4452 | `zeph-skills` |
 | `062-context-adaptive-memory/spec.md` | Context-Adaptive Memory (CAM): three-level fidelity (Full/Compressed/Placeholder), heuristic FidelityScorer, proactive AgeMem regrade trigger, PlannedToolHint struct for PAACE DAG lookahead; MVP: heuristic scoring only; GitHub #4016, #4017, #4018 | `zeph-common`, `zeph-context`, `zeph-agent-context` |
+| `parity-claude-code-3918/spec.md` | Claude Code v2.1.141–v2.1.143 parity gaps: `--plugin-url` ephemeral plugin loading (HTTPS-only, blocking scan, TempDir lifetime) + provider parameter override persistence (reasoning_effort, temperature via `channel_preferences` key-value row, no ALTER TABLE); defers worktree.baseRef, bgIsolation, Ctrl+R; GitHub #3918 | `zeph-plugins`, `zeph-core`, `zeph-config`, `zeph-commands` |
