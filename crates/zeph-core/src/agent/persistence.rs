@@ -401,6 +401,7 @@ impl<C: Channel> Agent<C> {
         let graph_store = memory.graph_store.clone();
         let metrics_tx = self.runtime.metrics.metrics_tx.clone();
         let start_time = self.runtime.lifecycle.start_time;
+        let cancel = self.runtime.lifecycle.cancel_token.child_token();
 
         self.runtime.lifecycle.supervisor.spawn(
             super::agent_supervisor::TaskClass::Enrichment,
@@ -412,6 +413,7 @@ impl<C: Channel> Agent<C> {
                     extraction_cfg,
                     validator,
                     provider_override,
+                    cancel,
                 );
 
                 // After extraction completes, refresh graph count metrics.

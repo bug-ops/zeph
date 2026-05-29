@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use tokio_util::sync::CancellationToken;
 #[allow(unused_imports)]
 use zeph_db::sql;
 use zeph_llm::any::AnyProvider;
@@ -266,6 +267,7 @@ async fn spawn_graph_extraction_zero_timeout_returns_without_panic() {
         cfg,
         None,
         None,
+        CancellationToken::new(),
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
@@ -287,6 +289,7 @@ async fn spawn_graph_extraction_with_provider_override_does_not_panic() {
         cfg,
         None,
         Some(override_provider),
+        CancellationToken::new(),
     );
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }

@@ -626,6 +626,7 @@ impl SemanticMemory {
         config: GraphExtractionConfig,
         post_extract_validator: PostExtractValidator,
         provider_override: Option<AnyProvider>,
+        cancel: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let using_override = provider_override.is_some();
         let provider = provider_override.unwrap_or_else(|| self.provider.clone());
@@ -642,7 +643,7 @@ impl SemanticMemory {
             extraction_count: self.graph_extraction_count.clone(),
             extraction_failures: self.graph_extraction_failures.clone(),
             embedding_store: self.qdrant.clone(),
-            cancel: CancellationToken::new(),
+            cancel,
         };
 
         tokio::spawn(run_graph_extraction_task(
