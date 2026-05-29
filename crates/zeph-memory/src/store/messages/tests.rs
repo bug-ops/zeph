@@ -1875,13 +1875,14 @@ async fn update_fidelity_tags_chunk_boundary() {
 
     store.update_fidelity_tags(&updates).await.unwrap();
 
-    let history = store.load_history(cid, N as u32 + 1).await.unwrap();
-    let updated = history
+    let limit = u32::try_from(N).expect("N fits in u32") + 1;
+    let history = store.load_history(cid, limit).await.unwrap();
+    let compressed_count = history
         .iter()
         .filter(|m| m.metadata.fidelity_tag == Some(zeph_common::ContextFidelity::Compressed))
         .count();
     assert_eq!(
-        updated, N,
+        compressed_count, N,
         "all {N} rows must be updated across chunk boundary"
     );
 }
