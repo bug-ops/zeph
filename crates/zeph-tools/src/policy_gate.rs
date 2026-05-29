@@ -131,7 +131,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
     /// This performs a **direct assignment** — it does not apply `min_trust` clamping.
     /// It is the agent loop's mechanism for writing the base trust level derived from the
     /// agent definition. Orchestration-layer caps are applied separately via
-    /// [`set_effective_trust`][ErasedToolExecutor::set_effective_trust], which uses
+    /// [`ToolExecutor::set_effective_trust`], which uses
     /// `min_trust` to ensure caps can only narrow, never raise, the stored trust level.
     ///
     /// Callers that want to impose a trust cap must use `set_effective_trust`, not this
