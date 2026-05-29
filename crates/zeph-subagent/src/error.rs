@@ -79,4 +79,12 @@ pub enum SubAgentError {
     /// The recursion depth for nested sub-agent spawning exceeded the configured limit.
     #[error("max spawn depth exceeded (depth: {depth}, max: {max})")]
     MaxDepthExceeded { depth: u32, max: u32 },
+
+    /// Worktree creation or cwd setup failed during agent spawn.
+    ///
+    /// This error is returned when `permissions.worktree = true` and the worktree
+    /// manager fails to create a dedicated worktree or cannot restore the working
+    /// directory.  The agent loop never starts in this case (INV-4).
+    #[error("worktree setup failed: {0}")]
+    WorktreeSetup(String),
 }

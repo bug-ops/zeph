@@ -17,6 +17,7 @@ use crate::tui_bridge::{
     TuiRunParams, forward_index_progress_to_tui, run_tui_agent, start_tui_early,
 };
 
+use crate::bootstrap::find_repo_root;
 use crate::bootstrap::resolve_config_path;
 #[cfg(not(feature = "tui"))]
 use crate::bootstrap::warmup_provider;
@@ -646,6 +647,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         }) => {
             return crate::commands::project::handle_project_command(
                 project_cmd,
+                cli.config.as_deref(),
+            )
+            .await;
+        }
+        Some(Command::Worktree { command: wt_cmd }) => {
+            return crate::commands::worktree::handle_worktree_command(
+                wt_cmd,
                 cli.config.as_deref(),
             )
             .await;
@@ -2774,7 +2782,42 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 std::sync::Arc::new(crate::fleet_session::SqliteFleetRegistry::new(fleet_store));
             mgr.set_fleet_registry(registry);
         }
-        agent.with_orchestration(config.orchestration.clone(), config.agents.clone(), mgr)
+
+        // Propagate root worktree config into agents_config so SubAgentManager::spawn
+        // can read it without a reference to the full Config.
+        let mut agents_config = config.agents.clone();
+        agents_config.worktree = config.worktree.clone();
+        if let Some(ref override_ref) = cli.worktree_base_ref {
+            agents_config.worktree.base_ref = if override_ref == "fresh" {
+                zeph_config::WorktreeBaseRef::Fresh
+            } else {
+                zeph_config::WorktreeBaseRef::Head
+            };
+        }
+
+        // Bootstrap the worktree subsystem when enabled (hard-fail per spec NEVER #92).
+        if agents_config.worktree.enabled && !exec_mode.bare {
+            let repo_root = find_repo_root().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Not inside a git repository. Worktree support requires a git repo. \
+                     Set `worktree.enabled = false` to disable."
+                )
+            })?;
+            let runner = zeph_worktree::DefaultGitRunner::new();
+            zeph_worktree::probe_capabilities(&runner, &repo_root)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let wm = zeph_worktree::DefaultWorktreeManager::new(
+                repo_root,
+                agents_config.worktree.clone(),
+                runner,
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            mgr.set_worktree_manager(std::sync::Arc::new(wm));
+            tracing::info!("worktree subsystem initialised");
+        }
+
+        agent.with_orchestration(config.orchestration.clone(), agents_config, mgr)
     };
     let agent = {
         let baseline = zeph_experiments::ConfigSnapshot::from_config(config);

@@ -133,6 +133,9 @@ pub struct Config {
     /// Resolved secrets from vault. Never serialized — populated at runtime.
     #[serde(skip)]
     pub secrets: ResolvedSecrets,
+    /// Git worktree isolation configuration.
+    #[serde(default)]
+    pub worktree: crate::worktree::WorktreeConfig,
 }
 
 /// Secrets resolved from the vault at runtime.
@@ -333,6 +336,7 @@ impl Default for Config {
             goals: GoalConfig::default(),
             cocoon: CocoonConfig::default(),
             secrets: ResolvedSecrets::default(),
+            worktree: crate::worktree::WorktreeConfig::default(),
         }
     }
 }

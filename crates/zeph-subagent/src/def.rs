@@ -170,6 +170,12 @@ pub struct SubAgentPermissions {
     /// are evicted from the front, keeping the system message intact. Set to `0` to
     /// disable eviction entirely (not recommended for long-running agents).
     pub max_history_messages: usize,
+    /// When `true`, the agent runs inside a dedicated git worktree (INV-1/INV-3).
+    ///
+    /// Requires `worktree.enabled = true` in the global config and a non-`None`
+    /// `bg_isolation` setting.  When the worktree subsystem is disabled, this field
+    /// is silently ignored.
+    pub worktree: bool,
 }
 
 impl Default for SubAgentPermissions {
@@ -182,6 +188,7 @@ impl Default for SubAgentPermissions {
             ttl_secs: 300,
             permission_mode: PermissionMode::Default,
             max_history_messages: 200,
+            worktree: false,
         }
     }
 }
@@ -240,6 +247,8 @@ struct RawPermissions {
     permission_mode: PermissionMode,
     #[serde(default = "default_max_history_messages")]
     max_history_messages: usize,
+    #[serde(default)]
+    worktree: bool,
 }
 
 impl Default for RawPermissions {
@@ -252,6 +261,7 @@ impl Default for RawPermissions {
             ttl_secs: default_ttl(),
             permission_mode: PermissionMode::Default,
             max_history_messages: default_max_history_messages(),
+            worktree: false,
         }
     }
 }
@@ -386,6 +396,7 @@ impl SubAgentDef {
         Self::parse_with_path(content, "<unknown>")
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_with_path(content: &str, path: &str) -> Result<Self, SubAgentError> {
         let (frontmatter_str, body, format) = split_frontmatter(content, path)?;
 
@@ -485,6 +496,7 @@ impl SubAgentDef {
                 ttl_secs: p.ttl_secs,
                 permission_mode: p.permission_mode,
                 max_history_messages: p.max_history_messages,
+                worktree: p.worktree,
             },
             skills: SkillFilter {
                 include: raw.skills.include,
@@ -782,6 +794,8 @@ struct WritablePermissions<'a> {
     timeout_secs: u64,
     ttl_secs: u64,
     permission_mode: PermissionMode,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    worktree: bool,
 }
 
 impl<'a> WritablePermissions<'a> {
@@ -793,6 +807,7 @@ impl<'a> WritablePermissions<'a> {
             timeout_secs: p.timeout_secs,
             ttl_secs: p.ttl_secs,
             permission_mode: p.permission_mode,
+            worktree: p.worktree,
         }
     }
 

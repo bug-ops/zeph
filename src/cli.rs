@@ -265,6 +265,13 @@ pub(crate) struct Cli {
     #[arg(long, action = clap::ArgAction::Append)]
     pub(crate) plugin_url: Vec<String>,
 
+    /// Override the `worktree.base_ref` config for this session.
+    ///
+    /// Accepted values: `head` (branch from local HEAD), `fresh` (fetch origin first).
+    /// Ignored when `worktree.enabled = false`.
+    #[arg(long, value_name = "REF")]
+    pub(crate) worktree_base_ref: Option<String>,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
@@ -439,6 +446,19 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Manage git worktrees used by sub-agents
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum WorktreeCommand {
+    /// List active and stale worktrees for the current repository
+    List,
+    /// Remove all stale worktrees that exist on disk but are not tracked in-session
+    Clean,
 }
 
 /// Project management subcommands.

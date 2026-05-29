@@ -104,6 +104,7 @@ pub mod telemetry;
 pub mod tools;
 pub mod ui;
 pub mod vigil;
+pub mod worktree;
 
 pub use agent::{
     AgentConfig, ContextInjectionMode, FocusConfig, GoalConfig, ModelSpec, ParentContextPolicy,
@@ -188,6 +189,7 @@ pub use ui::{
 };
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 pub use vigil::VigilConfig;
+pub use worktree::{BgIsolation, WorktreeBaseRef, WorktreeConfig};
 
 // Top-level config struct, error type, and resolved secrets — moved from zeph-core.
 pub use classifiers::{ClassifiersConfig, InjectionEnforcementMode};

@@ -27,3 +27,4 @@ pub(crate) mod scheduler_daemon;
 pub(crate) mod sessions;
 pub(crate) mod skill;
 pub(crate) mod vault;
+pub(crate) mod worktree;

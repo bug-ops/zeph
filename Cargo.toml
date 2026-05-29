@@ -176,6 +176,7 @@ zeph-skills = { path = "crates/zeph-skills", version = "0.21.3" }
 zeph-subagent = { path = "crates/zeph-subagent", version = "0.21.3" }
 zeph-tools = { path = "crates/zeph-tools", version = "0.21.3" }
 zeph-tui = { path = "crates/zeph-tui", version = "0.21.3" }
+zeph-worktree = { path = "crates/zeph-worktree", version = "0.21.3" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.21.3" }
 zeroize = { version = "1.8.2", default-features = false }
 
@@ -333,6 +334,7 @@ zeph-skills.workspace = true
 zeph-subagent.workspace = true
 zeph-tools.workspace = true
 zeph-tui = { workspace = true, optional = true }
+zeph-worktree.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

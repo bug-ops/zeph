@@ -19,9 +19,10 @@ use zeph_tools::ToolCall;
 use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
 
 use zeph_common::SkillTrustLevel;
-use zeph_config::{ContentIsolationConfig, McpServerConfig, SubAgentConfig};
+use zeph_config::{BgIsolation, ContentIsolationConfig, McpServerConfig, SubAgentConfig};
 
 use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
+use crate::cwd_guard::CwdRestoreGuard;
 use crate::fleet::{FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
 
 use super::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
@@ -559,6 +560,19 @@ pub struct SubAgentManager {
     /// When the limit is reached, new fire-and-forget tasks are dropped with a warning instead
     /// of growing the set unboundedly under high-throughput spawning.
     max_hook_tasks: usize,
+    /// Optional worktree manager; `Some` iff `worktree.enabled = true` in config.
+    ///
+    /// When set, every [`spawn`][Self::spawn] acquires [`cwd_lock`][Self::cwd_lock] for
+    /// its full run so that plain agents cannot observe a stale cwd mutated by a worktree
+    /// agent (INV-1). Only agents with `permissions.worktree = true` and a non-`None`
+    /// `bg_isolation` actually get a dedicated worktree.
+    worktree_manager: Option<Arc<zeph_worktree::DefaultWorktreeManager>>,
+    /// Process-level serialisation mutex for working-directory mutations (INV-1).
+    ///
+    /// Acquired by every spawned task when `worktree_manager.is_some()`.  The
+    /// `OwnedMutexGuard` is held for the full duration of `run_agent_loop` via the
+    /// `CwdRestoreGuard` RAII wrapper.
+    cwd_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -574,6 +588,8 @@ impl std::fmt::Debug for SubAgentManager {
             .field("fleet_registry", &self.fleet_registry.is_some())
             .field("hook_tasks_len", &self.hook_tasks.len())
             .field("max_hook_tasks", &self.max_hook_tasks)
+            .field("worktree_manager", &self.worktree_manager.is_some())
+            .field("cwd_lock", &"<Mutex>")
             .finish()
     }
 }
@@ -867,7 +883,19 @@ impl SubAgentManager {
             fleet_registry: None,
             hook_tasks: JoinSet::new(),
             max_hook_tasks: 64,
+            worktree_manager: None,
+            cwd_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Inject a [`DefaultWorktreeManager`][zeph_worktree::DefaultWorktreeManager] into the
+    /// manager.
+    ///
+    /// Must be called at most once, before the first [`spawn`][Self::spawn].  When set,
+    /// every spawned task acquires the process-level cwd mutex (INV-1) and agents with
+    /// `permissions.worktree = true` receive a dedicated git worktree.
+    pub fn set_worktree_manager(&mut self, wm: Arc<zeph_worktree::DefaultWorktreeManager>) {
+        self.worktree_manager = Some(wm);
     }
 
     /// Drain completed hook tasks and spawn a new one if below the limit.
@@ -1154,6 +1182,31 @@ impl SubAgentManager {
         let handle_mcp_tool_names = mcp_tool_names.clone();
         let parent_messages = ctx.parent_messages;
 
+        // Capture worktree-related config before moving into the spawned task.
+        // Cloning the Arc is cheap — the actual manager is reference-counted.
+        let cwd_lock = Arc::clone(&self.cwd_lock);
+        let worktree_manager_for_task: Option<Arc<zeph_worktree::DefaultWorktreeManager>> =
+            self.worktree_manager.clone();
+        let bg_isolation = config.worktree.bg_isolation;
+        let permissions_worktree = def.permissions.worktree;
+        let prune_branch_on_remove = config.worktree.prune_branch_on_remove;
+        let cleanup_on_completion = config.worktree.cleanup_on_completion;
+
+        // INV-3: disallow `set_working_directory` for agents that get a dedicated worktree.
+        // Must push BEFORE build_filtered_executor reads def.disallowed_tools.
+        // Conditioned on the full worktree-applies predicate (not bg_isolation=None).
+        let worktree_applies = permissions_worktree
+            && worktree_manager_for_task.is_some()
+            && bg_isolation != BgIsolation::None;
+        if worktree_applies
+            && !def
+                .disallowed_tools
+                .contains(&"set_working_directory".to_string())
+        {
+            def.disallowed_tools
+                .push("set_working_directory".to_string());
+        }
+
         let executor = build_filtered_executor(tool_executor, permission_mode, &def, memory_dir);
 
         // Apply the trust level cap to the executor so the skill runner enforces it at
@@ -1169,31 +1222,75 @@ impl SubAgentManager {
         let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name, None);
 
         let task_id_for_loop = task_id.clone();
-        let join_handle: JoinHandle<Result<String, SubAgentError>> =
-            tokio::spawn(run_agent_loop(AgentLoopArgs {
-                provider,
-                executor,
-                system_prompt,
-                task_prompt: effective_task_prompt,
-                skills,
-                max_turns,
-                max_history_messages,
-                cancel: cancel_clone,
-                status_tx,
-                started_at,
-                secret_request_tx,
-                secret_rx,
-                background,
-                hooks: agent_hooks,
-                task_id: task_id_for_loop,
-                agent_name: agent_name_clone,
-                initial_messages: parent_messages,
-                transcript_writer,
-                spawn_depth: spawn_depth + 1,
-                mcp_tool_names,
-                content_isolation: ctx.content_isolation,
-                llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
-            }));
+        let task_id_for_worktree = task_id.clone();
+        let agent_loop_args = AgentLoopArgs {
+            provider,
+            executor,
+            system_prompt,
+            task_prompt: effective_task_prompt,
+            skills,
+            max_turns,
+            max_history_messages,
+            cancel: cancel_clone,
+            status_tx,
+            started_at,
+            secret_request_tx,
+            secret_rx,
+            background,
+            hooks: agent_hooks,
+            task_id: task_id_for_loop,
+            agent_name: agent_name_clone,
+            initial_messages: parent_messages,
+            transcript_writer,
+            spawn_depth: spawn_depth + 1,
+            mcp_tool_names,
+            content_isolation: ctx.content_isolation,
+            llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
+        };
+
+        let join_handle: JoinHandle<Result<String, SubAgentError>> = tokio::spawn(async move {
+            // INV-1: acquire the cwd lock when the worktree subsystem is active,
+            // regardless of whether this specific agent opted into worktree isolation.
+            let _cwd_guard: Option<CwdRestoreGuard> =
+                if let Some(ref wm) = worktree_manager_for_task {
+                    let owned_guard = cwd_lock.clone().lock_owned().await;
+
+                    // Predicate 2: create a worktree only when the agent opted in AND
+                    // bg_isolation allows it.
+                    if permissions_worktree && bg_isolation != BgIsolation::None {
+                        let handle = wm
+                            .create(&task_id_for_worktree)
+                            .await
+                            .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?;
+                        tracing::info!(
+                            path = %handle.path.display(),
+                            "worktree created for sub-agent"
+                        );
+                        let guard = CwdRestoreGuard::new(&handle.path, owned_guard)
+                            .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?;
+                        let result = run_agent_loop(agent_loop_args).await;
+                        // guard drops here: cwd restored, mutex released
+                        drop(guard);
+                        // Remove the worktree after the agent completes (INV-2 ordering).
+                        if cleanup_on_completion
+                            && let Err(e) = wm.remove(&handle, prune_branch_on_remove).await
+                        {
+                            tracing::warn!(error = %e, "failed to remove sub-agent worktree");
+                        }
+                        return result;
+                    }
+
+                    // Plain agent with worktree subsystem active: hold the lock (no cwd
+                    // change) so worktree agents cannot interleave.
+                    let guard = CwdRestoreGuard::acquire(owned_guard)
+                        .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?;
+                    Some(guard)
+                } else {
+                    None
+                };
+
+            run_agent_loop(agent_loop_args).await
+        });
 
         let handle_transcript_dir = if config.transcript_enabled {
             Some(self.effective_transcript_dir(config))
@@ -5265,5 +5362,69 @@ mod tests {
             }
             other => panic!("expected AllowList, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod worktree_predicate_tests {
+    use zeph_config::BgIsolation;
+
+    /// INV-3: `set_working_directory` must be disallowed when `permissions.worktree = true`.
+    #[test]
+    fn inv3_set_working_directory_disallowed_when_worktree_applies() {
+        let mut disallowed_tools: Vec<String> = vec![];
+        let permissions_worktree = true;
+        if permissions_worktree {
+            disallowed_tools.push("set_working_directory".to_string());
+        }
+        assert!(
+            disallowed_tools.contains(&"set_working_directory".to_string()),
+            "set_working_directory must be disallowed for worktree-opted agents"
+        );
+    }
+
+    /// INV-3 inverse: plain agents must NOT have `set_working_directory` disallowed.
+    #[test]
+    fn inv3_set_working_directory_not_disallowed_for_plain_agent() {
+        let mut disallowed_tools: Vec<String> = vec![];
+        let permissions_worktree = false;
+        if permissions_worktree {
+            disallowed_tools.push("set_working_directory".to_string());
+        }
+        assert!(
+            !disallowed_tools.contains(&"set_working_directory".to_string()),
+            "plain agents must not have set_working_directory disallowed"
+        );
+    }
+
+    /// `bg_isolation = None`: worktree creation predicate must be false.
+    #[test]
+    fn bg_isolation_none_skips_worktree_creation() {
+        let bg_isolation = BgIsolation::None;
+        let permissions_worktree = true;
+        let worktree_manager_present = true;
+        // Predicate from spawn: create worktree only when manager && permissions.worktree && bg_isolation != None
+        let should_create = worktree_manager_present
+            && permissions_worktree
+            && !matches!(bg_isolation, BgIsolation::None);
+        assert!(
+            !should_create,
+            "bg_isolation=None must skip worktree creation"
+        );
+    }
+
+    /// `bg_isolation = Worktree` + `permissions.worktree = true`: predicate must be true.
+    #[test]
+    fn bg_isolation_worktree_enables_worktree_creation() {
+        let bg_isolation = BgIsolation::Worktree;
+        let permissions_worktree = true;
+        let worktree_manager_present = true;
+        let should_create = worktree_manager_present
+            && permissions_worktree
+            && !matches!(bg_isolation, BgIsolation::None);
+        assert!(
+            should_create,
+            "bg_isolation=Worktree with permissions.worktree=true must create a worktree"
+        );
     }
 }

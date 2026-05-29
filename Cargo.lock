@@ -10562,6 +10562,7 @@ dependencies = [
  "zeph-subagent",
  "zeph-tools",
  "zeph-tui",
+ "zeph-worktree",
  "zeroize",
 ]
 
@@ -11281,6 +11282,7 @@ dependencies = [
  "zeph-sanitizer",
  "zeph-skills",
  "zeph-tools",
+ "zeph-worktree",
 ]
 
 [[package]]
@@ -11386,6 +11388,18 @@ dependencies = [
  "tokio",
  "zeph-common",
  "zeroize",
+]
+
+[[package]]
+name = "zeph-worktree"
+version = "0.21.3"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeph-config",
 ]
 
 [[package]]

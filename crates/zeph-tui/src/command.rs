@@ -122,6 +122,9 @@ pub enum TuiCommand {
     CopyLastAssistant,
     // Fleet session overview (#3884)
     FleetPanel,
+    // Worktree subsystem (#4679)
+    WorktreeList,
+    WorktreeClean,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -409,6 +412,7 @@ pub fn extra_command_registry() -> &'static [CommandEntry] {
     EXTRA.get_or_init(build_extra_commands)
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_infra_commands() -> Vec<CommandEntry> {
     vec![
         CommandEntry {
@@ -508,6 +512,20 @@ fn build_infra_commands() -> Vec<CommandEntry> {
             category: "memory",
             shortcut: None,
             command: TuiCommand::MemoryTreeStats,
+        },
+        CommandEntry {
+            id: "worktree:list",
+            label: "List active and stale git worktrees (/worktree list)",
+            category: "worktree",
+            shortcut: None,
+            command: TuiCommand::WorktreeList,
+        },
+        CommandEntry {
+            id: "worktree:clean",
+            label: "Remove all stale git worktrees (/worktree clean)",
+            category: "worktree",
+            shortcut: None,
+            command: TuiCommand::WorktreeClean,
         },
     ]
 }
@@ -871,7 +889,8 @@ mod tests {
         // + 1 forgetting-sweep + 3 acp + 1 sandbox:status (#3294) = 43
         // + 2 cocoon (#3673) when feature = "cocoon"
         // + 1 clipboard:copy (#3685)
-        let expected = 44 + if cfg!(feature = "cocoon") { 2 } else { 0 };
+        // + 2 worktree (#4679)
+        let expected = 46 + if cfg!(feature = "cocoon") { 2 } else { 0 };
         assert_eq!(extra_command_registry().len(), expected);
     }
 

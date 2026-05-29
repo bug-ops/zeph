@@ -44,6 +44,21 @@ use zeph_core::config_watcher::{ConfigEvent, ConfigWatcher};
 use zeph_core::vault::EnvVaultProvider;
 use zeph_core::vault::{AgeVaultProvider, Secret, VaultProvider};
 
+/// Walk up from `$PWD` and return the first ancestor directory that contains a `.git` entry.
+///
+/// Returns `None` when the current directory is not inside a git repository.
+pub fn find_repo_root() -> Option<std::path::PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 /// Return `true` if the Qdrant URL points to a local development instance.
 ///
 /// Used to decide whether to emit a warning about a missing API key — local instances

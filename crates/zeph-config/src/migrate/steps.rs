@@ -12,7 +12,8 @@
 //! `startup_retry_backoff_ms` and `tool_timeout_secs` (#4004); step 51 adds
 //! `embed_timeout_secs` and `compress_timeout_secs` to `[memory.fidelity]` (#4645, #4651);
 //! step 52 adds `[session] persist_provider_overrides` (#4654);
-//! step 53 adds `[cocoon] show_balance` advisory notice (#4649).
+//! step 53 adds `[cocoon] show_balance` advisory notice (#4649);
+//! step 54 adds `[worktree]` section with defaults (#4679).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -39,10 +40,10 @@ use super::{
     migrate_session_persist_provider_overrides, migrate_session_provider_persistence,
     migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
-    migrate_trace_metadata, migrate_vigil_config,
+    migrate_trace_metadata, migrate_vigil_config, migrate_worktree_config,
 };
 
-// ── Wrapper structs for all 53 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 54 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -624,5 +625,16 @@ impl Migration for MigrateCocoonShowBalance {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_cocoon_show_balance(toml_src)
+    }
+}
+
+pub(super) struct MigrateWorktreeConfig;
+impl Migration for MigrateWorktreeConfig {
+    fn name(&self) -> &'static str {
+        "migrate_worktree_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_worktree_config(toml_src)
     }
 }

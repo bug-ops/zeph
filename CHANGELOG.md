@@ -49,6 +49,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DenyList` agents under an inherited allowlist are converted to an explicit
   `AllowList(parent_set \ deny_entries)` (fail-closed). `resume()` does not participate
   in constraint propagation; its doc comment documents this limitation.
+- Native worktree isolation for background sub-agents (closes #4679). New `zeph-worktree` crate
+  (`DefaultWorktreeManager`) manages git worktrees via subprocess calls with full path sanitization
+  and capability probing. `zeph-subagent` integrates the worktree lifecycle into `SubAgentManager`:
+  each background agent with `permissions.worktree = true` gets a dedicated worktree and a
+  `CwdLock` guard that serializes cwd changes across concurrent agents (INV-1). `set_working_directory`
+  is automatically added to `disallowed_tools` for worktree-opted agents (INV-3). `bg_isolation`
+  determines whether a worktree is created (`Worktree`) or only the lock is held (`None`). The
+  worktree is removed after the agent completes when `cleanup_on_completion = true`.
+- `zeph-config`: new `WorktreeConfig` type with `BgIsolation` enum and `WorktreeBaseRef` enum,
+  added to `Config` and `SubAgentConfig` structs.
+- CLI: `zeph worktree list|clean` subcommands; `--worktree-base-ref` flag for `run`.
+- TUI command palette: `WorktreeList` and `WorktreeClean` entries.
+- Config migration step 54: appends a commented-out `[worktree]` section with defaults to
+  configs that lack it.
 - `zeph-config`: `ProviderOverrides` struct — per-session LLM generation override parameters
   persisted across restarts (Phase 1: `reasoning_effort` only). Serialized as JSON and stored
   in the `channel_preferences` table under `pref_key = "provider_overrides"`. Uses

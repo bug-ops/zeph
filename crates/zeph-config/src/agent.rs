@@ -597,6 +597,18 @@ pub struct SubAgentConfig {
     /// cancelled and the sub-agent turn fails with a timeout error. Default: 120.
     #[serde(default = "default_llm_timeout_secs")]
     pub llm_timeout_secs: u64,
+    /// Worktree isolation settings propagated from the top-level `[worktree]` section.
+    ///
+    /// Passed to [`SubAgentManager::spawn`] so it can determine whether and how to
+    /// create a per-agent git worktree without needing a reference to the full `Config`.
+    ///
+    /// # Invariant
+    ///
+    /// This field is always populated from `Config::worktree` in `runner.rs` bootstrap.
+    /// Do not set defaults independently — changes here will not take effect in production
+    /// because the bootstrap overwrites this value before passing it to `SubAgentManager`.
+    #[serde(default)]
+    pub worktree: crate::worktree::WorktreeConfig,
 }
 
 impl Default for SubAgentConfig {
@@ -621,6 +633,7 @@ impl Default for SubAgentConfig {
             max_parent_messages: default_max_parent_messages(),
             summary_max_chars: default_summary_max_chars(),
             llm_timeout_secs: default_llm_timeout_secs(),
+            worktree: crate::worktree::WorktreeConfig::default(),
         }
     }
 }

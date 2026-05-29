@@ -31,6 +31,7 @@ zeph-llm.workspace = true
 zeph-sanitizer.workspace = true
 zeph-skills.workspace = true
 zeph-tools.workspace = true
+zeph-worktree.workspace = true
 
 [dev-dependencies]
 indoc.workspace = true

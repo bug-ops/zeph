@@ -3419,7 +3419,7 @@ use steps::{
     MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
     MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
 };
 
 /// Step 45: add an advisory comment above `GonkaGate` provider entries pointing users to
@@ -3636,6 +3636,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateSessionPersistProviderOverrides),
             // Step 53 — add [cocoon] show_balance advisory notice (#4649)
             Box::new(MigrateCocoonShowBalance),
+            // Step 54 — add [worktree] section with defaults (#4679)
+            Box::new(MigrateWorktreeConfig),
         ]
     });
 
@@ -3857,6 +3859,45 @@ pub fn migrate_cocoon_show_balance(toml_src: &str) -> Result<MigrationResult, Mi
     })
 }
 
+/// Add a commented-out `[worktree]` section with defaults if absent (#4679).
+///
+/// All worktree fields have `#[serde(default)]` so existing configs parse without changes.
+/// This step surfaces the new section for users upgrading from older configs.
+///
+/// Idempotent: the section header (live or commented) suppresses re-injection.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_worktree_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[worktree]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let _doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    let block = "\n# Native worktree isolation for background sub-agents (#4679).\n\
+         # [worktree]\n\
+         # enabled = false\n\
+         # base_ref = \"head\"\n\
+         # default_branch = \"main\"\n\
+         # root = \".claude/worktrees\"\n\
+         # branch_prefix = \"agent/\"\n\
+         # prune_branch_on_remove = false\n\
+         # cleanup_on_completion = true\n\
+         # bg_isolation = \"worktree\"\n";
+    let output = format!("{}{}", toml_src.trim_end(), block);
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["worktree".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3872,8 +3913,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            53,
-            "MIGRATIONS registry must contain all 53 sequential steps"
+            54,
+            "MIGRATIONS registry must contain all 54 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5460,7 +5501,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_fifty_entries() {
-        assert_eq!(MIGRATIONS.len(), 53);
+        assert_eq!(MIGRATIONS.len(), 54);
     }
 
     #[test]
@@ -5554,6 +5595,7 @@ prompt_cache_ttl = "1h"
             "migrate_fidelity_timeout_defaults",
             "migrate_session_persist_provider_overrides",
             "migrate_cocoon_show_balance",
+            "migrate_worktree_config",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -6018,5 +6060,45 @@ trace_extraction_embed_provider = \"live\"\n";
         let result = migrate_cocoon_show_balance(src).expect("migrate");
         assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, src);
+    }
+
+    // ── migrate_worktree_config tests (#4679) ────────────────────────────────
+
+    #[test]
+    fn step_54_inserts_worktree_section_on_fresh_config() {
+        let input = "[agent]\nmax_turns = 10\n";
+        let result = migrate_worktree_config(input).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("[worktree]"),
+            "should insert [worktree] section"
+        );
+        assert!(
+            result.output.contains("# enabled = false"),
+            "should include default fields"
+        );
+    }
+
+    #[test]
+    fn step_54_is_idempotent_when_worktree_present() {
+        let input = "[worktree]\nenabled = true\n";
+        let result = migrate_worktree_config(input).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(
+            result.output.matches("[worktree]").count(),
+            1,
+            "should not duplicate [worktree]"
+        );
+    }
+
+    #[test]
+    fn step_54_is_idempotent_when_worktree_commented() {
+        // String-contains check treats "# [worktree]" as present — conservative, acceptable for MVP.
+        let input = "# [worktree]\n[agent]\nmax_turns = 10\n";
+        let result = migrate_worktree_config(input).unwrap();
+        assert_eq!(
+            result.changed_count, 0,
+            "commented [worktree] counts as present"
+        );
     }
 }

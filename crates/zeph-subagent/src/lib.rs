@@ -40,6 +40,7 @@
 
 mod agent_loop;
 pub mod command;
+pub mod cwd_guard;
 pub mod def;
 pub mod error;
 pub mod filter;
@@ -53,6 +54,7 @@ pub mod state;
 pub mod transcript;
 
 pub use command::{AgentCommand, AgentsCommand};
+pub use cwd_guard::CwdLock;
 pub use def::{
     MemoryScope, ModelSpec, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions,
     ToolPolicy, is_valid_agent_name,
