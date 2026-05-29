@@ -109,6 +109,7 @@ async fn test_apply_query_bias_dimension_mismatch_returns_unchanged() {
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
         five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
     };
 
     let embedding = vec![0.1_f32, 0.2, 0.3];

@@ -32,12 +32,21 @@ Return only the summary text — no JSON, no preamble.";
 /// Configuration for the tree consolidation loop.
 #[derive(Clone)]
 pub struct TreeConsolidationConfig {
+    /// Enable or disable the tree consolidation background loop.
     pub enabled: bool,
+    /// Interval between consolidation sweeps, in seconds.
     pub sweep_interval_secs: u64,
+    /// Maximum number of leaf nodes processed per sweep.
     pub batch_size: usize,
+    /// Cosine similarity threshold for clustering nodes (0.0–1.0). Nodes with similarity
+    /// above this value are merged into a parent node.
     pub similarity_threshold: f32,
+    /// Maximum depth of the memory tree (levels above leaf nodes).
     pub max_level: u32,
+    /// Minimum cluster size required to trigger LLM consolidation.
     pub min_cluster_size: usize,
+    /// Per-call timeout for every `embed()` invocation, in seconds. Default: `5`.
+    pub embed_timeout_secs: u64,
 }
 
 /// Result of one consolidation sweep.
@@ -132,7 +141,12 @@ pub async fn run_tree_consolidation_sweep(
             continue;
         }
 
-        let embedded = embed_candidates(provider, &candidates).await;
+        let embedded = embed_candidates(
+            provider,
+            &candidates,
+            Duration::from_secs(config.embed_timeout_secs),
+        )
+        .await;
         if embedded.len() < config.min_cluster_size {
             continue;
         }
@@ -216,6 +230,7 @@ const EMBED_CONCURRENCY: usize = 8;
 async fn embed_candidates(
     provider: &AnyProvider,
     candidates: &[MemoryTreeRow],
+    embed_timeout: Duration,
 ) -> Vec<(i64, String, Vec<f32>)> {
     let mut embedded = Vec::with_capacity(candidates.len());
 
@@ -227,11 +242,8 @@ async fn embed_candidates(
                 let id = row.id;
                 let content = row.content.clone();
                 async move {
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        provider.embed(&content),
-                    )
-                    .await;
+                    let result =
+                        tokio::time::timeout(embed_timeout, provider.embed(&content)).await;
                     let result = match result {
                         Ok(r) => r,
                         Err(_elapsed) => {
@@ -359,7 +371,7 @@ mod tests {
 
         tokio::time::pause();
 
-        let fut = embed_candidates(&slow, &candidates);
+        let fut = embed_candidates(&slow, &candidates, Duration::from_secs(5));
         let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });

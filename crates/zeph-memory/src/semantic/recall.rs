@@ -761,7 +761,7 @@ impl SemanticMemory {
         {
             let embed_input = self.apply_search_prompt(query);
             let query_vector = match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                self.embed_timeout,
                 self.effective_embed_provider().embed(&embed_input),
             )
             .await
@@ -822,7 +822,7 @@ impl SemanticMemory {
         }
         let embed_input = self.apply_search_prompt(query);
         let query_vector = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(&embed_input),
         )
         .await
@@ -1448,6 +1448,7 @@ impl SemanticMemory {
             edge_types,
             self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
+            self.embed_timeout,
         )
         .await?;
 
@@ -1498,6 +1499,7 @@ impl SemanticMemory {
             edge_types,
             self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
+            self.embed_timeout,
         )
         .await?;
 
@@ -1804,6 +1806,7 @@ impl SemanticMemory {
             self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
             self.query_sensitive_cost,
+            self.embed_timeout,
         )
         .await
     }
@@ -1839,6 +1842,7 @@ impl SemanticMemory {
             temporal_decay_rate,
             self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
+            self.embed_timeout,
         )
         .await
     }
@@ -1874,6 +1878,7 @@ impl SemanticMemory {
             temporal_decay_rate,
             self.hebbian_reinforcement.is_enabled(),
             self.hebbian_lr,
+            self.embed_timeout,
         )
         .await
     }
@@ -2150,6 +2155,7 @@ mod tests {
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
             five_signal: None,
+            embed_timeout: std::time::Duration::from_secs(5),
         }
     }
 

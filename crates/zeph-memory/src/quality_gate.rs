@@ -187,6 +187,8 @@ pub struct QualityGate {
     rejection_counts: std::sync::Mutex<std::collections::HashMap<QualityRejectionReason, u64>>,
     /// Rolling rejection-rate tracker (last 100 writes).
     rate_tracker: std::sync::Mutex<RollingRateTracker>,
+    /// Per-call timeout for every `embed()` invocation. Default: 5 s.
+    embed_timeout: std::time::Duration,
 }
 
 impl QualityGate {
@@ -199,7 +201,17 @@ impl QualityGate {
             graph_store: None,
             rejection_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
             rate_tracker: std::sync::Mutex::new(RollingRateTracker::new(100)),
+            embed_timeout: std::time::Duration::from_secs(5),
         }
+    }
+
+    /// Set the per-call timeout for every `embed()` invocation.
+    ///
+    /// Default: 5 s. Must be non-zero; the minimum effective value is 1 s.
+    #[must_use]
+    pub fn with_embed_timeout(mut self, timeout_secs: u64) -> Self {
+        self.embed_timeout = std::time::Duration::from_secs(timeout_secs.max(1));
+        self
     }
 
     /// Attach an LLM provider for optional blended scoring.
@@ -248,7 +260,13 @@ impl QualityGate {
             return None;
         }
 
-        let info_val = compute_information_value(content, embed_provider, recent_embeddings).await;
+        let info_val = compute_information_value(
+            content,
+            embed_provider,
+            recent_embeddings,
+            self.embed_timeout,
+        )
+        .await;
         let ref_comp = if self.config.reference_check_lang_en {
             compute_reference_completeness(content)
         } else {
@@ -328,6 +346,7 @@ async fn compute_information_value(
     content: &str,
     provider: &AnyProvider,
     recent_embeddings: &[Vec<f32>],
+    embed_timeout: std::time::Duration,
 ) -> f32 {
     if recent_embeddings.is_empty() {
         return 1.0;
@@ -335,9 +354,7 @@ async fn compute_information_value(
     if !provider.supports_embeddings() {
         return 1.0;
     }
-    let candidate = match tokio::time::timeout(Duration::from_secs(5), provider.embed(content))
-        .await
-    {
+    let candidate = match tokio::time::timeout(embed_timeout, provider.embed(content)).await {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             tracing::debug!(error = %e, "quality_gate: embed failed, treating info_val = 1.0 (fail-open)");

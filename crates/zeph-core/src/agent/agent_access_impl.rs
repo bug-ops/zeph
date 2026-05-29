@@ -456,6 +456,13 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             Err(msg) => return Box::pin(async move { Ok(msg) }),
         };
         let graph_cfg = self.services.memory.extraction.graph_config.clone();
+        let embed_timeout_secs = self
+            .services
+            .memory
+            .persistence
+            .memory
+            .as_ref()
+            .map_or(5, |m| m.embed_timeout().as_secs());
         let provider = if graph_cfg.extract_provider.as_str().is_empty() {
             self.provider.clone()
         } else {
@@ -518,6 +525,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                             conversation_id: None,
                             apex_mem_enabled: graph_cfg.apex_mem.enabled,
                             llm_timeout_secs: graph_cfg.llm_timeout_secs,
+                            embed_timeout_secs,
                         };
                         let pool = store.pool().clone();
                         match extract_and_store(

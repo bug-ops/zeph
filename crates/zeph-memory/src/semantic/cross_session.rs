@@ -99,7 +99,7 @@ impl SemanticMemory {
         }
 
         let vector = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(summary_text),
         )
         .await
@@ -161,7 +161,7 @@ impl SemanticMemory {
         }
 
         let vector = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(query),
         )
         .await

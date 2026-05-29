@@ -116,6 +116,7 @@ impl<C: Channel> super::Agent<C> {
             similarity_threshold: 0.85,
             sweep_interval_secs: 0,
             llm_timeout_secs: cfg.llm_timeout_secs,
+            embed_timeout_secs: memory.embed_timeout().as_secs(),
         };
 
         // Run with a timeout bounded by max_iterations * ~30s per call as a rough limit.

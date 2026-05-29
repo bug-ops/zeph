@@ -323,6 +323,13 @@ impl<C: Channel> Agent<C> {
         if !cfg.enabled {
             return;
         }
+        let embed_timeout_secs = self
+            .services
+            .memory
+            .persistence
+            .memory
+            .as_ref()
+            .map_or(5, |m| m.embed_timeout().as_secs());
         let extraction_cfg = build_graph_extraction_config(
             cfg,
             self.services
@@ -330,6 +337,7 @@ impl<C: Channel> Agent<C> {
                 .persistence
                 .conversation_id
                 .map(|c| c.0),
+            embed_timeout_secs,
         );
         // Resolve a clean provider that bypasses quality_gate for JSON extraction tasks.
         // When extract_provider is empty, falls back to the primary provider (existing behavior).
@@ -702,6 +710,7 @@ impl<C: Channel> Agent<C> {
         let store_limit = cfg.store_limit;
         let extraction_timeout = std::time::Duration::from_secs(cfg.extraction_timeout_secs);
         let distill_timeout = std::time::Duration::from_secs(cfg.distill_timeout_secs);
+        let embed_timeout = memory.embed_timeout();
         let self_judge_window = cfg.self_judge_window;
         let min_assistant_chars = cfg.min_assistant_chars;
 
@@ -719,6 +728,7 @@ impl<C: Channel> Agent<C> {
                         store_limit,
                         extraction_timeout,
                         distill_timeout,
+                        embed_timeout,
                         self_judge_window,
                         min_assistant_chars,
                     },

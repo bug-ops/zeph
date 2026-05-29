@@ -1679,6 +1679,14 @@ pub struct SemanticConfig {
     /// single-model lock). Falls back to the main agent provider when `None`.
     #[serde(default)]
     pub embedding_provider: Option<ProviderName>,
+    /// Timeout in seconds applied to every `embed()` call inside `zeph-memory`.
+    ///
+    /// Applies to all embedding call sites: admission control, quality gate, recall,
+    /// summarization, graph retrieval, consolidation, and tree consolidation.
+    /// Set to a higher value when using slow remote embedding providers.
+    /// Default: `5`.
+    #[serde(default = "default_embed_timeout_secs")]
+    pub embed_timeout_secs: u64,
 }
 
 impl Default for SemanticConfig {
@@ -1695,8 +1703,13 @@ impl Default for SemanticConfig {
             importance_enabled: true,
             importance_weight: default_importance_weight(),
             embedding_provider: None,
+            embed_timeout_secs: default_embed_timeout_secs(),
         }
     }
+}
+
+fn default_embed_timeout_secs() -> u64 {
+    5
 }
 
 /// Memory snippet rendering format injected into agent context (MM-F5, #3340).
@@ -3034,6 +3047,10 @@ pub struct ConsolidationConfig {
     /// LLM call timeout per `propose_merge_op` invocation, in seconds. Default: `30`.
     #[serde(default = "default_consolidation_llm_timeout_secs")]
     pub llm_timeout_secs: u64,
+    /// Per-call timeout for every `embed()` invocation in the consolidation sweep, in seconds.
+    /// Default: `5`.
+    #[serde(default = "default_embed_timeout_secs")]
+    pub embed_timeout_secs: u64,
 }
 
 impl Default for ConsolidationConfig {
@@ -3046,6 +3063,7 @@ impl Default for ConsolidationConfig {
             sweep_batch_size: default_consolidation_sweep_batch_size(),
             similarity_threshold: default_consolidation_similarity_threshold(),
             llm_timeout_secs: default_consolidation_llm_timeout_secs(),
+            embed_timeout_secs: default_embed_timeout_secs(),
         }
     }
 }

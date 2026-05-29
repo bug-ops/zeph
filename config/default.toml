@@ -405,6 +405,9 @@ importance_weight = 0.15
 # Recommended: a cheap embedding model (e.g. text-embedding-3-small, nomic-embed-text).
 # Defaults to the main provider when unset.
 # embedding_provider = "ollama-embed"
+# Timeout for a single embedding call in the memory subsystem (seconds).
+# Increase if your embedding provider is slow or overloaded.
+# embed_timeout_secs = 5
 
 # MemMachine-inspired retrieval-stage tuning (#3340). Applies to all recall paths.
 [memory.retrieval]

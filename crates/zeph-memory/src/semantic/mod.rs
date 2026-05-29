@@ -385,6 +385,10 @@ pub struct SemanticMemory {
     /// `Some` when `memory.five_signal.enabled = true` at bootstrap.
     /// `None` guarantees zero overhead per NFR-005.
     pub(crate) five_signal: Option<Arc<crate::five_signal::FiveSignalRuntime>>,
+    /// Per-call timeout applied to every `embed()` invocation in this instance.
+    ///
+    /// Configurable via `[memory.semantic] embed_timeout_secs`. Default: 5 s.
+    pub(crate) embed_timeout: std::time::Duration,
 }
 
 impl SemanticMemory {
@@ -519,6 +523,7 @@ impl SemanticMemory {
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
             five_signal: None,
+            embed_timeout: std::time::Duration::from_secs(5),
         })
     }
 
@@ -585,6 +590,7 @@ impl SemanticMemory {
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
             five_signal: None,
+            embed_timeout: std::time::Duration::from_secs(5),
         })
     }
 
@@ -735,6 +741,19 @@ impl SemanticMemory {
     #[must_use]
     pub fn with_summarization_timeout(mut self, timeout_secs: u64) -> Self {
         self.summarization_llm_timeout_secs = timeout_secs;
+        self
+    }
+
+    /// Set the per-call timeout for every `embed()` invocation inside this instance.
+    ///
+    /// Configures the timeout applied at all embedding call sites: admission control,
+    /// quality gate, recall, summarization, graph retrieval, consolidation, and tree
+    /// consolidation. Must be non-zero; the minimum effective value is 1 s. Default: `5`.
+    #[must_use]
+    pub fn with_embed_timeout(mut self, timeout_secs: u64) -> Self {
+        let t = std::time::Duration::from_secs(timeout_secs.max(1));
+        self.embed_timeout = t;
+        self.hebbian_spread.embed_timeout = Some(t);
         self
     }
 
@@ -935,9 +954,7 @@ impl SemanticMemory {
         let texts: Vec<String> = facts.iter().map(|f| f.content.clone()).collect();
         let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
         for text in &texts {
-            match tokio::time::timeout(std::time::Duration::from_secs(5), provider.embed(text))
-                .await
-            {
+            match tokio::time::timeout(self.embed_timeout, provider.embed(text)).await {
                 Ok(Ok(v)) => embeddings.push(v),
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, "query-bias: failed to embed persona fact — skipping");
@@ -1131,6 +1148,7 @@ impl SemanticMemory {
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
             five_signal: None,
+            embed_timeout: std::time::Duration::from_secs(5),
         }
     }
 
@@ -1216,6 +1234,7 @@ impl SemanticMemory {
             summarization_llm_timeout_secs: 60,
             query_sensitive_cost: false,
             five_signal: None,
+            embed_timeout: std::time::Duration::from_secs(5),
         })
     }
 
@@ -1223,6 +1242,12 @@ impl SemanticMemory {
     #[must_use]
     pub fn sqlite(&self) -> &SqliteStore {
         &self.sqlite
+    }
+
+    /// Return the per-call embed timeout configured for this instance.
+    #[must_use]
+    pub fn embed_timeout(&self) -> std::time::Duration {
+        self.embed_timeout
     }
 
     /// Check if the vector store backend is reachable.
@@ -1391,7 +1416,7 @@ impl SemanticMemory {
             return Ok(Vec::new());
         }
         let embedding = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(query),
         )
         .await

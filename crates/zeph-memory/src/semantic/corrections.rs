@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::time::Duration;
-
 use zeph_llm::provider::LlmProvider as _;
 
 use crate::error::MemoryError;
@@ -29,7 +27,7 @@ impl SemanticMemory {
             return Ok(());
         }
         let embedding = match tokio::time::timeout(
-            Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(correction_text),
         )
         .await
@@ -75,7 +73,7 @@ impl SemanticMemory {
             return Ok(vec![]);
         }
         let embedding = match tokio::time::timeout(
-            Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(query),
         )
         .await

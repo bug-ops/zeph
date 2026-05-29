@@ -59,6 +59,8 @@ pub struct GraphExtractionConfig {
     pub apex_mem_enabled: bool,
     /// LLM call timeout for extraction, in seconds. Default: `30`.
     pub llm_timeout_secs: u64,
+    /// Per-call timeout for every `embed()` invocation, in seconds. Default: `5`.
+    pub embed_timeout_secs: u64,
 }
 
 impl Default for GraphExtractionConfig {
@@ -81,6 +83,7 @@ impl Default for GraphExtractionConfig {
             conversation_id: None,
             apex_mem_enabled: false,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         }
     }
 }
@@ -401,8 +404,9 @@ pub async fn extract_and_store(
         EntityResolver::new(&store)
             .with_embedding_store(emb)
             .with_provider(&provider)
+            .with_embed_timeout(config.embed_timeout_secs)
     } else {
-        EntityResolver::new(&store)
+        EntityResolver::new(&store).with_embed_timeout(config.embed_timeout_secs)
     };
 
     let (entity_name_to_id, entities_upserted) = upsert_entities(&resolver, &result.entities).await;

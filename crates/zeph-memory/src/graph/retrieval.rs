@@ -48,6 +48,7 @@ pub async fn graph_recall(
     edge_types: &[EdgeType],
     hebbian_enabled: bool,
     hebbian_lr: f32,
+    embed_timeout: std::time::Duration,
 ) -> Result<Vec<GraphFact>, MemoryError> {
     // graph_recall has no SpreadingActivationParams — use spec defaults.
     const DEFAULT_STRUCTURAL_WEIGHT: f32 = 0.4;
@@ -66,6 +67,7 @@ pub async fn graph_recall(
         limit,
         DEFAULT_STRUCTURAL_WEIGHT,
         DEFAULT_COMMUNITY_CAP,
+        embed_timeout,
     )
     .await?;
 
@@ -210,15 +212,11 @@ async fn seed_embedding_fallback(
     query: &str,
     limit: usize,
     fts_map: &mut HashMap<i64, (super::types::Entity, f32)>,
+    embed_timeout: std::time::Duration,
 ) -> bool {
     use zeph_llm::LlmProvider as _;
     const ENTITY_COLLECTION: &str = "zeph_graph_entities";
-    let embedding = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        provider.embed(query),
-    )
-    .await
-    {
+    let embedding = match tokio::time::timeout(embed_timeout, provider.embed(query)).await {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "seed fallback: embed() failed, returning empty seeds");
@@ -252,6 +250,7 @@ async fn seed_embedding_fallback(
     true
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn find_seed_entities(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,
@@ -260,6 +259,7 @@ pub(crate) async fn find_seed_entities(
     limit: usize,
     structural_weight: f32,
     community_cap: usize,
+    embed_timeout: std::time::Duration,
 ) -> Result<HashMap<i64, f32>, MemoryError> {
     use crate::graph::types::ScoredEntity;
 
@@ -291,7 +291,16 @@ pub(crate) async fn find_seed_entities(
     // Step 2: embedding fallback when FTS5 returns nothing.
     if fts_map.is_empty()
         && let Some(emb_store) = embeddings
-        && !seed_embedding_fallback(store, emb_store, provider, query, limit, &mut fts_map).await
+        && !seed_embedding_fallback(
+            store,
+            emb_store,
+            provider,
+            query,
+            limit,
+            &mut fts_map,
+            embed_timeout,
+        )
+        .await
     {
         return Ok(HashMap::new());
     }
@@ -402,6 +411,7 @@ pub async fn graph_recall_activated(
     edge_types: &[EdgeType],
     hebbian_enabled: bool,
     hebbian_lr: f32,
+    embed_timeout: std::time::Duration,
 ) -> Result<Vec<ActivatedFact>, MemoryError> {
     if limit == 0 {
         return Ok(Vec::new());
@@ -415,6 +425,7 @@ pub async fn graph_recall_activated(
         limit,
         params.seed_structural_weight,
         params.seed_community_cap,
+        embed_timeout,
     )
     .await?;
 
@@ -503,6 +514,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -525,6 +537,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -563,6 +576,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -611,6 +625,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -650,6 +665,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -704,6 +720,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -760,6 +777,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -804,6 +822,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -851,6 +870,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -872,6 +892,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -941,6 +962,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -996,6 +1018,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -1046,6 +1069,7 @@ mod tests {
             &[],
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -1098,6 +1122,7 @@ mod tests {
             &[],
             true,
             0.5,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -1145,6 +1170,7 @@ mod tests {
             &[],
             false,
             0.5,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -1183,7 +1209,15 @@ mod tests {
             emb_store_pool,
         );
 
-        let fut = seed_embedding_fallback(&store, &emb_store, &slow, "query", 5, &mut fts_map);
+        let fut = seed_embedding_fallback(
+            &store,
+            &emb_store,
+            &slow,
+            "query",
+            5,
+            &mut fts_map,
+            std::time::Duration::from_secs(5),
+        );
         let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });

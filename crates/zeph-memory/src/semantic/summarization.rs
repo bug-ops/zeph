@@ -146,7 +146,7 @@ impl SemanticMemory {
             && self.effective_embed_provider().supports_embeddings()
         {
             match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                self.embed_timeout,
                 self.effective_embed_provider().embed(summary_text),
             )
             .await
@@ -263,7 +263,7 @@ impl SemanticMemory {
             return;
         };
         let first_vector = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(first_fact),
         )
         .await
@@ -300,7 +300,7 @@ impl SemanticMemory {
 
         for fact in filtered[1..].iter().copied() {
             match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                self.embed_timeout,
                 self.effective_embed_provider().embed(fact),
             )
             .await
@@ -386,7 +386,7 @@ impl SemanticMemory {
         }
 
         let vector = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(query),
         )
         .await
@@ -442,7 +442,7 @@ impl SemanticMemory {
             return Ok(Vec::new());
         }
         let vector = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            self.embed_timeout,
             self.effective_embed_provider().embed(query),
         )
         .await

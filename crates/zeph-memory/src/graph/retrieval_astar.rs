@@ -108,6 +108,7 @@ pub async fn graph_recall_astar(
     hebbian_enabled: bool,
     hebbian_lr: f32,
     query_sensitive_cost: bool,
+    embed_timeout: std::time::Duration,
 ) -> Result<Vec<GraphFact>, MemoryError> {
     let _span = tracing::info_span!("memory.graph.astar", query_len = query.len()).entered();
 
@@ -123,6 +124,7 @@ pub async fn graph_recall_astar(
         limit,
         DEFAULT_STRUCTURAL_WEIGHT,
         DEFAULT_COMMUNITY_CAP,
+        embed_timeout,
     )
     .await?;
 
@@ -426,6 +428,7 @@ mod tests {
             false,
             0.0,
             false,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -448,6 +451,7 @@ mod tests {
             false,
             0.0,
             false,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -485,6 +489,7 @@ mod tests {
             false,
             0.0,
             false,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -526,6 +531,7 @@ mod tests {
             false,
             0.0,
             true, // query_sensitive_cost enabled but no embedding store
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -581,6 +587,7 @@ mod tests {
             false,
             0.0,
             true,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();

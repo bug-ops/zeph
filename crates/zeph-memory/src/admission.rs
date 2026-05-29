@@ -133,6 +133,8 @@ pub struct AdmissionControl {
     provider: Option<AnyProvider>,
     /// Goal-conditioned write gate. `None` when `goal_conditioned_write = false`.
     goal_gate: Option<GoalGateConfig>,
+    /// Per-call timeout for every `embed()` invocation. Default: 5 s.
+    embed_timeout: Duration,
 }
 
 impl AdmissionControl {
@@ -150,7 +152,17 @@ impl AdmissionControl {
             weights: weights.normalized(),
             provider: None,
             goal_gate: None,
+            embed_timeout: Duration::from_secs(5),
         }
+    }
+
+    /// Set the per-call timeout for every `embed()` invocation.
+    ///
+    /// Default: 5 s. Must be non-zero; the minimum effective value is 1 s.
+    #[must_use]
+    pub fn with_embed_timeout(mut self, timeout_secs: u64) -> Self {
+        self.embed_timeout = Duration::from_secs(timeout_secs.max(1));
+        self
     }
 
     /// Attach a dedicated LLM provider for `future_utility` evaluation.
@@ -209,14 +221,23 @@ impl AdmissionControl {
         let content_type_prior = compute_content_type_prior(role);
 
         // Semantic novelty requires an async embedding search.
-        let semantic_novelty = compute_semantic_novelty(content, effective_provider, qdrant).await;
+        let semantic_novelty =
+            compute_semantic_novelty(content, effective_provider, qdrant, self.embed_timeout).await;
 
         // Goal-conditioned utility (W3.1 fix: skip trivial goal text < 10 chars).
         let goal_utility = match &self.goal_gate {
             Some(gate) => {
                 let effective_goal = goal_text.filter(|t| t.trim().len() >= 10);
                 if let Some(goal) = effective_goal {
-                    compute_goal_utility(content, goal, gate, effective_provider, qdrant).await
+                    compute_goal_utility(
+                        content,
+                        goal,
+                        gate,
+                        effective_provider,
+                        qdrant,
+                        self.embed_timeout,
+                    )
+                    .await
                 } else {
                     0.0
                 }
@@ -341,6 +362,7 @@ async fn compute_semantic_novelty(
     content: &str,
     provider: &AnyProvider,
     qdrant: Option<&Arc<EmbeddingStore>>,
+    embed_timeout: Duration,
 ) -> f32 {
     let Some(store) = qdrant else {
         return 1.0;
@@ -348,7 +370,7 @@ async fn compute_semantic_novelty(
     if !provider.supports_embeddings() {
         return 1.0;
     }
-    let vector = match tokio::time::timeout(Duration::from_secs(5), provider.embed(content)).await {
+    let vector = match tokio::time::timeout(embed_timeout, provider.embed(content)).await {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             tracing::debug!(error = %e, "A-MAC: failed to embed for novelty, using 1.0");
@@ -440,6 +462,7 @@ async fn compute_goal_utility(
     gate: &GoalGateConfig,
     provider: &AnyProvider,
     qdrant: Option<&Arc<EmbeddingStore>>,
+    embed_timeout: Duration,
 ) -> f32 {
     use zeph_llm::provider::LlmProvider as _;
 
@@ -447,30 +470,28 @@ async fn compute_goal_utility(
         return 0.0;
     }
 
-    let goal_emb =
-        match tokio::time::timeout(Duration::from_secs(5), provider.embed(goal_text)).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
-                tracing::debug!(error = %e, "goal_utility: failed to embed goal text, using 0.0");
-                return 0.0;
-            }
-            Err(_) => {
-                tracing::warn!("A-MAC: embed timed out in goal_utility (goal text), using 0.0");
-                return 0.0;
-            }
-        };
-    let content_emb =
-        match tokio::time::timeout(Duration::from_secs(5), provider.embed(content)).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
-                tracing::debug!(error = %e, "goal_utility: failed to embed content, using 0.0");
-                return 0.0;
-            }
-            Err(_) => {
-                tracing::warn!("A-MAC: embed timed out in goal_utility (content), using 0.0");
-                return 0.0;
-            }
-        };
+    let goal_emb = match tokio::time::timeout(embed_timeout, provider.embed(goal_text)).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "goal_utility: failed to embed goal text, using 0.0");
+            return 0.0;
+        }
+        Err(_) => {
+            tracing::warn!("A-MAC: embed timed out in goal_utility (goal text), using 0.0");
+            return 0.0;
+        }
+    };
+    let content_emb = match tokio::time::timeout(embed_timeout, provider.embed(content)).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "goal_utility: failed to embed content, using 0.0");
+            return 0.0;
+        }
+        Err(_) => {
+            tracing::warn!("A-MAC: embed timed out in goal_utility (content), using 0.0");
+            return 0.0;
+        }
+    };
 
     // Qdrant is used for novelty search, not for goal utility — we compute cosine directly.
     let _ = qdrant; // unused here; kept for API symmetry
@@ -886,8 +907,9 @@ mod tests {
             .with_embed_delay(10_000)
             .with_embedding(vec![0.0; 4]);
         let provider = zeph_llm::any::AnyProvider::Mock(mock);
-        let handle =
-            tokio::spawn(async move { compute_semantic_novelty("hello", &provider, None).await });
+        let handle = tokio::spawn(async move {
+            compute_semantic_novelty("hello", &provider, None, Duration::from_secs(5)).await
+        });
         tokio::time::advance(std::time::Duration::from_secs(6)).await;
         let result = handle.await.expect("task panicked");
         assert!(
@@ -909,7 +931,15 @@ mod tests {
             provider: None,
         };
         let handle = tokio::spawn(async move {
-            compute_goal_utility("content", "goal", &gate, &provider, None).await
+            compute_goal_utility(
+                "content",
+                "goal",
+                &gate,
+                &provider,
+                None,
+                Duration::from_secs(5),
+            )
+            .await
         });
         tokio::time::advance(std::time::Duration::from_secs(6)).await;
         let result = handle.await.expect("task panicked");

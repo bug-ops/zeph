@@ -1536,6 +1536,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             similarity_threshold: config.memory.tiers.similarity_threshold,
             sweep_interval_secs: config.memory.tiers.sweep_interval_secs,
             sweep_batch_size: config.memory.tiers.sweep_batch_size,
+            embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
         };
         let tier_provider = provider.clone();
         let cancel = supervisor.cancellation_token();
@@ -1588,6 +1589,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             sweep_batch_size: config.memory.consolidation.sweep_batch_size,
             similarity_threshold: config.memory.consolidation.similarity_threshold,
             llm_timeout_secs: config.memory.consolidation.llm_timeout_secs,
+            embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
         };
         let consolidation_provider = app
             .build_consolidation_provider()
@@ -1669,6 +1671,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             similarity_threshold: config.memory.tree.similarity_threshold,
             max_level: config.memory.tree.max_level,
             min_cluster_size: config.memory.tree.min_cluster_size,
+            embed_timeout_secs: config.memory.semantic.embed_timeout_secs,
         };
         let cancel = supervisor.cancellation_token();
         supervisor.spawn(TaskDescriptor {

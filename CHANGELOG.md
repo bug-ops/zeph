@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-memory`: embed timeout is now configurable via `memory.semantic.embed_timeout_secs` (default
+  `5` s, preserving existing behavior). All ~30 hardcoded `Duration::from_secs(5)` call sites across
+  `AdmissionControl`, `QualityGate`, `EntityResolver`, `TreeConsolidationConfig`,
+  `TierPromotionConfig`, `GraphExtractionConfig`, `ProcessTurnConfig`, `ConsolidationConfig`, and
+  all graph recall variants now read the value from config. `SemanticMemory::with_embed_timeout`
+  propagates the timeout to `hebbian_spread` as well (closes #4601).
+
+### Docs
+
+- `zeph-memory`: `TreeConsolidationConfig` pub fields (`enabled`, `sweep_interval_secs`,
+  `batch_size`, `similarity_threshold`, `max_level`, `min_cluster_size`) now have `///` doc
+  comments describing their semantic and valid range (closes #4603).
+
 ### Refactored
 
 - `zeph-llm`: deduplicated `build_tool_description` into `crates/zeph-llm/src/tool_desc.rs`; both

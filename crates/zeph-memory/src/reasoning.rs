@@ -628,6 +628,8 @@ pub struct ProcessTurnConfig {
     pub extraction_timeout: Duration,
     /// Timeout for the distillation LLM call.
     pub distill_timeout: Duration,
+    /// Timeout for each `embed()` invocation in the pipeline. Default: 5 s.
+    pub embed_timeout: Duration,
     /// Maximum number of recent messages sliced from the turn history before passing
     /// to the self-judge evaluator. Narrowing the window prevents digest/recap messages
     /// from prior sessions from confusing the classifier. Default: `2`.
@@ -660,6 +662,7 @@ pub async fn process_turn(
         store_limit,
         extraction_timeout,
         distill_timeout,
+        embed_timeout,
         self_judge_window,
         min_assistant_chars,
     } = cfg;
@@ -706,22 +709,18 @@ pub async fn process_turn(
 
     // Embed task_hint + summary for Qdrant retrieval (S2 from architect plan).
     let embed_input = format!("{}\n{}", outcome.task_hint, summary);
-    let embedding = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        embed_provider.embed(&embed_input),
-    )
-    .await
-    {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "reasoning: embedding failed — strategy not stored");
-            return Ok(());
-        }
-        Err(_) => {
-            tracing::warn!("reasoning: embed timed out — strategy not stored");
-            return Ok(());
-        }
-    };
+    let embedding =
+        match tokio::time::timeout(embed_timeout, embed_provider.embed(&embed_input)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "reasoning: embedding failed — strategy not stored");
+                return Ok(());
+            }
+            Err(_) => {
+                tracing::warn!("reasoning: embed timed out — strategy not stored");
+                return Ok(());
+            }
+        };
 
     let id = uuid::Uuid::new_v4().to_string();
     let strategy = ReasoningStrategy {
@@ -1199,6 +1198,7 @@ mod tests {
             store_limit: 100,
             extraction_timeout: std::time::Duration::from_secs(1),
             distill_timeout: std::time::Duration::from_secs(1),
+            embed_timeout: std::time::Duration::from_secs(5),
             self_judge_window: 2,
             min_assistant_chars: 0,
         };

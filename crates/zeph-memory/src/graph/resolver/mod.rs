@@ -79,6 +79,8 @@ pub struct EntityResolver<'a> {
     ///
     /// Arc-wrapped so future clones or spawned tasks can share the same gate.
     collection_ensured: Arc<tokio::sync::OnceCell<()>>,
+    /// Per-call timeout for every `embed()` invocation. Default: 5 s.
+    embed_timeout: std::time::Duration,
 }
 
 impl<'a> EntityResolver<'a> {
@@ -99,7 +101,17 @@ impl<'a> EntityResolver<'a> {
             name_locks: Arc::new(DashMap::new()),
             fallback_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             collection_ensured: Arc::new(tokio::sync::OnceCell::new()),
+            embed_timeout: std::time::Duration::from_secs(5),
         }
+    }
+
+    /// Set the per-call timeout for every `embed()` invocation.
+    ///
+    /// Default: 5 s.
+    #[must_use]
+    pub fn with_embed_timeout(mut self, timeout_secs: u64) -> Self {
+        self.embed_timeout = std::time::Duration::from_secs(timeout_secs);
+        self
     }
 
     #[must_use]
@@ -977,12 +989,7 @@ impl<'a> EntityResolver<'a> {
             (belief_revision, self.provider)
         {
             // Kumiho belief revision: embed new fact once, find semantically contradicted edges.
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                provider.embed(&normalized_fact),
-            )
-            .await
-            {
+            match tokio::time::timeout(self.embed_timeout, provider.embed(&normalized_fact)).await {
                 Ok(Ok(new_emb)) => {
                     match crate::graph::belief_revision::find_superseded_edges(
                         &existing_edges,
@@ -991,6 +998,7 @@ impl<'a> EntityResolver<'a> {
                         edge_type,
                         provider,
                         cfg,
+                        self.embed_timeout,
                     )
                     .await
                     {

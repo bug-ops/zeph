@@ -75,6 +75,8 @@ pub struct ConsolidationConfig {
     pub similarity_threshold: f32,
     /// LLM call timeout per `propose_merge_op` invocation, in seconds.
     pub llm_timeout_secs: u64,
+    /// Per-call timeout for every `embed()` invocation, in seconds. Default: `5`.
+    pub embed_timeout_secs: u64,
 }
 
 /// Runtime config for the forgetting sweep (#2397).

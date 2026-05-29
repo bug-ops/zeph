@@ -486,6 +486,8 @@ impl AppBuilder {
         memory =
             memory.with_summarization_timeout(self.config.memory.summarization_llm_timeout_secs);
 
+        memory = memory.with_embed_timeout(self.config.memory.semantic.embed_timeout_secs);
+
         memory = self.attach_five_signal(memory);
 
         Ok(memory)
@@ -781,7 +783,8 @@ impl AppBuilder {
             self.config.memory.admission.threshold,
             self.config.memory.admission.fast_path_margin,
             weights,
-        );
+        )
+        .with_embed_timeout(self.config.memory.semantic.embed_timeout_secs);
         if !self.config.memory.admission.admission_provider.is_empty() {
             match create_named_provider(
                 &self.config.memory.admission.admission_provider,
@@ -874,7 +877,8 @@ impl AppBuilder {
             llm_weight: qg_cfg.llm_weight,
             reference_check_lang_en: qg_cfg.reference_check_lang_en,
         };
-        let mut gate = zeph_memory::quality_gate::QualityGate::new(runtime_cfg);
+        let mut gate = zeph_memory::quality_gate::QualityGate::new(runtime_cfg)
+            .with_embed_timeout(self.config.memory.semantic.embed_timeout_secs);
 
         if let Some(ref gs) = memory.graph_store {
             gate = gate.with_graph_store(gs.clone());

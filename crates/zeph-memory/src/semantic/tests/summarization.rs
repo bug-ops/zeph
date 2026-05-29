@@ -365,6 +365,7 @@ async fn summarize_fails_when_provider_chat_fails() {
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
         five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
     };
     let cid = memory.sqlite().create_conversation().await.unwrap();
 
@@ -448,6 +449,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
         five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -616,6 +618,7 @@ async fn make_embed_memory_with_threshold(threshold: f32) -> super::super::Seman
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
         five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
     }
 }
 
@@ -727,6 +730,7 @@ async fn store_key_facts_fail_open_on_search_error() {
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
         five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

@@ -88,6 +88,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         summarization_llm_timeout_secs: 60,
         query_sensitive_cost: false,
         five_signal: None,
+        embed_timeout: std::time::Duration::from_secs(5),
     };
 
     let cid = memory.sqlite().create_conversation().await.unwrap();

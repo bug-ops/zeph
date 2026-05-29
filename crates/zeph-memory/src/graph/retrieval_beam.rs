@@ -42,6 +42,7 @@ pub async fn graph_recall_beam(
     temporal_decay_rate: f64,
     hebbian_enabled: bool,
     hebbian_lr: f32,
+    embed_timeout: std::time::Duration,
 ) -> Result<Vec<GraphFact>, MemoryError> {
     let _span = tracing::info_span!("memory.graph.beam", query_len = query.len()).entered();
 
@@ -57,6 +58,7 @@ pub async fn graph_recall_beam(
         limit,
         DEFAULT_STRUCTURAL_WEIGHT,
         DEFAULT_COMMUNITY_CAP,
+        embed_timeout,
     )
     .await?;
 
@@ -238,6 +240,7 @@ mod tests {
             0.0,
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -260,6 +263,7 @@ mod tests {
             0.0,
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -297,6 +301,7 @@ mod tests {
             0.0,
             false,
             0.0,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();

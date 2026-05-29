@@ -49,6 +49,8 @@ pub struct TierPromotionConfig {
     pub sweep_interval_secs: u64,
     /// Maximum number of candidates to process per sweep.
     pub sweep_batch_size: usize,
+    /// Per-call timeout for every `embed()` invocation, in seconds. Default: `5`.
+    pub embed_timeout_secs: u64,
 }
 
 /// Start the background tier promotion loop.
@@ -192,7 +194,15 @@ async fn run_promotion_sweep(
 
         let source_conv_id = cluster[0].0.conversation_id;
 
-        match merge_cluster_and_promote(store, provider, &cluster, source_conv_id).await {
+        match merge_cluster_and_promote(
+            store,
+            provider,
+            &cluster,
+            source_conv_id,
+            Duration::from_secs(config.embed_timeout_secs),
+        )
+        .await
+        {
             Ok(()) => stats.promotions_completed += 1,
             Err(e) => {
                 tracing::warn!(
@@ -255,6 +265,7 @@ async fn merge_cluster_and_promote(
     provider: &AnyProvider,
     cluster: &[(PromotionCandidate, Vec<f32>)],
     conversation_id: ConversationId,
+    embed_timeout: Duration,
 ) -> Result<(), MemoryError> {
     let contents: Vec<&str> = cluster.iter().map(|(c, _)| c.content.as_str()).collect();
     let original_ids: Vec<crate::types::MessageId> = cluster.iter().map(|(c, _)| c.id).collect();
@@ -274,7 +285,7 @@ async fn merge_cluster_and_promote(
     if provider.supports_embeddings() {
         let embeddings_available = cluster.iter().any(|(_, emb)| !emb.is_empty());
         if embeddings_available {
-            match tokio::time::timeout(Duration::from_secs(5), provider.embed(&merged)).await {
+            match tokio::time::timeout(embed_timeout, provider.embed(&merged)).await {
                 Ok(Ok(merged_vec)) => {
                     let max_sim = cluster
                         .iter()
@@ -459,7 +470,9 @@ mod tests {
             (make_candidate(m2.0), vec![1.0_f32, 0.0, 0.0]),
         ];
 
-        let result = merge_cluster_and_promote(&store, &provider, &cluster, conv_id).await;
+        let result =
+            merge_cluster_and_promote(&store, &provider, &cluster, conv_id, Duration::from_secs(5))
+                .await;
         assert!(
             result.is_ok(),
             "embed failure during merge validation must be fail-open (Ok), got {result:?}"

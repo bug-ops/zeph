@@ -184,7 +184,12 @@ async fn process_conversation(
         return Ok(());
     }
 
-    let embedded = embed_candidates(provider, &candidates).await;
+    let embedded = embed_candidates(
+        provider,
+        &candidates,
+        Duration::from_secs(config.embed_timeout_secs),
+    )
+    .await;
 
     if embedded.len() < 2 {
         return Ok(());
@@ -210,6 +215,7 @@ async fn process_conversation(
 async fn embed_candidates(
     provider: &AnyProvider,
     candidates: &[(crate::types::MessageId, String)],
+    embed_timeout: Duration,
 ) -> Vec<(i64, String, Vec<f32>)> {
     let futures: Vec<_> = candidates
         .iter()
@@ -218,7 +224,7 @@ async fn embed_candidates(
             let content = content.clone();
             async move {
                 let timeout_result =
-                    tokio::time::timeout(Duration::from_secs(5), provider.embed(&content)).await;
+                    tokio::time::timeout(embed_timeout, provider.embed(&content)).await;
                 let embed_result = if let Ok(r) = timeout_result {
                     r
                 } else {
@@ -639,6 +645,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 99,
+            embed_timeout_secs: 5,
         };
         assert_eq!(cfg.llm_timeout_secs, 99);
     }
@@ -660,6 +667,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         };
 
         let result = run_consolidation_sweep(&store, &provider, &config).await;
@@ -699,6 +707,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         };
 
         let result = run_consolidation_sweep(&store, &provider, &config)
@@ -828,6 +837,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -871,6 +881,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -914,6 +925,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -958,6 +970,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -1003,6 +1016,7 @@ mod tests {
             sweep_batch_size: 100,
             similarity_threshold: 0.85,
             llm_timeout_secs: 30,
+            embed_timeout_secs: 5,
         };
 
         let r = run_consolidation_sweep(&store, &provider, &config)
@@ -1056,7 +1070,7 @@ mod tests {
             (crate::types::MessageId(2), "Alice loves Rust".to_owned()),
         ];
 
-        let fut = embed_candidates(&slow, &candidates);
+        let fut = embed_candidates(&slow, &candidates, Duration::from_secs(5));
         let (result, ()) = tokio::join!(fut, async {
             tokio::time::advance(std::time::Duration::from_secs(6)).await;
         });

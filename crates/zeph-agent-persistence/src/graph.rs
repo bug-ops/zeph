@@ -19,13 +19,14 @@ use zeph_llm::provider::{Message, MessagePart, Role};
 /// use zeph_config::memory::GraphConfig;
 ///
 /// let cfg = GraphConfig::default();
-/// let extraction_cfg = build_graph_extraction_config(&cfg, Some(42));
+/// let extraction_cfg = build_graph_extraction_config(&cfg, Some(42), 5);
 /// assert_eq!(extraction_cfg.conversation_id, Some(42));
 /// ```
 #[must_use]
 pub fn build_graph_extraction_config(
     cfg: &zeph_config::memory::GraphConfig,
     conversation_id: Option<i64>,
+    embed_timeout_secs: u64,
 ) -> zeph_memory::semantic::GraphExtractionConfig {
     zeph_memory::semantic::GraphExtractionConfig {
         max_entities: cfg.max_entities_per_message,
@@ -50,6 +51,7 @@ pub fn build_graph_extraction_config(
         conversation_id,
         apex_mem_enabled: cfg.apex_mem.enabled,
         llm_timeout_secs: cfg.llm_timeout_secs,
+        embed_timeout_secs,
     }
 }
 

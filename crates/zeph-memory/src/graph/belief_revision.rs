@@ -76,9 +76,13 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// Embed a fact string with the given provider.
 ///
-/// Returns `None` on timeout (5 s) or provider error.
-async fn embed_fact(provider: &AnyProvider, fact: &str) -> Option<Vec<f32>> {
-    match tokio::time::timeout(std::time::Duration::from_secs(5), provider.embed(fact)).await {
+/// Returns `None` on timeout or provider error.
+async fn embed_fact(
+    provider: &AnyProvider,
+    fact: &str,
+    embed_timeout: std::time::Duration,
+) -> Option<Vec<f32>> {
+    match tokio::time::timeout(embed_timeout, provider.embed(fact)).await {
         Ok(Ok(v)) => Some(v),
         Ok(Err(err)) => {
             tracing::warn!(error = %err, "belief_revision: embed failed");
@@ -112,6 +116,7 @@ pub async fn find_superseded_edges(
     new_edge_type: EdgeType,
     provider: &AnyProvider,
     config: &BeliefRevisionConfig,
+    embed_timeout: std::time::Duration,
 ) -> Result<Vec<i64>, MemoryError> {
     // Filter to edges of the same type with a related relation domain.
     let candidates: Vec<&Edge> = existing_edges
@@ -127,7 +132,7 @@ pub async fn find_superseded_edges(
 
     let mut superseded = Vec::new();
     for edge in candidates {
-        let Some(existing_emb) = embed_fact(provider, &edge.fact).await else {
+        let Some(existing_emb) = embed_fact(provider, &edge.fact, embed_timeout).await else {
             continue;
         };
         let sim = cosine_similarity(new_fact_embedding, &existing_emb);
@@ -288,6 +293,7 @@ mod tests {
             crate::graph::types::EdgeType::Semantic,
             &provider,
             &config,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -316,6 +322,7 @@ mod tests {
             crate::graph::types::EdgeType::Semantic,
             &provider,
             &config,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -347,6 +354,7 @@ mod tests {
             crate::graph::types::EdgeType::Semantic,
             &provider,
             &config,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -384,6 +392,7 @@ mod tests {
             crate::graph::types::EdgeType::Semantic,
             &provider,
             &config,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
@@ -417,6 +426,7 @@ mod tests {
             crate::graph::types::EdgeType::Semantic,
             &provider,
             &config,
+            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap();
