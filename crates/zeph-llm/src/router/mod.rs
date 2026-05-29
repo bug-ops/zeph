@@ -3980,7 +3980,7 @@ mod tests {
     // ── spawn_asi_update JoinSet reap regression (#4644) ─────────────────────
 
     /// Regression for #4644: completed tasks in `asi_tasks` must be reaped before the cap
-    /// check so that a full-but-finished JoinSet does not permanently block new spawns.
+    /// check so that a full-but-finished `JoinSet` does not permanently block new spawns.
     #[tokio::test]
     async fn spawn_asi_update_reaped_after_cap_full() {
         use crate::mock::MockProvider;
