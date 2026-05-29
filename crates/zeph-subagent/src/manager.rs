@@ -3,7 +3,7 @@
 
 //! Sub-agent lifecycle management: spawn, cancel, collect, and resume.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,6 +18,7 @@ use zeph_tools::FileExecutor;
 use zeph_tools::ToolCall;
 use zeph_tools::executor::{ErasedToolExecutor, ToolError, ToolOutput};
 
+use zeph_common::SkillTrustLevel;
 use zeph_config::{ContentIsolationConfig, McpServerConfig, SubAgentConfig};
 
 use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
@@ -39,6 +40,17 @@ use super::transcript::{
 /// All fields default to empty/`None`, preserving existing behavior when callers
 /// pass `SpawnContext::default()`.
 ///
+/// # Constraint propagation
+///
+/// [`max_trust_level`][Self::max_trust_level] and
+/// [`inherited_tool_allowlist`][Self::inherited_tool_allowlist] implement transitive
+/// constraint propagation: safety constraints set at orchestration time are enforced on
+/// every sub-agent in the spawn chain, regardless of nesting depth.
+///
+/// When a sub-agent spawns its own sub-agents it must forward these fields downward so
+/// that grandchild agents cannot silently receive more privileges than the original
+/// orchestration policy allowed.
+///
 /// # Examples
 ///
 /// ```rust
@@ -48,6 +60,8 @@ use super::transcript::{
 /// let ctx = SpawnContext::default();
 /// assert!(ctx.parent_messages.is_empty());
 /// assert_eq!(ctx.spawn_depth, 0);
+/// assert!(ctx.max_trust_level.is_none());
+/// assert!(ctx.inherited_tool_allowlist.is_none());
 /// ```
 #[derive(Default)]
 pub struct SpawnContext {
@@ -87,6 +101,41 @@ pub struct SpawnContext {
     /// `tool_executor` passed to [`SubAgentManager::spawn`]. This field only carries the
     /// server metadata so the subagent's system prompt lists the additional tool names.
     pub session_mcp_servers: Vec<McpServerConfig>,
+    /// Maximum trust level cap inherited from the parent agent or orchestration policy.
+    ///
+    /// When `Some(cap)`, the spawned sub-agent's effective trust level is clamped to
+    /// `min(own_trust, cap)` so that sub-agents can never receive higher privileges than
+    /// the orchestration policy originally allowed.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// This field does **not** propagate automatically. When a sub-agent itself spawns a
+    /// grandchild, it must copy this field from its own received `SpawnContext` into the
+    /// grandchild's `SpawnContext`. Passing `None` (the default) at that point means the
+    /// grandchild receives **no cap**, which is a privilege escalation if the parent was
+    /// constrained. Only the top-level session (spawned by `build_spawn_context`) correctly
+    /// leaves this `None` — that represents an unconstrained top-level entry point.
+    ///
+    /// `None` means no cap is imposed by the parent (the sub-agent's own definition
+    /// determines its trust level).
+    pub max_trust_level: Option<SkillTrustLevel>,
+    /// Tool names that this sub-agent is allowed to invoke, inherited from the parent.
+    ///
+    /// When `Some(set)`, the effective tool allowlist for the spawned agent is the
+    /// intersection of `set` and the agent's own definition policy. This prevents a
+    /// sub-agent from accessing tools that the parent is itself not allowed to use.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically. When a constrained sub-agent spawns its own children, it must copy
+    /// this field from its received `SpawnContext` into the child's `SpawnContext`.
+    /// Passing `None` at that point would grant the grandchild unrestricted tool access,
+    /// defeating the original orchestration policy.
+    ///
+    /// `None` means no additional allowlist restriction is imposed by the parent
+    /// (the agent's definition policy applies without narrowing).
+    pub inherited_tool_allowlist: Option<HashSet<String>>,
 }
 
 /// Wraps an executor to allow file operations on the agent's memory directory.
@@ -233,6 +282,105 @@ fn apply_def_config_defaults(
     }
 
     Ok(())
+}
+
+/// Apply transitive constraint propagation from `SpawnContext` to a sub-agent definition.
+///
+/// Enforces two safety constraints set by the orchestration layer:
+///
+/// 1. **Trust level cap** — if `ctx.max_trust_level` is `Some(cap)`, the agent's
+///    effective trust is clamped to `min(agent_trust, cap)` so sub-agents can never
+///    receive higher privileges than the orchestration policy originally allowed.
+///
+/// 2. **Tool allowlist intersection** — if `ctx.inherited_tool_allowlist` is `Some(parent_set)`,
+///    and the agent's policy is `AllowList`, the effective allowlist is narrowed to the
+///    intersection of the parent set and the agent's own list.  When the agent uses
+///    `InheritAll` (no explicit list), the parent set replaces it entirely, ensuring
+///    the agent cannot access tools that the parent is itself denied.
+///
+/// Both constraints narrow rather than expand access, so callers can safely propagate
+/// them downward without risk of privilege escalation.
+fn apply_constraint_propagation(def: &mut SubAgentDef, ctx: &SpawnContext) {
+    if let Some(cap) = ctx.max_trust_level {
+        // Nothing to clamp against in the definition itself today; the cap is attached to the
+        // executor via set_effective_trust after build_filtered_executor. We log it here so
+        // operators can audit the narrowing before executor construction.
+        tracing::info!(
+            agent = %def.name,
+            cap = %cap,
+            "constraint propagation: trust level cap applied"
+        );
+    }
+
+    if let Some(ref parent_set) = ctx.inherited_tool_allowlist {
+        match &def.tools {
+            ToolPolicy::AllowList(agent_list) => {
+                let narrowed: Vec<String> = agent_list
+                    .iter()
+                    .filter(|t| {
+                        let normalized = filter::normalize_tool_id(t);
+                        parent_set
+                            .iter()
+                            .any(|p| filter::normalize_tool_id(p) == normalized)
+                    })
+                    .cloned()
+                    .collect();
+                if narrowed.len() < agent_list.len() {
+                    tracing::info!(
+                        agent = %def.name,
+                        before = agent_list.len(),
+                        after = narrowed.len(),
+                        "constraint propagation: tool allowlist narrowed by parent intersection"
+                    );
+                }
+                def.tools = ToolPolicy::AllowList(narrowed);
+            }
+            ToolPolicy::InheritAll => {
+                // Agent has no explicit list → replace with parent allowlist to prevent
+                // privilege escalation through InheritAll bypass.
+                let inherited: Vec<String> = parent_set.iter().cloned().collect();
+                tracing::info!(
+                    agent = %def.name,
+                    count = inherited.len(),
+                    "constraint propagation: InheritAll replaced by parent allowlist"
+                );
+                def.tools = ToolPolicy::AllowList(inherited);
+            }
+            ToolPolicy::DenyList(deny_list) => {
+                // Fail-closed: when the parent supplies an allowlist and the agent uses a
+                // DenyList, compute the effective allowed set as parent_set minus the deny
+                // entries and switch to an explicit AllowList. This prevents a DenyList agent
+                // from silently accessing tools the parent did not allow.
+                let narrowed: Vec<String> = parent_set
+                    .iter()
+                    .filter(|p| {
+                        let normalized = filter::normalize_tool_id(p);
+                        !deny_list
+                            .iter()
+                            .any(|d| filter::normalize_tool_id(d) == normalized)
+                    })
+                    .cloned()
+                    .collect();
+                tracing::info!(
+                    agent = %def.name,
+                    before = parent_set.len(),
+                    after = narrowed.len(),
+                    "constraint propagation: DenyList agent restricted to parent allowlist minus denied tools"
+                );
+                def.tools = ToolPolicy::AllowList(narrowed);
+            }
+            // Wildcard: future non-exhaustive variants — fail-closed to parent allowlist.
+            _ => {
+                let inherited: Vec<String> = parent_set.iter().cloned().collect();
+                tracing::info!(
+                    agent = %def.name,
+                    count = inherited.len(),
+                    "constraint propagation: unknown policy replaced by parent allowlist (fail-closed)"
+                );
+                def.tools = ToolPolicy::AllowList(inherited);
+            }
+        }
+    }
 }
 
 fn make_hook_env(task_id: &str, agent_name: &str, tool_name: &str) -> HashMap<String, String> {
@@ -923,6 +1071,7 @@ impl SubAgentManager {
             .ok_or_else(|| SubAgentError::NotFound(def_name.to_owned()))?;
 
         apply_def_config_defaults(&mut def, config)?;
+        apply_constraint_propagation(&mut def, &ctx);
 
         let active = self
             .agents
@@ -1006,6 +1155,12 @@ impl SubAgentManager {
         let parent_messages = ctx.parent_messages;
 
         let executor = build_filtered_executor(tool_executor, permission_mode, &def, memory_dir);
+
+        // Apply the trust level cap to the executor so the skill runner enforces it at
+        // execution time. The cap was already logged by apply_constraint_propagation above.
+        if let Some(cap) = ctx.max_trust_level {
+            executor.set_effective_trust(cap);
+        }
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
@@ -1454,6 +1609,13 @@ impl SubAgentManager {
     /// agent loop with that history prepended. The new session gets a fresh UUID.
     ///
     /// Returns `(new_task_id, def_name)` on success so the caller can resolve skills by name.
+    ///
+    /// # Known limitation: constraint propagation not applied
+    ///
+    /// Unlike [`spawn`][Self::spawn], `resume()` does not accept a [`SpawnContext`] and
+    /// therefore does not apply `max_trust_level` or `inherited_tool_allowlist` constraints.
+    /// Resumed sessions inherit the definition's static policy only. If constraint enforcement
+    /// is required on a resumed session, cancel and re-spawn instead of resuming.
     ///
     /// # Errors
     ///
@@ -4949,6 +5111,159 @@ mod tests {
                 );
             }
             other => panic!("expected SubAgentError::Llm on timeout, got: {other:?}"),
+        }
+    }
+
+    // ── apply_constraint_propagation tests ────────────────────────────────────
+
+    fn def_with_allow_list(tools: &[&str]) -> SubAgentDef {
+        let tools_yaml = tools
+            .iter()
+            .map(|t| format!("    - {t}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!(
+            "---\nname: bot\ndescription: A bot\ntools:\n  allow:\n{tools_yaml}\n---\n\nDo things.\n"
+        );
+        SubAgentDef::parse(&content).unwrap()
+    }
+
+    fn def_with_inherit_all() -> SubAgentDef {
+        SubAgentDef::parse("---\nname: bot\ndescription: A bot\n---\n\nDo things.\n").unwrap()
+    }
+
+    fn def_with_deny_list(tools: &[&str]) -> SubAgentDef {
+        let tools_yaml = tools
+            .iter()
+            .map(|t| format!("    - {t}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!(
+            "---\nname: bot\ndescription: A bot\ntools:\n  deny:\n{tools_yaml}\n---\n\nDo things.\n"
+        );
+        SubAgentDef::parse(&content).unwrap()
+    }
+
+    fn ctx_with_allowlist(tools: &[&str]) -> SpawnContext {
+        SpawnContext {
+            inherited_tool_allowlist: Some(
+                tools.iter().map(std::string::ToString::to_string).collect(),
+            ),
+            ..SpawnContext::default()
+        }
+    }
+
+    #[test]
+    fn constraint_propagation_no_constraints_is_noop() {
+        let mut def = def_with_allow_list(&["shell", "web"]);
+        let ctx = SpawnContext::default();
+        apply_constraint_propagation(&mut def, &ctx);
+        assert!(matches!(&def.tools, ToolPolicy::AllowList(v) if v.len() == 2));
+    }
+
+    #[test]
+    fn constraint_propagation_allowlist_intersection_narrows_tools() {
+        let mut def = def_with_allow_list(&["shell", "web", "read"]);
+        // Parent only permits shell and read.
+        let ctx = ctx_with_allowlist(&["shell", "read"]);
+        apply_constraint_propagation(&mut def, &ctx);
+        match &def.tools {
+            ToolPolicy::AllowList(v) => {
+                assert!(v.contains(&"shell".to_owned()), "shell must remain");
+                assert!(v.contains(&"read".to_owned()), "read must remain");
+                assert!(!v.contains(&"web".to_owned()), "web must be removed");
+                assert_eq!(v.len(), 2);
+            }
+            other => panic!("expected AllowList after intersection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn constraint_propagation_allowlist_intersection_disjoint_gives_empty() {
+        let mut def = def_with_allow_list(&["shell", "web"]);
+        // Parent permits only tools not in the agent's list.
+        let ctx = ctx_with_allowlist(&["read", "edit"]);
+        apply_constraint_propagation(&mut def, &ctx);
+        match &def.tools {
+            ToolPolicy::AllowList(v) => {
+                assert!(v.is_empty(), "no intersection → empty allowlist");
+            }
+            other => panic!("expected AllowList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn constraint_propagation_inherit_all_replaced_by_parent_allowlist() {
+        let mut def = def_with_inherit_all();
+        let ctx = ctx_with_allowlist(&["shell", "read"]);
+        apply_constraint_propagation(&mut def, &ctx);
+        match &def.tools {
+            ToolPolicy::AllowList(v) => {
+                assert_eq!(v.len(), 2, "parent set becomes the effective allowlist");
+                assert!(v.contains(&"shell".to_owned()));
+                assert!(v.contains(&"read".to_owned()));
+            }
+            other => panic!("expected AllowList after InheritAll replacement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn constraint_propagation_deny_list_with_parent_allowlist_is_fail_closed() {
+        // Parent allows [shell, read], agent denies [shell].
+        // Result: AllowList([read]) — parent_set minus denied tools.
+        let mut def = def_with_deny_list(&["shell"]);
+        let ctx = ctx_with_allowlist(&["shell", "read"]);
+        apply_constraint_propagation(&mut def, &ctx);
+        match &def.tools {
+            ToolPolicy::AllowList(v) => {
+                assert_eq!(v.len(), 1, "shell denied, only read should remain");
+                assert!(v.contains(&"read".to_owned()));
+                assert!(!v.contains(&"shell".to_owned()), "shell is in deny list");
+            }
+            other => panic!("expected AllowList after DenyList+parent intersection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn constraint_propagation_deny_list_no_parent_allowlist_is_noop() {
+        // When no inherited_tool_allowlist, DenyList stays unchanged.
+        let mut def = def_with_deny_list(&["dangerous"]);
+        let ctx = SpawnContext::default();
+        apply_constraint_propagation(&mut def, &ctx);
+        assert!(
+            matches!(&def.tools, ToolPolicy::DenyList(v) if v == &["dangerous"]),
+            "DenyList must be unchanged when no parent allowlist is set"
+        );
+    }
+
+    #[test]
+    fn constraint_propagation_trust_level_cap_none_is_noop() {
+        let mut def = def_with_allow_list(&["shell"]);
+        let ctx = SpawnContext {
+            max_trust_level: None,
+            ..SpawnContext::default()
+        };
+        apply_constraint_propagation(&mut def, &ctx);
+        // No panic, no structural change.
+        assert!(matches!(&def.tools, ToolPolicy::AllowList(_)));
+    }
+
+    #[test]
+    fn constraint_propagation_intersection_is_case_insensitive() {
+        let mut def = def_with_allow_list(&["Shell", "Web"]);
+        // Parent allowlist uses lowercase.
+        let ctx = ctx_with_allowlist(&["shell"]);
+        apply_constraint_propagation(&mut def, &ctx);
+        match &def.tools {
+            ToolPolicy::AllowList(v) => {
+                assert_eq!(
+                    v.len(),
+                    1,
+                    "Shell (PascalCase) must match shell (lowercase) parent"
+                );
+                assert!(v.contains(&"Shell".to_owned()), "original casing preserved");
+            }
+            other => panic!("expected AllowList, got {other:?}"),
         }
     }
 }

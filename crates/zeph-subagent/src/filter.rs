@@ -202,6 +202,10 @@ impl ErasedToolExecutor for FilteredToolExecutor {
         self.inner.set_skill_env(env);
     }
 
+    fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
+        self.inner.set_effective_trust(level);
+    }
+
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
         self.inner.is_tool_retryable_erased(tool_id)
     }

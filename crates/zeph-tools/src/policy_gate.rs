@@ -121,7 +121,22 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
         self.context.read().clone()
     }
 
-    /// Write the current context (called by the agent loop when trust level changes).
+    #[cfg(test)]
+    fn trust_level_for_test(&self) -> crate::SkillTrustLevel {
+        self.context.read().trust_level
+    }
+
+    /// Overwrite the current policy context (called by the agent loop on each turn).
+    ///
+    /// This performs a **direct assignment** — it does not apply `min_trust` clamping.
+    /// It is the agent loop's mechanism for writing the base trust level derived from the
+    /// agent definition. Orchestration-layer caps are applied separately via
+    /// [`set_effective_trust`][ErasedToolExecutor::set_effective_trust], which uses
+    /// `min_trust` to ensure caps can only narrow, never raise, the stored trust level.
+    ///
+    /// Callers that want to impose a trust cap must use `set_effective_trust`, not this
+    /// method — calling `update_context` with an elevated `trust_level` will bypass any
+    /// previously applied caps.
     pub fn update_context(&self, new_ctx: PolicyContext) {
         *self.context.write() = new_ctx;
     }
@@ -344,8 +359,14 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
     }
 
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
-        self.context.write().trust_level = level;
-        self.inner.set_effective_trust(level);
+        // Clamp: the new level must not be more trusted than what is already in effect.
+        // This enforces the cap semantics — calling set_effective_trust with a higher-trust
+        // value (e.g. Trusted) on an already-Quarantined executor must not raise privilege.
+        let mut ctx = self.context.write();
+        ctx.trust_level = ctx.trust_level.min_trust(level);
+        let effective = ctx.trust_level;
+        drop(ctx);
+        self.inner.set_effective_trust(effective);
     }
 
     fn is_tool_retryable(&self, tool_id: &str) -> bool {
@@ -685,6 +706,53 @@ mod tests {
         assert!(
             result.is_ok(),
             "High (not Critical) must not block allowed tool calls"
+        );
+    }
+
+    // ── Trust level clamping tests (#3993 constraint propagation) ────────────
+
+    #[test]
+    fn set_effective_trust_lower_trust_cap_narrows_down() {
+        // Initial trust: Trusted (severity 0). Cap: Quarantined (severity 2).
+        // After cap: trust must be Quarantined (cap narrows down).
+        let config = PolicyConfig {
+            enabled: false,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: None,
+        };
+        let gate = make_gate(&config);
+        // Gate starts at Trusted.
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+        assert_eq!(
+            gate.trust_level_for_test(),
+            SkillTrustLevel::Quarantined,
+            "cap with lower trust must narrow executor trust level"
+        );
+    }
+
+    #[test]
+    fn set_effective_trust_higher_trust_cap_does_not_raise() {
+        // Initial trust: Quarantined (set via update_context). Cap: Trusted (higher privilege).
+        // After cap: trust must remain Quarantined — cap must not raise privilege.
+        let config = PolicyConfig {
+            enabled: false,
+            default_effect: DefaultEffect::Allow,
+            rules: vec![],
+            policy_file: None,
+        };
+        let gate = make_gate(&config);
+        // Force-set context to Quarantined first.
+        gate.update_context(PolicyContext {
+            trust_level: SkillTrustLevel::Quarantined,
+            env: std::collections::HashMap::new(),
+        });
+        // Attempt to raise to Trusted via cap — must be rejected.
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
+        assert_eq!(
+            gate.trust_level_for_test(),
+            SkillTrustLevel::Quarantined,
+            "cap with higher trust must NOT raise executor trust level"
         );
     }
 }

@@ -2813,6 +2813,9 @@ impl<C: Channel> Agent<C> {
             orchestrator_name: Some("zeph".to_owned()),
             orchestrator_role: Some("orchestrator".to_owned()),
             session_mcp_servers: Vec::new(),
+            // Constraint propagation (#3993): populated by orchestration layer when spawning
+            // with explicit trust/tool restrictions. Top-level agent sessions leave these None.
+            ..Default::default()
         }
     }
 

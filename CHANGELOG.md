@@ -31,6 +31,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the input area; typing filters by substring match (newest-first); Ctrl+R again cycles to the
   next older match; Enter copies the selection into the input (no auto-submit); Esc cancels.
   History is current-session only (populated on each submit, empty at startup).
+- `zeph-subagent`: transitive constraint propagation for sub-agent spawns (#3993).
+  `SpawnContext` gains `max_trust_level` and `inherited_tool_allowlist` fields.
+  When set by the orchestration layer, `apply_constraint_propagation` narrows the
+  spawned agent's tool policy and `PolicyGateExecutor::set_effective_trust` clamps
+  trust via `min(own, cap)` semantics — privilege can only narrow, never escalate.
+  `DenyList` agents under an inherited allowlist are converted to an explicit
+  `AllowList(parent_set \ deny_entries)` (fail-closed). `resume()` does not participate
+  in constraint propagation; its doc comment documents this limitation.
 - `zeph-config`: `ProviderOverrides` struct — per-session LLM generation override parameters
   persisted across restarts (Phase 1: `reasoning_effort` only). Serialized as JSON and stored
   in the `channel_preferences` table under `pref_key = "provider_overrides"`. Uses
