@@ -1787,3 +1787,101 @@ async fn update_fidelity_tags_empty_is_noop() {
     let store = test_store().await;
     store.update_fidelity_tags(&[]).await.unwrap();
 }
+
+#[tokio::test]
+async fn update_fidelity_tags_multiple_items_all_updated() {
+    // DB sentinel: fidelity_raw=0 maps to None (never-scored marker), not Full.
+    // So we only test Compressed (1) and Placeholder (2) here.
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id1 = store.save_message(cid, "user", "msg1").await.unwrap();
+    let id2 = store.save_message(cid, "assistant", "msg2").await.unwrap();
+    let id3 = store.save_message(cid, "user", "msg3").await.unwrap();
+
+    store
+        .update_fidelity_tags(&[
+            (id1, zeph_common::ContextFidelity::Compressed as u8),
+            (id2, zeph_common::ContextFidelity::Placeholder as u8),
+            (id3, zeph_common::ContextFidelity::Compressed as u8),
+        ])
+        .await
+        .unwrap();
+
+    let history = store.load_history(cid, 10).await.unwrap();
+    let by_content: std::collections::HashMap<&str, _> = history
+        .iter()
+        .map(|m| (m.content.as_str(), m.metadata.fidelity_tag))
+        .collect();
+
+    assert_eq!(
+        by_content["msg1"],
+        Some(zeph_common::ContextFidelity::Compressed),
+        "msg1 must be Compressed"
+    );
+    assert_eq!(
+        by_content["msg2"],
+        Some(zeph_common::ContextFidelity::Placeholder),
+        "msg2 must be Placeholder"
+    );
+    assert_eq!(
+        by_content["msg3"],
+        Some(zeph_common::ContextFidelity::Compressed),
+        "msg3 must be Compressed"
+    );
+}
+
+#[tokio::test]
+async fn update_fidelity_tags_single_item_compressed() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let id = store.save_message(cid, "user", "single").await.unwrap();
+
+    store
+        .update_fidelity_tags(&[(id, zeph_common::ContextFidelity::Compressed as u8)])
+        .await
+        .unwrap();
+
+    let history = store.load_history(cid, 10).await.unwrap();
+    assert_eq!(
+        history[0].metadata.fidelity_tag,
+        Some(zeph_common::ContextFidelity::Compressed),
+        "single-item update must persist"
+    );
+}
+
+#[tokio::test]
+async fn update_fidelity_tags_chunk_boundary() {
+    // MAX_FIDELITY_BATCH = 333 (3 bind slots/row, SQLITE_MAX_VARIABLE_NUMBER=999).
+    // 334 items splits into chunks of 333 + 1, exercising the multi-chunk path.
+    // If chunking is broken (e.g. single oversized statement), SQLite returns
+    // "too many SQL variables" and the test panics on unwrap().
+    const N: usize = 334;
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    let mut ids: Vec<crate::types::MessageId> = Vec::with_capacity(N);
+    for i in 0..N {
+        let id = store
+            .save_message(cid, "user", &format!("msg{i}"))
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+
+    let updates: Vec<(crate::types::MessageId, u8)> = ids
+        .iter()
+        .map(|&id| (id, zeph_common::ContextFidelity::Compressed as u8))
+        .collect();
+
+    store.update_fidelity_tags(&updates).await.unwrap();
+
+    let history = store.load_history(cid, N as u32 + 1).await.unwrap();
+    let updated = history
+        .iter()
+        .filter(|m| m.metadata.fidelity_tag == Some(zeph_common::ContextFidelity::Compressed))
+        .count();
+    assert_eq!(
+        updated, N,
+        "all {N} rows must be updated across chunk boundary"
+    );
+}

@@ -392,8 +392,9 @@ impl SqliteStore {
     /// Called after fidelity scoring to persist the assigned fidelity levels so subsequent
     /// turns see the persisted floor invariant.
     ///
-    /// All updates are committed in a single transaction for atomicity. The operation is
-    /// a no-op when `updates` is empty.
+    /// Updates are chunked at 333 rows per statement to stay under `SQLITE_MAX_VARIABLE_NUMBER=999`
+    /// (each row uses 3 bind slots). All chunks execute in a single transaction for atomicity.
+    /// The operation is a no-op when `updates` is empty.
     ///
     /// # Errors
     ///
@@ -402,16 +403,31 @@ impl SqliteStore {
         &self,
         updates: &[(MessageId, u8)],
     ) -> Result<(), MemoryError> {
+        // Each row occupies 3 SQLite bind slots (2 for CASE arm + 1 for IN list).
+        // SQLITE_MAX_VARIABLE_NUMBER = 999, so max rows per statement = floor(999/3) = 333.
+        const MAX_FIDELITY_BATCH: usize = 333;
         if updates.is_empty() {
             return Ok(());
         }
         let mut tx = self.pool.begin().await?;
-        for &(id, tag) in updates {
-            zeph_db::query(sql!("UPDATE messages SET fidelity_tag = ? WHERE id = ?"))
-                .bind(i32::from(tag))
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+        for chunk in updates.chunks(MAX_FIDELITY_BATCH) {
+            let case_arms: String = chunk
+                .iter()
+                .map(|_| "WHEN ? THEN ?")
+                .collect::<Vec<_>>()
+                .join(" ");
+            let in_list: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "UPDATE messages SET fidelity_tag = CASE id {case_arms} END WHERE id IN ({in_list})"
+            );
+            let mut q = zeph_db::query(&sql);
+            for &(id, tag) in chunk {
+                q = q.bind(id.0).bind(i32::from(tag));
+            }
+            for &(id, _) in chunk {
+                q = q.bind(id.0);
+            }
+            q.execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())

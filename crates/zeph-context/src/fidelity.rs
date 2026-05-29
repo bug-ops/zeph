@@ -441,11 +441,25 @@ fn truncate_to_tokens(content: &mut String, max_tokens: usize, tc: &dyn TokenCou
     if tc.count_tokens(content) <= max_tokens {
         return;
     }
-    let mut len = content.len();
-    while len > 0 && tc.count_tokens(&content[..len]) > max_tokens {
-        len = content.floor_char_boundary(len / 2);
+    // Binary search for the largest valid prefix that fits within max_tokens.
+    // lo: largest known-safe boundary (count <= max_tokens).
+    // hi: upper bound; count > max_tokens on the normal branch; on the stall branch
+    //     hi collapses to lo and the loop exits immediately.
+    let mut lo: usize = 0;
+    let mut hi: usize = content.len();
+    while hi - lo > 1 {
+        let mid = content.floor_char_boundary(usize::midpoint(lo, hi));
+        if mid == lo {
+            // floor_char_boundary landed back on lo (multibyte char spans the midpoint).
+            // Collapsing hi to lo satisfies hi-lo <= 1 and exits the loop.
+            hi = mid;
+        } else if tc.count_tokens(&content[..mid]) <= max_tokens {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
     }
-    content.truncate(len);
+    content.truncate(lo);
 }
 
 fn render_placeholder(msg: &mut Message, score: f32, original_tokens: u32) {
@@ -1198,6 +1212,86 @@ mod tests {
             Some(ContextFidelity::Full),
             "allow_upgrade=true must bypass the Placeholder floor"
         );
+    }
+
+    // ── truncate_to_tokens unit tests ─────────────────────────────────────────
+
+    // no-op when content is well below limit
+    #[test]
+    fn truncate_no_op_below_limit() {
+        let tc = FixedTc(1); // 1 char = 1 token
+        let mut s = "hello".to_string(); // 5 tokens
+        truncate_to_tokens(&mut s, 10, &tc);
+        assert_eq!(s, "hello");
+    }
+
+    // no-op when content is exactly at limit
+    #[test]
+    fn truncate_no_op_at_limit() {
+        let tc = FixedTc(1);
+        let mut s = "hello".to_string(); // 5 tokens
+        truncate_to_tokens(&mut s, 5, &tc);
+        assert_eq!(s, "hello");
+    }
+
+    // truncates when content is one token over the limit
+    #[test]
+    fn truncate_minimal_one_over_limit() {
+        let tc = FixedTc(1); // 1 char = 1 token
+        let mut s = "abcdef".to_string(); // 6 tokens, limit=5
+        truncate_to_tokens(&mut s, 5, &tc);
+        assert!(
+            tc.count_tokens(&s) <= 5,
+            "result must fit in 5 tokens, got {}",
+            tc.count_tokens(&s)
+        );
+        assert!(!s.is_empty(), "must keep prefix, not empty");
+    }
+
+    // binary search preserves more than halving would: at 90% of limit no truncation occurs
+    #[test]
+    fn truncate_preserves_90pct_of_limit() {
+        // FixedTc(1): each byte = 1 token; 90-byte string with limit=100 must not be truncated.
+        let tc = FixedTc(1);
+        let s_orig = "a".repeat(90);
+        let mut s = s_orig.clone();
+        truncate_to_tokens(&mut s, 100, &tc);
+        assert_eq!(s, s_orig, "90% of limit must not be truncated");
+    }
+
+    // empty string is a no-op
+    #[test]
+    fn truncate_empty_string_no_op() {
+        let tc = FixedTc(1);
+        let mut s = String::new();
+        truncate_to_tokens(&mut s, 5, &tc);
+        assert!(s.is_empty());
+    }
+
+    // max_tokens=0 truncates everything
+    #[test]
+    fn truncate_max_tokens_zero_clears_content() {
+        let tc = FixedTc(1);
+        let mut s = "hello world".to_string();
+        truncate_to_tokens(&mut s, 0, &tc);
+        assert!(s.is_empty(), "max_tokens=0 must clear content");
+    }
+
+    // multibyte characters: truncation must land on a valid char boundary
+    #[test]
+    fn truncate_multibyte_stays_on_char_boundary() {
+        // "日本語" = 3 chars, each 3 bytes (9 bytes total).
+        // FixedTc(3): count = byte_len / 3, so "日本語" = 3 tokens.
+        // limit=2 → must truncate to "日本" (2 chars, 6 bytes).
+        let tc = FixedTc(3);
+        let mut s = "日本語".to_string();
+        truncate_to_tokens(&mut s, 2, &tc);
+        assert!(
+            s.is_char_boundary(s.len()),
+            "result must be on a valid char boundary"
+        );
+        assert!(tc.count_tokens(&s) <= 2);
+        assert_eq!(s, "日本");
     }
 
     // Mixed-fidelity tool pair: None + Some(Compressed) → both end up Compressed via atomicity.
