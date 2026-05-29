@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-plugins`: `add_remote` now uses `tokio::fs::write` instead of `std::fs::write` when
+  persisting the `.plugin-source.toml` sidecar, preventing the async executor thread from blocking
+  during remote plugin installation (closes #4606).
+
+### Docs
+
+- `specs/004-memory/004-3-admission-control.md`: updated to document the actual 5-factor A-MAC
+  scoring model (`future_utility`, `factual_confidence`, `semantic_novelty`, `temporal_recency`,
+  `content_type_prior`; optional `goal_utility`) with correct default weights and config fields.
+  The original 6-factor design is preserved as historical context with a reference to arXiv:2603.04549
+  and issue #4141 (closes #4605).
+
 - `zeph-plugins`: `read_plugin_source` in `update_one_plugin` now uses `tokio::fs::read_to_string`
   instead of `std::fs::read_to_string`, preventing the async executor thread from blocking during
   plugin auto-update sidecar reads (closes #4589).

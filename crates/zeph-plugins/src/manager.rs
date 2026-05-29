@@ -506,7 +506,7 @@ impl PluginManager {
             .join(".plugin-source.toml");
         match toml::to_string(&source) {
             Ok(toml_str) => {
-                if let Err(e) = std::fs::write(&source_path, toml_str) {
+                if let Err(e) = tokio::fs::write(&source_path, toml_str).await {
                     tracing::warn!(
                         plugin = %result.name,
                         error = %e,
