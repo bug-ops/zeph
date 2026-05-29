@@ -128,6 +128,18 @@ impl<C: Channel> Agent<C> {
             metrics: None,
             typed_pages: None,
             fidelity_config: self.services.memory.compaction.fidelity_config.clone(),
+            fidelity_semantic_provider: self
+                .services
+                .memory
+                .compaction
+                .fidelity_semantic_provider
+                .clone(),
+            fidelity_compress_provider: self
+                .services
+                .memory
+                .compaction
+                .fidelity_compress_provider
+                .clone(),
             current_query: String::new(),
         }
     }
@@ -463,6 +475,18 @@ impl<C: Channel> Agent<C> {
                 .tiered_retrieval_validator
                 .clone(),
             fidelity_config: self.services.memory.compaction.fidelity_config.as_ref(),
+            fidelity_semantic_provider: self
+                .services
+                .memory
+                .compaction
+                .fidelity_semantic_provider
+                .clone(),
+            fidelity_compress_provider: self
+                .services
+                .memory
+                .compaction
+                .fidelity_compress_provider
+                .clone(),
             planned_next_tools: &[],
             status_tx: self.services.session.status_tx.clone(),
         };

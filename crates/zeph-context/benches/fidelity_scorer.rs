@@ -55,6 +55,8 @@ fn bench_score_500(c: &mut Criterion) {
         min_query_length: 5,
         max_scored_messages: 500,
         exempt_tail_messages: 0,
+        compress_provider: None,
+        semantic_scoring_provider: None,
     };
     let tc = CharDivTc(4);
     let base_messages = make_synthetic_messages(500);
@@ -62,7 +64,10 @@ fn bench_score_500(c: &mut Criterion) {
     c.bench_function("fidelity_score_and_apply_500", |b| {
         b.iter(|| {
             let mut messages = base_messages.clone();
-            scorer.score_and_apply(
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            rt.block_on(scorer.score_and_apply(
                 black_box(&mut messages),
                 black_box("query words for semantic signal"),
                 black_box(&[]),
@@ -70,7 +75,9 @@ fn bench_score_500(c: &mut Criterion) {
                 black_box(&tc),
                 black_box(0),
                 black_box(false),
-            );
+                black_box(None),
+                black_box(None),
+            ));
         });
     });
 }

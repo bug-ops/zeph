@@ -47,6 +47,16 @@ pub(crate) struct MemoryCompactionState {
     ///
     /// `None` means fidelity scoring is not configured (disabled).
     pub(crate) fidelity_config: Option<zeph_config::FidelityConfig>,
+    /// Resolved LLM provider for query and per-message embeddings (CAM §8.1, #4552).
+    ///
+    /// `None` → keyword overlap fallback; set when `fidelity_config.semantic_scoring_provider`
+    /// names a provider that exists in `[[llm.providers]]`.
+    pub(crate) fidelity_semantic_provider: Option<std::sync::Arc<zeph_llm::any::AnyProvider>>,
+    /// Resolved LLM provider for `Compressed` rendering (CAM §8.2, #4551).
+    ///
+    /// `None` → truncation is used; set when `fidelity_config.compress_provider` names a
+    /// provider that exists in `[[llm.providers]]`.
+    pub(crate) fidelity_compress_provider: Option<std::sync::Arc<zeph_llm::any::AnyProvider>>,
 }
 
 impl Default for MemoryCompactionState {
@@ -67,6 +77,8 @@ impl Default for MemoryCompactionState {
             context_strategy: crate::config::ContextStrategy::default(),
             crossover_turn_threshold: 20,
             fidelity_config: None,
+            fidelity_semantic_provider: None,
+            fidelity_compress_provider: None,
         }
     }
 }

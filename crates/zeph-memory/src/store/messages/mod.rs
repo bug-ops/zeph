@@ -304,6 +304,7 @@ impl SqliteStore {
                                     .ok()
                                     .map(ContextFidelity::from_u8)
                             },
+                            embedding: None,
                         },
                     }
                 },
@@ -379,6 +380,7 @@ impl SqliteStore {
                                     .ok()
                                     .map(ContextFidelity::from_u8)
                             },
+                            embedding: None,
                         },
                     }
                 },
@@ -614,6 +616,7 @@ impl SqliteStore {
                     focus_marker_id: None,
                     db_id: None,
                     fidelity_tag: None,
+                    embedding: None,
                 },
             }
         }))

@@ -474,6 +474,11 @@ pub struct MessageMetadata {
     /// Used for debug tracing and compaction input filtering (INV-02).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fidelity_tag: Option<zeph_common::ContextFidelity>,
+    /// Cached embedding vector for semantic fidelity scoring.
+    ///
+    /// In-memory only — not serialized or persisted to the database.
+    #[serde(skip)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl Default for MessageMetadata {
@@ -486,6 +491,7 @@ impl Default for MessageMetadata {
             focus_marker_id: None,
             db_id: None,
             fidelity_tag: None,
+            embedding: None,
         }
     }
 }
@@ -502,6 +508,7 @@ impl MessageMetadata {
             focus_marker_id: None,
             db_id: None,
             fidelity_tag: None,
+            embedding: None,
         }
     }
 
@@ -516,6 +523,7 @@ impl MessageMetadata {
             focus_marker_id: None,
             db_id: None,
             fidelity_tag: None,
+            embedding: None,
         }
     }
 
@@ -530,6 +538,7 @@ impl MessageMetadata {
             focus_marker_id: None,
             db_id: None,
             fidelity_tag: None,
+            embedding: None,
         }
     }
 }

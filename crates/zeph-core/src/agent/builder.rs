@@ -2180,6 +2180,18 @@ impl<C: Channel> Agent<C> {
         let turn_delay =
             tokio::time::Duration::from_millis(goal_config.autonomous_turn_delay_ms.max(1));
         self.services.autonomous = crate::goal::AutonomousDriver::new(turn_delay);
+        // Resolve fidelity semantic (embed) provider by name when config specifies one.
+        self.services.memory.compaction.fidelity_semantic_provider = fidelity_config
+            .as_ref()
+            .and_then(|c| c.semantic_scoring_provider.as_deref())
+            .filter(|name| !name.is_empty())
+            .map(|name| Arc::new(self.resolve_background_provider(name)));
+        // Resolve fidelity compress provider by name when config specifies one.
+        self.services.memory.compaction.fidelity_compress_provider = fidelity_config
+            .as_ref()
+            .and_then(|c| c.compress_provider.as_deref())
+            .filter(|name| !name.is_empty())
+            .map(|name| Arc::new(self.resolve_background_provider(name)));
         self.services.memory.compaction.fidelity_config = fidelity_config;
 
         self.runtime.debug.reasoning_model_warning = anomaly_config.reasoning_model_warning;

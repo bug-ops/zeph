@@ -26,6 +26,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-agent-context`: `persist_fidelity_tags` — private helper that collects `(MessageId, u8)`
   pairs from scored messages and batch-writes them to SQLite; called inline after each scoring pass
   (normal path and prograde path) so floor constraints survive to the next turn.
+- `zeph-context`: CAM Phase 2-C — LLM-assisted `Compressed` rendering via `FidelityConfig.compress_provider`.
+  When set, `render_compressed()` calls the named LLM provider to generate a high-quality summary instead
+  of truncating. The summary is cached in `MessageMetadata.deferred_summary` and reused on subsequent
+  turns. A 30 s timeout and a 2× token cost guard ensure the LLM path never stalls or over-spends; both
+  fall back to truncation silently (closes #4551).
+- `zeph-context`: CAM Phase 2-D — embedding-based semantic scoring via `FidelityConfig.semantic_scoring_provider`.
+  When set, `FidelityScorer` embeds the current query once per turn and computes cosine similarity against
+  per-message embeddings cached in `MessageMetadata.embedding` (`#[serde(skip)]`, in-memory only). Each
+  embed call has a 30 s timeout with keyword-overlap fallback. Config field `w_keyword` is accepted as a
+  deprecated alias for `w_semantic` (closes #4552).
+
+### Docs
+
+- `zeph-memory` / `zeph-common`: added disambiguation notes to `ContentFidelity` (optical forgetting,
+  long-term memory store fidelity) and `ContextFidelity` (CAM, context-window fidelity) to prevent
+  confusion between the two near-identical enum names (closes #4556).
 
 ### Changed
 

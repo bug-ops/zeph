@@ -13,10 +13,13 @@
 //! `config.toml`. When `enabled = false` (the default), the scorer returns immediately
 //! without modifying the message window.
 
+use std::time::Duration;
+
 use tracing::info_span;
 use zeph_common::memory::TokenCounting;
 use zeph_common::{ContextFidelity, PlannedToolHint};
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::LlmProviderDyn;
+use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use crate::assembler::CORRECTIONS_PREFIX;
 
@@ -37,20 +40,22 @@ struct FidelityScore {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use zeph_context::fidelity::{FidelityConfig, FidelityScorer};
 ///
+/// # async fn run() {
 /// let scorer = FidelityScorer;
 /// let cfg = FidelityConfig { enabled: false, ..FidelityConfig::default() };
 /// // With `enabled = false` the scorer is a no-op.
 /// let mut messages = vec![];
-/// scorer.score_and_apply(&mut messages, "query", &[], &cfg, &MockTc, 0, false);
+/// scorer.score_and_apply(&mut messages, "query", &[], &cfg, &MockTc, 0, false, None, None).await;
 ///
 /// struct MockTc;
 /// impl zeph_common::memory::TokenCounting for MockTc {
 ///     fn count_tokens(&self, text: &str) -> usize { text.len() / 4 }
 ///     fn count_tool_schema_tokens(&self, _: &serde_json::Value) -> usize { 0 }
 /// }
+/// # }
 /// ```
 pub struct FidelityScorer;
 
@@ -78,8 +83,16 @@ impl FidelityScorer {
     ///   `1..1+inserted_count`; these are always exempt (INV-10).
     /// - `allow_upgrade` — when `true` the persisted floor invariant is bypassed.
     ///   Pass `true` only from the proactive regrade path; pass `false` everywhere else.
+    /// - `embed_provider` — optional LLM provider used for query and per-message embeddings
+    ///   when `config.semantic_scoring_provider` is set. Pass `None` to fall back to keyword
+    ///   overlap.
+    /// - `compress_provider` — optional LLM provider used for `Compressed` rendering when
+    ///   `config.compress_provider` is set. Pass `None` to fall back to truncation.
+    ///
+    /// The two providers may be the same instance or different ones (e.g. a fast embedding
+    /// model for `embed_provider` and a generative model for `compress_provider`).
     #[allow(clippy::too_many_arguments)]
-    pub fn score_and_apply(
+    pub async fn score_and_apply(
         &self,
         messages: &mut Vec<Message>,
         query: &str,
@@ -88,9 +101,59 @@ impl FidelityScorer {
         tc: &dyn TokenCounting,
         inserted_count: usize,
         allow_upgrade: bool,
+        embed_provider: Option<&dyn LlmProviderDyn>,
+        compress_provider: Option<&dyn LlmProviderDyn>,
     ) {
         if !config.enabled || messages.is_empty() {
             return;
+        }
+
+        // Embed query once when semantic provider is configured.
+        let query_embedding: Option<Vec<f32>> = if let (true, Some(p)) =
+            (config.semantic_scoring_provider.is_some(), embed_provider)
+            && p.supports_embeddings()
+        {
+            let _span = info_span!("context.fidelity.embed_query").entered();
+            match tokio::time::timeout(Duration::from_secs(30), p.embed(query)).await {
+                Ok(Ok(v)) => Some(v),
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "semantic scoring provider unavailable, falling back to keyword");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!("fidelity query embed timed out, falling back to keyword");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Pre-pass: compute missing per-message embeddings when query embedding is available.
+        if let (Some(q_emb), Some(p)) = (&query_embedding, embed_provider) {
+            let n = messages.len();
+            let score_end = if n > config.max_scored_messages {
+                n.saturating_sub(config.exempt_tail_messages)
+            } else {
+                n
+            };
+            for (i, msg) in messages.iter_mut().enumerate().take(score_end) {
+                if msg.metadata.embedding.is_none() && !is_exempt(msg, i, inserted_count) {
+                    let _span =
+                        info_span!("context.fidelity.embed_message", cache_hit = false).entered();
+                    match tokio::time::timeout(Duration::from_secs(30), p.embed(&msg.content)).await
+                    {
+                        Ok(Ok(v)) => msg.metadata.embedding = Some(v),
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "message embed failed, skipping");
+                        }
+                        Err(_) => {
+                            tracing::warn!("fidelity message embed timed out, skipping");
+                        }
+                    }
+                }
+            }
+            let _ = q_emb; // suppress unused warning; used below in compute_scores
         }
 
         let scores = compute_scores(
@@ -101,8 +164,9 @@ impl FidelityScorer {
             tc,
             inserted_count,
             allow_upgrade,
+            query_embedding.as_deref(),
         );
-        apply_scores(messages, &scores, config, tc);
+        apply_scores(messages, &scores, config, tc, compress_provider).await;
 
         let _merge_span = info_span!("context.fidelity.merge").entered();
         let merged_count = merge_consecutive_placeholders(messages);
@@ -119,6 +183,7 @@ fn compute_scores(
     tc: &dyn TokenCounting,
     inserted_count: usize,
     allow_upgrade: bool,
+    query_embedding: Option<&[f32]>,
 ) -> Vec<Option<FidelityScore>> {
     let n = messages.len();
 
@@ -183,7 +248,10 @@ fn compute_scores(
             role_weight(msg.role)
         };
         let semantic = if semantic_active {
-            keyword_overlap(&msg.content, &query_words)
+            match (query_embedding, msg.metadata.embedding.as_deref()) {
+                (Some(q_emb), Some(m_emb)) => semantic_overlap(m_emb, q_emb),
+                _ => keyword_overlap(&msg.content, &query_words),
+            }
         } else {
             0.0
         };
@@ -240,11 +308,12 @@ fn compute_scores(
     scores
 }
 
-fn apply_scores(
+async fn apply_scores(
     messages: &mut [Message],
     scores: &[Option<FidelityScore>],
     config: &FidelityConfig,
     tc: &dyn TokenCounting,
+    provider: Option<&dyn LlmProviderDyn>,
 ) {
     let _apply_span = info_span!("context.fidelity.apply").entered();
     let (mut full_count, mut compressed_count, mut placeholder_count, mut tokens_saved) =
@@ -256,7 +325,7 @@ fn apply_scores(
             ContextFidelity::Compressed => {
                 #[allow(clippy::cast_possible_truncation)]
                 let original_tokens = fs.original_tokens;
-                render_compressed(msg, config, tc);
+                render_compressed(msg, config, tc, provider).await;
                 #[allow(clippy::cast_possible_truncation)]
                 let new_tokens = tc.count_tokens(&msg.content) as u32;
                 tokens_saved += original_tokens.saturating_sub(new_tokens);
@@ -300,6 +369,23 @@ fn role_weight(role: Role) -> f32 {
         Role::User => 0.8,
         Role::Assistant => 0.6,
     }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    (dot / (norm_a * norm_b)).clamp(0.0, 1.0)
+}
+
+fn semantic_overlap(msg_embedding: &[f32], query_embedding: &[f32]) -> f32 {
+    cosine_similarity(msg_embedding, query_embedding)
 }
 
 /// Simple word-intersection semantic overlap, normalized to [0, 1].
@@ -427,12 +513,73 @@ fn score_to_level(score: f32, config: &FidelityConfig) -> ContextFidelity {
     }
 }
 
-fn render_compressed(msg: &mut Message, config: &FidelityConfig, tc: &dyn TokenCounting) {
+async fn render_compressed(
+    msg: &mut Message,
+    config: &FidelityConfig,
+    tc: &dyn TokenCounting,
+    provider: Option<&dyn LlmProviderDyn>,
+) {
+    // Priority 1: use pre-computed deferred summary when available.
     if let Some(summary) = msg.metadata.deferred_summary.take() {
         msg.content = summary;
-    } else {
-        truncate_to_tokens(&mut msg.content, config.compressed_max_tokens, tc);
+        msg.parts.clear();
+        msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
+        return;
     }
+
+    // Priority 2: LLM-assisted compression when provider and config name are set.
+    if config.compress_provider.is_some()
+        && let Some(p) = provider
+    {
+        let input_tokens = tc.count_tokens(&msg.content);
+        // Guard: skip LLM if input is already small or within 2x of the max budget.
+        if input_tokens <= config.compressed_max_tokens * 2 || input_tokens == 0 {
+            truncate_to_tokens(&mut msg.content, config.compressed_max_tokens, tc);
+            msg.parts.clear();
+            msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
+            return;
+        }
+
+        let prompt = format!(
+            "Summarize in {} tokens or fewer: {}",
+            config.compressed_max_tokens, msg.content
+        );
+        let req = vec![Message {
+            role: Role::User,
+            content: prompt,
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+
+        let span = info_span!(
+            "context.fidelity.compress_llm",
+            input_tokens,
+            cached = false,
+        );
+        let result = {
+            let _enter = span.enter();
+            tokio::time::timeout(Duration::from_secs(30), p.chat(&req)).await
+        };
+
+        match result {
+            Ok(Ok(summary)) => {
+                msg.metadata.deferred_summary = Some(summary.clone());
+                msg.content = summary;
+                msg.parts.clear();
+                msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
+                return;
+            }
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, "compress_llm failed, falling back to truncation");
+            }
+            Err(_) => {
+                tracing::warn!("compress_llm timed out, falling back to truncation");
+            }
+        }
+    }
+
+    // Fallback: truncation.
+    truncate_to_tokens(&mut msg.content, config.compressed_max_tokens, tc);
     msg.parts.clear();
     msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
 }
@@ -610,23 +757,27 @@ mod tests {
             min_query_length: 8,
             max_scored_messages: 500,
             exempt_tail_messages: 0,
+            compress_provider: None,
+            semantic_scoring_provider: None,
         }
     }
 
     // 1. Empty window → no change.
-    #[test]
-    fn empty_window_no_change() {
+    #[tokio::test]
+    async fn empty_window_no_change() {
         let scorer = FidelityScorer;
         let cfg = make_cfg();
         let tc = FixedTc(4);
         let mut messages: Vec<Message> = vec![];
-        scorer.score_and_apply(&mut messages, "query text", &[], &cfg, &tc, 0, false);
+        scorer
+            .score_and_apply(&mut messages, "query text", &[], &cfg, &tc, 0, false, None, None)
+            .await;
         assert!(messages.is_empty());
     }
 
     // 2. All-exempt window → no downgrade.
-    #[test]
-    fn all_exempt_no_downgrade() {
+    #[tokio::test]
+    async fn all_exempt_no_downgrade() {
         let scorer = FidelityScorer;
         let cfg = make_cfg();
         let tc = FixedTc(4);
@@ -635,7 +786,9 @@ mod tests {
             // Injected memory at index 1 with inserted_count=1.
             make_msg(Role::User, "memory context"),
         ];
-        scorer.score_and_apply(&mut messages, "short", &[], &cfg, &tc, 1, false);
+        scorer
+            .score_and_apply(&mut messages, "short", &[], &cfg, &tc, 1, false, None, None)
+            .await;
         for msg in &messages {
             assert!(
                 msg.metadata.fidelity_tag.is_none()
@@ -645,8 +798,8 @@ mod tests {
     }
 
     // 3. Tool pair atomicity: divergent scores → min applied.
-    #[test]
-    fn tool_pair_atomicity() {
+    #[tokio::test]
+    async fn tool_pair_atomicity() {
         let scorer = FidelityScorer;
         // Very high thresholds to force Placeholder for older messages.
         let cfg = FidelityConfig {
@@ -673,23 +826,27 @@ mod tests {
             tool_use_msg,
             tool_result_msg,
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "completely unrelated query blah",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "completely unrelated query blah",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         let tag_a = messages[1].metadata.fidelity_tag;
         let tag_b = messages[2].metadata.fidelity_tag;
         assert_eq!(tag_a, tag_b, "tool pair must share fidelity level");
     }
 
     // 4. Same-role Placeholder merge: 5 consecutive assistant → merged to 1.
-    #[test]
-    fn same_role_placeholder_merge() {
+    #[tokio::test]
+    async fn same_role_placeholder_merge() {
         let scorer = FidelityScorer;
         // Force all non-system messages to become Placeholder.
         let cfg = FidelityConfig {
@@ -701,7 +858,19 @@ mod tests {
         let mut messages: Vec<Message> = std::iter::once(make_msg(Role::System, "system"))
             .chain((0..5).map(|i| make_msg(Role::Assistant, &format!("msg {i}"))))
             .collect();
-        scorer.score_and_apply(&mut messages, "some query here", &[], &cfg, &tc, 0, false);
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "some query here",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         // System + 1 merged placeholder.
         assert_eq!(
             messages.len(),
@@ -712,8 +881,8 @@ mod tests {
     }
 
     // 5. Score normalization: active signal subset still produces [0,1].
-    #[test]
-    fn score_normalization_no_panic() {
+    #[tokio::test]
+    async fn score_normalization_no_panic() {
         let scorer = FidelityScorer;
         let cfg = make_cfg();
         let tc = FixedTc(4);
@@ -722,23 +891,27 @@ mod tests {
             make_msg(Role::User, "hello"),
             make_msg(Role::Assistant, "world response"),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "hello world signal",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "hello world signal",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         for msg in &messages {
             let _ = msg.metadata.fidelity_tag;
         }
     }
 
     // 6. Short query fallback: query.len() < 8 → semantic signal excluded.
-    #[test]
-    fn short_query_fallback() {
+    #[tokio::test]
+    async fn short_query_fallback() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             min_query_length: 8,
@@ -750,7 +923,9 @@ mod tests {
             make_msg(Role::User, "test"),
         ];
         // Must not panic or produce out-of-range scores.
-        scorer.score_and_apply(&mut messages, "short", &[], &cfg, &tc, 0, false);
+        scorer
+            .score_and_apply(&mut messages, "short", &[], &cfg, &tc, 0, false, None, None)
+            .await;
     }
 
     // 7. AC-09: memory_first bypass is the caller's responsibility.
@@ -758,8 +933,8 @@ mod tests {
     //    memory_first simply skip the call (see service.rs guard at INV-11).
     //    This test documents the contract: the scorer itself is stateless and harmless
     //    when called with disabled config or an all-exempt window.
-    #[test]
-    fn memory_first_bypass_is_callers_responsibility() {
+    #[tokio::test]
+    async fn memory_first_bypass_is_callers_responsibility() {
         let scorer = FidelityScorer;
         // Simulate: caller would skip this call when memory_first=true.
         // The scorer itself must be a complete no-op when enabled=false.
@@ -775,15 +950,19 @@ mod tests {
         ];
         let before: Vec<_> = messages.iter().map(|m| m.content.clone()).collect();
         // Even with a real query, disabled scorer must not touch any message.
-        scorer.score_and_apply(
-            &mut messages,
-            "some user query text here",
-            &[],
-            &cfg,
-            &tc,
-            2,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "some user query text here",
+                &[],
+                &cfg,
+                &tc,
+                2,
+                false,
+                None,
+                None,
+            )
+            .await;
         for (msg, orig) in messages.iter().zip(&before) {
             assert_eq!(msg.content, *orig, "content must be unchanged");
             assert!(
@@ -794,8 +973,8 @@ mod tests {
     }
 
     // 9. enabled=false guard: no changes applied.
-    #[test]
-    fn enabled_false_guard() {
+    #[tokio::test]
+    async fn enabled_false_guard() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             enabled: false,
@@ -807,7 +986,19 @@ mod tests {
             make_msg(Role::User, "user message that would normally be scored"),
         ];
         let original_contents: Vec<String> = messages.iter().map(|m| m.content.clone()).collect();
-        scorer.score_and_apply(&mut messages, "query text here", &[], &cfg, &tc, 0, false);
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         for (msg, orig) in messages.iter().zip(&original_contents) {
             assert_eq!(msg.content, *orig);
             assert!(msg.metadata.fidelity_tag.is_none());
@@ -815,8 +1006,8 @@ mod tests {
     }
 
     // 10. Score always in [0.0, 1.0] for extreme inputs (zero weights).
-    #[test]
-    fn score_always_in_range() {
+    #[tokio::test]
+    async fn score_always_in_range() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             enabled: true,
@@ -831,16 +1022,20 @@ mod tests {
             min_query_length: 0,
             max_scored_messages: 500,
             exempt_tail_messages: 0,
+            compress_provider: None,
+            semantic_scoring_provider: None,
         };
         let tc = FixedTc(4);
         let mut messages = vec![make_msg(Role::System, ""), make_msg(Role::User, "")];
         // Must not panic with zero weights.
-        scorer.score_and_apply(&mut messages, "", &[], &cfg, &tc, 0, false);
+        scorer
+            .score_and_apply(&mut messages, "", &[], &cfg, &tc, 0, false, None, None)
+            .await;
     }
 
     // 11. Token count uses tc.count_tokens for Placeholder rendering.
-    #[test]
-    fn placeholder_uses_tc_count_tokens() {
+    #[tokio::test]
+    async fn placeholder_uses_tc_count_tokens() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             full_threshold: 2.0,
@@ -852,15 +1047,19 @@ mod tests {
             make_msg(Role::System, "system"),
             make_msg(Role::User, "user message content for placeholder rendering"),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "some query text here",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "some query text here",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Placeholder)
@@ -874,8 +1073,8 @@ mod tests {
     //     via is_exempt() and retain no tag regardless of the merge pass.
     //     n=20, max_scored_messages=10, exempt_tail_messages=5 → score_end=15.
     //     Indices [15..19] are in the exempt tail.
-    #[test]
-    fn exempt_tail_messages_large_window() {
+    #[tokio::test]
+    async fn exempt_tail_messages_large_window() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             // Force all scored messages to Placeholder so we can see which ones got tagged.
@@ -902,15 +1101,19 @@ mod tests {
             }))
             .collect();
 
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
 
         // Tail messages (focus_pinned) must have no fidelity_tag.
         let tail: Vec<_> = messages
@@ -934,8 +1137,8 @@ mod tests {
     // 14. #4593: when n <= max_scored_messages, exempt_tail_messages has no effect.
     //     n=8, max_scored_messages=10, exempt_tail_messages=5 → score_end=8 (all scored).
     //     Use alternating roles to avoid placeholder merging.
-    #[test]
-    fn exempt_tail_messages_small_window_no_effect() {
+    #[tokio::test]
+    async fn exempt_tail_messages_small_window_no_effect() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             full_threshold: 2.0,
@@ -951,15 +1154,19 @@ mod tests {
         let mut messages: Vec<Message> = std::iter::once(make_msg(Role::System, "system prompt"))
             .chain((1..8usize).map(|i| make_msg(roles[i % 2], &format!("message {i}"))))
             .collect();
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         // score_end = 8 (n=8 <= max_scored_messages=10, so exempt_tail not applied).
         // All non-system messages must be scored (tagged).
         let untagged_count = messages[1..]
@@ -973,8 +1180,8 @@ mod tests {
     }
 
     // 12. Compressed rendering uses deferred_summary when available.
-    #[test]
-    fn compressed_uses_deferred_summary() {
+    #[tokio::test]
+    async fn compressed_uses_deferred_summary() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             full_threshold: 2.0,       // nothing reaches Full
@@ -987,15 +1194,19 @@ mod tests {
             make_msg(Role::User, "original long content that would be truncated");
         msg_with_summary.metadata.deferred_summary = Some("short summary".to_string());
         let mut messages = vec![make_msg(Role::System, "system"), msg_with_summary];
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Compressed)
@@ -1012,8 +1223,8 @@ mod tests {
     }
 
     // Floor: Compressed cannot upgrade to Full when allow_upgrade=false.
-    #[test]
-    fn floor_prevents_compressed_upgrade_to_full() {
+    #[tokio::test]
+    async fn floor_prevents_compressed_upgrade_to_full() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             // Very low thresholds so every message naturally scores Full.
@@ -1030,15 +1241,19 @@ mod tests {
                 Some(ContextFidelity::Compressed),
             ),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long keyword",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long keyword",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Compressed),
@@ -1047,8 +1262,8 @@ mod tests {
     }
 
     // Floor: Placeholder cannot upgrade to Full.
-    #[test]
-    fn floor_prevents_placeholder_upgrade_to_full() {
+    #[tokio::test]
+    async fn floor_prevents_placeholder_upgrade_to_full() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             full_threshold: 0.0,
@@ -1064,15 +1279,19 @@ mod tests {
                 Some(ContextFidelity::Placeholder),
             ),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long keyword",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long keyword",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Placeholder),
@@ -1081,8 +1300,8 @@ mod tests {
     }
 
     // Floor: Placeholder cannot upgrade to Compressed.
-    #[test]
-    fn floor_prevents_placeholder_upgrade_to_compressed() {
+    #[tokio::test]
+    async fn floor_prevents_placeholder_upgrade_to_compressed() {
         let scorer = FidelityScorer;
         // Thresholds: full=2.0 (unreachable), compressed=0.0 (everything Compressed).
         let cfg = FidelityConfig {
@@ -1099,15 +1318,19 @@ mod tests {
                 Some(ContextFidelity::Placeholder),
             ),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Placeholder),
@@ -1116,8 +1339,8 @@ mod tests {
     }
 
     // Floor: further downgrade (Compressed → Placeholder) is allowed.
-    #[test]
-    fn floor_allows_further_downgrade() {
+    #[tokio::test]
+    async fn floor_allows_further_downgrade() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             full_threshold: 2.0,
@@ -1133,15 +1356,19 @@ mod tests {
                 Some(ContextFidelity::Compressed),
             ),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Placeholder),
@@ -1150,8 +1377,8 @@ mod tests {
     }
 
     // Floor: None tag → no constraint, normal scoring.
-    #[test]
-    fn floor_no_constraint_when_none() {
+    #[tokio::test]
+    async fn floor_no_constraint_when_none() {
         let scorer = FidelityScorer;
         // Force every message to Full.
         let cfg = FidelityConfig {
@@ -1164,15 +1391,19 @@ mod tests {
             make_msg(Role::System, "system"),
             make_msg_with_fidelity(Role::User, "query text here long keyword", None),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long keyword",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long keyword",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Full),
@@ -1181,8 +1412,8 @@ mod tests {
     }
 
     // allow_upgrade=true bypasses the Placeholder floor.
-    #[test]
-    fn allow_upgrade_bypasses_floor() {
+    #[tokio::test]
+    async fn allow_upgrade_bypasses_floor() {
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {
             full_threshold: 0.0,
@@ -1198,15 +1429,19 @@ mod tests {
                 Some(ContextFidelity::Placeholder),
             ),
         ];
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long keyword",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            true,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long keyword",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                true,
+                None,
+                None,
+            )
+            .await;
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Full),
@@ -1295,8 +1530,8 @@ mod tests {
     }
 
     // Mixed-fidelity tool pair: None + Some(Compressed) → both end up Compressed via atomicity.
-    #[test]
-    fn mixed_fidelity_tool_pair_floor_plus_atomicity() {
+    #[tokio::test]
+    async fn mixed_fidelity_tool_pair_floor_plus_atomicity() {
         let scorer = FidelityScorer;
         // Force everything to Full naturally, so the floor is the only downward pressure.
         let cfg = FidelityConfig {
@@ -1328,15 +1563,19 @@ mod tests {
             tool_result_msg,
         ];
 
-        scorer.score_and_apply(
-            &mut messages,
-            "query text here long",
-            &[],
-            &cfg,
-            &tc,
-            0,
-            false,
-        );
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
 
         // After floor clamping: tool_use scores Full (no floor), tool_result scores Full but
         // is clamped to Compressed by its floor. Atomicity then takes min(Full, Compressed) =
@@ -1352,5 +1591,330 @@ mod tests {
             Some(ContextFidelity::Compressed),
             "atomicity must bring the tool-use down to the tool-result floor"
         );
+    }
+
+    // 15. LLM path stores deferred_summary and updates content.
+    #[tokio::test]
+    async fn compress_llm_path_stores_deferred_summary() {
+        use zeph_llm::LlmError;
+        use zeph_llm::provider::ChatStream;
+
+        #[derive(Debug)]
+        struct MockProvider;
+
+        impl zeph_llm::provider::LlmProvider for MockProvider {
+            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
+                Ok("summary text".to_string())
+            }
+
+            async fn chat_stream(&self, _messages: &[Message]) -> Result<ChatStream, LlmError> {
+                Err(LlmError::Unavailable)
+            }
+
+            fn supports_streaming(&self) -> bool {
+                false
+            }
+
+            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+                Err(LlmError::EmbedUnsupported {
+                    provider: "mock".into(),
+                })
+            }
+
+            fn supports_embeddings(&self) -> bool {
+                false
+            }
+
+            fn name(&self) -> &str {
+                "mock"
+            }
+        }
+
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            enabled: true,
+            // Force everything to Compressed.
+            full_threshold: 2.0,
+            compressed_threshold: 0.0,
+            compressed_max_tokens: 5,
+            compress_provider: Some("mock".to_string()),
+            ..make_cfg()
+        };
+        // Use tc with chars-per-token=1 so a long string has more than 5*2=10 tokens.
+        let tc = FixedTc(1);
+        let content = "a".repeat(50); // 50 chars → 50 tokens → well above 5*2=10
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, &content),
+        ];
+
+        let provider = MockProvider;
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "some query text here",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                None,
+                Some(&provider),
+            )
+            .await;
+
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Compressed),
+        );
+        assert_eq!(messages[1].content, "summary text");
+        assert_eq!(
+            messages[1].metadata.deferred_summary,
+            Some("summary text".to_string()),
+        );
+    }
+
+    // 16. LLM path skipped when provider is None → truncation used instead.
+    #[tokio::test]
+    async fn compress_llm_skipped_when_provider_none() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            enabled: true,
+            full_threshold: 2.0,
+            compressed_threshold: 0.0,
+            compressed_max_tokens: 5,
+            compress_provider: Some("mock".to_string()),
+            ..make_cfg()
+        };
+        let tc = FixedTc(1);
+        let content = "a".repeat(50);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, &content),
+        ];
+
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "some query text here",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                None,
+                None,
+            )
+            .await;
+
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Compressed),
+        );
+        // Truncation path: deferred_summary must NOT be set.
+        assert!(
+            messages[1].metadata.deferred_summary.is_none(),
+            "deferred_summary must not be populated via truncation path"
+        );
+        // Content should be truncated to <= 5 chars.
+        assert!(
+            messages[1].content.len() <= 5,
+            "content must be truncated, got len={}",
+            messages[1].content.len()
+        );
+    }
+
+    // 17. cosine_similarity unit tests.
+    #[test]
+    fn cosine_similarity_identical() {
+        let v = vec![1.0f32, 0.0, 0.0];
+        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal() {
+        let a = vec![1.0f32, 0.0, 0.0];
+        let b = vec![0.0f32, 1.0, 0.0];
+        assert!(cosine_similarity(&a, &b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector() {
+        let a = vec![0.0f32, 0.0, 0.0];
+        let b = vec![1.0f32, 0.0, 0.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_empty() {
+        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_dimension_mismatch() {
+        let a = vec![1.0f32, 0.0];
+        let b = vec![1.0f32, 0.0, 0.0];
+        assert_eq!(cosine_similarity(&a, &b), 0.0);
+    }
+
+    // 18. semantic_scoring_higher_for_similar_messages.
+    //     Mock provider returns deterministic embeddings:
+    //       "cat"  → [1.0, 0.0, 0.0]  (similar to query)
+    //       "feline" → [0.9, 0.1, 0.0]  (similar to query)
+    //       "stock" → [0.0, 0.0, 1.0]  (orthogonal to query)
+    //       query "cat mat" → [1.0, 0.0, 0.0]
+    #[tokio::test]
+    async fn semantic_scoring_higher_for_similar_messages() {
+        use zeph_llm::LlmError;
+        use zeph_llm::provider::ChatStream;
+
+        #[derive(Debug)]
+        struct EmbedMockProvider;
+
+        impl zeph_llm::provider::LlmProvider for EmbedMockProvider {
+            async fn chat(&self, _: &[Message]) -> Result<String, LlmError> {
+                Err(LlmError::Unavailable)
+            }
+            async fn chat_stream(&self, _: &[Message]) -> Result<ChatStream, LlmError> {
+                Err(LlmError::Unavailable)
+            }
+            fn supports_streaming(&self) -> bool {
+                false
+            }
+            async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+                let v = if text.contains("cat")
+                    || text.contains("mat")
+                    || text.contains("feline")
+                    || text.contains("rug")
+                {
+                    if text.contains("feline") || text.contains("rug") {
+                        vec![0.9f32, 0.1, 0.0]
+                    } else {
+                        vec![1.0f32, 0.0, 0.0]
+                    }
+                } else {
+                    vec![0.0f32, 0.0, 1.0]
+                };
+                Ok(v)
+            }
+            fn supports_embeddings(&self) -> bool {
+                true
+            }
+            fn name(&self) -> &str {
+                "embed-mock"
+            }
+        }
+
+        let provider = EmbedMockProvider;
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            enabled: true,
+            semantic_scoring_provider: Some("embed-mock".to_string()),
+            // Only semantic + temporal active; force Full for all so we can inspect scores
+            // by checking which messages survive with Full vs not.
+            // Use extreme thresholds so all messages pass through as Full.
+            full_threshold: 0.0,
+            compressed_threshold: 0.0,
+            w_semantic: 1.0,
+            w_temporal: 0.0,
+            w_importance: 0.0,
+            w_plan: 0.0,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let cat_msg = make_msg(Role::User, "The cat is on the mat");
+        let feline_msg = make_msg(Role::User, "A feline rests on the rug");
+        let stock_msg = make_msg(Role::User, "Stock prices fell today");
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            cat_msg,
+            feline_msg,
+            stock_msg,
+        ];
+
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "cat mat",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                Some(&provider),
+                None,
+            )
+            .await;
+
+        // All should be scored (Full threshold = 0.0 means everything is Full).
+        // Embeddings must have been populated.
+        assert!(
+            messages[1].metadata.embedding.is_some(),
+            "cat message must have embedding"
+        );
+        assert!(
+            messages[2].metadata.embedding.is_some(),
+            "feline message must have embedding"
+        );
+        assert!(
+            messages[3].metadata.embedding.is_some(),
+            "stock message must have embedding"
+        );
+
+        // Verify cosine directly: cat/feline should be > stock vs query [1,0,0].
+        let query_emb = [1.0f32, 0.0, 0.0];
+        let cat_emb = messages[1].metadata.embedding.as_ref().unwrap();
+        let feline_emb = messages[2].metadata.embedding.as_ref().unwrap();
+        let stock_emb = messages[3].metadata.embedding.as_ref().unwrap();
+        assert!(
+            cosine_similarity(cat_emb, &query_emb) > cosine_similarity(stock_emb, &query_emb),
+            "cat message must be more similar to query than stock message"
+        );
+        assert!(
+            cosine_similarity(feline_emb, &query_emb) > cosine_similarity(stock_emb, &query_emb),
+            "feline message must be more similar to query than stock message"
+        );
+    }
+
+    // 19. semantic_scoring_falls_back_to_keyword_when_provider_none.
+    #[tokio::test]
+    async fn semantic_scoring_falls_back_to_keyword_when_provider_none() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            enabled: true,
+            semantic_scoring_provider: None,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, "cat mat keyword test"),
+            make_msg(Role::User, "something unrelated here"),
+        ];
+
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                None,
+                None,
+            )
+            .await;
+
+        // No embeddings should be computed since provider is None.
+        for msg in &messages {
+            assert!(
+                msg.metadata.embedding.is_none(),
+                "no embedding must be computed when provider is None"
+            );
+        }
+        // Scoring must still work (keyword path).
+        for msg in &messages[1..] {
+            assert!(
+                msg.metadata.fidelity_tag.is_some(),
+                "all non-system messages must be scored via keyword path"
+            );
+        }
     }
 }

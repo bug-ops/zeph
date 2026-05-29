@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 /// Assigned by `FidelityScorer` based on relevance signals; stored in
 /// `MessageMetadata.fidelity_tag` for debug tracing and compaction filtering.
 ///
+/// Distinct from `zeph_memory::optical_forgetting::ContentFidelity`, which tracks
+/// long-term memory store preservation (optical forgetting): `ContextFidelity` governs
+/// rendering in the active context window; `ContentFidelity` governs what is durably
+/// stored in the `SQLite` memory store.
+///
 /// # Examples
 ///
 /// ```

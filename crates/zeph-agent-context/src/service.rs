@@ -672,15 +672,27 @@ impl ContextService {
             if let Some(ref tx) = view.status_tx {
                 let _ = tx.send("Scoring context fidelity\u{2026}".into());
             }
-            FidelityScorer.score_and_apply(
-                window.messages,
-                query,
-                view.planned_next_tools,
-                fidelity_cfg,
-                &*view.token_counter,
-                inserted_count,
-                false, // floor invariant enforced on normal scoring path
-            );
+            let embed_provider = view
+                .fidelity_semantic_provider
+                .as_deref()
+                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+            let compress_provider = view
+                .fidelity_compress_provider
+                .as_deref()
+                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+            FidelityScorer
+                .score_and_apply(
+                    window.messages,
+                    query,
+                    view.planned_next_tools,
+                    fidelity_cfg,
+                    &*view.token_counter,
+                    inserted_count,
+                    false, // floor invariant enforced on normal scoring path
+                    embed_provider,
+                    compress_provider,
+                )
+                .await;
             // Persist fidelity tags so subsequent turns see the floor invariant.
             persist_fidelity_tags(window.messages, view.memory.as_deref()).await;
             recompute_prompt_tokens(window);
@@ -1024,7 +1036,8 @@ impl ContextService {
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        clippy::too_many_lines
     )]
     pub async fn maybe_compact(
         &self,
@@ -1111,15 +1124,27 @@ impl ContextService {
                 budget_ratio = tracing::field::Empty,
             )
             .entered();
-            FidelityScorer.score_and_apply(
-                summ.messages,
-                &summ.current_query,
-                &[],
-                fidelity_cfg,
-                &*summ.token_counter,
-                0,
-                true, // proactive regrade: allow upgrading past the persisted floor
-            );
+            let regrade_embed_provider = summ
+                .fidelity_semantic_provider
+                .as_deref()
+                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+            let regrade_compress_provider = summ
+                .fidelity_compress_provider
+                .as_deref()
+                .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+            FidelityScorer
+                .score_and_apply(
+                    summ.messages,
+                    &summ.current_query,
+                    &[],
+                    fidelity_cfg,
+                    &*summ.token_counter,
+                    0,
+                    true, // proactive regrade: allow upgrading past the persisted floor
+                    regrade_embed_provider,
+                    regrade_compress_provider,
+                )
+                .await;
             // Persist upgraded fidelity tags so the new levels survive the next turn (F-3).
             persist_fidelity_tags(summ.messages, summ.memory.as_deref()).await;
             recompute_prompt_tokens_summ(summ);
@@ -1948,6 +1973,8 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 fidelity_config: None,
+                fidelity_semantic_provider: None,
+                fidelity_compress_provider: None,
                 planned_next_tools: &[],
                 status_tx: None,
             };
@@ -2101,6 +2128,8 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 fidelity_config: None,
+                fidelity_semantic_provider: None,
+                fidelity_compress_provider: None,
                 planned_next_tools: &[],
                 status_tx: None,
             };
@@ -2179,6 +2208,8 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 fidelity_config: None,
+                fidelity_semantic_provider: None,
+                fidelity_compress_provider: None,
                 planned_next_tools: &[],
                 status_tx: None,
             };
@@ -2264,6 +2295,8 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 fidelity_config: None,
+                fidelity_semantic_provider: None,
+                fidelity_compress_provider: None,
                 planned_next_tools: &[],
                 status_tx: None,
             };

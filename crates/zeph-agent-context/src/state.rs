@@ -237,6 +237,14 @@ pub struct ContextAssemblyView<'a> {
     /// `None` when fidelity scoring is not configured (treated as `enabled = false`).
     /// `Some(&cfg)` with `cfg.enabled = false` is also a no-op (early-return inside scorer).
     pub fidelity_config: Option<&'a FidelityConfig>,
+    /// LLM provider used for query and per-message embeddings when
+    /// `fidelity_config.semantic_scoring_provider` is set. Resolved at construction time.
+    /// `None` → keyword overlap fallback is used.
+    pub fidelity_semantic_provider: Option<Arc<zeph_llm::any::AnyProvider>>,
+    /// LLM provider used for `Compressed` rendering when `fidelity_config.compress_provider`
+    /// is set. Resolved by the agent from `[[llm.providers]]` at construction time.
+    /// `None` → truncation fallback is used.
+    pub fidelity_compress_provider: Option<Arc<zeph_llm::any::AnyProvider>>,
     /// Lookahead tool hints derived from the orchestration DAG.
     ///
     /// Empty slice when no DAG lookahead is available (PAACE deferred to P2). The scorer
@@ -375,6 +383,12 @@ pub struct ContextSummarizationView<'a> {
     ///
     /// `None` → proactive regrade is skipped (scoring disabled or config absent).
     pub fidelity_config: Option<FidelityConfig>,
+    /// LLM provider used for query and per-message embeddings during proactive regrade.
+    /// `None` → keyword overlap fallback is used.
+    pub fidelity_semantic_provider: Option<Arc<zeph_llm::any::AnyProvider>>,
+    /// LLM provider used for `Compressed` rendering during proactive regrade.
+    /// `None` → truncation fallback is used.
+    pub fidelity_compress_provider: Option<Arc<zeph_llm::any::AnyProvider>>,
     /// Most recent user query — passed to the scorer as the semantic signal source.
     ///
     /// Empty string when no query is available (`AgeMem` degrades gracefully to

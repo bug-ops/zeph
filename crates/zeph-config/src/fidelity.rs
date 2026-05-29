@@ -28,6 +28,9 @@ pub struct FidelityConfig {
     /// Master switch. When `false`, no fidelity scoring occurs.
     pub enabled: bool,
     /// Cosine/keyword semantic relevance weight.
+    ///
+    /// Previously named `w_keyword` in config — that name is still accepted for compatibility.
+    #[serde(alias = "w_keyword")]
     pub w_semantic: f32,
     /// Recency weight.
     pub w_temporal: f32,
@@ -54,6 +57,14 @@ pub struct FidelityConfig {
     /// `max_scored_messages` cap.
     #[serde(default)]
     pub exempt_tail_messages: usize,
+    /// LLM provider name (from `[[llm.providers]]`) used to summarize messages during
+    /// `Compressed` rendering. When `None`, truncation is used instead.
+    #[serde(default)]
+    pub compress_provider: Option<String>,
+    /// Embedding provider name (from `[[llm.providers]]`) used for semantic similarity scoring.
+    /// When `None`, keyword overlap is used instead.
+    #[serde(default)]
+    pub semantic_scoring_provider: Option<String>,
 }
 
 impl FidelityConfig {
@@ -110,6 +121,8 @@ impl Default for FidelityConfig {
             min_query_length: 8,
             max_scored_messages: 500,
             exempt_tail_messages: 0,
+            compress_provider: None,
+            semantic_scoring_provider: None,
         }
     }
 }
@@ -135,6 +148,26 @@ mod tests {
         assert!(cfg.enabled);
         assert!((cfg.w_semantic - 0.4).abs() < f32::EPSILON);
         assert!((cfg.regrade_threshold - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn deserialize_w_keyword_alias() {
+        let toml_str = r"
+            enabled = true
+            w_keyword = 0.25
+        ";
+        let cfg: FidelityConfig = toml::from_str(toml_str).unwrap();
+        assert!((cfg.w_semantic - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn deserialize_semantic_scoring_provider() {
+        let toml_str = r#"
+            enabled = true
+            semantic_scoring_provider = "embed-fast"
+        "#;
+        let cfg: FidelityConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.semantic_scoring_provider.as_deref(), Some("embed-fast"));
     }
 
     #[test]

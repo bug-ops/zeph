@@ -45,6 +45,11 @@ use crate::store::SqliteStore;
 /// (episodic vs. declarative abstraction). `ContentFidelity` classifies memory *fidelity*:
 /// how much of the original content is preserved. A message can be both
 /// `CompressionLevel::Episodic` and `ContentFidelity::Compressed`.
+///
+/// Also distinct from [`zeph_common::fidelity::ContextFidelity`] introduced by
+/// Context-Adaptive Memory (CAM): `ContentFidelity` tracks the long-term memory store
+/// preservation level (optical forgetting in `zeph-memory`); `ContextFidelity` tracks how
+/// much of a message is shown in the active context window during LLM inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ContentFidelity {
