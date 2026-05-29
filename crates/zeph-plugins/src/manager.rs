@@ -574,6 +574,8 @@ impl PluginManager {
     /// }
     /// ```
     pub fn scan_targets(&self, source: &str) -> Result<Vec<SkillScanInput>, PluginError> {
+        // Cap per-file reads to prevent memory DoS when scanning untrusted plugin archives.
+        const MAX_SKILL_MD_READ_BYTES: u64 = 512 * 1024; // 512 KiB
         let source_path = std::path::PathBuf::from(source);
         if !source_path.exists() {
             return Err(PluginError::InvalidSource {
@@ -614,6 +616,17 @@ impl PluginManager {
                 return Err(PluginError::InvalidSource {
                     path: entry.path.clone(),
                     reason: "skill path escapes plugin source root".to_owned(),
+                });
+            }
+
+            // Reject oversized SKILL.md before reading to prevent memory DoS.
+            let file_len = skill_md_path.metadata().map_or(0, |m| m.len());
+            if file_len > MAX_SKILL_MD_READ_BYTES {
+                return Err(PluginError::InvalidSource {
+                    path: skill_md_path.display().to_string(),
+                    reason: format!(
+                        "SKILL.md is too large ({file_len} bytes, max {MAX_SKILL_MD_READ_BYTES})"
+                    ),
                 });
             }
 

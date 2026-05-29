@@ -201,14 +201,26 @@ impl SkillSemanticScanner {
 
 /// Build the user-facing prompt that wraps the untrusted SKILL.md in XML delimiters.
 ///
-/// The closing delimiter is neutralized in `body` before interpolation so a malicious
-/// SKILL.md cannot escape the `<skill_content>` block and inject LLM instructions.
+/// All three inputs come from untrusted SKILL.md frontmatter for remote skills.
+/// The closing delimiter is neutralized in all fields before interpolation to prevent
+/// delimiter-escape injection. Newlines are stripped from name and purpose to block
+/// multi-line prompt injection outside the `<skill_content>` block.
 fn build_user_prompt(skill_name: &str, declared_purpose: &str, body: &str) -> String {
-    // Neutralize the closing tag to prevent delimiter-escape injection.
+    // Strip newlines and neutralize the closing tag in metadata fields —
+    // both are attacker-controlled for remote skills.
+    let safe_name = skill_name
+        .replace('\n', " ")
+        .replace('\r', "")
+        .replace("</skill_content>", "</ skill_content>");
+    let safe_purpose = declared_purpose
+        .replace('\n', " ")
+        .replace('\r', "")
+        .replace("</skill_content>", "</ skill_content>");
+    // Neutralize the closing tag in body to prevent delimiter-escape injection.
     let safe_content = body.replace("</skill_content>", "</ skill_content>");
     format!(
-        "Skill name: {skill_name}\n\
-         Declared purpose: {declared_purpose}\n\n\
+        "Skill name: {safe_name}\n\
+         Declared purpose: {safe_purpose}\n\n\
          <skill_content>\n\
          {safe_content}\n\
          </skill_content>\n\
