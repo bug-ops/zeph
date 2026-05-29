@@ -346,9 +346,15 @@ mod tests {
         // The literal closing tag must not appear inside the body section.
         // The only </skill_content> in the prompt should be the one we added ourselves,
         // which is the last occurrence. The malicious tag is neutralized to "</ skill_content>".
-        assert!(prompt.contains("</ skill_content>"), "neutralized tag must be present");
+        assert!(
+            prompt.contains("</ skill_content>"),
+            "neutralized tag must be present"
+        );
         // Ensure it still contains exactly one structural </skill_content> (our own closing tag).
         let count = prompt.matches("</skill_content>").count();
-        assert_eq!(count, 1, "only the structural closing tag should remain verbatim");
+        assert_eq!(
+            count, 1,
+            "only the structural closing tag should remain verbatim"
+        );
     }
 }
