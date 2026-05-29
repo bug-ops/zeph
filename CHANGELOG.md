@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-db`: SQLite migration 095 adds `fidelity_tag INTEGER NOT NULL DEFAULT 0` column to
+  `messages` table; PostgreSQL migration adds equivalent `SMALLINT NOT NULL DEFAULT 0` column.
+  Enables per-message fidelity level persistence for cross-turn stability (CAM Phase 2-B, #4550).
+- `zeph-common`: `ContextFidelity::from_u8(v: u8) -> Self` — converts a database integer to a
+  fidelity level; unknown values map to `Full` (safe default).
+- `zeph-memory`: `MessageStore::update_fidelity_tags(&[(MessageId, u8)])` — batch-updates fidelity
+  tags for messages in a single transaction; no-op when slice is empty.
+- `zeph-memory`: `load_history` and `load_history_filtered` now read `fidelity_tag` from the DB and
+  populate `Message::metadata.fidelity_tag`; DB value `0` maps to `None` (never scored) to avoid
+  imposing a spurious floor on pre-CAM messages.
+- `zeph-context`: Floor invariant in `FidelityScorer::score_and_apply` — messages with a persisted
+  `Compressed` tag cannot upgrade to `Full`; messages with `Placeholder` cannot upgrade at all.
+  Bypass via new `allow_upgrade: bool` parameter (used by proactive regrade path only).
+- `zeph-context`: `more_restrictive(a, b)` — helper propagating the stricter fidelity level across
+  tool-use / tool-result atomicity pairs, preventing floor bypass via raw float score.
+- `zeph-agent-context`: `persist_fidelity_tags` — private helper that collects `(MessageId, u8)`
+  pairs from scored messages and batch-writes them to SQLite; called inline after each scoring pass
+  (normal path and prograde path) so floor constraints survive to the next turn.
+
 ### Changed
 
 - `zeph-memory`: embed timeout is now configurable via `memory.semantic.embed_timeout_secs` (default

@@ -1725,3 +1725,65 @@ async fn test_filter_out_preserved_episode_ids_removes_covered_ids() {
         "summary-covered IDs must be removed from the safe-to-delete set"
     );
 }
+
+// ── CAM Phase 2-B: fidelity tag persistence ──────────────────────────────────
+
+#[tokio::test]
+async fn update_fidelity_tags_round_trip() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let mid = store.save_message(cid, "user", "hello").await.unwrap();
+
+    store
+        .update_fidelity_tags(&[(mid, zeph_common::ContextFidelity::Compressed as u8)])
+        .await
+        .unwrap();
+
+    let history = store.load_history(cid, 10).await.unwrap();
+    assert_eq!(
+        history[0].metadata.fidelity_tag,
+        Some(zeph_common::ContextFidelity::Compressed),
+        "persisted Compressed must round-trip through load_history"
+    );
+}
+
+#[tokio::test]
+async fn update_fidelity_tags_placeholder_round_trip() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let mid = store.save_message(cid, "user", "hello").await.unwrap();
+
+    store
+        .update_fidelity_tags(&[(mid, zeph_common::ContextFidelity::Placeholder as u8)])
+        .await
+        .unwrap();
+
+    let history = store
+        .load_history_filtered(cid, 10, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        history[0].metadata.fidelity_tag,
+        Some(zeph_common::ContextFidelity::Placeholder),
+        "persisted Placeholder must round-trip through load_history_filtered"
+    );
+}
+
+#[tokio::test]
+async fn load_history_zero_fidelity_maps_to_none() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    store.save_message(cid, "user", "hello").await.unwrap();
+
+    let history = store.load_history(cid, 10).await.unwrap();
+    assert_eq!(
+        history[0].metadata.fidelity_tag, None,
+        "default DB value 0 must load as None (never-scored marker)"
+    );
+}
+
+#[tokio::test]
+async fn update_fidelity_tags_empty_is_noop() {
+    let store = test_store().await;
+    store.update_fidelity_tags(&[]).await.unwrap();
+}

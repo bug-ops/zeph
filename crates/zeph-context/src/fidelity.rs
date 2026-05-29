@@ -44,7 +44,7 @@ struct FidelityScore {
 /// let cfg = FidelityConfig { enabled: false, ..FidelityConfig::default() };
 /// // With `enabled = false` the scorer is a no-op.
 /// let mut messages = vec![];
-/// scorer.score_and_apply(&mut messages, "query", &[], &cfg, &MockTc, 0);
+/// scorer.score_and_apply(&mut messages, "query", &[], &cfg, &MockTc, 0, false);
 ///
 /// struct MockTc;
 /// impl zeph_common::memory::TokenCounting for MockTc {
@@ -61,9 +61,11 @@ impl FidelityScorer {
     /// 1. Guard: return early when `enabled == false`.
     /// 2. Build exempt set (INV-07 through INV-10).
     /// 3. Score each non-exempt message with normalized weight sum (INV-05).
-    /// 4. Apply tool-pair atomicity — both get `min(score_a, score_b)` (INV-03).
-    /// 5. Render `Compressed` / `Placeholder` messages (INV-12).
-    /// 6. Merge consecutive same-role `Placeholder` messages (INV-04).
+    /// 4. Apply floor invariant: a message with a persisted fidelity tag cannot
+    ///    be upgraded to a less restrictive level unless `allow_upgrade = true`.
+    /// 5. Apply tool-pair atomicity — both get `min(score_a, score_b)` (INV-03).
+    /// 6. Render `Compressed` / `Placeholder` messages (INV-12).
+    /// 7. Merge consecutive same-role `Placeholder` messages (INV-04).
     ///
     /// # Parameters
     ///
@@ -74,6 +76,9 @@ impl FidelityScorer {
     /// - `tc` — token counter used for `Placeholder`/`Compressed` rendering.
     /// - `inserted_count` — number of memory messages freshly injected at indices
     ///   `1..1+inserted_count`; these are always exempt (INV-10).
+    /// - `allow_upgrade` — when `true` the persisted floor invariant is bypassed.
+    ///   Pass `true` only from the proactive regrade path; pass `false` everywhere else.
+    #[allow(clippy::too_many_arguments)]
     pub fn score_and_apply(
         &self,
         messages: &mut Vec<Message>,
@@ -82,12 +87,21 @@ impl FidelityScorer {
         config: &FidelityConfig,
         tc: &dyn TokenCounting,
         inserted_count: usize,
+        allow_upgrade: bool,
     ) {
         if !config.enabled || messages.is_empty() {
             return;
         }
 
-        let scores = compute_scores(messages, query, planned_tools, config, tc, inserted_count);
+        let scores = compute_scores(
+            messages,
+            query,
+            planned_tools,
+            config,
+            tc,
+            inserted_count,
+            allow_upgrade,
+        );
         apply_scores(messages, &scores, config, tc);
 
         let _merge_span = info_span!("context.fidelity.merge").entered();
@@ -96,6 +110,7 @@ impl FidelityScorer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_scores(
     messages: &[Message],
     query: &str,
@@ -103,6 +118,7 @@ fn compute_scores(
     config: &FidelityConfig,
     tc: &dyn TokenCounting,
     inserted_count: usize,
+    allow_upgrade: bool,
 ) -> Vec<Option<FidelityScore>> {
     let n = messages.len();
 
@@ -191,7 +207,28 @@ fn compute_scores(
             };
 
         let score = (raw / weight_sum).clamp(0.0, 1.0);
-        let level = score_to_level(score, config);
+        let candidate_level = score_to_level(score, config);
+
+        // Floor invariant (CAM Phase 2-B): a persisted fidelity tag constrains upgrades.
+        // A message previously scored as Compressed cannot be upgraded back to Full;
+        // Placeholder cannot be upgraded to Full or Compressed.
+        // The regrade path passes allow_upgrade=true to bypass this constraint.
+        let level = if allow_upgrade {
+            candidate_level
+        } else {
+            match msg.metadata.fidelity_tag {
+                Some(ContextFidelity::Placeholder) => ContextFidelity::Placeholder,
+                Some(ContextFidelity::Compressed) => {
+                    if candidate_level == ContextFidelity::Full {
+                        ContextFidelity::Compressed
+                    } else {
+                        candidate_level
+                    }
+                }
+                _ => candidate_level,
+            }
+        };
+
         scores[i] = Some(FidelityScore {
             score,
             level,
@@ -310,6 +347,9 @@ fn plan_relevance(content: &str, planned_tools: &[PlannedToolHint]) -> f32 {
 }
 
 /// O(N) backward scan: find `ToolUse`/`ToolResult` pairs and assign `min(score_a, score_b)`.
+///
+/// The "min" is computed over both the float score and the already-floored level, so
+/// the floor invariant set in `compute_scores` is respected (INV-03 + floor invariant).
 fn apply_tool_pair_atomicity(
     messages: &[Message],
     scores: &mut [Option<FidelityScore>],
@@ -335,7 +375,19 @@ fn apply_tool_pair_atomicity(
                 let score_a = scores[i].as_ref().map_or(1.0, |s| s.score);
                 let score_b = scores[result_idx].as_ref().map_or(1.0, |s| s.score);
                 let min_score = score_a.min(score_b);
-                let min_level = score_to_level(min_score, config);
+
+                // The level is the more restrictive of the two already-floored levels.
+                // Taking min(float) alone would bypass the floor invariant for the pair
+                // because score_to_level(min_score) ignores persisted fidelity tags.
+                let level_a = scores[i]
+                    .as_ref()
+                    .map_or(ContextFidelity::Full, |s| s.level);
+                let level_b = scores[result_idx]
+                    .as_ref()
+                    .map_or(ContextFidelity::Full, |s| s.level);
+                let float_level = score_to_level(min_score, config);
+                let min_level = more_restrictive(more_restrictive(level_a, level_b), float_level);
+
                 let tokens_a = scores[i].as_ref().map_or(0, |s| s.original_tokens);
                 let tokens_b = scores[result_idx].as_ref().map_or(0, |s| s.original_tokens);
                 scores[i] = Some(FidelityScore {
@@ -350,6 +402,18 @@ fn apply_tool_pair_atomicity(
                 });
             }
         }
+    }
+}
+
+/// Return the more restrictive of two fidelity levels.
+///
+/// Restrictiveness order: Placeholder > Compressed > Full.
+fn more_restrictive(a: ContextFidelity, b: ContextFidelity) -> ContextFidelity {
+    use ContextFidelity::{Compressed, Full, Placeholder};
+    match (a, b) {
+        (Placeholder, _) | (_, Placeholder) => Placeholder,
+        (Compressed, _) | (_, Compressed) => Compressed,
+        _ => Full,
     }
 }
 
@@ -379,10 +443,7 @@ fn truncate_to_tokens(content: &mut String, max_tokens: usize, tc: &dyn TokenCou
     }
     let mut len = content.len();
     while len > 0 && tc.count_tokens(&content[..len]) > max_tokens {
-        len /= 2;
-        while len > 0 && !content.is_char_boundary(len) {
-            len -= 1;
-        }
+        len = content.floor_char_boundary(len / 2);
     }
     content.truncate(len);
 }
@@ -545,7 +606,7 @@ mod tests {
         let cfg = make_cfg();
         let tc = FixedTc(4);
         let mut messages: Vec<Message> = vec![];
-        scorer.score_and_apply(&mut messages, "query text", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(&mut messages, "query text", &[], &cfg, &tc, 0, false);
         assert!(messages.is_empty());
     }
 
@@ -560,7 +621,7 @@ mod tests {
             // Injected memory at index 1 with inserted_count=1.
             make_msg(Role::User, "memory context"),
         ];
-        scorer.score_and_apply(&mut messages, "short", &[], &cfg, &tc, 1);
+        scorer.score_and_apply(&mut messages, "short", &[], &cfg, &tc, 1, false);
         for msg in &messages {
             assert!(
                 msg.metadata.fidelity_tag.is_none()
@@ -605,6 +666,7 @@ mod tests {
             &cfg,
             &tc,
             0,
+            false,
         );
         let tag_a = messages[1].metadata.fidelity_tag;
         let tag_b = messages[2].metadata.fidelity_tag;
@@ -625,7 +687,7 @@ mod tests {
         let mut messages: Vec<Message> = std::iter::once(make_msg(Role::System, "system"))
             .chain((0..5).map(|i| make_msg(Role::Assistant, &format!("msg {i}"))))
             .collect();
-        scorer.score_and_apply(&mut messages, "some query here", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(&mut messages, "some query here", &[], &cfg, &tc, 0, false);
         // System + 1 merged placeholder.
         assert_eq!(
             messages.len(),
@@ -646,7 +708,15 @@ mod tests {
             make_msg(Role::User, "hello"),
             make_msg(Role::Assistant, "world response"),
         ];
-        scorer.score_and_apply(&mut messages, "hello world signal", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(
+            &mut messages,
+            "hello world signal",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
         for msg in &messages {
             let _ = msg.metadata.fidelity_tag;
         }
@@ -666,7 +736,7 @@ mod tests {
             make_msg(Role::User, "test"),
         ];
         // Must not panic or produce out-of-range scores.
-        scorer.score_and_apply(&mut messages, "short", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(&mut messages, "short", &[], &cfg, &tc, 0, false);
     }
 
     // 7. AC-09: memory_first bypass is the caller's responsibility.
@@ -698,6 +768,7 @@ mod tests {
             &cfg,
             &tc,
             2,
+            false,
         );
         for (msg, orig) in messages.iter().zip(&before) {
             assert_eq!(msg.content, *orig, "content must be unchanged");
@@ -722,7 +793,7 @@ mod tests {
             make_msg(Role::User, "user message that would normally be scored"),
         ];
         let original_contents: Vec<String> = messages.iter().map(|m| m.content.clone()).collect();
-        scorer.score_and_apply(&mut messages, "query text here", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(&mut messages, "query text here", &[], &cfg, &tc, 0, false);
         for (msg, orig) in messages.iter().zip(&original_contents) {
             assert_eq!(msg.content, *orig);
             assert!(msg.metadata.fidelity_tag.is_none());
@@ -750,7 +821,7 @@ mod tests {
         let tc = FixedTc(4);
         let mut messages = vec![make_msg(Role::System, ""), make_msg(Role::User, "")];
         // Must not panic with zero weights.
-        scorer.score_and_apply(&mut messages, "", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(&mut messages, "", &[], &cfg, &tc, 0, false);
     }
 
     // 11. Token count uses tc.count_tokens for Placeholder rendering.
@@ -767,7 +838,15 @@ mod tests {
             make_msg(Role::System, "system"),
             make_msg(Role::User, "user message content for placeholder rendering"),
         ];
-        scorer.score_and_apply(&mut messages, "some query text here", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(
+            &mut messages,
+            "some query text here",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Placeholder)
@@ -809,7 +888,15 @@ mod tests {
             }))
             .collect();
 
-        scorer.score_and_apply(&mut messages, "query text here long", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
 
         // Tail messages (focus_pinned) must have no fidelity_tag.
         let tail: Vec<_> = messages
@@ -850,7 +937,15 @@ mod tests {
         let mut messages: Vec<Message> = std::iter::once(make_msg(Role::System, "system prompt"))
             .chain((1..8usize).map(|i| make_msg(roles[i % 2], &format!("message {i}"))))
             .collect();
-        scorer.score_and_apply(&mut messages, "query text here long", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
         // score_end = 8 (n=8 <= max_scored_messages=10, so exempt_tail not applied).
         // All non-system messages must be scored (tagged).
         let untagged_count = messages[1..]
@@ -878,11 +973,290 @@ mod tests {
             make_msg(Role::User, "original long content that would be truncated");
         msg_with_summary.metadata.deferred_summary = Some("short summary".to_string());
         let mut messages = vec![make_msg(Role::System, "system"), msg_with_summary];
-        scorer.score_and_apply(&mut messages, "query text here long", &[], &cfg, &tc, 0);
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
         assert_eq!(
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Compressed)
         );
         assert_eq!(messages[1].content, "short summary");
+    }
+
+    // ── CAM Phase 2-B: floor invariant tests ────────────────────────────────
+
+    fn make_msg_with_fidelity(role: Role, content: &str, tag: Option<ContextFidelity>) -> Message {
+        let mut m = make_msg(role, content);
+        m.metadata.fidelity_tag = tag;
+        m
+    }
+
+    // Floor: Compressed cannot upgrade to Full when allow_upgrade=false.
+    #[test]
+    fn floor_prevents_compressed_upgrade_to_full() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            // Very low thresholds so every message naturally scores Full.
+            full_threshold: 0.0,
+            compressed_threshold: -1.0,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg_with_fidelity(
+                Role::User,
+                "query text here long keyword",
+                Some(ContextFidelity::Compressed),
+            ),
+        ];
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long keyword",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Compressed),
+            "Compressed floor must block upgrade to Full"
+        );
+    }
+
+    // Floor: Placeholder cannot upgrade to Full.
+    #[test]
+    fn floor_prevents_placeholder_upgrade_to_full() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            full_threshold: 0.0,
+            compressed_threshold: -1.0,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg_with_fidelity(
+                Role::User,
+                "query text here long keyword",
+                Some(ContextFidelity::Placeholder),
+            ),
+        ];
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long keyword",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Placeholder),
+            "Placeholder floor must block upgrade to Full"
+        );
+    }
+
+    // Floor: Placeholder cannot upgrade to Compressed.
+    #[test]
+    fn floor_prevents_placeholder_upgrade_to_compressed() {
+        let scorer = FidelityScorer;
+        // Thresholds: full=2.0 (unreachable), compressed=0.0 (everything Compressed).
+        let cfg = FidelityConfig {
+            full_threshold: 2.0,
+            compressed_threshold: 0.0,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg_with_fidelity(
+                Role::User,
+                "message content",
+                Some(ContextFidelity::Placeholder),
+            ),
+        ];
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Placeholder),
+            "Placeholder floor must block upgrade to Compressed"
+        );
+    }
+
+    // Floor: further downgrade (Compressed → Placeholder) is allowed.
+    #[test]
+    fn floor_allows_further_downgrade() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            full_threshold: 2.0,
+            compressed_threshold: 2.0, // everything Placeholder
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg_with_fidelity(
+                Role::User,
+                "some content",
+                Some(ContextFidelity::Compressed),
+            ),
+        ];
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Placeholder),
+            "downgrade from Compressed to Placeholder must be allowed"
+        );
+    }
+
+    // Floor: None tag → no constraint, normal scoring.
+    #[test]
+    fn floor_no_constraint_when_none() {
+        let scorer = FidelityScorer;
+        // Force every message to Full.
+        let cfg = FidelityConfig {
+            full_threshold: 0.0,
+            compressed_threshold: -1.0,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg_with_fidelity(Role::User, "query text here long keyword", None),
+        ];
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long keyword",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Full),
+            "None tag must not constrain scoring"
+        );
+    }
+
+    // allow_upgrade=true bypasses the Placeholder floor.
+    #[test]
+    fn allow_upgrade_bypasses_floor() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            full_threshold: 0.0,
+            compressed_threshold: -1.0,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg_with_fidelity(
+                Role::User,
+                "query text here long keyword",
+                Some(ContextFidelity::Placeholder),
+            ),
+        ];
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long keyword",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            true,
+        );
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Full),
+            "allow_upgrade=true must bypass the Placeholder floor"
+        );
+    }
+
+    // Mixed-fidelity tool pair: None + Some(Compressed) → both end up Compressed via atomicity.
+    #[test]
+    fn mixed_fidelity_tool_pair_floor_plus_atomicity() {
+        let scorer = FidelityScorer;
+        // Force everything to Full naturally, so the floor is the only downward pressure.
+        let cfg = FidelityConfig {
+            full_threshold: 0.0,
+            compressed_threshold: -1.0,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let tool_id = "tool-42".to_string();
+
+        let mut tool_use_msg = make_msg_with_fidelity(Role::Assistant, "call tool", None);
+        tool_use_msg.parts = vec![MessagePart::ToolUse {
+            id: tool_id.clone(),
+            name: "shell".to_string(),
+            input: serde_json::json!({}),
+        }];
+
+        let mut tool_result_msg =
+            make_msg_with_fidelity(Role::User, "result body", Some(ContextFidelity::Compressed));
+        tool_result_msg.parts = vec![MessagePart::ToolResult {
+            tool_use_id: tool_id.clone(),
+            content: "output".to_string(),
+            is_error: false,
+        }];
+
+        let mut messages = vec![
+            make_msg(Role::System, "system"),
+            tool_use_msg,
+            tool_result_msg,
+        ];
+
+        scorer.score_and_apply(
+            &mut messages,
+            "query text here long",
+            &[],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
+
+        // After floor clamping: tool_use scores Full (no floor), tool_result scores Full but
+        // is clamped to Compressed by its floor. Atomicity then takes min(Full, Compressed) =
+        // Compressed for both.
+        let tag_use = messages[1].metadata.fidelity_tag;
+        let tag_result = messages[2].metadata.fidelity_tag;
+        assert_eq!(
+            tag_use, tag_result,
+            "tool pair must share the same fidelity level"
+        );
+        assert_eq!(
+            tag_use,
+            Some(ContextFidelity::Compressed),
+            "atomicity must bring the tool-use down to the tool-result floor"
+        );
     }
 }

@@ -679,7 +679,10 @@ impl ContextService {
                 fidelity_cfg,
                 &*view.token_counter,
                 inserted_count,
+                false, // floor invariant enforced on normal scoring path
             );
+            // Persist fidelity tags so subsequent turns see the floor invariant.
+            persist_fidelity_tags(window.messages, view.memory.as_deref()).await;
             recompute_prompt_tokens(window);
             if let Some(ref tx) = view.status_tx {
                 let _ = tx.send(String::new());
@@ -1115,7 +1118,10 @@ impl ContextService {
                 fidelity_cfg,
                 &*summ.token_counter,
                 0,
+                true, // proactive regrade: allow upgrading past the persisted floor
             );
+            // Persist upgraded fidelity tags so the new levels survive the next turn (F-3).
+            persist_fidelity_tags(summ.messages, summ.memory.as_deref()).await;
             recompute_prompt_tokens_summ(summ);
             summ.context_manager.set_regraded_this_turn(true);
             tracing::debug!(
@@ -1510,6 +1516,39 @@ pub(crate) fn recompute_prompt_tokens(window: &mut MessageWindowView<'_>) {
         .iter()
         .map(|m| window.token_counter.count_message_tokens(m) as u64)
         .sum();
+}
+
+/// Persist fidelity tags for all scored messages to `SQLite`.
+///
+/// Collects `(db_id, tag as u8)` pairs for messages that have both a `db_id` and a
+/// non-None `fidelity_tag`, then calls [`SqliteStore::update_fidelity_tags`] inline.
+/// The await is cheap — `SQLite` UPDATE is a sub-millisecond local I/O operation.
+///
+/// A warn-level log is emitted on failure; the next turn will recompute from scratch,
+/// which is safe (the floor invariant simply won't apply until persistence succeeds).
+async fn persist_fidelity_tags(
+    messages: &[zeph_llm::provider::Message],
+    memory: Option<&zeph_memory::semantic::SemanticMemory>,
+) {
+    let Some(mem) = memory else { return };
+    let updates: Vec<(zeph_memory::MessageId, u8)> = messages
+        .iter()
+        .filter_map(|m| {
+            let db_id = m.metadata.db_id?;
+            let tag = m.metadata.fidelity_tag?;
+            Some((zeph_memory::MessageId(db_id), tag as u8))
+        })
+        .collect();
+    if updates.is_empty() {
+        return;
+    }
+    if let Err(e) = mem.sqlite().update_fidelity_tags(&updates).await {
+        tracing::warn!(
+            count = updates.len(),
+            error = %e,
+            "failed to persist fidelity tags; floor invariant will not apply next turn"
+        );
+    }
 }
 
 /// Recompute `cached_prompt_tokens` for a [`ContextSummarizationView`].

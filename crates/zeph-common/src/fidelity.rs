@@ -26,6 +26,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// let compressed: u8 = ContextFidelity::Compressed as u8;
 /// assert_eq!(compressed, 1);
+///
+/// assert_eq!(ContextFidelity::from_u8(0), ContextFidelity::Full);
+/// assert_eq!(ContextFidelity::from_u8(1), ContextFidelity::Compressed);
+/// assert_eq!(ContextFidelity::from_u8(255), ContextFidelity::Full); // unknown → Full
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -40,6 +44,35 @@ pub enum ContextFidelity {
     /// Content replaced by a compact placeholder tag; no semantic content
     /// survives.
     Placeholder = 2,
+}
+
+impl ContextFidelity {
+    /// Convert a database integer to a fidelity level.
+    ///
+    /// Unknown values map to [`Full`](ContextFidelity::Full) as the safe default,
+    /// preserving forward compatibility when new variants are added.
+    ///
+    /// **Note for variant authors:** update this match when adding new variants,
+    /// or old code will silently upgrade persisted values to `Full`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::fidelity::ContextFidelity;
+    ///
+    /// assert_eq!(ContextFidelity::from_u8(0), ContextFidelity::Full);
+    /// assert_eq!(ContextFidelity::from_u8(1), ContextFidelity::Compressed);
+    /// assert_eq!(ContextFidelity::from_u8(2), ContextFidelity::Placeholder);
+    /// assert_eq!(ContextFidelity::from_u8(99), ContextFidelity::Full);
+    /// ```
+    #[must_use]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Compressed,
+            2 => Self::Placeholder,
+            _ => Self::Full, // 0 = Full (default); unknown values also map to Full
+        }
+    }
 }
 
 /// Hint about an upcoming tool call derived from the orchestration DAG.
@@ -80,6 +113,35 @@ impl PlannedToolHint {
             tool_name: tool_name.into(),
             keywords,
             distance_from_current,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ContextFidelity;
+
+    #[test]
+    fn from_u8_round_trip() {
+        assert_eq!(ContextFidelity::from_u8(0), ContextFidelity::Full);
+        assert_eq!(ContextFidelity::from_u8(1), ContextFidelity::Compressed);
+        assert_eq!(ContextFidelity::from_u8(2), ContextFidelity::Placeholder);
+    }
+
+    #[test]
+    fn from_u8_unknown_defaults_to_full() {
+        assert_eq!(ContextFidelity::from_u8(3), ContextFidelity::Full);
+        assert_eq!(ContextFidelity::from_u8(255), ContextFidelity::Full);
+    }
+
+    #[test]
+    fn as_u8_matches_from_u8() {
+        for level in [
+            ContextFidelity::Full,
+            ContextFidelity::Compressed,
+            ContextFidelity::Placeholder,
+        ] {
+            assert_eq!(ContextFidelity::from_u8(level as u8), level);
         }
     }
 }

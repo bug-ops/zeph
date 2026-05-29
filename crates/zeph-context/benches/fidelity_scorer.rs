@@ -69,6 +69,7 @@ fn bench_score_500(c: &mut Criterion) {
                 black_box(&cfg),
                 black_box(&tc),
                 black_box(0),
+                black_box(false),
             );
         });
     });

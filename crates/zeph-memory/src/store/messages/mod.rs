@@ -4,6 +4,7 @@
 use futures::TryStreamExt as _;
 #[allow(unused_imports)]
 use zeph_common;
+use zeph_common::ContextFidelity;
 use zeph_db::ActiveDialect;
 use zeph_db::fts::sanitize_fts_query;
 #[allow(unused_imports)]
@@ -255,6 +256,10 @@ impl SqliteStore {
 
     /// Load the most recent messages for a conversation, up to `limit`.
     ///
+    /// Restores persisted `fidelity_tag` into [`MessageMetadata::fidelity_tag`].
+    /// A stored value of `0` maps to `None` (never scored / Full by default) so
+    /// messages written before CAM was enabled do not acquire a spurious floor.
+    ///
     /// # Errors
     ///
     /// Returns an error if the query fails.
@@ -263,9 +268,9 @@ impl SqliteStore {
         conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
-        let rows: Vec<(String, String, String, String, i64)> = zeph_db::query_as(sql!(
-            "SELECT role, content, parts, visibility, id FROM (\
-                SELECT role, content, parts, visibility, id FROM messages \
+        let rows: Vec<(String, String, String, String, i64, i32)> = zeph_db::query_as(sql!(
+            "SELECT role, content, parts, visibility, id, fidelity_tag FROM (\
+                SELECT role, content, parts, visibility, id, fidelity_tag FROM messages \
                 WHERE conversation_id = ? AND deleted_at IS NULL \
                 ORDER BY id DESC \
                 LIMIT ?\
@@ -278,23 +283,31 @@ impl SqliteStore {
 
         let messages = rows
             .into_iter()
-            .map(|(role_str, content, parts_json, visibility_str, row_id)| {
-                let parts = parse_parts_json(&role_str, &parts_json);
-                Message {
-                    role: parse_role(&role_str),
-                    content,
-                    parts,
-                    metadata: MessageMetadata {
-                        visibility: MessageVisibility::from_db_str(&visibility_str),
-                        compacted_at: None,
-                        deferred_summary: None,
-                        focus_pinned: false,
-                        focus_marker_id: None,
-                        db_id: Some(row_id),
-                        fidelity_tag: None,
-                    },
-                }
-            })
+            .map(
+                |(role_str, content, parts_json, visibility_str, row_id, fidelity_raw)| {
+                    let parts = parse_parts_json(&role_str, &parts_json);
+                    Message {
+                        role: parse_role(&role_str),
+                        content,
+                        parts,
+                        metadata: MessageMetadata {
+                            visibility: MessageVisibility::from_db_str(&visibility_str),
+                            compacted_at: None,
+                            deferred_summary: None,
+                            focus_pinned: false,
+                            focus_marker_id: None,
+                            db_id: Some(row_id),
+                            fidelity_tag: if fidelity_raw == 0 {
+                                None
+                            } else {
+                                u8::try_from(fidelity_raw)
+                                    .ok()
+                                    .map(ContextFidelity::from_u8)
+                            },
+                        },
+                    }
+                },
+            )
             .collect();
         Ok(messages)
     }
@@ -302,6 +315,10 @@ impl SqliteStore {
     /// Load messages filtered by visibility flags.
     ///
     /// Pass `Some(true)` to filter by a flag, `None` to skip filtering.
+    ///
+    /// Restores persisted `fidelity_tag` into [`MessageMetadata::fidelity_tag`].
+    /// A stored value of `0` maps to `None` (never scored / Full by default) so
+    /// messages written before CAM was enabled do not acquire a spurious floor.
     ///
     /// # Errors
     ///
@@ -321,16 +338,16 @@ impl SqliteStore {
         let exclude_user_only = agent_visible == Some(true);
         let exclude_agent_only = user_visible == Some(true);
 
-        let rows: Vec<(String, String, String, String, i64)> = zeph_db::query_as(sql!(
+        let rows: Vec<(String, String, String, String, i64, i32)> = zeph_db::query_as(sql!(
             "WITH recent AS (\
-                SELECT role, content, parts, visibility, id FROM messages \
+                SELECT role, content, parts, visibility, id, fidelity_tag FROM messages \
                 WHERE conversation_id = ? \
                   AND deleted_at IS NULL \
                   AND (NOT ? OR visibility != 'user_only') \
                   AND (NOT ? OR visibility != 'agent_only') \
                 ORDER BY id DESC \
                 LIMIT ?\
-             ) SELECT role, content, parts, visibility, id FROM recent ORDER BY id ASC"
+             ) SELECT role, content, parts, visibility, id, fidelity_tag FROM recent ORDER BY id ASC"
         ))
         .bind(conversation_id)
         .bind(exclude_user_only)
@@ -341,25 +358,63 @@ impl SqliteStore {
 
         let messages = rows
             .into_iter()
-            .map(|(role_str, content, parts_json, visibility_str, row_id)| {
-                let parts = parse_parts_json(&role_str, &parts_json);
-                Message {
-                    role: parse_role(&role_str),
-                    content,
-                    parts,
-                    metadata: MessageMetadata {
-                        visibility: MessageVisibility::from_db_str(&visibility_str),
-                        compacted_at: None,
-                        deferred_summary: None,
-                        focus_pinned: false,
-                        focus_marker_id: None,
-                        db_id: Some(row_id),
-                        fidelity_tag: None,
-                    },
-                }
-            })
+            .map(
+                |(role_str, content, parts_json, visibility_str, row_id, fidelity_raw)| {
+                    let parts = parse_parts_json(&role_str, &parts_json);
+                    Message {
+                        role: parse_role(&role_str),
+                        content,
+                        parts,
+                        metadata: MessageMetadata {
+                            visibility: MessageVisibility::from_db_str(&visibility_str),
+                            compacted_at: None,
+                            deferred_summary: None,
+                            focus_pinned: false,
+                            focus_marker_id: None,
+                            db_id: Some(row_id),
+                            fidelity_tag: if fidelity_raw == 0 {
+                                None
+                            } else {
+                                u8::try_from(fidelity_raw)
+                                    .ok()
+                                    .map(ContextFidelity::from_u8)
+                            },
+                        },
+                    }
+                },
+            )
             .collect();
         Ok(messages)
+    }
+
+    /// Batch-update fidelity tags for messages by their database IDs.
+    ///
+    /// Called after [`zeph_context::fidelity::FidelityScorer::score_and_apply`] to persist
+    /// the assigned fidelity levels so subsequent turns see the persisted floor invariant.
+    ///
+    /// All updates are committed in a single transaction for atomicity. The operation is
+    /// a no-op when `updates` is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction or any UPDATE fails.
+    pub async fn update_fidelity_tags(
+        &self,
+        updates: &[(MessageId, u8)],
+    ) -> Result<(), MemoryError> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for &(id, tag) in updates {
+            zeph_db::query(sql!("UPDATE messages SET fidelity_tag = ? WHERE id = ?"))
+                .bind(i32::from(tag))
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Atomically mark a range of messages as user-only and insert a summary as agent-only.
