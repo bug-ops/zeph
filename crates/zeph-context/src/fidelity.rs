@@ -35,13 +35,22 @@ pub use zeph_config::FidelityConfig;
 
 /// Run embed calls for `messages` concurrently, returning per-index embedding vectors.
 ///
-/// Indexes not included in the result either had no content or produced an error (errors
-/// are logged at `debug` level and silently skipped — scoring falls back to keyword overlap
-/// for those messages).
+/// Indexes not included in the result either had no content, already had an embedding
+/// cached in `msg.metadata.embedding`, or produced an error (errors are logged at `debug`
+/// level and silently skipped — scoring falls back to keyword overlap for those messages).
+/// Each embed call is bounded by a 30-second timeout; timed-out messages are skipped with
+/// a `warn`-level log.
 ///
 /// Only exempt messages (focus-pinned, inserted memory, system) are skipped; for non-exempt messages the content
 /// is optionally truncated to `config.max_embed_input_tokens * 4` bytes (at a char boundary)
 /// before the call.
+///
+/// # Note
+///
+/// This function accepts a generic `F: Fn(&str) -> EmbedFuture` closure, which requires
+/// the returned future to be `'static`. This is convenient for unit tests using mock
+/// closures. Production code in [`FidelityScorer::score_and_apply`] runs the equivalent
+/// concurrent pre-pass inline to avoid the `'static` bound on `&dyn LlmProviderDyn`.
 ///
 /// Concurrency is bounded by [`FidelityConfig::embed_concurrency`] (default 32), which
 /// maps to the `buffer_unordered(N)` parameter. A zero value is clamped to 1 with a warning.
@@ -79,7 +88,10 @@ where
     };
 
     let tasks = messages.iter().enumerate().filter_map(|(i, msg)| {
-        if is_exempt(msg, i, inserted_count) || msg.content.is_empty() {
+        if is_exempt(msg, i, inserted_count)
+            || msg.content.is_empty()
+            || msg.metadata.embedding.is_some()
+        {
             return None;
         }
         let content = match config.max_embed_input_tokens {
@@ -91,11 +103,15 @@ where
 
     futures::stream::iter(tasks)
         .map(|(i, content)| async move {
-            let result = embed(&content).await;
+            let result = tokio::time::timeout(Duration::from_secs(30), embed(&content)).await;
             match result {
-                Ok(vec) => Some((i, vec)),
-                Err(e) => {
+                Ok(Ok(vec)) => Some((i, vec)),
+                Ok(Err(e)) => {
                     tracing::debug!(idx = i, err = %e, "embed_prepass: embed failed, skipping");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(idx = i, "embed_prepass: embed timed out, skipping");
                     None
                 }
             }
@@ -225,7 +241,9 @@ impl FidelityScorer {
             None
         };
 
-        // Pre-pass: compute missing per-message embeddings when query embedding is available.
+        // Concurrent embed pre-pass: populate missing embeddings for the scored window.
+        // Uses buffer_unordered so all N embed calls run in parallel (bounded by
+        // embed_concurrency), replacing the former sequential O(N) loop.
         if let (Some(q_emb), Some(p)) = (&query_embedding, embed_provider) {
             let n = messages.len();
             let score_end = if n > config.max_scored_messages {
@@ -233,23 +251,54 @@ impl FidelityScorer {
             } else {
                 n
             };
-            for (i, msg) in messages.iter_mut().enumerate().take(score_end) {
-                if msg.metadata.embedding.is_none() && !is_exempt(msg, i, inserted_count) {
-                    let _span =
-                        info_span!("context.fidelity.embed_message", cache_hit = false).entered();
-                    match tokio::time::timeout(Duration::from_secs(30), p.embed(&msg.content)).await
-                    {
-                        Ok(Ok(v)) => msg.metadata.embedding = Some(v),
+            let concurrency = if config.embed_concurrency == 0 {
+                1
+            } else {
+                config.embed_concurrency
+            };
+            let _span = info_span!("context.fidelity.embed_prepass").entered();
+            let embeddings: std::collections::HashMap<usize, Vec<f32>> =
+                futures::stream::iter(messages[..score_end].iter().enumerate().filter_map(
+                    |(i, msg)| {
+                        if msg.metadata.embedding.is_none()
+                            && !is_exempt(msg, i, inserted_count)
+                            && !msg.content.is_empty()
+                        {
+                            let content = match config.max_embed_input_tokens {
+                                Some(n) => {
+                                    truncate_to_byte_limit(&msg.content, n.saturating_mul(4))
+                                }
+                                None => msg.content.clone(),
+                            };
+                            Some((i, content))
+                        } else {
+                            None
+                        }
+                    },
+                ))
+                .map(|(i, content)| async move {
+                    let result =
+                        tokio::time::timeout(Duration::from_secs(30), p.embed(&content)).await;
+                    match result {
+                        Ok(Ok(v)) => Some((i, v)),
                         Ok(Err(e)) => {
                             tracing::warn!(error = %e, "message embed failed, skipping");
+                            None
                         }
                         Err(_) => {
-                            tracing::warn!("fidelity message embed timed out, skipping");
+                            tracing::warn!(idx = i, "fidelity message embed timed out, skipping");
+                            None
                         }
                     }
-                }
+                })
+                .buffer_unordered(concurrency)
+                .filter_map(|opt| async move { opt })
+                .collect()
+                .await;
+            for (i, emb) in embeddings {
+                messages[i].metadata.embedding = Some(emb);
             }
-            let _ = q_emb; // suppress unused warning; used below in compute_scores
+            let _ = q_emb; // used below in compute_scores
         }
 
         let scores = compute_scores(
@@ -2277,6 +2326,47 @@ mod tests {
             result.contains_key(&1),
             "result must be produced even with concurrency=0"
         );
+    }
+
+    #[tokio::test]
+    async fn embed_prepass_skips_cached_embeddings() {
+        let mut msg_with_cache = make_msg(Role::User, "already embedded");
+        msg_with_cache.metadata.embedding = Some(vec![9.0f32]);
+        let messages = vec![
+            make_msg(Role::System, "system"),
+            msg_with_cache,
+            make_msg(Role::User, "needs embedding"),
+        ];
+        let cfg = FidelityConfig::default();
+        let embed = |_text: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0f32]) }) };
+        let result = embed_prepass(&messages, &embed, &cfg, 0).await;
+        assert!(
+            !result.contains_key(&1),
+            "message with cached embedding must be skipped"
+        );
+        assert!(
+            result.contains_key(&2),
+            "message without embedding must be processed"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn embed_prepass_timeout_skips_message() {
+        let messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, "user"),
+        ];
+        let cfg = FidelityConfig::default();
+        let embed = |_text: &str| -> EmbedFuture {
+            Box::pin(async {
+                // Simulate a stalled embed provider.
+                tokio::time::sleep(Duration::from_secs(45)).await;
+                Ok(vec![1.0f32])
+            })
+        };
+        // Run the pre-pass; the 30-second timeout fires before the 60-second sleep.
+        let result = embed_prepass(&messages, &embed, &cfg, 0).await;
+        assert!(result.is_empty(), "timed-out embed must be skipped");
     }
 
     // ── FidelityConfig new fields ─────────────────────────────────────────────
