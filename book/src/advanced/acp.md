@@ -210,6 +210,40 @@ Unknown transport variants are skipped with a `WARN` log line and do not cause t
 
 No configuration is needed beyond what the IDE sends. Zeph reads the server list from each `new_session` request and registers the servers with the shared `McpManager` for the duration of the session.
 
+## Session Management and Reporting
+
+### Session/Usage Reporting
+
+Zeph reports session usage metrics to the IDE via the `SessionUpdate::UsageReport` message type. This allows IDEs to display token counts, cost estimates, and API quota usage in real-time:
+
+```json
+{
+  "type": "UsageReport",
+  "session_id": "...",
+  "usage": {
+    "input_tokens": 1245,
+    "output_tokens": 387,
+    "cache_hit_tokens": 150,
+    "cost_usd": 0.015
+  }
+}
+```
+
+Usage is reported after each agent turn and can be aggregated by the IDE across a session. The `cache_hit_tokens` field indicates tokens served from semantic caching (when enabled).
+
+### Session Deletion
+
+Delete a persisted session and all its message history:
+
+```json
+{
+  "method": "session/delete",
+  "params": { "session_id": "550e8400-e29b-41d4-a716-446655440000" }
+}
+```
+
+This removes the conversation record and all associated messages from SQLite. The operation is immediate and irreversible.
+
 ## Session modes
 
 Each ACP session operates in a mode that signals intent to the agent. Modes are set by the IDE using `set_session_mode` and can be changed at any time during a session.
@@ -233,7 +267,8 @@ Zeph advertises the following capabilities in the `initialize` response:
     "session_capabilities": {
       "list": {},
       "fork": {},
-      "resume": {}
+      "resume": {},
+      "delete": {}
     },
     "mcp_capabilities": {
       "http": true,
@@ -243,9 +278,68 @@ Zeph advertises the following capabilities in the `initialize` response:
 }
 ```
 
-`session_capabilities` is always present regardless of whether the `unstable_session_*` features are compiled in. The actual `list_sessions`, `fork_session`, and `resume_session` handlers are available when the corresponding features are enabled (all three are on by default — see [Feature Flags](../reference/feature-flags.md#acp-session-management-unstable)).
+`session_capabilities` is always present regardless of whether the `unstable_session_*` features are compiled in. The actual `list_sessions`, `fork_session`, `resume_session`, and `delete_session` handlers are available when the corresponding features are enabled (all three are on by default — see [Feature Flags](../reference/feature-flags.md#acp-session-management-unstable)).
 
 `mcp_capabilities` is present when an `McpManager` is available (i.e., MCP servers are configured). It advertises support for the HTTP MCP transport, allowing IDEs to pass MCP server definitions that use HTTP endpoints.
+
+## Providers API
+
+Zeph exposes a `providers` method that allows IDEs to query the available LLM providers and models configured in Zeph:
+
+```json
+{
+  "method": "providers",
+  "params": {}
+}
+```
+
+Response:
+
+```json
+{
+  "providers": [
+    {
+      "name": "claude",
+      "type": "claude",
+      "models": [
+        {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "context_tokens": 200000},
+        {"id": "claude-opus-4-6", "display_name": "Claude Opus 4.6", "context_tokens": 200000}
+      ]
+    },
+    {
+      "name": "openai",
+      "type": "openai",
+      "models": [
+        {"id": "gpt-5.2", "display_name": "GPT-5.2", "context_tokens": 128000}
+      ]
+    }
+  ]
+}
+```
+
+IDEs can use this to populate model selectors in the UI and allow users to switch models at runtime.
+
+## Elicitation Protocol
+
+When Zeph's context budget is tight or the agent is unsure how to proceed, it can request clarification from the IDE via the `Elicitation` protocol:
+
+```json
+{
+  "type": "Elicitation",
+  "session_id": "...",
+  "prompt": "The request could apply to multiple files. Which files should I edit?",
+  "options": [
+    {"id": "1", "label": "src/main.rs"},
+    {"id": "2", "label": "src/lib.rs"},
+    {"id": "3", "label": "All files in /src"}
+  ],
+  "timeout_secs": 30
+}
+```
+
+The IDE should display this as a popup or choice dialog and send back the user's selection via the standard message API. If the timeout expires, Zeph proceeds with a default choice or aborts the operation.
+
+Elicitation is opt-in and controlled by `[acp] elicitation_enabled` (default: false) in config.
 
 ## Session isolation
 

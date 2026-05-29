@@ -61,6 +61,16 @@ McpManager
 - Capability negotiation: `initialize` → `tools/list` → register in tool registry
 - Health: each server has heartbeat; dead servers are restarted automatically
 - Shutdown: graceful SIGTERM → wait → SIGKILL fallback
+- **Retry with jitter**: exponential backoff on connection failure, base configured by `startup_retry_backoff_ms`, capped at 8 s; jitter applies `[nominal * 3/4, nominal]` range (AWS-style); commit #4568
+
+### Per-Server Config Fields (Added)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `startup_retry_backoff_ms` | `u64` | `1000` | Base interval for exponential backoff on startup failure. Actual delay = `min(base * 2^(attempt-1), 8000) ms` with jitter. Minimum clamped to 1. |
+| `tool_timeout_secs` | `Option<u64>` | `None` (no limit) | Per-call timeout for `tools/call` on this server. Max 3600. When set, overrides global timeout for this server's tools. |
+
+Config migration step 50 adds these fields. Both live under `[[mcp.servers]]`.
 
 ### Tool Management
 - Tools merged from all MCP servers into single catalog each turn
@@ -91,6 +101,11 @@ McpManager
 | `crates/zeph-tui/src/channel.rs` | `suppress_stderr` integration |
 
 ---
+
+## Implementation Notes
+
+- `ToolRefreshEvent` channel is bounded to 16 slots (commit #4488) — prevents unbounded memory growth in high-churn registries
+- Cancellation token plumbed through retry loop (commit #4609) — shutdown is clean even during retry wait
 
 ## See Also
 

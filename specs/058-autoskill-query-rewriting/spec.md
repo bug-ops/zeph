@@ -10,7 +10,7 @@ tags:
   - retrieval
   - autoskill
 created: 2026-05-19
-status: draft
+status: implemented
 related:
   - "[[005-skills/spec]]"
   - "[[015-self-learning/spec]]"
@@ -186,6 +186,13 @@ AND query rewriting is disabled for all turns (treated as empty string)
 ### Never
 - Substitute the rewritten query for the original in any context other than the embedding call
 - Use the quality provider (e.g., claude-opus) for query rewriting
+
+---
+
+## Implementation Notes
+
+- Implemented in commit #4506 (A3+A4+A5 combined PR)
+- `heuristic_promotion` lifecycle bug fixed: promotion job not started when `heuristic_promotion_enabled = false` on initial wiring (commit #4539)
 
 ---
 

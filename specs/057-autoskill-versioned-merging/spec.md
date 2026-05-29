@@ -10,7 +10,7 @@ tags:
   - self-learning
   - autoskill
 created: 2026-05-19
-status: draft
+status: implemented
 related:
   - "[[005-skills/spec]]"
   - "[[015-self-learning/spec]]"
@@ -233,6 +233,11 @@ THEN the candidate is discarded (falls through to Discard branch)
 - Set merged version to anything other than `existing.version + 1`
 
 ---
+
+## Implementation Notes
+
+- Implemented in commits #4476 (A1+A2 combined), #4499 (`dedup_threshold` config + Add/Merge/Discard in `miner.rs`)
+- `validate_query_rewrite` placement corrected to run after skill matching (commit #4539)
 
 ## See Also
 

@@ -10,7 +10,7 @@ tags:
   - security
   - experimental
 created: 2026-05-18
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -68,8 +68,7 @@ Three concrete threat classes are undetected today:
    trajectory. Each signal alone falls below the per-turn policy threshold.
 
 MAGMA [[004-7-memory-apex-magma]] tracks semantic entity relationships but does not
-accumulate trajectory-level safety signals. SafeAgent (#3570) addresses trajectory-
-stateful mediation conceptually but remains unimplemented.
+accumulate trajectory-level safety signals.
 
 ### Goal
 
@@ -330,21 +329,22 @@ AND no tool call is blocked by shadow memory
 
 ## 11. Implementation Notes
 
-- New module: `crates/zeph-memory/src/shadow/mod.rs` — owns `TrajectoryRiskAccumulator`
-  and `SignalEvent`. No dependency on graph or semantic memory modules.
-- `zeph-sanitizer` gains two new `AuditEvent` variants (`ToolChainPattern`,
-  `TrajectoryBlock`) — additive change, no existing variant modified.
-- `zeph-agent-tools` wires the accumulator into the pre-tool-execution gate; receives it
-  as an `Arc<Mutex<TrajectoryRiskAccumulator>>` from the session context.
+- New module: `crates/zeph-core/src/agent/shadow_sentinel.rs` — owns `ShadowSentinel`,
+  `SentinelEvent`, and `ShadowProbeExecutor`. The core struct is `ShadowSentinel` (not
+  `TrajectoryRiskAccumulator` as originally specced — name changed during implementation).
+- `ShadowSentinel` is wired into the agent loop (commit #4443: `wire ShadowMemory into agent loop`)
+- `SentinelEvent` is the per-turn audit event type in `zeph-core`; `ShadowEvent` in
+  `zeph-sanitizer` is a separate, parallel type for sanitizer-layer events.
+- The `ShadowEvent → SentinelEvent` rename in `zeph-core` happened in commit #4401 (`refactor:
+  rename ShadowEvent to SentinelEvent; extract HTTP middleware`).
+- `ShadowSentinel` JoinHandle is tracked in `LifecycleState` (commit #4588).
 - Signal weight calibration: start with the MAGE paper's reported thresholds; adjust via
   integration tests against known-attack scenarios.
-- The in-memory ring buffer for `signal_history` is sized by `signal_history_cap` (default
-  200 entries); oldest entries evicted when capacity is reached. The risk score itself is
-  not affected by eviction — it is a running accumulator, not recomputed from history.
 - Temporal decay formula: at each turn boundary, `trajectory_risk *= exp(-ln(2) / halflife)`.
   This ensures the score halves every `risk_halflife_turns` turns without any signals.
 - No database migration is required for this feature.
-- TUI gauge integration uses the existing security panel widget added in `zeph-tui`.
+- TUI fleet refresh spinner and tracing spans added for shadow sentinel (commit #4376).
+- Prometheus shadow memory metrics added in commit #4408.
 
 ---
 

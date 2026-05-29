@@ -264,3 +264,26 @@ Sub-specs for Telegram Bot API 10.0 features live in this directory:
 
 The `stream_interval_ms` config field (issue #3727) is documented in the
 [Telegram Streaming Interval](#telegram-streaming-interval) section above.
+
+---
+
+## Implementation Fixes (v0.21–v0.22)
+
+### Telegram `chat_id` Authorization (commit #4403)
+
+`TelegramChannel::confirm()` now enforces the `chat_id` authorization loop correctly.
+Previously, the authorization check could be bypassed if the reply came from a different
+chat. The fix ensures that all replies are validated against the originating `chat_id`
+before the confirmation result is accepted.
+
+### Discord / Slack JoinHandle Tracking (commit #4501)
+
+`DiscordChannel` and `SlackChannel` now track their background task `JoinHandle`s
+in `LifecycleState`. Previously, the gateway task and Slack event server task were spawned
+without tracking, creating silent orphan tasks on shutdown.
+
+### StreamingBuffer (commit #4398)
+
+A shared `StreamingBuffer` abstraction was extracted from channel-specific code. Discord
+and Slack adapters now use the shared buffer for streaming chunk accumulation. Stub
+`elicit()` methods were added to Discord and Slack channels for future elicitation support.

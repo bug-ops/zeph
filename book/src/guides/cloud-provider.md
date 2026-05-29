@@ -73,6 +73,52 @@ reasoning_effort = "medium"   # optional: low, medium, high (for o3, etc.)
 
 When `embedding_model` is set, Qdrant subsystems use it automatically for skill matching and semantic memory.
 
+### o-Series Models (o1, o3, o4)
+
+OpenAI's o-series reasoning models have different configuration requirements from standard LLMs:
+
+```toml
+[[llm.providers]]
+type = "openai"
+model = "o3-mini"
+max_completion_tokens = 16000      # Required: cap reasoning token budget (max 100,000)
+# Note: o-series does not support:
+# - max_tokens (use max_completion_tokens instead)
+# - temperature (always 1.0)
+# - top_p (always 1.0)
+# - system prompts (limited support — use sparingly)
+```
+
+**Cost control with reasoning models:**
+
+The `max_completion_tokens` parameter is critical for o-series models because reasoning tokens are 10–20× more expensive than regular completion tokens. Set a hard cap based on your task complexity:
+
+- **Simple tasks** (math, string manipulation): `max_completion_tokens = 2000`
+- **Moderate tasks** (code analysis, data retrieval): `max_completion_tokens = 8000`
+- **Complex reasoning** (multi-step analysis): `max_completion_tokens = 16000+`
+
+Without a cap, reasoning models can generate 100,000+ tokens per request, leading to unexpected bills. Start conservatively and increase if the model runs out of tokens mid-reasoning.
+
+**Latency expectations:**
+
+Reasoning models typically take 5–30 seconds per request. If you pair o-series with faster models via cascading, configure the cascade to skip o-series for simple queries:
+
+```toml
+[llm]
+routing = "cascade"
+
+[[llm.providers]]
+name = "fast"
+type = "openai"
+model = "gpt-4o-mini"
+
+[[llm.providers]]
+name = "reasoning"
+type = "openai"
+model = "o3-mini"
+max_completion_tokens = 8000
+```
+
 ## Compatible APIs
 
 Use `type = "compatible"` with the appropriate `base_url`:

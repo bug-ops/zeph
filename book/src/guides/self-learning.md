@@ -68,9 +68,55 @@ BM25+cosine hybrid matching improves recall for skills with distinctive trigger 
 [skills]
 hybrid_search = true
 cosine_weight = 0.7   # reduce to 0.5 to give BM25 more weight
+bm25_alpha = 0.7      # weight for BM25 in fusion; 0.5 = equal weight, 0.7 = favor BM25
 ```
 
 When hybrid search is enabled, the system prompt includes skill health attributes (`trust`, `wilson`, `outcomes`) so the LLM can factor in reliability.
+
+## Step 3a — Add Query Rewriting (A3, Optional)
+
+AutoSkill A3 adds an optional query rewriting step before skill retrieval. The query is lightly rewritten to expand synonyms and clarify intent, improving skill matching for paraphrased requests.
+
+```toml
+[skills]
+query_rewrite_provider = "fast"   # provider name for rewrite LLM calls; empty = disabled
+```
+
+The rewrite has a 5-second timeout with automatic fallback to the original query on failure. This improves recall without adding cost when the rewrite fails.
+
+## Step 3b — Index Trigger Keywords in Skills (A5, Optional)
+
+Skills can now include a `triggers` field in their SKILL.md frontmatter to list alternative keywords:
+
+```toml
+---
+name: web-search
+description: Search the web for current information
+triggers = ["google it", "look up", "find online", "web search", "search results"]
+---
+```
+
+Trigger embeddings are indexed and scored alongside the skill description. The final score for each skill is `max(description_score, best_trigger_score)`, so trigger keyword matches boost relevance. Zeph limits total trigger embeddings to 500 across all skills.
+
+## Step 3c — Enable AutoSkill A6 Heuristic Promotion (Optional)
+
+AutoSkill A6 periodically scans the execution history for learned heuristics and automatically promotes the best ones to full skills. This is useful for turning frequently-used error-correction hints into reusable skills.
+
+```toml
+[skills.learning]
+heuristic_promotion_enabled = true
+heuristic_promotion_provider = "fast"        # LLM provider for promotion decisions
+heuristic_promotion_threshold = 5            # min heuristics before promotion eligibility
+heuristic_promotion_interval_hours = 24      # background job interval
+```
+
+After the interval elapses, you can preview which skills are ready for promotion:
+
+```bash
+zeph skills promote-heuristics        # dry-run: show eligible skills
+```
+
+The promotion system never modifies active skills — new candidates are written as quarantined drafts for your review. Enabled by default but set `heuristic_promotion_enabled = false` in `[skills.learning]` to disable it.
 
 ## Step 4 — Enable EMA Routing (Multi-Provider Setups)
 
@@ -121,6 +167,9 @@ This triggers the LLM improvement pipeline on the next agent cycle.
 [skills]
 hybrid_search = true
 cosine_weight = 0.7
+bm25_alpha = 0.7
+query_rewrite_provider = ""         # enable with "fast" to add query rewriting
+# Add trigger keywords to your skill files to improve matching
 
 [skills.learning]
 enabled = true
@@ -131,7 +180,9 @@ rollback_threshold = 0.5
 min_evaluations = 5
 max_versions = 10
 cooldown_minutes = 60
-detector_mode = "regex"   # switch to "judge" for LLM-backed detection
+detector_mode = "regex"             # switch to "judge" for LLM-backed detection
+heuristic_promotion_enabled = false # set to true to enable A6 promotion
+heuristic_promotion_provider = ""   # required when heuristic_promotion_enabled = true
 
 [agent.learning]
 correction_detection = true
@@ -140,7 +191,7 @@ correction_recall_limit = 3
 correction_min_similarity = 0.75
 ```
 
-Keep `auto_activate = false` until you have enough history to trust the LLM-generated improvements.
+Keep `auto_activate = false` until you have enough history to trust the LLM-generated improvements. Start with A3/A5/A6 disabled (`query_rewrite_provider = ""`, no `triggers` field, `heuristic_promotion_enabled = false`) and enable them one at a time to measure their impact.
 
 ## Step 5 -- Enable D2Skill Step-Level Correction (Optional)
 

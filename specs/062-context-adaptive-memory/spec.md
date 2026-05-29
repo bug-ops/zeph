@@ -35,14 +35,20 @@ CAM introduces three coordinated mechanisms across a single cohesive subsystem:
 - **AgeMem (#4016)** — Proactive age-triggered regrading: fires before the compaction threshold using heuristic budget monitoring.
 - **PAACE (#4018)** — Plan-Aware Adaptive Context Engineering: plan-hint scoring bias from orchestration DAG lookahead (data structure only in MVP; wiring deferred).
 
-### Out of Scope (v0.21 MVP)
+### Implemented Beyond MVP (v0.21–v0.22)
+
+The following items were originally listed as out of scope but have since been implemented:
+
+- **Per-message embedding-based semantic scoring** — `semantic_scoring_provider` field in `FidelityConfig` enables LLM-embed scoring alongside keyword heuristics. Concurrent pre-pass via `buffer_unordered` bounded by `embed_concurrency`. Input size capped by `max_embed_input_tokens`.
+- **LLM-assisted compression for `Compressed` rendering** — `compress_provider` field enables LLM-compressed rendering with 30s timeout. Result cached in `msg.metadata.deferred_summary`. Input size capped by `max_compress_input_tokens`.
+- **Orchestration DAG live wiring for PAACE** — PAACE lookahead wired from DAG into `ContextAssemblyInput.planned_next_tools` (commit #4633).
+- **Fidelity state persistence to SQLite** — `fidelity_tag` column persisted in the `messages` table (migration 093); floor invariant maintained across turns (commit #4615).
+- **Lookahead BFS guard** — BFS computation is skipped when fidelity scoring is disabled to avoid wasted work (commit #4641).
+
+### Remaining Out of Scope
 
 - RL-based trigger threshold learning
-- Per-message embedding-based scoring
-- Orchestration DAG live wiring for PAACE
-- Fidelity state persistence to SQLite
 - Dynamic weight adaptation
-- LLM-assisted compression for `Compressed` rendering
 
 ---
 
@@ -168,8 +174,34 @@ pub struct FidelityConfig {
     pub min_query_length: usize,
     /// Maximum number of messages scored per turn (performance cap).
     pub max_scored_messages: usize,
+    /// Number of newest messages always exempted from scoring (tail guard).
+    pub exempt_tail_messages: usize,
+    /// BFS lookahead depth for PAACE plan-hint extraction.
+    pub lookahead_depth: u8,
+    /// Optional provider name for embedding-based semantic scoring.
+    /// When set, embeds each non-exempt message and scores via cosine similarity.
+    /// Replaces keyword-overlap heuristic for the w_semantic signal.
+    pub semantic_scoring_provider: Option<String>,
+    /// Optional provider name for LLM-assisted compression.
+    /// When set, calls the LLM to produce a compressed summary instead of truncating.
+    /// Result is cached in `msg.metadata.deferred_summary`.
+    pub compress_provider: Option<String>,
+    /// Maximum number of concurrent embed requests in the embedding pre-pass.
+    /// Default: 32. Zero is clamped to 1.
+    pub embed_concurrency: usize,
+    /// Maximum input token count per embed call. Content is truncated at a char
+    /// boundary to approximately `max_embed_input_tokens * 4` bytes before embedding.
+    /// `None` = no limit.
+    pub max_embed_input_tokens: Option<usize>,
+    /// Maximum input token count fed to the compress_provider LLM call.
+    /// Content exceeding this is truncated before the LLM compress call.
+    /// `None` = no limit (truncation falls back to `compressed_max_tokens`).
+    pub max_compress_input_tokens: Option<usize>,
 }
 ```
+
+**Note**: The `w_keyword` alias used in some early versions of config documentation is
+deprecated. Use `w_semantic` directly.
 
 ### 4.4 FidelityScore (internal, zeph-context/src/fidelity.rs)
 
@@ -362,22 +394,37 @@ Never downgraded (INV-07 through INV-10):
 
 ```toml
 [context.fidelity]
-enabled = false                 # off by default for v0.21
+enabled = false                 # off by default
 w_semantic = 0.3
 w_temporal = 0.3
 w_importance = 0.2
 w_plan = 0.2
 full_threshold = 0.7
 compressed_threshold = 0.3
-compressed_max_tokens = 50      # tokens kept for Compressed rendering
+compressed_max_tokens = 50      # tokens kept for Compressed rendering (truncation path)
 regrade_threshold = 0.6         # AgeMem proactive trigger budget ratio
 min_query_length = 8            # below this, semantic signal is zeroed
 max_scored_messages = 500       # performance cap
+exempt_tail_messages = 0        # newest N messages always exempt from scoring
+lookahead_depth = 3             # BFS depth for PAACE plan-hint extraction
+
+# Phase 2-C: LLM-compressed rendering (optional)
+# compress_provider = "fast"   # named [[llm.providers]] entry; empty = truncation only
+# max_compress_input_tokens = 4096  # cap input before LLM compress call
+
+# Phase 2-D: Embedding-based semantic scoring (optional)
+# semantic_scoring_provider = "embed"  # named [[llm.providers]] embed-capable entry
+# embed_concurrency = 32               # max concurrent embed requests
+# max_embed_input_tokens = 512         # cap input per embed call
 ```
 
 ### 8.2 Tuning Note
 
-`compressed_max_tokens = 50` may be aggressive for tool-result messages that commonly exceed 1000 tokens. This default is deliberately conservative for the MVP; adjustment based on live testing is expected post-merge. (Critic note N3.)
+`compressed_max_tokens = 50` may be aggressive for tool-result messages that commonly exceed 1000 tokens. This default is deliberately conservative; adjustment based on live testing is expected. When `compress_provider` is set, the LLM produces a semantic summary instead of truncation, which is more accurate but adds latency.
+
+### 8.3 Fidelity Persistence (Phase 2-B)
+
+`fidelity_tag` values are persisted in the `messages` SQLite table via DB migration 093. At session resume, persisted fidelity levels are loaded and used as a floor: a message's fidelity can only descend (Full → Compressed → Placeholder), never ascend, across turns. This prevents context blowouts when resuming long sessions.
 
 ---
 
@@ -473,16 +520,23 @@ A spinner MUST be displayed during fidelity scoring (per TUI rule: any backgroun
 | `fidelity_tag` in MessageMetadata | #4017 | `Option<ContextFidelity>` field |
 | TUI spinner | all | Spinner during scoring |
 
-### Spec-Only (Deferred Implementation)
+### Implemented (Originally Deferred)
+
+| Feature | Status | Commit |
+|---|---|---|
+| Embedding-based scoring | ✓ Implemented via `semantic_scoring_provider` | #4626 |
+| LLM-compressed fidelity | ✓ Implemented via `compress_provider`, 30s timeout | #4626 |
+| Orchestration DAG live wiring | ✓ PAACE lookahead wired from DAG into `ContextAssemblyInput` | #4633 |
+| Fidelity state persistence to SQLite | ✓ `fidelity_tag` column in `messages` table, migration 093 | #4615 |
+| Concurrent embed pre-pass | ✓ `buffer_unordered` with `embed_concurrency` cap | #4634 |
+| Binary search budget fit + batch fidelity updates | ✓ Replaced linear halving with binary search; fidelity tag writes batched | #4624 |
+
+### Remaining Deferred
 
 | Feature | Reason | Expected Phase |
 |---|---|---|
 | RL-based trigger threshold | No training infrastructure | post-v1.0 |
-| Embedding-based scoring | Per-message embedding too expensive for hot path | post-v1.0 |
-| Orchestration DAG live wiring | Requires `zeph-orchestration` API changes | P2 |
-| Fidelity state persistence to SQLite | Per-turn recompute sufficient for MVP | P2 |
 | Dynamic weight adaptation | Post-v1.0 | post-v1.0 |
-| LLM-compressed fidelity | MVP uses truncation | P2 |
 
 ---
 

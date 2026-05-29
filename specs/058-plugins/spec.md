@@ -231,6 +231,10 @@ AND the registry treats all plugin skills as hub-installed (non-bundled)
 | FR-024 | WHEN `plugin remove <name>` is called THEN the plugin directory is deleted from disk and the integrity registry entry is cleared | must |
 | FR-025 | WHEN `plugin list` is called THEN all subdirectories under `plugins_dir` are enumerated; each `.plugin.toml` is parsed to collect metadata | must |
 | FR-026 | WHEN `plugin list` enumerates plugins THEN entries are sorted deterministically by directory name (not inode order) | must |
+| FR-027 | WHEN `plugin disable <name>` is called AND no enabled plugin depends on it THEN the plugin is disabled and `DisableResult { forced_over_dependents: [] }` is returned | must |
+| FR-028 | WHEN `plugin disable <name>` is called AND enabled plugins depend on it AND `force = false` THEN `PluginError::HasDependents` is returned and the plugin is NOT disabled | must |
+| FR-029 | WHEN `plugin disable <name> --force` is called THEN the plugin is disabled regardless of dependents and `DisableResult { forced_over_dependents }` lists impacted plugins | must |
+| FR-030 | WHEN `add_remote` is called THEN all I/O operations use `tokio::fs` (not `std::fs`) to avoid blocking the async runtime | must |
 
 ---
 
@@ -345,6 +349,9 @@ AND the registry treats all plugin skills as hub-installed (non-bundled)
 - `/plugin add-remote <url> [sha256]` — installs a remote plugin.
 - `/plugin remove <name>` — uninstalls a plugin.
 - `/plugin list` — enumerates installed plugins.
+- `/plugin disable <name>` — disables a plugin without removing it.
+- `/plugin disable <name> --force` — disables a plugin even when other enabled plugins declare it as a dependency. Returns `DisableResult { forced_over_dependents: Vec<String> }` listing the impacted dependents.
+- `/plugin enable <name>` — re-enables a previously disabled plugin.
 
 ### TUI Integration (`zeph-tui`)
 

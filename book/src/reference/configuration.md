@@ -209,6 +209,7 @@ embedding_model = "qwen3-embedding"    # model for text embeddings
 # base_url = "https://api.openai.com/v1"
 # model = "gpt-5.2"
 # max_tokens = 4096
+# max_completion_tokens = 16000     # Token cap for o1/o3/o4 models (optional; OpenAI/compatible only)
 # embedding_model = "text-embedding-3-small"
 # reasoning_effort = "medium"  # low, medium, high (for reasoning models)
 
@@ -248,6 +249,8 @@ disambiguation_threshold = 0.05    # LLM disambiguation when top-2 score delta <
 prompt_mode = "auto"               # Skill prompt format: "full", "compact", or "auto" (default: "auto")
 cosine_weight = 0.7                # Cosine signal weight in BM25+cosine fusion (default: 0.7)
 hybrid_search = false              # Enable BM25+cosine hybrid skill matching (default: false)
+bm25_alpha = 0.7                   # BM25 weight in hybrid fusion: [0.0, 1.0] (default: 0.7)
+query_rewrite_provider = ""        # Provider name for query rewriting before skill retrieval (empty = disabled)
 
 [skills.learning]
 enabled = true                     # Enable self-learning skill improvement (default: true)
@@ -262,6 +265,10 @@ detector_mode = "regex"            # Correction detector: "regex" (default) or "
 judge_model = ""                   # Model for judge calls; empty = use primary provider
 judge_adaptive_low = 0.5           # Regex confidence below this bypasses judge (default: 0.5)
 judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses judge (default: 0.8)
+heuristic_promotion_enabled = false     # Enable A6 background heuristic → full skill promotion (default: false)
+heuristic_promotion_provider = ""       # Provider name for promotion LLM calls; empty = uses summary provider
+heuristic_promotion_threshold = 5       # Minimum heuristics collected before promotion eligibility (default: 5)
+heuristic_promotion_interval_hours = 24 # Background job interval in hours (default: 24)
 
 [memory]
 # Defaults to the user data dir when omitted
@@ -341,6 +348,7 @@ tool_call_cutoff = 6          # Summarize oldest tool pair when visible pairs ex
 [memory.semantic]
 enabled = false               # Enable semantic search via Qdrant
 recall_limit = 5              # Number of semantically relevant messages to inject
+embed_timeout_secs = 5        # Timeout for embedding calls in seconds (default: 5)
 temporal_decay_enabled = false        # Attenuate scores by message age (default: false)
 temporal_decay_half_life_days = 30    # Half-life for temporal decay in days (default: 30)
 mmr_enabled = false                   # MMR re-ranking for result diversity (default: false)
@@ -382,6 +390,24 @@ strategy = "reactive"         # "reactive" (default) or "proactive"
 # hard_fail_threshold = 0.35 # Score below this blocks compaction (default: 0.35)
 # max_questions = 3         # Factual questions per probe (default: 3)
 # timeout_secs = 15         # Timeout for both LLM calls in seconds (default: 15)
+
+# Context-Adaptive Memory (CAM) — three-level message fidelity scoring (Full/Compressed/Placeholder).
+# Reduces context footprint while preserving relevance via heuristic + LLM + embedding-based scoring.
+# When disabled, no behavioral change to context handling (backward compatible).
+[context.fidelity]
+enabled = false                          # Enable CAM fidelity scoring (default: false)
+compressed_threshold = 0.4               # Score below this marks message as Compressed (default: 0.4)
+placeholder_threshold = 0.2              # Score below this marks message as Placeholder (default: 0.2)
+compressed_max_tokens = 300              # Token budget for Compressed rendering (default: 300)
+w_temporal = 0.2                         # Weight for temporal decay signal (0.0–1.0; default: 0.2)
+w_role = 0.2                             # Weight for message role importance (0.0–1.0; default: 0.2)
+w_keyword = 0.3                          # Weight for keyword overlap with query (0.0–1.0; default: 0.3)
+w_semantic = 0.3                         # Weight for semantic similarity (0.0–1.0; deprecated alias: w_keyword)
+embed_concurrency = 32                   # Concurrent embedding requests in pre-pass (default: 32)
+max_embed_input_tokens = 2000            # Max tokens sent to embed provider per message (default: 2000, none = no cap)
+max_compress_input_tokens = 4000         # Max tokens sent to compress LLM per message (default: 4000, none = no cap)
+compress_provider = ""                   # Provider name for LLM-assisted compression (empty = disabled)
+semantic_scoring_provider = ""           # Provider name for embedding-based semantic scoring (empty = uses keyword fallback)
 
 [memory.compression_guidelines]
 enabled = false                # Enable failure-driven compression guidelines (default: false)
@@ -627,6 +653,8 @@ request_timeout_secs = 10          # Timeout for LSP ext_method calls in seconds
 [mcp]
 allowed_commands = ["npx", "uvx", "node", "python", "python3"]
 max_dynamic_servers = 10
+startup_retry_backoff_ms = 100       # Backoff duration for MCP server startup retries in milliseconds (default: 100)
+tool_timeout_secs = 30               # Default timeout for tool execution via MCP in seconds (default: 30)
 
 # [[mcp.servers]]
 # id = "filesystem"

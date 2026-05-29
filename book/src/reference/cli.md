@@ -70,6 +70,7 @@ Manage external skills. Installed skills are stored in `~/.config/zeph/skills/`.
 | `skill trust <name> [level]` | Show or set trust level (`trusted`, `verified`, `quarantined`, `blocked`) |
 | `skill block <name>` | Block a skill (deny all tool access) |
 | `skill unblock <name>` | Unblock a skill (revert to `quarantined`) |
+| `skill promote-heuristics [--skill <name>]` | Dry-run: show skills eligible for A6 heuristic → full promotion (requires `[skills.learning.heuristic_promotion_enabled = true]`) |
 
 ```bash
 # Install from git
@@ -87,6 +88,12 @@ zeph skill trust my-skill trusted
 
 # Remove a skill
 zeph skill remove my-skill
+
+# Show skills eligible for heuristic promotion (dry-run)
+zeph skill promote-heuristics
+
+# Show eligibility for a specific skill
+zeph skill promote-heuristics --skill my-skill
 ```
 
 ### `zeph plugin`
@@ -99,6 +106,7 @@ Manage plugin packages (collections of skills, MCP servers, and config overlays)
 | `plugin list --overlay` | Show which plugins are active and which were skipped (with reasons), including integrity check failures |
 | `plugin add <path>` | Install a plugin from a local directory path (must contain `plugin.toml`) |
 | `plugin remove <name>` | Remove an installed plugin by name |
+| `plugin disable <name> [--force]` | Disable a plugin (optional `--force` to skip confirmation and enforcement checks) |
 
 ```bash
 # List installed plugins
@@ -112,6 +120,12 @@ zeph plugin add /path/to/my-plugin
 
 # Remove a plugin
 zeph plugin remove my-plugin
+
+# Disable a plugin (with confirmation)
+zeph plugin disable my-plugin
+
+# Force-disable a plugin (skip confirmation)
+zeph plugin disable my-plugin --force
 ```
 
 **Overlay flag note:** `--overlay` shows which plugins contributed to the active config and which were skipped (with reasons like "integrity mismatch", "invalid manifest", etc.). This is evaluated against the default config — use `--config <path>` in the agent to see the live intersection with your active config.

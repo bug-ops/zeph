@@ -232,6 +232,27 @@ When disabled, the prior `recall_semantic` path is used unchanged.
 | [[004-17-implicit-conflict-detection]] | Implicit Conflict Detection — STALE/CUPMem fuzzy predicate matching and propagation-aware SYNAPSE recall (issue #3702) |
 | [[004-18-five-signal-retrieval]] | Five-Signal Retrieval — access frequency, causal distance, novelty signals + async consolidation daemon (MemTier, issue #3703) |
 
+## Configurable Embed Timeout (`[memory.semantic]`)
+
+`embed_timeout_secs` is a configurable field in the semantic memory config (added in commit #4613).
+All `embed()` call sites in `zeph-memory`, `zeph-plugins`, and `zeph-index` that were previously
+unguarded now carry a `tokio::time::timeout` wrapper (commits #4592, #4597).
+
+```toml
+[memory.semantic]
+embed_timeout_secs = 5   # per-embed timeout; 0 = disabled
+```
+
+This is separate from `context.fidelity.max_embed_input_tokens` (which limits input size) —
+`embed_timeout_secs` limits wall-clock duration of the embed call itself.
+
+## JoinSet and CancellationToken Fixes
+
+- `spawn_graph_extraction` now receives a `CancellationToken` from `LifecycleState` for clean shutdown (commit #4635)
+- `spawn_asi_update` JoinSet reaps completed tasks before checking the cap — prevents the cap from being permanently hit after 8 completions (commit #4648, closes #4644)
+- `maybe_refresh_communities` no longer spawns orphan tasks; uses `CancellationToken` guard (commit #4629)
+- `hebbian_spread` timeout propagated through all call paths (commit #4638)
+
 ## Integration Points
 
 - [[002-agent-loop/spec]] — context assembly calls recall pipeline

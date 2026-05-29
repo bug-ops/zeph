@@ -165,6 +165,36 @@ default = true
 
 Subsystems reference a provider by name via a `*_provider` field. When the field is absent, the subsystem falls back to the default provider. See `.local/specs/024-multi-model-design/spec.md` for the full per-subsystem mapping.
 
+## BetaHeaderRejected Retry (Claude)
+
+When a Claude request fails with `LlmError::BetaHeaderRejected`, the provider automatically
+retries the same request without the offending beta header. This retry covers all three call
+paths: `chat_with_tools_stream`, `chat_typed`, and `chat_with_tools` (extended in commit #4591,
+#4607). The retry is transparent to callers.
+
+### Key Invariants
+
+- Retry MUST cover ALL Claude call paths — single-path retry is incomplete
+- Retry is Claude-specific — NEVER apply `BetaHeaderRejected` retry logic to other providers
+- The retried request uses identical parameters except the beta header is omitted
+- Retry happens at most once per request — no retry loop
+
+## o-Series Models (OpenAI)
+
+OpenAI o-series models (`o1`, `o2-*`, `o3`, `o4-mini`, `o4`, and any model matching the
+`o` + digit prefix pattern) require `max_completion_tokens` in the API request body instead
+of `max_tokens`. Zeph detects o-series models at request time via prefix match and uses the
+correct field name automatically (commit #4591). This applies to:
+
+- `chat` / `chat_stream` requests (uses `max_completion_tokens` when model is o-series)
+- `chat_with_tools` requests
+
+### Key Invariants
+
+- o-series detection uses model name prefix match — NEVER hardcode specific model names
+- `max_tokens` must NOT be sent for o-series models — use `max_completion_tokens` only
+- Non-o-series models continue to use `max_tokens`
+
 ## Key Invariants
 
 - Provider methods are always `&self` — immutable, concurrent-safe

@@ -27,6 +27,7 @@ related:
 |---------|------|--------|---------|
 | 1.0 | 2026-04-08 | sdd | Initial spec (SDK 0.11.1 / schema 0.12.0) |
 | 1.1 | 2026-05-19 | sdd | Updated to SDK 0.12.1 / schema 0.13.2; added Providers API, Elicitation, MCP-over-ACP, Session Usage, Session Delete migration, v2 tracking, breaking changes resolution |
+| 1.2 | 2026-05-29 | sdd | Mark Providers API, Elicitation protocol, Session Usage, and session/delete as implemented; update SDK to 0.12.1; wire IDE-provided MCP servers into do_new_session; add blocking-await timeout note |
 
 ---
 
@@ -94,7 +95,7 @@ SDK 0.12.0 removed `McpAcpTransport` and the direct `tokio` re-export. Zeph is u
 The `unstable-session-resume` and `unstable-session-close` feature flags in Zeph should be
 removed after SDK upgrade to 0.12.1.
 
-**Status: not-implemented** (SDK still pinned to 0.11.1; upgrade tracked as implementation gap I1)
+**Status: implemented** (SDK upgraded to 0.12.1 in commit #4464; `unstable-session-resume` and `unstable-session-close` feature flags removed)
 
 ## Permission Model
 
@@ -230,9 +231,8 @@ ACP server advertises its capabilities in the `initialize` response and via the 
 
 #### Protocol Version
 
-Zeph currently uses `agent-client-protocol 0.11.1` / `schema 0.12.0`. Target version is
-SDK 0.12.1 / schema 0.13.2. The `/agent.json` `protocol` field must be updated to match
-the compiled crate version after the SDK upgrade.
+Zeph uses `agent-client-protocol 0.12.1` / `schema 0.13.2` (upgraded in commit #4464).
+The `/agent.json` `protocol` field reflects `"acp/0.13.2"` per the compiled crate version.
 
 #### Current Model in SessionInfoUpdate
 
@@ -271,7 +271,7 @@ exposing tools over ACP.
 
 ### Providers API
 
-**Status: design-needed**
+**Status: implemented** (commit #4473, PR #4473)
 
 Schema 0.11.7 introduced a providers management API (`unstable` in SDK):
 
@@ -311,7 +311,7 @@ Schema 0.11.7 introduced a providers management API (`unstable` in SDK):
 
 ### Elicitation Protocol
 
-**Status: design-needed**
+**Status: implemented** (commit #4473, PR #4473; `elicitation_timeout_secs` wired from `_meta` in `mcp_bridge.rs` — commit #4453; `elicitation_enabled` read from `_meta` — commit #4441)
 
 Schema 0.11.5 introduced structured user input (elicitation) across three scopes:
 - **Session scope** (0.11.5, PR #792): agent requests structured input during session initialization
@@ -325,9 +325,8 @@ The SDK 0.11.1 has no corresponding feature flag. This means elicitation in Zeph
 SDK-gated; it requires a custom implementation or will need to align with SDK 0.12.x's
 elicitation support. This is NOT a simple "enable a feature flag" task.
 
-**Known issue**: `elicitation_timeout_secs` is hardcoded to 120s at multiple sites in
-`mcp_bridge.rs` (lines 80, 97, 116). This should be read from `_meta` or config.
-See GitHub issue #4446.
+**Fixed**: `elicitation_timeout_secs` is now read from `_meta` in `mcp_bridge.rs` (commit #4453).
+`elicitation_enabled` is read from `_meta` rather than being hardcoded to `false` (commit #4441).
 
 **Broader hardcoding concern**: `terminal.rs` contains 10+ call sites with hardcoded 120s
 shell execution timeout (`AcpShellExecutor::new(..., 120)`). This is separate from the
@@ -370,7 +369,7 @@ the feature reaches stable status in the SDK.
 
 ### Session Usage (Token/Cost Reporting)
 
-**Status: not-implemented**
+**Status: implemented** (commit #4522, PR #4522; `session/usage` wired from `zeph-core` cost tracker)
 
 Schema 0.10.8 (PR #454) introduced session usage messages for token consumption and context
 window tracking.
@@ -399,7 +398,7 @@ work is wiring this existing data to ACP session usage protocol messages.
 
 ### Session Delete
 
-**Status: not-implemented (migration path documented)**
+**Status: implemented** (commit #4464; standard `session/delete` handler added; `_session/delete` retained for backward compatibility)
 
 Schema 0.13.1 (PR #1216, SDK 0.12.0 PR #165) introduced `session/delete` as an unstable
 standard method for removing sessions from `session/list`.
@@ -434,17 +433,19 @@ without `_` prefix are rejected).
 
 | # | Feature | Current State | Target | Priority |
 |---|---------|--------------|--------|----------|
-| I1 | SDK upgrade 0.11.1 → 0.12.1 | Pinned at 0.11.1 | 0.12.1 | P1 |
-| I2 | `session/resume` stable API | Uses `unstable-session-resume` flag | Remove flag, use stable API | P2 (free with I1) |
-| I3 | `session/delete` migration | Custom `_session/delete` | Standard `session/delete` (unstable) | P3 |
-| I4 | Providers API | Not implemented | Implement after design analysis | P2 |
-| I5 | Elicitation protocol | Local empty feature flag; not SDK-gated | Full implementation after design | P2 |
+| I1 | SDK upgrade 0.11.1 → 0.12.1 | **Implemented** (#4464) | ✓ Done | — |
+| I2 | `session/resume` stable API | **Implemented** — feature flags removed | ✓ Done | — |
+| I3 | `session/delete` migration | **Implemented** — standard handler added (#4464) | Deprecate `_session/delete` when clients migrate | P4 |
+| I4 | Providers API | **Implemented** (#4473) | ✓ Done | — |
+| I5 | Elicitation protocol | **Implemented** (#4473, #4453, #4441) | ✓ Done | — |
 | I6 | MCP-over-ACP transport | MCP passthrough only | Track stabilization | P3 |
-| I7 | Session usage reporting | Internal cost tracking exists | Wire to ACP protocol messages | P3 |
-| I8 | `elicitation_timeout_secs` hardcoded | 120s hardcoded (#4446) | Read from config | P3 |
+| I7 | Session usage reporting | **Implemented** (#4522) | ✓ Done | — |
+| I8 | `elicitation_timeout_secs` hardcoded | **Fixed** — read from `_meta` (#4453) | ✓ Done | — |
 | I9 | Shell timeout hardcoded | 10+ sites in `terminal.rs` with 120s | `[acp.timeouts]` config section | P3 |
 | I10 | Logout method | `handlers/logout.rs` exists | Verify against upstream Preview RFD | P3 |
 | I11 | Agent telemetry export | Local tracing only | Follow upstream RFD (not yet in schema) | P4 |
+| I12 | IDE-provided MCP servers | **Implemented** — wired into `do_new_session` (#4444) | ✓ Done | — |
+| I13 | Blocking awaits in handlers | **Fixed** — bounded with configurable timeouts (#4538) | ✓ Done | — |
 
 ---
 

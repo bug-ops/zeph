@@ -10,7 +10,7 @@ tags:
   - retrieval
   - autoskill
 created: 2026-05-19
-status: draft
+status: implemented
 related:
   - "[[005-skills/spec]]"
   - "[[015-self-learning/spec]]"
@@ -194,6 +194,12 @@ AND SkillMatcher falls back to pure cosine matching for all turns until next rel
 - Update BM25 index during a live turn
 
 ---
+
+## Implementation Notes
+
+- Implemented in commit #4506 (A3+A4+A5 combined PR)
+- `matched_indices` is re-synced with `active_skills` after the channel allowlist filter to prevent index drift (commits #4435, #4437)
+- `xml_escape` function consolidated into `zeph-common` (commit #4437)
 
 ## See Also
 

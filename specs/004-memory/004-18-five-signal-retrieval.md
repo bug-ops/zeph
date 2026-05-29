@@ -10,7 +10,8 @@ tags:
   - retrieval
   - experimental
 created: 2026-05-18
-status: draft
+updated: 2026-05-29
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -392,7 +393,30 @@ AND SYNAPSE latency is indistinguishable from the pre-spec baseline
 
 ---
 
-## 13. See Also
+## 13. Implementation Status
+
+**Status: implemented** — commits #4392, #4408, #4414, #4418, #4419, #4428, #4433, #4434
+
+Key implementation details:
+
+- `SemanticMemory::with_five_signal()` wires the `FiveSignalRuntime` into `recall_merge_and_rank`
+- Five-signal scoring runs as a post-processing step after Qdrant and SQLite candidate retrieval
+- `TrajectoryRiskAccumulator` and `ImplicitConflictDetector` implemented in commits #4386, #4408
+- Consolidation daemon wired into `zeph-scheduler` and A* node cap added (commits #4377, #4418)
+- Prometheus metrics exported: `five_signal_recall_total`, consolidation counters (commit #4418)
+- `mage_accumulator` config properly wired in agent builder (commit #4428)
+- Five-signal cron scheduling fixed for long intervals (commit #4433)
+- Real access frequency (not placeholder) used in consolidation scoring (commit #4414)
+- `ConnectInfo` for rate limiting and `ConsolidationHandler` registration fixed (commit #4419)
+
+### Resolved Open Questions
+
+| Question | Resolution |
+|---|---|
+| Goal entity sourcing | `causal goal entity` type added to MAGMA graph; wired as causal anchor (commit #4418) |
+| LongMemEval-S adapter | Deferred to `zeph-bench`; synthetic fixtures used for AC validation |
+
+## 14. See Also
 
 - [[constitution]] — project principles
 - [[004-memory/spec]] — memory system parent index

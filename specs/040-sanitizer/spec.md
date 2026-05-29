@@ -235,6 +235,13 @@ impl QuarantinedSummarizer {
 }
 ```
 
+**LLM timeout**: `extract_facts` now wraps the LLM call in a configurable timeout
+(`quarantine_summarizer_timeout_secs`, default 30s). Timeout returns `SummarizedFacts::empty()`
+rather than propagating an error — the agent continues without the extracted facts (commit #4526).
+
+```rust
+```
+
 ---
 
 ## 7. Response Verification (Layer 5)

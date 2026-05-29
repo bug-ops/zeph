@@ -10,7 +10,7 @@ tags:
   - retrieval
   - autoskill
 created: 2026-05-19
-status: draft
+status: implemented
 related:
   - "[[005-skills/spec]]"
   - "[[015-self-learning/spec]]"
@@ -205,6 +205,10 @@ THEN the trigger embeddings for that skill are recomputed
 - Store triggers as separate Qdrant points in v1
 
 ---
+
+## Implementation Notes
+
+- Implemented in commit #4506 (A3+A4+A5 combined PR)
 
 ## See Also
 

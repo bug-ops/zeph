@@ -147,6 +147,29 @@ startup_timeout = 60   # give this server 60 seconds instead of 30
 > [!TIP]
 > Exponential backoff prevents the agent startup from hanging indefinitely on flaky servers. If a server consistently fails, consider whether it's essential. If not, remove it from the config to speed up startup.
 
+## Tool Execution Timeout
+
+Each MCP tool call has a default timeout of 30 seconds. You can override this globally or per-server:
+
+**Global timeout (applies to all servers):**
+
+```toml
+[mcp]
+tool_timeout_secs = 30     # default timeout in seconds
+```
+
+**Per-server timeout (overrides global):**
+
+```toml
+[[mcp.servers]]
+id = "slow-tools"
+command = "python3"
+args = ["-m", "my_server"]
+tool_timeout = 60          # this server's tools get 60 seconds
+```
+
+When a tool call exceeds its timeout, the execution is aborted and the error is returned to the agent. Increase the timeout for long-running tools (data analysis, large file processing) or decrease it to fail-fast on unresponsive servers.
+
 ## Native Tool Integration (Claude / OpenAI)
 
 MCP tools are exposed as native `ToolDefinition`s alongside built-in tools. All providers use the same structured tool calling path.

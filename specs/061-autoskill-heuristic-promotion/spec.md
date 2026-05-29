@@ -10,7 +10,7 @@ tags:
   - self-learning
   - autoskill
 created: 2026-05-19
-status: draft
+status: implemented
 related:
   - "[[005-skills/spec]]"
   - "[[015-self-learning/spec]]"
@@ -162,7 +162,7 @@ CREATE TABLE skill_heuristic_promotions (
 );
 ```
 
-Migration number: assign the next available migration in `crates/zeph-db/migrations/`.
+Migration number: **093** (`crates/zeph-db/migrations/093_skill_heuristic_promotions.sql`).
 
 ---
 
@@ -236,6 +236,13 @@ THEN "deploy-ci" is skipped (no LLM call)
 - Run promotion during an active agent turn
 
 ---
+
+## Implementation Notes
+
+- Implemented in commit #4523 (A6 initial implementation), with bugs fixed in commits #4535 (NULL `skill_name` in promotion scan, blocking I/O in async), #4539 (lifecycle and placement fixes)
+- CLI `zeph skills promote-heuristics [--skill <name>]` is implemented
+- DB migration 093 (`skill_heuristic_promotions` table) is applied
+- Background task JoinHandle is tracked in `LifecycleState`
 
 ## See Also
 

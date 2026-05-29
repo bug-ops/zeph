@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-05-29
+
 ### Added
 
 - `zeph-config`: `FidelityConfig` gains three new optional fields — `embed_concurrency: usize`
@@ -24,13 +26,130 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-context`: `render_compressed` now applies a post-LLM truncation step: if the compressed
   summary exceeds `compressed_max_tokens`, the result is truncated at a char boundary. Prevents
   runaway LLM output from bypassing the token budget.
+- `specs/062-context-adaptive-memory/`: formal specification package for Context-Adaptive Memory (CAM)
+  subsystem — three-level fidelity (Full/Compressed/Placeholder) via `ContextFidelity` enum in
+  `zeph-common`, heuristic `FidelityScorer` combining temporal decay + role importance + keyword
+  overlap + plan-tool relevance, proactive AgeMem regrade trigger before context fills,
+  `PlannedToolHint` struct for PAACE plan-aware context retention. Covers GitHub #4016, #4017, #4018.
+  MVP (v0.21): heuristic scoring only; RL training pipeline and orchestration wiring deferred.
+- `ToolResultCompressor`: configurable per-result token budget with truncation for tool outputs
+  before they enter message history (Acon #4021). Config: `[memory.compression.acon]`.
+- `request_compaction` internal tool: agent-initiated context compaction on demand (ARC #4020).
+  Config: `[memory.compression.arc]`. Rate-limited to one compaction per turn via `CompactionState`.
+- Context-Adaptive Memory (CAM) Phase 1 MVP (`zeph-common`, `zeph-llm`, `zeph-context`,
+  `zeph-agent-context`, `zeph-config`): three-level fidelity scoring for context messages
+  (Full/Compressed/Placeholder) with heuristic `FidelityScorer` (temporal decay, role importance,
+  keyword overlap, plan-tool relevance), proactive AgeMem regrade trigger in `maybe_compact()`,
+  Placeholder exclusion from hard compaction summarizer input, `[context.fidelity]` config section
+  with `enabled = false` default (no behavioral change when disabled). Closes #4547.
+- `zeph-skills`: `promoter` module — pure-logic helpers for `AutoSkill A6` heuristic promotion:
+  `compute_batch_hash` (BLAKE3, order-independent), `build_promotion_prompt`, `parse_promotion_response`,
+  `PromotionRecommendation` enum (`BodyEnrichment`, `NewSkill`, `None`). No async/DB/LLM dependencies.
+- `zeph-core`: periodic heuristic promotion background task (`AutoSkill A6`, spec 061) — when
+  `heuristic_promotion_enabled = true`, a tokio task scans `skill_heuristics` for qualifying skills
+  (count ≥ `heuristic_promotion_threshold`), calls the LLM to evaluate, and writes quarantined
+  drafts. Idempotency via `skill_heuristic_promotions` `(skill_name, batch_hash)` primary key.
+  60-second initial delay, configurable interval (default 24 h). Aborted at agent shutdown.
+- `zeph-config`: four new `[skills.learning]` fields: `heuristic_promotion_enabled` (default `false`),
+  `heuristic_promotion_provider` (empty = primary), `heuristic_promotion_threshold` (default `5`),
+  `heuristic_promotion_interval_hours` (default `24`).
+- `zeph-memory`: `count_heuristics_by_skill`, `load_heuristic_texts_for_promotion`,
+  `promotion_already_evaluated`, `record_promotion_evaluation` DB helpers; `DbStore::from_pool`
+  constructor for pool-reuse without re-running migrations.
+- DB migration 093 (SQLite) / 092 (PostgreSQL): `skill_heuristic_promotions` table for idempotency.
+- `zeph-skills`: `parent_skill: Option<String>` field in `SkillMeta` and SKILL.md frontmatter;
+  propagated through `parse_frontmatter`, `load_skill_meta_from_str`, and `load_skill_meta`.
+- CLI: `zeph skills promote-heuristics [--skill <name>]` subcommand for manual promotion dry-run.
+- `zeph-mcp`: configurable MCP startup retry backoff (`mcp.startup_retry_backoff_ms`, default 1000 ms) —
+  controls the exponential backoff base delay between server reconnect attempts at startup; see
+  migration step 50 (`migrate_mcp_retry_and_tool_timeout`).
+- `zeph-mcp`: per-call tool timeout (`mcp.tool_timeout_secs`) — when set, overrides the per-server
+  `[[mcp.servers]].timeout` for `tools/call` requests while leaving handshake and `tools/list` timeouts
+  unchanged. When absent (the default), per-server timeout governs all requests. Maximum value: 3600 s.
+- `zeph-plugins`: `disable --force` support (`zeph plugin disable <name> --force`) — proceeds past
+  enabled dependents when `force = true`, returning them in `DisableResult.forced_over_dependents`.
+- `zeph-acp`: implement `session/usage` ACP message — `UsageUpdate` notifications are now sent after
+  each LLM call with per-turn input/output/cache token counts and cost estimate; a cumulative session
+  summary is sent on `session/close`. Feature-gated behind `unstable-session-usage`. Reuses existing
+  internal cost tracker and `LoopbackEvent::Usage` — no duplicate counters (closes #4457).
+- `zeph-config`: add `dedup_threshold: f32` field to `LearningConfig` (AutoSkill A2, spec 057)
+  with default 0.90, startup validation that `merge_threshold < dedup_threshold` via
+  `LearningConfig::validate()` wired into `Config::validate_llm_and_skills` (closes #4474).
+- `zeph-skills`: replace binary novel/duplicate dedup in `SkillMiner::process_repo` with the
+  three-way `Add/Merge/Discard` flow via `merger::decide()`, mirroring `TraceExtractor`; adds
+  `merge_threshold` (0.75) and `merge_enabled` (true) fields to `MiningConfig`; adds
+  `embed_candidate` and `merge_candidate` methods to `SkillMiner` (AutoSkill A2, closes #4475).
+- `zeph-acp`: add `unstable-elicitation` feature — per-session elicitation bridge task
+  (`spawn_elicitation_bridge`) with `Arc<Notify>` cancel signal, bounded mpsc channel, and
+  `ElicitationBridge::elicit()` helper; bridge task is spawned in `do_new_session` when the IDE
+  advertises `elicitation` capability during `initialize()`, and aborted on session drop via
+  `Drop` impl on `SessionEntry` (closes #4456).
+- `zeph-acp`: add `unstable-llm-providers` feature — connection-scoped `providers/list`,
+  `providers/set`, and `providers/disable` handlers dispatched via ext method; state stored in
+  `ZephAcpAgentState.global_disabled_providers` and `global_provider_overrides`; 6 unit tests
+  verify list, set, disable, and combined flows (closes #4455).
+- `zeph-config`: add `AcpTimeoutsConfig` struct with `elicitation_secs`, `terminal_secs`,
+  `mcp_secs` fields (all default 120 s / 300 s); wired into `AcpServerConfig` and
+  `ZephAcpAgentState` via `.with_timeouts()`; replaces previously hardcoded 120-second defaults.
+- `zeph-acp`: add `AcpError::ProviderDisabled` and `AcpError::ProviderNotFound` variants.
+- `zeph-skills`: add `merger` module with `MergeDecision` enum and `decide`/`find_nearest` functions
+  implementing the three-way Add/Merge/Discard skill candidate evaluation (AutoSkill A2, spec 057,
+  closes #4448). Similarity thresholds: `merge_threshold` (0.75) and `dedup_threshold` (0.90).
+- `zeph-skills`: add `trace_extractor` module with `TraceExtractor` pipeline that extracts SKILL.md
+  candidates from post-session user-only conversation messages, quarantines them under `_quarantine/`,
+  and applies injection scanning and embedding-based dedup (AutoSkill A1, spec 056, closes #4447).
+- `zeph-skills`: add `write_quarantined()` to `SkillGenerator` for writing skills to `_quarantine/`
+  subdirectory without user approval.
+- `zeph-skills`: add `version`, `source`, and `session_id` fields to `SkillMeta` and `RawFrontmatter`
+  for spec 057 versioned merge tracking and spec 056 session attribution. Added `Default` impl for
+  `SkillMeta`.
+- `zeph-config`: add `LearningConfig` fields `trace_extraction_enabled`, `trace_extraction_provider`,
+  `trace_extraction_max_turns`, `trace_extraction_max_input_bytes`, `skill_merge_enabled`,
+  `skill_merge_provider`, and `merge_threshold` for AutoSkill A1/A2 opt-in configuration.
+- `zeph-core`: add post-session hook `maybe_extract_skills_from_trace` that fires after the agent
+  loop exits and spawns a background `TraceExtractor` task when enabled.
+- `zeph-db`: add migration `092_skill_trace_sessions.sql` (SQLite) and `091_skill_trace_sessions.sql`
+  (PostgreSQL) for the idempotency table that prevents double-processing of sessions.
+- `zeph-skills`: GoSkills group-structured skill retrieval (#4411). New `group` module with
+  `SkillGroup`, `SkillRole` (EntryPoint / Support / Context), `GroupResult`, and `group_skills()`
+  that computes inter-skill cosine similarity (reusing `zeph_common::math::cosine_similarity`) and
+  groups top-N matched skills into an entry-point + support structure. New
+  `format_grouped_skills_prompt()` in `prompt.rs` emits role-labelled `<active_skill>` XML with
+  the same per-skill trust sanitization, quarantine wrapping, and health attributes as the flat
+  path. Quarantined skills are excluded from support roles. Empty `requirements` and
+  `failure_notes` blocks are omitted from output. Flat fallback is used when no pair exceeds the
+  configured threshold.
+- `zeph-config`: `skills.group_structured` (bool, default `false`) and
+  `skills.support_similarity_threshold` (f32, default `0.50`) config fields for GoSkills (#4411).
+  Threshold outside `[0.0, 1.0]` emits a runtime warning.
+- `zeph-experiments`: `ParameterKind::GroupStructured` variant for A/B experiment gating of
+  GoSkills grouped injection (#4411). Added to `ConfigSnapshot` and wired through `get`/`set`/
+  `diff`/`from_config`.
+- `zeph-plugins`: tracing spans on `collect_skill_dirs`, `update_one_plugin`, and
+  `download_archive` in `PluginManager` (#4385), following the `plugins.manager.*` naming
+  convention.
+- `zeph-common`: new `http_middleware` module (feature `http-middleware`) — shared bearer-token
+  auth and per-IP rate-limit axum middleware extracted from `zeph-gateway` and `zeph-a2a`;
+  eliminates duplicated `AuthConfig`, `RateLimitState`, `Cidr`, `auth_middleware`,
+  `rate_limit_middleware` implementations; gateway's pre-hashing + `subtle::ConstantTimeEq`
+  approach is canonical (closes #4387).
+- `zeph-core`, `zeph-memory`: Wire `TrajectoryRiskAccumulator` (MAGE spec 004-16) into the
+  tool execution gate (#4380). When `memory.shadow_memory.enabled = true` and the accumulated
+  trajectory risk reaches `risk_threshold`, all tool calls in the current turn are blocked with
+  `ToolError::TrajectoryRiskExceeded`. Signal ingestion bridges the existing `trajectory_signal_queue`
+  codes (PolicyDeny, VigilMedium/High, ExfiltrationRedaction) to MAGE `AuditSignalType` variants;
+  exponential temporal decay is applied once per turn via `advance_turn()` in `begin_turn()`.
+  Blocked dispatches bypass the tier-execution loop and produce structured error results.
+- `zeph-memory`: Prometheus counters for shadow memory (spec 004-16 NFR-007, #4396).
+  `shadow_memory_signals_total{type,severity}` increments on every `ingest()` call;
+  `shadow_memory_blocks_total` and `shadow_memory_escalations_total` are incremented via new
+  `record_block()` / `record_escalation()` methods called from the gate.
 
 ### Changed
 
 - `zeph-context`: `truncate_chars` renamed to `truncate_to_byte_limit` with clarified docs
   (the limit is a byte count, not a character count; callers pass `n * 4` bytes via the
   4-byte-per-token heuristic). Uses `usize::saturating_mul` to avoid overflow on extreme inputs.
-
 - `zeph-db`: SQLite migration 095 adds `fidelity_tag INTEGER NOT NULL DEFAULT 0` column to
   `messages` table; PostgreSQL migration adds equivalent `SMALLINT NOT NULL DEFAULT 0` column.
   Enables per-message fidelity level persistence for cross-turn stability (CAM Phase 2-B, #4550).
@@ -59,183 +178,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-message embeddings cached in `MessageMetadata.embedding` (`#[serde(skip)]`, in-memory only). Each
   embed call has a 30 s timeout with keyword-overlap fallback. Config field `w_keyword` is accepted as a
   deprecated alias for `w_semantic` (closes #4552).
-
-### Docs
-
-- `zeph-memory` / `zeph-common`: added disambiguation notes to `ContentFidelity` (optical forgetting,
-  long-term memory store fidelity) and `ContextFidelity` (CAM, context-window fidelity) to prevent
-  confusion between the two near-identical enum names (closes #4556).
-
-### Fixed
-
-- `zeph-context`: `build_reasoning_context` now tracks the `JoinHandle` for `mark_reasoning_used`
-  in `PreparedContext::background_tasks`; the handle is drained into `TaskSupervisor` in
-  `prepare_context` before `apply_prepared_context` consumes `PreparedContext`, eliminating the
-  untracked fire-and-forget spawn (closes #4631).
-- `zeph-memory`: `spawn_graph_extraction` now stores the `CancellationToken` in
-  `SemanticMemory::graph_cancel`; `cancel_graph_extraction()` fires the token cooperatively on
-  shutdown before `abort_all()` so in-progress DB writes can complete cleanly (closes #4630).
-- `zeph-llm`: `RouterProvider::spawn_asi_update` now pushes the `JoinHandle` into a bounded
-  `Arc<Mutex<JoinSet<()>>>` (`MAX_ASI_TASKS = 8`); new spawns are skipped when the cap is reached,
-  preventing unbounded task accumulation on high-throughput routing (closes #4625).
-
-### Changed
-
 - `zeph-memory`: embed timeout is now configurable via `memory.semantic.embed_timeout_secs` (default
   `5` s, preserving existing behavior). All ~30 hardcoded `Duration::from_secs(5)` call sites across
   `AdmissionControl`, `QualityGate`, `EntityResolver`, `TreeConsolidationConfig`,
   `TierPromotionConfig`, `GraphExtractionConfig`, `ProcessTurnConfig`, `ConsolidationConfig`, and
   all graph recall variants now read the value from config. `SemanticMemory::with_embed_timeout`
   propagates the timeout to `hebbian_spread` as well (closes #4601).
-
-### Docs
-
-- `zeph-memory`: `TreeConsolidationConfig` pub fields (`enabled`, `sweep_interval_secs`,
-  `batch_size`, `similarity_threshold`, `max_level`, `min_cluster_size`) now have `///` doc
-  comments describing their semantic and valid range (closes #4603).
-
-### Refactored
-
-- `zeph-agent-feedback`, `zeph-experiments`, `zeph-plugins`, `zeph-skills`, `zeph-tui`: added
-  `#[non_exhaustive]` to all extensible `pub enum` types missed by the sweep in #4545. Wildcard
-  match arms added in `zeph-core` and the `zeph` binary where required to preserve exhaustive
-  pattern coverage (closes #4561, #4563, #4565).
-
-- `zeph-llm`: deduplicated `build_tool_description` into `crates/zeph-llm/src/tool_desc.rs`; both
-  `claude` and `openai` backends now share a single implementation with a common `static WARNED`
-  guard for once-per-session schema-overflow warnings (closes #4577).
-
-### Fixed
-
-- `zeph`: `apply_response_cache` now returns `Option<tokio::task::JoinHandle<()>>`; the caller
-  in `runner.rs` stores the handle and calls `abort()` during shutdown, ensuring the background
-  cache cleanup loop cannot outlive the agent lifecycle (closes #4612).
-- `zeph-agent-context`: removed `#![allow(clippy::unused_async)]` blanket allow from crate root;
-  `ContextService::reset_conversation` is now a plain `fn` (no `.await` calls); scaffold-phase
-  allow is no longer needed (closes #4567).
-- `zeph-core`: added `#[non_exhaustive]` to seven extensible `pub enum` types in the `quality`
-  and `shadow_sentinel` modules (`SkipReason`, `StageOutcome`, `VerdictStatus`, `TriggerPolicy`,
-  `QualityConfigError`, `ToolRiskCategory`, `ProbeVerdict`); consistent with the project-wide
-  convention from bba75144 (closes #4569).
-- `zeph` (bootstrap): `vault_args_env_overrides_config`, `vault_args_cli_overrides_env_and_config`,
-  and `vault_args_env_key_and_path_fallback` tests now carry `#[serial_test::serial]` to prevent
-  data races when `nextest` runs them in parallel (closes #4617).
-- `zeph` (project): `check_db_lock` now emits a `tracing::warn!` when the database path appears to
-  reside on a network or non-local filesystem (`/Volumes/`, `/net/`, `/nfs/`), where `flock(2)`
-  advisory locking is not enforced (closes #4573).
-- `zeph-context`: removed dead `fidelity_config: Option<&'a FidelityConfig>` field from
-  `ContextAssemblyInput`; the field was always `None` and never read after the CAM Phase 1
-  refactor (closes #4595).
-- `zeph-plugins`: `add_remote` now uses `tokio::fs::write` instead of `std::fs::write` when
-  persisting the `.plugin-source.toml` sidecar, preventing the async executor thread from blocking
-  during remote plugin installation (closes #4606).
-
-### Docs
-
-- `specs/004-memory/004-3-admission-control.md`: updated to document the actual 5-factor A-MAC
-  scoring model (`future_utility`, `factual_confidence`, `semantic_novelty`, `temporal_recency`,
-  `content_type_prior`; optional `goal_utility`) with correct default weights and config fields.
-  The original 6-factor design is preserved as historical context with a reference to arXiv:2603.04549
-  and issue #4141 (closes #4605).
-
-- `zeph-plugins`: `read_plugin_source` in `update_one_plugin` now uses `tokio::fs::read_to_string`
-  instead of `std::fs::read_to_string`, preventing the async executor thread from blocking during
-  plugin auto-update sidecar reads (closes #4589).
-- `zeph-core`: `AgentBuilder::apply_tool_schema_filter` wraps `provider.embed()` with a 15-second
-  `tokio::time::timeout`. On timeout the filter is silently disabled (graceful degradation) rather
-  than hanging agent startup indefinitely (closes #4585).
-- `zeph-index`: `CodeIndexer::ensure_collection_for_provider` wraps `provider.embed("probe")` with
-  a 15-second `tokio::time::timeout`, mapping a stall to `IndexError::EmbedTimeout` so index
-  initialization fails fast with a clear diagnostic (closes #4585).
-- `zeph-llm`, `zeph-mcp`: embed calls inside fire-and-forget tasks (`RouterProvider::spawn_asi_update`
-  and `EmbeddingAnomalyGuard::check_async`) are now bounded by `embed_timeout_ms` (default 5 s) via
-  `tokio::time::timeout`. On timeout the task returns early — same as the existing embed-error path —
-  preventing indefinite task accumulation when the embedding provider stalls (closes #4566).
-  `EmbeddingAnomalyGuard` gains an `embed_timeout_ms` field and `with_embed_timeout()` builder.
-- `zeph-core`: `ShadowSentinel` no longer drops `JoinHandle`s from its two fire-and-forget persist
-  tasks. Both spawn sites now route through a bounded `Mutex<JoinSet<()>>` (capacity 32). Completed
-  handles are reaped non-blockingly with `try_join_next()` before each spawn; if the set is still at
-  capacity the new task is skipped with a debug log. `drain_pending()` awaits all remaining writes at
-  session shutdown via `Agent::shutdown()` (closes #4570).
-- `zeph-llm`: `ClaudeProvider::send_request` and `send_stream_request` now retry the request
-  transparently after receiving a `BetaHeaderRejected` error for the `compact-2026-01-12` beta
-  header. Previously, the first request in a session with server compaction enabled would always
-  fail when the API rejects the header; the flag is now set and the call retried in the same path
-  without surfacing an error to the caller (closes #4580).
-- `zeph-llm`: `CompletionTokens::for_model` now returns `max_completion_tokens` for OpenAI
-  o-series models (`o1`, `o1-mini`, `o1-pro`, `o3`, `o3-mini`, `o4-mini`). Previously only
-  `gpt-5*` models used this field; o-series models fell through to the legacy `max_tokens` field,
-  causing 400 Bad Request errors from the API (closes #4579).
-- `zeph-core`: `select_messages_for_compression` now sorts indices before building `to_compress`,
-  ensuring messages are passed to the compression LLM in chronological (ascending index) order.
-  Previously, iterating a raw `HashSet<usize>` produced non-deterministic ordering (closes #4558).
-- `zeph-plugins`: replaced blocking `std::fs::write` / `std::fs::read_to_string` calls in the
-  async `update_one_plugin` with `tokio::fs` equivalents, preventing Tokio thread starvation
-  during concurrent auto-update checks (closes #4560).
-- `apply_response_cache`: hourly cleanup background task now exits cleanly when the session shuts
-  down. The loop uses `tokio::select!` on a `CancellationToken` child of `mem_cancel`, which is
-  already cancelled via `shutdown_rx` at session teardown. Closes #4572.
-- `runner`: TUI early-status-forwarder `JoinHandle` annotated as intentionally dropped at block
-  end (self-terminating when the channel closes). Removes misleading bare `let _` and satisfies
-  `clippy::let_underscore_future`. Closes #4571.
-- `zeph-llm`: `ClaudeProvider::chat_with_tools_stream`, `chat_typed`, and `chat_with_tools` now
-  apply the same `BetaHeaderRejected` retry loop that `send_request` and `send_stream_request`
-  already use. Previously these three paths returned `BetaHeaderRejected` to the caller without
-  retrying, meaning any session that started with server compaction enabled would always fail on
-  the first tool-stream, typed, or non-streaming tool call (closes #4598).
-- `zeph-llm`: `CompletionTokens::for_model` now uses a general `o`+digit prefix check instead of
-  enumerating `o1`/`o3`/`o4`. This covers all current and future o-series models (`o2`, `o5`, …)
-  without requiring per-model additions (closes #4600, #4602).
-
-### Added
-
-- `specs/062-context-adaptive-memory/`: formal specification package for Context-Adaptive Memory (CAM)
-  subsystem — three-level fidelity (Full/Compressed/Placeholder) via `ContextFidelity` enum in
-  `zeph-common`, heuristic `FidelityScorer` combining temporal decay + role importance + keyword
-  overlap + plan-tool relevance, proactive AgeMem regrade trigger before context fills,
-  `PlannedToolHint` struct for PAACE plan-aware context retention. Covers GitHub #4016, #4017, #4018.
-  MVP (v0.21): heuristic scoring only; RL training pipeline and orchestration wiring deferred.
-- `ToolResultCompressor`: configurable per-result token budget with truncation for tool outputs
-  before they enter message history (Acon #4021). Config: `[memory.compression.acon]`.
-- `request_compaction` internal tool: agent-initiated context compaction on demand (ARC #4020).
-  Config: `[memory.compression.arc]`. Rate-limited to one compaction per turn via `CompactionState`.
-
-- Context-Adaptive Memory (CAM) Phase 1 MVP (`zeph-common`, `zeph-llm`, `zeph-context`,
-  `zeph-agent-context`, `zeph-config`): three-level fidelity scoring for context messages
-  (Full/Compressed/Placeholder) with heuristic `FidelityScorer` (temporal decay, role importance,
-  keyword overlap, plan-tool relevance), proactive AgeMem regrade trigger in `maybe_compact()`,
-  Placeholder exclusion from hard compaction summarizer input, `[context.fidelity]` config section
-  with `enabled = false` default (no behavioral change when disabled). Closes #4547.
-
-- `zeph-skills`: `promoter` module — pure-logic helpers for `AutoSkill A6` heuristic promotion:
-  `compute_batch_hash` (BLAKE3, order-independent), `build_promotion_prompt`, `parse_promotion_response`,
-  `PromotionRecommendation` enum (`BodyEnrichment`, `NewSkill`, `None`). No async/DB/LLM dependencies.
-- `zeph-core`: periodic heuristic promotion background task (`AutoSkill A6`, spec 061) — when
-  `heuristic_promotion_enabled = true`, a tokio task scans `skill_heuristics` for qualifying skills
-  (count ≥ `heuristic_promotion_threshold`), calls the LLM to evaluate, and writes quarantined
-  drafts. Idempotency via `skill_heuristic_promotions` `(skill_name, batch_hash)` primary key.
-  60-second initial delay, configurable interval (default 24 h). Aborted at agent shutdown.
-- `zeph-config`: four new `[skills.learning]` fields: `heuristic_promotion_enabled` (default `false`),
-  `heuristic_promotion_provider` (empty = primary), `heuristic_promotion_threshold` (default `5`),
-  `heuristic_promotion_interval_hours` (default `24`).
-- `zeph-memory`: `count_heuristics_by_skill`, `load_heuristic_texts_for_promotion`,
-  `promotion_already_evaluated`, `record_promotion_evaluation` DB helpers; `DbStore::from_pool`
-  constructor for pool-reuse without re-running migrations.
-- DB migration 093 (SQLite) / 092 (PostgreSQL): `skill_heuristic_promotions` table for idempotency.
-- `zeph-skills`: `parent_skill: Option<String>` field in `SkillMeta` and SKILL.md frontmatter;
-  propagated through `parse_frontmatter`, `load_skill_meta_from_str`, and `load_skill_meta`.
-- CLI: `zeph skills promote-heuristics [--skill <name>]` subcommand for manual promotion dry-run.
-- `zeph-mcp`: configurable MCP startup retry backoff (`mcp.startup_retry_backoff_ms`, default 1000 ms) —
-  controls the exponential backoff base delay between server reconnect attempts at startup; see
-  migration step 50 (`migrate_mcp_retry_and_tool_timeout`).
-- `zeph-mcp`: per-call tool timeout (`mcp.tool_timeout_secs`) — when set, overrides the per-server
-  `[[mcp.servers]].timeout` for `tools/call` requests while leaving handshake and `tools/list` timeouts
-  unchanged. When absent (the default), per-server timeout governs all requests. Maximum value: 3600 s.
-- `zeph-plugins`: `disable --force` support (`zeph plugin disable <name> --force`) — proceeds past
-  enabled dependents when `force = true`, returning them in `DisableResult.forced_over_dependents`.
-
-### Changed
-
 - `zeph-config`: renamed `embed_provider` config field to `embedding_provider` across
   `IndexConfig` (`[index]`), `SemanticConfig` (`[memory.semantic]`), and `CoeConfig`
   (`[llm.coe]`); renamed `trace_extraction_embed_provider` to
@@ -266,19 +214,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING** `zeph-plugins`: `PluginManager::disable(name)` signature changed to
   `disable(name, force: bool)`. Pass `false` to preserve the previous behavior (refuse to disable if
   enabled dependents exist).
-
-### Security
-
-- `zeph-scheduler`: RTW-A temporal re-entry defense (#4026) — four mechanisms: (1) write-fence
-  tick quarantine for channel-added tasks (`UserAdded` provenance held for 1 tick), (2) sealed
-  config with `TaskProvenance` (`Static` / `UserAdded` / `External`) persisted to DB via migration
-  `094_scheduler_provenance`, (3) injection pattern detection in `sanitize_task_prompt_checked`
-  (14 markers, case-insensitive), (4) capability attenuation suppressing custom prompts after
-  external-read ticks (e.g. `UpdateCheck`). Configurable via `[scheduler.security]` TOML section
-  (`enabled`, `injection_pattern_check`, `attenuate_after_external_read`).
+- `zeph-agent-context`: extract private `box_err` helper in `memory_backend.rs` and replace 12
+  identical `map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)` closures; no behavior
+  change (closes #4511).
+- `zeph-acp`: upgrade agent-client-protocol SDK to 0.12.1; migrate feature gate
+  `unstable-session-close` → `unstable-session-delete`; `session/resume` is now stable in SDK
+  0.12.1 and no longer requires a feature gate (closes #4454).
+- `zeph-acp`: add standard `session/delete` handler; deprecate `_session/delete` ext method
+  (closes #4458).
+- `zeph-orchestration`: cache reverse-adjacency list in `TopologyAnalysis.rev_adj`; `propagate_failure`
+  and `reset_for_retry` now accept `rev_adj: &[Vec<TaskId>]` and no longer allocate on every failure
+  event (closes #4384).
+- `zeph-scheduler`: extract private `run_loop(interval, grace_secs)` from three near-identical public
+  run-loop methods (`run`, `run_with_interval`, `run_with_interval_and_grace`); public methods are now
+  thin wrappers (closes #4382).
+- `zeph-tui`: remove duplicate `format_token_count` helper in `widgets/input.rs`; call site delegates
+  to `zeph_common::text::format_tokens` (closes #4378).
+- `zeph-core`: rename `ShadowEvent` → `SentinelEvent` in `shadow_sentinel` module to eliminate
+  naming collision with `zeph_sanitizer::ShadowMemory`; `ShadowEventStore` and `ShadowEventRow`
+  retain their names (closes #4379).
+- `zeph-common`: canonical `AuditSignalType`, `Severity`, and `AuditSignal` types moved here
+  from `zeph-sanitizer` and `zeph-memory`; both crates re-export from `zeph_common::audit` for
+  backward compatibility (closes #4395).
 
 ### Fixed
 
+- `zeph-context`: `build_reasoning_context` now tracks the `JoinHandle` for `mark_reasoning_used`
+  in `PreparedContext::background_tasks`; the handle is drained into `TaskSupervisor` in
+  `prepare_context` before `apply_prepared_context` consumes `PreparedContext`, eliminating the
+  untracked fire-and-forget spawn (closes #4631).
+- `zeph-memory`: `spawn_graph_extraction` now stores the `CancellationToken` in
+  `SemanticMemory::graph_cancel`; `cancel_graph_extraction()` fires the token cooperatively on
+  shutdown before `abort_all()` so in-progress DB writes can complete cleanly (closes #4630).
+- `zeph-llm`: `RouterProvider::spawn_asi_update` now pushes the `JoinHandle` into a bounded
+  `Arc<Mutex<JoinSet<()>>>` (`MAX_ASI_TASKS = 8`); new spawns are skipped when the cap is reached,
+  preventing unbounded task accumulation on high-throughput routing (closes #4625).
+- `zeph-llm`: `RouterProvider::spawn_asi_update` now drains completed tasks from the bounded
+  `JoinSet` via `try_join_next()` before the capacity check, preventing the cap from being
+  permanently hit after 8 completions (closes #4644).
+- `zeph`: `apply_response_cache` now returns `Option<tokio::task::JoinHandle<()>>`; the caller
+  in `runner.rs` stores the handle and calls `abort()` during shutdown, ensuring the background
+  cache cleanup loop cannot outlive the agent lifecycle (closes #4612).
+- `zeph-agent-context`: removed `#![allow(clippy::unused_async)]` blanket allow from crate root;
+  `ContextService::reset_conversation` is now a plain `fn` (no `.await` calls); scaffold-phase
+  allow is no longer needed (closes #4567).
+- `zeph-core`: added `#[non_exhaustive]` to seven extensible `pub enum` types in the `quality`
+  and `shadow_sentinel` modules (`SkipReason`, `StageOutcome`, `VerdictStatus`, `TriggerPolicy`,
+  `QualityConfigError`, `ToolRiskCategory`, `ProbeVerdict`); consistent with the project-wide
+  convention from bba75144 (closes #4569).
+- `zeph` (bootstrap): `vault_args_env_overrides_config`, `vault_args_cli_overrides_env_and_config`,
+  and `vault_args_env_key_and_path_fallback` tests now carry `#[serial_test::serial]` to prevent
+  data races when `nextest` runs them in parallel (closes #4617).
+- `zeph` (project): `check_db_lock` now emits a `tracing::warn!` when the database path appears to
+  reside on a network or non-local filesystem (`/Volumes/`, `/net/`, `/nfs/`), where `flock(2)`
+  advisory locking is not enforced (closes #4573).
+- `zeph-context`: removed dead `fidelity_config: Option<&'a FidelityConfig>` field from
+  `ContextAssemblyInput`; the field was always `None` and never read after the CAM Phase 1
+  refactor (closes #4595).
+- `zeph-plugins`: `add_remote` now uses `tokio::fs::write` instead of `std::fs::write` when
+  persisting the `.plugin-source.toml` sidecar, preventing the async executor thread from blocking
+  during remote plugin installation (closes #4606).
 - `zeph-core`: `maybe_start_heuristic_promotion()` moved from post-loop cleanup to agent startup
   so the background task spawns unconditionally — previously, an early `Err` return from
   `process_user_message` (e.g. LLM 429) skipped the cleanup block entirely and the task never
@@ -347,82 +342,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-subagent`: LLM calls inside sub-agent turns are now bounded by `agents.llm_timeout_secs`
   (default 120 s); previously `chat_with_tools` could block indefinitely if the provider stalled;
   timeout logs a `warn` and returns `SubAgentError::Llm("LLM call timed out")` (closes #4525).
-
-### Changed
-
-- `zeph-agent-context`: extract private `box_err` helper in `memory_backend.rs` and replace 12
-  identical `map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)` closures; no behavior
-  change (closes #4511).
-
-### Added
-
-- `zeph-acp`: implement `session/usage` ACP message — `UsageUpdate` notifications are now sent after
-  each LLM call with per-turn input/output/cache token counts and cost estimate; a cumulative session
-  summary is sent on `session/close`. Feature-gated behind `unstable-session-usage`. Reuses existing
-  internal cost tracker and `LoopbackEvent::Usage` — no duplicate counters (closes #4457).
-
-- `zeph-config`: add `dedup_threshold: f32` field to `LearningConfig` (AutoSkill A2, spec 057)
-  with default 0.90, startup validation that `merge_threshold < dedup_threshold` via
-  `LearningConfig::validate()` wired into `Config::validate_llm_and_skills` (closes #4474).
-- `zeph-skills`: replace binary novel/duplicate dedup in `SkillMiner::process_repo` with the
-  three-way `Add/Merge/Discard` flow via `merger::decide()`, mirroring `TraceExtractor`; adds
-  `merge_threshold` (0.75) and `merge_enabled` (true) fields to `MiningConfig`; adds
-  `embed_candidate` and `merge_candidate` methods to `SkillMiner` (AutoSkill A2, closes #4475).
-
-- `zeph-acp`: add `unstable-elicitation` feature — per-session elicitation bridge task
-  (`spawn_elicitation_bridge`) with `Arc<Notify>` cancel signal, bounded mpsc channel, and
-  `ElicitationBridge::elicit()` helper; bridge task is spawned in `do_new_session` when the IDE
-  advertises `elicitation` capability during `initialize()`, and aborted on session drop via
-  `Drop` impl on `SessionEntry` (closes #4456).
-- `zeph-acp`: add `unstable-llm-providers` feature — connection-scoped `providers/list`,
-  `providers/set`, and `providers/disable` handlers dispatched via ext method; state stored in
-  `ZephAcpAgentState.global_disabled_providers` and `global_provider_overrides`; 6 unit tests
-  verify list, set, disable, and combined flows (closes #4455).
-- `zeph-config`: add `AcpTimeoutsConfig` struct with `elicitation_secs`, `terminal_secs`,
-  `mcp_secs` fields (all default 120 s / 300 s); wired into `AcpServerConfig` and
-  `ZephAcpAgentState` via `.with_timeouts()`; replaces previously hardcoded 120-second defaults.
-- `zeph-acp`: add `AcpError::ProviderDisabled` and `AcpError::ProviderNotFound` variants.
-- `zeph-skills`: add `merger` module with `MergeDecision` enum and `decide`/`find_nearest` functions
-  implementing the three-way Add/Merge/Discard skill candidate evaluation (AutoSkill A2, spec 057,
-  closes #4448). Similarity thresholds: `merge_threshold` (0.75) and `dedup_threshold` (0.90).
-- `zeph-skills`: add `trace_extractor` module with `TraceExtractor` pipeline that extracts SKILL.md
-  candidates from post-session user-only conversation messages, quarantines them under `_quarantine/`,
-  and applies injection scanning and embedding-based dedup (AutoSkill A1, spec 056, closes #4447).
-- `zeph-skills`: add `write_quarantined()` to `SkillGenerator` for writing skills to `_quarantine/`
-  subdirectory without user approval.
-- `zeph-skills`: add `version`, `source`, and `session_id` fields to `SkillMeta` and `RawFrontmatter`
-  for spec 057 versioned merge tracking and spec 056 session attribution. Added `Default` impl for
-  `SkillMeta`.
-- `zeph-config`: add `LearningConfig` fields `trace_extraction_enabled`, `trace_extraction_provider`,
-  `trace_extraction_max_turns`, `trace_extraction_max_input_bytes`, `skill_merge_enabled`,
-  `skill_merge_provider`, and `merge_threshold` for AutoSkill A1/A2 opt-in configuration.
-- `zeph-core`: add post-session hook `maybe_extract_skills_from_trace` that fires after the agent
-  loop exits and spawns a background `TraceExtractor` task when enabled.
-- `zeph-db`: add migration `092_skill_trace_sessions.sql` (SQLite) and `091_skill_trace_sessions.sql`
-  (PostgreSQL) for the idempotency table that prevents double-processing of sessions.
-
-### Changed
-
-- `zeph-acp`: upgrade agent-client-protocol SDK to 0.12.1; migrate feature gate
-  `unstable-session-close` → `unstable-session-delete`; `session/resume` is now stable in SDK
-  0.12.1 and no longer requires a feature gate (closes #4454).
-- `zeph-acp`: add standard `session/delete` handler; deprecate `_session/delete` ext method
-  (closes #4458).
-- `zeph-orchestration`: cache reverse-adjacency list in `TopologyAnalysis.rev_adj`; `propagate_failure`
-  and `reset_for_retry` now accept `rev_adj: &[Vec<TaskId>]` and no longer allocate on every failure
-  event (closes #4384).
-- `zeph-scheduler`: extract private `run_loop(interval, grace_secs)` from three near-identical public
-  run-loop methods (`run`, `run_with_interval`, `run_with_interval_and_grace`); public methods are now
-  thin wrappers (closes #4382).
-- `zeph-tui`: remove duplicate `format_token_count` helper in `widgets/input.rs`; call site delegates
-  to `zeph_common::text::format_tokens` (closes #4378).
-
-- `zeph-core`: rename `ShadowEvent` → `SentinelEvent` in `shadow_sentinel` module to eliminate
-  naming collision with `zeph_sanitizer::ShadowMemory`; `ShadowEventStore` and `ShadowEventRow`
-  retain their names (closes #4379).
-
-### Fixed
-
 - `zeph-core`: wire `ShadowMemory` into the agent loop; `SecurityState` now holds
   `Option<ShadowMemory>`, instantiated from `security.causal_ipi.shadow_memory` config at
   startup. `process_tool_result_batch` records a `ShadowEvent` after each tool batch and emits a
@@ -435,7 +354,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remove three duplicate private copies from `zeph-experiments`, `zeph-orchestration`, and
   `zeph-skills` (closes #4431). The canonical implementation escapes `&`, `<`, `>`, `"`, and
   `'` — a superset of the most permissive prior copy.
-
 - `zeph` (binary): `ConsolidationHandler` is now registered with `zeph-scheduler` at bootstrap
   under `TaskKind::Custom("five_signal_consolidation")` when
   `memory.five_signal.consolidation_daemon.enabled = true`; previously the daemon was implemented
@@ -449,57 +367,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CausalDistanceComputer::compute` instead of the hardcoded `None`; the causal distance signal
   is no longer always zero when a goal entity is present (closes #4405). Call sites that do not
   yet supply a goal entity continue to pass `None` per FR-006.
-
 - `zeph-core`: `memory_save` tool now returns "Saved to session memory (ephemeral — not
   available after session ends)." in `--bare` mode instead of the persistent-mode message that
   incorrectly implied data would survive the session (closes #4394).
-
-### Changed
-
-- `zeph-common`: canonical `AuditSignalType`, `Severity`, and `AuditSignal` types moved here
-  from `zeph-sanitizer` and `zeph-memory`; both crates re-export from `zeph_common::audit` for
-  backward compatibility (closes #4395).
-
-### Added
-
-- `zeph-skills`: GoSkills group-structured skill retrieval (#4411). New `group` module with
-  `SkillGroup`, `SkillRole` (EntryPoint / Support / Context), `GroupResult`, and `group_skills()`
-  that computes inter-skill cosine similarity (reusing `zeph_common::math::cosine_similarity`) and
-  groups top-N matched skills into an entry-point + support structure. New
-  `format_grouped_skills_prompt()` in `prompt.rs` emits role-labelled `<active_skill>` XML with
-  the same per-skill trust sanitization, quarantine wrapping, and health attributes as the flat
-  path. Quarantined skills are excluded from support roles. Empty `requirements` and
-  `failure_notes` blocks are omitted from output. Flat fallback is used when no pair exceeds the
-  configured threshold.
-- `zeph-config`: `skills.group_structured` (bool, default `false`) and
-  `skills.support_similarity_threshold` (f32, default `0.50`) config fields for GoSkills (#4411).
-  Threshold outside `[0.0, 1.0]` emits a runtime warning.
-- `zeph-experiments`: `ParameterKind::GroupStructured` variant for A/B experiment gating of
-  GoSkills grouped injection (#4411). Added to `ConfigSnapshot` and wired through `get`/`set`/
-  `diff`/`from_config`.
-- `zeph-plugins`: tracing spans on `collect_skill_dirs`, `update_one_plugin`, and
-  `download_archive` in `PluginManager` (#4385), following the `plugins.manager.*` naming
-  convention.
-
-- `zeph-common`: new `http_middleware` module (feature `http-middleware`) — shared bearer-token
-  auth and per-IP rate-limit axum middleware extracted from `zeph-gateway` and `zeph-a2a`;
-  eliminates duplicated `AuthConfig`, `RateLimitState`, `Cidr`, `auth_middleware`,
-  `rate_limit_middleware` implementations; gateway's pre-hashing + `subtle::ConstantTimeEq`
-  approach is canonical (closes #4387).
-- `zeph-core`, `zeph-memory`: Wire `TrajectoryRiskAccumulator` (MAGE spec 004-16) into the
-  tool execution gate (#4380). When `memory.shadow_memory.enabled = true` and the accumulated
-  trajectory risk reaches `risk_threshold`, all tool calls in the current turn are blocked with
-  `ToolError::TrajectoryRiskExceeded`. Signal ingestion bridges the existing `trajectory_signal_queue`
-  codes (PolicyDeny, VigilMedium/High, ExfiltrationRedaction) to MAGE `AuditSignalType` variants;
-  exponential temporal decay is applied once per turn via `advance_turn()` in `begin_turn()`.
-  Blocked dispatches bypass the tier-execution loop and produce structured error results.
-- `zeph-memory`: Prometheus counters for shadow memory (spec 004-16 NFR-007, #4396).
-  `shadow_memory_signals_total{type,severity}` increments on every `ingest()` call;
-  `shadow_memory_blocks_total` and `shadow_memory_escalations_total` are incremented via new
-  `record_block()` / `record_escalation()` methods called from the gate.
-
-### Fixed
-
 - `zeph-core`: GoSkills grouping now rebuilds `matched_indices` after the channel-allowlist
   filter so the index slice stays 1:1 with `active_skills`; previously, skills removed by the
   allowlist left stale store-indices in place, causing `group_skills()` to look up the wrong
@@ -507,7 +377,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-memory`: Remove `info_span!` from `TrajectoryRiskAccumulator::current_risk()` (#4397).
   The method is a pure getter with no I/O; creating a span on every call added ~1 µs overhead
   and polluted traces with noise. Spans remain on `advance_turn()` and `ingest()`.
-
 - `zeph-memory`, `zeph-config`: Five-signal SYNAPSE retrieval (#4374). Extends the recall
   pipeline with three signals beyond the two-signal baseline (recency + relevance): access
   frequency (facts queried more often rank higher), causal distance (facts closer to the current
@@ -527,6 +396,88 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   section.
 - `zeph` (binary): Bootstrap wiring — `AppBuilder::attach_five_signal` constructs and attaches
   `FiveSignalRuntime` when `memory.five_signal.enabled = true`.
+
+### Refactored
+
+- `zeph-agent-feedback`, `zeph-experiments`, `zeph-plugins`, `zeph-skills`, `zeph-tui`: added
+  `#[non_exhaustive]` to all extensible `pub enum` types missed by the sweep in #4545. Wildcard
+  match arms added in `zeph-core` and the `zeph` binary where required to preserve exhaustive
+  pattern coverage (closes #4561, #4563, #4565).
+- `zeph-llm`: deduplicated `build_tool_description` into `crates/zeph-llm/src/tool_desc.rs`; both
+  `claude` and `openai` backends now share a single implementation with a common `static WARNED`
+  guard for once-per-session schema-overflow warnings (closes #4577).
+
+### Security
+
+- `zeph-scheduler`: RTW-A temporal re-entry defense (#4026) — four mechanisms: (1) write-fence
+  tick quarantine for channel-added tasks (`UserAdded` provenance held for 1 tick), (2) sealed
+  config with `TaskProvenance` (`Static` / `UserAdded` / `External`) persisted to DB via migration
+  `094_scheduler_provenance`, (3) injection pattern detection in `sanitize_task_prompt_checked`
+  (14 markers, case-insensitive), (4) capability attenuation suppressing custom prompts after
+  external-read ticks (e.g. `UpdateCheck`). Configurable via `[scheduler.security]` TOML section
+  (`enabled`, `injection_pattern_check`, `attenuate_after_external_read`).
+
+### Docs
+
+- `zeph-memory` / `zeph-common`: added disambiguation notes to `ContentFidelity` (optical forgetting,
+  long-term memory store fidelity) and `ContextFidelity` (CAM, context-window fidelity) to prevent
+  confusion between the two near-identical enum names (closes #4556).
+- `zeph-memory`: `TreeConsolidationConfig` pub fields (`enabled`, `sweep_interval_secs`,
+  `batch_size`, `similarity_threshold`, `max_level`, `min_cluster_size`) now have `///` doc
+  comments describing their semantic and valid range (closes #4603).
+- `specs/004-memory/004-3-admission-control.md`: updated to document the actual 5-factor A-MAC
+  scoring model (`future_utility`, `factual_confidence`, `semantic_novelty`, `temporal_recency`,
+  `content_type_prior`; optional `goal_utility`) with correct default weights and config fields.
+  The original 6-factor design is preserved as historical context with a reference to arXiv:2603.04549
+  and issue #4141 (closes #4605).
+- `zeph-plugins`: `read_plugin_source` in `update_one_plugin` now uses `tokio::fs::read_to_string`
+  instead of `std::fs::read_to_string`, preventing the async executor thread from blocking during
+  plugin auto-update sidecar reads (closes #4589).
+- `zeph-core`: `AgentBuilder::apply_tool_schema_filter` wraps `provider.embed()` with a 15-second
+  `tokio::time::timeout`. On timeout the filter is silently disabled (graceful degradation) rather
+  than hanging agent startup indefinitely (closes #4585).
+- `zeph-index`: `CodeIndexer::ensure_collection_for_provider` wraps `provider.embed("probe")` with
+  a 15-second `tokio::time::timeout`, mapping a stall to `IndexError::EmbedTimeout` so index
+  initialization fails fast with a clear diagnostic (closes #4585).
+- `zeph-llm`, `zeph-mcp`: embed calls inside fire-and-forget tasks (`RouterProvider::spawn_asi_update`
+  and `EmbeddingAnomalyGuard::check_async`) are now bounded by `embed_timeout_ms` (default 5 s) via
+  `tokio::time::timeout`. On timeout the task returns early — same as the existing embed-error path —
+  preventing indefinite task accumulation when the embedding provider stalls (closes #4566).
+  `EmbeddingAnomalyGuard` gains an `embed_timeout_ms` field and `with_embed_timeout()` builder.
+- `zeph-core`: `ShadowSentinel` no longer drops `JoinHandle`s from its two fire-and-forget persist
+  tasks. Both spawn sites now route through a bounded `Mutex<JoinSet<()>>` (capacity 32). Completed
+  handles are reaped non-blockingly with `try_join_next()` before each spawn; if the set is still at
+  capacity the new task is skipped with a debug log. `drain_pending()` awaits all remaining writes at
+  session shutdown via `Agent::shutdown()` (closes #4570).
+- `zeph-llm`: `ClaudeProvider::send_request` and `send_stream_request` now retry the request
+  transparently after receiving a `BetaHeaderRejected` error for the `compact-2026-01-12` beta
+  header. Previously, the first request in a session with server compaction enabled would always
+  fail when the API rejects the header; the flag is now set and the call retried in the same path
+  without surfacing an error to the caller (closes #4580).
+- `zeph-llm`: `CompletionTokens::for_model` now returns `max_completion_tokens` for OpenAI
+  o-series models (`o1`, `o1-mini`, `o1-pro`, `o3`, `o3-mini`, `o4-mini`). Previously only
+  `gpt-5*` models used this field; o-series models fell through to the legacy `max_tokens` field,
+  causing 400 Bad Request errors from the API (closes #4579).
+- `zeph-core`: `select_messages_for_compression` now sorts indices before building `to_compress`,
+  ensuring messages are passed to the compression LLM in chronological (ascending index) order.
+  Previously, iterating a raw `HashSet<usize>` produced non-deterministic ordering (closes #4558).
+- `zeph-plugins`: replaced blocking `std::fs::write` / `std::fs::read_to_string` calls in the
+  async `update_one_plugin` with `tokio::fs` equivalents, preventing Tokio thread starvation
+  during concurrent auto-update checks (closes #4560).
+- `apply_response_cache`: hourly cleanup background task now exits cleanly when the session shuts
+  down. The loop uses `tokio::select!` on a `CancellationToken` child of `mem_cancel`, which is
+  already cancelled via `shutdown_rx` at session teardown. Closes #4572.
+- `runner`: TUI early-status-forwarder `JoinHandle` annotated as intentionally dropped at block
+  end (self-terminating when the channel closes). Removes misleading bare `let _` and satisfies
+  `clippy::let_underscore_future`. Closes #4571.
+- `zeph-llm`: `ClaudeProvider::chat_with_tools_stream`, `chat_typed`, and `chat_with_tools` now
+  apply the same `BetaHeaderRejected` retry loop that `send_request` and `send_stream_request`
+  already use. Previously these three paths returned `BetaHeaderRejected` to the caller without
+  retrying, meaning any session that started with server compaction enabled would always fail on
+  the first tool-stream, typed, or non-streaming tool call (closes #4598).
+- `zeph-llm`: `CompletionTokens::for_model` now uses a general `o`+digit prefix check instead of
+  enumerating `o1`/`o3`/`o4`. This covers all current and future o-series models (`o2`, `o5`, …)
+  without requiring per-model additions (closes #4600, #4602).
 
 ## [0.21.2] - 2026-05-18
 
@@ -550,11 +501,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   conflict candidate pairs with status/resolution lifecycle columns and three supporting indexes.
 - `zeph-config`: `ImplicitConflictConfig` and supporting types (`SimilarityMethod`,
   `ConflictResolutionStrategy`, `ConsolidationDaemonConfig`) under `[memory.graph.implicit_conflict]`.
-
-## [0.21.2] - 2026-05-18
-
-### Added
-
 - `zeph-config`: Added `telemetry.trace_metadata` config field (`HashMap<String, String>`)
   that propagates user-defined key/value pairs as OpenTelemetry resource attributes. Attributes
   appear on every exported OTLP span and in Chrome JSON `resourceSpans[].resource.attributes`.
@@ -6993,7 +6939,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.2...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.3...HEAD
+[0.21.3]: https://github.com/bug-ops/zeph/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/bug-ops/zeph/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/bug-ops/zeph/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/bug-ops/zeph/compare/v0.20.2...v0.21.0

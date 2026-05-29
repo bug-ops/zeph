@@ -148,3 +148,48 @@ The `zeph schedule` subcommand (requires `scheduler` feature) provides out-of-pr
 - Prompt sanitization via `sanitize_task_prompt` is mandatory on the CLI path, same as the LLM tool path
 - `--name` auto-generation uses BLAKE3 prefix of the sanitized prompt (not the raw input)
 - NEVER bypass `normalize_cron_expr` when inserting via CLI — normalization ensures 6-field canonical form in DB
+
+---
+
+## RTW-A Temporal Re-Entry Defense
+
+**Status: Implemented** (commit #4548, PR #4548)
+
+RTW-A (Read-Then-Write-Attack) is a class of timing-based prompt injection where a malicious
+task is written to the scheduler in the same tick that reads it, or where an external-source
+task suppresses its prompt while reading from untrusted storage.
+
+### Mechanisms
+
+Zeph's RTW-A defense implements four mechanisms active when `rtwa_enabled = true`:
+
+| Mechanism | Behavior |
+|---|---|
+| **Mech1 (Write-then-read quarantine)** | A task added via the control channel in the same tick is quarantined and does not fire that tick. |
+| **Mech2 (Trust gate)** | Only tasks with `provenance = "static"` or `"user_added"` may run custom prompts. External tasks (`provenance = "external"`) are suppressed. |
+| **Mech3 (Injection scan)** | Task prompt scanned via `sanitize_task_prompt` before execution. Matched injection patterns block the task with `SchedulerError::InjectionBlocked`. |
+| **Mech4 (External-read suppression)** | When the tick reads from an external source, tasks with `"external"` provenance suppress their custom prompt for that tick. |
+
+### Provenance Field
+
+The `scheduled_jobs` table carries an RTW-A `provenance` field:
+- `"static"` — registered at startup by code (e.g., built-in periodic jobs)
+- `"user_added"` — registered via the user-facing CLI or LLM tool
+- `"external"` — registered by an external integration (webhook, API)
+
+### Config
+
+```toml
+[scheduler]
+rtwa_enabled = true   # enables all 4 RTW-A mechanisms; set false only in test environments
+```
+
+RTW-A defense is enabled by default. Pass `Scheduler::with_rtwa(false)` to disable for unit tests.
+
+### Key Invariants
+
+- Mech1 applies only within a single tick — a task added in tick N is eligible to fire from tick N+1
+- Mech3 injection scan MUST run before task prompt is passed to the agent `message_queue`
+- `SchedulerError::InjectionBlocked` and `SchedulerError::TaskQuarantined` are distinct variants
+- NEVER fire a task with `provenance = "external"` custom prompt during an external-read tick (Mech4)
+- `adversarial_policy_bypass` in `list_tasks` responses is blocked — task listing enforces the same policy filter as execution (commit #4536)

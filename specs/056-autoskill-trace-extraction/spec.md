@@ -10,7 +10,7 @@ tags:
   - self-learning
   - autoskill
 created: 2026-05-19
-status: draft
+status: implemented
 related:
   - "[[005-skills/spec]]"
   - "[[015-self-learning/spec]]"
@@ -231,6 +231,12 @@ THEN the error is logged at WARN level and the session is NOT marked as processe
 - Process sessions without the opt-in flag enabled
 
 ---
+
+## Implementation Notes
+
+- Implemented in commits #4476 (A1+A2 combined), #4499 (A2 dedup), #4503 (frontmatter and embed provider fixes)
+- `TraceExtractor` shutdown await is bounded (commit #4504) — no blocking on agent exit
+- JoinHandle for the trace extraction background task is tracked in `LifecycleState` (commit #4489)
 
 ## See Also
 

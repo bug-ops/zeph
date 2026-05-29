@@ -21,6 +21,18 @@ Two vector backends are available:
 
 Semantic memory uses hybrid search — vector similarity combined with SQLite FTS5 keyword search — to improve recall quality. When the vector backend is unavailable, Zeph falls back to keyword-only search.
 
+### Result Quality: MEMTIER Five-Signal Scoring
+
+Semantic memory recall quality is improved by a multi-factor scoring model (MEMTIER) that considers five signals:
+
+- **Future utility** — estimated probability the message will be relevant to future queries
+- **Factual confidence** — inverse of hedging markers ("maybe", "I think", "probably")
+- **Semantic novelty** — uniqueness relative to other recalled messages
+- **Temporal recency** — freshness of the information (always 1.0 at write time)
+- **Content type prior** — role-based signal (tool outputs, user queries, etc.)
+
+These signals are fused into a composite score that determines message rank in recall results. The scoring operates transparently — you do not need to configure it, but you can tune the weights in `[memory.admission]` (see [Admission Control](../advanced/context.md#admission-control) for details).
+
 ### Result Quality: MMR and Temporal Decay
 
 Two post-processing stages improve recall quality beyond raw similarity:
@@ -65,6 +77,39 @@ recall_limit = 5
 ```
 
 See [Set Up Semantic Memory](../guides/semantic-memory.md) for the full setup guide.
+
+## Context Fidelity (CAM — Context-Adaptive Memory)
+
+When conversations grow long, the LLM context window fills with messages that are less important: old system messages, irrelevant tool outputs, or low-value user queries. Context-Adaptive Memory (CAM) automatically assigns a fidelity level to each message in the context to reduce token waste without losing information.
+
+Three fidelity levels are available:
+
+- **Full** — complete original message; sent to the LLM as-is
+- **Compressed** — summarized version (auto-truncated or LLM-generated); preserves key information in fewer tokens
+- **Placeholder** — metadata-only stub; signals the message existed without its content
+
+The fidelity level is determined by a heuristic score combining four signals:
+
+1. **Temporal decay** — older messages score lower (exponential decay with configurable half-life)
+2. **Message role importance** — user messages and tool results score higher than system messages
+3. **Keyword overlap** — messages matching the current query score higher
+4. **Semantic similarity** — (optional) embedding-based relevance to the query
+
+Compressed messages are rendered by truncating to a token budget, or (when configured) by calling an LLM to generate a summary. Placeholder messages are excluded from the LLM context entirely but preserved in the conversation UI.
+
+Enable CAM in the `[context.fidelity]` config section (disabled by default):
+
+```toml
+[context.fidelity]
+enabled = true
+compressed_threshold = 0.4       # Score below this → Compressed
+placeholder_threshold = 0.2      # Score below this → Placeholder
+compressed_max_tokens = 300      # Token budget for truncation
+compress_provider = "fast"       # (optional) LLM provider for smart summaries
+semantic_scoring_provider = ""   # (optional) embedding provider for relevance scoring
+```
+
+When both `compress_provider` and `semantic_scoring_provider` are empty, CAM uses the heuristic model (no LLM/embedding calls). When configured, they improve accuracy at the cost of latency and API calls. See [Context Engineering — CAM Tuning](../advanced/context.md#cam-tuning) for full configuration details.
 
 ## Cross-Session History Restore
 
