@@ -12,19 +12,115 @@
 //! [`FidelityConfig`] holds all tuning knobs; it is read from `[memory.fidelity]` in
 //! `config.toml`. When `enabled = false` (the default), the scorer returns immediately
 //! without modifying the message window.
+//!
+//! ## Embed pre-pass
+//!
+//! [`embed_prepass`] runs concurrently via `futures::stream::buffer_unordered` and
+//! populates per-message embedding vectors before scoring. The concurrency bound is
+//! controlled by [`FidelityConfig::embed_concurrency`] (default 32).
 
 use std::time::Duration;
 
+use futures::StreamExt as _;
 use tracing::info_span;
 use zeph_common::memory::TokenCounting;
 use zeph_common::{ContextFidelity, PlannedToolHint};
 use zeph_llm::LlmProviderDyn;
-use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+use zeph_llm::provider::{EmbedFuture, Message, MessageMetadata, MessagePart, Role};
 
 use crate::assembler::CORRECTIONS_PREFIX;
 
 // Re-export FidelityConfig from zeph-config so both crates share one definition.
 pub use zeph_config::FidelityConfig;
+
+/// Run embed calls for `messages` concurrently, returning per-index embedding vectors.
+///
+/// Indexes not included in the result either had no content or produced an error (errors
+/// are logged at `debug` level and silently skipped — scoring falls back to keyword overlap
+/// for those messages).
+///
+/// Only exempt messages (focus-pinned, inserted memory, system) are skipped; for non-exempt messages the content
+/// is optionally truncated to `config.max_embed_input_tokens * 4` bytes (at a char boundary)
+/// before the call.
+///
+/// Concurrency is bounded by [`FidelityConfig::embed_concurrency`] (default 32), which
+/// maps to the `buffer_unordered(N)` parameter. A zero value is clamped to 1 with a warning.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_context::fidelity::{embed_prepass, FidelityConfig};
+///
+/// async fn example() {
+///     let messages = vec![];
+///     let cfg = FidelityConfig::default();
+///     let embed = |_text: &str| -> zeph_llm::provider::EmbedFuture {
+///         Box::pin(async { Ok(vec![0.0f32; 384]) })
+///     };
+///     let _embeddings = embed_prepass(&messages, &embed, &cfg, 0).await;
+/// }
+/// ```
+pub async fn embed_prepass<F>(
+    messages: &[Message],
+    embed: &F,
+    config: &FidelityConfig,
+    inserted_count: usize,
+) -> std::collections::HashMap<usize, Vec<f32>>
+where
+    F: Fn(&str) -> EmbedFuture + Send + Sync,
+{
+    let concurrency = if config.embed_concurrency == 0 {
+        tracing::warn!(
+            "embed_concurrency is 0, clamping to 1; set a positive value in [context.fidelity]"
+        );
+        1
+    } else {
+        config.embed_concurrency
+    };
+
+    let tasks = messages.iter().enumerate().filter_map(|(i, msg)| {
+        if is_exempt(msg, i, inserted_count) || msg.content.is_empty() {
+            return None;
+        }
+        let content = match config.max_embed_input_tokens {
+            Some(n) => truncate_to_byte_limit(&msg.content, n.saturating_mul(4)),
+            None => msg.content.clone(),
+        };
+        Some((i, content))
+    });
+
+    futures::stream::iter(tasks)
+        .map(|(i, content)| async move {
+            let result = embed(&content).await;
+            match result {
+                Ok(vec) => Some((i, vec)),
+                Err(e) => {
+                    tracing::debug!(idx = i, err = %e, "embed_prepass: embed failed, skipping");
+                    None
+                }
+            }
+        })
+        .buffer_unordered(concurrency)
+        .filter_map(|opt| async move { opt })
+        .collect()
+        .await
+}
+
+/// Truncate `s` to at most `max_bytes` bytes, landing on a valid UTF-8 char boundary.
+///
+/// The limit is a byte count, not a character count. Callers using a token approximation
+/// should pass `n * 4` (the 4-byte-per-token heuristic) via [`saturating_mul`](usize::saturating_mul).
+/// Uses [`str::floor_char_boundary`] (stable since Rust 1.91) so multibyte characters
+/// are never split.
+///
+/// Returns a new `String`; does not modify the original.
+fn truncate_to_byte_limit(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let boundary = s.floor_char_boundary(max_bytes);
+    s[..boundary].to_string()
+}
 
 struct FidelityScore {
     score: f32,
@@ -522,66 +618,77 @@ async fn render_compressed(
     // Priority 1: use pre-computed deferred summary when available.
     if let Some(summary) = msg.metadata.deferred_summary.take() {
         msg.content = summary;
-        msg.parts.clear();
-        msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
-        return;
-    }
-
-    // Priority 2: LLM-assisted compression when provider and config name are set.
-    if config.compress_provider.is_some()
+    } else if config.compress_provider.is_some()
         && let Some(p) = provider
     {
+        // Priority 2: LLM-assisted compression when provider and config name are set.
         let input_tokens = tc.count_tokens(&msg.content);
         // Guard: skip LLM if input is already small or within 2x of the max budget.
-        if input_tokens <= config.compressed_max_tokens * 2 || input_tokens == 0 {
-            truncate_to_tokens(&mut msg.content, config.compressed_max_tokens, tc);
-            msg.parts.clear();
-            msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
-            return;
-        }
-
-        let prompt = format!(
-            "Summarize in {} tokens or fewer: {}",
-            config.compressed_max_tokens, msg.content
-        );
-        let req = vec![Message {
-            role: Role::User,
-            content: prompt,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }];
-
-        let span = info_span!(
-            "context.fidelity.compress_llm",
-            input_tokens,
-            cached = false,
-        );
-        let result = {
-            let _enter = span.enter();
-            tokio::time::timeout(Duration::from_secs(30), p.chat(&req)).await
-        };
-
-        match result {
-            Ok(Ok(summary)) => {
-                msg.metadata.deferred_summary = Some(summary.clone());
-                msg.content = summary;
-                msg.parts.clear();
-                msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
-                return;
+        if input_tokens > config.compressed_max_tokens * 2 && input_tokens > 0 {
+            // Apply input cap before sending to LLM.
+            if let Some(max_in) = config.max_compress_input_tokens {
+                apply_input_cap(&mut msg.content, max_in);
             }
-            Ok(Err(e)) => {
-                tracing::debug!(error = %e, "compress_llm failed, falling back to truncation");
-            }
-            Err(_) => {
-                tracing::warn!("compress_llm timed out, falling back to truncation");
+
+            let prompt = format!(
+                "Summarize in {} tokens or fewer: {}",
+                config.compressed_max_tokens, msg.content
+            );
+            let req = vec![Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+
+            let span = info_span!(
+                "context.fidelity.compress_llm",
+                input_tokens,
+                cached = false,
+            );
+            let result = {
+                let _enter = span.enter();
+                tokio::time::timeout(Duration::from_secs(30), p.chat(&req)).await
+            };
+
+            match result {
+                Ok(Ok(summary)) => {
+                    msg.metadata.deferred_summary = Some(summary.clone());
+                    msg.content = summary;
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!(error = %e, "compress_llm failed, falling back to truncation");
+                }
+                Err(_) => {
+                    tracing::warn!("compress_llm timed out, falling back to truncation");
+                }
             }
         }
+    } else if let Some(max_in) = config.max_compress_input_tokens {
+        // Cap input before truncation so pathologically large messages don't blow the budget.
+        apply_input_cap(&mut msg.content, max_in);
     }
 
-    // Fallback: truncation.
+    // Always cap output to compressed_max_tokens — covers both the deferred-summary path
+    // (LLM output may exceed the limit) and the truncation-only path.
     truncate_to_tokens(&mut msg.content, config.compressed_max_tokens, tc);
     msg.parts.clear();
     msg.metadata.fidelity_tag = Some(ContextFidelity::Compressed);
+}
+
+/// Truncate `content` in place using the `max_tokens * 4` byte approximation.
+///
+/// Truncates at a valid UTF-8 char boundary via [`str::floor_char_boundary`]. Uses
+/// [`saturating_mul`](usize::saturating_mul) to avoid overflow on extreme token counts.
+///
+/// Pass `config.max_compress_input_tokens` as `max_tokens` before an LLM compress call,
+/// or `config.max_embed_input_tokens` before an embed call.
+pub fn apply_input_cap(content: &mut String, max_tokens: usize) {
+    let max_bytes = max_tokens.saturating_mul(4);
+    if content.len() > max_bytes {
+        let boundary = content.floor_char_boundary(max_bytes);
+        content.truncate(boundary);
+    }
 }
 
 fn truncate_to_tokens(content: &mut String, max_tokens: usize, tc: &dyn TokenCounting) {
@@ -760,6 +867,9 @@ mod tests {
             compress_provider: None,
             semantic_scoring_provider: None,
             lookahead_depth: 3,
+            embed_concurrency: 32,
+            max_embed_input_tokens: None,
+            max_compress_input_tokens: None,
         }
     }
 
@@ -1036,6 +1146,9 @@ mod tests {
             compress_provider: None,
             semantic_scoring_provider: None,
             lookahead_depth: 3,
+            embed_concurrency: 32,
+            max_embed_input_tokens: None,
+            max_compress_input_tokens: None,
         };
         let tc = FixedTc(4);
         let mut messages = vec![make_msg(Role::System, ""), make_msg(Role::User, "")];
@@ -1679,7 +1792,12 @@ mod tests {
             messages[1].metadata.fidelity_tag,
             Some(ContextFidelity::Compressed),
         );
-        assert_eq!(messages[1].content, "summary text");
+        // Content is capped to compressed_max_tokens (5 chars with FixedTc(1)) after LLM call.
+        assert!(
+            tc.count_tokens(&messages[1].content) <= 5,
+            "content must be capped to compressed_max_tokens after LLM summary"
+        );
+        // deferred_summary stores the full LLM output for future reuse.
         assert_eq!(
             messages[1].metadata.deferred_summary,
             Some("summary text".to_string()),
@@ -1933,6 +2051,7 @@ mod tests {
             );
         }
     }
+
     // w_plan path: messages whose content overlaps planned tool keywords score higher.
     #[tokio::test]
     async fn w_plan_produces_nonzero_score_for_matching_message() {
@@ -1990,6 +2109,301 @@ mod tests {
             messages[2].metadata.fidelity_tag,
             Some(ContextFidelity::Full),
             "message with no keyword overlap must not reach Full fidelity via w_plan"
+        );
+    }
+
+    // ── truncate_to_byte_limit ────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_to_byte_limit_no_op_when_short() {
+        assert_eq!(truncate_to_byte_limit("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_to_byte_limit_exact_limit_no_op() {
+        assert_eq!(truncate_to_byte_limit("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_to_byte_limit_over_limit() {
+        let s = truncate_to_byte_limit("abcdefgh", 5);
+        assert_eq!(s.len(), 5);
+        assert_eq!(s, "abcde");
+    }
+
+    #[test]
+    fn truncate_to_byte_limit_multibyte_boundary() {
+        // "日本語" = 3 chars, each 3 bytes (9 bytes total). max_bytes=6 → "日本" (6 bytes).
+        let s = truncate_to_byte_limit("日本語", 6);
+        assert!(s.is_char_boundary(s.len()));
+        assert_eq!(s, "日本");
+    }
+
+    // ── apply_input_cap ───────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_input_cap_no_op_below_limit() {
+        let mut s = "hello".to_string();
+        apply_input_cap(&mut s, 10); // 10 * 4 = 40 bytes, well above 5
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn apply_input_cap_truncates_over_limit() {
+        // max_tokens=1 → max_bytes=4
+        let mut s = "abcdefgh".to_string();
+        apply_input_cap(&mut s, 1);
+        assert_eq!(s, "abcd");
+    }
+
+    #[test]
+    fn apply_input_cap_multibyte() {
+        // "日本語" = 9 bytes. max_tokens=1 → max_bytes=4. floor_char_boundary(4) on "日本語"
+        // lands at 3 (end of "日"). Result is "日".
+        let mut s = "日本語".to_string();
+        apply_input_cap(&mut s, 1);
+        assert!(s.is_char_boundary(s.len()));
+        assert_eq!(s, "日");
+    }
+
+    // ── embed_prepass ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn embed_prepass_returns_embeddings_for_non_exempt() {
+        let messages = vec![
+            make_msg(Role::System, "system prompt"), // exempt (idx=0, system)
+            make_msg(Role::User, "user message"),
+            make_msg(Role::Assistant, "assistant reply"),
+        ];
+        let cfg = FidelityConfig::default();
+        let embed = |_text: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0f32, 2.0, 3.0]) }) };
+        let result = embed_prepass(&messages, &embed, &cfg, 0).await;
+        // Index 0 (system) is exempt, indices 1 and 2 get embeddings.
+        assert!(!result.contains_key(&0));
+        assert_eq!(result[&1], vec![1.0, 2.0, 3.0]);
+        assert_eq!(result[&2], vec![1.0, 2.0, 3.0]);
+    }
+
+    #[tokio::test]
+    async fn embed_prepass_skips_empty_content() {
+        let messages = vec![make_msg(Role::System, "system"), make_msg(Role::User, "")];
+        let cfg = FidelityConfig::default();
+        let embed = |_text: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0f32]) }) };
+        let result = embed_prepass(&messages, &embed, &cfg, 0).await;
+        assert!(!result.contains_key(&1), "empty content must be skipped");
+    }
+
+    #[tokio::test]
+    async fn embed_prepass_skips_inserted_memory() {
+        let messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, "injected memory"),
+            make_msg(Role::User, "real user message"),
+        ];
+        let cfg = FidelityConfig::default();
+        let embed = |_text: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0f32]) }) };
+        // inserted_count=1 → idx 1 is exempt
+        let result = embed_prepass(&messages, &embed, &cfg, 1).await;
+        assert!(!result.contains_key(&0), "system is exempt");
+        assert!(!result.contains_key(&1), "inserted memory is exempt");
+        assert!(
+            result.contains_key(&2),
+            "real user message must be embedded"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_prepass_silently_skips_errors() {
+        let messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, "user"),
+        ];
+        let cfg = FidelityConfig::default();
+        let embed = |_text: &str| -> EmbedFuture {
+            Box::pin(async {
+                Err(zeph_llm::LlmError::EmbedUnsupported {
+                    provider: "mock".to_string(),
+                })
+            })
+        };
+        let result = embed_prepass(&messages, &embed, &cfg, 0).await;
+        assert!(result.is_empty(), "errors must be silently skipped");
+    }
+
+    #[tokio::test]
+    async fn embed_prepass_truncates_content_when_cap_set() {
+        // With max_embed_input_tokens=1 (max_bytes=4), content longer than 4 bytes is truncated.
+        let long_content = "a".repeat(100);
+        let messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, &long_content),
+        ];
+        let cfg = FidelityConfig {
+            max_embed_input_tokens: Some(1), // 1 * 4 = 4 bytes max
+            ..FidelityConfig::default()
+        };
+        let seen_len = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let seen_len_clone = seen_len.clone();
+        let embed = move |text: &str| -> EmbedFuture {
+            let len = text.len();
+            let seen = seen_len_clone.clone();
+            Box::pin(async move {
+                *seen.lock().unwrap() = len;
+                Ok(vec![1.0f32])
+            })
+        };
+        embed_prepass(&messages, &embed, &cfg, 0).await;
+        assert_eq!(
+            *seen_len.lock().unwrap(),
+            4,
+            "content must be truncated to max_embed_input_tokens * 4 bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_prepass_concurrency_zero_clamped_to_one() {
+        // embed_concurrency=0 must be clamped to 1 (with a warning) and still produce results.
+        let messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, "user message"),
+        ];
+        let cfg = FidelityConfig {
+            embed_concurrency: 0,
+            ..FidelityConfig::default()
+        };
+        let embed = |_text: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0f32]) }) };
+        let result = embed_prepass(&messages, &embed, &cfg, 0).await;
+        assert!(
+            result.contains_key(&1),
+            "result must be produced even with concurrency=0"
+        );
+    }
+
+    // ── FidelityConfig new fields ─────────────────────────────────────────────
+
+    #[test]
+    fn fidelity_config_new_fields_defaults() {
+        let cfg = FidelityConfig::default();
+        assert_eq!(cfg.embed_concurrency, 32);
+        assert!(cfg.max_embed_input_tokens.is_none());
+        assert!(cfg.max_compress_input_tokens.is_none());
+    }
+
+    #[test]
+    fn fidelity_config_new_fields_custom() {
+        let cfg = FidelityConfig {
+            embed_concurrency: 8,
+            max_embed_input_tokens: Some(512),
+            max_compress_input_tokens: Some(1024),
+            ..FidelityConfig::default()
+        };
+        assert_eq!(cfg.embed_concurrency, 8);
+        assert_eq!(cfg.max_embed_input_tokens, Some(512));
+        assert_eq!(cfg.max_compress_input_tokens, Some(1024));
+    }
+
+    // Post-compress truncation: deferred_summary exceeding compressed_max_tokens is trimmed.
+    #[tokio::test]
+    async fn render_compressed_truncates_oversized_deferred_summary() {
+        let scorer = FidelityScorer;
+        // full_threshold=2.0 unreachable, compressed_threshold=0.0 → everything Compressed.
+        // compressed_max_tokens=3 (with FixedTc(1): 1 char = 1 token, so 3 tokens = 3 chars).
+        let cfg = FidelityConfig {
+            full_threshold: 2.0,
+            compressed_threshold: 0.0,
+            compressed_max_tokens: 3,
+            ..make_cfg()
+        };
+        let tc = FixedTc(1);
+        let mut msg = make_msg(Role::User, "original long content");
+        // Simulate LLM returning a summary that is 10 chars (> 3 tokens).
+        msg.metadata.deferred_summary = Some("ten chars!".to_string());
+        let mut messages = vec![make_msg(Role::System, "sys"), msg];
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
+        let compressed = &messages[1];
+        assert_eq!(
+            compressed.metadata.fidelity_tag,
+            Some(ContextFidelity::Compressed)
+        );
+        assert!(
+            tc.count_tokens(&compressed.content) <= 3,
+            "deferred_summary result must be truncated to compressed_max_tokens"
+        );
+    }
+
+    // max_compress_input_tokens: content is capped before truncation when no deferred_summary.
+    #[tokio::test]
+    async fn render_compressed_applies_max_compress_input_tokens() {
+        let scorer = FidelityScorer;
+        // Force everything to Compressed. max_compress_input_tokens=2 → max_bytes=8.
+        // FixedTc(1): 1 byte = 1 token. compressed_max_tokens=100 (no output cap needed here).
+        let cfg = FidelityConfig {
+            full_threshold: 2.0,
+            compressed_threshold: 0.0,
+            compressed_max_tokens: 100,
+            max_compress_input_tokens: Some(2), // 2 * 4 = 8 bytes
+            ..make_cfg()
+        };
+        let tc = FixedTc(1);
+        let content_20 = "a".repeat(20); // 20 bytes, must be capped to 8
+        let mut msg = make_msg(Role::User, &content_20);
+        // No deferred_summary → input cap path applies.
+        let mut messages = vec![make_msg(Role::System, "sys"), msg.clone()];
+        scorer
+            .score_and_apply(
+                &mut messages,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
+        let compressed = &messages[1];
+        assert_eq!(
+            compressed.metadata.fidelity_tag,
+            Some(ContextFidelity::Compressed)
+        );
+        // Input was capped to 8 bytes, then output cap of 100 is no-op, so content is 8 bytes.
+        assert_eq!(
+            compressed.content.len(),
+            8,
+            "content must be capped to max_compress_input_tokens * 4 bytes"
+        );
+        // Verify deferred_summary path is unaffected by input cap.
+        msg.metadata.deferred_summary = Some("short".to_string());
+        let mut messages2 = vec![make_msg(Role::System, "sys"), msg];
+        scorer
+            .score_and_apply(
+                &mut messages2,
+                "query text here long",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(
+            messages2[1].content, "short",
+            "deferred_summary must bypass input cap"
         );
     }
 }

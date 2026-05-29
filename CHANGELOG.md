@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-config`: `FidelityConfig` gains three new optional fields — `embed_concurrency: usize`
+  (default 32, controls bounded parallelism of the embed pre-pass), `max_embed_input_tokens:
+  Option<usize>` (byte-cap on content sent to the embed provider; `None` = no cap), and
+  `max_compress_input_tokens: Option<usize>` (byte-cap on content sent to the LLM compress
+  provider; `None` = no cap). All fields are backward-compatible with existing TOML configs.
+- `zeph-context`: `embed_prepass` now runs embed calls concurrently using
+  `futures::stream::buffer_unordered(embed_concurrency)`, eliminating O(N) sequential latency on
+  cold-start turns. Warm-cache turns (embeddings already stored in `MessageMetadata`) are
+  unaffected. Embed errors are logged at `debug` level and fall back to keyword-overlap scoring.
+  Input content is optionally truncated to `max_embed_input_tokens * 4` bytes before each call.
+- `zeph-context`: `apply_input_cap(content: &mut String, max_tokens: usize)` — public helper that
+  truncates message content to `max_tokens * 4` bytes at a valid UTF-8 char boundary. Used by
+  callers to apply `max_compress_input_tokens` before LLM compress calls.
+- `zeph-context`: `render_compressed` now applies a post-LLM truncation step: if the compressed
+  summary exceeds `compressed_max_tokens`, the result is truncated at a char boundary. Prevents
+  runaway LLM output from bypassing the token budget.
+
+### Changed
+
+- `zeph-context`: `truncate_chars` renamed to `truncate_to_byte_limit` with clarified docs
+  (the limit is a byte count, not a character count; callers pass `n * 4` bytes via the
+  4-byte-per-token heuristic). Uses `usize::saturating_mul` to avoid overflow on extreme inputs.
+
 - `zeph-db`: SQLite migration 095 adds `fidelity_tag INTEGER NOT NULL DEFAULT 0` column to
   `messages` table; PostgreSQL migration adds equivalent `SMALLINT NOT NULL DEFAULT 0` column.
   Enables per-message fidelity level persistence for cross-turn stability (CAM Phase 2-B, #4550).

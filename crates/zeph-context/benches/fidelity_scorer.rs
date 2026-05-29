@@ -58,6 +58,9 @@ fn bench_score_500(c: &mut Criterion) {
         compress_provider: None,
         semantic_scoring_provider: None,
         lookahead_depth: 3,
+        embed_concurrency: 32,
+        max_embed_input_tokens: None,
+        max_compress_input_tokens: None,
     };
     let tc = CharDivTc(4);
     let base_messages = make_synthetic_messages(500);

@@ -76,6 +76,28 @@ pub struct FidelityConfig {
     /// `0` disables lookahead (returns an empty hint slice). Valid range: `0..=5`.
     #[serde(default = "fidelity_lookahead_depth_default")]
     pub lookahead_depth: u8,
+    /// Maximum number of concurrent `provider.embed()` calls during the cold-start pre-pass.
+    ///
+    /// Controls the `buffer_unordered(N)` bound. Higher values reduce latency on cold starts
+    /// at the cost of more concurrent API requests. Default is `32`.
+    #[serde(default = "default_embed_concurrency")]
+    pub embed_concurrency: usize,
+    /// Hard cap on message content length (in approximate tokens) fed to `provider.embed()`.
+    ///
+    /// When `Some(n)`, message content is truncated to approximately `n * 4` characters
+    /// (at a valid UTF-8 char boundary) before the embed call. `None` means no cap.
+    #[serde(default)]
+    pub max_embed_input_tokens: Option<usize>,
+    /// Hard cap on message content length (in approximate tokens) fed to the LLM compress call.
+    ///
+    /// When `Some(n)`, the input is truncated to approximately `n * 4` characters before
+    /// the compress call. `None` means no cap. Independent of the existing 2× cost guard.
+    #[serde(default)]
+    pub max_compress_input_tokens: Option<usize>,
+}
+
+fn default_embed_concurrency() -> usize {
+    32
 }
 
 impl FidelityConfig {
@@ -150,6 +172,9 @@ impl Default for FidelityConfig {
             compress_provider: None,
             semantic_scoring_provider: None,
             lookahead_depth: Self::default_lookahead_depth(),
+            embed_concurrency: default_embed_concurrency(),
+            max_embed_input_tokens: None,
+            max_compress_input_tokens: None,
         }
     }
 }
@@ -289,5 +314,27 @@ mod tests {
     fn deserialize_defaults_lookahead_depth_when_omitted() {
         let cfg: FidelityConfig = toml::from_str("enabled = false").unwrap();
         assert_eq!(cfg.lookahead_depth, 3);
+    }
+
+    #[test]
+    fn deserialize_new_perf_fields_defaults() {
+        let cfg: FidelityConfig = toml::from_str("enabled = false").unwrap();
+        assert_eq!(cfg.embed_concurrency, 32);
+        assert!(cfg.max_embed_input_tokens.is_none());
+        assert!(cfg.max_compress_input_tokens.is_none());
+    }
+
+    #[test]
+    fn deserialize_new_perf_fields_custom() {
+        let toml_str = r"
+            enabled = true
+            embed_concurrency = 8
+            max_embed_input_tokens = 512
+            max_compress_input_tokens = 1024
+        ";
+        let cfg: FidelityConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.embed_concurrency, 8);
+        assert_eq!(cfg.max_embed_input_tokens, Some(512));
+        assert_eq!(cfg.max_compress_input_tokens, Some(1024));
     }
 }
