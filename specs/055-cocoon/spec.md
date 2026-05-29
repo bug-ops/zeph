@@ -428,6 +428,9 @@ Result: 5/5 checks passed
 > - NEVER implement TON crypto operations in Zeph — delegate entirely to sidecar
 > - NEVER store Cocoon payment state in Zeph's SQLite — sidecar owns all payment and balance state
 > - NEVER use `openssl-sys` — rustls everywhere per constitution
+> - NEVER assume Qdrant data is TEE-protected when using Cocoon — Qdrant runs outside the TEE; only inference computation on the worker is protected
+> - NEVER implement compound attestation verification without upstream Cocoon sidecar support for forwarding attestation evidence — Zeph cannot verify the chain end-to-end unilaterally
+> - NEVER enable `cocoon_managed = true` by default — must be explicit opt-in because managing the sidecar lifecycle places Zeph inside the trusted compute base and weakens TEE attestation guarantees
 
 ---
 
@@ -464,3 +467,265 @@ Result: 5/5 checks passed
 - [[022-config-simplification/spec]] — `[[llm.providers]]` canonical format and `ProviderEntry`
 - [[038-vault/spec]] — Age vault backend, zeroize-on-drop guarantee
 - [[052-gonka-native/spec]] — Analogous native transport pattern (GonkaProvider)
+- [[055-cocoon/threat-model]] — TEE threat model: six-layer stack mapping and nine security goals (arXiv:2605.03213)
+
+---
+
+## 15. Security and Trust Model
+
+> [!info]
+> This section documents the TEE trust boundary for the Zeph/Cocoon integration,
+> known security limitations, and operator guidance. It is based on threat model
+> analysis from arXiv:2605.03213. See [[055-cocoon/threat-model]] for the full
+> mapping of the six-layer agent stack and nine security goals.
+
+### 15.1 TEE Trust Boundary
+
+The Cocoon integration provides TEE-backed confidential inference for the
+**computation only**. The trust boundary is narrow and must be understood by
+operators choosing Cocoon for privacy-sensitive workloads.
+
+```
+Zeph process (no TEE)
+    │  plaintext prompt assembled here
+    ▼
+Context assembly + Qdrant memory (no TEE)
+    │  plaintext prompt crosses trust boundary
+    ▼
+CocoonClient → localhost HTTP → Cocoon C++ sidecar (no TEE)
+    │  RA-TLS — channel is encrypted
+    ▼
+Cocoon Proxy (TEE — Intel TDX)
+    │  RA-TLS — channel is encrypted; worker is attested
+    ▼
+Cocoon Worker (TEE + GPU — Intel TDX + NVIDIA H100 CC)
+    └── inference computation protected inside TEE
+```
+
+**What is TEE-protected:** inference computation on the worker node. Prompt
+and response content are processed inside the TEE worker; the worker's memory
+is inaccessible to the host OS or cloud provider.
+
+**What is NOT TEE-protected:** everything upstream of the sidecar, including
+Zeph process memory, SQLite conversation history, Qdrant embeddings and
+retrieved context, and the localhost plaintext segment between Zeph and the
+sidecar.
+
+### 15.2 Known Limitations
+
+> [!danger] Known Limitations — read before choosing Cocoon for confidential workloads
+>
+> **1. Compound attestation gap**
+> Zeph trusts the sidecar implicitly via localhost without verifying the
+> attestation chain end-to-end. The sidecar verifies proxy attestation via
+> RA-TLS and the proxy verifies worker attestation. However, Zeph has no way
+> to verify that the sidecar's RA-TLS connection leads to a genuine TEE worker
+> rather than a proxy that terminated the RA-TLS session. True compound
+> attestation would require the sidecar to forward attestation evidence to
+> Zeph — this is a protocol-level capability gap in the current Cocoon design,
+> not something Zeph can resolve unilaterally.
+>
+> **2. Qdrant memory outside the TEE**
+> Conversation history, extracted knowledge graphs, and semantic embeddings are
+> stored in SQLite and Qdrant, both running entirely outside any TEE. When Zeph
+> assembles context for a Cocoon inference request, the retrieved content crosses
+> the TEE boundary in plaintext. The TEE only protects the computation on the
+> worker; it does not protect data at rest in Qdrant or in transit through the
+> context assembly pipeline. Full protection would require a TEE-backed vector
+> database — not feasible with the current architecture.
+>
+> **3. Localhost-only validation and containerised deployments**
+> `cocoon_client_url` is validated to accept only localhost addresses
+> (`localhost`, `127.0.0.1`, `::1`). This is correct for bare-metal: the sidecar
+> MUST be co-located to preserve confidentiality (non-localhost HTTP exposes
+> plaintext prompts on the network). In Kubernetes pods, containers share a
+> network namespace, so `localhost` works. In Docker Compose with separate
+> container services (e.g., `cocoon-sidecar:10000`), the sidecar address is a
+> container hostname rather than `localhost`. Docker Compose users who run the
+> sidecar as a separate service MUST use host networking (`network_mode: host`)
+> or a shared network namespace to satisfy the localhost constraint. Relaxing
+> the localhost restriction to allow arbitrary remote hosts would negate TEE
+> confidentiality benefits and is not planned.
+>
+> **4. `ton_balance` side-channel**
+> `CocoonHealth.ton_balance` is returned by `/stats` and displayed in the TUI
+> sidebar. In shared-access or shared-screen scenarios, an observer with TUI
+> visibility can infer the user's spending volume and usage pattern from
+> balance changes over time. This is not a TEE break but is a privacy
+> consideration. Operators in multi-user environments should consider making
+> balance display opt-in or redacting the value in the TUI status area.
+>
+> **5. GPU-TEE overhead**
+> Intel TDX provides CPU-level TEE protection; NVIDIA H100 Confidential
+> Computing provides GPU-level TEE protection. Running inference inside a
+> GPU-TEE incurs 10–30% latency overhead compared to non-confidential GPU
+> inference (per arXiv:2605.03213). This is a Cocoon infrastructure
+> characteristic, not a Zeph implementation issue, but operators making
+> provider selection decisions should account for it.
+
+### 15.3 TEE Attestation Chain
+
+The attestation chain Zeph relies on is:
+
+1. **Sidecar ↔ Proxy**: RA-TLS — the sidecar verifies the proxy's TDX
+   attestation quote before establishing a connection. If attestation fails, the
+   sidecar refuses to connect (transparent to Zeph).
+2. **Proxy ↔ Worker**: RA-TLS — the proxy verifies the worker's TDX+GPU
+   attestation quote. Zeph has no visibility into this sub-chain.
+3. **Zeph ↔ Sidecar**: plain localhost HTTP. No attestation. Zeph trusts the
+   sidecar by virtue of it running on the same host.
+
+**Gap**: Zeph cannot verify the full chain end-to-end. The `proxy_connected`
+and `worker_count` fields from `/stats` are informational signals, not
+cryptographic attestation evidence. A future `cocoon attestation` command
+could fetch chain evidence if the sidecar exposes it, but this requires
+upstream Cocoon protocol support.
+
+### 15.4 Updated Key Invariants (Security)
+
+Add the following to Section 11 "Key Invariants":
+
+**Never (additional):**
+
+> [!danger]
+> - NEVER assume Qdrant data is TEE-protected when using Cocoon — Qdrant runs
+>   outside the TEE; only inference computation is protected
+> - NEVER implement compound attestation verification without upstream Cocoon
+>   sidecar support for forwarding attestation evidence
+> - NEVER enable `cocoon_managed = true` by default — explicit opt-in required
+>   because managing the sidecar lifecycle makes Zeph part of the trusted
+>   compute base and weakens TEE attestation guarantees
+
+---
+
+## 16. Deferred Features — Research Findings
+
+This section records research outcomes for features explicitly deferred from
+the initial Cocoon implementation. Each entry documents the design decision,
+the config interface reserved for future use, and acceptance criteria for
+eventual implementation.
+
+### 16.1 Sidecar Lifecycle Management (Issue #3676)
+
+**Status:** DEFERRED to post-v1.0.0 (P3)
+
+**Research question answered:** Should Zeph spawn and supervise the Cocoon
+C++ sidecar process?
+
+**Recommendation:** No. Spawning the sidecar from Zeph makes Zeph part of the
+trusted compute base. The sidecar performs RA-TLS attestation proving to the
+proxy that it is running in a TEE-safe environment. If Zeph controls the
+sidecar's lifecycle, an adversary who compromises Zeph could substitute a
+modified sidecar binary. This weakens the TEE guarantees that Cocoon provides.
+The current model — user starts the sidecar independently, Zeph connects to it
+— maintains a clean trust separation.
+
+**Additional deferral reasons:**
+- Managing a C++ binary from Rust requires platform-specific process
+  semantics, binary location discovery, argument handling, and version pinning
+  that add complexity without clear UX benefit (`cocoon doctor` already gives
+  actionable guidance when the sidecar is down).
+- Distribution questions: the Cocoon sidecar has its own release cycle;
+  bundling it with Zeph raises packaging, platform, and update concerns.
+
+**Config interface reserved (not implemented):**
+
+```toml
+# cocoon_managed = false           # default; set true to let Zeph own sidecar lifecycle
+# cocoon_binary_path = ""          # path to cocoon-client binary; required if cocoon_managed = true
+# cocoon_args = []                 # extra args passed to sidecar at spawn
+```
+
+**Future implementation acceptance criteria (post-v1.0.0):**
+- GIVEN `cocoon_managed = true` and `cocoon_binary_path` set
+- WHEN Zeph starts and `/stats` is unreachable
+- THEN Zeph spawns the binary, waits for health, and registers a SIGTERM hook
+  for clean shutdown; exponential backoff with max 3 retries before giving up
+- Platform: Unix-only initially; Windows deferred
+- MUST document in operator guide that `cocoon_managed = true` weakens TEE
+  attestation guarantees
+
+### 16.2 End-to-End Payload Encryption (Issue #3677)
+
+**Status:** DEFERRED (P3)
+
+**Research question answered:** Is E2E payload encryption beyond RA-TLS
+feasible and warranted?
+
+**Recommendation:** The feature is technically feasible and the Cocoon protocol
+supports it per Cocoon documentation (Ed25519 keypair, public key in request,
+worker encrypts response, client decrypts). Deferral is due to implementation
+complexity — key management, streaming encryption, vault integration — not
+because the feature is blocked on upstream. The open question is whether
+encryption should happen at the sidecar level or at the client (Zeph) level.
+
+**Threat model context:** RA-TLS already encrypts the sidecar ↔ proxy ↔
+worker channel. E2E encryption provides additional defense-in-depth against a
+compromised proxy node that terminates RA-TLS but does not have access to
+worker TEE memory. This is a narrow but real threat in a decentralised
+multi-operator proxy network.
+
+**Protocol sketch (from Cocoon docs):**
+1. Zeph generates an Ed25519 keypair at startup
+2. Private key stored in age vault as `ZEPH_COCOON_E2E_PRIVATE_KEY`
+3. Public key sent in request header `X-Cocoon-E2E-Pubkey`
+4. Worker encrypts response payload with the public key
+5. Zeph decrypts with the private key
+
+**Key design question:** The issue's primary open question — whether
+encryption is performed by the Cocoon sidecar on behalf of the client, or
+by Zeph directly before sending to the sidecar — must be resolved with the
+Cocoon upstream before implementation. Option A (Zeph encrypts, sidecar passes
+opaque ciphertext) is the stronger model; Option B (sidecar encrypts after
+receiving plaintext from Zeph) provides no security improvement over RA-TLS
+alone since localhost plaintext exposure remains.
+
+**Config interface reserved (not implemented):**
+
+```toml
+# cocoon_e2e_encryption = false    # default; enable Ed25519 E2E encryption if supported by sidecar
+```
+
+**Vault key reserved:**
+
+| Key | Usage |
+|-----|-------|
+| `ZEPH_COCOON_E2E_PRIVATE_KEY` | Ed25519 private key for E2E encryption; generated at setup |
+
+**Deferred challenges:**
+- Key rotation mid-conversation requires protocol support
+- SSE streaming: per-chunk encryption requires a streaming cipher mode (AEAD
+  per chunk), significantly more complex than request/response encryption
+- Older sidecar versions without E2E support require graceful fallback
+
+**Future implementation acceptance criteria (post-v1.0.0):**
+- GIVEN `cocoon_e2e_encryption = true` and `ZEPH_COCOON_E2E_PRIVATE_KEY` in vault
+- WHEN Zeph sends a chat or embed request
+- THEN the Ed25519 public key is included in the request header and the
+  response is decrypted before deserialisation
+- MUST verify with Cocoon upstream which encryption point (sidecar vs. client)
+  is supported before starting implementation
+
+---
+
+## 17. Updated Open Questions
+
+> [!question]
+> The following questions extend the original open questions in Section 13:
+>
+> - **`/stats` schema stability**: `CocoonHealth` parses `proxy_connected`,
+>   `worker_count`, `ton_balance` with `#[serde(default)]`. If Cocoon changes
+>   the schema, parsing silently succeeds with defaults. Is there a versioning
+>   mechanism or a way to detect schema drift?
+> - **Attestation evidence endpoint**: Does the Cocoon sidecar expose
+>   attestation chain information (proxy certificate details, TDX quote)? This
+>   would enable partial compound attestation verification from Zeph.
+> - **E2E encryption point**: Does the current Cocoon sidecar support E2E
+>   encryption at the client level (Zeph encrypts before sending) or only at
+>   the sidecar level? This determines which Option (A vs. B) is viable for #3677.
+> - **Streaming E2E**: If E2E encryption is added, what cipher mode does Cocoon
+>   use for SSE streaming chunks? Per-chunk AEAD, or a session cipher with
+>   stream continuity?
+> - **Cost model for TEE**: `cocoon_pricing` allows manual per-1K-token pricing.
+>   Does the sidecar expose real-time cost estimates that Zeph could use for
+>   dynamic cost tracking?
