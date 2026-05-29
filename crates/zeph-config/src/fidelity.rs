@@ -94,10 +94,26 @@ pub struct FidelityConfig {
     /// the compress call. `None` means no cap. Independent of the existing 2× cost guard.
     #[serde(default)]
     pub max_compress_input_tokens: Option<usize>,
+    /// Timeout in seconds for embed calls in fidelity scoring (default: 30).
+    ///
+    /// Applies to both the query embed and each per-message embed in the pre-pass.
+    /// Timed-out calls are skipped with a `warn`-level log; scoring falls back to keyword overlap.
+    #[serde(default = "default_thirty")]
+    pub embed_timeout_secs: u64,
+    /// Timeout in seconds for the LLM compress call in fidelity scoring (default: 30).
+    ///
+    /// When the LLM compress call exceeds this limit it is cancelled and truncation is used
+    /// as a fallback. Set higher if your compress provider has high cold-start latency.
+    #[serde(default = "default_thirty")]
+    pub compress_timeout_secs: u64,
 }
 
 fn default_embed_concurrency() -> usize {
     32
+}
+
+fn default_thirty() -> u64 {
+    30
 }
 
 impl FidelityConfig {
@@ -175,6 +191,8 @@ impl Default for FidelityConfig {
             embed_concurrency: default_embed_concurrency(),
             max_embed_input_tokens: None,
             max_compress_input_tokens: None,
+            embed_timeout_secs: default_thirty(),
+            compress_timeout_secs: default_thirty(),
         }
     }
 }
@@ -336,5 +354,31 @@ mod tests {
         assert_eq!(cfg.embed_concurrency, 8);
         assert_eq!(cfg.max_embed_input_tokens, Some(512));
         assert_eq!(cfg.max_compress_input_tokens, Some(1024));
+    }
+
+    #[test]
+    fn default_timeout_fields_are_thirty() {
+        let cfg = FidelityConfig::default();
+        assert_eq!(cfg.embed_timeout_secs, 30);
+        assert_eq!(cfg.compress_timeout_secs, 30);
+    }
+
+    #[test]
+    fn deserialize_timeout_fields_custom() {
+        let toml_str = r"
+            enabled = true
+            embed_timeout_secs = 60
+            compress_timeout_secs = 120
+        ";
+        let cfg: FidelityConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.embed_timeout_secs, 60);
+        assert_eq!(cfg.compress_timeout_secs, 120);
+    }
+
+    #[test]
+    fn deserialize_timeout_fields_default_when_omitted() {
+        let cfg: FidelityConfig = toml::from_str("enabled = false").unwrap();
+        assert_eq!(cfg.embed_timeout_secs, 30);
+        assert_eq!(cfg.compress_timeout_secs, 30);
     }
 }

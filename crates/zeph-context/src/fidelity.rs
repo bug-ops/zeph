@@ -38,8 +38,8 @@ pub use zeph_config::FidelityConfig;
 /// Indexes not included in the result either had no content, already had an embedding
 /// cached in `msg.metadata.embedding`, or produced an error (errors are logged at `debug`
 /// level and silently skipped — scoring falls back to keyword overlap for those messages).
-/// Each embed call is bounded by a 30-second timeout; timed-out messages are skipped with
-/// a `warn`-level log.
+/// Each embed call is bounded by [`FidelityConfig::embed_timeout_secs`]; timed-out messages
+/// are skipped with a `warn`-level log.
 ///
 /// Only exempt messages (focus-pinned, inserted memory, system) are skipped; for non-exempt messages the content
 /// is optionally truncated to `config.max_embed_input_tokens * 4` bytes (at a char boundary)
@@ -101,9 +101,10 @@ where
         Some((i, content))
     });
 
+    let timeout = Duration::from_secs(config.embed_timeout_secs);
     futures::stream::iter(tasks)
         .map(|(i, content)| async move {
-            let result = tokio::time::timeout(Duration::from_secs(30), embed(&content)).await;
+            let result = tokio::time::timeout(timeout, embed(&content)).await;
             match result {
                 Ok(Ok(vec)) => Some((i, vec)),
                 Ok(Err(e)) => {
@@ -203,7 +204,7 @@ impl FidelityScorer {
     ///
     /// The two providers may be the same instance or different ones (e.g. a fast embedding
     /// model for `embed_provider` and a generative model for `compress_provider`).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn score_and_apply(
         &self,
         messages: &mut Vec<Message>,
@@ -226,7 +227,12 @@ impl FidelityScorer {
             && p.supports_embeddings()
         {
             let _span = info_span!("context.fidelity.embed_query").entered();
-            match tokio::time::timeout(Duration::from_secs(30), p.embed(query)).await {
+            match tokio::time::timeout(
+                Duration::from_secs(config.embed_timeout_secs),
+                p.embed(query),
+            )
+            .await
+            {
                 Ok(Ok(v)) => Some(v),
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, "semantic scoring provider unavailable, falling back to keyword");
@@ -277,8 +283,11 @@ impl FidelityScorer {
                     },
                 ))
                 .map(|(i, content)| async move {
-                    let result =
-                        tokio::time::timeout(Duration::from_secs(30), p.embed(&content)).await;
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(config.embed_timeout_secs),
+                        p.embed(&content),
+                    )
+                    .await;
                     match result {
                         Ok(Ok(v)) => Some((i, v)),
                         Ok(Err(e)) => {
@@ -697,7 +706,11 @@ async fn render_compressed(
             );
             let result = {
                 let _enter = span.enter();
-                tokio::time::timeout(Duration::from_secs(30), p.chat(&req)).await
+                tokio::time::timeout(
+                    Duration::from_secs(config.compress_timeout_secs),
+                    p.chat(&req),
+                )
+                .await
             };
 
             match result {
@@ -919,6 +932,8 @@ mod tests {
             embed_concurrency: 32,
             max_embed_input_tokens: None,
             max_compress_input_tokens: None,
+            embed_timeout_secs: 30,
+            compress_timeout_secs: 30,
         }
     }
 
@@ -1198,6 +1213,8 @@ mod tests {
             embed_concurrency: 32,
             max_embed_input_tokens: None,
             max_compress_input_tokens: None,
+            embed_timeout_secs: 30,
+            compress_timeout_secs: 30,
         };
         let tc = FixedTc(4);
         let mut messages = vec![make_msg(Role::System, ""), make_msg(Role::User, "")];
@@ -2364,9 +2381,33 @@ mod tests {
                 Ok(vec![1.0f32])
             })
         };
-        // Run the pre-pass; the 30-second timeout fires before the 60-second sleep.
+        // Run the pre-pass; the 30-second timeout fires before the 45-second sleep.
         let result = embed_prepass(&messages, &embed, &cfg, 0).await;
         assert!(result.is_empty(), "timed-out embed must be skipped");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn embed_prepass_custom_timeout_respected() {
+        let messages = vec![
+            make_msg(Role::System, "system"),
+            make_msg(Role::User, "user"),
+        ];
+        // embed_timeout_secs=5: provider takes 10 s → must be skipped.
+        let cfg = FidelityConfig {
+            embed_timeout_secs: 5,
+            ..FidelityConfig::default()
+        };
+        let embed = |_text: &str| -> EmbedFuture {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(vec![1.0f32])
+            })
+        };
+        let result = embed_prepass(&messages, &embed, &cfg, 0).await;
+        assert!(
+            result.is_empty(),
+            "custom embed_timeout_secs must be honored"
+        );
     }
 
     // ── FidelityConfig new fields ─────────────────────────────────────────────
@@ -2377,6 +2418,13 @@ mod tests {
         assert_eq!(cfg.embed_concurrency, 32);
         assert!(cfg.max_embed_input_tokens.is_none());
         assert!(cfg.max_compress_input_tokens.is_none());
+    }
+
+    #[test]
+    fn fidelity_config_timeout_defaults() {
+        let cfg = FidelityConfig::default();
+        assert_eq!(cfg.embed_timeout_secs, 30);
+        assert_eq!(cfg.compress_timeout_secs, 30);
     }
 
     #[test]

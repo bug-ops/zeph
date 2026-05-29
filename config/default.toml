@@ -363,6 +363,8 @@ autosave_assistant = true
 # regrade_threshold = 0.6
 # min_query_length = 8
 # max_scored_messages = 500
+# embed_timeout_secs = 30     # timeout for embed calls in fidelity scoring (seconds)
+# compress_timeout_secs = 30  # timeout for LLM compress calls in fidelity scoring (seconds)
 
 [memory.sessions]
 # Maximum number of sessions returned by list operations (0 = unlimited)

@@ -61,6 +61,8 @@ fn bench_score_500(c: &mut Criterion) {
         embed_concurrency: 32,
         max_embed_input_tokens: None,
         max_compress_input_tokens: None,
+        embed_timeout_secs: 30,
+        compress_timeout_secs: 30,
     };
     let tc = CharDivTc(4);
     let base_messages = make_synthetic_messages(500);

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- refactor(context): make embed and compress timeouts in `FidelityScorer` configurable via
+  `embed_timeout_secs` / `compress_timeout_secs` in `[memory.fidelity]` config (closes #4645, #4651).
+  Both fields default to 30 seconds to preserve existing behaviour; config migration step 51 adds
+  commented-out hints for existing configs that contain a `[memory.fidelity]` section.
+
 ## [0.21.3] - 2026-05-29
 
 ### Added

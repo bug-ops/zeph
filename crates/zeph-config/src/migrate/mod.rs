@@ -3364,11 +3364,12 @@ mod steps;
 use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateEgressConfig, MigrateEmbedProviderRename, MigrateFiveSignalConfig,
-    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
-    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
-    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateDatabaseUrl, MigrateEgressConfig, MigrateEmbedProviderRename,
+    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
+    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
@@ -3588,6 +3589,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateEmbedProviderRename),
             // Step 50 — add mcp startup_retry_backoff_ms and tool_timeout_secs (#4004)
             Box::new(MigrateMcpRetryAndToolTimeout),
+            // Step 51 — add embed_timeout_secs and compress_timeout_secs to [memory.fidelity] (#4645, #4651)
+            Box::new(MigrateFidelityTimeoutDefaults),
         ]
     });
 
@@ -3716,6 +3719,68 @@ pub fn migrate_embed_provider_rename(toml_src: &str) -> Result<MigrationResult, 
     })
 }
 
+/// Add commented-out `embed_timeout_secs` and `compress_timeout_secs` to `[memory.fidelity]`
+/// when it is present in the config but does not yet have these keys (#4645, #4651).
+///
+/// Both keys default to 30 seconds when absent; this step surfaces them for discovery.
+/// Only runs when `[memory.fidelity]` is present — configs without fidelity are unchanged.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_fidelity_timeout_defaults(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let has_embed = toml_src.contains("embed_timeout_secs");
+    let has_compress = toml_src.contains("compress_timeout_secs");
+
+    if (has_embed && has_compress) || !toml_src.contains("[memory.fidelity]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut output = toml_src.to_owned();
+    let mut changed = false;
+
+    if !has_embed {
+        let comment = "# embed_timeout_secs = 30  \
+            # timeout in seconds for embed calls in fidelity scoring\n";
+        output = output.replacen(
+            "[memory.fidelity]\n",
+            &format!("[memory.fidelity]\n{comment}"),
+            1,
+        );
+        changed = true;
+    }
+
+    if !has_compress {
+        let comment = "# compress_timeout_secs = 30  \
+            # timeout in seconds for the LLM compress call in fidelity scoring\n";
+        output = output.replacen(
+            "[memory.fidelity]\n",
+            &format!("[memory.fidelity]\n{comment}"),
+            1,
+        );
+        changed = true;
+    }
+
+    if changed {
+        Ok(MigrationResult {
+            output,
+            changed_count: 1,
+            sections_changed: vec!["memory.fidelity".to_owned()],
+        })
+    } else {
+        Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        })
+    }
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3731,8 +3796,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            50,
-            "MIGRATIONS registry must contain all 50 sequential steps"
+            51,
+            "MIGRATIONS registry must contain all 51 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5319,7 +5384,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_fifty_entries() {
-        assert_eq!(MIGRATIONS.len(), 50);
+        assert_eq!(MIGRATIONS.len(), 51);
     }
 
     #[test]
@@ -5358,7 +5423,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–49).
+        // Names must follow the documented step order (steps 1–51).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -5410,6 +5475,7 @@ prompt_cache_ttl = "1h"
             "migrate_five_signal_config",
             "migrate_embed_provider_rename",
             "migrate_mcp_retry_and_tool_timeout",
+            "migrate_fidelity_timeout_defaults",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -5792,6 +5858,51 @@ trace_extraction_embed_provider = \"live\"\n";
             result
                 .output
                 .contains("trace_extraction_embedding_provider = \"live\"")
+        );
+    }
+
+    // ── migrate_fidelity_timeout_defaults tests (#4645, #4651) ───────────────
+
+    #[test]
+    fn migrate_fidelity_timeout_defaults_adds_both_comments_when_absent() {
+        let src = "[memory.fidelity]\nenabled = true\n";
+        let result = migrate_fidelity_timeout_defaults(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("embed_timeout_secs"));
+        assert!(result.output.contains("compress_timeout_secs"));
+        assert!(
+            result
+                .sections_changed
+                .contains(&"memory.fidelity".to_owned())
+        );
+    }
+
+    #[test]
+    fn migrate_fidelity_timeout_defaults_idempotent_when_both_present() {
+        let src = "[memory.fidelity]\nembed_timeout_secs = 30\ncompress_timeout_secs = 30\n";
+        let result = migrate_fidelity_timeout_defaults(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+    }
+
+    #[test]
+    fn migrate_fidelity_timeout_defaults_skips_when_no_fidelity_section() {
+        let src = "[agent]\nname = \"test\"\n";
+        let result = migrate_fidelity_timeout_defaults(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn migrate_fidelity_timeout_defaults_adds_only_missing_key() {
+        let src = "[memory.fidelity]\nenabled = true\nembed_timeout_secs = 60\n";
+        let result = migrate_fidelity_timeout_defaults(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("compress_timeout_secs"));
+        // embed_timeout_secs already present as a real key, must not be duplicated
+        assert_eq!(
+            result.output.matches("embed_timeout_secs").count(),
+            1,
+            "embed_timeout_secs must appear exactly once"
         );
     }
 }
