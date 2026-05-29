@@ -63,6 +63,7 @@ pub(crate) async fn handle_bench_command(
             }
         }
         BenchCommand::Show { results } => handle_show(results),
+        _ => anyhow::bail!("unknown bench subcommand"),
     }
 }
 
