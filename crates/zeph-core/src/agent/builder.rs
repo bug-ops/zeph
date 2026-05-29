@@ -1358,6 +1358,18 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    // ---- Ephemeral Plugins ----
+
+    /// Store session-scoped ephemeral plugin directories loaded via `--plugin-url`.
+    ///
+    /// The `TempDir` handles keep extracted archives alive for the session. They are dropped
+    /// when the agent is dropped, which cleans up all temporary files automatically.
+    #[must_use]
+    pub fn with_ephemeral_plugins(mut self, plugins: Vec<tempfile::TempDir>) -> Self {
+        self.runtime.ephemeral_plugins = plugins;
+        self
+    }
+
     // ---- Lifecycle & Session ----
 
     /// Attach the session-level task supervisor.

@@ -1779,7 +1779,45 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         });
     }
 
-    let skill_paths = app.skill_paths_for_registry();
+    // Load ephemeral plugin from --plugin-url before building the skill registry.
+    let ephemeral_plugin_dir: Option<tempfile::TempDir> = if let Some(ref url) = cli.plugin_url {
+        let sha256 = cli.plugin_sha256.as_deref();
+        let mgr = zeph_plugins::PluginManager::new(
+            crate::bootstrap::plugins_dir(),
+            crate::bootstrap::managed_skills_dir(),
+            config.mcp.allowed_commands.clone(),
+            config.tools.shell.allowed_commands.clone(),
+        );
+        match mgr.add_remote_ephemeral(url, sha256).await {
+            Ok(tmp) => {
+                tracing::info!(url, "ephemeral plugin loaded for this session");
+                Some(tmp)
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to load ephemeral plugin from {url}: {e}"
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut skill_paths = app.skill_paths_for_registry();
+    // Include ephemeral plugin skill dirs in the registry.
+    if let Some(ref tmp) = ephemeral_plugin_dir {
+        let manifest_path = tmp.path().join("plugin.toml");
+        if let Ok(manifest_str) = std::fs::read_to_string(&manifest_path)
+            && let Ok(manifest) = toml::from_str::<zeph_plugins::PluginManifest>(&manifest_str)
+        {
+            for entry in &manifest.skills {
+                let skill_dir = tmp.path().join(&entry.path);
+                if !skill_paths.contains(&skill_dir) {
+                    skill_paths.push(skill_dir);
+                }
+            }
+        }
+    }
     // Cloned so the original can be moved into `with_skill_reload` while the copy is used
     // later for proactive exploration and promotion engine output directory resolution.
     let skill_paths_for_features = skill_paths.clone();
@@ -2292,6 +2330,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .with_embedding_provider(embedding_provider.clone())
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider)
     .await;
+
+    // Hold ephemeral plugin TempDir handles in the agent for the session lifetime.
+    let agent = if let Some(tmp) = ephemeral_plugin_dir {
+        agent.with_ephemeral_plugins(vec![tmp])
+    } else {
+        agent
+    };
 
     // Wire JsonEventLayer when --json is active so tool_call / tool_result events
     // are emitted. JsonCliChannel no-ops send_tool_start / send_tool_output to

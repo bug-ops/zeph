@@ -27,6 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Config migration step 52: splices `persist_provider_overrides = true` (commented, discoverability
   only) into existing `[session]` blocks. `SessionConfig` already defaults the field to `true`
   so existing configs load fine without the key.
+- `--plugin-url <URL> [--plugin-sha256 <HASH>]` CLI flag for ephemeral session-scoped plugin
+  loading (closes #4653). The plugin archive is downloaded over HTTPS, verified against the
+  optional SHA-256 digest, scanned for injection patterns (blocking), and loaded into a temporary
+  directory that is cleaned up on process exit. The plugin is never written to the permanent
+  plugins store and its config overlays are never applied.
 
 ### Changed
 

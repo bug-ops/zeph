@@ -119,4 +119,12 @@ pub enum PluginError {
         /// The missing dependency name.
         dependency: String,
     },
+
+    /// The URL supplied to `--plugin-url` uses a non-HTTPS scheme.
+    ///
+    /// Only `https://` is accepted for ephemeral plugin loading. `http://` and
+    /// any other scheme are rejected to prevent MITM attacks against session-scoped
+    /// plugin archives (security invariant INV-EPH-1).
+    #[error("insecure URL scheme for --plugin-url: {0} (only https:// is accepted)")]
+    InsecureUrl(String),
 }

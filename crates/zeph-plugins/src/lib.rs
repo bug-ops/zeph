@@ -26,8 +26,9 @@ pub mod overlay;
 
 pub use error::PluginError;
 pub use manager::{
-    AddResult, AutoUpdateResult, AutoUpdateStatus, DisableResult, InstalledPlugin, PluginManager,
-    PluginSource, RemoveResult,
+    AddResult, AutoUpdateResult, AutoUpdateStatus, DisableResult, InstalledPlugin,
+    MAX_ARCHIVE_BYTES, PluginManager, PluginSource, RemoveResult, download_and_extract,
+    validate_url_scheme_ephemeral,
 };
 pub use manifest::PluginManifest;
 pub use overlay::{ResolvedOverlay, apply_plugin_config_overlays};

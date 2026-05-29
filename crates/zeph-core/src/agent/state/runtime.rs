@@ -24,4 +24,9 @@ pub(crate) struct AgentRuntime {
     pub(crate) metrics: MetricsState,
     pub(crate) debug: DebugState,
     pub(crate) instructions: InstructionState,
+    /// Session-scoped ephemeral plugin directories loaded via `--plugin-url`.
+    ///
+    /// Holds the `TempDir` handles so extracted archives remain on disk for the session.
+    /// Dropped automatically when the agent is dropped, cleaning up all ephemeral plugins.
+    pub(crate) ephemeral_plugins: Vec<tempfile::TempDir>,
 }

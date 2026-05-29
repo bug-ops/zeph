@@ -252,6 +252,21 @@ pub(crate) struct Cli {
     #[arg(long = "auto", short = 'y')]
     pub(crate) auto: bool,
 
+    /// URL of an ephemeral plugin archive to load for this session only (HTTPS required).
+    ///
+    /// The archive is downloaded, scanned for injection patterns, and loaded into a temporary
+    /// directory that is cleaned up on process exit. The plugin is never written to the
+    /// permanent plugins store. Pair with `--plugin-sha256` for integrity verification.
+    #[arg(long)]
+    pub(crate) plugin_url: Option<String>,
+
+    /// Expected SHA-256 hex digest of the plugin archive at `--plugin-url`.
+    ///
+    /// When provided, the downloaded archive is verified before extraction. The session aborts
+    /// if the digest does not match. Requires `--plugin-url`.
+    #[arg(long, requires = "plugin_url")]
+    pub(crate) plugin_sha256: Option<String>,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }

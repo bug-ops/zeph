@@ -372,11 +372,13 @@ impl<C: crate::channel::Channel> Agent<C> {
     ///
     /// Execute a `/plugins` command given pre-cloned state, suitable for use inside
     /// `tokio::task::spawn_blocking` without borrowing `&self`.
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn run_plugin_command(
         args: &str,
         managed_dir: Option<std::path::PathBuf>,
         mcp_allowed: Vec<String>,
         base_shell_allowed: Vec<String>,
+        ephemeral_plugin_names: Vec<String>,
     ) -> String {
         // Use the canonical default so CLI and TUI always reference the same directory.
         let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
@@ -401,12 +403,19 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         match subcmd {
             "" | "list" => match mgr.list_installed() {
-                Ok(plugins) if plugins.is_empty() => "No plugins installed.".to_owned(),
-                Ok(plugins) => plugins
-                    .iter()
-                    .map(|p| format!("{} v{} — {}", p.name, p.version, p.description))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                Ok(plugins) if plugins.is_empty() && ephemeral_plugin_names.is_empty() => {
+                    "No plugins installed.".to_owned()
+                }
+                Ok(plugins) => {
+                    let mut lines: Vec<String> = plugins
+                        .iter()
+                        .map(|p| format!("{} v{} — {}", p.name, p.version, p.description))
+                        .collect();
+                    for name in &ephemeral_plugin_names {
+                        lines.push(format!("{name} [ephemeral]"));
+                    }
+                    lines.join("\n")
+                }
                 Err(e) => format!("plugin list failed: {e}"),
             },
             "add" => {

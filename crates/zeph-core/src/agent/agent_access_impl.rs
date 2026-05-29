@@ -974,11 +974,30 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         let managed_dir = self.services.skill.managed_dir.clone();
         let mcp_allowed = self.services.mcp.allowed_commands.clone();
         let base_shell_allowed = self.runtime.lifecycle.startup_shell_overlay.allowed.clone();
+        // Collect ephemeral plugin names for display in the list subcommand.
+        let ephemeral_names: Vec<String> = self
+            .runtime
+            .ephemeral_plugins
+            .iter()
+            .filter_map(|tmp| {
+                let manifest_path = tmp.path().join("plugin.toml");
+                std::fs::read_to_string(manifest_path)
+                    .ok()
+                    .and_then(|s| toml::from_str::<zeph_plugins::PluginManifest>(&s).ok())
+                    .map(|m| m.plugin.name)
+            })
+            .collect();
         Box::pin(async move {
             // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all,
             // read_dir). Run on a blocking thread to avoid stalling the tokio worker.
             tokio::task::spawn_blocking(move || {
-                Self::run_plugin_command(&args_owned, managed_dir, mcp_allowed, base_shell_allowed)
+                Self::run_plugin_command(
+                    &args_owned,
+                    managed_dir,
+                    mcp_allowed,
+                    base_shell_allowed,
+                    ephemeral_names,
+                )
             })
             .await
             .map_err(|e| CommandError(format!("plugin task panicked: {e}")))

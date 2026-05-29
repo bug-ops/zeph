@@ -302,6 +302,7 @@ impl<C: Channel> Agent<C> {
             metrics: MetricsState::new(token_counter),
             debug: DebugState::default(),
             instructions: InstructionState::default(),
+            ephemeral_plugins: Vec::new(),
         };
 
         Self {
