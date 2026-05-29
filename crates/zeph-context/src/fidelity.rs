@@ -82,7 +82,7 @@ async fn embed_prepass_dyn(
 ) -> std::collections::HashMap<usize, Vec<f32>> {
     let concurrency = if config.embed_concurrency == 0 {
         tracing::warn!(
-            "embed_concurrency is 0, clamping to 1; set a positive value in [context.fidelity]"
+            "embed_concurrency is 0, clamping to 1; set a positive value in [memory.fidelity]"
         );
         1
     } else {

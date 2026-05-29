@@ -33,6 +33,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directory that is cleaned up on process exit. The plugin is never written to the permanent
   plugins store and its config overlays are never applied.
 
+### Fixed
+
+- `zeph-config`: `FidelityConfig::validate()` now rejects `embed_timeout_secs = 0` and
+  `compress_timeout_secs = 0` with a descriptive error referencing `[memory.fidelity]`; a zero
+  value caused immediate `tokio::time::timeout` expiry, silently degrading scoring to keyword
+  overlap on every turn (closes #4666).
+- `zeph-config`, `zeph-context`, `zeph-agent-context`: corrected stale `[context.fidelity]`
+  references to `[memory.fidelity]` in module doc comment, warn log, and field doc comment
+  (closes #4667).
+
 ### Changed
 
 - refactor(context): make embed and compress timeouts in `FidelityScorer` configurable via

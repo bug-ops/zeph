@@ -3,7 +3,7 @@
 
 //! Configuration for Context-Adaptive Memory (CAM) fidelity scoring.
 //!
-//! [`FidelityConfig`] is serialised from the `[context.fidelity]` section in `config.toml`.
+//! [`FidelityConfig`] is serialised from the `[memory.fidelity]` section in `config.toml`.
 //! When `enabled = false` (the default) the fidelity scorer is a complete no-op.
 
 use crate::providers::ProviderName;
@@ -150,22 +150,34 @@ impl FidelityConfig {
     /// ```
     pub fn validate(&self) -> Result<(), String> {
         if self.compressed_threshold < 0.0 {
-            return Err("context.fidelity: compressed_threshold must be >= 0.0".into());
+            return Err("memory.fidelity: compressed_threshold must be >= 0.0".into());
         }
         if self.full_threshold > 1.0 {
-            return Err("context.fidelity: full_threshold must be <= 1.0".into());
+            return Err("memory.fidelity: full_threshold must be <= 1.0".into());
         }
         if self.full_threshold < self.compressed_threshold {
             return Err(format!(
-                "context.fidelity: full_threshold ({}) must be >= compressed_threshold ({})",
+                "memory.fidelity: full_threshold ({}) must be >= compressed_threshold ({})",
                 self.full_threshold, self.compressed_threshold
             ));
         }
         if self.lookahead_depth > 5 {
             return Err(format!(
-                "context.fidelity: lookahead_depth ({}) must be <= 5",
+                "memory.fidelity: lookahead_depth ({}) must be <= 5",
                 self.lookahead_depth
             ));
+        }
+        if self.embed_timeout_secs == 0 {
+            return Err(
+                "memory.fidelity: embed_timeout_secs must be > 0 (zero causes immediate timeout)"
+                    .into(),
+            );
+        }
+        if self.compress_timeout_secs == 0 {
+            return Err(
+                "memory.fidelity: compress_timeout_secs must be > 0 (zero causes immediate timeout)"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -386,5 +398,41 @@ mod tests {
         let cfg: FidelityConfig = toml::from_str("enabled = false").unwrap();
         assert_eq!(cfg.embed_timeout_secs, 30);
         assert_eq!(cfg.compress_timeout_secs, 30);
+    }
+
+    #[test]
+    fn validate_embed_timeout_zero_is_err() {
+        let cfg = FidelityConfig {
+            embed_timeout_secs: 0,
+            ..FidelityConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.contains("embed_timeout_secs"),
+            "error should mention embed_timeout_secs: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_compress_timeout_zero_is_err() {
+        let cfg = FidelityConfig {
+            compress_timeout_secs: 0,
+            ..FidelityConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.contains("compress_timeout_secs"),
+            "error should mention compress_timeout_secs: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_timeout_one_is_ok() {
+        let cfg = FidelityConfig {
+            embed_timeout_secs: 1,
+            compress_timeout_secs: 1,
+            ..FidelityConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
     }
 }

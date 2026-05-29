@@ -232,7 +232,7 @@ pub struct ContextAssemblyView<'a> {
     pub tiered_retrieval_validator: Option<Arc<zeph_llm::any::AnyProvider>>,
 
     // ── CAM: Context-Adaptive Memory (#4547) ─────────────────────────────────
-    /// Fidelity scoring configuration resolved from `[context.fidelity]`.
+    /// Fidelity scoring configuration resolved from `[memory.fidelity]`.
     ///
     /// `None` when fidelity scoring is not configured (treated as `enabled = false`).
     /// `Some(&cfg)` with `cfg.enabled = false` is also a no-op (early-return inside scorer).
