@@ -15,16 +15,20 @@
 //!
 //! ## Embed pre-pass
 //!
-//! [`embed_prepass`] runs concurrently via `futures::stream::buffer_unordered` and
-//! populates per-message embedding vectors before scoring. The concurrency bound is
-//! controlled by [`FidelityConfig::embed_concurrency`] (default 32).
+//! The private `embed_prepass_dyn` helper runs concurrently via
+//! `futures::stream::buffer_unordered` and populates per-message embedding vectors before
+//! scoring. The public [`embed_prepass`] is a thin wrapper over the same helper for
+//! closure-based callers (e.g. unit tests). The concurrency bound is controlled by
+//! [`FidelityConfig::embed_concurrency`] (default 32).
 
 use std::time::Duration;
 
 use futures::StreamExt as _;
+use futures::future::BoxFuture;
 use tracing::info_span;
 use zeph_common::memory::TokenCounting;
 use zeph_common::{ContextFidelity, PlannedToolHint};
+use zeph_llm::LlmError;
 use zeph_llm::LlmProviderDyn;
 use zeph_llm::provider::{EmbedFuture, Message, MessageMetadata, MessagePart, Role};
 
@@ -33,10 +37,98 @@ use crate::assembler::CORRECTIONS_PREFIX;
 // Re-export FidelityConfig from zeph-config so both crates share one definition.
 pub use zeph_config::FidelityConfig;
 
+/// Object-safe embed callback used by [`embed_prepass_dyn`].
+///
+/// Exists only to unify the `'static`-future closure path (used by [`embed_prepass`])
+/// with the `&dyn LlmProviderDyn` path (used by [`FidelityScorer::score_and_apply`])
+/// without an HRTB trait-object bound.
+trait EmbedCall: Send + Sync {
+    fn call<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, LlmError>>;
+}
+
+/// Adapts a `Fn(&str) -> EmbedFuture` (where `EmbedFuture` is `'static`) to [`EmbedCall`].
+struct ClosureEmbed<F>(F);
+
+impl<F> EmbedCall for ClosureEmbed<F>
+where
+    F: Fn(&str) -> EmbedFuture + Send + Sync,
+{
+    fn call<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, LlmError>> {
+        // EmbedFuture is Pin<Box<dyn Future + Send>> — implicitly 'static, so
+        // coercing to BoxFuture<'a, _> is always sound.
+        Box::pin((self.0)(text))
+    }
+}
+
+/// Adapts `&dyn LlmProviderDyn` to [`EmbedCall`].
+struct ProviderEmbed<'p>(&'p dyn LlmProviderDyn);
+
+impl EmbedCall for ProviderEmbed<'_> {
+    fn call<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, LlmError>> {
+        self.0.embed(text)
+    }
+}
+
+/// Shared concurrent embed pipeline used by both [`embed_prepass`] and
+/// [`FidelityScorer::score_and_apply`].
+///
+/// `messages` is the slice to embed (callers pre-slice to `[..score_end]` when needed).
+/// Indices in the returned map are relative to the start of the passed slice.
+async fn embed_prepass_dyn(
+    messages: &[Message],
+    embed: &dyn EmbedCall,
+    config: &FidelityConfig,
+    inserted_count: usize,
+) -> std::collections::HashMap<usize, Vec<f32>> {
+    let concurrency = if config.embed_concurrency == 0 {
+        tracing::warn!(
+            "embed_concurrency is 0, clamping to 1; set a positive value in [context.fidelity]"
+        );
+        1
+    } else {
+        config.embed_concurrency
+    };
+
+    let tasks = messages.iter().enumerate().filter_map(|(i, msg)| {
+        if is_exempt(msg, i, inserted_count)
+            || msg.content.is_empty()
+            || msg.metadata.embedding.is_some()
+        {
+            return None;
+        }
+        let content = match config.max_embed_input_tokens {
+            Some(n) => truncate_to_byte_limit(&msg.content, n.saturating_mul(4)),
+            None => msg.content.clone(),
+        };
+        Some((i, content))
+    });
+
+    let timeout = Duration::from_secs(config.embed_timeout_secs);
+    futures::stream::iter(tasks)
+        .map(|(i, content)| async move {
+            let result = tokio::time::timeout(timeout, embed.call(&content)).await;
+            match result {
+                Ok(Ok(vec)) => Some((i, vec)),
+                Ok(Err(e)) => {
+                    tracing::warn!(idx = i, err = %e, "embed_prepass: embed failed, skipping");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(idx = i, "embed_prepass: embed timed out, skipping");
+                    None
+                }
+            }
+        })
+        .buffer_unordered(concurrency)
+        .filter_map(|opt| async move { opt })
+        .collect()
+        .await
+}
+
 /// Run embed calls for `messages` concurrently, returning per-index embedding vectors.
 ///
 /// Indexes not included in the result either had no content, already had an embedding
-/// cached in `msg.metadata.embedding`, or produced an error (errors are logged at `debug`
+/// cached in `msg.metadata.embedding`, or produced an error (errors are logged at `warn`
 /// level and silently skipped — scoring falls back to keyword overlap for those messages).
 /// Each embed call is bounded by [`FidelityConfig::embed_timeout_secs`]; timed-out messages
 /// are skipped with a `warn`-level log.
@@ -44,13 +136,6 @@ pub use zeph_config::FidelityConfig;
 /// Only exempt messages (focus-pinned, inserted memory, system) are skipped; for non-exempt messages the content
 /// is optionally truncated to `config.max_embed_input_tokens * 4` bytes (at a char boundary)
 /// before the call.
-///
-/// # Note
-///
-/// This function accepts a generic `F: Fn(&str) -> EmbedFuture` closure, which requires
-/// the returned future to be `'static`. This is convenient for unit tests using mock
-/// closures. Production code in [`FidelityScorer::score_and_apply`] runs the equivalent
-/// concurrent pre-pass inline to avoid the `'static` bound on `&dyn LlmProviderDyn`.
 ///
 /// Concurrency is bounded by [`FidelityConfig::embed_concurrency`] (default 32), which
 /// maps to the `buffer_unordered(N)` parameter. A zero value is clamped to 1 with a warning.
@@ -78,49 +163,7 @@ pub async fn embed_prepass<F>(
 where
     F: Fn(&str) -> EmbedFuture + Send + Sync,
 {
-    let concurrency = if config.embed_concurrency == 0 {
-        tracing::warn!(
-            "embed_concurrency is 0, clamping to 1; set a positive value in [context.fidelity]"
-        );
-        1
-    } else {
-        config.embed_concurrency
-    };
-
-    let tasks = messages.iter().enumerate().filter_map(|(i, msg)| {
-        if is_exempt(msg, i, inserted_count)
-            || msg.content.is_empty()
-            || msg.metadata.embedding.is_some()
-        {
-            return None;
-        }
-        let content = match config.max_embed_input_tokens {
-            Some(n) => truncate_to_byte_limit(&msg.content, n.saturating_mul(4)),
-            None => msg.content.clone(),
-        };
-        Some((i, content))
-    });
-
-    let timeout = Duration::from_secs(config.embed_timeout_secs);
-    futures::stream::iter(tasks)
-        .map(|(i, content)| async move {
-            let result = tokio::time::timeout(timeout, embed(&content)).await;
-            match result {
-                Ok(Ok(vec)) => Some((i, vec)),
-                Ok(Err(e)) => {
-                    tracing::debug!(idx = i, err = %e, "embed_prepass: embed failed, skipping");
-                    None
-                }
-                Err(_) => {
-                    tracing::warn!(idx = i, "embed_prepass: embed timed out, skipping");
-                    None
-                }
-            }
-        })
-        .buffer_unordered(concurrency)
-        .filter_map(|opt| async move { opt })
-        .collect()
-        .await
+    embed_prepass_dyn(messages, &ClosureEmbed(embed), config, inserted_count).await
 }
 
 /// Truncate `s` to at most `max_bytes` bytes, landing on a valid UTF-8 char boundary.
@@ -257,53 +300,14 @@ impl FidelityScorer {
             } else {
                 n
             };
-            let concurrency = if config.embed_concurrency == 0 {
-                1
-            } else {
-                config.embed_concurrency
-            };
             let _span = info_span!("context.fidelity.embed_prepass").entered();
-            let embeddings: std::collections::HashMap<usize, Vec<f32>> =
-                futures::stream::iter(messages[..score_end].iter().enumerate().filter_map(
-                    |(i, msg)| {
-                        if msg.metadata.embedding.is_none()
-                            && !is_exempt(msg, i, inserted_count)
-                            && !msg.content.is_empty()
-                        {
-                            let content = match config.max_embed_input_tokens {
-                                Some(n) => {
-                                    truncate_to_byte_limit(&msg.content, n.saturating_mul(4))
-                                }
-                                None => msg.content.clone(),
-                            };
-                            Some((i, content))
-                        } else {
-                            None
-                        }
-                    },
-                ))
-                .map(|(i, content)| async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(config.embed_timeout_secs),
-                        p.embed(&content),
-                    )
-                    .await;
-                    match result {
-                        Ok(Ok(v)) => Some((i, v)),
-                        Ok(Err(e)) => {
-                            tracing::warn!(error = %e, "message embed failed, skipping");
-                            None
-                        }
-                        Err(_) => {
-                            tracing::warn!(idx = i, "fidelity message embed timed out, skipping");
-                            None
-                        }
-                    }
-                })
-                .buffer_unordered(concurrency)
-                .filter_map(|opt| async move { opt })
-                .collect()
-                .await;
+            let embeddings = embed_prepass_dyn(
+                &messages[..score_end],
+                &ProviderEmbed(p),
+                config,
+                inserted_count,
+            )
+            .await;
             for (i, emb) in embeddings {
                 messages[i].metadata.embedding = Some(emb);
             }
