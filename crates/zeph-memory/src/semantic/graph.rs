@@ -6,6 +6,7 @@ use std::sync::Arc;
 use zeph_db::sql;
 
 use std::sync::atomic::Ordering;
+use tokio_util::sync::CancellationToken;
 use zeph_db::DbPool;
 
 pub use zeph_common::config::memory::NoteLinkingConfig;
@@ -641,6 +642,7 @@ impl SemanticMemory {
             extraction_count: self.graph_extraction_count.clone(),
             extraction_failures: self.graph_extraction_failures.clone(),
             embedding_store: self.qdrant.clone(),
+            cancel: CancellationToken::new(),
         };
 
         tokio::spawn(run_graph_extraction_task(
@@ -663,6 +665,8 @@ struct GraphExtractionTaskCtx {
     extraction_count: Arc<std::sync::atomic::AtomicU64>,
     extraction_failures: Arc<std::sync::atomic::AtomicU64>,
     embedding_store: Option<Arc<EmbeddingStore>>,
+    /// Cancellation signal propagated into background sub-tasks (community refresh).
+    cancel: CancellationToken,
 }
 
 /// Body of the spawned graph-extraction task.
@@ -726,6 +730,7 @@ async fn run_graph_extraction_task(
         ctx.provider,
         ctx.failure_counter,
         &config,
+        ctx.cancel,
     )
     .await;
 }
@@ -767,12 +772,17 @@ async fn run_note_linking(
 
 /// Trigger community detection, graph eviction, and link-weight decay when the extraction
 /// count hits the configured refresh interval.
+///
+/// Runs inline within the caller's task (no nested `tokio::spawn`). Each long-running step
+/// is guarded by `tokio::select!` on `cancel` so shutdown aborts immediately at the next
+/// yield point without leaving orphaned tasks.
 async fn maybe_refresh_communities(
     extraction_ok: bool,
     pool: DbPool,
     provider: AnyProvider,
     failure_counter: Arc<std::sync::atomic::AtomicU64>,
     config: &GraphExtractionConfig,
+    cancel: CancellationToken,
 ) {
     use crate::graph::GraphStore;
 
@@ -791,7 +801,6 @@ async fn maybe_refresh_communities(
 
     tracing::info!(extraction_count, "triggering community detection refresh");
     let store2 = GraphStore::new(pool);
-    let provider2 = provider;
     let retention_days = config.expired_edge_retention_days;
     let max_cap = config.max_entities_cap;
     let max_prompt_bytes = config.community_summary_max_prompt_bytes;
@@ -799,68 +808,86 @@ async fn maybe_refresh_communities(
     let edge_chunk_size = config.lpa_edge_chunk_size;
     let decay_lambda = config.link_weight_decay_lambda;
     let decay_interval_secs = config.link_weight_decay_interval_secs;
-    tokio::spawn(async move {
-        match crate::graph::community::detect_communities(
+
+    tokio::select! {
+        () = cancel.cancelled() => {
+            tracing::debug!("community refresh cancelled before community detection");
+            return;
+        }
+        result = crate::graph::community::detect_communities(
             &store2,
-            &provider2,
+            &provider,
             max_prompt_bytes,
             concurrency,
             edge_chunk_size,
-        )
-        .await
-        {
-            Ok(count) => {
-                tracing::info!(communities = count, "community detection complete");
-            }
-            Err(e) => {
-                tracing::warn!("community detection failed: {e:#}");
-                failure_counter.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        match crate::graph::community::run_graph_eviction(&store2, retention_days, max_cap).await {
-            Ok(stats) => {
-                tracing::info!(
-                    expired_edges = stats.expired_edges_deleted,
-                    orphan_entities = stats.orphan_entities_deleted,
-                    capped_entities = stats.capped_entities_deleted,
-                    "graph eviction complete"
-                );
-            }
-            Err(e) => {
-                tracing::warn!("graph eviction failed: {e:#}");
+        ) => {
+            match result {
+                Ok(count) => {
+                    tracing::info!(communities = count, "community detection complete");
+                }
+                Err(e) => {
+                    tracing::warn!("community detection failed: {e:#}");
+                    failure_counter.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
+    }
 
-        // Time-based link weight decay — independent of eviction cycle.
-        if decay_lambda > 0.0 && decay_interval_secs > 0 {
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            let last_decay = store2
-                .get_metadata("last_link_weight_decay_at")
-                .await
-                .ok()
-                .flatten()
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
-            if now_secs.saturating_sub(last_decay) >= decay_interval_secs {
-                match store2
-                    .decay_edge_retrieval_counts(decay_lambda, decay_interval_secs)
-                    .await
-                {
-                    Ok(affected) => {
-                        tracing::info!(affected, "link weight decay applied");
-                        let _ = store2
-                            .set_metadata("last_link_weight_decay_at", &now_secs.to_string())
-                            .await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("link weight decay failed: {e:#}");
+    tokio::select! {
+        () = cancel.cancelled() => {
+            tracing::debug!("community refresh cancelled before graph eviction");
+            return;
+        }
+        result = crate::graph::community::run_graph_eviction(&store2, retention_days, max_cap) => {
+            match result {
+                Ok(stats) => {
+                    tracing::info!(
+                        expired_edges = stats.expired_edges_deleted,
+                        orphan_entities = stats.orphan_entities_deleted,
+                        capped_entities = stats.capped_entities_deleted,
+                        "graph eviction complete"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("graph eviction failed: {e:#}");
+                }
+            }
+        }
+    }
+
+    // Time-based link weight decay — independent of eviction cycle.
+    if decay_lambda > 0.0 && decay_interval_secs > 0 {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let last_decay = store2
+            .get_metadata("last_link_weight_decay_at")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        if now_secs.saturating_sub(last_decay) >= decay_interval_secs {
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    tracing::debug!("community refresh cancelled before link weight decay");
+                }
+                result = store2.decay_edge_retrieval_counts(decay_lambda, decay_interval_secs) => {
+                    match result {
+                        Ok(affected) => {
+                            tracing::info!(affected, "link weight decay applied");
+                            let _ = store2
+                                .set_metadata("last_link_weight_decay_at", &now_secs.to_string())
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("link weight decay failed: {e:#}");
+                        }
                     }
                 }
             }
         }
-    });
+    }
 }
 
 #[cfg(test)]
@@ -1167,6 +1194,59 @@ mod tests {
         assert!(
             result.is_empty(),
             "embed_work_items must return empty Vec on 30 s timeout (fail-open)"
+        );
+    }
+
+    /// Regression for #4622: `maybe_refresh_communities` must return immediately when the
+    /// CancellationToken is already cancelled, without hanging or panicking.
+    ///
+    /// Before the fix a nested `tokio::spawn` was used with no CancellationToken, so shutdown
+    /// could not interrupt community detection.  The inline `tokio::select!` path now exits at
+    /// the first select arm when the token is pre-cancelled.
+    #[tokio::test]
+    async fn maybe_refresh_communities_respects_cancelled_token() {
+        use tokio_util::sync::CancellationToken;
+
+        use crate::graph::GraphStore;
+        use crate::store::SqliteStore;
+
+        let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+        let gs = GraphStore::new(pool.clone());
+
+        // Seed extraction_count=1 so the interval check passes (1 % 1 == 0).
+        gs.set_metadata("extraction_count", "1").await.unwrap();
+
+        let config = GraphExtractionConfig {
+            community_refresh_interval: 1,
+            ..Default::default()
+        };
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // pre-cancelled — all select! arms must short-circuit immediately
+
+        let extraction_json = r#"{"entities":[],"edges":[]}"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+
+        let failure_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        // Must complete promptly — if the fix regresses and a blocking call is made this will
+        // hang forever (caught by tokio::time::timeout in CI or a test runtime timeout).
+        super::maybe_refresh_communities(
+            true,
+            pool,
+            provider,
+            failure_counter.clone(),
+            &config,
+            cancel,
+        )
+        .await;
+
+        assert_eq!(
+            failure_counter.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "no failures should be recorded when cancelled before any detection step"
         );
     }
 }
