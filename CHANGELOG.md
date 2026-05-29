@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Research
+
+- Competitive parity scan: assessed Goose v1.34.0–v1.35.0 features against Zeph. Three features
+  confirmed as already covered (vault chmod 600 enforcement, plugin auto-update, compaction
+  guards). Filed parity issues for recursive nested skill discovery (#4682), skills platform
+  extension manifest (#4683), egress logging with skill attribution (#4684), and deep link scheme
+  (#4687). Two issues (#4685, #4686) closed as duplicates of #4023. Updated
+  `.local/testing/playbooks/competitive-parity.md` with full assessment log.
+  Closes #3917, #4023, #4059.
+
 ### Fixed
 
 - `zeph-plugins`: `add_remote` now uses `extract_archive_safe` instead of the unguarded
