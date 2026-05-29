@@ -1198,9 +1198,9 @@ mod tests {
     }
 
     /// Regression for #4622: `maybe_refresh_communities` must return immediately when the
-    /// CancellationToken is already cancelled, without hanging or panicking.
+    /// `CancellationToken` is already cancelled, without hanging or panicking.
     ///
-    /// Before the fix a nested `tokio::spawn` was used with no CancellationToken, so shutdown
+    /// Before the fix a nested `tokio::spawn` was used with no `CancellationToken`, so shutdown
     /// could not interrupt community detection.  The inline `tokio::select!` path now exits at
     /// the first select arm when the token is pre-cancelled.
     #[tokio::test]
