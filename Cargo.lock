@@ -11063,6 +11063,7 @@ dependencies = [
  "open",
  "parking_lot",
  "qdrant-client",
+ "rand 0.10.1",
  "regex",
  "reqwest 0.13.3",
  "rmcp",

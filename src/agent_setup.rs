@@ -1729,6 +1729,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_response_cache_cleanup_spawns_without_panic() {
+        // NOTE: apply_response_cache is sync and drops the inner JoinHandle internally.
+        // This test verifies the function does not panic and returns promptly when
+        // the token is cancelled during setup, but cannot verify the inner cleanup
+        // loop exits — that requires exposing the inner JoinHandle (tracked separately).
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db_url = format!("sqlite:{}", tmp.path().display());
+        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let agent = make_agent();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let child = cancel.child_token();
+
+        let handle = tokio::spawn(async move {
+            apply_response_cache(agent, true, pool, 300, false, "embed-model".into(), child)
+        });
+
+        tokio::task::yield_now().await;
+        cancel.cancel();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("apply_response_cache did not complete within 1 s")
+            .expect("apply_response_cache panicked");
+    }
+
+    #[tokio::test]
     async fn apply_code_indexer_disabled_returns_no_runtime() {
         let full_config = Config {
             index: IndexConfig {

@@ -28,6 +28,7 @@ glob.workspace = true
 http.workspace = true
 open.workspace = true
 parking_lot.workspace = true
+rand.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }
 regex.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }

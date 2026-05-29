@@ -1920,19 +1920,33 @@ fn apply_allowlist(
 
 /// Compute the sleep duration before retry attempt `attempt + 1`.
 ///
-/// Doubling exponential backoff capped at 8 s:
-/// `min(base_ms * 2^(attempt - 1), 8_000ms)`.
+/// Doubling exponential backoff capped at 8 s, with up to -25%/+0% jitter applied to the
+/// capped value so that concurrent servers do not retry in lock-step:
+/// `jitter(min(base_ms * 2^(attempt - 1), 8_000ms))`.
+///
+/// The jitter range is `[nominal * 3/4, nominal]` (full-jitter, AWS-style), so the
+/// returned duration is always ≤ the nominal (capped) backoff.
 ///
 /// For `base_ms = 1000, max_connect_attempts = 3` the sequence is **1 s, 2 s**
-/// (three attempts → two inter-attempt gaps).
-/// For `max_connect_attempts = 10` the full sequence caps at 8 s after the 4th inter-attempt gap.
+/// (three attempts → two inter-attempt gaps), each with up to -25% variance.
+/// For `max_connect_attempts = 10` the nominal value caps at 8 s after the 4th
+/// inter-attempt gap; jitter keeps the actual sleep in [6 s, 8 s].
 ///
 /// `attempt` is 1-based and corresponds to the just-failed attempt index.
 fn connect_retry_backoff(attempt: u8, base_ms: u64) -> Duration {
+    use rand::RngExt as _;
     const CAP_MS: u64 = 8_000;
     let exp = u32::from(attempt.saturating_sub(1));
-    let raw = base_ms.saturating_mul(2u64.saturating_pow(exp.min(20)));
-    Duration::from_millis(raw.min(CAP_MS))
+    let nominal = base_ms
+        .saturating_mul(2u64.saturating_pow(exp.min(20)))
+        .min(CAP_MS);
+    let low = nominal * 3 / 4;
+    let jittered = if low < nominal {
+        rand::rng().random_range(low..=nominal)
+    } else {
+        nominal
+    };
+    Duration::from_millis(jittered)
 }
 
 /// Classify whether a connection error is transient and worth retrying.
@@ -3530,38 +3544,46 @@ mod tests {
 
     #[test]
     fn connect_retry_backoff_table() {
-        // base_ms = 500 gives the legacy sequence; verify the doubling curve and 8 s cap.
-        let expected_ms: &[(u8, u64)] = &[
-            (1, 500),
-            (2, 1000),
-            (3, 2000),
-            (4, 4000),
-            (5, 8000),
-            (6, 8000),
-            (7, 8000),
-            (8, 8000),
-            (9, 8000),
-            (10, 8000),
+        // base_ms = 500; verify the doubling curve and 8 s cap.
+        // Jitter is ±25% (range [nominal*3/4, nominal]), so we check an inclusive range.
+        let cases: &[(u8, u64, u64)] = &[
+            // (attempt, low_ms, high_ms)
+            (1, 375, 500),
+            (2, 750, 1000),
+            (3, 1500, 2000),
+            (4, 3000, 4000),
+            (5, 6000, 8000),
+            (6, 6000, 8000),
+            (7, 6000, 8000),
+            (8, 6000, 8000),
+            (9, 6000, 8000),
+            (10, 6000, 8000),
         ];
-        for &(attempt, expected) in expected_ms {
+        for &(attempt, low, high) in cases {
             let actual = u64::try_from(connect_retry_backoff(attempt, 500).as_millis())
                 .expect("backoff duration fits u64");
-            assert_eq!(
-                actual, expected,
-                "backoff for attempt {attempt} should be {expected} ms"
+            assert!(
+                actual >= low && actual <= high,
+                "backoff for attempt {attempt} should be in [{low}, {high}] ms, got {actual}"
             );
         }
     }
 
     #[test]
     fn connect_retry_backoff_respects_custom_base_ms() {
-        // base_ms = 1000 (default config value): 1s, 2s, 4s, 8s, …
-        assert_eq!(connect_retry_backoff(1, 1000), Duration::from_secs(1));
-        assert_eq!(connect_retry_backoff(2, 1000), Duration::from_secs(2));
-        assert_eq!(connect_retry_backoff(3, 1000), Duration::from_secs(4));
-        assert_eq!(connect_retry_backoff(4, 1000), Duration::from_secs(8));
+        // base_ms = 1000 (default config value): nominal 1s, 2s, 4s, 8s, …
+        // Jitter is in [nominal*3/4, nominal], so we verify the upper bound equals nominal.
+        let d1 = connect_retry_backoff(1, 1000);
+        let d2 = connect_retry_backoff(2, 1000);
+        let d3 = connect_retry_backoff(3, 1000);
+        let d4 = connect_retry_backoff(4, 1000);
+        let d10 = connect_retry_backoff(10, 1000);
+        assert!(d1 >= Duration::from_millis(750) && d1 <= Duration::from_secs(1));
+        assert!(d2 >= Duration::from_millis(1500) && d2 <= Duration::from_secs(2));
+        assert!(d3 >= Duration::from_millis(3000) && d3 <= Duration::from_secs(4));
+        assert!(d4 >= Duration::from_millis(6000) && d4 <= Duration::from_secs(8));
         // cap enforced at 8 s regardless of attempt
-        assert_eq!(connect_retry_backoff(10, 1000), Duration::from_secs(8));
+        assert!(d10 >= Duration::from_millis(6000) && d10 <= Duration::from_secs(8));
     }
 
     // ── Error classifier ───────────────────────────────────────────────────────────────────────
