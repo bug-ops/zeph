@@ -105,6 +105,7 @@ pub mod sse;
 pub mod stt;
 #[cfg(test)]
 pub mod testing;
+pub(crate) mod tool_desc;
 pub(crate) mod usage;
 pub mod whisper;
 

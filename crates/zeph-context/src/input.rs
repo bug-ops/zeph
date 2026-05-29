@@ -17,8 +17,6 @@ use zeph_config::{
     DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig, TreeConfig,
 };
 
-use crate::fidelity::FidelityConfig;
-
 use crate::manager::ContextManager;
 
 /// All borrowed data needed to assemble context for one agent turn.
@@ -66,8 +64,6 @@ pub struct ContextAssemblyInput<'a> {
     ///
     /// Pass `&[]` when no DAG context is available (PAACE data structure only in MVP).
     pub planned_next_tools: &'a [PlannedToolHint],
-    /// Fidelity scorer configuration. `None` disables all fidelity scoring for this turn.
-    pub fidelity_config: Option<&'a FidelityConfig>,
 }
 
 /// Configuration extracted from `LearningEngine` needed by correction recall.

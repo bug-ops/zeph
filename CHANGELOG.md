@@ -6,8 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Refactored
+
+- `zeph-llm`: deduplicated `build_tool_description` into `crates/zeph-llm/src/tool_desc.rs`; both
+  `claude` and `openai` backends now share a single implementation with a common `static WARNED`
+  guard for once-per-session schema-overflow warnings (closes #4577).
+
 ### Fixed
 
+- `zeph-context`: removed dead `fidelity_config: Option<&'a FidelityConfig>` field from
+  `ContextAssemblyInput`; the field was always `None` and never read after the CAM Phase 1
+  refactor (closes #4595).
 - `zeph-plugins`: `add_remote` now uses `tokio::fs::write` instead of `std::fs::write` when
   persisting the `.plugin-source.toml` sidecar, preventing the async executor thread from blocking
   during remote plugin installation (closes #4606).

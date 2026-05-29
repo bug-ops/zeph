@@ -634,7 +634,6 @@ impl ContextService {
             active_levels,
             router,
             planned_next_tools: &[],
-            fidelity_config: None,
         };
 
         let mut prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;
