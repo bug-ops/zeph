@@ -91,6 +91,7 @@ pub use admission::AdmissionGate;
 pub use aggregator::{Aggregator, LlmAggregator};
 pub use cascade::{AbortDecision, CascadeConfig, CascadeDetector, RegionHealth};
 pub use command::PlanCommand;
+pub use dag::lookahead_tools;
 pub use error::OrchestrationError;
 pub use graph::{
     ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, PlanSlug, TaskGraph,

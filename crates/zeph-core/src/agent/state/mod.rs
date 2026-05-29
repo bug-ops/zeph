@@ -583,6 +583,12 @@ pub(crate) struct MetricsState {
 /// Groups task orchestration and subagent state.
 #[derive(Default)]
 pub(crate) struct OrchestrationState {
+    /// Lookahead tool hints snapshot taken after the most recent scheduler tick.
+    ///
+    /// Populated by `run_scheduler_loop` after each `scheduler.tick()` call via
+    /// `zeph_orchestration::lookahead_tools`. Cleared when the scheduler loop exits.
+    /// Read by `prepare_context` in `assembly.rs` to pass PAACE hints to `FidelityScorer`.
+    pub(crate) cached_lookahead: Vec<zeph_common::PlannedToolHint>,
     /// On `OrchestrationState` (not `ProviderState`) because this provider is used exclusively
     /// by `LlmPlanner` during orchestration, not shared across subsystems.
     pub(crate) planner_provider: Option<AnyProvider>,

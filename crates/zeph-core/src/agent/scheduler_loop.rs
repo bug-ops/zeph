@@ -300,6 +300,20 @@ impl<C: crate::channel::Channel> Agent<C> {
         let final_status = 'tick: loop {
             let actions = scheduler.tick();
 
+            // Update lookahead cache so prepare_context can read PAACE hints between ticks.
+            let lookahead_depth = self
+                .services
+                .memory
+                .compaction
+                .fidelity_config
+                .as_ref()
+                .map_or(
+                    zeph_config::FidelityConfig::default_lookahead_depth(),
+                    |c| c.lookahead_depth,
+                );
+            self.services.orchestration.cached_lookahead =
+                zeph_orchestration::lookahead_tools(scheduler.graph(), lookahead_depth);
+
             let mut any_spawn_success = false;
             let mut any_concurrency_failure = false;
 
@@ -584,6 +598,9 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         self.process_pending_secret_requests(&mut std::collections::HashSet::new())
             .await;
+
+        // Clear lookahead cache so stale hints are never seen after plan completion.
+        self.services.orchestration.cached_lookahead = Vec::new();
 
         Ok(final_status)
     }

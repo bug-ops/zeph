@@ -487,7 +487,7 @@ impl<C: Channel> Agent<C> {
                 .compaction
                 .fidelity_compress_provider
                 .clone(),
-            planned_next_tools: &[],
+            planned_next_tools: &self.services.orchestration.cached_lookahead,
             status_tx: self.services.session.status_tx.clone(),
         };
         let _ = self.channel.send_status("recalling context...").await;

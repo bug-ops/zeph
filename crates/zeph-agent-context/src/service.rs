@@ -633,7 +633,7 @@ impl ContextService {
             scrub: view.scrub,
             active_levels,
             router,
-            planned_next_tools: &[],
+            planned_next_tools: view.planned_next_tools,
         };
 
         let mut prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;

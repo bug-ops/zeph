@@ -12,6 +12,8 @@
 
 use std::collections::VecDeque;
 
+use zeph_common::fidelity::PlannedToolHint;
+
 use super::error::OrchestrationError;
 use super::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskId, TaskNode, TaskStatus};
 use super::verify_predicate::PredicateOutcome;
@@ -372,6 +374,143 @@ pub fn reset_for_retry(
 
     graph.status = GraphStatus::Running;
     Ok(())
+}
+
+/// Stopwords filtered out of task keyword extraction.
+const KEYWORD_STOPWORDS: &[&str] = &["the", "a", "an", "in", "of", "for", "to", "from", "with"];
+
+/// Extract lookahead tool hints from the DAG for PAACE context scoring.
+///
+/// Performs a BFS forward from all tasks currently in `Running` or `Ready`
+/// status (the execution frontier, distance 0) and collects downstream tasks
+/// at distances 1..=`depth` as [`PlannedToolHint`] values.
+///
+/// # Arguments
+///
+/// * `graph` — the active task graph.
+/// * `depth` — maximum lookahead steps. `0` means "disabled" and returns an
+///   empty vec immediately without traversing the graph.
+///
+/// # Returns
+///
+/// A [`Vec<PlannedToolHint>`] sorted by `distance_from_current` ascending.
+/// Returns an empty vec when `depth == 0`, when no Running/Ready frontier
+/// tasks exist, or when there are no reachable downstream tasks within `depth`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::{TaskGraph, TaskNode, TaskStatus};
+/// use zeph_orchestration::dag::lookahead_tools;
+///
+/// let mut g = TaskGraph::new("example");
+/// g.tasks.push(TaskNode::new(0, "search", "web search"));
+/// g.tasks.push(TaskNode::new(1, "summarize", "summarize results"));
+/// g.tasks[1].depends_on = vec![zeph_orchestration::TaskId(0)];
+/// g.tasks[0].status = TaskStatus::Running;
+/// g.tasks[1].status = TaskStatus::Pending;
+///
+/// let hints = lookahead_tools(&g, 1);
+/// assert_eq!(hints.len(), 1);
+/// assert_eq!(hints[0].tool_name, "summarize");
+/// assert_eq!(hints[0].distance_from_current, 1);
+/// ```
+#[must_use]
+pub fn lookahead_tools(graph: &TaskGraph, depth: u8) -> Vec<PlannedToolHint> {
+    let _span = tracing::debug_span!("orch.dag.lookahead", depth = depth).entered();
+
+    if depth == 0 {
+        return vec![];
+    }
+
+    let tasks = &graph.tasks;
+    let n = tasks.len();
+
+    // Build forward adjacency: rev_adj[i] = tasks that depend on task i (downstream).
+    let mut forward_adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for task in tasks {
+        for dep in &task.depends_on {
+            forward_adj[dep.index()].push(task.id.index());
+        }
+    }
+
+    // BFS from Running/Ready frontier (distance=0, not emitted).
+    let mut visited = vec![false; n];
+    let mut queue: VecDeque<(usize, u8)> = VecDeque::new();
+
+    for task in tasks {
+        if matches!(task.status, TaskStatus::Running | TaskStatus::Ready) {
+            visited[task.id.index()] = true;
+            queue.push_back((task.id.index(), 0));
+        }
+    }
+
+    if queue.is_empty() {
+        return vec![];
+    }
+
+    let mut hints: Vec<PlannedToolHint> = Vec::new();
+
+    while let Some((idx, dist)) = queue.pop_front() {
+        for &child_idx in &forward_adj[idx] {
+            if visited[child_idx] {
+                continue;
+            }
+            visited[child_idx] = true;
+            let child_dist = dist + 1;
+            if child_dist <= depth {
+                let child = &tasks[child_idx];
+                let tool_name = child.agent_hint.as_deref().unwrap_or(&child.title);
+                hints.push(PlannedToolHint::new(
+                    tool_name,
+                    extract_keywords(tool_name, &child.description),
+                    child_dist,
+                ));
+                queue.push_back((child_idx, child_dist));
+            }
+        }
+    }
+
+    hints.sort_by_key(|h| h.distance_from_current);
+    hints
+}
+
+/// Extract up to 10 keywords from a tool name and task description prefix.
+///
+/// The full `tool_name` is always inserted first (enables exact matching by
+/// the fidelity scorer). Split tokens from `title` and `description` follow,
+/// lowercased, filtered for stopwords and minimum length, deduplicated, capped
+/// at 10 total entries.
+fn extract_keywords(tool_name: &str, description: &str) -> Vec<String> {
+    let end = description.floor_char_boundary(200);
+    let desc_prefix = &description[..end];
+    let combined = format!("{tool_name} {desc_prefix}");
+
+    let mut seen = std::collections::HashSet::new();
+    let mut keywords: Vec<String> = Vec::new();
+
+    // Always include the full tool_name first for exact matching.
+    let full = tool_name.to_lowercase();
+    seen.insert(full.clone());
+    keywords.push(full);
+
+    for token in combined.split(|c: char| !c.is_alphanumeric()) {
+        if keywords.len() == 10 {
+            break;
+        }
+        if token.len() < 3 {
+            continue;
+        }
+        let lower = token.to_lowercase();
+        if KEYWORD_STOPWORDS.contains(&lower.as_str()) {
+            continue;
+        }
+        if seen.insert(lower.clone()) {
+            keywords.push(lower);
+        }
+    }
+
+    keywords
 }
 
 #[cfg(test)]
@@ -965,5 +1104,179 @@ mod tests {
         reset_for_retry(&mut graph, &__ra).unwrap();
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(graph.tasks[1].status, TaskStatus::Pending);
+    }
+
+    // --- lookahead_tools tests ---
+
+    fn make_node_titled(id: u32, deps: &[u32], title: &str, desc: &str) -> TaskNode {
+        let mut n = TaskNode::new(id, title, desc);
+        n.depends_on = deps.iter().map(|&d| TaskId(d)).collect();
+        n
+    }
+
+    #[test]
+    fn lookahead_depth_zero_returns_empty() {
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "web_search", "Search the web for results"),
+            make_node_titled(1, &[0], "summarize", "Summarize findings"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 0);
+        assert!(hints.is_empty(), "depth=0 must return empty vec");
+    }
+
+    #[test]
+    fn lookahead_depth_one_emits_only_direct_child() {
+        // A(0, Running) -> B(1, Pending, tool: web_search) -> C(2, Pending, tool: summarize)
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "task-a", "Root task"),
+            make_node_titled(1, &[0], "web_search", "Search the web"),
+            make_node_titled(2, &[1], "summarize", "Summarize search results"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+        graph.tasks[2].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 1);
+        assert_eq!(hints.len(), 1, "depth=1 should emit only B");
+        assert_eq!(hints[0].tool_name, "web_search");
+        assert_eq!(hints[0].distance_from_current, 1);
+    }
+
+    #[test]
+    fn lookahead_depth_two_emits_both_children() {
+        // A(0, Running) -> B(1, Pending) -> C(2, Pending)
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "task-a", "Root task"),
+            make_node_titled(1, &[0], "web_search", "Search the web"),
+            make_node_titled(2, &[1], "summarize", "Summarize search results"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+        graph.tasks[2].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 2);
+        assert_eq!(hints.len(), 2, "depth=2 should emit B and C");
+        assert_eq!(hints[0].tool_name, "web_search");
+        assert_eq!(hints[0].distance_from_current, 1);
+        assert_eq!(hints[1].tool_name, "summarize");
+        assert_eq!(hints[1].distance_from_current, 2);
+    }
+
+    #[test]
+    fn lookahead_no_frontier_returns_empty() {
+        // All tasks are Pending — no Running or Ready frontier
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "task-a", "Root"),
+            make_node_titled(1, &[0], "task-b", "Child"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Pending;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 2);
+        assert!(hints.is_empty(), "no frontier → empty");
+    }
+
+    #[test]
+    fn lookahead_frontier_not_emitted() {
+        // Running task itself must NOT appear in output
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "running-tool", "Currently executing"),
+            make_node_titled(1, &[0], "next-tool", "Next step"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 3);
+        assert!(
+            hints.iter().all(|h| h.tool_name != "running-tool"),
+            "frontier task must not be emitted"
+        );
+        assert_eq!(hints.len(), 1);
+    }
+
+    #[test]
+    fn lookahead_uses_agent_hint_as_tool_name() {
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "dispatch", "Root"),
+            make_node_titled(1, &[0], "raw-title", "Execute shell command"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+        graph.tasks[1].agent_hint = Some("shell_executor".to_string());
+
+        let hints = lookahead_tools(&graph, 1);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(
+            hints[0].tool_name, "shell_executor",
+            "agent_hint should take precedence over title"
+        );
+    }
+
+    #[test]
+    fn lookahead_results_sorted_by_distance() {
+        // A(0, Running) -> B(1) and B(1) -> C(2): should be sorted 1, 2
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "root", "Root"),
+            make_node_titled(1, &[0], "step-one", "Step one"),
+            make_node_titled(2, &[1], "step-two", "Step two"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+        graph.tasks[2].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 2);
+        for w in hints.windows(2) {
+            assert!(
+                w[0].distance_from_current <= w[1].distance_from_current,
+                "hints must be sorted by distance"
+            );
+        }
+    }
+
+    #[test]
+    fn lookahead_keywords_extracted_and_deduped() {
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "root", "Root task"),
+            make_node_titled(1, &[0], "search", "search search search results web"),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 1);
+        assert_eq!(hints.len(), 1);
+        // "search" appears multiple times but should be deduped to one entry
+        let count = hints[0]
+            .keywords
+            .iter()
+            .filter(|k| k.as_str() == "search")
+            .count();
+        assert_eq!(count, 1, "duplicate keywords must be deduplicated");
+    }
+
+    #[test]
+    fn lookahead_stopwords_filtered() {
+        let mut graph = graph_from_nodes(vec![
+            make_node_titled(0, &[], "root", "Root"),
+            make_node_titled(
+                1,
+                &[0],
+                "task",
+                "the result of the operation from the source",
+            ),
+        ]);
+        graph.tasks[0].status = TaskStatus::Running;
+        graph.tasks[1].status = TaskStatus::Pending;
+
+        let hints = lookahead_tools(&graph, 1);
+        assert_eq!(hints.len(), 1);
+        for kw in &hints[0].keywords {
+            assert!(
+                !KEYWORD_STOPWORDS.contains(&kw.as_str()),
+                "stopword '{kw}' must not appear in keywords"
+            );
+        }
     }
 }

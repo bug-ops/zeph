@@ -759,6 +759,7 @@ mod tests {
             exempt_tail_messages: 0,
             compress_provider: None,
             semantic_scoring_provider: None,
+            lookahead_depth: 3,
         }
     }
 
@@ -1034,6 +1035,7 @@ mod tests {
             exempt_tail_messages: 0,
             compress_provider: None,
             semantic_scoring_provider: None,
+            lookahead_depth: 3,
         };
         let tc = FixedTc(4);
         let mut messages = vec![make_msg(Role::System, ""), make_msg(Role::User, "")];
@@ -1930,5 +1932,60 @@ mod tests {
                 "all non-system messages must be scored via keyword path"
             );
         }
+    }
+    // w_plan path: messages whose content overlaps planned tool keywords score higher.
+    #[test]
+    fn w_plan_produces_nonzero_score_for_matching_message() {
+        use zeph_common::PlannedToolHint;
+
+        let scorer = FidelityScorer;
+        // Only w_plan is active: all other weights zero so plan signal is isolated.
+        // full_threshold = 0.5 so that a non-zero plan score reaches Full.
+        let cfg = FidelityConfig {
+            w_semantic: 0.0,
+            w_temporal: 0.0,
+            w_importance: 0.0,
+            w_plan: 1.0,
+            full_threshold: 0.5,
+            compressed_threshold: 0.1,
+            min_query_length: 100, // disable semantic signal
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+
+        // Hint: tool_name="shell", keywords contain "cargo" and "build".
+        let hint = PlannedToolHint::new("shell", vec!["cargo".to_string(), "build".to_string()], 1);
+
+        // matching_msg contains words from the hint keywords.
+        // non_matching_msg has no overlap with hint keywords.
+        let mut messages = vec![
+            make_msg(Role::System, "system prompt"),
+            make_msg(Role::User, "run cargo build to compile"),
+            make_msg(Role::User, "what is the weather today"),
+        ];
+
+        scorer.score_and_apply(
+            &mut messages,
+            "q", // short query to keep semantic inactive
+            &[hint],
+            &cfg,
+            &tc,
+            0,
+            false,
+        );
+
+        // The matching message should be scored Full (plan overlap is high).
+        assert_eq!(
+            messages[1].metadata.fidelity_tag,
+            Some(ContextFidelity::Full),
+            "message matching planned tool keywords must reach Full fidelity"
+        );
+
+        // The non-matching message should not be Full (plan overlap is zero).
+        assert_ne!(
+            messages[2].metadata.fidelity_tag,
+            Some(ContextFidelity::Full),
+            "message with no keyword overlap must not reach Full fidelity via w_plan"
+        );
     }
 }

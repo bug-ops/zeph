@@ -8,6 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
+fn fidelity_lookahead_depth_default() -> u8 {
+    FidelityConfig::default_lookahead_depth()
+}
+
 /// Configuration for the heuristic fidelity scorer (CAM §8.1).
 ///
 /// All weight fields must be positive. Weights are normalised at runtime by
@@ -65,9 +69,25 @@ pub struct FidelityConfig {
     /// When `None`, keyword overlap is used instead.
     #[serde(default)]
     pub semantic_scoring_provider: Option<String>,
+    /// Maximum BFS depth for PAACE lookahead hints derived from the orchestration DAG.
+    ///
+    /// Controls how many steps ahead in the active task graph are converted to
+    /// `PlannedToolHint` values and passed to `FidelityScorer`.
+    /// `0` disables lookahead (returns an empty hint slice). Valid range: `0..=5`.
+    #[serde(default = "fidelity_lookahead_depth_default")]
+    pub lookahead_depth: u8,
 }
 
 impl FidelityConfig {
+    /// Default value for [`lookahead_depth`](FidelityConfig::lookahead_depth): 3 BFS steps.
+    ///
+    /// Used as the `serde` default function and for callers that need the fallback value without
+    /// constructing a full [`FidelityConfig`].
+    #[must_use]
+    pub fn default_lookahead_depth() -> u8 {
+        3
+    }
+
     /// Validate threshold ordering: `full_threshold >= compressed_threshold >= 0.0`.
     ///
     /// Call this at config load time to catch inverted thresholds before they silently
@@ -102,6 +122,12 @@ impl FidelityConfig {
                 self.full_threshold, self.compressed_threshold
             ));
         }
+        if self.lookahead_depth > 5 {
+            return Err(format!(
+                "context.fidelity: lookahead_depth ({}) must be <= 5",
+                self.lookahead_depth
+            ));
+        }
         Ok(())
     }
 }
@@ -123,6 +149,7 @@ impl Default for FidelityConfig {
             exempt_tail_messages: 0,
             compress_provider: None,
             semantic_scoring_provider: None,
+            lookahead_depth: Self::default_lookahead_depth(),
         }
     }
 }
@@ -213,5 +240,54 @@ mod tests {
             ..FidelityConfig::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn default_lookahead_depth_is_three() {
+        assert_eq!(FidelityConfig::default().lookahead_depth, 3);
+    }
+
+    #[test]
+    fn lookahead_depth_zero_is_valid() {
+        let cfg = FidelityConfig {
+            lookahead_depth: 0,
+            ..FidelityConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn lookahead_depth_five_is_valid() {
+        let cfg = FidelityConfig {
+            lookahead_depth: 5,
+            ..FidelityConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn lookahead_depth_above_five_is_err() {
+        let cfg = FidelityConfig {
+            lookahead_depth: 6,
+            ..FidelityConfig::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.contains("lookahead_depth"),
+            "error should mention lookahead_depth: {err}"
+        );
+    }
+
+    #[test]
+    fn deserialize_lookahead_depth() {
+        let toml_str = "enabled = true\nlookahead_depth = 2";
+        let cfg: FidelityConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.lookahead_depth, 2);
+    }
+
+    #[test]
+    fn deserialize_defaults_lookahead_depth_when_omitted() {
+        let cfg: FidelityConfig = toml::from_str("enabled = false").unwrap();
+        assert_eq!(cfg.lookahead_depth, 3);
     }
 }
