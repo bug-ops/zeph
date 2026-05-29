@@ -770,7 +770,17 @@ mod tests {
         let tc = FixedTc(4);
         let mut messages: Vec<Message> = vec![];
         scorer
-            .score_and_apply(&mut messages, "query text", &[], &cfg, &tc, 0, false, None, None)
+            .score_and_apply(
+                &mut messages,
+                "query text",
+                &[],
+                &cfg,
+                &tc,
+                0,
+                false,
+                None,
+                None,
+            )
             .await;
         assert!(messages.is_empty());
     }
@@ -1657,6 +1667,7 @@ mod tests {
                 &cfg,
                 &tc,
                 0,
+                false,
                 None,
                 Some(&provider),
             )
@@ -1700,6 +1711,7 @@ mod tests {
                 &cfg,
                 &tc,
                 0,
+                false,
                 None,
                 None,
             )
@@ -1838,6 +1850,7 @@ mod tests {
                 &cfg,
                 &tc,
                 0,
+                false,
                 Some(&provider),
                 None,
             )
@@ -1897,6 +1910,7 @@ mod tests {
                 &cfg,
                 &tc,
                 0,
+                false,
                 None,
                 None,
             )
