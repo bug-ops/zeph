@@ -15,6 +15,7 @@
 /// assert!(matches!(err, SubAgentError::Parse { .. }));
 /// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SubAgentError {
     /// Frontmatter parsing failed (malformed YAML/TOML or missing delimiters).
     #[error("parse error in {path}: {reason}")]

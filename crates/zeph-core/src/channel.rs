@@ -116,6 +116,7 @@ pub enum ElicitationResponse {
 
 /// Typed error for channel operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChannelError {
     /// Underlying I/O failure.
     #[error("I/O error: {0}")]

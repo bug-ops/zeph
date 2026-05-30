@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `ChannelError` is now marked `#[non_exhaustive]` so new variants can be added
+  without a breaking change. Closes #4726.
+- `zeph-sanitizer`: `QuarantineError`, `MemoryValidationError`, and `CausalIpiError` are now
+  marked `#[non_exhaustive]`, continuing the workspace-wide non-exhaustive cleanup (PR #4658).
+  Closes #4716.
+- `zeph-subagent`: `SubAgentError` is now marked `#[non_exhaustive]`. Closes #4732.
 - `zeph-tools`: scrape executor now redacts sensitive query parameters (tokens, API keys) from URLs
   before writing them to audit JSONL via `redact_url_for_log`. Previously, raw URLs were passed
   directly to `log_audit` and `run_with_audit` in both the legacy fenced-block `execute()` path and

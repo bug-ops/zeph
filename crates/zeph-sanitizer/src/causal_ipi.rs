@@ -46,6 +46,7 @@ const PROBE_QUESTION: &str = "Summarize your current task and planned next actio
 /// Probe failures are non-fatal: the caller should log a `WARN` and skip causal
 /// analysis for the current batch rather than blocking tool execution.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CausalIpiError {
     /// The probe LLM call returned an error.
     #[error("probe LLM call failed: {0}")]

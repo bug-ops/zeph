@@ -49,6 +49,7 @@ Do not include any preamble, explanations, or meta-commentary — only the extra
 
 /// Errors returned by [`QuarantinedSummarizer::extract_facts`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum QuarantineError {
     /// The quarantine LLM call failed (network error, provider error, etc.).
     #[error("quarantine LLM call failed: {0}")]

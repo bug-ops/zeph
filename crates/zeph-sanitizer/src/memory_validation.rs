@@ -33,6 +33,7 @@ use crate::pii::{EMAIL_RE, SSN_RE};
 /// [`validate_graph_extraction`](MemoryWriteValidator::validate_graph_extraction). Callers
 /// should log the error and skip the write rather than panicking.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MemoryValidationError {
     /// The content exceeds the configured `max_content_bytes` limit.
     #[error("content too large: {size} bytes exceeds max {max}")]
