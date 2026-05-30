@@ -139,6 +139,44 @@ pub struct SpawnContext {
     pub inherited_tool_allowlist: Option<HashSet<String>>,
 }
 
+/// RAII guard that calls [`DefaultWorktreeManager::remove`] when dropped.
+///
+/// Guarantees cleanup on normal return and on early `?` returns from the agent loop.
+/// With `panic = "abort"` (release profile) panics terminate the process via `abort(3)`
+/// before any `Drop` runs; the OS reclaims resources directly. With `panic = "unwind"`
+/// (dev/test profile) `Drop` runs during stack unwinding.
+struct WorktreeCleanupGuard {
+    wm: Arc<zeph_worktree::DefaultWorktreeManager>,
+    handle: zeph_worktree::WorktreeHandle,
+    prune: bool,
+    enabled: bool,
+}
+
+impl Drop for WorktreeCleanupGuard {
+    fn drop(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        let wm = Arc::clone(&self.wm);
+        let h = self.handle.clone();
+        let prune = self.prune;
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                rt.spawn(async move {
+                    if let Err(e) = wm.remove(&h, prune).await {
+                        tracing::warn!(error = %e, "failed to remove sub-agent worktree");
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::error!(
+                    "no tokio runtime in WorktreeCleanupGuard::drop — worktree cleanup skipped"
+                );
+            }
+        }
+    }
+}
+
 /// Wraps an executor to allow file operations on the agent's memory directory.
 ///
 /// When the inner executor returns `SandboxViolation` for a file tool call, this
@@ -1268,15 +1306,18 @@ impl SubAgentManager {
                         );
                         let guard = CwdRestoreGuard::new(&handle.path, owned_guard)
                             .map_err(|e| SubAgentError::WorktreeSetup(e.to_string()))?;
+                        let _cleanup = WorktreeCleanupGuard {
+                            wm: Arc::clone(wm),
+                            handle: handle.clone(),
+                            prune: prune_branch_on_remove,
+                            enabled: cleanup_on_completion,
+                        };
+
                         let result = run_agent_loop(agent_loop_args).await;
-                        // guard drops here: cwd restored, mutex released
+                        // CwdRestoreGuard drops here: cwd restored, mutex released.
+                        // WorktreeCleanupGuard drops next: spawns wm.remove via
+                        // Handle::try_current.
                         drop(guard);
-                        // Remove the worktree after the agent completes (INV-2 ordering).
-                        if cleanup_on_completion
-                            && let Err(e) = wm.remove(&handle, prune_branch_on_remove).await
-                        {
-                            tracing::warn!(error = %e, "failed to remove sub-agent worktree");
-                        }
                         return result;
                     }
 
@@ -5597,5 +5638,95 @@ mod worktree_predicate_tests {
             should_create,
             "bg_isolation=Worktree with permissions.worktree=true must create a worktree"
         );
+    }
+}
+
+/// Regression tests for #4702: `WorktreeCleanupGuard` `enabled` flag and Drop behaviour.
+///
+/// Now that `WorktreeCleanupGuard` is a module-level struct, these tests instantiate the
+/// real production type. Tests that require `wm.remove` to execute use a `#[tokio::test]`
+/// runtime; tests that exercise the `enabled = false` no-op path work without one.
+#[cfg(test)]
+mod worktree_cleanup_guard_tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+    use zeph_config::WorktreeConfig;
+    use zeph_worktree::{DefaultGitRunner, DefaultWorktreeManager, WorktreeHandle};
+
+    use super::WorktreeCleanupGuard;
+
+    fn make_dummy_wm() -> (TempDir, Arc<DefaultWorktreeManager>) {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let config = WorktreeConfig {
+            enabled: true,
+            root: "worktrees".to_string(),
+            ..WorktreeConfig::default()
+        };
+        let wm =
+            DefaultWorktreeManager::new(dir.path().to_path_buf(), config, DefaultGitRunner::new())
+                .unwrap();
+        (dir, Arc::new(wm))
+    }
+
+    fn dummy_handle(dir: &TempDir) -> WorktreeHandle {
+        WorktreeHandle {
+            path: dir.path().join("wt"),
+            branch_name: "agent/test".to_string(),
+            base_ref_resolved: "HEAD".to_string(),
+            subagent_id: "test-agent".to_string(),
+            created_at: std::time::SystemTime::now(),
+        }
+    }
+
+    /// `enabled = false`: Drop must be a no-op — no `Handle::try_current` call, no panic
+    /// even outside a tokio runtime.
+    #[test]
+    fn cleanup_skipped_when_disabled() {
+        let (_dir, wm) = make_dummy_wm();
+        let dir2 = TempDir::new().unwrap();
+        let handle = dummy_handle(&dir2);
+        // Drop must not panic even without a tokio runtime.
+        drop(WorktreeCleanupGuard {
+            wm,
+            handle,
+            prune: false,
+            enabled: false,
+        });
+    }
+
+    /// `enabled = true` outside a tokio runtime: Drop must log an error and not panic.
+    /// This covers the `Handle::try_current` → `Err` branch.
+    #[test]
+    fn cleanup_logs_error_without_runtime() {
+        let (_dir, wm) = make_dummy_wm();
+        let dir2 = TempDir::new().unwrap();
+        let handle = dummy_handle(&dir2);
+        // No tokio runtime active — must not panic, must log error instead.
+        drop(WorktreeCleanupGuard {
+            wm,
+            handle,
+            prune: false,
+            enabled: true,
+        });
+    }
+
+    /// `enabled = true` inside a tokio runtime: Drop spawns `wm.remove`. The task
+    /// runs and completes without error (the worktree path does not exist, so remove
+    /// is a no-op or logs a warning — either outcome is acceptable here).
+    #[tokio::test]
+    async fn cleanup_spawns_remove_with_runtime() {
+        let (_dir, wm) = make_dummy_wm();
+        let dir2 = TempDir::new().unwrap();
+        let handle = dummy_handle(&dir2);
+        drop(WorktreeCleanupGuard {
+            wm,
+            handle,
+            prune: false,
+            enabled: true,
+        });
+        // Yield to allow the spawned task to complete.
+        tokio::task::yield_now().await;
     }
 }

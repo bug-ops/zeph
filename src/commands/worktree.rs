@@ -19,7 +19,9 @@ pub(crate) async fn handle_worktree_command(
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = zeph_core::config::Config::load(&config_file).map_err(|e| {
+        anyhow::anyhow!("failed to load config from {}: {e}", config_file.display())
+    })?;
 
     if !config.worktree.enabled {
         anyhow::bail!(
@@ -72,4 +74,31 @@ pub(crate) async fn handle_worktree_command(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    /// Regression test for #4701: `handle_worktree_command` must propagate a config parse
+    /// error instead of silently falling back to `Config::default()`.
+    #[tokio::test]
+    async fn invalid_config_returns_error_not_default() {
+        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+        f.write_all(b"[[[[invalid toml}}}").expect("write");
+        let path = f.path().to_owned();
+
+        let result =
+            super::handle_worktree_command(crate::cli::WorktreeCommand::List, Some(&path)).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error for invalid config, got Ok"
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("failed to load config"),
+            "error must mention config load failure, got: {msg}"
+        );
+    }
 }
