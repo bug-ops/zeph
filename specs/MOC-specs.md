@@ -144,6 +144,9 @@ status: moc
 ### Benchmarking
 - [[034-zeph-bench/spec|Benchmark Harness]] — BenchmarkChannel, dataset loaders (LongMemEval, LOCOMO, FRAMES, tau-bench, GAIA), CLI `zeph bench run`, memory isolation, deterministic mode, baseline comparison; `zeph-bench` crate
 
+### Durable Execution
+- [[064-durable-execution/spec|Durable Execution]] — `zeph-durable` Layer-0 crate: append-only journal, `DurableStep`/`DurableContext` (`&self` + `AtomicU32`), `EffectClass`+`OnAmbiguous` (construction-time error for destructive-unspecified), `JournalWriter` actor (mpsc capacity=1024, group-commit, ACK, supervised restart), AEAD `PayloadCipher` (XChaCha20-Poly1305, vault-keyed `ZEPH_DURABLE_KEY`, AAD-bound to step identity), `DurablePromise`/resolver-token auth, `DurableTimer`, dedicated `durable.db` (own pool+migrations), `ReplayDivergence` fingerprint guard, `read_execution_range` cursor (O(segment)); P1 agent-loop (explicit tier_loop.rs rewrite, LLM gate), P2 orchestration `/plan resume` (replan-budget restore), P3 scheduler exactly-once, P4 subagent durable promise; `restate` optional feature in `server` bundle
+
 ---
 
 ## System-Wide Features
@@ -223,6 +226,8 @@ status: moc
 | 042 | [[042-zeph-commands/spec\|Slash Command Registry]] | specify | approved |
 | 043 | [[043-zeph-common/spec\|Shared Primitives]] | specify | approved |
 | 044 | [[044-subagent-lifecycle/spec\|Subagent Lifecycle]] | specify | approved |
+| 063 | [[063-worktree-subsystem/spec\|Worktree Subsystem]] | specify | approved |
+| 064 | [[064-durable-execution/spec\|Durable Execution]] | specify | approved |
 
 ---
 
