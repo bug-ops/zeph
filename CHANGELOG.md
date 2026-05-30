@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-skills`: add `SkillExtensions` manifest parsing for UI/keybinding/monitor declarations in
+  `SKILL.md` `extensions:` frontmatter block (`SkillExtensions`, `SkillUiElement`,
+  `SkillKeybinding`, `SkillMonitor`). Parse failures log a warning and fall back to `None` so
+  existing skills are unaffected. Closes #4683.
+
 ### Fixed
 
 - `zeph-sanitizer`: `UNICODE_BYPASS_RE` now includes U+2060 (WORD JOINER) in its character class,
@@ -15,7 +22,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   via the provider registry and falls back to the main provider when the field is absent, matching
   the pattern used by `apply_quarantine_provider` and `apply_guardrail`. Previously the field had no
   effect and IPI probes always used the main/expensive provider. Closes #4753.
-
 - `zeph-commands`: `CommandHandler` gains a `requires_auth` method (default `false`). Handlers in
   the `Debugging`, `Configuration`, and `Advanced` categories (`/log`, `/debug-dump`, `/dump-format`,
   `/model`, `/provider`, `/experiment`, `/policy`, `/scheduler`) now return `true`, causing
@@ -33,6 +39,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: `detect_and_record_corrections` now runs `FeedbackDetector::detect` in
   `tokio::task::spawn_blocking` when the message exceeds 4096 bytes, preventing the async agent
   loop from blocking on CPU-bound regex work. Closes #4740.
+- `zeph-core`: concurrent skill scanning in `semantic_scan_plugin_add` with `buffer_unordered(4)`
+  and aggregate 300 s timeout; previously skills were scanned sequentially. Closes #4705.
 - `zeph-memory`: `resolve_edge_typed` now forwards `edge.confidence` to the store instead of
   hardcoding `0.8`. Introduces `DEFAULT_EDGE_CONFIDENCE` constant and fixes both the non-APEX and
   APEX-MEM paths. Closes #4723.

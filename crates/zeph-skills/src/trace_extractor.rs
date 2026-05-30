@@ -725,6 +725,7 @@ mod tests {
             category: None,
             triggers: vec![],
             parent_skill: None,
+            extensions: None,
         };
         let emb = SkillEmbedding::from_raw(vec![1.0, 0.0]);
         let existing = vec![(meta, emb)];

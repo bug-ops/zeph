@@ -38,6 +38,7 @@
 //!     category: None,
 //!     triggers: vec![],
 //!     parent_skill: None,
+//!     extensions: None,
 //! };
 //!
 //! let decision = decide(0.80, 0.75, 0.90, true, &meta);
@@ -216,6 +217,7 @@ mod tests {
             category: None,
             triggers: vec![],
             parent_skill: None,
+            extensions: None,
         }
     }
 

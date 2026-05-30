@@ -58,6 +58,7 @@ use std::path::{Path, PathBuf};
 use zeph_common::SessionId;
 
 use crate::error::SkillError;
+use crate::extensions::{SkillExtensions, parse_extensions};
 
 /// Parsed frontmatter metadata for a single skill.
 ///
@@ -114,6 +115,11 @@ pub struct SkillMeta {
     /// Set when `source = "heuristic_promotion"`. Used for traceability only — no effect on
     /// skill matching or trust governance.
     pub parent_skill: Option<String>,
+    /// Optional platform-extension manifest declared in the skill's `extensions:` frontmatter block.
+    ///
+    /// `None` when the block is absent or fails to parse (a warning is logged on parse failure).
+    /// Existing SKILL.md files without `extensions:` always load with `extensions: None`.
+    pub extensions: Option<SkillExtensions>,
 }
 
 /// A fully loaded skill: metadata plus the raw Markdown body.
@@ -162,6 +168,7 @@ impl Default for SkillMeta {
             category: None,
             triggers: vec![],
             parent_skill: None,
+            extensions: None,
         }
     }
 }
@@ -659,6 +666,8 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
         tracing::warn!("'requires-secrets' is deprecated, use 'x-requires-secrets'");
     }
 
+    let extensions = parse_extensions(yaml_str);
+
     let meta = SkillMeta {
         name,
         description,
@@ -676,6 +685,7 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
         category: raw.category,
         triggers: raw.triggers,
         parent_skill: raw.parent_skill,
+        extensions,
     };
 
     Ok((meta, body.to_string()))
@@ -740,6 +750,8 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         );
     }
 
+    let extensions = parse_extensions(yaml_str);
+
     Ok(SkillMeta {
         name,
         description,
@@ -757,6 +769,7 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         category: raw.category,
         triggers: raw.triggers,
         parent_skill: raw.parent_skill,
+        extensions,
     })
 }
 
@@ -1705,5 +1718,63 @@ mod tests {
         );
         let meta = load_skill_meta(&path).unwrap();
         assert!(meta.parent_skill.is_none());
+    }
+
+    #[test]
+    fn extensions_block_parsed_from_skill_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "\
+---
+name: my-skill
+description: A skill with extensions.
+extensions:
+  ui:
+    - type: toolbar_button
+      label: Run
+      icon: play
+  keybindings:
+    - chord: ctrl+r
+      action: run
+  monitors:
+    - trigger: file_changed
+      action: reload
+---
+body
+";
+        let path = write_skill(dir.path(), "my-skill", content);
+        let meta = load_skill_meta(&path).unwrap();
+        let ext = meta.extensions.expect("extensions should be parsed");
+        assert_eq!(ext.ui.len(), 1);
+        assert_eq!(ext.keybindings.len(), 1);
+        assert_eq!(ext.monitors.len(), 1);
+    }
+
+    #[test]
+    fn extensions_absent_when_not_in_skill_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "no-ext",
+            "---\nname: no-ext\ndescription: No extensions here.\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert!(
+            meta.extensions.is_none(),
+            "extensions must be None when not declared"
+        );
+    }
+
+    #[test]
+    fn extensions_absent_does_not_prevent_skill_loading() {
+        // Backwards compat: existing SKILL.md files without extensions load without error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "compat",
+            "---\nname: compat\ndescription: Existing skill.\ncategory: dev\n---\nbody",
+        );
+        let meta = load_skill_meta(&path).unwrap();
+        assert!(meta.extensions.is_none());
+        assert_eq!(meta.category.as_deref(), Some("dev"));
     }
 }

@@ -58,6 +58,7 @@ pub mod erl;
 pub mod error;
 pub mod evaluator;
 pub mod evolution;
+pub mod extensions;
 pub mod generator;
 pub mod group;
 pub mod loader;
@@ -87,6 +88,7 @@ pub use error::SkillError;
 pub use evaluator::{
     EvaluationWeights, SkillEvaluationRequest, SkillEvaluator, SkillQualityScore, SkillVerdict,
 };
+pub use extensions::{SkillExtensions, SkillKeybinding, SkillMonitor, SkillUiElement};
 pub use generator::{GeneratedSkill, SkillGenerationRequest, SkillGenerator};
 pub use group::{GroupResult, SkillGroup, SkillRole, group_skills};
 pub use matcher::{IntentClassification, MatchResult, ScoredMatch};

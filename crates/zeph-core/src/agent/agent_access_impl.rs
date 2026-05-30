@@ -44,7 +44,15 @@ impl<C: Channel + Send + 'static> Agent<C> {
 
 /// Run Stage-2 LLM semantic scan for all skills in the plugin at `source`.
 ///
-/// Returns `Some(err_msg)` when a skill is blocked, `None` when all skills pass.
+/// Skills are scanned concurrently with up to 4 in-flight at a time
+/// (`buffer_unordered(4)`). An aggregate 5-minute timeout wraps the whole
+/// batch; each individual scan is already bounded by `SCAN_TIMEOUT` (30 s) in
+/// `SkillSemanticScanner`. Returns `Some(err_msg)` when any skill is blocked,
+/// `None` when all skills pass.
+///
+/// Each future carries its own `skill_name` so that the rejection message names
+/// the correct skill regardless of completion order (which differs from input
+/// order when futures complete out-of-order with `buffer_unordered`).
 async fn semantic_scan_plugin_add(
     scanner: &zeph_skills::semantic_scanner::SkillSemanticScanner,
     source: &str,
@@ -52,7 +60,11 @@ async fn semantic_scan_plugin_add(
     mcp_allowed: Vec<String>,
     base_shell_allowed: Vec<String>,
 ) -> Result<Option<String>, CommandError> {
+    use futures::stream::StreamExt as _;
     use zeph_skills::semantic_scanner::ScanVerdict;
+
+    let span = tracing::info_span!("core.agent.scan_plugin", plugin = %source);
+    let _enter = span.enter();
 
     let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
     let mgr_dir =
@@ -72,34 +84,55 @@ async fn semantic_scan_plugin_add(
         "plugins.add: running Stage-2 semantic scan"
     );
 
-    for input in &scan_inputs {
-        let verdict = scanner
-            .scan(&input.skill_name, &input.declared_purpose, &input.skill_md)
-            .await
-            .map_err(|e| {
-                CommandError(format!(
-                    "plugin add failed: semantic scan error for skill {:?}: {e}",
-                    input.skill_name
-                ))
-            })?;
+    // Scan all skills concurrently with up to 4 in-flight. Each individual scan is
+    // already bounded by SCAN_TIMEOUT (30 s); the outer 5-min cap guards the batch.
+    // Each future owns its skill_name so verdicts carry the correct name regardless
+    // of buffer_unordered completion order (which is not the same as input order).
+    let scan_futs: Vec<_> = scan_inputs
+        .iter()
+        .map(|input| {
+            let name = input.skill_name.clone();
+            let purpose = input.declared_purpose.clone();
+            let md = input.skill_md.clone();
+            async move {
+                let verdict = scanner.scan(&name, &purpose, &md).await;
+                (name, verdict)
+            }
+        })
+        .collect();
+
+    let verdicts: Vec<_> = tokio::time::timeout(
+        std::time::Duration::from_mins(5),
+        futures::stream::iter(scan_futs)
+            .buffer_unordered(4)
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .map_err(|_| CommandError("plugin scan timed out after 300s".to_owned()))?;
+
+    for (skill_name, verdict_result) in verdicts {
+        let verdict = verdict_result.map_err(|e| {
+            CommandError(format!(
+                "plugin add failed: semantic scan error for skill {skill_name:?}: {e}"
+            ))
+        })?;
         match verdict {
             ScanVerdict::Allow => {
                 tracing::debug!(
-                    skill = %input.skill_name,
+                    skill = %skill_name,
                     "plugins.add: skill passed semantic scan"
                 );
             }
             ScanVerdict::Warn(ref reason) => {
                 tracing::warn!(
-                    skill = %input.skill_name,
+                    skill = %skill_name,
                     reason = %reason,
                     "plugins.add: skill passed with warning"
                 );
             }
             ScanVerdict::Block(reason) => {
                 return Ok(Some(format!(
-                    "plugin add failed: skill {:?} rejected by semantic scan: {}",
-                    input.skill_name, reason
+                    "plugin add failed: skill {skill_name:?} rejected by semantic scan: {reason}"
                 )));
             }
         }
@@ -1942,6 +1975,120 @@ mod tests {
                 "must not fail with scan error when semantic_scan is disabled, got: {e}"
             );
         }
+    }
+
+    // R-4705: semantic_scan_plugin_add must scan all skills concurrently and return
+    // None when every scanner call returns Allow. Verifies buffer_unordered path
+    // processes N inputs without sequential bottleneck.
+    #[tokio::test]
+    async fn semantic_scan_plugin_add_concurrent_all_allow_returns_none() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_skills::semantic_scanner::SkillSemanticScanner;
+
+        // MockProvider returns `{"verdict":"allow","reason":"ok"}` for every call.
+        let allow_json = r#"{"verdict":"allow","reason":"ok"}"#.to_owned();
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![
+            allow_json.clone(),
+            allow_json,
+        ]));
+        let scanner = SkillSemanticScanner::new(provider);
+
+        // Build a minimal plugin layout with two skills so scan_targets returns
+        // two SkillScanInput entries.
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_toml = r#"
+[plugin]
+name = "test-plugin"
+version = "0.1.0"
+description = "test"
+
+[[skills]]
+path = "skill-a"
+
+[[skills]]
+path = "skill-b"
+"#;
+        std::fs::write(tmp.path().join("plugin.toml"), plugin_toml).unwrap();
+        for name in ["skill-a", "skill-b"] {
+            let skill_dir = tmp.path().join(name);
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("# {name}\n\n## Purpose\nTest skill.\n"),
+            )
+            .unwrap();
+        }
+
+        let result =
+            semantic_scan_plugin_add(&scanner, tmp.path().to_str().unwrap(), None, vec![], vec![])
+                .await;
+
+        // All skills allowed → no error message returned.
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+        assert!(
+            result.unwrap().is_none(),
+            "expected None (all passed) but got Some(err)"
+        );
+    }
+
+    // R-4705 regression: buffer_unordered yields in completion order, not input order.
+    // A Block verdict on the *second* skill (index 1) must name that second skill, not the
+    // first. Before the fix, the code zipped verdicts against scan_inputs by position and
+    // discarded the tuple's skill_name, so the wrong skill was reported.
+    #[tokio::test]
+    async fn semantic_scan_plugin_add_block_names_correct_skill() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_skills::semantic_scanner::SkillSemanticScanner;
+
+        // First call returns Allow, second returns Block — only the second skill is rejected.
+        let allow_json = r#"{"verdict":"allow","reason":"ok"}"#.to_owned();
+        let block_json = r#"{"verdict":"block","reason":"malicious"}"#.to_owned();
+        let provider =
+            AnyProvider::Mock(MockProvider::with_responses(vec![allow_json, block_json]));
+        let scanner = SkillSemanticScanner::new(provider);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_toml = r#"
+[plugin]
+name = "test-plugin-block"
+version = "0.1.0"
+description = "test"
+
+[[skills]]
+path = "skill-first"
+
+[[skills]]
+path = "skill-second"
+"#;
+        std::fs::write(tmp.path().join("plugin.toml"), plugin_toml).unwrap();
+        for name in ["skill-first", "skill-second"] {
+            let skill_dir = tmp.path().join(name);
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("# {name}\n\n## Purpose\nTest skill.\n"),
+            )
+            .unwrap();
+        }
+
+        let result =
+            semantic_scan_plugin_add(&scanner, tmp.path().to_str().unwrap(), None, vec![], vec![])
+                .await;
+
+        assert!(result.is_ok(), "expected Ok(_), got: {result:?}");
+        let msg = result
+            .unwrap()
+            .expect("expected Some(err) for blocked skill");
+        assert!(
+            msg.contains("skill-second"),
+            "rejection must name the blocked skill 'skill-second', got: {msg}"
+        );
+        assert!(
+            !msg.contains("skill-first"),
+            "rejection must NOT name the allowed skill 'skill-first', got: {msg}"
+        );
     }
 
     // R-4706/R-4709: unknown provider name must also fail-closed rather than silently
