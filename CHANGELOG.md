@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-sanitizer`: `UNICODE_BYPASS_RE` now includes U+2060 (WORD JOINER) in its character class,
+  closing a bypass where inserting that invisible character between `!` and `[` evaded markdown image
+  exfiltration detection. Closes #4752.
+- `zeph-core`: `apply_causal_analyzer` in `agent_setup.rs` now resolves `CausalIpiConfig.provider`
+  via the provider registry and falls back to the main provider when the field is absent, matching
+  the pattern used by `apply_quarantine_provider` and `apply_guardrail`. Previously the field had no
+  effect and IPI probes always used the main/expensive provider. Closes #4753.
+
 - `zeph-commands`: `CommandHandler` gains a `requires_auth` method (default `false`). Handlers in
   the `Debugging`, `Configuration`, and `Advanced` categories (`/log`, `/debug-dump`, `/dump-format`,
   `/model`, `/provider`, `/experiment`, `/policy`, `/scheduler`) now return `true`, causing

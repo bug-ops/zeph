@@ -72,11 +72,11 @@ static HTML_IMG_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Detects zero-width Unicode characters between `!` and `[` used to bypass markdown regex.
 ///
-/// Adversaries insert U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ), or U+FEFF (BOM) between
-/// the `!` and `[` characters to prevent standard regex matchers from recognising the
+/// Adversaries insert U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ), U+2060 (WJ), or U+FEFF (BOM)
+/// between the `!` and `[` characters to prevent standard regex matchers from recognising the
 /// markdown image syntax. This pattern catches those sequences for stripping.
 static UNICODE_BYPASS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("![\u{200B}\u{200C}\u{200D}\u{FEFF}]+\\[").expect("valid UNICODE_BYPASS_RE")
+    Regex::new("![\u{200B}\u{200C}\u{200D}\u{2060}\u{FEFF}]+\\[").expect("valid UNICODE_BYPASS_RE")
 });
 
 // ---------------------------------------------------------------------------
@@ -683,6 +683,25 @@ mod tests {
         assert!(
             !cleaned.contains('\u{200B}'),
             "zero-width char must be stripped: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_word_joiner_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        // U+2060 (WORD JOINER) inserted between ! and [ to evade markdown regex.
+        let input = "!\u{2060}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert!(
+            !cleaned.contains('\u{2060}'),
+            "U+2060 word joiner must be stripped: {cleaned}"
         );
         assert!(
             !cleaned.starts_with('!'),

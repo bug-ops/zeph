@@ -968,20 +968,48 @@ pub(crate) fn apply_causal_analyzer<C: Channel>(
     provider: zeph_llm::any::AnyProvider,
     config: &Config,
 ) -> zeph_core::agent::Agent<C> {
-    apply_causal_analyzer_with_cfg(agent, provider, &config.security.causal_ipi)
+    let resolved = config
+        .security
+        .causal_ipi
+        .provider
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(
+            |name| match crate::bootstrap::create_named_provider(name, config) {
+                Ok(p) => {
+                    tracing::info!(provider = %name, "causal IPI dedicated provider configured");
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %name,
+                        error = %e,
+                        "causal IPI provider resolution failed, falling back to primary"
+                    );
+                    None
+                }
+            },
+        );
+    apply_causal_analyzer_with_cfg(agent, provider, resolved, &config.security.causal_ipi)
 }
 
 /// Wire the `TurnCausalAnalyzer` into the agent's security config (takes `CausalIpiConfig` directly).
+///
+/// `resolved_provider` is an already-resolved named provider from `[[llm.providers]]` for probe
+/// calls. When `None`, `provider` (the session's primary) is used as fallback.
 pub(crate) fn apply_causal_analyzer_with_cfg<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     provider: zeph_llm::any::AnyProvider,
+    resolved_provider: Option<zeph_llm::any::AnyProvider>,
     causal_config: &zeph_sanitizer::causal_ipi::CausalIpiConfig,
 ) -> zeph_core::agent::Agent<C> {
     let agent = agent.with_shadow_memory_config(&causal_config.shadow_memory);
     if !causal_config.enabled {
         return agent;
     }
-    let analyzer = zeph_sanitizer::causal_ipi::TurnCausalAnalyzer::new(provider, causal_config);
+    let probe_provider = resolved_provider.unwrap_or(provider);
+    let analyzer =
+        zeph_sanitizer::causal_ipi::TurnCausalAnalyzer::new(probe_provider, causal_config);
     tracing::info!(
         threshold = causal_config.threshold,
         probe_timeout_ms = causal_config.probe_timeout_ms,
