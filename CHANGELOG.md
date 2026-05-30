@@ -38,6 +38,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SubgoalState`. Updated exhaustive match sites in `zeph-core`. Closes #4718.
 - `zeph-agent-persistence`: add `#[non_exhaustive]` to `PersistenceError` to allow adding
   variants without breaking downstream crates. Closes #4719.
+- `zeph-context`: add `#[non_exhaustive]` to `CompactionTier`, `CompactionOutcome`,
+  `AssemblerError`, and `PageType`. Updated exhaustive match sites in `zeph-agent-context`.
+  Closes #4733, #4734.
+- `zeph-db`: add `#[non_exhaustive]` to `DbError`. Closes #4736.
+- `zeph-vault`: add `#[non_exhaustive]` to `AgeVaultError`. Closes #4736.
+- `zeph-bench`: add `#[non_exhaustive]` to `BenchError` and `Role`. Closes #4736.
 
 ### Performance
 

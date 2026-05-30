@@ -439,7 +439,7 @@ fn classify_to_compact_batch(
                     excerpt_labels.push(source_label.clone());
                 }
             }
-            PageType::SystemContext | PageType::ConversationTurn => {}
+            _ => {}
         }
 
         pages.push(TypedPage::new(
@@ -482,7 +482,7 @@ fn derive_origin(msg: &Message, index: usize, page_type: PageType) -> PageOrigin
                 .unwrap_or_else(|| format!("msg_{index}"));
             PageOrigin::System { key }
         }
-        PageType::ConversationTurn => PageOrigin::Turn {
+        _ => PageOrigin::Turn {
             message_id: index.to_string(),
         },
     }

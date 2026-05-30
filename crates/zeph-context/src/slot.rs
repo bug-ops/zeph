@@ -49,6 +49,7 @@ pub enum ContextSlot {
 ///
 /// Gives `maybe_compact()` enough information to handle probe rejection without triggering
 /// the `Exhausted` state — which would only be correct if summarization itself is stuck.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionOutcome {
     /// Messages were drained and replaced with a summary.

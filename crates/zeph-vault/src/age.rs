@@ -36,6 +36,7 @@ use zeph_common::secret::VaultError;
 /// let err = AgeVaultError::KeyParse("no identity line found".into());
 /// assert!(err.to_string().contains("failed to parse age identity"));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum AgeVaultError {
     /// The key file could not be read from disk.

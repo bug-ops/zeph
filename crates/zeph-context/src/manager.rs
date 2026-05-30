@@ -125,6 +125,7 @@ impl CompactionState {
 }
 
 /// Indicates which compaction tier applies for the current context size.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionTier {
     /// Context is within budget — no compaction needed.

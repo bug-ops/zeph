@@ -4,6 +4,7 @@
 use thiserror::Error;
 
 /// Unified database error type for `zeph-db`.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum DbError {
     /// Connection failed. The URL stored here is always credential-redacted.

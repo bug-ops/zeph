@@ -1183,12 +1183,12 @@ impl ContextService {
             .context_manager
             .compaction_tier(*summ.cached_prompt_tokens)
         {
-            CompactionTier::None => Ok(()),
             CompactionTier::Soft => {
                 self.do_soft_compaction(summ, status).await;
                 Ok(())
             }
             CompactionTier::Hard => self.do_hard_compaction(summ, status, in_cooldown).await,
+            _ => Ok(()),
         }
     }
 

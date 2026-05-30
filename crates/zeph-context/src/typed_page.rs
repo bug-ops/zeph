@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Every [`TypedPage`] carries exactly one `PageType`. Unclassifiable segments
 /// default to [`PageType::ConversationTurn`] (see [`classify`]).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PageType {

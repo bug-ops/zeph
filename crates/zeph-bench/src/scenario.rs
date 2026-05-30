@@ -15,6 +15,7 @@ use crate::error::BenchError;
 /// assert!(matches!(Role::User, Role::User));
 /// assert!(matches!(Role::Assistant, Role::Assistant));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
     /// A message from the human user.

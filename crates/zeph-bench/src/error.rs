@@ -16,6 +16,7 @@
 ///
 /// assert!(example().is_err());
 /// ```
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum BenchError {
     /// A named dataset was requested but is not registered in [`crate::DatasetRegistry`].
