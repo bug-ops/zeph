@@ -1831,6 +1831,14 @@ impl SubAgentManager {
         // from the previous session which already contains memory instructions.
         let executor = build_filtered_executor(tool_executor, permission_mode, &def, None);
 
+        // Mirror spawn(): apply the trust level cap to the executor so the skill runner
+        // enforces it at execution time. apply_constraint_propagation only logs the cap.
+        if let Some(ctx) = spawn_context
+            && let Some(cap) = ctx.max_trust_level
+        {
+            executor.set_effective_trust(cap);
+        }
+
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<String>>(4);
 

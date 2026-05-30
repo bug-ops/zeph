@@ -69,7 +69,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     }
                 }
                 SchedulerAction::Done { status } => return Some(status),
-                _ => {}
+                _ => {} // non_exhaustive: unrecognised variants are no-ops
             }
         }
         None
@@ -498,7 +498,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                             }
                         }
                     }
-                    _ => {}
+                    _ => {} // non_exhaustive: unrecognised variants are no-ops
                 }
             }
 
