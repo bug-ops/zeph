@@ -17,7 +17,7 @@
 //!     session:  &session_impl,
 //!     agent:    &mut agent_impl,
 //! };
-//! registry.dispatch(&mut ctx, input).await;
+//! registry.dispatch(&mut ctx, input, true).await;
 //! ```
 //!
 //! [`CommandHandler`]: crate::CommandHandler

@@ -35,6 +35,10 @@ impl CommandHandler<CommandContext<'_>> for SchedulerCommand {
         Some("scheduler")
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,

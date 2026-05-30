@@ -209,6 +209,18 @@ pub trait CommandHandler<Ctx: ?Sized>: Send + Sync {
         None
     }
 
+    /// Returns `true` if this command requires a trusted (local) caller.
+    ///
+    /// When `true`, [`CommandRegistry::dispatch`] rejects the command with an authorization
+    /// error if the dispatch site passes `trusted = false`. Commands in the `Debugging`,
+    /// `Configuration`, and `Advanced` categories that should not be accessible from
+    /// remote channels (Telegram, Discord, Slack) must override this to return `true`.
+    ///
+    /// The default returns `false` (accessible from all channels).
+    fn requires_auth(&self) -> bool {
+        false
+    }
+
     /// Execute the command.
     ///
     /// # Arguments
@@ -273,21 +285,30 @@ impl<Ctx: ?Sized> CommandRegistry<Ctx> {
     ///
     /// Returns `None` if the input does not start with `/` or no handler matches.
     ///
+    /// # Authorization
+    ///
+    /// When `trusted` is `false`, handlers that return `true` from
+    /// [`CommandHandler::requires_auth`] are rejected with a `CommandError` before execution.
+    /// Pass `trusted = true` for local CLI sessions; `false` for remote channels
+    /// (Telegram, Discord, Slack) where callers are not unconditionally trusted.
+    ///
     /// # Algorithm
     ///
     /// 1. Return `None` if `input` does not start with `/`.
     /// 2. Find all handlers where `input == name` or `input.starts_with(name + " ")`.
     /// 3. Pick the handler with the longest matching name (subcommand resolution).
-    /// 4. Extract `args = input[name.len()..].trim()`.
-    /// 5. Call `handler.handle(ctx, args)` and return the result.
+    /// 4. If `!trusted && handler.requires_auth()`, return `Some(Err(...))`.
+    /// 5. Extract `args = input[name.len()..].trim()`.
+    /// 6. Call `handler.handle(ctx, args)` and return the result.
     ///
     /// # Errors
     ///
-    /// Returns `Some(Err(_))` when the matched handler returns an error.
+    /// Returns `Some(Err(_))` when authorization fails or the matched handler returns an error.
     pub async fn dispatch(
         &self,
         ctx: &mut Ctx,
         input: &str,
+        trusted: bool,
     ) -> Option<Result<CommandOutput, CommandError>> {
         let trimmed = input.trim();
         if !trimmed.starts_with('/') {
@@ -309,6 +330,11 @@ impl<Ctx: ?Sized> CommandRegistry<Ctx> {
         }
 
         let handler = &self.handlers[best_idx?];
+        if !trusted && handler.requires_auth() {
+            return Some(Err(CommandError::new(
+                "this command requires a trusted (local) session",
+            )));
+        }
         let name = handler.name();
         let args = trimmed[name.len()..].trim();
         Some(handler.handle(ctx, args).await)
@@ -416,7 +442,7 @@ mod tests {
 
         let mut ctx = MockCtx;
         let out = reg
-            .dispatch(&mut ctx, "/plan confirm foo")
+            .dispatch(&mut ctx, "/plan confirm foo", true)
             .await
             .unwrap()
             .unwrap();
@@ -431,7 +457,7 @@ mod tests {
         let mut reg: CommandRegistry<MockCtx> = CommandRegistry::new();
         reg.register(make_handler("/help"));
         let mut ctx = MockCtx;
-        assert!(reg.dispatch(&mut ctx, "hello").await.is_none());
+        assert!(reg.dispatch(&mut ctx, "hello", true).await.is_none());
     }
 
     #[tokio::test]
@@ -439,7 +465,7 @@ mod tests {
         let mut reg: CommandRegistry<MockCtx> = CommandRegistry::new();
         reg.register(make_handler("/help"));
         let mut ctx = MockCtx;
-        assert!(reg.dispatch(&mut ctx, "/unknown").await.is_none());
+        assert!(reg.dispatch(&mut ctx, "/unknown", true).await.is_none());
     }
 
     #[test]
@@ -459,6 +485,46 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].name, "/alpha");
         assert_eq!(list[1].name, "/beta");
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_privileged_command_when_untrusted() {
+        struct PrivHandler;
+        impl CommandHandler<MockCtx> for PrivHandler {
+            fn name(&self) -> &'static str {
+                "/secret"
+            }
+            fn description(&self) -> &'static str {
+                "secret"
+            }
+            fn category(&self) -> SlashCategory {
+                SlashCategory::Debugging
+            }
+            fn requires_auth(&self) -> bool {
+                true
+            }
+            fn handle<'a>(
+                &'a self,
+                _ctx: &'a mut MockCtx,
+                _args: &'a str,
+            ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>>
+            {
+                Box::pin(async { Ok(CommandOutput::Silent) })
+            }
+        }
+
+        let mut reg: CommandRegistry<MockCtx> = CommandRegistry::new();
+        reg.register(PrivHandler);
+        let mut ctx = MockCtx;
+
+        // Trusted: command executes.
+        let result = reg.dispatch(&mut ctx, "/secret", true).await;
+        assert!(result.unwrap().is_ok());
+
+        // Untrusted: command is rejected.
+        let result = reg.dispatch(&mut ctx, "/secret", false).await;
+        let err = result.unwrap().unwrap_err();
+        assert!(err.0.contains("trusted"));
     }
 
     #[test]

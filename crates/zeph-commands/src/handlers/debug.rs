@@ -26,6 +26,10 @@ impl CommandHandler<CommandContext<'_>> for LogCommand {
         SlashCategory::Debugging
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -69,6 +73,10 @@ impl CommandHandler<CommandContext<'_>> for DebugDumpCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Debugging
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(
@@ -122,6 +130,10 @@ impl CommandHandler<CommandContext<'_>> for DumpFormatCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Debugging
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(

@@ -33,6 +33,10 @@ impl CommandHandler<CommandContext<'_>> for ModelCommand {
         SlashCategory::Configuration
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -75,6 +79,10 @@ impl CommandHandler<CommandContext<'_>> for ProviderCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Configuration
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(

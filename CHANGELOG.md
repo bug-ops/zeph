@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-commands`: `CommandHandler` gains a `requires_auth` method (default `false`). Handlers in
+  the `Debugging`, `Configuration`, and `Advanced` categories (`/log`, `/debug-dump`, `/dump-format`,
+  `/model`, `/provider`, `/experiment`, `/policy`, `/scheduler`) now return `true`, causing
+  `CommandRegistry::dispatch` to reject them with an error when `trusted = false`. The dispatch call
+  sites in `zeph-core` pass `channel.supports_exit()` as the trust signal, so remote channels
+  (Telegram, Discord, Slack) can no longer invoke privileged commands. Closes #4741.
+- `zeph-tools`: three `EgressEvent` construction sites in `fetch_html` (non-2xx, body-too-large, and
+  success paths) now call `redact_url_for_log` instead of passing the raw `current_url`. This
+  completes the redaction coverage started in #4713; the connection-error and SSRF-blocked paths were
+  already correct. Closes #4738.
+
 - `zeph-memory`: `resolve_edge_typed` now forwards `edge.confidence` to the store instead of
   hardcoding `0.8`. Introduces `DEFAULT_EDGE_CONFIDENCE` constant and fixes both the non-APEX and
   APEX-MEM paths. Closes #4723.

@@ -1024,8 +1024,9 @@ impl<C: Channel> Agent<C> {
             // Drop-order rules enforced here:
             //   - `sink_adapter` / `null_agent` declared before the registry block → dropped after.
             //   - Phase-2 sentinels declared before `ctx` → dropped after `ctx`.
+            let trusted = self.channel.supports_exit();
             let session_impl = command_context_impls::SessionAccessImpl {
-                supports_exit: self.channel.supports_exit(),
+                supports_exit: trusted,
             };
             let mut messages_impl = command_context_impls::MessageAccessImpl {
                 msg: &mut self.msg,
@@ -1069,7 +1070,7 @@ impl<C: Channel> Agent<C> {
                     session: &session_impl,
                     agent: &mut null_agent,
                 };
-                reg.dispatch(&mut ctx, trimmed).await
+                reg.dispatch(&mut ctx, trimmed, trusted).await
             };
             let session_reg_missed = registry_handled.is_none();
             match self
@@ -1165,7 +1166,7 @@ impl<C: Channel> Agent<C> {
                     agent: self,
                 };
                 // self is reborrowed; ctx drops at end of this block.
-                agent_reg.dispatch(&mut ctx, trimmed).await
+                agent_reg.dispatch(&mut ctx, trimmed, trusted).await
             } else {
                 None
             };
