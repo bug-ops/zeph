@@ -3442,6 +3442,113 @@ mod tests {
     }
 
     #[test]
+    fn resume_with_spawn_context_applies_trust_cap_to_executor() {
+        // Verify that resume() calls executor.set_effective_trust(cap) when
+        // spawn_context carries max_trust_level, matching the spawn() path.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "d0d00000-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        // Executor that records the trust level passed to set_effective_trust.
+        #[derive(Debug)]
+        struct TrustTrackingExecutor {
+            recorded: Mutex<Option<SkillTrustLevel>>,
+        }
+        impl ErasedToolExecutor for TrustTrackingExecutor {
+            fn execute_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn execute_confirmed_erased<'a>(
+                &'a self,
+                _response: &'a str,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+                vec![]
+            }
+
+            fn execute_tool_call_erased<'a>(
+                &'a self,
+                _call: &'a ToolCall,
+            ) -> Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(std::future::ready(Ok(None)))
+            }
+
+            fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+                false
+            }
+
+            fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+                false
+            }
+
+            fn set_effective_trust(&self, level: zeph_tools::SkillTrustLevel) {
+                *self.recorded.lock().unwrap() = Some(level);
+            }
+        }
+
+        let tracker = Arc::new(TrustTrackingExecutor {
+            recorded: Mutex::new(None),
+        });
+        let executor: Arc<dyn ErasedToolExecutor> = Arc::clone(&tracker) as _;
+
+        let ctx = SpawnContext {
+            max_trust_level: Some(SkillTrustLevel::Quarantined),
+            ..SpawnContext::default()
+        };
+        let (new_id, _) = mgr
+            .resume(
+                "d0d00000",
+                "continue",
+                mock_provider(vec!["done"]),
+                executor,
+                None,
+                &cfg,
+                Some(&ctx),
+            )
+            .unwrap();
+
+        assert_eq!(
+            *tracker.recorded.lock().unwrap(),
+            Some(SkillTrustLevel::Quarantined),
+            "executor must receive the trust cap from spawn_context"
+        );
+
+        mgr.cancel(&new_id).unwrap();
+    }
+
+    #[test]
     fn def_name_for_resume_returns_def_name() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();

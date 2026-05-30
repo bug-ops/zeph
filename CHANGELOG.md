@@ -18,6 +18,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-subagent`: `SubAgentManager::resume()` now accepts an optional `SpawnContext` and applies
+  the same constraint propagation as `spawn()`: `apply_constraint_propagation` narrows the tool
+  policy and `PolicyGateExecutor::set_effective_trust` clamps the trust level when
+  `max_trust_level` is set. Passing `None` preserves the previous behavior (no constraints applied).
+  An agent originally spawned as `Quarantined` can no longer resume with `Trusted` access when
+  the orchestration layer passes the original `SpawnContext`. Closes #4690.
+- `zeph-scheduler`, `zeph-orchestration`: added `#[non_exhaustive]` to `SchedulerError`,
+  `TaskProvenance`, `OrchestrationError`, and `SchedulerAction`, consistent with the
+  workspace-wide convention (PR #4658). Downstream exhaustive `match` blocks updated with
+  `_ => {}` wildcard arms. Closes #4693.
+- `zeph-orchestration`: replaced bare `.unwrap()` with `.expect("ensure_adjacency was called")`
+  in the two private methods of `cascade.rs` that rely on the `ensure_adjacency()` invariant.
+  Documents the invariant in code instead of comments only. Closes #4694.
 - `zeph-plugins`: `add_remote` now uses `extract_archive_safe` instead of the unguarded
   `extract_archive`, closing a tar-slip path-traversal vulnerability where a crafted archive
   could write files outside the plugins directory (absolute paths, `../` components, or symlink
@@ -86,8 +99,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spawned agent's tool policy and `PolicyGateExecutor::set_effective_trust` clamps
   trust via `min(own, cap)` semantics — privilege can only narrow, never escalate.
   `DenyList` agents under an inherited allowlist are converted to an explicit
-  `AllowList(parent_set \ deny_entries)` (fail-closed). `resume()` does not participate
-  in constraint propagation; its doc comment documents this limitation.
+  `AllowList(parent_set \ deny_entries)` (fail-closed). `resume()` constraint propagation
+  support added in #4690.
 - Native worktree isolation for background sub-agents (closes #4679). New `zeph-worktree` crate
   (`DefaultWorktreeManager`) manages git worktrees via subprocess calls with full path sanitization
   and capability probing. `zeph-subagent` integrates the worktree lifecycle into `SubAgentManager`:
