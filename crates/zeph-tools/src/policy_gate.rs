@@ -168,6 +168,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
             exit_code: None,
             truncated: false,
             caller_id: call.caller_id.clone(),
+            skill_name: call.skill_name.clone(),
             policy_match: None,
             correlation_id: None,
             vigil_risk: None,
@@ -223,6 +224,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         exit_code: None,
                         truncated: false,
                         caller_id: call.caller_id.clone(),
+                        skill_name: call.skill_name.clone(),
                         policy_match: Some(trace.clone()),
                         correlation_id: None,
                         vigil_risk: None,
@@ -260,6 +262,7 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                         exit_code: None,
                         truncated: false,
                         caller_id: call.caller_id.clone(),
+                        skill_name: call.skill_name.clone(),
                         policy_match: Some(trace.clone()),
                         correlation_id: None,
                         vigil_risk: None,
@@ -330,6 +333,7 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
                     exit_code: None,
                     truncated: false,
                     caller_id: call.caller_id.clone(),
+                    skill_name: call.skill_name.clone(),
                     policy_match: None,
                     correlation_id: None,
                     vigil_risk: None,
@@ -442,6 +446,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 
@@ -455,6 +460,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 

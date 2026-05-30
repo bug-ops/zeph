@@ -3,14 +3,33 @@
 
 //! In-process skill registry with lazy body loading and content fingerprinting.
 //!
-//! [`SkillRegistry`] scans one or more base directories for `*/SKILL.md` files,
-//! loads their frontmatter eagerly, and reads the Markdown body on first access
-//! (via [`std::sync::OnceLock`]). This keeps startup I/O proportional to the number
+//! [`SkillRegistry`] scans one or more base directories for `SKILL.md` files at any
+//! nesting depth, loads their frontmatter eagerly, and reads the Markdown body on first
+//! access (via [`std::sync::OnceLock`]). This keeps startup I/O proportional to the number
 //! of skills, not to their total size.
+//!
+//! # Discovery order
+//!
+//! Within each base directory the registry uses a depth-first pre-order walk with
+//! siblings sorted lexicographically at each level. This means a parent directory's
+//! `SKILL.md` is always visited before any of its own descendants' `SKILL.md` files,
+//! but there is no global depth-priority across unrelated branches (e.g. `a/b/SKILL.md`
+//! is visited before `c/SKILL.md` when `a` < `c` lexicographically, regardless of depth).
+//!
+//! Symlinked *directories* are not followed (walkdir default). Symlinked `SKILL.md`
+//! *files* are resolved by [`validate_path_within`] and must canonicalize to a path
+//! inside the base directory, otherwise they are rejected with a warning.
+//!
+//! Traversal is limited to [`MAX_SKILL_DEPTH`] levels to prevent runaway recursion on
+//! adversarial directory trees. A directory at exactly that depth is still descended into;
+//! skills deeper than `MAX_SKILL_DEPTH` relative to the base are silently skipped (the
+//! limit should be set generously enough that this is never a surprise in practice).
 //!
 //! # Duplicate handling
 //!
-//! When the same skill name appears in multiple base directories the **first** path wins.
+//! When the same skill name appears in multiple base directories, or multiple times
+//! within the same base directory at different depths, the **first** encountered path
+//! wins according to the DFS pre-order described above.
 //! Pass higher-priority directories first (e.g. user-managed before bundled).
 //!
 //! # Examples
@@ -34,11 +53,20 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use walkdir::WalkDir;
 use zeph_common::SkillTrustLevel;
 
 use crate::error::SkillError;
 use crate::loader::{Skill, SkillMeta, load_skill_body, load_skill_meta, validate_path_within};
 use crate::scanner::{EscalationResult, ScanResult, check_capability_escalation, scan_skill_body};
+
+/// Maximum directory depth searched for `SKILL.md` files relative to a base directory.
+///
+/// A depth of 1 means only `base/*/SKILL.md` (same as the old flat scan). A depth of
+/// 16 allows deeply nested plugin bundles without bound on practical layouts. Skills at
+/// `depth > MAX_SKILL_DEPTH` are silently skipped — this limit is intentionally generous
+/// so that no real-world layout hits it.
+const MAX_SKILL_DEPTH: usize = 16;
 
 struct SkillEntry {
     meta: SkillMeta,
@@ -113,12 +141,24 @@ impl SkillRegistry {
         }
     }
 
-    /// Scan directories for `*/SKILL.md` and load metadata only (lazy body).
+    /// Scan directories recursively for `SKILL.md` files and load metadata only (lazy body).
     ///
-    /// Earlier paths have higher priority: if a skill with the same name appears
-    /// in multiple paths, only the first one is kept.
+    /// Searches at any depth up to [`MAX_SKILL_DEPTH`] using a depth-first pre-order walk
+    /// with siblings sorted lexicographically. Earlier paths have higher priority: if a skill
+    /// with the same name appears in multiple paths or multiple depths within the same path,
+    /// only the first one encountered in DFS order is kept.
     ///
     /// Invalid files are logged with `tracing::warn` and skipped.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use zeph_skills::registry::SkillRegistry;
+    ///
+    /// // Skills can live at any depth: `plugins/auth/SKILL.md`, `plugins/auth/sub/SKILL.md`
+    /// let registry = SkillRegistry::load(&["/path/to/skills"]);
+    /// println!("loaded {} skills", registry.all_meta().len());
+    /// ```
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "skill.registry_load", skip_all, fields(count = tracing::field::Empty))
@@ -129,21 +169,32 @@ impl SkillRegistry {
 
         for base in paths {
             let base = base.as_ref();
-            let Ok(dir_entries) = std::fs::read_dir(base) else {
-                tracing::warn!("cannot read skill directory: {}", base.display());
-                continue;
-            };
+            // WalkDir pre-order DFS, siblings sorted lexicographically, no symlink-dir follow.
+            let walker = WalkDir::new(base)
+                .max_depth(MAX_SKILL_DEPTH)
+                .follow_links(false)
+                .sort_by_file_name();
 
-            for entry in dir_entries.flatten() {
-                let skill_path = entry.path().join("SKILL.md");
-                if !skill_path.is_file() {
+            for entry in walker {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::warn!("skill directory walk error: {e}");
+                        continue;
+                    }
+                };
+                if !entry.file_type().is_file() {
                     continue;
                 }
-                if let Err(e) = validate_path_within(&skill_path, base) {
+                if entry.file_name() != "SKILL.md" {
+                    continue;
+                }
+                let skill_path = entry.path();
+                if let Err(e) = validate_path_within(skill_path, base) {
                     tracing::warn!("skipping skill path traversal: {e:#}");
                     continue;
                 }
-                match load_skill_meta(&skill_path) {
+                match load_skill_meta(skill_path) {
                     Ok(meta) => {
                         if seen.insert(meta.name.clone()) {
                             entries.push(SkillEntry {
@@ -699,5 +750,126 @@ mod tests {
             1,
             "after reload, hub skill must still be flagged — hub_dirs must be preserved"
         );
+    }
+
+    // --- Nested discovery tests (#4682) ---
+
+    /// Create a skill at `base/rel_path/SKILL.md`.
+    ///
+    /// The leaf component of `rel_path` must equal `name` — the loader enforces
+    /// that the skill name matches the parent directory name.
+    fn create_skill_nested(dir: &Path, rel_path: &str, description: &str, body: &str) {
+        let skill_dir = dir.join(rel_path);
+        // The skill name is the leaf directory name, per loader convention.
+        let name = skill_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("rel_path must have a non-empty leaf component");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n{body}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn discovers_skill_at_depth_two() {
+        let dir = tempfile::tempdir().unwrap();
+        // skill lives at base/vendor/auth/SKILL.md — depth 2, name == "auth"
+        create_skill_nested(dir.path(), "vendor/auth", "Auth skill", "body");
+
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        assert_eq!(registry.all_meta().len(), 1);
+        assert_eq!(registry.all_meta()[0].name, "auth");
+    }
+
+    #[test]
+    fn discovers_skills_at_mixed_depths() {
+        let dir = tempfile::tempdir().unwrap();
+        create_skill(dir.path(), "shallow", "Shallow", "body");
+        create_skill_nested(dir.path(), "vendor/deep", "Deep", "body");
+
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        let names: Vec<_> = registry
+            .all_meta()
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(registry.all_meta().len(), 2);
+        assert!(names.contains(&"shallow"));
+        assert!(names.contains(&"deep"));
+    }
+
+    /// DFS pre-order: a directory is visited before its own subdirectories.
+    ///
+    /// Both `shared/SKILL.md` and `shared/shared/SKILL.md` carry `name: "shared"`.
+    /// DFS pre-order visits the parent (`shared/`) before descending into `shared/shared/`,
+    /// so the shallower copy wins the first-insert-wins dedup.
+    #[test]
+    fn parent_wins_over_descendant_same_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        // Top-level skill: shared/SKILL.md (name="shared", description="parent")
+        create_skill(dir.path(), "shared", "parent", "body");
+        // Nested skill: shared/shared/SKILL.md (name="shared", description="child")
+        create_skill_nested(dir.path(), "shared/shared", "child", "child body");
+
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        assert_eq!(
+            registry.all_meta().len(),
+            1,
+            "duplicate name must be deduped"
+        );
+        assert_eq!(
+            registry.all_meta()[0].description,
+            "parent",
+            "DFS pre-order: parent directory visited before its own descendants"
+        );
+    }
+
+    /// DFS pre-order with lexicographic sibling sort: `a/` branch fully traversed before `b/`.
+    ///
+    /// `a/shared/SKILL.md` and `b/shared/SKILL.md` both have `name: "shared"`.
+    /// Because siblings sort lexicographically, the `a` branch is fully traversed first,
+    /// so `a/shared` wins the duplicate-name collision even though both are at equal depth.
+    #[test]
+    fn lexicographic_sibling_order_determines_duplicate_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        // a/shared/SKILL.md — visited first (a < b in sibling order)
+        create_skill_nested(dir.path(), "a/shared", "from-a", "body");
+        // b/shared/SKILL.md — visited second
+        create_skill_nested(dir.path(), "b/shared", "from-b", "body");
+
+        let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        assert_eq!(
+            registry.all_meta().len(),
+            1,
+            "duplicate name must be deduped"
+        );
+        assert_eq!(
+            registry.all_meta()[0].description,
+            "from-a",
+            "lexicographic sibling sort: a/ branch visited before b/"
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_nested_skill_added() {
+        let dir = tempfile::tempdir().unwrap();
+        create_skill(dir.path(), "top", "Top", "body");
+
+        let mut registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
+        let fp_before = registry.fingerprint();
+
+        // Add a new nested skill: vendor/new-nested/SKILL.md (name="new-nested")
+        create_skill_nested(dir.path(), "vendor/new-nested", "New", "body");
+        registry.reload(&[dir.path().to_path_buf()]);
+
+        assert_ne!(
+            registry.fingerprint(),
+            fp_before,
+            "fingerprint must change when a new nested skill is added"
+        );
+        assert_eq!(registry.all_meta().len(), 2);
     }
 }

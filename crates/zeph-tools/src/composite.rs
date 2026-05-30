@@ -294,6 +294,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "file_handler");
@@ -309,6 +310,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap().unwrap();
         assert_eq!(result.summary, "shell_handler");
@@ -324,6 +326,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = composite.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());

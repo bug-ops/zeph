@@ -524,8 +524,8 @@ async fn handle_tool_step(
                     params,
                     caller_id: None,
                     context: None,
-
                     tool_call_id: String::new(),
+                    skill_name: None,
                 };
                 let tool_start = Instant::now();
                 let exec_result = executor.execute_tool_call_erased(&call).await;

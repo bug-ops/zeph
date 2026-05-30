@@ -199,6 +199,7 @@ impl RetailEnv {
                 caller_id: None,
                 context: None,
                 tool_call_id: String::new(),
+                skill_name: None,
             };
             self.execute_tool_call(&call).await.map_err(|e| {
                 BenchError::InvalidFormat(format!("replay action '{}': {e}", action.name))
@@ -789,6 +790,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 

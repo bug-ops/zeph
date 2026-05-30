@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-skills`: recursive `SKILL.md` discovery now uses depth-first pre-order traversal
+  (siblings sorted lexicographically, `max_depth = 16`) via `walkdir`, replacing the previous
+  flat single-level `read_dir` scan. Skills at any nesting depth are discovered and registered;
+  symlinked directories are not followed; per-file path validation is unchanged. The first
+  encountered skill wins on duplicate names (DFS pre-order within each base directory, base
+  directories ordered by caller priority). Closes #4682.
+- `zeph-tools`: `ToolCall` now carries `skill_name: Option<Vec<String>>` (turn-level attribution
+  of which skills were active in the system prompt when the tool call was issued). The field is
+  propagated to `AuditEntry` and `EgressEvent` (both with `#[serde(skip_serializing_if =
+  "Option::is_none")]` to preserve existing JSONL consumers). Attribution is set in the main agent
+  loop (`tier_loop.rs`) and threads through all decorator executors (`ScopedToolExecutor`,
+  `PolicyGateExecutor`, `AdversarialPolicyGateExecutor`) and the scrape executor's egress path.
+  `ToolCall` now derives `Default` to reduce churn at struct literal sites. Closes #4684.
+
 ### Research
 
 - Competitive parity scan: assessed Goose v1.34.0–v1.35.0 features against Zeph. Three features

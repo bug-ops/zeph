@@ -330,6 +330,7 @@ impl<C: Channel> Agent<C> {
                                 exit_code: None,
                                 truncated: false,
                                 caller_id: call.caller_id.clone(),
+                                skill_name: call.skill_name.clone(),
                                 policy_match: None,
                                 correlation_id: None,
                                 vigil_risk: None,
@@ -651,6 +652,11 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
+    fn skill_attribution(&self) -> Option<Vec<String>> {
+        (!self.services.skill.active_skill_names.is_empty())
+            .then(|| self.services.skill.active_skill_names.clone())
+    }
+
     fn prepare_tool_dispatch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -659,7 +665,7 @@ impl<C: Channel> Agent<C> {
         // When the orchestration scheduler has set a named execution environment for the
         // current task, inject it into every ToolCall so ShellExecutor::resolve_context
         // uses the right env/cwd without the LLM having to supply it.
-        let task_ctx: Option<ExecutionContext> = self
+        let task_ctx = self
             .services
             .orchestration
             .task_execution_env
@@ -692,13 +698,12 @@ impl<C: Channel> Agent<C> {
                     caller_id: None,
                     context: task_ctx.clone(),
                     tool_call_id: tool_call_ids[idx].clone(),
+                    skill_name: self.skill_attribution(),
                 })
             })
             .collect();
-        // tool_started_ats is populated per-tier just before each tier's join_all so that
-        // audit timestamps reflect actual execution start rather than pre-build time.
-        let tool_started_ats: Vec<std::time::Instant> =
-            vec![std::time::Instant::now(); tool_calls.len()];
+        // Timestamps filled just before each tier's join_all so audit reflects actual start.
+        let tool_started_ats = vec![std::time::Instant::now(); tool_calls.len()];
 
         self.check_exfiltration_urls(tool_calls);
 

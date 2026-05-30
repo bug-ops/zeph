@@ -15,8 +15,8 @@ impl<C: Channel> Agent<C> {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-
             tool_call_id: String::new(),
+            skill_name: None,
         };
         match self.tool_executor.execute_tool_call_erased(&call).await {
             Ok(Some(output)) => Ok(output.summary),

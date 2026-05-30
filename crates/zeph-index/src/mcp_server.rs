@@ -679,6 +679,7 @@ impl Foo {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 

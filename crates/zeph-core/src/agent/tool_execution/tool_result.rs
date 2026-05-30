@@ -55,6 +55,7 @@ impl<C: Channel> Agent<C> {
             exit_code: None,
             truncated: false,
             caller_id: None,
+            skill_name: None,
             policy_match: None,
             correlation_id: None,
             vigil_risk,

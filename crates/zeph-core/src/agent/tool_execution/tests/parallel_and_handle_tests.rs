@@ -103,6 +103,7 @@ fn make_calls(n: usize) -> Vec<ToolCall> {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         })
         .collect()
 }

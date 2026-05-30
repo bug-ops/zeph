@@ -572,6 +572,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -590,6 +591,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -608,6 +610,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err());
@@ -623,6 +626,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -700,6 +704,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await.unwrap();
         assert!(res.is_some());
@@ -834,6 +839,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(
@@ -856,6 +862,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_ok(), "non-disallowed tool must be allowed");
@@ -933,6 +940,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let res = exec.execute_tool_call_erased(&call).await;
         assert!(res.is_err(), "plan mode must block all tool execution");

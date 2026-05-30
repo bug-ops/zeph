@@ -462,8 +462,8 @@ impl ToolExecutor for SchedulerExecutor {
                     params,
                     caller_id: None,
                     context: None,
-
                     tool_call_id: String::new(),
+                    skill_name: None,
                 };
                 return self.execute_tool_call(&call).await;
             }
@@ -567,6 +567,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 

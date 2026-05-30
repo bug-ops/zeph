@@ -11250,6 +11250,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "uuid",
+ "walkdir",
  "zeph-common",
  "zeph-config",
  "zeph-llm",

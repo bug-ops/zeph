@@ -277,6 +277,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let out = executor.execute_tool_call(&call).await.unwrap().unwrap();
 
@@ -300,6 +301,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let out = executor.execute_tool_call(&call).await.unwrap().unwrap();
         // StubCompressor would return "COMPRESSED" — but threshold not met, so raw passes through.
@@ -336,6 +338,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let out = executor.execute_tool_call(&call).await.unwrap().unwrap();
         // Error compressor → raw output preserved (T4 safety invariant).

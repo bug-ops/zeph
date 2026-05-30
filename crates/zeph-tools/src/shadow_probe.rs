@@ -312,6 +312,7 @@ mod tests {
             caller_id: None,
             context: None,
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 

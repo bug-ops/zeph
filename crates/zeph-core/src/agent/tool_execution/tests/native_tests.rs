@@ -396,6 +396,7 @@ fn clear_utility_state_resets_per_turn_redundancy_tracking() {
         context: None,
 
         tool_call_id: String::new(),
+        skill_name: None,
     };
     let ctx = UtilityContext {
         tool_calls_this_turn: 0,
@@ -728,6 +729,7 @@ fn test_tool_call(tool_id: &str) -> ToolCall {
         context: None,
 
         tool_call_id: String::new(),
+        skill_name: None,
     }
 }
 

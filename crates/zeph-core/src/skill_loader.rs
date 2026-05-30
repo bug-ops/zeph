@@ -111,6 +111,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("## Instructions"));
@@ -132,6 +133,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -160,6 +162,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -182,6 +185,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("truncated"));
@@ -203,6 +207,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -240,6 +245,7 @@ mod tests {
                         context: None,
 
                         tool_call_id: String::new(),
+                        skill_name: None,
                     };
                     ex.execute_tool_call(&call).await
                 })
@@ -268,6 +274,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(result.summary.contains("skill not found"));
@@ -286,6 +293,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());

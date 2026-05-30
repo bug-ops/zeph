@@ -75,6 +75,13 @@ pub struct EgressEvent {
     /// Caller identity propagated from `ToolCall::caller_id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_id: Option<String>,
+    /// Skills active in the turn that triggered this egress call (turn-level attribution).
+    ///
+    /// Propagated from `ToolCall::skill_name`. `None` for system-initiated calls.
+    /// This is turn-scoped: it lists all skills injected into the system prompt for
+    /// the current turn, not necessarily the specific skill that caused this request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_name: Option<Vec<String>>,
     /// Redirect hop index (0 for the initial request). Distinguishes per-hop events
     /// sharing the same `correlation_id`.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
@@ -204,6 +211,13 @@ pub struct AuditEntry {
     /// `None` when `ScopedToolExecutor` is not in the chain.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_at_dispatch: Option<String>,
+    /// Skills active in the turn that triggered this tool call (turn-level attribution).
+    ///
+    /// Propagated from `ToolCall::skill_name`. `None` for
+    /// system-initiated or internal tool calls. This is turn-scoped: it lists all skills
+    /// injected into the system prompt for the current turn, not per-call causation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_name: Option<Vec<String>>,
 }
 
 /// Risk level assigned by the VIGIL pre-sanitizer gate to a flagged tool output.
@@ -443,6 +457,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"success\""));
@@ -479,6 +494,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"blocked\""));
@@ -514,6 +530,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"error\""));
@@ -546,6 +563,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"type\":\"timeout\""));
@@ -584,6 +602,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         logger.log(&entry).await;
     }
@@ -623,6 +642,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         logger.log(&entry).await;
 
@@ -689,6 +709,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -725,6 +746,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -770,6 +792,7 @@ mod tests {
                 resolved_cwd: None,
                 scope_at_definition: None,
                 scope_at_dispatch: None,
+                skill_name: None,
             };
             logger.log(&entry).await;
         }
@@ -805,6 +828,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(
@@ -840,6 +864,7 @@ mod tests {
             resolved_cwd: None,
             scope_at_definition: None,
             scope_at_dispatch: None,
+            skill_name: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(

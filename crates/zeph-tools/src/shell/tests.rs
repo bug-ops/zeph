@@ -1277,6 +1277,7 @@ async fn execute_tool_call_valid_command() {
         context: None,
 
         tool_call_id: String::new(),
+        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(result.summary.contains("hi"));
@@ -1292,6 +1293,7 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
         context: None,
 
         tool_call_id: String::new(),
+        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await;
     assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
@@ -1309,6 +1311,7 @@ async fn execute_tool_call_empty_command_returns_none() {
         context: None,
 
         tool_call_id: String::new(),
+        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap();
     assert!(result.is_none());
@@ -2714,6 +2717,7 @@ async fn execute_tool_call_with_background_true() {
         context: None,
 
         tool_call_id: String::new(),
+        skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
     assert!(
@@ -3267,6 +3271,7 @@ mod resolve_context {
             context: Some(ctx),
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
@@ -3300,6 +3305,7 @@ mod resolve_context {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         let expected = std::env::current_dir().unwrap();

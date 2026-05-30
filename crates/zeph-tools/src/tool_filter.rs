@@ -122,6 +122,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -137,6 +138,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());

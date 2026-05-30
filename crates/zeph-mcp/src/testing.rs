@@ -217,6 +217,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -233,6 +234,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -251,6 +253,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = mock.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -269,6 +272,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         mock.execute_tool_call(&call).await.unwrap();
 
@@ -290,6 +294,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
 
         // First call succeeds.

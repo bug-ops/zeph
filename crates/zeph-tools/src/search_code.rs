@@ -690,6 +690,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidParams { .. }));
@@ -711,6 +712,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(out.summary.contains("retry_backoff_ms"));
@@ -734,6 +736,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(out.summary.contains("grep fallback"));

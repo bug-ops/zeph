@@ -1537,6 +1537,7 @@ impl ShellExecutor {
                 exit_code,
                 truncated,
                 caller_id: None,
+                skill_name: None,
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
@@ -1588,6 +1589,7 @@ impl ShellExecutor {
                 exit_code,
                 truncated,
                 caller_id: None,
+                skill_name: None,
                 policy_match: None,
                 correlation_id: None,
                 vigil_risk: None,
@@ -2902,6 +2904,7 @@ async fn run_bash_stream(
                                 command: code.to_owned(),
                                 chunk: interleaved.clone(),
                                 tool_call_id: tool_call_id.to_owned(),
+                                skill_name: None,
                             });
                         }
                         combined.push_str(&interleaved);

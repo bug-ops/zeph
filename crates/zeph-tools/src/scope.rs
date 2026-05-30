@@ -516,6 +516,7 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
                     exit_code: None,
                     truncated: false,
                     caller_id: call.caller_id.clone(),
+                    skill_name: call.skill_name.clone(),
                     policy_match: None,
                     correlation_id: None,
                     vigil_risk: None,
@@ -575,6 +576,7 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
                     exit_code: None,
                     truncated: false,
                     caller_id: call.caller_id.clone(),
+                    skill_name: call.skill_name.clone(),
                     policy_match: None,
                     correlation_id: None,
                     vigil_risk: None,
@@ -738,6 +740,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 

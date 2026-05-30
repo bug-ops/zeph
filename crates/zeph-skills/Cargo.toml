@@ -39,6 +39,7 @@ toml = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"], optional = true }
 uuid = { workspace = true, features = ["v5"] }
+walkdir = { workspace = true }
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-llm.workspace = true

@@ -489,6 +489,7 @@ pub(crate) async fn forward_tool_events_to_tui(
                 command,
                 chunk,
                 tool_call_id,
+                ..
             } => zeph_tui::AgentEvent::ToolOutputChunk {
                 tool_name,
                 command,
@@ -575,6 +576,7 @@ mod tests {
                 tool_name: "shell".into(),
                 command: "ls".into(),
                 chunk: "file.txt\n".into(),
+                skill_name: None,
             })
             .await
             .unwrap();

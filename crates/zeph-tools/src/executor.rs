@@ -42,10 +42,11 @@ pub struct DiffData {
 ///     caller_id: Some("user-42".to_owned()),
 ///     context: Some(ExecutionContext::new().with_name("repo")),
 ///     tool_call_id: String::new(),
+///     skill_name: None,
 /// };
 /// assert_eq!(call.tool_id, "bash");
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolCall {
     /// The tool identifier, matching a value from [`ToolExecutor::tool_definitions`].
     pub tool_id: ToolName,
@@ -60,6 +61,13 @@ pub struct ToolCall {
     /// Opaque tool call ID used to correlate [`ToolEvent::OutputChunk`] events with
     /// their originating tool call in the TUI. Empty when not set by the agent loop.
     pub tool_call_id: String,
+    /// Names of skills active in the turn that issued this tool call (turn-level attribution).
+    ///
+    /// This is a best-effort, turn-scoped field: it lists the skills injected into the
+    /// system prompt for the current turn, not the specific skill that caused this individual
+    /// call (the LLM does not report per-call causation). `None` for system-initiated or
+    /// internal tool calls that execute outside the skill-augmented agent loop.
+    pub skill_name: Option<Vec<String>>,
 }
 
 /// Cumulative filter statistics for a single tool execution.
@@ -316,6 +324,8 @@ pub enum ToolEvent {
         /// Opaque tool call ID matching the corresponding [`ToolEvent::Started`] event.
         /// Empty string when the executor does not have access to the call ID.
         tool_call_id: String,
+        /// Skills active in the turn that triggered this tool call (turn-level attribution).
+        skill_name: Option<Vec<String>>,
     },
     /// The tool finished. Contains the full output and optional filter/diff data.
     Completed {
@@ -1266,6 +1276,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -1413,6 +1424,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -1750,6 +1762,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         }
     }
 

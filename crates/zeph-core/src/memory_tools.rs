@@ -302,6 +302,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_none());
@@ -323,6 +324,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -353,6 +355,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
         assert!(result.is_some());
@@ -374,6 +377,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -395,6 +399,7 @@ mod tests {
             context: None,
 
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
         assert!(result.is_err());
@@ -418,6 +423,7 @@ mod tests {
             caller_id: None,
             context: None,
             tool_call_id: String::new(),
+            skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(
