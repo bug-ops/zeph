@@ -29,6 +29,7 @@
 //!         ScanVerdict::Allow => println!("skill is compliant"),
 //!         ScanVerdict::Warn(reason) => eprintln!("warning: {reason}"),
 //!         ScanVerdict::Block(reason) => eprintln!("blocked: {reason}"),
+//!         _ => {}
 //!     }
 //!     Ok(())
 //! }
