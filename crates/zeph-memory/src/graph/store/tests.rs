@@ -4430,9 +4430,9 @@ async fn bfs_edges_at_depth_empty_when_no_edges() {
 /// SYNAPSE Benna-Fusi: inserting an edge twice (non-APEX) produces diverged fast/slow variables.
 ///
 /// After first insert: fast = slow = confidence = 0.5 (initialized equal).
-/// After second insert with confidence 0.9, fast_rate=0.5, slow_rate=0.05:
-///   new_fast = 0.5 + 0.5*(0.9 - 0.5) = 0.7
-///   new_slow = 0.5 + 0.05*(0.7 - 0.5) = 0.51
+/// After second insert with confidence 0.9, `fast_rate`=0.5, `slow_rate`=0.05:
+///   `new_fast` = 0.5 + 0.5*(0.9 - 0.5) = 0.7
+///   `new_slow` = 0.5 + 0.05*(0.7 - 0.5) = 0.51
 #[tokio::test]
 async fn benna_fusi_update_diverges_fast_and_slow() {
     let store = SqliteStore::new(":memory:").await.unwrap();
@@ -4484,20 +4484,18 @@ async fn benna_fusi_update_diverges_fast_and_slow() {
     .await
     .unwrap();
 
-    let fast_f32 = fast as f32;
-    let slow_f32 = slow as f32;
     assert!(
-        (fast_f32 - 0.7_f32).abs() < 1e-4,
-        "expected fast ≈ 0.7, got {fast_f32}"
+        (fast - 0.7_f64).abs() < 1e-4,
+        "expected fast ≈ 0.7, got {fast}"
     );
     assert!(
-        (slow_f32 - 0.51_f32).abs() < 1e-4,
-        "expected slow ≈ 0.51, got {slow_f32}"
+        (slow - 0.51_f64).abs() < 1e-4,
+        "expected slow ≈ 0.51, got {slow}"
     );
-    assert!(fast_f32 > slow_f32, "fast must converge faster than slow");
+    assert!(fast > slow, "fast must converge faster than slow");
 }
 
-/// SYNAPSE Benna-Fusi: APEX reassertion path also updates confidence_fast/confidence_slow.
+/// SYNAPSE Benna-Fusi: APEX reassertion path also updates `confidence_fast`/`confidence_slow`.
 #[tokio::test]
 async fn benna_fusi_update_applied_on_apex_reassertion() {
     let store = SqliteStore::new(":memory:").await.unwrap();
@@ -4555,15 +4553,13 @@ async fn benna_fusi_update_applied_on_apex_reassertion() {
             .await
             .unwrap();
 
-    let fast_f32 = fast as f32;
-    let slow_f32 = slow as f32;
     // After update: fast = 0.5 + 0.5*(0.9-0.5) = 0.7, slow = 0.5 + 0.05*(0.7-0.5) = 0.51
     assert!(
-        (fast_f32 - 0.7_f32).abs() < 1e-4,
-        "APEX reassertion must update fast ≈ 0.7, got {fast_f32}"
+        (fast - 0.7_f64).abs() < 1e-4,
+        "APEX reassertion must update fast ≈ 0.7, got {fast}"
     );
     assert!(
-        (slow_f32 - 0.51_f32).abs() < 1e-4,
-        "APEX reassertion must update slow ≈ 0.51, got {slow_f32}"
+        (slow - 0.51_f64).abs() < 1e-4,
+        "APEX reassertion must update slow ≈ 0.51, got {slow}"
     );
 }
