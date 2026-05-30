@@ -596,6 +596,8 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                                 .write_gate
                                 .enabled
                                 .then_some(graph_cfg.write_gate.min_edge_relevance),
+                            benna_fast_rate: graph_cfg.spreading_activation.benna_fast_rate,
+                            benna_slow_rate: graph_cfg.spreading_activation.benna_slow_rate,
                         };
                         let pool = store.pool().clone();
                         match extract_and_store(

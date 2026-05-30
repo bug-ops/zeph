@@ -70,6 +70,14 @@ pub struct GraphExtractionConfig {
     ///
     /// `None` disables the gate (default behaviour, always writes).
     pub write_gate_min_relevance: Option<f32>,
+    /// Benna-Fusi fast-variable learning rate for confidence merges (#4711).
+    ///
+    /// Passed to [`crate::graph::GraphStore::with_benna_rates`]. Default: `0.5`.
+    pub benna_fast_rate: f32,
+    /// Benna-Fusi slow-variable learning rate for confidence merges (#4711).
+    ///
+    /// Passed to [`crate::graph::GraphStore::with_benna_rates`]. Default: `0.05`.
+    pub benna_slow_rate: f32,
 }
 
 impl Default for GraphExtractionConfig {
@@ -95,6 +103,8 @@ impl Default for GraphExtractionConfig {
             embed_timeout_secs: 5,
             turn_index: None,
             write_gate_min_relevance: None,
+            benna_fast_rate: 0.5,
+            benna_slow_rate: 0.05,
         }
     }
 }
@@ -391,7 +401,8 @@ pub async fn extract_and_store(
     );
     let ctx_refs: Vec<&str> = context_messages.iter().map(String::as_str).collect();
 
-    let store = GraphStore::new(pool);
+    let store =
+        GraphStore::new(pool).with_benna_rates(config.benna_fast_rate, config.benna_slow_rate);
 
     bump_extraction_count(store.pool()).await?;
 
@@ -510,8 +521,7 @@ fn is_low_signal_relation(relation: &str) -> bool {
         "involves",
         "involved",
     ];
-    let lower = relation.to_lowercase();
-    LOW_SIGNAL.iter().any(|&s| lower == s)
+    LOW_SIGNAL.iter().any(|&s| relation.eq_ignore_ascii_case(s))
 }
 
 /// Insert extracted edges that have both endpoints in `name_to_id`.
@@ -1369,6 +1379,106 @@ mod tests {
         assert!(
             !super::is_low_signal_relation("born_in"),
             "born_in must NOT be low-signal"
+        );
+    }
+
+    /// Regression test for #4711: configured Benna-Fusi rates must produce different
+    /// `confidence_fast`/`confidence_slow` values than the hardcoded defaults.
+    ///
+    /// `extract_and_store` builds `GraphStore::new(pool).with_benna_rates(fast, slow)` using
+    /// `config.benna_fast_rate` / `config.benna_slow_rate`.  Before the fix it called
+    /// `GraphStore::new(pool)` only, so the configured rates were silently ignored.
+    ///
+    /// This test calls `GraphStore::insert_edge_typed` directly (bypassing the resolver dedup
+    /// layer) to exercise the Benna-Fusi UPDATE path with two confidence levels (0.6 → 0.8).
+    ///
+    /// Math:
+    ///   default (0.5/0.05):  fast = 0.6 + 0.5*(0.8-0.6) = 0.7;  slow ≈ 0.605
+    ///   custom  (0.1/0.02):  fast = 0.6 + 0.1*(0.8-0.6) = 0.62; slow ≈ 0.6004
+    #[tokio::test]
+    async fn extract_and_store_respects_configured_benna_rates() {
+        use crate::graph::EdgeType;
+
+        async fn run_two_inserts(fast_rate: f32, slow_rate: f32) -> crate::graph::types::Edge {
+            let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+            let pool = sqlite.pool().clone();
+            let gs = GraphStore::new(pool).with_benna_rates(fast_rate, slow_rate);
+
+            let alice_id = gs
+                .upsert_entity("Alice", "alice", crate::graph::EntityType::Person, None)
+                .await
+                .unwrap();
+            let bob_id = gs
+                .upsert_entity("Bob", "bob", crate::graph::EntityType::Person, None)
+                .await
+                .unwrap();
+
+            // Pass 1: INSERT — seeds confidence_fast = confidence_slow = 0.6.
+            gs.insert_edge_typed(
+                alice_id.0,
+                bob_id.0,
+                "knows",
+                "Alice knows Bob",
+                0.6,
+                None,
+                EdgeType::Semantic,
+            )
+            .await
+            .unwrap();
+
+            // Pass 2: UPDATE — triggers Benna-Fusi merge with incoming confidence = 0.8.
+            gs.insert_edge_typed(
+                alice_id.0,
+                bob_id.0,
+                "knows",
+                "Alice knows Bob",
+                0.8,
+                None,
+                EdgeType::Semantic,
+            )
+            .await
+            .unwrap();
+
+            let mut edges = gs.edges_exact(alice_id.0, bob_id.0).await.unwrap();
+            assert_eq!(edges.len(), 1, "exactly one active edge expected");
+            edges.remove(0)
+        }
+
+        let default_edge = run_two_inserts(0.5, 0.05).await;
+        let custom_edge = run_two_inserts(0.1, 0.02).await;
+
+        // Different rates → different fast/slow.  Before the fix extract_and_store ignored the
+        // config fields; all edges would have been identical regardless of configured rates.
+        assert_ne!(
+            default_edge.confidence_fast, custom_edge.confidence_fast,
+            "confidence_fast must differ between default (0.5) and custom (0.1) benna_fast_rate (#4711)"
+        );
+        assert_ne!(
+            default_edge.confidence_slow, custom_edge.confidence_slow,
+            "confidence_slow must differ between default (0.05) and custom (0.02) benna_slow_rate (#4711)"
+        );
+        // Higher fast_rate → fast variable grows more aggressively: 0.7 (default) > 0.62 (custom).
+        assert!(
+            default_edge.confidence_fast > custom_edge.confidence_fast,
+            "higher benna_fast_rate must produce a larger confidence_fast after merge"
+        );
+    }
+
+    /// Verify `GraphExtractionConfig` default benna rates match `GraphStore::new` defaults.
+    ///
+    /// If either default is changed in one place but not the other, behavior silently diverges
+    /// between paths that call `with_benna_rates` and paths that don't.
+    #[test]
+    fn graph_extraction_config_benna_defaults_match_graph_store_defaults() {
+        let cfg = GraphExtractionConfig::default();
+        // GraphStore::new uses 0.5 / 0.05 — these must stay in sync.
+        assert_eq!(
+            cfg.benna_fast_rate, 0.5,
+            "benna_fast_rate default must match GraphStore::new default of 0.5"
+        );
+        assert_eq!(
+            cfg.benna_slow_rate, 0.05,
+            "benna_slow_rate default must match GraphStore::new default of 0.05"
         );
     }
 }

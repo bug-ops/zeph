@@ -13,7 +13,7 @@
 //! - Per-hop pruning to enforce `max_activated_nodes` bound (SA-INV-04)
 //! - MAGMA edge type filtering via `edge_types` parameter
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[allow(unused_imports)]
@@ -295,6 +295,7 @@ pub async fn hela_spreading_recall(
         }
 
         let mut next_frontier: Vec<i64> = Vec::new();
+        let mut next_frontier_set: HashSet<i64> = HashSet::new();
 
         for edge in &edges {
             // Cache by edge id to avoid repeated clones per source in frontier.
@@ -324,7 +325,7 @@ pub async fn hela_spreading_recall(
                     || ((new_pw - entry.1).abs() < f32::EPSILON && hop + 1 < entry.0)
                 {
                     *entry = (hop + 1, new_pw, Some(edge.id));
-                    if !next_frontier.contains(&neighbor) {
+                    if next_frontier_set.insert(neighbor) {
                         next_frontier.push(neighbor);
                     }
                 }

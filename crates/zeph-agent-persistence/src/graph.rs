@@ -57,6 +57,8 @@ pub fn build_graph_extraction_config(
             .write_gate
             .enabled
             .then_some(cfg.write_gate.min_edge_relevance),
+        benna_fast_rate: cfg.spreading_activation.benna_fast_rate,
+        benna_slow_rate: cfg.spreading_activation.benna_slow_rate,
     }
 }
 
