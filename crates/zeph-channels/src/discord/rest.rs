@@ -385,7 +385,10 @@ mod tests {
     #[test]
     fn max_retry_secs_clamps() {
         let unclamped: f64 = 120.0;
-        assert_eq!(unclamped.min(MAX_RETRY_SECS), MAX_RETRY_SECS);
+        assert_eq!(
+            unclamped.min(MAX_RETRY_SECS).to_bits(),
+            MAX_RETRY_SECS.to_bits()
+        );
     }
 
     #[test]
