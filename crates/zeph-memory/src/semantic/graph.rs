@@ -1449,12 +1449,12 @@ mod tests {
 
         // Different rates → different fast/slow.  Before the fix extract_and_store ignored the
         // config fields; all edges would have been identical regardless of configured rates.
-        assert_ne!(
-            default_edge.confidence_fast, custom_edge.confidence_fast,
+        assert!(
+            (default_edge.confidence_fast - custom_edge.confidence_fast).abs() > f32::EPSILON,
             "confidence_fast must differ between default (0.5) and custom (0.1) benna_fast_rate (#4711)"
         );
-        assert_ne!(
-            default_edge.confidence_slow, custom_edge.confidence_slow,
+        assert!(
+            (default_edge.confidence_slow - custom_edge.confidence_slow).abs() > f32::EPSILON,
             "confidence_slow must differ between default (0.05) and custom (0.02) benna_slow_rate (#4711)"
         );
         // Higher fast_rate → fast variable grows more aggressively: 0.7 (default) > 0.62 (custom).
@@ -1472,12 +1472,12 @@ mod tests {
     fn graph_extraction_config_benna_defaults_match_graph_store_defaults() {
         let cfg = GraphExtractionConfig::default();
         // GraphStore::new uses 0.5 / 0.05 — these must stay in sync.
-        assert_eq!(
-            cfg.benna_fast_rate, 0.5,
+        assert!(
+            (cfg.benna_fast_rate - 0.5_f32).abs() < f32::EPSILON,
             "benna_fast_rate default must match GraphStore::new default of 0.5"
         );
-        assert_eq!(
-            cfg.benna_slow_rate, 0.05,
+        assert!(
+            (cfg.benna_slow_rate - 0.05_f32).abs() < f32::EPSILON,
             "benna_slow_rate default must match GraphStore::new default of 0.05"
         );
     }
