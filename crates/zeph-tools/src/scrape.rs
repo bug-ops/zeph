@@ -281,7 +281,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 Ok(output) => {
                     self.log_audit(
                         "web_scrape",
-                        &instruction.url,
+                        &redact_url_for_log(&instruction.url),
                         AuditResult::Success,
                         duration_ms,
                         None,
@@ -296,7 +296,7 @@ impl ToolExecutor for WebScrapeExecutor {
                     let audit_result = tool_error_to_audit_result(&e);
                     self.log_audit(
                         "web_scrape",
-                        &instruction.url,
+                        &redact_url_for_log(&instruction.url),
                         audit_result,
                         duration_ms,
                         Some(&e),
@@ -347,7 +347,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 self.run_with_audit(
                     "web_scrape",
                     "web-scrape",
-                    &instruction.url,
+                    &redact_url_for_log(&instruction.url),
                     call.caller_id.clone(),
                     call.skill_name.clone(),
                     correlation_id,
@@ -373,7 +373,7 @@ impl ToolExecutor for WebScrapeExecutor {
                 self.run_with_audit(
                     "fetch",
                     "fetch",
-                    &p.url,
+                    &redact_url_for_log(&p.url),
                     call.caller_id.clone(),
                     call.skill_name.clone(),
                     correlation_id,
@@ -1007,14 +1007,13 @@ impl WebScrapeExecutor {
     /// # Errors
     ///
     /// Returns a [`ToolError`] if the blocking scan task panics.
+    #[tracing::instrument(name = "tools.scrape.apply_ipi_filter", skip(self, body), fields(body_len = body.len()))]
     async fn apply_ipi_filter(&self, body: &str, url: &str) -> Result<String, ToolError> {
-        let span = tracing::info_span!("tools.scrape.apply_ipi_filter", url, body_len = body.len());
         let verdict = self
             .ipi_filter
             .filter_async(body.to_owned())
             .await
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
-        let _enter = span.enter();
         if !verdict.patterns_found.is_empty() {
             tracing::warn!(
                 url = url,

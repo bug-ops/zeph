@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `zeph-tools`: scrape executor now redacts sensitive query parameters (tokens, API keys) from URLs
+  before writing them to audit JSONL via `redact_url_for_log`. Previously, raw URLs were passed
+  directly to `log_audit` and `run_with_audit` in both the legacy fenced-block `execute()` path and
+  the structured `execute_tool_call` path. Closes #4713.
+- `zeph-tools`: `apply_ipi_filter` tracing span now correctly covers the `filter_async().await` call
+  using `#[tracing::instrument]`. Previously a manual `span.enter()` was called after the await
+  point, making the IPI filtering invisible in traces. Closes #4712.
+
 ### Added
 
 - `zeph-skills`: recursive `SKILL.md` discovery now uses depth-first pre-order traversal
