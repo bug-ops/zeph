@@ -83,6 +83,7 @@ impl<C: Channel> Agent<C> {
                  Original context preserved."
                     .to_owned())
             }
+            _ => Ok("Context compacted successfully.".to_owned()),
         }
     }
 

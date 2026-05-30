@@ -467,6 +467,7 @@ pub type QdrantPersistFuture = Pin<Box<dyn Future<Output = bool> + Send + 'stati
 /// Gives `maybe_compact()` enough information to handle probe rejection without triggering
 /// the `Exhausted` state — which would only be correct if summarization itself is stuck.
 #[must_use]
+#[non_exhaustive]
 pub enum CompactionOutcome {
     /// Messages were drained and replaced with a summary. `SQLite` persistence succeeded.
     ///

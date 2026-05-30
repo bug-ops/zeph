@@ -10,6 +10,7 @@ use thiserror::Error;
 /// The caller in `zeph-core` maps these variants to `AgentError` via `From<PersistenceError>`.
 /// Callers can distinguish degradable errors (Qdrant offline) from fatal errors (`SQLite` corrupt).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PersistenceError {
     /// Qdrant vector store is unavailable. Embedding is skipped; `SQLite` write may still succeed.
     /// Callers should degrade gracefully and continue the conversation without semantic search.

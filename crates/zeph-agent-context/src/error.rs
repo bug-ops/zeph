@@ -10,6 +10,7 @@ use thiserror::Error;
 /// The caller in `zeph-core` maps these variants to `AgentError` via a `From` impl.
 /// Each variant corresponds to one subsystem that the context service touches.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ContextError {
     /// Memory backend returned an error during recall or summary loading.
     ///

@@ -290,6 +290,7 @@ pub struct SubgoalId(pub u32);
 
 /// Lifecycle state of a subgoal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SubgoalState {
     /// Currently being worked on. Messages tagged with this subgoal are protected.
     Active,

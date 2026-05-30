@@ -320,6 +320,7 @@ impl DebugDumper {
                 let state_str = match sg.state {
                     zeph_agent_context::SubgoalState::Active => "Active   ",
                     zeph_agent_context::SubgoalState::Completed => "Completed",
+                    _ => "Unknown  ",
                 };
                 let _ = std::fmt::write(
                     &mut output,

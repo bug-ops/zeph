@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   discarding operator-configured Benna-Fusi rates and falling back to hardcoded defaults
   (fast=0.5, slow=0.05). Both rates are now threaded through `GraphExtractionConfig` and applied
   at all extraction callsites, including the backfill path in `agent_access_impl.rs`. Closes #4711.
+- `zeph-agent-tools`: add `#[non_exhaustive]` to `ToolDispatchError` to allow adding variants
+  without breaking downstream crates. Updated exhaustive match sites in `zeph-core`. Closes #4717.
+- `zeph-agent-context`: add `#[non_exhaustive]` to `ContextError`, `CompactionOutcome`, and
+  `SubgoalState`. Updated exhaustive match sites in `zeph-core`. Closes #4718.
+- `zeph-agent-persistence`: add `#[non_exhaustive]` to `PersistenceError` to allow adding
+  variants without breaking downstream crates. Closes #4719.
 
 ### Performance
 

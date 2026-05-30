@@ -9,6 +9,7 @@ use thiserror::Error;
 ///
 /// The caller in `zeph-core` maps these to `AgentError` via `From<ToolDispatchError>`.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ToolDispatchError {
     /// LLM provider returned an error during tool-loop inference.
     #[error("LLM provider error: {0}")]
