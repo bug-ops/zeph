@@ -39,6 +39,7 @@ pub struct LspLocation {
 /// Diagnostic severity values as defined by the LSP specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
+#[non_exhaustive]
 pub enum LspDiagnosticSeverity {
     Error = 1,
     Warning = 2,
@@ -94,6 +95,7 @@ pub struct LspDiagnostic {
 /// LSP `SymbolKind` values (matches the LSP specification integer encoding).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
+#[non_exhaustive]
 pub enum LspSymbolKind {
     File = 1,
     Module = 2,

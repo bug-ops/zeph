@@ -392,6 +392,7 @@ pub struct CorrectionSignal {
 }
 
 /// Detects implicit corrections in user messages without an LLM call.
+#[derive(Clone)]
 pub struct FeedbackDetector {
     confidence_threshold: f32,
 }
@@ -1974,5 +1975,44 @@ mod tests {
         assert!(fv.is_correction);
         assert_eq!(fv.kind, "explicit_rejection");
         assert!((fv.confidence - 0.85).abs() < 1e-5);
+    }
+
+    // Verify FeedbackDetector::detect works correctly on inputs above/below the 4096-byte threshold.
+
+    #[test]
+    fn detect_short_message_below_threshold() {
+        let d = FeedbackDetector::new(0.6);
+        let msg = "no that's wrong";
+        assert!(msg.len() < 4096);
+        let signal = d.detect(msg, &[]);
+        assert!(signal.is_some());
+        assert_eq!(signal.unwrap().kind, CorrectionKind::ExplicitRejection);
+    }
+
+    #[test]
+    fn detect_long_message_above_threshold_same_result() {
+        let d = FeedbackDetector::new(0.6);
+        // Build a message > 4096 bytes that still contains a rejection phrase.
+        let padding = "a ".repeat(2100); // 4200 bytes
+        let long_msg = format!("no that's wrong {padding}");
+        assert!(long_msg.len() > 4096);
+        let signal = d.detect(&long_msg, &[]);
+        assert!(
+            signal.is_some(),
+            "long message must still detect correction"
+        );
+        assert_eq!(signal.unwrap().kind, CorrectionKind::ExplicitRejection);
+    }
+
+    #[test]
+    fn detect_long_neutral_message_returns_none() {
+        let d = FeedbackDetector::new(0.6);
+        let neutral = "please ".repeat(800); // ~5600 bytes, no rejection phrase
+        assert!(neutral.len() > 4096);
+        let signal = d.detect(&neutral, &[]);
+        assert!(
+            signal.is_none(),
+            "long neutral message must not be classified as correction"
+        );
     }
 }

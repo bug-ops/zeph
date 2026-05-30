@@ -184,11 +184,25 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
 
         let previous_user_messages = self.collect_previous_user_messages();
-        let regex_signal = self
-            .services
-            .feedback
-            .detector
-            .detect(trimmed, &previous_user_messages);
+        let regex_signal = if trimmed.len() > 4096 {
+            let detector = self.services.feedback.detector.clone();
+            let msg_owned = trimmed.to_owned();
+            let prev_owned: Vec<String> = previous_user_messages
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                let prev_refs: Vec<&str> = prev_owned.iter().map(String::as_str).collect();
+                detector.detect(&msg_owned, &prev_refs)
+            })
+            .await
+            .unwrap_or(None)
+        } else {
+            self.services
+                .feedback
+                .detector
+                .detect(trimmed, &previous_user_messages)
+        };
 
         let judge_should_run = self.should_run_judge(regex_signal.as_ref());
 

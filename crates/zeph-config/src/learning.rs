@@ -222,6 +222,12 @@ pub struct LearningConfig {
     /// Model for the judge detector (e.g. "claude-sonnet-4-6"). Empty = use primary provider.
     #[serde(default)]
     pub judge_model: String,
+    /// Named provider from `[[llm.providers]]` for the judge detector (`detector_mode = "judge"`).
+    ///
+    /// When set, overrides the model-level fallback: the named provider is resolved and used
+    /// instead of the primary provider. Empty = use primary provider (same as leaving unset).
+    #[serde(default)]
+    pub judge_provider: String,
     /// Provider name from `[[llm.providers]]` for `detector_mode = "model"` (`LlmClassifier`).
     ///
     /// Empty = use the primary provider. Named but not found in registry = log warning,
@@ -428,6 +434,7 @@ impl Default for LearningConfig {
             correction_confidence_threshold: default_correction_confidence_threshold(),
             detector_mode: DetectorMode::default(),
             judge_model: String::new(),
+            judge_provider: String::new(),
             feedback_provider: ProviderName::default(),
             judge_adaptive_low: default_judge_adaptive_low(),
             judge_adaptive_high: default_judge_adaptive_high(),
@@ -751,5 +758,40 @@ heuristic_promotion_interval_hours = 48
         assert!(!cfg.heuristic_promotion_enabled);
         assert_eq!(cfg.heuristic_promotion_threshold, 5);
         assert_eq!(cfg.heuristic_promotion_interval_hours, 24);
+    }
+
+    #[test]
+    fn judge_provider_default_is_empty() {
+        let cfg = LearningConfig::default();
+        assert!(cfg.judge_provider.is_empty());
+    }
+
+    #[test]
+    fn judge_provider_serde_roundtrip() {
+        let cfg: LearningConfig = toml::from_str(r#"judge_provider = "quality""#).unwrap();
+        assert_eq!(cfg.judge_provider, "quality");
+    }
+
+    #[test]
+    fn judge_provider_and_judge_model_coexist() {
+        let toml = r#"
+judge_model = "claude-sonnet-4-6"
+judge_provider = "quality"
+detector_mode = "judge"
+"#;
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.judge_model, "claude-sonnet-4-6");
+        assert_eq!(cfg.judge_provider, "quality");
+        assert_eq!(cfg.detector_mode, DetectorMode::Judge);
+    }
+
+    #[test]
+    fn judge_provider_absent_falls_back_to_empty_default() {
+        let cfg: LearningConfig = toml::from_str("judge_model = \"gpt-4o\"").unwrap();
+        assert!(
+            cfg.judge_provider.is_empty(),
+            "missing judge_provider must default to empty string"
+        );
+        assert_eq!(cfg.judge_model, "gpt-4o");
     }
 }

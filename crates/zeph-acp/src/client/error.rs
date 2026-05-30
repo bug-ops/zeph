@@ -24,6 +24,7 @@ impl std::fmt::Display for HandshakeStep {
 
 /// Errors returned by the ACP sub-agent client.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AcpClientError {
     /// The command string was empty or could not be shell-split.
     #[error("invalid command config: {0}")]

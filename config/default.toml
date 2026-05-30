@@ -212,6 +212,9 @@ max_versions = 10
 cooldown_minutes = 60
 # Correction detector strategy: "regex" (default), "judge" (LLM-based), or "model" (ML classifier)
 # detector_mode = "regex"
+# Named provider from [[llm.providers]] for the judge detector. Takes precedence over judge_model.
+# Empty = fall back to judge_model, then to primary provider.
+# judge_provider = ""
 # LLM model for judge detector (e.g. "claude-sonnet-4-6"). Empty = use primary provider.
 # judge_model = ""
 # HuggingFace repo ID for ML correction detector (requires detector_mode = "model" and classifiers feature).

@@ -18,6 +18,7 @@
 /// assert!(err.to_string().contains("timed out"));
 /// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AcpError {
     /// The underlying JSON-RPC transport (stdio, HTTP, WebSocket) encountered an I/O error.
     #[error("transport error: {0}")]

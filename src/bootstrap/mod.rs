@@ -1290,17 +1290,33 @@ impl AppBuilder {
 
     /// Build a dedicated provider for the judge detector when `detector_mode = judge`.
     ///
-    /// Returns `None` when mode is `Regex` or `judge_model` is empty (primary provider used).
-    /// Emits a `tracing::warn` when mode is `Judge` but no model is specified.
+    /// Resolution order: `judge_provider` (named provider from `[[llm.providers]]`) →
+    /// `judge_model` (legacy model-name lookup) → primary provider (fallback, returns `None`).
+    /// Returns `None` when mode is `Regex` or both provider fields are empty.
     pub fn build_judge_provider(&self) -> Option<AnyProvider> {
         use zeph_core::config::DetectorMode;
         let learning = &self.config.skills.learning;
         if learning.detector_mode != DetectorMode::Judge {
             return None;
         }
+        if !learning.judge_provider.is_empty() {
+            return match create_named_provider(&learning.judge_provider, &self.config) {
+                Ok(jp) => {
+                    tracing::info!(provider = %learning.judge_provider, "judge provider configured");
+                    Some(jp)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %learning.judge_provider,
+                        "failed to create judge provider: {e:#}, using primary"
+                    );
+                    None
+                }
+            };
+        }
         if learning.judge_model.is_empty() {
             tracing::warn!(
-                "detector_mode=judge but judge_model is empty — primary provider will be used for judging"
+                "detector_mode=judge but judge_provider and judge_model are empty — primary provider will be used for judging"
             );
             return None;
         }

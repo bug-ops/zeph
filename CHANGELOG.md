@@ -18,7 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   success paths) now call `redact_url_for_log` instead of passing the raw `current_url`. This
   completes the redaction coverage started in #4713; the connection-error and SSRF-blocked paths were
   already correct. Closes #4738.
-
+- `zeph-acp`: `AcpError`, `AcpClientError`, `LspDiagnosticSeverity`, and `LspSymbolKind` are now
+  marked `#[non_exhaustive]`. Closes #4749.
+- `zeph-config`: `LearningConfig` gains a `judge_provider` field that accepts a named provider from
+  `[[llm.providers]]`, taking precedence over `judge_model` for the judge detector. Closes #4739.
+- `zeph-core`: `detect_and_record_corrections` now runs `FeedbackDetector::detect` in
+  `tokio::task::spawn_blocking` when the message exceeds 4096 bytes, preventing the async agent
+  loop from blocking on CPU-bound regex work. Closes #4740.
 - `zeph-memory`: `resolve_edge_typed` now forwards `edge.confidence` to the store instead of
   hardcoding `0.8`. Introduces `DEFAULT_EDGE_CONFIDENCE` constant and fixes both the non-APEX and
   APEX-MEM paths. Closes #4723.
