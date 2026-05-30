@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-memory`: `resolve_edge_typed` now forwards `edge.confidence` to the store instead of
+  hardcoding `0.8`. Introduces `DEFAULT_EDGE_CONFIDENCE` constant and fixes both the non-APEX and
+  APEX-MEM paths. Closes #4723.
+- `zeph-tools`: `resolve_and_validate` tracing span now correctly covers the async DNS lookup via
+  `#[tracing::instrument]`, consistent with the `apply_ipi_filter` fix in #4730. Closes #4731.
 - `zeph-core`: `ChannelError` is now marked `#[non_exhaustive]` so new variants can be added
   without a breaking change. Closes #4726.
 - `zeph-sanitizer`: `QuarantineError`, `MemoryValidationError`, and `CausalIpiError` are now

@@ -138,6 +138,8 @@ const ENTITY_COLLECTION: &str = "zeph_graph_entities";
 const MAX_RELATION_BYTES: usize = 256;
 /// Mirrors the constant from `graph/resolver/mod.rs` — used for sanitizing APEX-MEM inputs.
 const MAX_FACT_BYTES: usize = 2048;
+/// Fallback confidence used when the LLM omits the `confidence` field in an extracted edge.
+const DEFAULT_EDGE_CONFIDENCE: f32 = 0.8;
 
 /// Work item for a single entity during a note-linking pass.
 struct EntityWorkItem {
@@ -598,7 +600,7 @@ async fn insert_edges(
                     &relation_display,
                     &canonical_relation,
                     &normalized_fact,
-                    0.8,
+                    edge.confidence.unwrap_or(DEFAULT_EDGE_CONFIDENCE),
                     None,
                     edge_type,
                     true,
@@ -625,7 +627,7 @@ async fn insert_edges(
                     tgt_id,
                     &edge.relation,
                     &edge.fact,
-                    0.8,
+                    edge.confidence.unwrap_or(DEFAULT_EDGE_CONFIDENCE),
                     None,
                     edge_type,
                     belief_cfg.as_ref(),
@@ -1461,6 +1463,148 @@ mod tests {
         assert!(
             default_edge.confidence_fast > custom_edge.confidence_fast,
             "higher benna_fast_rate must produce a larger confidence_fast after merge"
+        );
+    }
+
+    /// Regression test for #4723: `extract_and_store` must forward `ExtractedEdge.confidence`
+    /// to the graph resolver instead of always using the hardcoded fallback 0.8.
+    ///
+    /// The LLM JSON sets `confidence: 0.3`. Before the fix, line 628 passed `0.8` unconditionally;
+    /// after the fix it passes `edge.confidence.unwrap_or(0.8)` which is `0.3` when present.
+    /// A freshly-inserted edge sets `confidence_fast = confidence`, so we compare against 0.3.
+    #[tokio::test]
+    async fn extract_and_store_forwards_edge_confidence_not_hardcoded_08() {
+        use crate::graph::{EntityType, GraphStore};
+
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+
+        // confidence = 0.3 is far enough from 0.8 that float imprecision cannot mask the bug.
+        let extraction_json = r#"{
+            "entities":[
+                {"name":"Alice","type":"person","summary":"person"},
+                {"name":"Bob","type":"person","summary":"person"}
+            ],
+            "edges":[{"source":"Alice","target":"Bob","relation":"knows","fact":"Alice knows Bob","edge_type":"semantic","confidence":0.3}]
+        }"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Alice knows Bob.".to_owned(),
+            vec![],
+            provider,
+            pool.clone(),
+            config,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
+
+        let gs = GraphStore::new(pool);
+        let alice_id: i64 = gs
+            .find_entity("alice", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("alice must exist")
+            .id
+            .0;
+        let bob_id: i64 = gs
+            .find_entity("bob", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("bob must exist")
+            .id
+            .0;
+
+        let mut edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
+        assert_eq!(edges.len(), 1, "exactly one active edge expected");
+        let edge = edges.remove(0);
+
+        // Before fix: confidence_fast would be ~0.8 (hardcoded); after fix: ~0.3 (from JSON).
+        assert!(
+            (edge.confidence_fast - 0.3_f32).abs() < 0.01,
+            "confidence_fast must be ~0.3 (from ExtractedEdge.confidence), got {} (regression for #4723)",
+            edge.confidence_fast
+        );
+    }
+
+    /// Regression for #4723 (APEX-MEM path): `extract_and_store` must forward
+    /// `ExtractedEdge.confidence` to `insert_or_supersede_with_turn_index_and_metrics` instead
+    /// of using the hardcoded literal `0.8`.
+    #[tokio::test]
+    async fn extract_and_store_apex_forwards_edge_confidence_not_hardcoded_08() {
+        use crate::graph::{EntityType, GraphStore};
+
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let pool = sqlite.pool().clone();
+
+        // confidence = 0.3 is far enough from 0.8 that float imprecision cannot mask the bug.
+        let extraction_json = r#"{
+            "entities":[
+                {"name":"Alice","type":"person","summary":"person"},
+                {"name":"Bob","type":"person","summary":"person"}
+            ],
+            "edges":[{"source":"Alice","target":"Bob","relation":"knows","fact":"Alice knows Bob","edge_type":"semantic","confidence":0.3}]
+        }"#;
+        let mock = zeph_llm::mock::MockProvider::with_responses(vec![extraction_json.to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+        let config = GraphExtractionConfig {
+            max_entities: 10,
+            max_edges: 10,
+            extraction_timeout_secs: 10,
+            apex_mem_enabled: true,
+            ..Default::default()
+        };
+
+        let result = extract_and_store(
+            "Alice knows Bob.".to_owned(),
+            vec![],
+            provider,
+            pool.clone(),
+            config,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
+
+        let gs = GraphStore::new(pool);
+        let alice_id: i64 = gs
+            .find_entity("alice", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("alice must exist")
+            .id
+            .0;
+        let bob_id: i64 = gs
+            .find_entity("bob", EntityType::Person)
+            .await
+            .unwrap()
+            .expect("bob must exist")
+            .id
+            .0;
+
+        let mut edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
+        assert_eq!(edges.len(), 1, "exactly one active edge expected");
+        let edge = edges.remove(0);
+
+        // Before fix: confidence_fast would be ~0.8 (hardcoded); after fix: ~0.3 (from JSON).
+        assert!(
+            (edge.confidence_fast - 0.3_f32).abs() < 0.01,
+            "confidence_fast must be ~0.3 (from ExtractedEdge.confidence), got {} (regression for #4723 APEX path)",
+            edge.confidence_fast
         );
     }
 
