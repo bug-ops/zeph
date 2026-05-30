@@ -10,6 +10,7 @@ use candle_core::quantized::gguf_file;
 use candle_transformers::models::quantized_llama::ModelWeights;
 use tokenizers::Tokenizer;
 
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ModelSource {
     Local {

@@ -27,8 +27,8 @@ fn parse_role(s: &str) -> Role {
 pub fn role_str(role: Role) -> &'static str {
     match role {
         Role::System => "system",
-        Role::User => "user",
         Role::Assistant => "assistant",
+        Role::User | _ => "user",
     }
 }
 

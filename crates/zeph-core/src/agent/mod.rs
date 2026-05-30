@@ -610,9 +610,9 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(|m| {
                 let role = match m.role {
-                    Role::User => "user".to_owned(),
                     Role::Assistant => "assistant".to_owned(),
                     Role::System => "system".to_owned(),
+                    Role::User | _ => "user".to_owned(),
                 };
                 (zeph_memory::MessageId(0), role, m.content.clone())
             })

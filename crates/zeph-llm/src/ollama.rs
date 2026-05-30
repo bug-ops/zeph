@@ -55,6 +55,17 @@ use crate::provider::{
 };
 use crate::usage::UsageTracker;
 
+/// Build a reqwest 0.12 HTTP client (the version used by ollama-rs) with a 600-second hard
+/// backstop timeout and a 30-second connect timeout.
+fn ollama_reqwest_client() -> reqwest012::Client {
+    reqwest012::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_mins(10))
+        .user_agent(concat!("zeph/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("Ollama HTTP client construction must not fail")
+}
+
 /// Metadata returned by `/api/show` for the configured chat model.
 #[derive(Debug)]
 pub struct ModelInfo {
@@ -114,7 +125,7 @@ impl OllamaProvider {
     pub fn new(base_url: &str, model: String, embedding_model: String) -> Self {
         let (host, port) = parse_host_port(base_url);
         Self {
-            client: Ollama::new(host, port),
+            client: Ollama::new_with_client(host, port, ollama_reqwest_client()),
             model,
             embedding_model,
             context_window_size: None,
@@ -645,6 +656,14 @@ mod tests {
 
     fn ollama_embed_model() -> String {
         std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "qwen3-embedding".into())
+    }
+
+    // --- #4729: Ollama HTTP client smoke test ---
+
+    #[test]
+    fn ollama_reqwest_client_builds_without_panicking() {
+        // Verify that constructing the timeout-configured reqwest client does not panic.
+        let _client = ollama_reqwest_client();
     }
 
     #[test]

@@ -440,6 +440,7 @@ mod tests {
                     }
                 }
                 Role::System => {}
+                _ => {}
             }
         }
 

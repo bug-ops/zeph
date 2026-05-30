@@ -525,7 +525,7 @@ fn role_weight(role: Role) -> f32 {
     match role {
         Role::System => 1.0,
         Role::User => 0.8,
-        Role::Assistant => 0.6,
+        Role::Assistant | _ => 0.6,
     }
 }
 
@@ -785,8 +785,8 @@ fn truncate_to_tokens(content: &mut String, max_tokens: usize, tc: &dyn TokenCou
 fn render_placeholder(msg: &mut Message, score: f32, original_tokens: u32) {
     let role_str = match msg.role {
         Role::System => "system",
-        Role::User => "user",
         Role::Assistant => "assistant",
+        Role::User | _ => "user",
     };
     msg.content = format!(
         "[placeholder: role={role_str}, original_tokens={original_tokens}, importance={score:.2}]"
@@ -836,8 +836,8 @@ fn merge_consecutive_placeholders(messages: &mut Vec<Message>) -> usize {
         };
         let role_str = match role {
             Role::System => "system",
-            Role::User => "user",
             Role::Assistant => "assistant",
+            Role::User | _ => "user",
         };
         let merged_content = format!(
             "[placeholder: {count} messages, role={role_str}, total_tokens={total_tokens}, avg_importance={avg_importance:.2}]"

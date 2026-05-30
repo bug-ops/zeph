@@ -335,9 +335,9 @@ pub async fn generate_probe_questions(
     let mut history = String::new();
     for msg in &truncated {
         let role = match msg.role {
-            Role::User => "user",
             Role::Assistant => "assistant",
             Role::System => "system",
+            Role::User | _ => "user",
         };
         history.push_str(role);
         history.push_str(": ");

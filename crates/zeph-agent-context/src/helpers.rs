@@ -969,9 +969,9 @@ pub async fn fetch_semantic_recall(
 
 fn format_plain_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
     let role_label = match item.message.role {
-        Role::User => "user",
         Role::Assistant => "assistant",
         Role::System => "system",
+        Role::User | _ => "user",
     };
     format!("- [{}] {}\n", role_label, item.message.content)
 }
@@ -979,9 +979,9 @@ fn format_plain_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
 #[allow(clippy::map_unwrap_or)]
 fn format_structured_recall_entry(item: &zeph_memory::RecalledMessage) -> String {
     let source = match item.message.role {
-        Role::User => "user",
         Role::Assistant => "assistant",
         Role::System => "system",
+        Role::User | _ => "user",
     };
     // Use compacted_at as a proxy for message age when available; otherwise "unknown".
     // A full timestamp lookup from SQLite would require an async DB call in the assembler

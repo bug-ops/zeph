@@ -421,9 +421,9 @@ fn build_compression_prompt(
     to_compress: &[zeph_llm::provider::Message],
 ) -> Vec<zeph_llm::provider::Message> {
     let role_label = |role: &zeph_llm::provider::Role| match role {
-        zeph_llm::provider::Role::User => "user",
         zeph_llm::provider::Role::Assistant => "assistant",
         zeph_llm::provider::Role::System => "system",
+        zeph_llm::provider::Role::User | _ => "user",
     };
     let bullet_list: String = to_compress
         .iter()

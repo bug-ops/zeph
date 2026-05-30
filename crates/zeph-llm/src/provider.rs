@@ -246,6 +246,7 @@ pub struct GenerationOverrides {
 /// - `System` — global instructions prepended before the conversation
 /// - `User` — human turn input
 /// - `Assistant` — previous model output (used for multi-turn context)
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {

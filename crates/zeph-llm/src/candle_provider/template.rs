@@ -3,6 +3,7 @@
 
 use crate::provider::{Message, Role};
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum ChatTemplate {
     Llama3,

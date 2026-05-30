@@ -69,9 +69,9 @@ fn map_correction(c: zeph_memory::UserCorrectionRow) -> MemCorrection {
 fn map_recalled_message(r: zeph_memory::RecalledMessage) -> MemRecalledMessage {
     use zeph_llm::provider::Role;
     let role = match r.message.role {
-        Role::User => "user",
         Role::Assistant => "assistant",
         Role::System => "system",
+        Role::User | _ => "user",
     }
     .to_owned();
     MemRecalledMessage {

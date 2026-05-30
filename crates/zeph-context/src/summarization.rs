@@ -456,6 +456,7 @@ pub fn build_metadata_summary(messages: &[Message], truncate: fn(&str, usize) ->
                 }
             }
             Role::System => system_count += 1,
+            _ => {}
         }
     }
 
@@ -649,9 +650,9 @@ fn format_history(messages: &[Message]) -> String {
             history_text.push_str("\n\n");
         }
         let role = match m.role {
-            Role::User => "user",
             Role::Assistant => "assistant",
             Role::System => "system",
+            Role::User | _ => "user",
         };
         let _ = write!(history_text, "[{role}]: {}", m.content);
     }

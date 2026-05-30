@@ -480,7 +480,7 @@ fn messages_to_api_value(messages: &[Message]) -> serde_json::Value {
             let role = match m.role {
                 Role::User => "user",
                 Role::Assistant => "assistant",
-                Role::System => return None,
+                Role::System | _ => return None,
             };
             let is_assistant = m.role == Role::Assistant;
             let has_structured = m.parts.iter().any(|p| {

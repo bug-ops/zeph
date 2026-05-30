@@ -147,9 +147,9 @@ impl ToolExecutor for MemoryToolExecutor {
                 let _ = writeln!(output, "## Recalled Messages ({} results)", recalled.len());
                 for r in &recalled {
                     let role = match r.message.role {
-                        zeph_llm::provider::Role::User => "user",
                         zeph_llm::provider::Role::Assistant => "assistant",
                         zeph_llm::provider::Role::System => "system",
+                        zeph_llm::provider::Role::User | _ => "user",
                     };
                     let content = r.message.content.trim();
                     let _ = writeln!(output, "[score: {:.2}] {role}: {content}", r.score);

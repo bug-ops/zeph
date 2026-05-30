@@ -94,9 +94,9 @@ fn format_and_sanitize_conversation(
     let mut result = String::new();
     for msg in messages {
         let role = match msg.role {
-            Role::User => "User",
             Role::Assistant => "Assistant",
             Role::System => "System",
+            Role::User | _ => "User",
         };
         // Redact credentials first, then sanitize for injection patterns.
         let redacted: Cow<'_, str> = scrub_content(&msg.content);

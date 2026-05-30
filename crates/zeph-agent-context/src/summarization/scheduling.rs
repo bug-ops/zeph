@@ -383,9 +383,9 @@ fn spawn_task_goal_extraction(
         let mut context_text = String::new();
         for (role, content) in &recent {
             let role_str = match role {
-                Role::User => "user",
                 Role::Assistant => "assistant",
                 Role::System => "system",
+                Role::User | _ => "user",
             };
             let preview = if content.len() > 300 {
                 let end = content.floor_char_boundary(300);
@@ -460,9 +460,9 @@ fn spawn_subgoal_extraction(
         let mut context_text = String::new();
         for (role, content) in &recent {
             let role_str = match role {
-                Role::User => "user",
                 Role::Assistant => "assistant",
                 Role::System => "system",
+                Role::User | _ => "user",
             };
             let preview = if content.len() > 300 {
                 let end = content.floor_char_boundary(300);

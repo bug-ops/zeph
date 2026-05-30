@@ -76,6 +76,7 @@ macro_rules! delegate_provider {
 /// [`Arc<dyn LlmProviderDyn>`](crate::provider_dyn::LlmProviderDyn).
 ///
 /// The `Candle` variant is only available when the `candle` feature is enabled.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum AnyProvider {
     Ollama(OllamaProvider),

@@ -125,9 +125,6 @@ impl SpeculativeStreamDrainer {
                 ToolSseEvent::ThinkingBlockDone(block) => {
                     thinking_blocks.push(block);
                 }
-                ToolSseEvent::ThinkingChunk(_) => {
-                    // Pass-through; full block assembled via ThinkingBlockDone.
-                }
                 ToolSseEvent::ContentChunk(text) => {
                     text_buf.push_str(&text);
                 }
@@ -140,6 +137,8 @@ impl SpeculativeStreamDrainer {
                 ToolSseEvent::Error(e) => {
                     return Err(e);
                 }
+                // ThinkingChunk pass-through; full block assembled via ThinkingBlockDone.
+                ToolSseEvent::ThinkingChunk(_) | _ => {}
             }
         }
 

@@ -13,6 +13,7 @@ use crate::provider::{ChatStream, StreamChunk, ThinkingBlock, ToolUseRequest};
 /// Never exposed as a `StreamChunk` downstream — the drainer consumes these and
 /// surfaces only `StreamChunk` variants, keeping `StreamChunk` exhaustiveness stable
 /// (critic M3). `pub` so `zeph-core` can use the drainer without feature-gating.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum ToolSseEvent {
     /// Tool block opened: id and name are now known, before any `InputJsonDelta` for this index.
@@ -320,7 +321,12 @@ fn parse_tool_delta_event(state: &mut ClaudeSseState, data: &str) -> Vec<ToolSse
         }
         "input_json_delta" if !delta.partial_json.is_empty() => {
             if let Some((_, _, _, ref mut json)) = state.tool_block {
-                json.push_str(&delta.partial_json);
+                const MAX_TOOL_JSON_BUF: usize = 4 * 1024 * 1024;
+                if json.len() >= MAX_TOOL_JSON_BUF {
+                    tracing::warn!("tool JSON buffer exceeded 4 MiB cap; discarding excess");
+                } else {
+                    json.push_str(&delta.partial_json);
+                }
             }
             let index = state.current_block_index;
             vec![ToolSseEvent::InputJsonDelta {
@@ -330,7 +336,12 @@ fn parse_tool_delta_event(state: &mut ClaudeSseState, data: &str) -> Vec<ToolSse
         }
         "thinking_delta" if !delta.thinking.is_empty() => {
             if let Some((ref mut t, _)) = state.thinking_block {
-                t.push_str(&delta.thinking);
+                const MAX_THINKING_BUF: usize = 1024 * 1024;
+                if t.len() >= MAX_THINKING_BUF {
+                    tracing::warn!("thinking buffer exceeded 1 MiB cap; discarding excess");
+                } else {
+                    t.push_str(&delta.thinking);
+                }
             }
             vec![ToolSseEvent::ThinkingChunk(delta.thinking)]
         }
@@ -994,5 +1005,71 @@ mod tests {
         let result = parse_gemini_sse_event(data);
         let chunk = result.unwrap().unwrap();
         assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello world"));
+    }
+
+    // --- #4727: SSE buffer cap tests ---
+
+    #[test]
+    fn tool_json_buf_capped_at_4mib() {
+        let mut state = ClaudeSseState {
+            tool_block: Some((
+                0,
+                "toolu_01".into(),
+                "bash".into(),
+                "x".repeat(4 * 1024 * 1024),
+            )),
+            current_block_index: 0,
+            ..Default::default()
+        };
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"OVERFLOW"}}"#;
+        parse_tool_delta_event(&mut state, data);
+        let buf_len = state.tool_block.as_ref().unwrap().3.len();
+        assert_eq!(
+            buf_len,
+            4 * 1024 * 1024,
+            "tool JSON buffer must not grow beyond 4 MiB"
+        );
+    }
+
+    #[test]
+    fn tool_json_buf_accepts_data_below_cap() {
+        let mut state = ClaudeSseState {
+            tool_block: Some((0, "toolu_01".into(), "bash".into(), String::new())),
+            current_block_index: 0,
+            ..Default::default()
+        };
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"k\":1}"}}"#;
+        parse_tool_delta_event(&mut state, data);
+        let buf = &state.tool_block.as_ref().unwrap().3;
+        assert_eq!(buf, r#"{"k":1}"#);
+    }
+
+    #[test]
+    fn thinking_buf_capped_at_1mib() {
+        let mut state = ClaudeSseState {
+            thinking_block: Some(("t".repeat(1024 * 1024), String::new())),
+            in_thinking_block: true,
+            ..Default::default()
+        };
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"OVERFLOW"}}"#;
+        parse_tool_delta_event(&mut state, data);
+        let thinking_len = state.thinking_block.as_ref().unwrap().0.len();
+        assert_eq!(
+            thinking_len,
+            1024 * 1024,
+            "thinking buffer must not grow beyond 1 MiB"
+        );
+    }
+
+    #[test]
+    fn thinking_buf_accepts_data_below_cap() {
+        let mut state = ClaudeSseState {
+            thinking_block: Some((String::new(), String::new())),
+            in_thinking_block: true,
+            ..Default::default()
+        };
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step one"}}"#;
+        parse_tool_delta_event(&mut state, data);
+        assert_eq!(state.thinking_block.as_ref().unwrap().0, "step one");
     }
 }

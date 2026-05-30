@@ -11029,6 +11029,7 @@ dependencies = [
  "proptest",
  "rand 0.10.1",
  "rand_distr 0.6.0",
+ "reqwest 0.12.28",
  "reqwest 0.13.3",
  "ripemd",
  "rubato",
