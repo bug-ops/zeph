@@ -15,6 +15,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-tools`: `apply_ipi_filter` tracing span now correctly covers the `filter_async().await` call
   using `#[tracing::instrument]`. Previously a manual `span.enter()` was called after the await
   point, making the IPI filtering invisible in traces. Closes #4712.
+- `zeph-memory`: `extract_and_store` now correctly propagates `benna_fast_rate` and
+  `benna_slow_rate` from `[memory.graph.spreading_activation]` config to the `GraphStore`
+  created during graph extraction. Previously a bare `GraphStore::new(pool)` was used, silently
+  discarding operator-configured Benna-Fusi rates and falling back to hardcoded defaults
+  (fast=0.5, slow=0.05). Both rates are now threaded through `GraphExtractionConfig` and applied
+  at all extraction callsites, including the backfill path in `agent_access_impl.rs`. Closes #4711.
+
+### Performance
+
+- `zeph-memory`: HELA spreading-activation BFS hop loop now uses a `HashSet<i64>` for O(1)
+  frontier membership checks instead of `Vec::contains()` (O(F) per edge, O(F²) overall).
+  The `Vec` is preserved for BFS traversal order. Closes #4698.
+- `zeph-memory`: `is_low_signal_relation` replaced `to_lowercase() == "..."` comparisons with
+  `eq_ignore_ascii_case("...")`, eliminating ~30 short-string heap allocations per extraction
+  pass. Closes #4699.
 
 ### Added
 
