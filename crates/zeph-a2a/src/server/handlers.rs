@@ -646,7 +646,6 @@ mod tests {
             task_manager: super::super::state::TaskManager::new(),
             processor: Arc::new(MultiChunkProcessor),
             request_timeout: std::time::Duration::from_mins(5),
-            eviction_task: None,
         }
     }
 
@@ -702,7 +701,6 @@ mod tests {
             task_manager: super::super::state::TaskManager::new(),
             processor: Arc::new(SlowProcessor),
             request_timeout: std::time::Duration::from_millis(100),
-            eviction_task: None,
         }
     }
 
@@ -781,7 +779,6 @@ mod tests {
             task_manager: TaskManager::new(),
             processor: Arc::new(NeverEndingProcessor),
             request_timeout: std::time::Duration::from_secs(30),
-            eviction_task: None,
         };
 
         let (tx, rx) = mpsc::channel::<axum::response::sse::Event>(1);

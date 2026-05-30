@@ -26,11 +26,6 @@ pub struct AppState {
     /// Maximum time to wait for a [`TaskProcessor`] to complete before marking the task
     /// as [`TaskState::Failed`] and aborting the spawned future.
     pub request_timeout: Duration,
-    /// Handle for the background rate-limiter eviction task.
-    ///
-    /// Stored so the task can be aborted on server shutdown rather than running forever.
-    /// `None` when rate limiting is disabled (`rate_limit == 0`).
-    pub eviction_task: Option<Arc<tokio::task::JoinHandle<()>>>,
 }
 
 /// An event emitted by a [`TaskProcessor`] to drive the handler's response.
