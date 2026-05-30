@@ -380,6 +380,18 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Enable Stage-2 LLM semantic compliance scan for `plugin add` and set its provider.
+    ///
+    /// When `enabled` is `true` and `provider_name` is empty the agent will refuse `plugin add`
+    /// with a `CommandError` (fail-closed). Passing a non-empty `provider_name` with `enabled =
+    /// false` is a no-op — the scanner is only instantiated when both conditions hold.
+    #[must_use]
+    pub fn with_semantic_scan(mut self, enabled: bool, provider_name: impl Into<String>) -> Self {
+        self.services.skill.semantic_scan = enabled;
+        self.services.skill.semantic_scan_provider = provider_name.into();
+        self
+    }
+
     /// Override the embedding model name used for skill matching.
     #[must_use]
     pub fn with_embedding_model(mut self, model: String) -> Self {

@@ -1059,12 +1059,37 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             .collect();
 
         // Resolve scanner once, before the async block captures `self`.
+        // Fail-closed: if semantic_scan is enabled but no provider is configured, refuse
+        // to proceed rather than silently falling back to the primary provider (#4706, #4709).
         let semantic_scan_enabled = self.services.skill.semantic_scan;
         let maybe_scanner: Option<zeph_skills::semantic_scanner::SkillSemanticScanner> =
             if semantic_scan_enabled {
-                let provider = self.resolve_background_provider(
-                    self.services.skill.semantic_scan_provider.as_str(),
-                );
+                let provider_name = self.services.skill.semantic_scan_provider.as_str();
+                if provider_name.trim().is_empty() {
+                    return Box::pin(async move {
+                        Err(CommandError::new(
+                            "semantic_scan is enabled but semantic_scan_provider is not set; \
+                             refusing plugin add to maintain fail-closed security posture",
+                        ))
+                    });
+                }
+                let provider_known = self
+                    .runtime
+                    .providers
+                    .provider_pool
+                    .iter()
+                    .any(|e| e.effective_name().eq_ignore_ascii_case(provider_name));
+                if !provider_known {
+                    let name = provider_name.to_owned();
+                    return Box::pin(async move {
+                        Err(CommandError::new(format!(
+                            "semantic_scan is enabled but semantic_scan_provider '{name}' \
+                             is not configured in [[llm.providers]]; \
+                             refusing plugin add to maintain fail-closed security posture",
+                        )))
+                    });
+                }
+                let provider = self.resolve_background_provider(provider_name);
                 Some(zeph_skills::semantic_scanner::SkillSemanticScanner::new(
                     provider,
                 ))
@@ -1838,6 +1863,108 @@ mod tests {
         assert!(
             result.is_err(),
             "timeout must fire on a never-resolving future"
+        );
+    }
+
+    // R-4706/R-4709: when semantic_scan is enabled but semantic_scan_provider is empty,
+    // `plugin add` must return a CommandError immediately (fail-closed). Before this fix
+    // the code fell through to resolve_background_provider which silently used the primary
+    // provider, bypassing the intent that an unconfigured scanner means "do not proceed".
+    #[tokio::test]
+    async fn plugin_add_semantic_scan_enabled_empty_provider_returns_error() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_semantic_scan(true, "");
+
+        let result = agent.handle_plugins("add some-plugin").await;
+        assert!(
+            result.is_err(),
+            "expected CommandError for missing semantic_scan_provider, got: {result:?}"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("semantic_scan_provider"),
+            "error message must mention semantic_scan_provider, got: {msg}"
+        );
+    }
+
+    // R-4706/R-4709: when semantic_scan is disabled, plugin subcommands must proceed
+    // normally regardless of whether semantic_scan_provider is set.
+    #[tokio::test]
+    async fn plugin_list_semantic_scan_disabled_succeeds() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_semantic_scan(false, "");
+
+        // "list" does not trigger scan logic; it should succeed without error.
+        let result = agent.handle_plugins("list").await;
+        assert!(
+            result.is_ok(),
+            "plugin list must succeed when semantic_scan is disabled, got: {result:?}"
+        );
+    }
+
+    // R-4706/R-4709: "plugin add" with semantic_scan disabled must reach the install path
+    // rather than return a scan-related error. The install itself may fail (no real plugin
+    // source), but it must NOT fail with the fail-closed error message.
+    #[tokio::test]
+    async fn plugin_add_semantic_scan_disabled_no_scan_error() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_semantic_scan(false, "");
+
+        let result = agent.handle_plugins("add some-plugin").await;
+        // The call may succeed or fail for unrelated reasons (no real plugin source),
+        // but must NOT fail with the fail-closed error about semantic_scan_provider.
+        if let Err(ref e) = result {
+            assert!(
+                !e.to_string().contains("semantic_scan_provider"),
+                "must not fail with scan error when semantic_scan is disabled, got: {e}"
+            );
+        }
+    }
+
+    // R-4706/R-4709: unknown provider name must also fail-closed rather than silently
+    // falling back to the primary provider via resolve_background_provider.
+    #[tokio::test]
+    async fn plugin_add_semantic_scan_unknown_provider_returns_error() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_semantic_scan(true, "nonexistent_provider");
+
+        let result = agent.handle_plugins("add some-plugin").await;
+        assert!(
+            result.is_err(),
+            "expected CommandError for unknown semantic_scan_provider, got: {result:?}"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("semantic_scan_provider"),
+            "error message must mention semantic_scan_provider, got: {msg}"
         );
     }
 }
