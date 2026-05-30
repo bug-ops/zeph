@@ -25,6 +25,10 @@ impl CommandHandler<CommandContext<'_>> for StatusCommand {
         SlashCategory::Debugging
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -60,6 +64,10 @@ impl CommandHandler<CommandContext<'_>> for GuardrailCommand {
 
     fn feature_gate(&self) -> Option<&'static str> {
         Some("guardrail")
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(
@@ -99,6 +107,10 @@ impl CommandHandler<CommandContext<'_>> for FocusCommand {
         Some("context-compression")
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -134,6 +146,10 @@ impl CommandHandler<CommandContext<'_>> for SideQuestCommand {
 
     fn feature_gate(&self) -> Option<&'static str> {
         Some("context-compression")
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(

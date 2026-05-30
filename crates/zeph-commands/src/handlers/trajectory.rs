@@ -31,6 +31,10 @@ impl CommandHandler<CommandContext<'_>> for TrajectoryCommand {
         SlashCategory::Advanced
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,
@@ -68,6 +72,10 @@ impl CommandHandler<CommandContext<'_>> for ScopeCommand {
 
     fn category(&self) -> SlashCategory {
         SlashCategory::Advanced
+    }
+
+    fn requires_auth(&self) -> bool {
+        true
     }
 
     fn handle<'a>(

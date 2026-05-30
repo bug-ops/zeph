@@ -37,6 +37,10 @@ impl CommandHandler<CommandContext<'_>> for LoopCommand {
         SlashCategory::Advanced
     }
 
+    fn requires_auth(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(
         &'a self,
         ctx: &'a mut CommandContext<'_>,

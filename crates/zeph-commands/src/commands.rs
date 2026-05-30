@@ -250,6 +250,20 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     // --- Advanced (feature-gated) ---
     CommandInfo {
+        name: "/trajectory",
+        args: "[status|reset]",
+        description: "Show trajectory risk sentinel status or reset it",
+        category: SlashCategory::Advanced,
+        feature_gate: None,
+    },
+    CommandInfo {
+        name: "/scope",
+        args: "[list [task_type]]",
+        description: "List configured capability scopes (spec 050)",
+        category: SlashCategory::Advanced,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/scheduler",
         args: "[list]",
         description: "List scheduled tasks",

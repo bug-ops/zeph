@@ -28,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CommandRegistry::dispatch` to reject them with an error when `trusted = false`. The dispatch call
   sites in `zeph-core` pass `channel.supports_exit()` as the trust signal, so remote channels
   (Telegram, Discord, Slack) can no longer invoke privileged commands. Closes #4741.
+- `zeph-commands`: extend auth guard to the remaining Advanced and Debugging handlers that were
+  missing `requires_auth` coverage: `/trajectory`, `/scope`, `/loop`, `/lsp`, `/cache-stats`,
+  `/notify-test`, `/status`, `/guardrail`, `/focus`, `/sidequest`. Also registers `/trajectory`
+  and `/scope` in the `COMMANDS` static list so they appear in `/help` output. Closes #4755.
 - `zeph-tools`: three `EgressEvent` construction sites in `fetch_html` (non-2xx, body-too-large, and
   success paths) now call `redact_url_for_log` instead of passing the raw `current_url`. This
   completes the redaction coverage started in #4713; the connection-error and SSRF-blocked paths were
