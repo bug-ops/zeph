@@ -136,6 +136,7 @@ impl std::fmt::Display for ParameterKind {
     }
 }
 
+#[non_exhaustive]
 /// The value for a single parameter variation.
 ///
 /// Floating-point values use [`ordered_float::OrderedFloat`] to support hashing

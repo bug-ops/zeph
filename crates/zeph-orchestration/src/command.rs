@@ -3,6 +3,7 @@
 
 use super::error::OrchestrationError;
 
+#[non_exhaustive]
 /// Typed representation of a parsed `/plan` CLI command.
 ///
 /// # Parsing ambiguity

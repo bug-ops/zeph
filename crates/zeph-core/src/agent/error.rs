@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[non_exhaustive]
 /// Typed orchestration failure.
 ///
 /// Wraps errors from DAG scheduling, planning, and config verification. Each variant
@@ -30,6 +31,7 @@ pub enum OrchestrationFailure {
     Generic(String),
 }
 
+#[non_exhaustive]
 /// Typed skill file operation failure.
 ///
 /// Returned when skill name validation or skill directory lookup fails.
@@ -48,6 +50,7 @@ pub enum SkillOperationFailure {
     Generic(String),
 }
 
+#[non_exhaustive]
 /// Top-level error type for the agent loop.
 ///
 /// All fallible agent operations return `Result<T, AgentError>`. Variants are kept

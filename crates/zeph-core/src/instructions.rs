@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::config::ProviderKind;
 
+#[non_exhaustive]
 pub enum InstructionEvent {
     Changed,
 }

@@ -15,6 +15,7 @@ use zeph_llm::any::AnyProvider;
 use super::autonomous::SupervisorVerdict;
 use crate::quality::parser::{ChatJsonError, chat_json};
 
+#[non_exhaustive]
 /// Errors returned by the supervisor.
 #[derive(Debug, thiserror::Error)]
 pub enum SupervisorError {

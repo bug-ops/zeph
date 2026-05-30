@@ -14,6 +14,7 @@ use zeph_db::DbPool;
 
 use super::{Goal, GoalStatus};
 
+#[non_exhaustive]
 /// Error variants for goal store operations.
 #[derive(Debug, thiserror::Error)]
 pub enum GoalError {

@@ -3,6 +3,7 @@
 
 //! Goal status FSM with valid transition table.
 
+#[non_exhaustive]
 /// Status of a long-horizon goal.
 ///
 /// Transitions form a directed acyclic graph where `Completed` and `Cleared`

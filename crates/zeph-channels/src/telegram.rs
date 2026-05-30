@@ -1445,6 +1445,7 @@ fn build_telegram_field_prompt(field: &ElicitationField) -> String {
         ElicitationFieldType::String => {
             format!("*{name}*{req}: Reply with text")
         }
+        _ => format!("*{name}*{req}: Reply with a value"),
     }
 }
 
@@ -1488,6 +1489,7 @@ fn coerce_telegram_field(text: &str, kind: &ElicitationFieldType) -> Option<serd
                 .find(|o| o.eq_ignore_ascii_case(text))
                 .map(|o| serde_json::Value::String(o.clone()))
         }
+        _ => None,
     }
 }
 

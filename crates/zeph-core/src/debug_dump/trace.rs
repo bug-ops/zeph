@@ -71,6 +71,7 @@ fn now_unix_nanos() -> u64 {
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
+#[non_exhaustive]
 /// Span status code (matches OTLP `StatusCode` values).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SpanStatus {

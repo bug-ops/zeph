@@ -99,6 +99,7 @@ impl<C: Channel> Agent<C> {
                 match enforcer.evaluate(tool, &params, &ctx) {
                     PolicyDecision::Allow { trace } => format!("Allow: {trace}"),
                     PolicyDecision::Deny { trace } => format!("Deny: {trace}"),
+                    _ => String::new(),
                 }
             }
             Err(e) => format!("policy compile error: {e}"),

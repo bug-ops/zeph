@@ -25,6 +25,7 @@ pub use zeph_config::TrajectorySentinelConfig as SentinelConfig;
 
 // ── Signal taxonomy ───────────────────────────────────────────────────────────
 
+#[non_exhaustive]
 /// Vigil confidence levels mirrored from the audit crate to avoid a circular dep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VigilRiskLevel {
@@ -36,6 +37,7 @@ pub enum VigilRiskLevel {
     High,
 }
 
+#[non_exhaustive]
 /// Risk signal emitted by security subsystems and accumulated by `TrajectorySentinel`.
 ///
 /// Each variant maps to a configurable weight (see spec 050 §2 for defaults).
@@ -115,6 +117,7 @@ impl RiskSignal {
 
 // ── Risk levels ───────────────────────────────────────────────────────────────
 
+#[non_exhaustive]
 /// Advisory risk level computed from the accumulated score.
 ///
 /// `PolicyGateExecutor` consumes this to decide whether to downgrade an `Allow` decision.

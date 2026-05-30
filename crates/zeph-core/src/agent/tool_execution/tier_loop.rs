@@ -290,7 +290,6 @@ impl<C: Channel> Agent<C> {
             let args_value = serde_json::Value::Object(call.params.clone());
             for verifier in &self.tool_orchestrator.pre_execution_verifiers {
                 match verifier.verify(call.tool_id.as_str(), &args_value) {
-                    zeph_tools::VerificationResult::Allow => {}
                     zeph_tools::VerificationResult::Block { reason } => {
                         tracing::warn!(
                             tool = %call.tool_id,
@@ -363,6 +362,7 @@ impl<C: Channel> Agent<C> {
                             format!("{}: {}", verifier.name(), message),
                         );
                     }
+                    _ => {}
                 }
             }
         }
@@ -1225,7 +1225,6 @@ impl<C: Channel> Agent<C> {
         pending_system_hints: &mut Vec<String>,
     ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
         match utility_actions[idx] {
-            zeph_tools::UtilityAction::ToolCall => Ok(None),
             zeph_tools::UtilityAction::Respond => {
                 let _ = self
                     .channel
@@ -1309,6 +1308,7 @@ impl<C: Channel> Agent<C> {
                     ),
                 )))
             }
+            _ => Ok(None),
         }
     }
 

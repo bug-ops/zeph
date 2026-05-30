@@ -7,6 +7,7 @@ use std::time::Duration;
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
 
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigWatcherError {
     #[error("config path has no parent directory")]
@@ -19,6 +20,7 @@ pub enum ConfigWatcherError {
     Notify(#[from] notify::Error),
 }
 
+#[non_exhaustive]
 #[derive(Clone)]
 pub enum ConfigEvent {
     Changed,

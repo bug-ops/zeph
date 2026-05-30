@@ -1160,6 +1160,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             PlanCommand::Cancel(id) => Ok(self.handle_plan_cancel_as_string(id.as_deref())),
             PlanCommand::Resume(id) => Ok(self.handle_plan_resume_as_string(id.as_deref()).await),
             PlanCommand::Retry(id) => self.handle_plan_retry_as_string(id.as_deref()),
+            _ => Ok(String::new()),
         }
     }
 

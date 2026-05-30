@@ -63,6 +63,7 @@ pub struct DeleteAllReactionsParams {
 
 // ── Backend trait ──────────────────────────────────────────────────────────
 
+#[non_exhaustive]
 /// Errors produced by a [`ReactionModerationBackend`].
 #[derive(Debug, thiserror::Error)]
 pub enum ModerationError {

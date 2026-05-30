@@ -22,6 +22,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   via the provider registry and falls back to the main provider when the field is absent, matching
   the pattern used by `apply_quarantine_provider` and `apply_guardrail`. Previously the field had no
   effect and IPI probes always used the main/expensive provider. Closes #4753.
+- `zeph-acp`, `zeph-channels`, `zeph-config`, `zeph-core`, `zeph-experiments`, `zeph-index`,
+  `zeph-llm`, `zeph-orchestration`, `zeph-skills`, `zeph-subagent`, `zeph-tools`, `zeph-tui`,
+  `zeph-vault`, `zeph-worktree`: remaining public enums are now marked `#[non_exhaustive]`,
+  completing the workspace-wide non-exhaustive enum cleanup (71 enums across 53 files). Cross-crate
+  exhaustive match sites updated with wildcard arms for forward compatibility. Closes #4743, #4703.
+
 - `zeph-commands`: `CommandHandler` gains a `requires_auth` method (default `false`). Handlers in
   the `Debugging`, `Configuration`, and `Advanced` categories (`/log`, `/debug-dump`, `/dump-format`,
   `/model`, `/provider`, `/experiment`, `/policy`, `/scheduler`) now return `true`, causing

@@ -157,6 +157,7 @@ impl Default for SandboxPolicy {
 
 pub(crate) use zeph_config::tools::SandboxProfile;
 
+#[non_exhaustive]
 /// Error returned when sandbox setup or policy application fails.
 #[derive(Debug, Error)]
 pub enum SandboxError {

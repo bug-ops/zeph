@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::DaemonConfig;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentStatus {
     Running,
@@ -17,6 +18,7 @@ pub enum ComponentStatus {
     Stopped,
 }
 
+#[non_exhaustive]
 /// Error type for daemon component task failures.
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {

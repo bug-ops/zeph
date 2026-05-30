@@ -33,6 +33,7 @@ pub struct ElicitationField {
     pub required: bool,
 }
 
+#[non_exhaustive]
 /// Type of an elicitation form field.
 ///
 /// # Examples
@@ -87,6 +88,7 @@ pub struct ElicitationRequest {
     pub fields: Vec<ElicitationField>,
 }
 
+#[non_exhaustive]
 /// User's response to an elicitation request.
 ///
 /// Channels return this after the user interacts with the form. The MCP layer
@@ -174,6 +176,7 @@ impl ChannelError {
     }
 }
 
+#[non_exhaustive]
 /// Kind of binary attachment on an incoming message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {
@@ -468,6 +471,7 @@ pub trait Channel: Send {
     }
 }
 
+#[non_exhaustive]
 /// Reason why the agent turn ended — carried by [`LoopbackEvent::Stop`].
 ///
 /// Emitted by the agent loop immediately before `Flush` when a non-default
@@ -549,6 +553,7 @@ pub type ToolStartData = ToolStartEvent;
 /// Kept for use in the ACP layer. Prefer [`ToolOutputEvent`] in new code.
 pub type ToolOutputData = ToolOutputEvent;
 
+#[non_exhaustive]
 /// Events emitted by the agent side toward the A2A caller.
 #[derive(Debug, Clone)]
 pub enum LoopbackEvent {
@@ -589,6 +594,7 @@ pub enum LoopbackEvent {
     Stop(StopHint),
 }
 
+#[non_exhaustive]
 /// Status of a plan item, mirroring `acp::PlanEntryStatus`.
 #[derive(Debug, Clone)]
 pub enum PlanItemStatus {

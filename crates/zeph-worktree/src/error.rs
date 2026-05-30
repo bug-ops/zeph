@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+#[non_exhaustive]
 /// All errors that `zeph-worktree` can produce.
 ///
 /// Every variant is designed so that the `Display` message is safe to show to the

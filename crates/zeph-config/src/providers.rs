@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 // ── LLM provider config types (moved from zeph-llm) ─────────────────────────
 
+#[non_exhaustive]
 /// Extended or adaptive thinking mode for Claude.
 ///
 /// Serializes with `mode` as tag:
@@ -39,6 +40,7 @@ pub enum ThinkingEffort {
     High,
 }
 
+#[non_exhaustive]
 /// Prompt-cache TTL variant for the Anthropic API.
 ///
 /// When used as a TOML config value the accepted strings are `"ephemeral"` and `"1h"`.

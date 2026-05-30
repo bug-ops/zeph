@@ -210,7 +210,8 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
                     | zeph_core::LoopbackEvent::SessionTitle(_)
                     | zeph_core::LoopbackEvent::Plan(_)
                     | zeph_core::LoopbackEvent::ThinkingChunk(_)
-                    | zeph_core::LoopbackEvent::Stop(_) => {}
+                    | zeph_core::LoopbackEvent::Stop(_)
+                    | _ => {}
                 }
             }
 

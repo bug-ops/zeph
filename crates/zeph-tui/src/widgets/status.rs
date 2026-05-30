@@ -361,6 +361,7 @@ fn build_goal_spans(snap: &crate::metrics::GoalSnapshot, theme: &Theme) -> Vec<S
         GoalStatus::Paused => ("⏸", Color::Yellow),
         GoalStatus::Completed => ("✓", Color::Cyan),
         GoalStatus::Cleared => ("✗", Color::Red),
+        _ => ("?", Color::DarkGray),
     };
     let label = if snap.text.is_empty() {
         format!(" {icon} goal")

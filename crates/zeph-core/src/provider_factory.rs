@@ -27,6 +27,7 @@ use zeroize::Zeroizing;
 use crate::agent::state::ProviderConfigSnapshot;
 use crate::config::{Config, ProviderEntry, ProviderKind};
 
+#[non_exhaustive]
 /// Error type for provider construction failures.
 ///
 /// String-based variants flatten the error chain intentionally: bootstrap errors are

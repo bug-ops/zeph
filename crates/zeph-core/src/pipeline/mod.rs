@@ -10,6 +10,7 @@ pub use builder::Pipeline;
 pub use parallel::ParallelStep;
 pub use step::Step;
 
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
     #[error(transparent)]

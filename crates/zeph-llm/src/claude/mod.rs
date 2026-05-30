@@ -527,7 +527,6 @@ impl ClaudeProvider {
     ) {
         let cap = thinking_capability(&self.model);
         match &self.thinking {
-            None => (None, None, None),
             Some(ThinkingConfig::Extended { budget_tokens }) if cap.prefers_effort => {
                 let effort = budget_to_effort(*budget_tokens);
                 tracing::warn!(
@@ -561,6 +560,8 @@ impl ClaudeProvider {
                 None,
                 *effort,
             ),
+            // Unknown future variants: treat as no thinking.
+            _ => (None, None, None),
         }
     }
 

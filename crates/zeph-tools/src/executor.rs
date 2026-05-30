@@ -386,6 +386,7 @@ impl std::fmt::Display for ErrorKind {
     }
 }
 
+#[non_exhaustive]
 /// Errors that can occur during tool execution.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {

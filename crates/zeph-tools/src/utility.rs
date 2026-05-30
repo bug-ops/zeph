@@ -109,6 +109,7 @@ pub struct UtilityContext {
     pub user_requested: bool,
 }
 
+#[non_exhaustive]
 /// Recommended action from the utility policy (arXiv:2603.19896, §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UtilityAction {

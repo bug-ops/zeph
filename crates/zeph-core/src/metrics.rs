@@ -106,6 +106,7 @@ pub struct OrchestrationMetrics {
     pub tasks_skipped: u64,
 }
 
+#[non_exhaustive]
 /// Connection status of a single MCP server for TUI display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpServerConnectionStatus {

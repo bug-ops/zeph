@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvocationHint {
     /// Tool invoked via ```{tag}\n...\n``` fenced block in LLM response

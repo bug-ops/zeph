@@ -35,6 +35,7 @@ use zeph_config::tools::{
     UrlGroundingVerifierConfig,
 };
 
+#[non_exhaustive]
 /// Result of a pre-execution verification check.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]

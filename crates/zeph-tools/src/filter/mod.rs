@@ -16,6 +16,7 @@ use regex::Regex;
 // FilterConfidence (#440)
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FilterConfidence {
     Full,

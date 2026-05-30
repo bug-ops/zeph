@@ -14,6 +14,7 @@ use std::time::Duration;
 
 pub use zeph_common::{PolicyLlmClient, PolicyMessage, PolicyRole};
 
+#[non_exhaustive]
 /// Decision returned by the adversarial policy validator.
 #[derive(Debug, Clone)]
 pub enum PolicyDecision {

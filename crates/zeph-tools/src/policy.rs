@@ -27,6 +27,7 @@ pub struct PolicyContext {
     pub env: std::collections::HashMap<String, String>,
 }
 
+#[non_exhaustive]
 /// Result of a policy evaluation.
 #[derive(Debug, Clone)]
 pub enum PolicyDecision {
@@ -34,6 +35,7 @@ pub enum PolicyDecision {
     Deny { trace: String },
 }
 
+#[non_exhaustive]
 /// Errors that can occur when compiling a `PolicyConfig`.
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyCompileError {

@@ -68,6 +68,7 @@ use crate::metrics::{MetricsSnapshot, StaticMetricsInit};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::watcher::SkillEvent;
 
+#[non_exhaustive]
 /// Errors that can occur during agent construction.
 ///
 /// Returned by [`Agent::build`] when required configuration is missing.

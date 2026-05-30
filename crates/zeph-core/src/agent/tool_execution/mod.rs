@@ -925,7 +925,7 @@ impl<C: Channel> Agent<C> {
         let vigil_code = match risk {
             zeph_tools::audit::VigilRiskLevel::High => 7u8,
             zeph_tools::audit::VigilRiskLevel::Medium => 6u8,
-            zeph_tools::audit::VigilRiskLevel::Low => 0u8,
+            _ => 0u8,
         };
         self.services
             .security

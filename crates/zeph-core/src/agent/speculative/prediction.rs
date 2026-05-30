@@ -18,6 +18,7 @@
 use zeph_common::ToolName;
 use zeph_tools::{ToolCall, ToolError};
 
+#[non_exhaustive]
 /// Source of a tool call prediction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PredictionSource {

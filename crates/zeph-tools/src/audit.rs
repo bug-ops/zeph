@@ -220,6 +220,7 @@ pub struct AuditEntry {
     pub skill_name: Option<Vec<String>>,
 }
 
+#[non_exhaustive]
 /// Risk level assigned by the VIGIL pre-sanitizer gate to a flagged tool output.
 ///
 /// Emitted in [`AuditEntry::vigil_risk`] when VIGIL fires.

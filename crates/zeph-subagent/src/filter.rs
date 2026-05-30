@@ -33,7 +33,7 @@ fn collect_fenced_tags(executor: &dyn ErasedToolExecutor) -> Vec<&'static str> {
         .into_iter()
         .filter_map(|def| match def.invocation {
             InvocationHint::FencedBlock(tag) => Some(tag),
-            InvocationHint::ToolCall => None,
+            _ => None,
         })
         .collect()
 }

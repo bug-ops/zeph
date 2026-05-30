@@ -53,6 +53,7 @@ use crate::redact::scrub_content;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
+#[non_exhaustive]
 /// Whether a turn completed successfully or with an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnExitStatus {
@@ -217,6 +218,7 @@ impl Notifier {
     }
 }
 
+#[non_exhaustive]
 /// Error returned by [`Notifier::fire_test`].
 #[derive(Debug, thiserror::Error)]
 pub enum NotifyTestError {

@@ -43,6 +43,7 @@ use std::pin::Pin;
 
 use zeph_common::ToolName;
 
+#[non_exhaustive]
 /// Error variants for compression operations.
 #[derive(Debug, thiserror::Error)]
 pub enum CompressionError {

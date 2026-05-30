@@ -209,6 +209,7 @@ fn unix_now() -> i64 {
     }
 }
 
+#[non_exhaustive]
 /// Error type for plan cache operations.
 ///
 /// All errors are non-fatal in the context of the planning critical path:

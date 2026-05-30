@@ -9,6 +9,7 @@
 
 use std::num::TryFromIntError;
 
+#[non_exhaustive]
 /// Errors that can occur during code indexing operations.
 ///
 /// # Examples

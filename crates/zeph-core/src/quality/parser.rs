@@ -13,6 +13,7 @@ use thiserror::Error;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role};
 
+#[non_exhaustive]
 /// Errors from the parser.
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -22,6 +23,7 @@ pub enum ParseError {
     Json(#[from] serde_json::Error),
 }
 
+#[non_exhaustive]
 /// Errors from `chat_json` (wraps [`ParseError`] and provider/timeout errors).
 #[derive(Debug, Error)]
 pub enum ChatJsonError {

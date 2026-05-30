@@ -34,6 +34,7 @@ use crate::agent::speculative::cache::{args_template, hash_args};
 /// Wilson 95% one-sided z-score.
 const Z: f64 = 1.645;
 
+#[non_exhaustive]
 /// Outcome of a tool call, used when observing a transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOutcome {
@@ -41,6 +42,7 @@ pub enum ToolOutcome {
     Failure,
 }
 
+#[non_exhaustive]
 /// Error type for `PatternStore` operations.
 #[derive(Debug, Error)]
 pub enum PatternError {

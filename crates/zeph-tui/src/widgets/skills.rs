@@ -64,6 +64,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
             let (indicator, color) = match srv.status {
                 McpServerConnectionStatus::Connected => ("OK", Color::Green),
                 McpServerConnectionStatus::Failed => ("FAIL", Color::Red),
+                _ => ("?", Color::DarkGray),
             };
             mcp_lines.push(Line::from(vec![
                 Span::raw(format!("  {} ", srv.id)),

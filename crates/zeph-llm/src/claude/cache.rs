@@ -23,7 +23,7 @@ pub(super) fn build_cache_control(ttl: Option<CacheTtl>) -> CacheControl {
         cache_type: CacheType::Ephemeral,
         ttl: match ttl {
             Some(CacheTtl::OneHour) => Some(CacheTtl::OneHour),
-            Some(CacheTtl::Ephemeral) | None => None,
+            _ => None,
         },
     }
 }

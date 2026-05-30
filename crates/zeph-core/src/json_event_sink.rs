@@ -24,6 +24,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
+#[non_exhaustive]
 /// Structured event emitted on stdout in `--json` mode.
 ///
 /// All variants are serialized as JSONL with a `"event"` discriminator field.

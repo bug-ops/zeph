@@ -168,6 +168,7 @@ impl ElicitationDialogState {
                     }
                     serde_json::Value::String(sanitize_field_value(&opts[sel]))
                 }
+                _ => continue,
             };
             map.insert(sanitize_field_name(&field.name), value);
         }
@@ -321,6 +322,7 @@ fn render_fields(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, 
                     format!("▼ {opt}")
                 }
             }
+            _ => String::new(),
         };
 
         // Split row: label on left, value on right

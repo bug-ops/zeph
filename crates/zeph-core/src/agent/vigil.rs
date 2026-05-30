@@ -37,6 +37,7 @@ struct CompiledPattern {
     regex: Regex,
 }
 
+#[non_exhaustive]
 /// Action to take when VIGIL flags a tool output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VigilAction {
@@ -46,6 +47,7 @@ pub enum VigilAction {
     Sanitize,
 }
 
+#[non_exhaustive]
 /// Verdict returned by [`VigilGate::verify`].
 #[derive(Debug, Clone)]
 pub enum VigilVerdict {

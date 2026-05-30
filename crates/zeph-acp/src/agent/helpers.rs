@@ -552,11 +552,11 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<SessionUpda
                 .into_iter()
                 .map(|(content, status)| {
                     let acp_status = match status {
-                        zeph_core::channel::PlanItemStatus::Pending => PlanEntryStatus::Pending,
                         zeph_core::channel::PlanItemStatus::InProgress => {
                             PlanEntryStatus::InProgress
                         }
                         zeph_core::channel::PlanItemStatus::Completed => PlanEntryStatus::Completed,
+                        _ => PlanEntryStatus::Pending,
                     };
                     PlanEntry::new(content, PlanEntryPriority::Medium, acp_status)
                 })
@@ -571,5 +571,6 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<SessionUpda
         }
         // Stop hints are consumed directly in the prompt() loop and must not reach here.
         LoopbackEvent::Stop(_) => vec![],
+        _ => vec![],
     }
 }

@@ -113,6 +113,7 @@ impl<C: Channel> Agent<C> {
                     zeph_tools::FilterConfidence::Fallback => {
                         m.filter_confidence_fallback += 1;
                     }
+                    _ => {}
                 }
             }
         });

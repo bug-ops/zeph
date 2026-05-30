@@ -59,6 +59,7 @@ use zeph_config::{CapabilityScopesConfig, PatternStrictness};
 
 // ── Errors & warnings ─────────────────────────────────────────────────────────
 
+#[non_exhaustive]
 /// Fatal startup error emitted when a scope configuration is invalid.
 #[derive(Debug, thiserror::Error)]
 pub enum ScopeError {

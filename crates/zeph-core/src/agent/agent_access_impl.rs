@@ -135,6 +135,7 @@ async fn semantic_scan_plugin_add(
                     "plugin add failed: skill {skill_name:?} rejected by semantic scan: {reason}"
                 )));
             }
+            _ => {}
         }
     }
     Ok(None)

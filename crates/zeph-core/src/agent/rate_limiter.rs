@@ -19,6 +19,7 @@ pub use zeph_config::RateLimitConfig;
 // ToolCategory
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 /// Logical category used for per-category rate limiting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolCategory {

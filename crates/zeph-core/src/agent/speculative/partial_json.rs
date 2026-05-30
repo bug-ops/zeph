@@ -30,6 +30,7 @@
 
 use serde_json::Map;
 
+#[non_exhaustive]
 /// Result of feeding accumulated JSON delta bytes to [`PartialJsonParser::push`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrefixState {

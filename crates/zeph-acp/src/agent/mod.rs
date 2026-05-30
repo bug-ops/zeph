@@ -3158,7 +3158,7 @@ fn compute_stop_reason(cancelled: bool, stop_hint: Option<StopHint>) -> acp::sch
         match stop_hint {
             Some(StopHint::MaxTokens) => acp::schema::StopReason::MaxTokens,
             Some(StopHint::MaxTurnRequests) => acp::schema::StopReason::MaxTurnRequests,
-            None => acp::schema::StopReason::EndTurn,
+            None | Some(_) => acp::schema::StopReason::EndTurn,
         }
     }
 }

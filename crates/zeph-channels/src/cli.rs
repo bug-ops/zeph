@@ -612,6 +612,7 @@ fn coerce_field_value(raw: &str, field_type: &ElicitationFieldType) -> Option<se
                 None
             }
         }
+        _ => None,
     }
 }
 
