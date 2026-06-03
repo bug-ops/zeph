@@ -91,7 +91,7 @@ regex = "1.12.3"
 reqwest = { version = "0.13.3", default-features = false }
 ripemd = "0.2"
 rmcp = "1.7.0"
-rubato = "2.0"
+rubato = "3.0.0"
 rustix = { version = "1.1.4", default-features = false }
 schemars = "1.2.1"
 scrape-core = "0.2.6"
