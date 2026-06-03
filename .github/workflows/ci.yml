@@ -201,7 +201,7 @@ jobs:
           cache-targets: "false"
           shared-key: "ci"
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - uses: taiki-e/install-action@fabec9d8e651f60df8d763cf7a293dbffa79355d # nextest
+      - uses: taiki-e/install-action@f5b277aa8941a90c16bc1cd6ab9363e0502b7d31 # nextest
       - name: Build and archive tests
         run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler" --lib --bins --tests --archive-file nextest-archive.tar.zst
       - name: Upload test archive
@@ -240,7 +240,7 @@ jobs:
         partition: ["1/5", "2/5", "3/5", "4/5", "5/5"]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: taiki-e/install-action@fabec9d8e651f60df8d763cf7a293dbffa79355d # nextest
+      - uses: taiki-e/install-action@f5b277aa8941a90c16bc1cd6ab9363e0502b7d31 # nextest
       - name: Download test archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -262,8 +262,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: taiki-e/install-action@fabec9d8e651f60df8d763cf7a293dbffa79355d # nextest
-      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+      - uses: taiki-e/install-action@f5b277aa8941a90c16bc1cd6ab9363e0502b7d31 # nextest
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -333,8 +333,8 @@ jobs:
           cache-targets: "false"
           shared-key: "coverage"
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - uses: taiki-e/install-action@1af28e82b8acfe451db73552a27a2019a19b9ab6 # cargo-llvm-cov
-      - uses: taiki-e/install-action@fabec9d8e651f60df8d763cf7a293dbffa79355d # nextest
+      - uses: taiki-e/install-action@28ba36d36bfc4814f98a469ff9f76b2a41e9aa8a # cargo-llvm-cov
+      - uses: taiki-e/install-action@f5b277aa8941a90c16bc1cd6ab9363e0502b7d31 # nextest
       - name: Generate coverage
         run: cargo llvm-cov nextest --config-file .github/nextest.toml --cargo-profile ci --workspace --features full --lib --bins --lcov --output-path lcov.info
       - name: Upload coverage
@@ -362,9 +362,9 @@ jobs:
           mkdir -p binaries
           cp target/ci/zeph binaries/zeph-amd64
           cp target/ci/zeph binaries/zeph-arm64
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
       - name: Build Docker image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: docker/Dockerfile
@@ -386,7 +386,7 @@ jobs:
           exit-code: '1'
           limit-severities-for-sarif: true
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4
+        uses: github/codeql-action/upload-sarif@87557b9c84dde89fdd9b10e88954ac2f4248e463 # v4
         with:
           sarif_file: trivy-results.sarif
 
