@@ -1,6 +1,6 @@
 # Stage 1: prepare writable runtime directories with correct ownership.
 # busybox is used only to run mkdir/chown; it is not present in the final image.
-FROM busybox:1.37-musl@sha256:19b646668802469d968a05342a601e78da4322a414a7c09b1c9ee25165042138 AS setup
+FROM busybox:1.38-musl@sha256:8635836765b0c4c43970660219739baa58b0883c2e429e4b8918f7dd1519455c AS setup
 
 ARG TARGETARCH
 
