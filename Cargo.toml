@@ -74,7 +74,7 @@ ollama-rs = { version = "0.3.4", default-features = false }
 open = "5.3.5"
 opentelemetry = "0.32.0"
 opentelemetry-otlp = { version = "0.32.0", default-features = false }
-opentelemetry_sdk = { version = "0.32.0", default-features = false }
+opentelemetry_sdk = { version = "0.32.1", default-features = false }
 ordered-float = "5.3"
 parking_lot = "0.12.5"
 pdf-extract = "0.10"
