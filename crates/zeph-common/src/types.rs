@@ -725,6 +725,28 @@ pub struct ToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
+/// Reason why the agent turn ended early.
+///
+/// Emitted by the agent loop when a non-default terminal condition is detected.
+/// Consumers (e.g. the ACP layer) map this to the protocol-level `StopReason`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::StopHint;
+///
+/// let hint = StopHint::MaxTokens;
+/// assert!(matches!(hint, StopHint::MaxTokens));
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopHint {
+    /// The LLM response was cut off by the token limit.
+    MaxTokens,
+    /// The turn loop exhausted `max_turns` without a final text response.
+    MaxTurnRequests,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

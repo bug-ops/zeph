@@ -20,7 +20,9 @@ use std::time::Instant;
 use zeph_agent_tools::channel::{AgentChannel, ChannelSinkError, ToolEventOutput, ToolEventStart};
 use zeph_agent_tools::sealed::Sealed;
 
-use crate::channel::{Channel, StopHint, ToolOutputEvent, ToolStartEvent};
+use zeph_common::StopHint;
+
+use crate::channel::{Channel, ToolOutputEvent, ToolStartEvent};
 
 /// Borrowed adapter that wraps `&mut C` so any [`Channel`] implementation can be used
 /// where [`zeph_agent_tools::AgentChannel`] is required.
@@ -81,20 +83,7 @@ impl<C: Channel + Send> AgentChannel for AgentChannelView<'_, C> {
             .map_err(|e| ChannelSinkError::new(e.to_string()))
     }
 
-    async fn send_stop_hint(&mut self, reason: &str) -> Result<(), ChannelSinkError> {
-        // TODO(review): if new StopHint variants are added to zeph-core::channel::StopHint,
-        // mirror them here AND at any dispatcher emit-sites in zeph-agent-tools.
-        let hint = match reason {
-            "max_tokens" => StopHint::MaxTokens,
-            "max_turn_requests" => StopHint::MaxTurnRequests,
-            other => {
-                tracing::warn!(
-                    reason = other,
-                    "AgentChannelView: unknown stop reason, ignoring"
-                );
-                return Ok(());
-            }
-        };
+    async fn send_stop_hint(&mut self, hint: StopHint) -> Result<(), ChannelSinkError> {
         self.channel
             .send_stop_hint(hint)
             .await
@@ -188,17 +177,9 @@ mod tests {
     async fn agent_channel_view_send_stop_hint_max_tokens() {
         let (mut ch, mut handle) = LoopbackChannel::pair(8);
         let mut view = AgentChannelView::new(&mut ch);
-        view.send_stop_hint("max_tokens").await.unwrap();
+        view.send_stop_hint(StopHint::MaxTokens).await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
         assert!(matches!(event, LoopbackEvent::Stop(StopHint::MaxTokens)));
-    }
-
-    #[tokio::test]
-    async fn agent_channel_view_send_stop_hint_unknown_is_noop() {
-        let (mut ch, _handle) = LoopbackChannel::pair(8);
-        let mut view = AgentChannelView::new(&mut ch);
-        // Unknown reason should not send any event
-        view.send_stop_hint("unknown_reason").await.unwrap();
     }
 
     #[tokio::test]

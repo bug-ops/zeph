@@ -66,9 +66,6 @@
 //! # }
 //! ```
 
-#[allow(unused_imports)]
-pub(crate) use zeph_db::sql;
-
 pub mod adaptorch;
 pub mod admission;
 pub mod aggregator;

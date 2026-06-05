@@ -77,9 +77,6 @@
 //! `zeph-db` migrations. Use [`JobStore::open`] to connect or [`JobStore::new`] when
 //! you already hold a [`zeph_db::DbPool`].
 
-#[allow(unused_imports)]
-pub(crate) use zeph_db::sql;
-
 mod error;
 mod handlers;
 mod sanitize;

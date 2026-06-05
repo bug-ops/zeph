@@ -13,7 +13,7 @@ use blake3;
 use serde::{Deserialize, Serialize};
 use zeph_config::PlanCacheConfig;
 use zeph_db::DbPool;
-#[allow(unused_imports)]
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use zeph_db::sql;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 

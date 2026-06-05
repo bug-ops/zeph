@@ -49,7 +49,7 @@ pub use task_supervisor::{
 };
 pub use text::format_tokens;
 pub use trust_level::SkillTrustLevel;
-pub use types::{ProviderName, SessionId, SkillName, ToolDefinition, ToolName};
+pub use types::{ProviderName, SessionId, SkillName, StopHint, ToolDefinition, ToolName};
 
 #[cfg(feature = "treesitter")]
 pub mod treesitter;

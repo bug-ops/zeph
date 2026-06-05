@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_db::DbPool;
-#[allow(unused_imports)]
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use zeph_db::sql;
 
 use crate::error::SchedulerError;

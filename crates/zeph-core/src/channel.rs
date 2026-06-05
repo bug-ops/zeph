@@ -471,19 +471,7 @@ pub trait Channel: Send {
     }
 }
 
-#[non_exhaustive]
-/// Reason why the agent turn ended — carried by [`LoopbackEvent::Stop`].
-///
-/// Emitted by the agent loop immediately before `Flush` when a non-default
-/// terminal condition is detected. Consumers (e.g. the ACP layer) map this to
-/// the protocol-level `StopReason`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopHint {
-    /// The LLM response was cut off by the token limit.
-    MaxTokens,
-    /// The turn loop exhausted `max_turns` without a final text response.
-    MaxTurnRequests,
-}
+pub use zeph_common::StopHint;
 
 /// Event carrying data for a tool call start, emitted before execution begins.
 ///

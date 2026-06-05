@@ -17,13 +17,10 @@
 //! impl<C: zeph_core::channel::Channel> AgentChannel for AgentChannelView<'_, C>
 //! ```
 //! which is orphan-safe because `AgentChannelView` is a local type in `zeph-core`.
-//!
-//! # TODO(critic): `send_stop_hint` takes a primitive `&str` reason instead of an enum.
-//! Any new variant added to `zeph_core::channel::StopHint` MUST be mirrored at dispatcher
-//! emit-sites AND at `AgentChannelView::send_stop_hint` match arms.
-//! See `critic-3515-3516.md` F3.
 
 use std::future::Future;
+
+use zeph_common::StopHint;
 
 use crate::sealed::Sealed;
 
@@ -115,14 +112,10 @@ pub trait AgentChannel: Sealed + Send {
         prompt: &str,
     ) -> impl Future<Output = Result<bool, ChannelSinkError>> + Send;
 
-    /// Notify the channel that the assistant turn stopped for `reason`.
-    ///
-    /// `reason` is a primitive string code such as `"max_tokens"`, `"cancelled"`,
-    /// `"max_turn_requests"`, or `"timeout"`. The `AgentChannelView` impl maps these to the
-    /// concrete `zeph_core::channel::StopHint` enum and forwards.
+    /// Notify the channel that the assistant turn stopped for `hint`.
     fn send_stop_hint(
         &mut self,
-        reason: &str,
+        hint: StopHint,
     ) -> impl Future<Output = Result<(), ChannelSinkError>> + Send;
 
     /// Emit a tool-start event.

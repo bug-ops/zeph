@@ -4,8 +4,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-#[allow(unused_imports)]
-use zeph_db::sql;
 
 use chrono::Utc;
 use tokio::sync::{Mutex, mpsc, watch};
@@ -887,6 +885,8 @@ mod tests {
     use super::*;
     use crate::task::TaskHandler;
     use zeph_db::DbPool;
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
+    use zeph_db::sql;
 
     struct CountingHandler {
         count: Arc<AtomicU32>,
