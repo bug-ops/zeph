@@ -28,6 +28,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-tools`: normalize all span names in `scrape.rs`, `shell/mod.rs`, `diagnostics.rs`,
   `file.rs`, and `search_code.rs` to the `tools.<subsystem>.<operation>` convention; eliminates the
   mix of `tool.*`, `tools.*`, and bare `scrape.*` prefixes. Closes #4714.
+- `zeph-core`, `zeph-plugins`: fix `span.enter()` held across `.await` in
+  `SemanticStateAccumulator::maybe_distill` (`accumulator.rs`) and three `PluginManager` methods
+  (`add_remote`, `add_remote_ephemeral`, `download_and_extract`). Span creation moved outside the
+  async block in `accumulator.rs`; future wrapped with `.instrument(span)`. Plugin manager methods
+  converted to `#[tracing::instrument]`. Under the tokio multi-thread scheduler, holding a
+  synchronous span guard across an await point causes spans to be attributed to the wrong worker
+  thread and `Span::current().record()` to silently write to the wrong span. Closes #4787.
+- `zeph-context`: `ContextAssembler::gather` now carries
+  `#[tracing::instrument(name = "context.assembler.gather", skip_all)]`, completing full async
+  instrumentation coverage for the context assembler. Previously `gather` was the only async
+  function in `ContextAssembler` without a tracing span, making it invisible in traces.
+  Closes #4783.
 - `zeph-sanitizer`: `UNICODE_BYPASS_RE` now includes U+2060 (WORD JOINER) in its character class,
   closing a bypass where inserting that invisible character between `!` and `[` evaded markdown image
   exfiltration detection. Closes #4752.

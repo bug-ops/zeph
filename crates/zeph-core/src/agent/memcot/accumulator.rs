@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
+use tracing::Instrument as _;
 use zeph_config::MemCotConfig;
 use zeph_llm::provider::LlmProvider as _;
 
@@ -153,58 +154,59 @@ impl SemanticStateAccumulator {
         let cfg = Arc::clone(&self.cfg);
         let content = assistant_content.to_owned();
 
-        let fut = Box::pin(async move {
-            let span = tracing::info_span!("core.memcot.distill", result = tracing::field::Empty);
-            let _guard = span.enter();
+        let span = tracing::info_span!("core.memcot.distill", result = tracing::field::Empty);
+        let fut = Box::pin(
+            async move {
+                let prompt = build_distill_prompt(&content, &state_arc).await;
+                let msgs = vec![zeph_llm::provider::Message::from_legacy(
+                    zeph_llm::provider::Role::User,
+                    prompt,
+                )];
 
-            let prompt = build_distill_prompt(&content, &state_arc).await;
-            let msgs = vec![zeph_llm::provider::Message::from_legacy(
-                zeph_llm::provider::Role::User,
-                prompt,
-            )];
+                let timeout = Duration::from_secs(cfg.distill_timeout_secs);
+                let result = tokio::time::timeout(timeout, provider.chat(&msgs)).await;
 
-            let timeout = Duration::from_secs(cfg.distill_timeout_secs);
-            let result = tokio::time::timeout(timeout, provider.chat(&msgs)).await;
+                match result {
+                    Ok(Ok(response)) => {
+                        tracing::Span::current().record("result", "ok");
+                        let raw = response.trim().to_owned();
+                        let cap = cfg.max_state_chars;
+                        let new_buf = if raw.chars().count() > cap {
+                            let cut = raw.floor_char_boundary(
+                                raw.char_indices().nth(cap).map_or(raw.len(), |(i, _)| i),
+                            );
+                            raw[..cut].to_owned()
+                        } else {
+                            raw
+                        };
 
-            match result {
-                Ok(Ok(response)) => {
-                    tracing::Span::current().record("result", "ok");
-                    let raw = response.trim().to_owned();
-                    let cap = cfg.max_state_chars;
-                    let new_buf = if raw.chars().count() > cap {
-                        let cut = raw.floor_char_boundary(
-                            raw.char_indices().nth(cap).map_or(raw.len(), |(i, _)| i),
+                        let mut state = state_arc.write().await;
+                        state.buffer = new_buf;
+                        state.turn_count = state.turn_count.saturating_add(1);
+                        state.updated_at_secs = unix_now_secs();
+                        tracing::debug!(
+                            turn = state.turn_count,
+                            buf_chars = state.buffer.chars().count(),
+                            "memcot: distill complete"
                         );
-                        raw[..cut].to_owned()
-                    } else {
-                        raw
-                    };
-
-                    let mut state = state_arc.write().await;
-                    state.buffer = new_buf;
-                    state.turn_count = state.turn_count.saturating_add(1);
-                    state.updated_at_secs = unix_now_secs();
-                    tracing::debug!(
-                        turn = state.turn_count,
-                        buf_chars = state.buffer.chars().count(),
-                        "memcot: distill complete"
-                    );
-                }
-                Ok(Err(e)) => {
-                    tracing::Span::current().record("result", "error");
-                    metrics::distill_error();
-                    tracing::warn!(error = %e, "memcot: distill failed");
-                }
-                Err(_) => {
-                    tracing::Span::current().record("result", "timeout");
-                    metrics::distill_timeout();
-                    tracing::warn!(
-                        timeout_secs = cfg.distill_timeout_secs,
-                        "memcot: distill timed out"
-                    );
+                    }
+                    Ok(Err(e)) => {
+                        tracing::Span::current().record("result", "error");
+                        metrics::distill_error();
+                        tracing::warn!(error = %e, "memcot: distill failed");
+                    }
+                    Err(_) => {
+                        tracing::Span::current().record("result", "timeout");
+                        metrics::distill_timeout();
+                        tracing::warn!(
+                            timeout_secs = cfg.distill_timeout_secs,
+                            "memcot: distill timed out"
+                        );
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
 
         supervisor_spawn("memcot_distill", fut);
     }

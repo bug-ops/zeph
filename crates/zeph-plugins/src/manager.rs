@@ -423,14 +423,12 @@ impl PluginManager {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(name = "plugins.manager.add_remote", skip(self, expected_sha256), fields(%url))]
     pub async fn add_remote(
         &self,
         url: &str,
         expected_sha256: Option<&str>,
     ) -> Result<AddResult, PluginError> {
-        let span = tracing::info_span!("plugins.manager.add_remote", %url);
-        let _guard = span.enter();
-
         // Reject non-HTTP(S) schemes to prevent SSRF via file:// or other transports.
         validate_url_scheme(url)?;
 
@@ -1295,14 +1293,12 @@ impl PluginManager {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(name = "plugins.manager.add_remote_ephemeral", skip(self, sha256), fields(%url))]
     pub async fn add_remote_ephemeral(
         &self,
         url: &str,
         sha256: Option<&str>,
     ) -> Result<tempfile::TempDir, PluginError> {
-        let span = tracing::info_span!("plugins.manager.add_remote_ephemeral", %url);
-        let _guard = span.enter();
-
         validate_url_scheme_ephemeral(url)?;
 
         let tmp = tempfile::tempdir().map_err(|e| PluginError::Io {
@@ -1458,15 +1454,13 @@ pub const MAX_ARCHIVE_BYTES: u64 = 52 * 1024 * 1024;
 ///   exceeded [`MAX_ARCHIVE_BYTES`], or the download timed out.
 /// - [`PluginError::IntegrityCheckFailed`] — SHA-256 mismatch when `sha256` is `Some`.
 /// - [`PluginError::InvalidSource`] — archive format is unsupported or extraction failed.
+#[tracing::instrument(name = "plugins.manager.download_and_extract", skip(sha256, dest, timeout_secs), fields(%url))]
 pub async fn download_and_extract(
     url: &str,
     sha256: Option<&str>,
     dest: &std::path::Path,
     timeout_secs: u64,
 ) -> Result<(), PluginError> {
-    let span = tracing::info_span!("plugins.manager.download_and_extract", %url);
-    let _enter = span.enter();
-
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
     // Build a client that refuses to follow any redirect that downgrades from https (B1).

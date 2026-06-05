@@ -295,6 +295,7 @@ impl ContextAssembler {
     /// # Errors
     ///
     /// Propagates errors from any async fetch operation.
+    #[tracing::instrument(name = "context.assembler.gather", skip_all)]
     pub async fn gather(
         input: &ContextAssemblyInput<'_>,
     ) -> Result<PreparedContext, AssemblerError> {
