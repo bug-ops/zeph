@@ -1166,7 +1166,7 @@ impl AppBuilder {
 
     /// Return the effective embedding model name for this config.
     ///
-    /// Delegates to [`effective_embedding_model`] and is the canonical source for the
+    /// Delegates to [`zeph_config::LlmConfig::effective_embedding_model`] and is the canonical source for the
     /// model name passed to skill matchers, memory backends, and the embed backfill task.
     pub fn embedding_model(&self) -> String {
         self.config.llm.effective_embedding_model()
