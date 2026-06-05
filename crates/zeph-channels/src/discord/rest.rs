@@ -154,6 +154,10 @@ impl RestClient {
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or rate-limit retries are exhausted.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.discord.rest.send_message", skip_all)
+    )]
     pub async fn send_message(
         &self,
         channel_id: &str,
@@ -175,6 +179,10 @@ impl RestClient {
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or rate-limit retries are exhausted.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.discord.rest.edit_message", skip_all)
+    )]
     pub async fn edit_message(
         &self,
         channel_id: &str,
@@ -199,6 +207,10 @@ impl RestClient {
     /// Uses `PUT /applications/{id}/commands` which is idempotent — safe to call on every
     /// restart. Global commands take up to 1 hour to propagate. Logs success or failure;
     /// never returns an error (fire-and-forget caller pattern).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.discord.rest.register_slash_commands", skip_all)
+    )]
     pub async fn register_slash_commands(&self) {
         let app_id = match self
             .client
@@ -238,6 +250,10 @@ impl RestClient {
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or rate-limit retries are exhausted.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.discord.rest.trigger_typing", skip_all)
+    )]
     pub async fn trigger_typing(&self, channel_id: &str) -> Result<(), reqwest::Error> {
         let url = format!("{BASE_URL}/channels/{channel_id}/typing");
         let auth = self.auth_header();

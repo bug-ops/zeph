@@ -60,6 +60,10 @@ impl SlackApi {
     /// # Errors
     ///
     /// Returns an error if the HTTP request or Slack API fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.auth_test", skip_all)
+    )]
     pub async fn auth_test(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let resp: Value = tokio::time::timeout(
             Duration::from_secs(15),
@@ -93,6 +97,10 @@ impl SlackApi {
     /// # Errors
     ///
     /// Returns an error if the HTTP request or Slack API fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.post_message", skip_all)
+    )]
     pub async fn post_message(
         &self,
         channel: &str,
@@ -126,6 +134,10 @@ impl SlackApi {
     /// # Errors
     ///
     /// Returns an error if the HTTP request or Slack API fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.update_message", skip_all)
+    )]
     pub async fn update_message(
         &self,
         channel: &str,
@@ -158,6 +170,10 @@ impl SlackApi {
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or the response status is not success.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.slack.download_file", skip_all)
+    )]
     pub async fn download_file(
         &self,
         url: &str,

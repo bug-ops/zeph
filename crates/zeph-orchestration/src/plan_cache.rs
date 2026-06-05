@@ -291,6 +291,7 @@ impl PlanCache {
     ///
     /// Returns `PlanCacheError::Database` on query failure or
     /// `PlanCacheError::Serialization` on template JSON deserialization failure.
+    #[tracing::instrument(name = "orchestration.plan_cache.find_similar", skip_all, fields(embedding_model = embedding_model))]
     pub async fn find_similar(
         &self,
         goal_embedding: &[f32],
@@ -353,6 +354,7 @@ impl PlanCache {
     /// # Errors
     ///
     /// Returns `PlanCacheError` on extraction, serialization, or database failure.
+    #[tracing::instrument(name = "orchestration.plan_cache.cache_plan", skip_all, fields(goal_hash = tracing::field::Empty))]
     pub async fn cache_plan(
         &self,
         graph: &TaskGraph,
@@ -364,6 +366,7 @@ impl PlanCache {
 
         let normalized = normalize_goal(&graph.goal);
         let hash = goal_hash(&normalized);
+        tracing::Span::current().record("goal_hash", hash.as_str());
         let template_json = serde_json::to_string(&template)?;
         let task_count = i64::try_from(template.tasks.len()).unwrap_or(i64::MAX);
         let now = unix_now();

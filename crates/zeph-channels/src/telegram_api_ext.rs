@@ -257,6 +257,10 @@ impl TelegramApiClient {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.get_me", skip_all)
+    )]
     pub async fn get_me(&self) -> Result<GuestUser, TelegramApiError> {
         self.post("getMe", &serde_json::json!({})).await
     }
@@ -353,6 +357,10 @@ impl TelegramApiClient {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.answer_guest_query", skip_all)
+    )]
     pub async fn answer_guest_query(
         &self,
         query_id: &str,
@@ -395,6 +403,10 @@ impl TelegramApiClient {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.get_managed_bot_access_settings", skip_all)
+    )]
     pub async fn get_managed_bot_access_settings(
         &self,
     ) -> Result<BotAccessSettings, TelegramApiError> {
@@ -425,6 +437,10 @@ impl TelegramApiClient {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.set_managed_bot_access_settings", skip_all)
+    )]
     pub async fn set_managed_bot_access_settings(
         &self,
         settings: &BotAccessSettings,
@@ -459,6 +475,10 @@ impl TelegramApiClient {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.delete_message_reaction", skip_all)
+    )]
     pub async fn delete_message_reaction(
         &self,
         chat_id: i64,
@@ -511,6 +531,10 @@ impl TelegramApiClient {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.get_chat_member", skip_all)
+    )]
     pub async fn get_chat_member(
         &self,
         chat_id: i64,
@@ -550,6 +574,10 @@ impl TelegramApiClient {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "channel.telegram.delete_all_message_reactions", skip_all)
+    )]
     pub async fn delete_all_message_reactions(
         &self,
         chat_id: i64,

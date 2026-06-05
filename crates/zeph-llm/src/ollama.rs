@@ -403,6 +403,14 @@ impl LlmProvider for OllamaProvider {
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_with_tools",
+            skip_all,
+            fields(model = self.model_identifier())
+        )
+    )]
     async fn chat_with_tools(
         &self,
         messages: &[Message],

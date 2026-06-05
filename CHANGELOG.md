@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(channels)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to 17
+  uninstrumented async fns in `zeph-channels` — Telegram API ext (8 fns), Discord REST client
+  (4 fns), and Slack API client (4 fns) plus `bot_is_admin` in telegram moderation. Span names
+  follow `channel.<adapter>.<operation>` convention. Closes #4818.
+- `refactor(orchestration)`: add `#[tracing::instrument]` to `PlanCache::find_similar` and
+  `PlanCache::cache_plan` in `plan_cache.rs`, making plan-cache lookup and store latency visible
+  as child spans inside `orchestration.plan_cache.plan`. Closes #4807.
+- `refactor(llm)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to
+  `OllamaProvider::chat_with_tools`, completing profiling coverage across all `LlmProvider`
+  backends (Claude, OpenAI, Gemini, Compatible, Ollama). Closes #4824.
+
 - `refactor(index)`: add `#[tracing::instrument]` to `retrieve_filtered`, `refresh`, and
   `chunk_exists` in `zeph-index`, completing hot-path trace coverage for the code retrieval flow.
   Span names: `index.retriever.retrieve_filtered`, `index.mcp_server.refresh`,
