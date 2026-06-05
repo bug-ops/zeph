@@ -113,6 +113,7 @@ impl IndexMcpServer {
     /// Rebuild the symbol index from the project root.
     ///
     /// Call this when watcher events indicate file changes.
+    #[tracing::instrument(name = "index.mcp_server.refresh", skip_all)]
     pub async fn refresh(&self) {
         let index = build_index(&self.project_root);
         *self.index.write().await = index;

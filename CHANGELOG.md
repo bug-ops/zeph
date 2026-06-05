@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(index)`: add `#[tracing::instrument]` to `retrieve_filtered`, `refresh`, and
+  `chunk_exists` in `zeph-index`, completing hot-path trace coverage for the code retrieval flow.
+  Span names: `index.retriever.retrieve_filtered`, `index.mcp_server.refresh`,
+  `index.store.chunk_exists`. Closes #4817.
+- `refactor(commands)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to
+  `CommandRegistry::dispatch` — the main entry point for all slash command routing. Adds `profiling`
+  feature to `zeph-commands/Cargo.toml` and propagates it through `zeph-core/profiling`. Closes #4820.
+- `refactor(subagent)`: add `#[tracing::instrument]` to `fire_hooks`, `fire_single_hook`, and
+  `fire_shell_hook` in `zeph-subagent/hooks.rs`, making hook dispatch latency visible in local
+  Chrome JSON traces. Closes #4805.
+
 - `refactor(orchestration)`: extract `DagScheduler::init_common()` private helper from `::new` and
   `::resume_from`, eliminating ~75 lines of duplicated struct initialization code. Only
   graph-state-specific setup (pre-validation, tracing) differs between the two constructors. Closes #4781.

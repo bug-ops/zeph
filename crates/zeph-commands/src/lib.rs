@@ -304,6 +304,14 @@ impl<Ctx: ?Sized> CommandRegistry<Ctx> {
     /// # Errors
     ///
     /// Returns `Some(Err(_))` when authorization fails or the matched handler returns an error.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "commands.dispatch",
+            skip_all,
+            fields(input = tracing::field::Empty, matched = tracing::field::Empty)
+        )
+    )]
     pub async fn dispatch(
         &self,
         ctx: &mut Ctx,

@@ -311,6 +311,7 @@ pub fn make_base_hook_env(
 ///
 /// Returns [`HookError`] if a fail-closed hook exits non-zero, times out, or the
 /// MCP call fails.
+#[tracing::instrument(name = "subagent.hooks.fire", skip_all, fields(hook_count = hooks.len()))]
 pub async fn fire_hooks<S: BuildHasher>(
     hooks: &[HookDef],
     env: &HashMap<String, String, S>,
@@ -352,6 +353,7 @@ pub async fn fire_hooks<S: BuildHasher>(
     Ok(run_result)
 }
 
+#[tracing::instrument(name = "subagent.hooks.single", skip_all)]
 async fn fire_single_hook<S: BuildHasher>(
     hook: &HookDef,
     env: &HashMap<String, String, S>,
@@ -388,6 +390,7 @@ async fn fire_single_hook<S: BuildHasher>(
     }
 }
 
+#[tracing::instrument(name = "subagent.hooks.shell", skip_all, fields(timeout_secs))]
 async fn fire_shell_hook<S: BuildHasher>(
     command: &str,
     timeout_secs: u64,

@@ -217,6 +217,7 @@ impl CodeRetriever {
     /// # Errors
     ///
     /// Returns an error if embedding or Qdrant search fails.
+    #[tracing::instrument(name = "index.retriever.retrieve_filtered", skip(self), fields(%query, available_tokens, %language))]
     pub async fn retrieve_filtered(
         &self,
         query: &str,

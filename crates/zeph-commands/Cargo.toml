@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 cocoon = []
+profiling = []
 
 [lints]
 workspace = true

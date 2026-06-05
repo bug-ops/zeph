@@ -338,6 +338,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
+    #[tracing::instrument(name = "index.store.chunk_exists", skip_all, fields(%content_hash))]
     pub async fn chunk_exists(&self, content_hash: &str) -> Result<bool> {
         let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM chunk_metadata WHERE content_hash = ?"
