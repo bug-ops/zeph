@@ -21,6 +21,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`, `zeph-context`, `zeph-skills`, `zeph-tools`: replace six `span.enter()` guards held
+  across `.await` boundaries with `.instrument(span).await` (and `.instrument(span)` on
+  `async move` blocks passed to `tokio::task::spawn`). The synchronous guard is `!Send` and caused
+  incorrect parent–child span relationships under the tokio multi-thread scheduler. Closes #4777.
+- `zeph-tools`: normalize all span names in `scrape.rs`, `shell/mod.rs`, `diagnostics.rs`,
+  `file.rs`, and `search_code.rs` to the `tools.<subsystem>.<operation>` convention; eliminates the
+  mix of `tool.*`, `tools.*`, and bare `scrape.*` prefixes. Closes #4714.
 - `zeph-sanitizer`: `UNICODE_BYPASS_RE` now includes U+2060 (WORD JOINER) in its character class,
   closing a bypass where inserting that invisible character between `!` and `[` evaded markdown image
   exfiltration detection. Closes #4752.

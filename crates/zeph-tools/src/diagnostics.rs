@@ -93,7 +93,7 @@ impl ToolExecutor for DiagnosticsExecutor {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "tool.diagnostics", skip_all)
+        tracing::instrument(name = "tools.diagnostics.execute", skip_all)
     )]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != "diagnostics" {
