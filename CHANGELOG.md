@@ -30,11 +30,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `fire_shell_hook` in `zeph-subagent/hooks.rs`, making hook dispatch latency visible in local
   Chrome JSON traces. Closes #4805.
 
+- `refactor(context)`: add `#[tracing::instrument]` to four previously uninstrumented `pub async fn`
+  in `zeph-context`: `embed_prepass` and `FidelityScorer::score_and_apply` in `fidelity.rs`, and
+  `CompactionAuditSink::open` / `::flush` in `typed_page.rs`. The remaining four functions listed in
+  #4829 (`ContextAssembler::gather`, `summarize_structured`, `single_pass_summary`,
+  `summarize_with_llm`) were already instrumented by prior PRs. Closes #4829.
+
 - `refactor(orchestration)`: extract `DagScheduler::init_common()` private helper from `::new` and
   `::resume_from`, eliminating ~75 lines of duplicated struct initialization code. Only
   graph-state-specific setup (pre-validation, tracing) differs between the two constructors. Closes #4781.
 
 ### Fixed
+
+- `zeph-context`: replace three synchronous `EnteredSpan` guards held across `.await` boundaries in
+  `fidelity.rs` with `.instrument(span).await` (inline futures) and `#[tracing::instrument]` (function
+  attribute). Affected call sites: `embed_query` (line 273), inline `embed_prepass_dyn` (line 304),
+  `apply_scores` (line 477). Holding a synchronous span guard across an await point silently prevents
+  work-stealing on the tokio multi-thread scheduler. Closes #4828.
 
 - `zeph-agent-context`: replace four synchronous `EnteredSpan` guards held across `.await`
   boundaries with `#[tracing::instrument]` (standalone async fns) and `.instrument(span).await`

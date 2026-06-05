@@ -155,6 +155,7 @@ async fn embed_prepass_dyn(
 ///     let _embeddings = embed_prepass(&messages, &embed, &cfg, 0).await;
 /// }
 /// ```
+#[tracing::instrument(name = "context.fidelity.embed_prepass", skip_all)]
 pub async fn embed_prepass<F>(
     messages: &[Message],
     embed: &F,
@@ -248,6 +249,7 @@ impl FidelityScorer {
     ///
     /// The two providers may be the same instance or different ones (e.g. a fast embedding
     /// model for `embed_provider` and a generative model for `compress_provider`).
+    #[tracing::instrument(name = "context.fidelity.score_and_apply", skip_all)]
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn score_and_apply(
         &self,
@@ -270,11 +272,11 @@ impl FidelityScorer {
             (config.semantic_scoring_provider.is_some(), embed_provider)
             && p.supports_embeddings()
         {
-            let _span = info_span!("context.fidelity.embed_query").entered();
             match tokio::time::timeout(
                 Duration::from_secs(config.embed_timeout_secs),
                 p.embed(query),
             )
+            .instrument(info_span!("context.fidelity.embed_query"))
             .await
             {
                 Ok(Ok(v)) => Some(v),
@@ -301,13 +303,13 @@ impl FidelityScorer {
             } else {
                 n
             };
-            let _span = info_span!("context.fidelity.embed_prepass").entered();
             let embeddings = embed_prepass_dyn(
                 &messages[..score_end],
                 &ProviderEmbed(p),
                 config,
                 inserted_count,
             )
+            .instrument(info_span!("context.fidelity.embed_prepass"))
             .await;
             for (i, emb) in embeddings {
                 messages[i].metadata.embedding = Some(emb);
@@ -467,6 +469,7 @@ fn compute_scores(
     scores
 }
 
+#[tracing::instrument(name = "context.fidelity.apply", skip_all)]
 async fn apply_scores(
     messages: &mut [Message],
     scores: &[Option<FidelityScore>],
@@ -474,7 +477,6 @@ async fn apply_scores(
     tc: &dyn TokenCounting,
     provider: Option<&dyn LlmProviderDyn>,
 ) {
-    let _apply_span = info_span!("context.fidelity.apply").entered();
     let (mut full_count, mut compressed_count, mut placeholder_count, mut tokens_saved) =
         (0u32, 0u32, 0u32, 0u32);
 

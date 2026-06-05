@@ -925,6 +925,7 @@ impl CompactionAuditSink {
     /// # Errors
     ///
     /// Returns an error when `path` cannot be opened for appending.
+    #[tracing::instrument(name = "context.typed_page.open", skip_all)]
     pub async fn open(path: &std::path::Path, capacity: usize) -> Result<Self, std::io::Error> {
         use tokio::io::AsyncWriteExt as _;
 
@@ -1000,6 +1001,7 @@ impl CompactionAuditSink {
     /// Sends a `Flush` sentinel through the same channel as records, so ordering is
     /// preserved — the writer task responds only after all preceding records are written.
     /// If the writer task does not respond within 100 ms, the flush times out silently.
+    #[tracing::instrument(name = "context.typed_page.flush", skip_all)]
     pub async fn flush(&self) {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         if self.tx.send(AuditCommand::Flush(tx)).await.is_ok() {
