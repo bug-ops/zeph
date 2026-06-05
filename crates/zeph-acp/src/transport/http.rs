@@ -290,6 +290,7 @@ impl AcpHttpState {
 ///
 /// Returns `503 Service Unavailable` until the ACP server marks itself ready.
 #[cfg(feature = "acp-http")]
+#[tracing::instrument(skip_all, name = "acp.http.health")]
 pub async fn health_handler(State(state): State<AcpHttpState>) -> impl IntoResponse {
     let ready = state.ready.load(Ordering::Acquire);
     let status = if ready {
@@ -388,6 +389,7 @@ pub(crate) fn create_connection(
 /// Returns `500 Internal Server Error` if writing to the agent channel fails.
 /// Returns `503 Service Unavailable` if `max_sessions` is reached.
 #[cfg(feature = "acp-http")]
+#[tracing::instrument(skip_all, name = "acp.http.post")]
 pub async fn post_handler(
     State(state): State<AcpHttpState>,
     headers: HeaderMap,
@@ -454,6 +456,7 @@ pub async fn post_handler(
 /// Returns `400 Bad Request` if `Acp-Session-Id` header is missing or not a valid UUID.
 /// Returns `404 Not Found` if the session ID is not found.
 #[cfg(feature = "acp-http")]
+#[tracing::instrument(skip_all, name = "acp.http.get")]
 pub async fn get_handler(
     State(state): State<AcpHttpState>,
     headers: HeaderMap,
@@ -497,6 +500,7 @@ pub async fn get_handler(
 /// Returns `503 Service Unavailable` if no `SQLite` store is configured.
 /// Returns `500 Internal Server Error` if the database query fails.
 #[cfg(feature = "acp-http")]
+#[tracing::instrument(skip_all, name = "acp.http.list_sessions")]
 pub async fn list_sessions_handler(
     State(state): State<AcpHttpState>,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -526,6 +530,7 @@ pub async fn list_sessions_handler(
 /// Returns `404 Not Found` if the session does not exist.
 /// Returns `500 Internal Server Error` if the database query fails.
 #[cfg(feature = "acp-http")]
+#[tracing::instrument(skip_all, name = "acp.http.session_messages", fields(session_id = %session_id))]
 pub async fn session_messages_handler(
     State(state): State<AcpHttpState>,
     Path(session_id): Path<String>,

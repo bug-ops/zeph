@@ -281,6 +281,7 @@ impl AcpPermissionGate {
     ///
     /// Returns `AcpError::ChannelClosed` when the `LocalSet` handler has exited,
     /// or `AcpError::ClientError` when the IDE returns a protocol error.
+    #[tracing::instrument(skip_all, name = "acp.permission.check", fields(session_id = %session_id))]
     pub async fn check_permission(
         &self,
         session_id: acp::schema::SessionId,

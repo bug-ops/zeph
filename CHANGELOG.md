@@ -46,6 +46,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `::resume_from`, eliminating ~75 lines of duplicated struct initialization code. Only
   graph-state-specific setup (pre-validation, tracing) differs between the two constructors. Closes #4781.
 
+- `refactor(acp)`: add `#[tracing::instrument]` to `AcpPermissionGate::check_permission`
+  (`acp.permission.check`) and 5 HTTP transport handlers in `transport/http.rs`
+  (`acp.http.post`, `acp.http.get`, `acp.http.health`, `acp.http.list_sessions`,
+  `acp.http.session_messages`), making ACP permission round-trip and HTTP session latency
+  visible in traces. Closes #4837, #4806, #4842.
+
 ### Fixed
 
 - `fix(orchestration)`: `check_graph_completion` deadlock→Failed branch now sets `graph_dirty` flag,
