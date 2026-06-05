@@ -377,15 +377,7 @@ impl LlmProvider for GonkaProvider {
 
         if !status.is_success() {
             tracing::error!("gonka API error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "gonka".into(),
-                status: status.as_u16(),
-            });
+            return Err(crate::http::map_error_response(status, &text, "gonka"));
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
@@ -418,15 +410,7 @@ impl LlmProvider for GonkaProvider {
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
             tracing::error!("gonka streaming error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "gonka".into(),
-                status: status.as_u16(),
-            });
+            return Err(crate::http::map_error_response(status, &text, "gonka"));
         }
 
         Ok(openai_sse_to_stream(response))

@@ -444,6 +444,12 @@ fn default_embedding_model_opt() -> String {
     default_embedding_model()
 }
 
+impl Default for LlmConfig {
+    fn default() -> Self {
+        toml::from_str("").expect("empty TOML produces valid LlmConfig defaults")
+    }
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_routing_none(s: &LlmRoutingStrategy) -> bool {
     *s == LlmRoutingStrategy::None
@@ -498,6 +504,77 @@ impl LlmConfig {
                 .iter()
                 .find(|p| p.effective_name() == name_hint && p.stt_model.is_some())
         }
+    }
+
+    /// Returns the name of the effective embedding model.
+    ///
+    /// Resolution order:
+    /// 1. `embedding_model` from the `[[llm.providers]]` entry marked `embed = true`
+    /// 2. `embedding_model` from the first entry in `[[llm.providers]]`
+    /// 3. `[llm] embedding_model` global fallback (defaults to `"nomic-embed-text"`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::providers::LlmConfig;
+    ///
+    /// let cfg = LlmConfig::default();
+    /// assert!(!cfg.effective_embedding_model().is_empty());
+    /// ```
+    #[must_use]
+    pub fn effective_embedding_model(&self) -> String {
+        if let Some(m) = self
+            .providers
+            .iter()
+            .find(|e| e.embed)
+            .and_then(|e| e.embedding_model.as_ref())
+        {
+            return m.clone();
+        }
+        if let Some(m) = self
+            .providers
+            .first()
+            .and_then(|e| e.embedding_model.as_ref())
+        {
+            return m.clone();
+        }
+        self.embedding_model.clone()
+    }
+
+    /// Returns the name of the stable skill embedding model.
+    ///
+    /// Prefers the `[[llm.providers]]` entry with `embed = true`, using its
+    /// `embedding_model` field first and `model` field as a secondary fallback.
+    /// Falls back to [`Self::effective_embedding_model`] when no dedicated embed
+    /// entry exists. Using the actual provider model name prevents false-positive
+    /// collection rebuilds in `zeph_memory::embedding_registry`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_config::providers::LlmConfig;
+    ///
+    /// let cfg = LlmConfig::default();
+    /// assert!(!cfg.stable_skill_embedding_model().is_empty());
+    /// ```
+    #[must_use]
+    pub fn stable_skill_embedding_model(&self) -> String {
+        let embed_entry = self
+            .providers
+            .iter()
+            .find(|e| e.embed)
+            .or_else(|| self.providers.iter().find(|e| e.embedding_model.is_some()));
+
+        if let Some(entry) = embed_entry {
+            if let Some(em) = entry.embedding_model.as_ref().filter(|s| !s.is_empty()) {
+                return em.clone();
+            }
+            if let Some(m) = entry.model.as_ref().filter(|s| !s.is_empty()) {
+                return m.clone();
+            }
+        }
+
+        self.effective_embedding_model()
     }
 
     /// Validate that the config uses the new `[[llm.providers]]` format.

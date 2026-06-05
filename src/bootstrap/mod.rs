@@ -19,8 +19,7 @@ pub use provider::{
     create_summary_provider,
 };
 pub use skills::{
-    create_embedding_provider, create_skill_matcher, effective_embedding_model, managed_skills_dir,
-    plugins_dir, stable_skill_embedding_model,
+    create_embedding_provider, create_skill_matcher, managed_skills_dir, plugins_dir,
 };
 
 use std::path::{Path, PathBuf};
@@ -941,7 +940,7 @@ impl AppBuilder {
         // Use the stable model name derived from the resolved embed provider entry so that
         // `model_has_changed` in `EmbeddingRegistry` does not trigger a collection rebuild on
         // every restart when `effective_embedding_model` returns an unstable or empty string.
-        let embed_model = stable_skill_embedding_model(&self.config);
+        let embed_model = self.config.llm.stable_skill_embedding_model();
         create_skill_matcher(
             &self.config,
             provider,
@@ -1170,7 +1169,7 @@ impl AppBuilder {
     /// Delegates to [`effective_embedding_model`] and is the canonical source for the
     /// model name passed to skill matchers, memory backends, and the embed backfill task.
     pub fn embedding_model(&self) -> String {
-        effective_embedding_model(&self.config)
+        self.config.llm.effective_embedding_model()
     }
 
     pub fn build_summary_provider(&self) -> Option<AnyProvider> {

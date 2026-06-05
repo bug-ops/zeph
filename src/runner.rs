@@ -2517,7 +2517,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         cache_pool,
         config.llm.response_cache_ttl_secs,
         config.llm.semantic_cache_enabled,
-        crate::bootstrap::effective_embedding_model(config),
+        config.llm.effective_embedding_model(),
         mem_cancel.child_token(),
     );
     let agent = agent_setup::apply_cost_tracker(agent, config);
@@ -3050,7 +3050,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             .and_then(|e| e.stt_model.clone());
         let compaction_model = config.llm.summary_model.clone();
         let semantic_cache_enabled = config.llm.semantic_cache_enabled;
-        let embedding_model = crate::bootstrap::effective_embedding_model(config).clone();
+        let embedding_model = config.llm.effective_embedding_model().clone();
         let self_learning_enabled = config.skills.learning.enabled;
         let token_budget = u64::try_from(budget_tokens).ok();
         let compaction_threshold = u32::try_from(budget_tokens).ok().map(|b| {

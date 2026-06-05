@@ -283,15 +283,7 @@ impl LlmProvider for CocoonProvider {
             if !status.is_success() {
                 let truncated: String = text.chars().take(256).collect();
                 tracing::error!("cocoon API error {status}: {truncated}");
-                if status == reqwest::StatusCode::BAD_REQUEST
-                    && crate::error::body_is_context_length_error(&text)
-                {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::ApiError {
-                    provider: "cocoon".into(),
-                    status: status.as_u16(),
-                });
+                return Err(crate::http::map_error_response(status, &text, "cocoon"));
             }
 
             let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
@@ -328,18 +320,9 @@ impl LlmProvider for CocoonProvider {
             let status = response.status();
             if !status.is_success() {
                 let text = response.text().await.map_err(LlmError::Http)?;
-                // MINOR-1: tag streaming errors as cocoon-specific for trace distinguishability.
                 let truncated: String = text.chars().take(256).collect();
                 tracing::error!("cocoon SSE stream error (status={status}): {truncated}");
-                if status == reqwest::StatusCode::BAD_REQUEST
-                    && crate::error::body_is_context_length_error(&text)
-                {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::ApiError {
-                    provider: "cocoon".into(),
-                    status: status.as_u16(),
-                });
+                return Err(crate::http::map_error_response(status, &text, "cocoon"));
             }
             Ok(openai_sse_to_stream(response))
         }

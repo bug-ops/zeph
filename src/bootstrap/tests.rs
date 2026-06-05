@@ -178,7 +178,7 @@ async fn health_check_claude_noop() {
 #[test]
 fn effective_embedding_model_defaults_to_llm() {
     let config = Config::load(Path::new("/nonexistent")).unwrap();
-    assert_eq!(effective_embedding_model(&config), "qwen3-embedding");
+    assert_eq!(config.llm.effective_embedding_model(), "qwen3-embedding");
 }
 
 #[test]
@@ -192,7 +192,10 @@ fn effective_embedding_model_uses_pool_embed_entry() {
         embed: true,
         ..ProviderEntry::default()
     }];
-    assert_eq!(effective_embedding_model(&config), "text-embedding-3-small");
+    assert_eq!(
+        config.llm.effective_embedding_model(),
+        "text-embedding-3-small"
+    );
 }
 
 #[test]
@@ -205,7 +208,7 @@ fn effective_embedding_model_falls_back_when_embed_missing() {
         embedding_model: None,
         ..ProviderEntry::default()
     }];
-    assert_eq!(effective_embedding_model(&config), "qwen3-embedding");
+    assert_eq!(config.llm.effective_embedding_model(), "qwen3-embedding");
 }
 
 #[test]

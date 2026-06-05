@@ -5,6 +5,8 @@
 
 use std::time::Duration;
 
+use crate::error::{LlmError, body_is_context_length_error};
+
 /// Create an HTTP client for LLM inference providers.
 ///
 /// Connect timeout is fixed at 30s. `request_timeout_secs` is a hard backstop
@@ -25,4 +27,84 @@ pub fn llm_client(request_timeout_secs: u64) -> reqwest::Client {
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .expect("LLM HTTP client construction must not fail")
+}
+
+/// Maps a non-2xx HTTP status and response body to the appropriate [`LlmError`].
+///
+/// Returns [`LlmError::ContextLengthExceeded`] when `status` is `400 Bad Request`
+/// and `body` matches known context-length-exceeded error patterns.
+///
+/// Returns [`LlmError::ApiError`] for all other non-2xx responses. This covers
+/// authentication errors, server errors, and unexpected 4xx codes that are not
+/// context-length failures.
+///
+/// Only call this function after confirming the response is not a 2xx success.
+pub(crate) fn map_error_response(
+    status: reqwest::StatusCode,
+    body: &str,
+    provider: &str,
+) -> LlmError {
+    if status == reqwest::StatusCode::BAD_REQUEST && body_is_context_length_error(body) {
+        LlmError::ContextLengthExceeded
+    } else {
+        LlmError::ApiError {
+            provider: provider.into(),
+            status: status.as_u16(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bad_request_with_context_length_body_returns_exceeded() {
+        let err = map_error_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            "context length exceeded",
+            "p",
+        );
+        assert!(matches!(err, LlmError::ContextLengthExceeded));
+    }
+
+    #[test]
+    fn bad_request_without_context_body_returns_api_error() {
+        let err = map_error_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            "invalid parameter",
+            "myprovider",
+        );
+        assert!(matches!(
+            err,
+            LlmError::ApiError { ref provider, status: 400 } if provider == "myprovider"
+        ));
+    }
+
+    #[test]
+    fn server_error_returns_api_error() {
+        let err = map_error_response(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "", "svc");
+        assert!(matches!(
+            err,
+            LlmError::ApiError { ref provider, status: 500 } if provider == "svc"
+        ));
+    }
+
+    #[test]
+    fn unauthorized_returns_api_error() {
+        let err = map_error_response(reqwest::StatusCode::UNAUTHORIZED, "", "claude");
+        assert!(matches!(
+            err,
+            LlmError::ApiError { ref provider, status: 401 } if provider == "claude"
+        ));
+    }
+
+    #[test]
+    fn too_many_requests_returns_api_error() {
+        let err = map_error_response(reqwest::StatusCode::TOO_MANY_REQUESTS, "", "openai");
+        assert!(matches!(
+            err,
+            LlmError::ApiError { ref provider, status: 429 } if provider == "openai"
+        ));
+    }
 }

@@ -31,6 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bounded by `parallel_evals` (default: 3). Wall-time for Phase 1 drops from O(n) to O(⌈n/k⌉);
   at k=3 the hill-climbing loop evaluates ~3× more variation candidates within the same
   `max_wall_time_secs` budget. Closes #4794.
+- `refactor(llm)`: extract shared HTTP error-response mapper `map_error_response` in
+  `zeph-llm/src/http.rs`; replace 12 duplicate inline error-mapping blocks across `claude`,
+  `openai`, `gonka`, and `cocoon` backends. Closes #4850.
+- `refactor(config)`: move `effective_embedding_model` and `stable_skill_embedding_model` to
+  `LlmConfig` in `zeph-config`; remove config-layer logic from `zeph-core::provider_factory`.
+  Add `impl Default for LlmConfig`. Closes #4840.
 
 - `refactor(channels)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to 17
   uninstrumented async fns in `zeph-channels` — Telegram API ext (8 fns), Discord REST client

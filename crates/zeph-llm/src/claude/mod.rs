@@ -854,15 +854,7 @@ impl ClaudeProvider {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
-                if status == reqwest::StatusCode::BAD_REQUEST
-                    && crate::error::body_is_context_length_error(&text)
-                {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::ApiError {
-                    provider: "claude".into(),
-                    status: status.as_u16(),
-                });
+                return Err(crate::http::map_error_response(status, &text, "claude"));
             }
 
             if Self::has_image_parts(messages) {
@@ -983,15 +975,7 @@ impl ClaudeProvider {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
-                if status == reqwest::StatusCode::BAD_REQUEST
-                    && crate::error::body_is_context_length_error(&text)
-                {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::ApiError {
-                    provider: "claude".into(),
-                    status: status.as_u16(),
-                });
+                return Err(crate::http::map_error_response(status, &text, "claude"));
             }
 
             return Ok(claude_sse_to_tool_stream(response, &self.stream_limits));
@@ -1024,15 +1008,7 @@ impl ClaudeProvider {
                     continue;
                 }
                 tracing::error!("Claude API streaming request error {status}: {text}");
-                if status == reqwest::StatusCode::BAD_REQUEST
-                    && crate::error::body_is_context_length_error(&text)
-                {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::ApiError {
-                    provider: "claude".into(),
-                    status: status.as_u16(),
-                });
+                return Err(crate::http::map_error_response(status, &text, "claude"));
             }
 
             return Ok(response);
@@ -1207,15 +1183,7 @@ impl LlmProvider for ClaudeProvider {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
-                if status == reqwest::StatusCode::BAD_REQUEST
-                    && crate::error::body_is_context_length_error(&text)
-                {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::ApiError {
-                    provider: "claude".into(),
-                    status: status.as_u16(),
-                });
+                return Err(crate::http::map_error_response(status, &text, "claude"));
             }
             let resp: ToolApiResponse = serde_json::from_str(&text)?;
             if let Some(ref usage) = resp.usage {
@@ -1408,15 +1376,7 @@ impl LlmProvider for ClaudeProvider {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
-                if status == reqwest::StatusCode::BAD_REQUEST
-                    && crate::error::body_is_context_length_error(&text)
-                {
-                    return Err(LlmError::ContextLengthExceeded);
-                }
-                return Err(LlmError::ApiError {
-                    provider: "claude".into(),
-                    status: status.as_u16(),
-                });
+                return Err(crate::http::map_error_response(status, &text, "claude"));
             }
 
             let resp: ToolApiResponse = serde_json::from_str(&text)?;

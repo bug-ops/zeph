@@ -385,15 +385,7 @@ impl OpenAiProvider {
 
         if !status.is_success() {
             tracing::error!("OpenAI API error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(crate::http::map_error_response(status, &text, "openai"));
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
@@ -456,15 +448,7 @@ impl OpenAiProvider {
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
             tracing::error!("OpenAI API streaming request error {status}: {text}");
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(crate::http::map_error_response(status, &text, "openai"));
         }
 
         Ok(response)
@@ -814,15 +798,7 @@ impl LlmProvider for OpenAiProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && crate::error::body_is_context_length_error(&text)
-            {
-                return Err(LlmError::ContextLengthExceeded);
-            }
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(crate::http::map_error_response(status, &text, "openai"));
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
