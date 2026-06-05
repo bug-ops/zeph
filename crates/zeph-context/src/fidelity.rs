@@ -75,6 +75,7 @@ impl EmbedCall for ProviderEmbed<'_> {
 ///
 /// `messages` is the slice to embed (callers pre-slice to `[..score_end]` when needed).
 /// Indices in the returned map are relative to the start of the passed slice.
+#[tracing::instrument(name = "context.fidelity.embed_prepass_dyn", skip_all)]
 async fn embed_prepass_dyn(
     messages: &[Message],
     embed: &dyn EmbedCall,
@@ -674,6 +675,7 @@ fn score_to_level(score: f32, config: &FidelityConfig) -> ContextFidelity {
     }
 }
 
+#[tracing::instrument(name = "context.fidelity.render_compressed", skip_all)]
 async fn render_compressed(
     msg: &mut Message,
     config: &FidelityConfig,

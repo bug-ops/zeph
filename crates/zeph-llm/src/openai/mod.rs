@@ -431,13 +431,7 @@ impl OpenAiProvider {
             .await?
         };
 
-        let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
-
-        if !status.is_success() {
-            tracing::error!("OpenAI API error {status}: {text}");
-            return Err(crate::http::map_error_response(status, &text, "openai"));
-        }
+        let text = crate::http::check_response(response, "openai").await?;
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
 
@@ -596,8 +590,7 @@ impl LlmProvider for OpenAiProvider {
             .send()
             .await?;
 
-        let status = response.status();
-        let body_text = response.text().await.map_err(LlmError::Http)?;
+        let (status, body_text) = crate::http::read_response_body(response).await?;
 
         if !status.is_success() {
             tracing::error!("OpenAI embedding API error {status}: {body_text}");
@@ -649,8 +642,7 @@ impl LlmProvider for OpenAiProvider {
             .send()
             .await?;
 
-        let status = response.status();
-        let body_text = response.text().await.map_err(LlmError::Http)?;
+        let (status, body_text) = crate::http::read_response_body(response).await?;
 
         if !status.is_success() {
             tracing::error!("OpenAI batch embedding API error {status}: {body_text}");
@@ -835,12 +827,7 @@ impl LlmProvider for OpenAiProvider {
             .send()
             .await?;
 
-        let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
-
-        if !status.is_success() {
-            return Err(crate::http::map_error_response(status, &text, "openai"));
-        }
+        let text = crate::http::check_response(response, "openai").await?;
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;
 
@@ -927,8 +914,7 @@ impl LlmProvider for OpenAiProvider {
             .send()
             .await?;
 
-        let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+        let (status, text) = crate::http::read_response_body(response).await?;
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(LlmError::RateLimited);

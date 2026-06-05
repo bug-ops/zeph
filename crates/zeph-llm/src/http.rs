@@ -38,6 +38,40 @@ pub fn llm_client(request_timeout_secs: u64) -> reqwest::Client {
 /// authentication errors, server errors, and unexpected 4xx codes that are not
 /// context-length failures.
 ///
+/// Read the response body text and check the HTTP status code in one step.
+///
+/// Returns the body text on success. On non-2xx responses, logs the error at
+/// `error` level and returns the appropriate [`LlmError`] via [`map_error_response`].
+///
+/// Use this for call sites where the only error action is returning
+/// `map_error_response(status, text, provider)` — i.e. no retry logic or
+/// custom error variant selection based on the status.
+pub(crate) async fn check_response(
+    response: reqwest::Response,
+    provider: &str,
+) -> Result<String, LlmError> {
+    let status = response.status();
+    let text = response.text().await.map_err(LlmError::Http)?;
+    if !status.is_success() {
+        tracing::error!(%provider, %status, body = %text, "API error response");
+        return Err(map_error_response(status, &text, provider));
+    }
+    Ok(text)
+}
+
+/// Extract the HTTP status code and response body text together.
+///
+/// Use when the caller needs to inspect both `status` and `text` before
+/// deciding the error path — for example, retry logic, `InvalidInput`
+/// variants based on status code, or custom error messages.
+pub(crate) async fn read_response_body(
+    response: reqwest::Response,
+) -> Result<(reqwest::StatusCode, String), LlmError> {
+    let status = response.status();
+    let text = response.text().await.map_err(LlmError::Http)?;
+    Ok((status, text))
+}
+
 /// Only call this function after confirming the response is not a 2xx success.
 pub(crate) fn map_error_response(
     status: reqwest::StatusCode,

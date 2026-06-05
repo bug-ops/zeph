@@ -838,8 +838,7 @@ impl ClaudeProvider {
             })
             .await?;
 
-            let status = response.status();
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let (status, text) = crate::http::read_response_body(response).await?;
 
             if !status.is_success() {
                 if !retried && Self::is_compact_beta_rejection(status, &text) {
@@ -1168,8 +1167,7 @@ impl LlmProvider for ClaudeProvider {
                     .send()
             })
             .await?;
-            let status = response.status();
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let (status, text) = crate::http::read_response_body(response).await?;
             if !status.is_success() {
                 if !retried && Self::is_compact_beta_rejection(status, &text) {
                     self.server_compaction_rejected
@@ -1360,8 +1358,7 @@ impl LlmProvider for ClaudeProvider {
             })
             .await?;
 
-            let status = response.status();
-            let text = response.text().await.map_err(LlmError::Http)?;
+            let (status, text) = crate::http::read_response_body(response).await?;
 
             if !status.is_success() {
                 if !retried && Self::is_compact_beta_rejection(status, &text) {
