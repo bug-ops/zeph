@@ -210,6 +210,14 @@ impl LlmProvider for CompatibleProvider {
         self.inner.embed(text).await
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.embed_batch",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier())
+        )
+    )]
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
         self.inner.embed_batch(texts).await
     }
@@ -242,6 +250,14 @@ impl LlmProvider for CompatibleProvider {
         self.inner.chat_typed(messages).await
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_with_tools",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
+        )
+    )]
     async fn chat_with_tools(
         &self,
         messages: &[Message],

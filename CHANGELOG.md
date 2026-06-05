@@ -43,6 +43,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(llm): make SSE buffer caps configurable via LlmConfig.stream_limits (#4750)` — adds
+  `StreamLimits` struct to `zeph-config` with `max_tool_json_bytes` (4 MiB), `max_thinking_bytes`
+  (1 MiB), and `max_compaction_bytes` (32 KiB) defaults. All three were previously hardcoded
+  constants in `sse.rs`. `ClaudeProvider` gains a `with_stream_limits()` builder method and is
+  wired from `provider_factory.rs`. Migration step 56 adds a commented `[llm.stream_limits]` hint
+  to existing configs. Backward-compatible: configs without the section parse with defaults.
+
+- `feat(tracing): add profiling instrument to LlmProvider trait methods (#4808, #4790)` — adds
+  `#[cfg_attr(feature = "profiling", tracing::instrument(...))]` to `chat_with_tools` on
+  `ClaudeProvider`, `OpenAiProvider`, `GeminiProvider`, and `CompatibleProvider`; to `embed_batch`
+  on `CompatibleProvider`; and to all five `LlmProvider` trait methods plus `bandit_chat` and
+  `cascade_chat` on `RouterProvider`. Span names follow `llm.<provider>.<method>` convention.
+
 - `feat(worktree): make DefaultGitRunner timeout configurable via WorktreeConfig (#4704)` — adds
   `git_timeout_secs: u64` (default `30`) to `WorktreeConfig`; both production construction sites
   now use `DefaultGitRunner::with_timeout(Duration::from_secs(...))`. Configs without the field

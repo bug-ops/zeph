@@ -126,6 +126,8 @@ pub struct ClaudeProvider {
     enable_extended_context: bool,
     /// Prompt cache TTL variant. `None` means default (~5 min ephemeral).
     prompt_cache_ttl: Option<CacheTtl>,
+    /// SSE buffer size caps (tool JSON, thinking, compaction). Sourced from config.
+    stream_limits: zeph_config::StreamLimits,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -155,6 +157,7 @@ impl fmt::Debug for ClaudeProvider {
             )
             .field("enable_extended_context", &self.enable_extended_context)
             .field("prompt_cache_ttl", &self.prompt_cache_ttl)
+            .field("stream_limits", &self.stream_limits)
             .field("forward_output_schema", &self.forward_output_schema)
             .field("output_schema_hint_bytes", &self.output_schema_hint_bytes)
             .field(
@@ -186,6 +189,7 @@ impl Clone for ClaudeProvider {
             forward_output_schema: self.forward_output_schema,
             output_schema_hint_bytes: self.output_schema_hint_bytes,
             max_tool_description_bytes: self.max_tool_description_bytes,
+            stream_limits: self.stream_limits.clone(),
         }
     }
 }
@@ -225,6 +229,7 @@ impl ClaudeProvider {
             last_compaction: Mutex::new(None),
             enable_extended_context: false,
             prompt_cache_ttl: None,
+            stream_limits: zeph_config::StreamLimits::default(),
         }
     }
 
@@ -369,6 +374,15 @@ impl ClaudeProvider {
             );
         }
         self.prompt_cache_ttl = ttl;
+        self
+    }
+
+    /// Override SSE streaming buffer caps (tool JSON, thinking, compaction).
+    ///
+    /// Call this when the config provides non-default `[llm.stream_limits]` values.
+    #[must_use]
+    pub fn with_stream_limits(mut self, limits: zeph_config::StreamLimits) -> Self {
+        self.stream_limits = limits;
         self
     }
 
@@ -980,7 +994,7 @@ impl ClaudeProvider {
                 });
             }
 
-            return Ok(claude_sse_to_tool_stream(response));
+            return Ok(claude_sse_to_tool_stream(response, &self.stream_limits));
         }
     }
 
@@ -1074,7 +1088,7 @@ impl LlmProvider for ClaudeProvider {
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
-        Ok(claude_sse_to_stream(response))
+        Ok(claude_sse_to_stream(response, &self.stream_limits))
     }
 
     fn supports_streaming(&self) -> bool {
@@ -1318,6 +1332,14 @@ impl LlmProvider for ClaudeProvider {
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_with_tools",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
+        )
+    )]
     async fn chat_with_tools(
         &self,
         messages: &[Message],

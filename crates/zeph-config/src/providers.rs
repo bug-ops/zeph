@@ -276,6 +276,64 @@ impl std::fmt::Display for ProviderKind {
     }
 }
 
+fn default_max_tool_json_bytes() -> usize {
+    4 * 1024 * 1024
+}
+
+fn default_max_thinking_bytes() -> usize {
+    1024 * 1024
+}
+
+fn default_max_compaction_bytes() -> usize {
+    32 * 1024
+}
+
+fn stream_limits_is_default(v: &StreamLimits) -> bool {
+    v.max_tool_json_bytes == default_max_tool_json_bytes()
+        && v.max_thinking_bytes == default_max_thinking_bytes()
+        && v.max_compaction_bytes == default_max_compaction_bytes()
+}
+
+/// Per-buffer byte caps for Claude SSE streaming.
+///
+/// Controls the maximum number of bytes accumulated in each streaming buffer before
+/// excess data is discarded with a warning. All caps default to values that match the
+/// pre-existing hardcoded constants, so omitting `[llm.stream_limits]` in the config
+/// preserves identical behavior.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [llm.stream_limits]
+/// max_tool_json_bytes  = 8388608   # 8 MiB  — raise for unusually large tool results
+/// max_thinking_bytes   = 2097152   # 2 MiB  — raise for deep extended-thinking runs
+/// max_compaction_bytes = 65536     # 64 KiB — raise for verbose compaction summaries
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct StreamLimits {
+    /// Maximum bytes for an accumulated tool-use JSON buffer. Default: 4 MiB.
+    #[serde(default = "default_max_tool_json_bytes")]
+    pub max_tool_json_bytes: usize,
+
+    /// Maximum bytes for an accumulated thinking block. Default: 1 MiB.
+    #[serde(default = "default_max_thinking_bytes")]
+    pub max_thinking_bytes: usize,
+
+    /// Maximum bytes for an accumulated server-side compaction summary. Default: 32 KiB.
+    #[serde(default = "default_max_compaction_bytes")]
+    pub max_compaction_bytes: usize,
+}
+
+impl Default for StreamLimits {
+    fn default() -> Self {
+        Self {
+            max_tool_json_bytes: default_max_tool_json_bytes(),
+            max_thinking_bytes: default_max_thinking_bytes(),
+            max_compaction_bytes: default_max_compaction_bytes(),
+        }
+    }
+}
+
 /// LLM configuration, nested under `[llm]` in TOML.
 ///
 /// Declares the provider pool and controls routing, embedding, caching, and STT.
@@ -372,6 +430,14 @@ pub struct LlmConfig {
     /// Collaborative Entropy (`CoE`) configuration. `None` = `CoE` disabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coe: Option<CoeConfig>,
+
+    /// SSE streaming buffer size limits.
+    ///
+    /// Controls the maximum bytes accumulated in per-block SSE buffers before excess
+    /// data is silently discarded. All fields have sane defaults; omitting the section
+    /// keeps pre-existing behavior.
+    #[serde(default, skip_serializing_if = "stream_limits_is_default")]
+    pub stream_limits: StreamLimits,
 }
 
 fn default_embedding_model_opt() -> String {

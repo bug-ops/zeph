@@ -4,6 +4,7 @@
 use eventsource_stream::Eventsource;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
+use zeph_config::StreamLimits;
 
 use crate::error::LlmError;
 use crate::provider::{ChatStream, StreamChunk, ThinkingBlock, ToolUseRequest};
@@ -65,7 +66,11 @@ struct ClaudeSseState {
 }
 
 /// Convert a Claude streaming response into a `ChatStream`.
-pub(crate) fn claude_sse_to_stream(response: reqwest::Response) -> ChatStream {
+pub(crate) fn claude_sse_to_stream(
+    response: reqwest::Response,
+    limits: &StreamLimits,
+) -> ChatStream {
+    let limits = limits.clone();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
         let mut state = ClaudeSseState::default();
@@ -73,7 +78,7 @@ pub(crate) fn claude_sse_to_stream(response: reqwest::Response) -> ChatStream {
         while let Some(event) = pinned.next().await {
             match event {
                 Ok(ev) => {
-                    for chunk in parse_claude_sse_events(&mut state, &ev.data, &ev.event) {
+                    for chunk in parse_claude_sse_events(&mut state, &ev.data, &ev.event, &limits) {
                         yield chunk;
                     }
                 }
@@ -89,7 +94,11 @@ pub(crate) fn claude_sse_to_stream(response: reqwest::Response) -> ChatStream {
 /// Emits `ToolSseEvent` variants so `SpeculativeStreamDrainer` can intercept
 /// `InputJsonDelta` events for early speculative dispatch, while passing other
 /// events through to reconstruct a `ChatResponse` at the end.
-pub(crate) fn claude_sse_to_tool_stream(response: reqwest::Response) -> ToolSseStream {
+pub(crate) fn claude_sse_to_tool_stream(
+    response: reqwest::Response,
+    limits: &StreamLimits,
+) -> ToolSseStream {
+    let limits = limits.clone();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
         let mut state = ClaudeSseState::default();
@@ -97,7 +106,7 @@ pub(crate) fn claude_sse_to_tool_stream(response: reqwest::Response) -> ToolSseS
         while let Some(event) = pinned.next().await {
             match event {
                 Ok(ev) => {
-                    for tool_ev in parse_claude_tool_sse_events(&mut state, &ev.data, &ev.event) {
+                    for tool_ev in parse_claude_tool_sse_events(&mut state, &ev.data, &ev.event, &limits) {
                         yield tool_ev;
                     }
                 }
@@ -140,6 +149,7 @@ fn parse_claude_sse_events(
     state: &mut ClaudeSseState,
     data: &str,
     event_type: &str,
+    limits: &StreamLimits,
 ) -> Vec<Result<StreamChunk, LlmError>> {
     match event_type {
         "content_block_start" => {
@@ -168,11 +178,12 @@ fn parse_claude_sse_events(
                     match delta.delta_type.as_str() {
                         "text_delta" if !delta.text.is_empty() => {
                             if let Some(ref mut buf) = state.compaction_buf {
-                                const MAX_COMPACTION_BUF: usize = 32 * 1024;
-                                let remaining = MAX_COMPACTION_BUF.saturating_sub(buf.len());
+                                let remaining =
+                                    limits.max_compaction_bytes.saturating_sub(buf.len());
                                 if remaining == 0 {
                                     tracing::warn!(
-                                        "compaction buffer exceeded 32 KiB cap; discarding excess"
+                                        cap = limits.max_compaction_bytes,
+                                        "compaction buffer exceeded cap; discarding excess"
                                     );
                                 } else {
                                     let to_append = &delta.text[..delta.text.len().min(remaining)];
@@ -227,6 +238,7 @@ fn parse_claude_tool_sse_events(
     state: &mut ClaudeSseState,
     data: &str,
     event_type: &str,
+    limits: &StreamLimits,
 ) -> Vec<ToolSseEvent> {
     match event_type {
         "content_block_start" => {
@@ -289,13 +301,17 @@ fn parse_claude_tool_sse_events(
             state.in_thinking_block = false;
             events
         }
-        "content_block_delta" => parse_tool_delta_event(state, data),
+        "content_block_delta" => parse_tool_delta_event(state, data, limits),
         "error" => parse_sse_error_event(data),
         _ => vec![],
     }
 }
 
-fn parse_tool_delta_event(state: &mut ClaudeSseState, data: &str) -> Vec<ToolSseEvent> {
+fn parse_tool_delta_event(
+    state: &mut ClaudeSseState,
+    data: &str,
+    limits: &StreamLimits,
+) -> Vec<ToolSseEvent> {
     let Ok(event) = serde_json::from_str::<ClaudeStreamEvent>(data) else {
         return vec![ToolSseEvent::Error(LlmError::SseParse(format!(
             "failed to parse SSE data: {data}"
@@ -307,13 +323,15 @@ fn parse_tool_delta_event(state: &mut ClaudeSseState, data: &str) -> Vec<ToolSse
     match delta.delta_type.as_str() {
         "text_delta" if !delta.text.is_empty() => {
             if let Some(ref mut buf) = state.compaction_buf {
-                const MAX_COMPACTION_BUF: usize = 32 * 1024;
-                let remaining = MAX_COMPACTION_BUF.saturating_sub(buf.len());
+                let remaining = limits.max_compaction_bytes.saturating_sub(buf.len());
                 if remaining > 0 {
                     let to_append = &delta.text[..delta.text.len().min(remaining)];
                     buf.push_str(to_append);
                 } else {
-                    tracing::warn!("compaction buffer exceeded 32 KiB cap; discarding excess");
+                    tracing::warn!(
+                        cap = limits.max_compaction_bytes,
+                        "compaction buffer exceeded cap; discarding excess"
+                    );
                 }
                 return vec![];
             }
@@ -321,9 +339,11 @@ fn parse_tool_delta_event(state: &mut ClaudeSseState, data: &str) -> Vec<ToolSse
         }
         "input_json_delta" if !delta.partial_json.is_empty() => {
             if let Some((_, _, _, ref mut json)) = state.tool_block {
-                const MAX_TOOL_JSON_BUF: usize = 4 * 1024 * 1024;
-                if json.len() >= MAX_TOOL_JSON_BUF {
-                    tracing::warn!("tool JSON buffer exceeded 4 MiB cap; discarding excess");
+                if json.len() >= limits.max_tool_json_bytes {
+                    tracing::warn!(
+                        cap = limits.max_tool_json_bytes,
+                        "tool JSON buffer exceeded cap; discarding excess"
+                    );
                 } else {
                     json.push_str(&delta.partial_json);
                 }
@@ -336,9 +356,11 @@ fn parse_tool_delta_event(state: &mut ClaudeSseState, data: &str) -> Vec<ToolSse
         }
         "thinking_delta" if !delta.thinking.is_empty() => {
             if let Some((ref mut t, _)) = state.thinking_block {
-                const MAX_THINKING_BUF: usize = 1024 * 1024;
-                if t.len() >= MAX_THINKING_BUF {
-                    tracing::warn!("thinking buffer exceeded 1 MiB cap; discarding excess");
+                if t.len() >= limits.max_thinking_bytes {
+                    tracing::warn!(
+                        cap = limits.max_thinking_bytes,
+                        "thinking buffer exceeded cap; discarding excess"
+                    );
                 } else {
                     t.push_str(&delta.thinking);
                 }
@@ -587,12 +609,18 @@ struct GeminiStreamPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_config::StreamLimits;
 
     #[test]
     fn claude_parse_text_delta() {
         let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
-        let mut results = parse_claude_sse_events(&mut state, data, "content_block_delta");
+        let mut results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
         assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello"));
@@ -603,7 +631,12 @@ mod tests {
         let mut state = ClaudeSseState::default();
         let data =
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}"#;
-        let results = parse_claude_sse_events(&mut state, data, "content_block_delta");
+        let results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         assert!(results.is_empty());
     }
 
@@ -611,7 +644,8 @@ mod tests {
     fn claude_parse_error_event() {
         let mut state = ClaudeSseState::default();
         let data = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
-        let mut results = parse_claude_sse_events(&mut state, data, "error");
+        let mut results =
+            parse_claude_sse_events(&mut state, data, "error", &StreamLimits::default());
         assert_eq!(results.len(), 1);
         let err = results.remove(0).unwrap_err();
         assert!(err.to_string().contains("overloaded_error"));
@@ -620,7 +654,7 @@ mod tests {
     #[test]
     fn claude_parse_unknown_event_skipped() {
         let mut state = ClaudeSseState::default();
-        let results = parse_claude_sse_events(&mut state, "{}", "ping");
+        let results = parse_claude_sse_events(&mut state, "{}", "ping", &StreamLimits::default());
         assert!(results.is_empty());
     }
 
@@ -656,7 +690,12 @@ mod tests {
     fn claude_thinking_delta_emitted_as_thinking_chunk() {
         let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I need to think about this"}}"#;
-        let mut results = parse_claude_sse_events(&mut state, data, "content_block_delta");
+        let mut results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
         assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "I need to think about this"));
@@ -666,7 +705,12 @@ mod tests {
     fn claude_thinking_delta_empty_not_emitted() {
         let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}"#;
-        let results = parse_claude_sse_events(&mut state, data, "content_block_delta");
+        let results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         assert!(results.is_empty());
     }
 
@@ -683,7 +727,12 @@ mod tests {
     fn claude_signature_delta_not_emitted_to_stream() {
         let mut state = ClaudeSseState::default();
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc123"}}"#;
-        let results = parse_claude_sse_events(&mut state, data, "content_block_delta");
+        let results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         assert!(results.is_empty());
     }
 
@@ -692,7 +741,12 @@ mod tests {
         let mut state = ClaudeSseState::default();
         assert!(state.compaction_buf.is_none());
         let data = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","text":""}}"#;
-        let results = parse_claude_sse_events(&mut state, data, "content_block_start");
+        let results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_start",
+            &StreamLimits::default(),
+        );
         assert!(results.is_empty());
         assert!(state.compaction_buf.is_some());
     }
@@ -702,7 +756,12 @@ mod tests {
         let mut state = ClaudeSseState::default();
         let data =
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
-        let results = parse_claude_sse_events(&mut state, data, "content_block_start");
+        let results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_start",
+            &StreamLimits::default(),
+        );
         assert!(results.is_empty());
         assert!(state.compaction_buf.is_none());
     }
@@ -714,7 +773,12 @@ mod tests {
             ..Default::default()
         };
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Summary text"}}"#;
-        let results = parse_claude_sse_events(&mut state, data, "content_block_delta");
+        let results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         assert!(results.is_empty());
         assert_eq!(state.compaction_buf.as_deref(), Some("Summary text"));
     }
@@ -726,7 +790,12 @@ mod tests {
             ..Default::default()
         };
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" more"}}"#;
-        let results = parse_claude_sse_events(&mut state, data, "content_block_delta");
+        let results = parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         // Must not emit a Content chunk while accumulating compaction.
         assert!(results.is_empty());
         assert_eq!(state.compaction_buf.as_deref(), Some("so far more"));
@@ -738,7 +807,12 @@ mod tests {
             compaction_buf: Some("Final summary".to_owned()),
             ..Default::default()
         };
-        let mut results = parse_claude_sse_events(&mut state, "{}", "content_block_stop");
+        let mut results = parse_claude_sse_events(
+            &mut state,
+            "{}",
+            "content_block_stop",
+            &StreamLimits::default(),
+        );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
         assert!(
@@ -751,7 +825,12 @@ mod tests {
     #[test]
     fn claude_stop_without_compaction_buf_returns_none() {
         let mut state = ClaudeSseState::default();
-        let results = parse_claude_sse_events(&mut state, "{}", "content_block_stop");
+        let results = parse_claude_sse_events(
+            &mut state,
+            "{}",
+            "content_block_stop",
+            &StreamLimits::default(),
+        );
         assert!(results.is_empty());
     }
 
@@ -764,7 +843,12 @@ mod tests {
         // Two-byte push that would exceed cap.
         let data =
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ab"}}"#;
-        parse_claude_sse_events(&mut state, data, "content_block_delta");
+        parse_claude_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         let buf = state.compaction_buf.as_ref().unwrap();
         assert!(buf.len() <= 32 * 1024, "buffer must not exceed 32 KiB");
     }
@@ -774,12 +858,33 @@ mod tests {
         let mut state = ClaudeSseState::default();
         // 1. block_start with compaction type
         let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","text":""}}"#;
-        assert!(parse_claude_sse_events(&mut state, start, "content_block_start").is_empty());
+        assert!(
+            parse_claude_sse_events(
+                &mut state,
+                start,
+                "content_block_start",
+                &StreamLimits::default()
+            )
+            .is_empty()
+        );
         // 2. delta
         let delta = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Summarized context"}}"#;
-        assert!(parse_claude_sse_events(&mut state, delta, "content_block_delta").is_empty());
+        assert!(
+            parse_claude_sse_events(
+                &mut state,
+                delta,
+                "content_block_delta",
+                &StreamLimits::default()
+            )
+            .is_empty()
+        );
         // 3. stop
-        let mut results = parse_claude_sse_events(&mut state, "{}", "content_block_stop");
+        let mut results = parse_claude_sse_events(
+            &mut state,
+            "{}",
+            "content_block_stop",
+            &StreamLimits::default(),
+        );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
         assert!(matches!(chunk, StreamChunk::Compaction(s) if s == "Summarized context"));
@@ -793,7 +898,12 @@ mod tests {
             ..Default::default()
         };
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":\"ls"}}"#;
-        let events = parse_claude_tool_sse_events(&mut state, data, "content_block_delta");
+        let events = parse_claude_tool_sse_events(
+            &mut state,
+            data,
+            "content_block_delta",
+            &StreamLimits::default(),
+        );
         assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0], ToolSseEvent::InputJsonDelta { index: 0, delta } if delta == r#"{"cmd":"ls"#)
@@ -812,7 +922,12 @@ mod tests {
             current_block_index: 1,
             ..Default::default()
         };
-        let events = parse_claude_tool_sse_events(&mut state, "{}", "content_block_stop");
+        let events = parse_claude_tool_sse_events(
+            &mut state,
+            "{}",
+            "content_block_stop",
+            &StreamLimits::default(),
+        );
         assert!(state.tool_block.is_none());
         assert!(
             events.iter().any(|e| matches!(e, ToolSseEvent::ToolCallComplete { index: 1, name, .. } if name == "read_file"))
@@ -826,7 +941,12 @@ mod tests {
             in_thinking_block: true,
             ..Default::default()
         };
-        let events = parse_claude_tool_sse_events(&mut state, "{}", "content_block_stop");
+        let events = parse_claude_tool_sse_events(
+            &mut state,
+            "{}",
+            "content_block_stop",
+            &StreamLimits::default(),
+        );
         assert!(state.thinking_block.is_none());
         assert!(
             events.iter().any(|e| matches!(e, ToolSseEvent::ThinkingBlockDone(ThinkingBlock::Thinking { thinking, .. }) if thinking == "think"))
@@ -1022,7 +1142,7 @@ mod tests {
             ..Default::default()
         };
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"OVERFLOW"}}"#;
-        parse_tool_delta_event(&mut state, data);
+        parse_tool_delta_event(&mut state, data, &StreamLimits::default());
         let buf_len = state.tool_block.as_ref().unwrap().3.len();
         assert_eq!(
             buf_len,
@@ -1039,7 +1159,7 @@ mod tests {
             ..Default::default()
         };
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"k\":1}"}}"#;
-        parse_tool_delta_event(&mut state, data);
+        parse_tool_delta_event(&mut state, data, &StreamLimits::default());
         let buf = &state.tool_block.as_ref().unwrap().3;
         assert_eq!(buf, r#"{"k":1}"#);
     }
@@ -1052,7 +1172,7 @@ mod tests {
             ..Default::default()
         };
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"OVERFLOW"}}"#;
-        parse_tool_delta_event(&mut state, data);
+        parse_tool_delta_event(&mut state, data, &StreamLimits::default());
         let thinking_len = state.thinking_block.as_ref().unwrap().0.len();
         assert_eq!(
             thinking_len,
@@ -1069,7 +1189,7 @@ mod tests {
             ..Default::default()
         };
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step one"}}"#;
-        parse_tool_delta_event(&mut state, data);
+        parse_tool_delta_event(&mut state, data, &StreamLimits::default());
         assert_eq!(state.thinking_block.as_ref().unwrap().0, "step one");
     }
 }

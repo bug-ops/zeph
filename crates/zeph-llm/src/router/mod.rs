@@ -1538,6 +1538,14 @@ impl LlmProvider for RouterProvider {
             .and_then(LlmProvider::context_window)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.router.chat",
+            skip_all,
+            fields(model = self.model_identifier())
+        )
+    )]
     #[allow(clippy::too_many_lines)] // CoE + quality-gate inline logic; extracting would obscure the control flow
     fn chat(
         &self,
@@ -1704,6 +1712,10 @@ impl LlmProvider for RouterProvider {
         })
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.chat_stream", skip_all, fields(model = self.model_identifier()))
+    )]
     fn chat_stream(
         &self,
         messages: &[Message],
@@ -1775,6 +1787,10 @@ impl LlmProvider for RouterProvider {
             .any(LlmProvider::supports_streaming)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.embed", skip_all, fields(model = self.model_identifier()))
+    )]
     fn embed(
         &self,
         text: &str,
@@ -1879,6 +1895,10 @@ impl LlmProvider for RouterProvider {
         })
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.embed_batch", skip_all, fields(model = self.model_identifier()))
+    )]
     fn embed_batch(
         &self,
         texts: &[&str],
@@ -2006,6 +2026,14 @@ impl LlmProvider for RouterProvider {
             .collect()
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.router.chat_with_tools",
+            skip_all,
+            fields(model = self.model_identifier(), tool_count = tools.len())
+        )
+    )]
     #[allow(refining_impl_trait_reachable)]
     fn chat_with_tools(
         &self,
@@ -2117,6 +2145,10 @@ impl LlmProvider for RouterProvider {
 
 impl RouterProvider {
     /// Bandit `chat()` implementation: select provider, call, record reward.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.bandit_chat", skip_all)
+    )]
     async fn bandit_chat(
         &self,
         messages: &[Message],
@@ -2229,6 +2261,10 @@ impl RouterProvider {
     /// Cascade chat: try providers in order, escalate on degenerate output.
     ///
     /// Returns the best-seen response if all providers fail or budget is exhausted.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.cascade_chat", skip_all)
+    )]
     #[allow(clippy::too_many_lines)] // cascade loop: per-provider error/ok/budget/escalation branches are tightly coupled — extracting would obscure the control flow
     async fn cascade_chat(
         &self,

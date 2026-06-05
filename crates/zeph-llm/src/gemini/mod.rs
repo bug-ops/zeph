@@ -1224,6 +1224,14 @@ impl LlmProvider for GeminiProvider {
         true
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.chat_with_tools",
+            skip_all,
+            fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
+        )
+    )]
     async fn chat_with_tools(
         &self,
         messages: &[Message],

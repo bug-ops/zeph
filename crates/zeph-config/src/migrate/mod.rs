@@ -3434,14 +3434,15 @@ use steps::{
     MigrateEmbedProviderRename, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
     MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
     MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
-    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
-    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
-    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
+    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
+    MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
+    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
+    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
+    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
+    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
+    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateProviderMaxConcurrent,
+    MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
+    MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
     MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
@@ -3666,6 +3667,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateWorktreeConfig),
             // Step 55 — add git_timeout_secs to [worktree] (#4704)
             Box::new(MigrateWorktreeGitTimeout),
+            // Step 56 — add [llm.stream_limits] commented advisory notice (#4750)
+            Box::new(MigrateLlmStreamLimits),
         ]
     });
 
@@ -3978,6 +3981,39 @@ pub fn migrate_worktree_git_timeout(toml_src: &str) -> Result<MigrationResult, M
     })
 }
 
+/// Add a commented-out `[llm.stream_limits]` section when `[llm]` is present but the
+/// section is absent (#4750).
+///
+/// All three fields carry compile-time defaults that reproduce pre-existing behavior, so
+/// existing deployments that skip the section are unaffected.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_llm_stream_limits(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[llm.stream_limits]") || !toml_src.contains("[llm]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# SSE streaming buffer caps (#4750). Defaults match pre-existing behavior.\n\
+        # [llm.stream_limits]\n\
+        # max_tool_json_bytes  = 4194304   # 4 MiB\n\
+        # max_thinking_bytes   = 1048576   # 1 MiB\n\
+        # max_compaction_bytes = 32768     # 32 KiB\n";
+
+    let output = format!("{toml_src}{comment}");
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["llm.stream_limits".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3993,8 +4029,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            55,
-            "MIGRATIONS registry must contain all 55 sequential steps"
+            56,
+            "MIGRATIONS registry must contain all 56 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5581,7 +5617,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_fifty_entries() {
-        assert_eq!(MIGRATIONS.len(), 55);
+        assert_eq!(MIGRATIONS.len(), 56);
     }
 
     #[test]
@@ -5620,7 +5656,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–55).
+        // Names must follow the documented step order (steps 1–56).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -5677,6 +5713,7 @@ prompt_cache_ttl = "1h"
             "migrate_cocoon_show_balance",
             "migrate_worktree_config",
             "migrate_worktree_git_timeout",
+            "migrate_llm_stream_limits",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);

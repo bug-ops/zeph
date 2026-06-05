@@ -200,6 +200,7 @@ impl Default for Config {
                 summary_provider: None,
                 complexity_routing: None,
                 coe: None,
+                stream_limits: crate::StreamLimits::default(),
             },
             skills: SkillsConfig {
                 paths: default_skill_paths(),

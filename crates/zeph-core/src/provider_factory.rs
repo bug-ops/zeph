@@ -184,6 +184,7 @@ fn build_claude_provider(
         .map_err(|e| BootstrapError::Provider(format!("invalid thinking config: {e}")))?
         .with_server_compaction(entry.server_compaction)
         .with_prompt_cache_ttl(entry.prompt_cache_ttl)
+        .with_stream_limits(config.llm.stream_limits.clone())
         .with_output_schema_forwarding(
             config.mcp.forward_output_schema,
             config.mcp.output_schema_hint_bytes,
