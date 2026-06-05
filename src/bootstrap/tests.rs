@@ -756,8 +756,8 @@ fn build_judge_provider_valid_judge_provider_returns_some() {
     );
 }
 
-/// Regression test for #4761: when judge_provider is set but the named provider does not exist,
-/// the function must fall through to judge_model instead of returning None early.
+/// Regression test for #4761: when `judge_provider` is set but the named provider does not exist,
+/// the function must fall through to `judge_model` instead of returning `None` early.
 #[test]
 fn build_judge_provider_invalid_judge_provider_falls_back_to_judge_model() {
     let b = make_builder_with_judge_config(
