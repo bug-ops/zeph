@@ -63,9 +63,6 @@ async fn semantic_scan_plugin_add(
     use futures::stream::StreamExt as _;
     use zeph_skills::semantic_scanner::ScanVerdict;
 
-    let span = tracing::info_span!("core.agent.scan_plugin", plugin = %source);
-    let _enter = span.enter();
-
     let plugins_dir = zeph_plugins::PluginManager::default_plugins_dir();
     let mgr_dir =
         managed_dir.unwrap_or_else(|| zeph_config::defaults::default_vault_dir().join("skills"));
@@ -1150,6 +1147,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     mcp_allowed.clone(),
                     base_shell_allowed.clone(),
                 )
+                .instrument(tracing::info_span!("core.agent.scan_plugin", plugin = %source.trim()))
                 .await?
             {
                 return Ok(err);

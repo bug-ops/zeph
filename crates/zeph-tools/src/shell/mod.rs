@@ -621,7 +621,7 @@ impl ShellExecutor {
     /// Returns `ToolError` on blocked commands, sandbox violations, or execution failures.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "tool.shell", skip_all, fields(exit_code = tracing::field::Empty, duration_ms = tracing::field::Empty))
+        tracing::instrument(name = "tools.shell.execute", skip_all, fields(exit_code = tracing::field::Empty, duration_ms = tracing::field::Empty))
     )]
     pub async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
         self.execute_inner(response, true).await
@@ -801,7 +801,7 @@ impl ShellExecutor {
     ///
     /// This is the structured-tool-call path — it uses the resolved CWD and env directly
     /// instead of re-reading process state on every call.
-    #[tracing::instrument(name = "tool.shell.execute_block", skip(self, resolved), level = "info",
+    #[tracing::instrument(name = "tools.shell.execute_block", skip(self, resolved), level = "info",
         fields(cwd = %resolved.cwd.display(), env_name = resolved.name.as_deref().unwrap_or("")))]
     async fn execute_block_with_context(
         &self,
@@ -1637,7 +1637,7 @@ impl ToolExecutor for ShellExecutor {
         }]
     }
 
-    #[tracing::instrument(name = "tool.shell.execute_tool_call", skip(self, call), level = "info",
+    #[tracing::instrument(name = "tools.shell.execute_tool_call", skip(self, call), level = "info",
         fields(tool_id = %call.tool_id, env = call.context.as_ref().and_then(|c| c.name()).unwrap_or("")))]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != "bash" {

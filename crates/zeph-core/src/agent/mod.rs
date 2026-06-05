@@ -86,6 +86,8 @@ use zeph_skills::prompt::format_skills_prompt;
 use zeph_skills::registry::SkillRegistry;
 use zeph_tools::executor::{ErasedToolExecutor, ToolExecutor};
 
+use tracing::Instrument as _;
+
 use crate::channel::Channel;
 use crate::config::Config;
 use crate::context::{ContextBudget, build_system_prompt};
@@ -3718,9 +3720,6 @@ impl<C: Channel> Agent<C> {
             agent_supervisor::TaskClass::Enrichment,
             "compression_spectrum.promotion_scan",
             async move {
-                let span = tracing::info_span!("memory.compression.promote.background");
-                let _enter = span.enter();
-
                 let window = match memory.load_promotion_window(promotion_window).await {
                     Ok(w) => w,
                     Err(e) => {
@@ -3752,7 +3751,8 @@ impl<C: Channel> Agent<C> {
                 }
 
                 tracing::info!(candidates = candidates.len(), "promotion scan: complete");
-            },
+            }
+            .instrument(tracing::info_span!("memory.compression.promote.background")),
         );
 
         if accepted {

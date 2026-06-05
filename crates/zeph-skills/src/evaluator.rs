@@ -23,6 +23,7 @@
 
 use std::time::Duration;
 
+use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
@@ -201,11 +202,12 @@ impl SkillEvaluator {
             Message::from_legacy(Role::User, &prompt),
         ];
 
-        let llm_result = tokio::time::timeout(Duration::from_millis(self.timeout_ms), async {
-            let span = tracing::info_span!("skills.eval.llm_call");
-            let _enter = span.enter();
-            self.critic.chat(&messages).await
-        })
+        let llm_result = tokio::time::timeout(
+            Duration::from_millis(self.timeout_ms),
+            self.critic
+                .chat(&messages)
+                .instrument(tracing::info_span!("skills.eval.llm_call")),
+        )
         .await;
 
         let raw = match llm_result {

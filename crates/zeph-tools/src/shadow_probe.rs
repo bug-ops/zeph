@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use tracing::info_span;
+use tracing::{Instrument as _, info_span};
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::registry::ToolDef;
@@ -142,7 +142,6 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
             "security.shadow.probe_executor",
             tool_id = %call.tool_id
         );
-        let _enter = span.enter();
 
         let args = serde_json::Value::Object(call.params.clone());
         let turn = self.current_turn();
@@ -151,6 +150,7 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
         let outcome = self
             .probe
             .probe(call.tool_id.as_str(), &args, turn, &risk)
+            .instrument(span)
             .await;
 
         match outcome {
@@ -177,7 +177,6 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
             "security.shadow.probe_executor_confirmed",
             tool_id = %call.tool_id
         );
-        let _enter = span.enter();
 
         let args = serde_json::Value::Object(call.params.clone());
         let turn = self.current_turn();
@@ -186,6 +185,7 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
         let outcome = self
             .probe
             .probe(call.tool_id.as_str(), &args, turn, &risk)
+            .instrument(span)
             .await;
 
         match outcome {

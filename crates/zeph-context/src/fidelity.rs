@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
+use tracing::Instrument as _;
 use tracing::info_span;
 use zeph_common::memory::TokenCounting;
 use zeph_common::{ContextFidelity, PlannedToolHint};
@@ -708,14 +709,12 @@ async fn render_compressed(
                 input_tokens,
                 cached = false,
             );
-            let result = {
-                let _enter = span.enter();
-                tokio::time::timeout(
-                    Duration::from_secs(config.compress_timeout_secs),
-                    p.chat(&req),
-                )
-                .await
-            };
+            let result = tokio::time::timeout(
+                Duration::from_secs(config.compress_timeout_secs),
+                p.chat(&req),
+            )
+            .instrument(span)
+            .await;
 
             match result {
                 Ok(Ok(summary)) => {
