@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fix(config)`: `migrate_worktree_config` now uses a line-anchored check (`lines().any(|l| l.trim() == "[worktree]")`) instead of a bare `contains("[worktree]")`, preventing false-positive idempotency detection when `[worktree]` appears inside a config value string. Adds regression test `step_54_does_not_skip_when_worktree_in_value`. Closes #4793.
 - `OpenAiProvider::context_window()` now returns `Some(200_000)` for o-series models
   (o1, o1-mini, o3, o3-mini, o4-mini) instead of `None`, preventing silent context overflow (#4801)
+- `zeph-config`: extract `section_header_present(src, name)` helper in the migration module to
+  correctly detect active TOML section headers, covering exact matches (`[name]`), inline-comment
+  headers (`[name] # ...`), and implicit parent sections via subtables (`[name.foo]`), while
+  rejecting commented-out headers (`# [name]`) and value substrings. Apply the helper to all
+  worktree migration guards (steps 54–55). Fix migration step 55 silently no-opping on
+  Windows-style CRLF line endings by anchoring `WORKTREE_HEADER_RE` to `(?m)^` and extending it to
+  match `\r?\n`. Adds 10 regression tests. Closes #4804, #4785.
 - `fix(memory,scheduler)`: `MemoryError` and `SchedulerError` now use distinct display strings for
   their `Sqlx` and `Db` variants (`"sqlx error: {0}"` and `"db error: {0}"` respectively), making
   it possible to distinguish raw SQLx query failures from zeph-db lifecycle/migration errors in log

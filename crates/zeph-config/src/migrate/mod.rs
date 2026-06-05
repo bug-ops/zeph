@@ -7,7 +7,32 @@
 //! Missing sections and keys are added as `# key = default_value` comments so users can discover
 //! and enable them without hunting through documentation.
 
+use regex::Regex;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
+
+/// Returns `true` when `name` is an active (non-commented) TOML section header in `src`.
+///
+/// Correctly handles:
+/// - Exact bare header: `[name]` on its own line.
+/// - Inline comment: `[name] # remark` — header is active.
+/// - Implicit subtable parent: `[name.foo]` implies `[name]` is active.
+/// - Commented header: `# [name]` — returns `false`.
+///
+/// # Panics
+///
+/// Never panics in practice — [`regex::escape`] always produces a valid pattern.
+#[must_use]
+pub fn section_header_present(src: &str, name: &str) -> bool {
+    // Escape the name for use in a regex pattern.
+    let escaped = regex::escape(name);
+    // Matches `[name]` or `[name.anything]`, optionally followed by whitespace/comment.
+    // Applied to trimmed lines after filtering out lines starting with `#`.
+    let pattern = format!(r"^\[{escaped}(?:\.[^\]]+)?\](?:\s*#.*)?$");
+    let re = Regex::new(&pattern).expect("regex::escape always produces a valid pattern");
+    src.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .any(|line| re.is_match(line.trim()))
+}
 
 /// Canonical section ordering for top-level keys in the output document.
 static CANONICAL_ORDER: &[&str] = &[
@@ -3873,14 +3898,11 @@ pub fn migrate_cocoon_show_balance(toml_src: &str) -> Result<MigrationResult, Mi
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_worktree_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    // Only treat `[worktree]` as present when it appears as a standalone line
-    // (section header) or as a commented-out header `# [worktree]`.
-    // A bare `contains` would fire on values like `description = "uses [worktree] isolation"`.
-    let already_present = toml_src.lines().any(|line| {
-        let t = line.trim();
-        t == "[worktree]" || t == "# [worktree]"
-    });
-    if already_present {
+    // Check both active and commented-out headers to preserve idempotency across runs.
+    // `section_header_present` handles active headers (including subtables and inline comments).
+    // The second check detects the commented-out block that a previous migration run injected.
+    let commented_present = toml_src.lines().any(|l| l.trim() == "# [worktree]");
+    if section_header_present(toml_src, "worktree") || commented_present {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -3920,7 +3942,14 @@ pub fn migrate_worktree_config(toml_src: &str) -> Result<MigrationResult, Migrat
 /// This function is infallible in practice; the `Result` return type matches the
 /// migration function convention for use in chained pipelines.
 pub fn migrate_worktree_git_timeout(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("git_timeout_secs") || !toml_src.contains("[worktree]") {
+    // Anchored multiline pattern: matches `[worktree]` with optional inline comment,
+    // followed by LF or CRLF. Does NOT match subtables (`[worktree.foo]`) so the
+    // replacement target and the guard stay aligned.
+    static WORKTREE_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?m)^[ \t]*\[worktree\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+    });
+
+    if toml_src.contains("git_timeout_secs") || !WORKTREE_HEADER_RE.is_match(toml_src) {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -3930,12 +3959,22 @@ pub fn migrate_worktree_git_timeout(toml_src: &str) -> Result<MigrationResult, M
 
     let comment = "# git_timeout_secs = 30  \
         # per-command timeout for git invocations (seconds)\n";
-    let output = toml_src.replacen("[worktree]\n", &format!("[worktree]\n{comment}"), 1);
+    // Preserve the original header line (including any inline comment) and append after it.
+    let output = WORKTREE_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{comment}", &caps[0])
+        })
+        .into_owned();
 
+    let changed = output != toml_src;
     Ok(MigrationResult {
         output,
-        changed_count: 1,
-        sections_changed: vec!["worktree".to_owned()],
+        changed_count: usize::from(changed),
+        sections_changed: if changed {
+            vec!["worktree".to_owned()]
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -6194,5 +6233,111 @@ trace_extraction_embed_provider = \"live\"\n";
         let input = "[worktree]\n# git_timeout_secs = 30\n";
         let result = migrate_worktree_git_timeout(input).unwrap();
         assert_eq!(result.changed_count, 0);
+    }
+
+    #[test]
+    fn step_55_handles_crlf_line_endings() {
+        let input = "[worktree]\r\nenabled = true\r\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("git_timeout_secs"),
+            "CRLF input should still receive the git_timeout_secs comment"
+        );
+    }
+
+    // ── section_header_present tests (#4804) ────────────────────────────────
+
+    #[test]
+    fn section_header_present_exact_match() {
+        assert!(section_header_present(
+            "[worktree]\nenabled = true\n",
+            "worktree"
+        ));
+    }
+
+    #[test]
+    fn section_header_present_inline_comment() {
+        assert!(section_header_present(
+            "[worktree] # some comment\nenabled = true\n",
+            "worktree"
+        ));
+    }
+
+    #[test]
+    fn section_header_present_subtable_implies_parent() {
+        assert!(section_header_present(
+            "[worktree.git]\ntimeout = 30\n",
+            "worktree"
+        ));
+    }
+
+    #[test]
+    fn section_header_present_commented_header_returns_false() {
+        assert!(!section_header_present(
+            "# [worktree]\nenabled = true\n",
+            "worktree"
+        ));
+    }
+
+    #[test]
+    fn section_header_present_no_match() {
+        assert!(!section_header_present(
+            "[agent]\nmax_turns = 10\n",
+            "worktree"
+        ));
+    }
+
+    #[test]
+    fn section_header_present_does_not_match_value_containing_header() {
+        // A TOML value like `path = "[worktree]"` must not trigger the guard.
+        assert!(!section_header_present(
+            "[agent]\npath = \"[worktree]\"\n",
+            "worktree"
+        ));
+    }
+
+    // ── step_55 regression tests for C1/S1/S2 ────────────────────────────────
+
+    #[test]
+    fn step_55_subtable_only_is_noop() {
+        // C1 regression: `[worktree.git]` makes section_header_present return true,
+        // but the regex cannot inject a comment after the subtable header —
+        // the function must report changed_count=0.
+        let input = "[worktree.git]\ntimeout = 30\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(
+            result.changed_count, 0,
+            "subtable-only header must be a no-op"
+        );
+        assert_eq!(result.output, input);
+    }
+
+    #[test]
+    fn step_55_inline_comment_header_gets_comment_injected() {
+        // S1: `[worktree] # remark` is an active header — git_timeout_secs must be injected.
+        let input = "[worktree] # remark\nenabled = true\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("git_timeout_secs"),
+            "inline-comment header must still receive the git_timeout_secs comment"
+        );
+        assert!(
+            result.output.contains("[worktree] # remark"),
+            "original header line must be preserved"
+        );
+    }
+
+    #[test]
+    fn step_55_value_substring_is_noop() {
+        // S2: a value containing `[worktree]` must not be mistaken for the section header.
+        let input = "[agent]\npath = \"[worktree]\"\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(
+            result.changed_count, 0,
+            "value substring must not trigger replacement"
+        );
+        assert_eq!(result.output, input);
     }
 }
