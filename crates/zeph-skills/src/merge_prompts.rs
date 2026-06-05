@@ -37,9 +37,8 @@ Output ONLY the raw unified SKILL.md, no explanation, no code fences.\n";
 ///
 /// # Examples
 ///
-/// ```rust
-/// use zeph_skills::merge_prompts::build_merge_messages;
-///
+/// ```ignore
+/// // pub(crate) — callable only within zeph-skills; see merge_prompts::tests for coverage.
 /// let messages = build_merge_messages("---\nname: my-skill\n---\n", "---\nname: other\n---\n", "my-skill", 2);
 /// assert_eq!(messages.len(), 2);
 /// ```
