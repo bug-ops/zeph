@@ -228,6 +228,7 @@ status: moc
 | 044 | [[044-subagent-lifecycle/spec\|Subagent Lifecycle]] | specify | approved |
 | 063 | [[063-worktree-subsystem/spec\|Worktree Subsystem]] | specify | approved |
 | 064 | [[064-durable-execution/spec\|Durable Execution]] | specify | approved |
+| 065 | [[065-ephemeral-plugins-provider-overrides/spec\|Ephemeral Plugins & Provider Overrides]] | specify | implemented |
 
 ---
 

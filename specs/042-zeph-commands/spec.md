@@ -232,6 +232,27 @@ recap_provider = ""           # provider for recap LLM call; empty = primary pro
 
 ---
 
+## 12. `requires_auth` Guard on Advanced/Debugging Handlers (#4762)
+
+Handlers in the `Advanced` and `Debugging` `SlashCategory` categories now carry a
+`requires_auth: bool` field on their `CommandInfo`. When `requires_auth = true` and the
+channel is unauthenticated (e.g. a public Telegram group without an `allowed_users` match),
+dispatch returns `CommandOutput::Message("Unauthorized")` without invoking the handler.
+
+### Affected Handlers
+
+All handlers registered under `SlashCategory::Advanced` and `SlashCategory::Debugging` have
+`requires_auth = true` by default. The check is performed in `CommandRegistry::dispatch()`,
+before calling `handler.handle()`.
+
+### Key Invariants
+
+- `requires_auth = true` handlers MUST be rejected before the handler body runs — never inside the handler
+- Handlers in `Session` / `Configuration` / `Memory` / `Skills` / `Planning` categories default to `requires_auth = false`
+- The `NullSink` used in tests bypasses auth gating — tests must use a dedicated test context that sets `is_authenticated = true` where needed
+
+---
+
 ## 9. Open Questions
 
 None.

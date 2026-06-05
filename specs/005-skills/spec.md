@@ -638,6 +638,56 @@ breaking existing struct literals.
 
 ---
 
+## Stage-2 LLM Semantic Scan for Third-Party Skills (#3947, #4696)
+
+Defends against Semantic Compliance Hijacking (SCH) attacks (arXiv:2605.14460) where malicious
+third-party skills encode harmful instructions in SKILL.md without explicit code payloads that
+Stage-1 regex patterns would catch.
+
+### `SkillSemanticScanner`
+
+`crates/zeph-skills/src/semantic_scanner.rs`. Uses `chat_typed_erased` with a configurable
+fast provider. Content cap: 8 KiB with head+tail sampling for larger skills.
+
+XML delimiter-escape neutralization: any `</skill_content>` sequences in the skill body are
+neutralized before interpolation into the prompt to prevent prompt-frame escapes.
+
+Verdicts:
+
+| `ScanVerdict` | Action |
+|--------------|--------|
+| `Allow` | Skill passes; proceed with installation/execution |
+| `Warn` | Advisory; skill logged at WARN but not blocked |
+| `Block` | Skill blocked; installation or execution rejected |
+
+Unknown LLM output tokens fall back to `Block` (fail-closed).
+
+### Integration Points
+
+- **Plugin add**: `zeph-plugins` calls `scan_targets()` to extract SKILL.md candidates from an
+  archive before installation. The `zeph-plugins` crate itself remains LLM-free; the scan
+  is performed in `zeph-core` via `semantic_scan_plugin_add`, which wires the scanner.
+- **Fail-closed on config error**: `semantic_scan = true` with an empty `semantic_scan_provider`
+  returns a config error — never proceeds with an unconfigured scanner.
+
+### Config
+
+```toml
+[skills]
+semantic_scan = false              # opt-in Stage-2 semantic scan
+semantic_scan_provider = ""        # [[llm.providers]] name (required when semantic_scan = true)
+```
+
+### Key Invariants
+
+- NEVER proceed when `semantic_scan = true` and `semantic_scan_provider` is empty
+- XML delimiter-escape neutralization (`</skill_content>` → escaped form) MUST run before interpolation — NEVER interpolate raw skill content
+- Unknown scanner output tokens MUST produce `Block` verdict — NEVER default to `Allow` on parse failure
+- `scan_targets()` in `zeph-plugins` extracts candidates without LLM calls — keeps `zeph-plugins` LLM-free
+- NEVER apply Stage-2 scan to bundled skills (`.bundled` marker) — bundled skills are pre-vetted
+
+---
+
 ## Stage-1 Advisory SKILL.md Scan (#4132)
 
 Before executing a skill, the system runs a lightweight static scan over the SKILL.md body

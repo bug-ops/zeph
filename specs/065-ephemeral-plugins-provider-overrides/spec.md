@@ -1,7 +1,7 @@
 ---
 aliases:
+  - Ephemeral Plugins and Provider Overrides
   - Parity Spec 3918
-  - Claude Code Parity Implementation Spec
 tags:
   - sdd
   - spec
@@ -9,20 +9,20 @@ tags:
   - plugins
   - provider-persistence
 created: 2026-05-29
-status: approved
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
-  - "[[specs/parity-claude-code-3918/brd]]"
-  - "[[specs/parity-claude-code-3918/srs]]"
-  - "[[specs/parity-claude-code-3918/nfr]]"
-  - "[[specs/parity-claude-code-3918/plan]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/brd]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/srs]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/nfr]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/plan]]"
   - "[[specs/058-plugins/spec]]"
   - "[[specs/003-llm-providers/spec]]"
   - "[[specs/010-security/spec]]"
 ---
 
-# Spec: Claude Code v2.1.141–v2.1.143 Parity (GitHub #3918)
+# Spec: Ephemeral Plugin Loading and Provider Override Persistence (GitHub #3918)
 
 > This spec is the authoritative implementation contract for the two actionable parity gaps
 > identified in GitHub issue #3918. It is derived from the architect plan
@@ -37,9 +37,9 @@ related:
 |-----|---------|----------|-----------|
 | `--plugin-url` session-scoped loading | **Implement** | P2 | Download infra exists; missing ephemeral variant + HTTPS gate |
 | Session provider override persistence | **Implement** | P2 | Persistence infra exists; missing overrides blob per channel |
-| `worktree.baseRef` config | Defer | P3 | Requires native worktree subsystem (does not exist) |
-| `worktree.bgIsolation: none` | Defer | P3 | Depends on worktree.baseRef |
-| Ctrl+R cross-project history | Defer | P3 | Zeph TUI has no prompt-history infrastructure |
+| `worktree.baseRef` config | **Implemented** | P3 | `worktree.base_ref: fresh\|head` in spec-063; `--init` wizard via `step_worktree()` (#4847) |
+| `worktree.bgIsolation: none` | Partially deferred | P3 | `bg_isolation` field added to `WorktreeConfig` via `step_worktree()` (#4847); full child-process isolation still deferred |
+| Ctrl+R cross-project history | **Implemented (single-session)** | P3 | `ReverseSearchState` widget with Ctrl+R keybinding added in TUI (#4678); cross-session scope deferred |
 
 Deferred gaps **must** have follow-up GitHub issues filed. See `tasks.md`.
 

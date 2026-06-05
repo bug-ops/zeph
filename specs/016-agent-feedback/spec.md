@@ -452,7 +452,26 @@ let detector = FeedbackDetector::new(0.6);
 
 ---
 
-## 9. Related Specs
+## 10. `judge_provider` Three-Level Fallback (#4780)
+
+`build_judge_provider` resolves the LLM provider for `JudgeDetector` calls via a three-level
+fallback chain:
+
+1. **`judge_provider`**: named lookup in `[[llm.providers]]`
+2. **`judge_model`**: legacy field — construct a provider from the model name string
+3. **Primary provider**: agent's default LLM provider
+
+A previous regression caused `build_judge_provider` to return `None` on named lookup failure
+instead of falling through to the `judge_model` branch. This was fixed in #4780. The three-level
+chain is now correctly restored and tested.
+
+### Key Invariant
+
+- NEVER return `None` from `build_judge_provider` on `judge_provider` lookup failure — fall through to `judge_model` → primary provider chain
+
+---
+
+## 11. Related Specs
 
 - **015-self-learning**: Uses `FeedbackDetector` to identify user corrections for skill refinement
 - **002-agent-loop**: Calls feedback detector on every user message to detect implicit corrections

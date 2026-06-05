@@ -287,3 +287,15 @@ without tracking, creating silent orphan tasks on shutdown.
 A shared `StreamingBuffer` abstraction was extracted from channel-specific code. Discord
 and Slack adapters now use the shared buffer for streaming chunk accumulation. Stub
 `elicit()` methods were added to Discord and Slack channels for future elicitation support.
+
+### Discord API 429 Rate-Limit Retry (#4746)
+
+`DiscordChannel` now handles HTTP 429 responses from the Discord API by reading the
+`Retry-After` header and retrying the request after the specified delay. Previously,
+HTTP 429 responses were propagated as `ChannelError::Send` and the message was dropped.
+
+#### Key Invariants
+
+- On HTTP 429, the channel MUST wait `Retry-After` seconds before retrying — never drop the message
+- If `Retry-After` is absent or unparseable, fall back to a fixed 1-second delay
+- Retry applies to `send()` and `send_chunk()` only — `send_typing()` is non-critical and may be dropped on 429

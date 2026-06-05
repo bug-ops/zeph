@@ -1,7 +1,7 @@
 ---
 aliases:
+  - Ephemeral Plugins and Provider Overrides BRD
   - Parity BRD 3918
-  - Claude Code Parity Business Requirements
 tags:
   - sdd
   - brd
@@ -11,22 +11,22 @@ tags:
 created: 2026-05-29
 status: approved
 related:
-  - "[[specs/parity-claude-code-3918/spec]]"
-  - "[[specs/parity-claude-code-3918/srs]]"
-  - "[[specs/parity-claude-code-3918/nfr]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/spec]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/srs]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/nfr]]"
   - "[[specs/058-plugins/spec]]"
   - "[[specs/003-llm-providers/spec]]"
 ---
 
-# BRD: Claude Code v2.1.141–v2.1.143 Parity (GitHub #3918)
+# BRD: Ephemeral Plugin Loading and Provider Override Persistence (GitHub #3918)
 
 ## 1. Business Context
 
-Zeph is an AI agent targeting parity with the Claude Code CLI UX where features are directly applicable to Zeph's architecture. GitHub issue #3918 tracks parity assessment for Claude Code v2.1.141–v2.1.143 release notes. This document defines the business case for the two actionable gaps identified in that assessment.
+Zeph is an AI agent that tracks capability gaps identified through competitive analysis. GitHub issue #3918 covers a gap assessment for release v2.1.141–v2.1.143. This document defines the business case for the two actionable gaps identified in that assessment.
 
 ## 2. Problem Statement
 
-Claude Code v2.1.141–v2.1.143 introduced:
+The assessed release introduced:
 
 1. **`--plugin-url` flag** — load a plugin from a URL for the duration of one session, with no permanent installation. Zeph has permanent plugin installation but no session-scoped ephemeral loading.
 2. **Background session provider persistence** — model selection and reasoning effort are preserved when the agent wakes from an idle background state. Zeph persists the provider *name* but discards per-session parameter overrides (reasoning effort, temperature) on process restart.

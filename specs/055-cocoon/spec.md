@@ -547,13 +547,22 @@ sidecar.
 > the localhost restriction to allow arbitrary remote hosts would negate TEE
 > confidentiality benefits and is not planned.
 >
-> **4. `ton_balance` side-channel**
+> **4. `ton_balance` side-channel (MITIGATED #4649, #4657)**
 > `CocoonHealth.ton_balance` is returned by `/stats` and displayed in the TUI
 > sidebar. In shared-access or shared-screen scenarios, an observer with TUI
 > visibility can infer the user's spending volume and usage pattern from
-> balance changes over time. This is not a TEE break but is a privacy
-> consideration. Operators in multi-user environments should consider making
-> balance display opt-in or redacting the value in the TUI status area.
+> balance changes over time. This is mitigated by `cocoon.show_balance` (default `true`):
+> when `false`, the TUI renders `*** TON` instead of the real balance value.
+> Operators in multi-user or shared-screen environments should set `show_balance = false`.
+>
+> ```toml
+> [cocoon]
+> show_balance = true   # set false to redact balance in TUI sidebar
+> ```
+>
+> Migration step 53 (config 2026-05 series) adds a commented `[cocoon]` section to
+> existing configs for discoverability. The `--init` wizard prompts for this value
+> in the Cocoon setup section.
 >
 > **5. GPU-TEE overhead**
 > Intel TDX provides CPU-level TEE protection; NVIDIA H100 Confidential

@@ -1,7 +1,7 @@
 ---
 aliases:
+  - Ephemeral Plugins and Provider Overrides NFR
   - Parity NFR 3918
-  - Claude Code Parity Non-Functional Requirements
 tags:
   - sdd
   - nfr
@@ -11,12 +11,12 @@ tags:
 created: 2026-05-29
 status: approved
 related:
-  - "[[specs/parity-claude-code-3918/brd]]"
-  - "[[specs/parity-claude-code-3918/srs]]"
-  - "[[specs/parity-claude-code-3918/spec]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/brd]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/srs]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/spec]]"
 ---
 
-# NFR: Claude Code v2.1.141–v2.1.143 Parity (GitHub #3918)
+# NFR: Ephemeral Plugin Loading and Provider Override Persistence (GitHub #3918)
 
 ISO/IEC 25010:2011 quality model.
 

@@ -265,6 +265,39 @@ Issue #3054. When the user pastes multi-line content into the TUI input:
 
 ---
 
+## Ctrl+R Prompt History Reverse-Search (#4649, #4657, #4678)
+
+`ReverseSearchState` widget adds in-session prompt history reverse-search accessible via
+`Ctrl+R` keybinding from TUI Insert mode.
+
+### Behavior
+
+- Scope: in-memory prompt history for the current session only (no cross-session persistence)
+- `Ctrl+R`: enter reverse-search mode; input field shows search query, history filtered live
+- `Ctrl+R` again: cycle to the next older match
+- `Enter`: confirm match, place in input composer, exit reverse-search mode
+- `Esc`: exit reverse-search mode without replacing input
+
+### Key Dispatch Order
+
+Key dispatch in TUI Insert mode checks reverse-search **before** slash-autocomplete (invariant C4).
+If the user is in reverse-search mode, all keystrokes route to `ReverseSearchState` — slash
+autocomplete does not activate.
+
+### Char-Safe Rendering
+
+The reverse-search render uses `floor_char_boundary()` for truncation to prevent panics on
+multibyte UTF-8 input (Cyrillic, CJK characters). NEVER truncate at a byte boundary.
+
+### Key Invariants (Ctrl+R)
+
+- Reverse-search scope is single-session, in-memory only — NEVER persist across restarts or share across slots
+- Key dispatch MUST check reverse-search before slash-autocomplete (C4 invariant)
+- Render truncation MUST use `floor_char_boundary()` — NEVER byte-index truncation
+- `Esc` MUST exit without side-effects — NEVER modify the composer input on dismiss
+
+---
+
 ## Key Invariants
 
 - Metrics updated every turn — not only when a specific event fires

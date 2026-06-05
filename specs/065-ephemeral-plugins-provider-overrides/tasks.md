@@ -1,7 +1,7 @@
 ---
 aliases:
+  - Ephemeral Plugins and Provider Overrides Tasks
   - Parity Tasks 3918
-  - Claude Code Parity Task Breakdown
 tags:
   - sdd
   - tasks
@@ -11,11 +11,11 @@ tags:
 created: 2026-05-29
 status: approved
 related:
-  - "[[specs/parity-claude-code-3918/plan]]"
-  - "[[specs/parity-claude-code-3918/spec]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/plan]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/spec]]"
 ---
 
-# Task Breakdown: Claude Code v2.1.141–v2.1.143 Parity (GitHub #3918)
+# Task Breakdown: Ephemeral Plugin Loading and Provider Override Persistence (GitHub #3918)
 
 All tasks reference the implementation plan in `plan.md`.
 

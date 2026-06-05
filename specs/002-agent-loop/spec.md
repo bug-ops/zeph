@@ -490,3 +490,21 @@ Starting from PR #3597, `OmniMem::recall()` logs retrieval failures into the
 - Logged queries are truncated to 512 characters before storage — no unbounded writes
 - Failure logs are NOT surfaced to the LLM or the user; they are operator/self-improvement data only
 - `outcome_type = "memory_miss"` is a stable string — consumers (scheduler micro-benchmark) depend on it
+
+---
+
+## Unknown `ChatResponse` Variant Handling (#4786)
+
+`tier_loop` previously panicked (via `unreachable!`) on a `ChatResponse` variant it did not
+recognize. This was hit in practice when a new provider-specific variant was added without
+updating all match arms.
+
+Fix: unknown `ChatResponse` variants are now handled gracefully:
+- The unknown variant is logged at `WARN` with the variant name (using `{:?}`)
+- The turn continues with an empty content response rather than panicking
+
+### Key Invariant
+
+- NEVER use `unreachable!` in `tier_loop`'s `ChatResponse` match — use a wildcard arm that
+  logs and recovers. New variants must be added to the match before shipping, but an unknown
+  variant at runtime must not crash the agent.

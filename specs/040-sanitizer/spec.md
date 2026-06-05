@@ -452,6 +452,33 @@ max_external_content_size = 25000
 
 ---
 
+## Unicode Bypass Extension (#4757, #4760, #4802)
+
+`UNICODE_BYPASS_RE` (the regex used to detect Unicode homoglyph / invisible-character injection
+bypass attempts) has been extended with additional codepoint ranges:
+
+| PR | Codepoints Added | Rationale |
+|----|-----------------|-----------|
+| #4757 | U+2060 (WORD JOINER) | Used to split injection keywords invisibly |
+| #4760 | `\p{Cf}` (Unicode Format characters), U+034F (COMBINING GRAPHEME JOINER) | Broader format-character class that covers a family of invisible bypass vectors |
+| #4802 | U+034F explicitly re-listed for clarity alongside `\p{Cf}` | Documentation fix; no functional change |
+
+`CausalIpiConfig.provider` was previously hardcoded; it now resolves from the named provider
+registry (same `*_provider` pattern used by all other subsystems). The config field:
+
+```toml
+[sanitizer.causal_ipi]
+provider = ""   # [[llm.providers]] name; empty = primary provider fallback
+```
+
+### Key Invariants
+
+- `UNICODE_BYPASS_RE` MUST cover `\p{Cf}` (all Unicode Format characters) — point-by-point additions are insufficient; use the Unicode category
+- U+2060 (WORD JOINER) is in `\p{Cf}` but MUST also be listed explicitly for documentation clarity
+- `CausalIpiConfig.provider` MUST resolve via the named provider registry — NEVER hardcode a provider
+
+---
+
 ## 15. See Also
 
 - [[MOC-specs]] — all specifications

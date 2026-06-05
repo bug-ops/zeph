@@ -1,7 +1,7 @@
 ---
 aliases:
+  - Ephemeral Plugins and Provider Overrides SRS
   - Parity SRS 3918
-  - Claude Code Parity Software Requirements
 tags:
   - sdd
   - srs
@@ -11,12 +11,12 @@ tags:
 created: 2026-05-29
 status: approved
 related:
-  - "[[specs/parity-claude-code-3918/brd]]"
-  - "[[specs/parity-claude-code-3918/spec]]"
-  - "[[specs/parity-claude-code-3918/nfr]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/brd]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/spec]]"
+  - "[[specs/065-ephemeral-plugins-provider-overrides/nfr]]"
 ---
 
-# SRS: Claude Code v2.1.141–v2.1.143 Parity (GitHub #3918)
+# SRS: Ephemeral Plugin Loading and Provider Override Persistence (GitHub #3918)
 
 ISO/IEC/IEEE 29148:2018 compliant. Requirements use EARS notation.
 
