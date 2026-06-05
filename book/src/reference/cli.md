@@ -668,7 +668,7 @@ Configuration: Set `[session.recap]` in your config to control which LLM provide
 | `--log-file <PATH>` | Override the log file path for this session. Set to empty string (`""`) to disable file logging. See [Logging](../concepts/logging.md) |
 | `--tafc` | Enable Think-Augmented Function Calling for this session, overriding `tools.tafc.enabled`. See [Tools — TAFC](../concepts/tools.md#think-augmented-function-calling-tafc) |
 | `--debug-dump [PATH]` | Write LLM requests/responses and raw tool output to files. Omit `PATH` to use `debug.output_dir` from config (default: `.zeph/debug`). See [Debug Dump](../advanced/debug-dump.md) |
-| `--plugin-url <URL>` | Load a plugin from a remote URL for this session only (ephemeral). Accepts multiple values. Use `url@sha256` syntax to pin a version, e.g., `--plugin-url https://example.com/plugin.tar.gz@abc123def456`. Requires HTTPS. See [Plugins](../guides/plugins.md) |
+| `--plugin-url <URL>` | Load a plugin from a remote URL for this session only (ephemeral). Accepts multiple values. Use `url@sha256` syntax to pin a version, e.g., `--plugin-url https://example.com/plugin.tar.gz@abc123def456`. Requires HTTPS. |
 | `--worktree-base-ref <REF>` | Override the base ref for worktree creation: `head` (current HEAD) or `fresh` (clone main). Requires `[worktree] enabled = true`. See [Worktree Isolation](../guides/worktree.md) |
 | `--version` | Print version and exit |
 | `--help` | Print help and exit |
