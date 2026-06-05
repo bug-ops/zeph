@@ -797,6 +797,10 @@ impl SemanticMemory {
         Ok(results)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall.fts5", skip_all, fields(query_len = %query.len()))
+    )]
     pub(super) async fn recall_fts5_raw(
         &self,
         query: &str,
@@ -808,6 +812,10 @@ impl SemanticMemory {
             .await
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall.vectors", skip_all, fields(query_len = %query.len()))
+    )]
     pub(super) async fn recall_vectors_raw(
         &self,
         query: &str,
@@ -850,6 +858,10 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` `messages_by_ids` query fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall.merge_and_rank", skip_all, fields(kw_count = keyword_results.len(), vec_count = vector_results.len()))
+    )]
     #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     pub(super) async fn recall_merge_and_rank(
         &self,

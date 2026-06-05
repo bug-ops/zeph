@@ -33,6 +33,7 @@ impl DbConfig {
     /// # Errors
     ///
     /// Returns [`DbError`] if connection or migration fails.
+    #[tracing::instrument(name = "db.pool.connect", skip_all, err)]
     pub async fn connect(&self) -> Result<DbPool, DbError> {
         #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
         {

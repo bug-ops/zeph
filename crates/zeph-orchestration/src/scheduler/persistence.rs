@@ -60,6 +60,7 @@ impl DagScheduler {
 
         // Signal that topology needs re-analysis on the next tick (critic C2).
         self.topology_dirty = true;
+        self.graph_dirty = true;
 
         // Reset cascade failure counts — the graph has fundamentally changed (C13 fix).
         if let Some(ref mut det) = self.cascade_detector {
@@ -110,6 +111,7 @@ impl DagScheduler {
         if outcome.passed {
             // Gate cleared — downstream tasks will be unblocked by ready_tasks() on next tick.
             tracing::debug!(task_id = %task_id, confidence = outcome.confidence, "predicate passed");
+            self.graph_dirty = true;
             return Ok(());
         }
 
@@ -131,6 +133,7 @@ impl DagScheduler {
             task.status = TaskStatus::Ready;
             self.predicate_replans_used += 1;
             self.predicate_reasons.insert(task_id, outcome.reason);
+            self.graph_dirty = true;
             return Ok(());
         }
 
@@ -143,6 +146,7 @@ impl DagScheduler {
             "predicate re-run budget exhausted, injecting remediation task"
         );
         self.inject_predicate_remediation(task_id, &outcome.reason, max_tasks)?;
+        self.graph_dirty = true;
         Ok(())
     }
 
@@ -917,5 +921,96 @@ mod tests {
             DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
                 .unwrap();
         assert_eq!(scheduler.graph.status, GraphStatus::Running);
+    }
+
+    // --- graph_dirty tests for inject_tasks and record_predicate_outcome ---
+
+    #[test]
+    fn inject_tasks_sets_graph_dirty() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        assert!(!scheduler.graph_dirty);
+
+        let new_task = make_node(1, &[]);
+        scheduler
+            .inject_tasks(TaskId(0), vec![new_task], 20)
+            .unwrap();
+        assert!(
+            scheduler.graph_dirty,
+            "inject_tasks must set graph_dirty after mutating the graph"
+        );
+    }
+
+    #[test]
+    fn record_predicate_outcome_pass_sets_graph_dirty() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        let mut scheduler = make_scheduler(graph);
+        scheduler.graph.status = GraphStatus::Running;
+
+        scheduler
+            .record_predicate_outcome(
+                TaskId(0),
+                PredicateOutcome {
+                    passed: true,
+                    confidence: 0.9,
+                    reason: "ok".to_string(),
+                },
+                20,
+            )
+            .unwrap();
+        assert!(
+            scheduler.graph_dirty,
+            "record_predicate_outcome (passed) must set graph_dirty"
+        );
+    }
+
+    #[test]
+    fn record_predicate_outcome_fail_rerun_sets_graph_dirty() {
+        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+
+        let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "bad".to_string(),
+            artifacts: vec![],
+            duration_ms: 1,
+            agent_id: None,
+            agent_def: None,
+        });
+        graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
+        let config = zeph_config::OrchestrationConfig {
+            verify_predicate_enabled: true,
+            max_predicate_replans: 2,
+            ..make_config()
+        };
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(FirstRouter),
+            vec![make_def("worker")],
+            None,
+        )
+        .unwrap();
+        scheduler.graph.status = GraphStatus::Running;
+
+        scheduler
+            .record_predicate_outcome(
+                TaskId(0),
+                PredicateOutcome {
+                    passed: false,
+                    confidence: 0.1,
+                    reason: "bad output".to_string(),
+                },
+                20,
+            )
+            .unwrap();
+        assert!(
+            scheduler.graph_dirty,
+            "record_predicate_outcome (failed, re-run) must set graph_dirty"
+        );
     }
 }

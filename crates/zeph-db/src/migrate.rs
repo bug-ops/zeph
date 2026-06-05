@@ -12,6 +12,7 @@ use crate::{DbPool, error::DbError};
 ///
 /// Returns [`DbError::Migration`] if any migration fails.
 #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#[tracing::instrument(name = "db.migrate.run", skip_all, err)]
 pub async fn run_migrations(pool: &DbPool) -> Result<(), DbError> {
     sqlx::migrate!("./migrations/sqlite")
         .run(pool)
@@ -26,6 +27,7 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), DbError> {
 ///
 /// Returns [`DbError::Migration`] if any migration fails.
 #[cfg(feature = "postgres")]
+#[tracing::instrument(name = "db.migrate.run", skip_all, err)]
 pub async fn run_migrations(pool: &DbPool) -> Result<(), DbError> {
     sqlx::migrate!("./migrations/postgres")
         .run(pool)

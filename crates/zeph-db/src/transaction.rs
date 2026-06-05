@@ -8,6 +8,7 @@ use crate::DbPool;
 /// # Errors
 ///
 /// Returns a sqlx error if the transaction cannot be started.
+#[tracing::instrument(name = "db.tx.begin", skip_all, err)]
 pub async fn begin(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Error> {
     pool.begin().await
 }
@@ -25,6 +26,7 @@ pub async fn begin(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Erro
 ///
 /// Returns a sqlx error if the transaction cannot be started.
 #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#[tracing::instrument(name = "db.tx.begin_write", skip_all, err)]
 pub async fn begin_write(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Error> {
     pool.begin_with("BEGIN IMMEDIATE").await
 }
@@ -35,6 +37,7 @@ pub async fn begin_write(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx
 ///
 /// Returns a sqlx error if the transaction cannot be started.
 #[cfg(feature = "postgres")]
+#[tracing::instrument(name = "db.tx.begin_write", skip_all, err)]
 pub async fn begin_write(pool: &DbPool) -> Result<crate::DbTransaction<'_>, sqlx::Error> {
     pool.begin().await
 }
