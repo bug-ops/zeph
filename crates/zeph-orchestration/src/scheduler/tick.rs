@@ -366,6 +366,7 @@ impl DagScheduler {
             error = %error_excerpt,
             "spawn failed, marking task failed"
         );
+        self.graph_dirty = true;
         self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
         let cancel_ids = dag::propagate_failure(&mut self.graph, task_id, &self.topology.rev_adj);
         let mut actions = Vec::new();
@@ -410,6 +411,7 @@ impl DagScheduler {
     /// checks the cancellation token. Callers should inspect the task graph state and clean
     /// up partially-written artifacts manually.
     pub fn cancel_all(&mut self) -> Vec<SchedulerAction> {
+        self.graph_dirty = true;
         self.graph.status = GraphStatus::Canceled;
         self.graph.finished_at = Some(crate::graph::chrono_now());
 
@@ -528,6 +530,7 @@ impl DagScheduler {
         output: String,
         artifacts: Vec<std::path::PathBuf>,
     ) -> Vec<SchedulerAction> {
+        self.graph_dirty = true;
         self.graph.tasks[task_id.index()].status = TaskStatus::Completed;
         self.graph.tasks[task_id.index()].result = Some(TaskResult {
             output: output.clone(),
@@ -585,6 +588,7 @@ impl DagScheduler {
 
     /// Apply the Failed outcome branch: build lineage, evaluate cascade abort, propagate failure.
     fn handle_failed_outcome(&mut self, task_id: TaskId, error: &str) -> Vec<SchedulerAction> {
+        self.graph_dirty = true;
         // SEC-ORCH-04: truncate error to avoid logging sensitive internal details.
         let error_excerpt: String = error.chars().take(512).collect();
         tracing::warn!(
@@ -735,6 +739,7 @@ impl DagScheduler {
                 timeout_secs = self.task_timeout.as_secs(),
                 "task timed out"
             );
+            self.graph_dirty = true;
             self.running.remove(&task_id);
             self.graph.tasks[task_id.index()].status = TaskStatus::Failed;
 
@@ -2001,6 +2006,207 @@ mod tests {
         assert!(
             !scheduler.pending_permits.contains_key(&task_id),
             "pending permit must be removed after fatal spawn failure"
+        );
+    }
+
+    // --- graph_dirty / take_graph_dirty checkpoint flag tests ---
+
+    #[test]
+    fn graph_dirty_clear_at_construction() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let scheduler = make_scheduler(graph);
+        assert!(
+            !scheduler.graph_dirty,
+            "graph_dirty must be false immediately after construction"
+        );
+    }
+
+    #[test]
+    fn take_graph_dirty_returns_false_when_no_mutations() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        // No tick or mutation — flag must stay false.
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "take_graph_dirty must return false when no mutations occurred"
+        );
+        // Calling again must still return false (idempotent on clean state).
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "take_graph_dirty must remain false after a second call"
+        );
+    }
+
+    #[test]
+    fn take_graph_dirty_true_after_task_completes() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(0),
+            RunningTask {
+                agent_handle_id: "h0".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: std::time::Instant::now(),
+                admission_permit: None,
+            },
+        );
+
+        let event = TaskEvent {
+            task_id: TaskId(0),
+            agent_handle_id: "h0".to_string(),
+            outcome: TaskOutcome::Completed {
+                output: "done".to_string(),
+                artifacts: vec![],
+            },
+        };
+        scheduler.buffered_events.push_back(event);
+        scheduler.tick();
+
+        assert!(
+            scheduler.take_graph_dirty(),
+            "take_graph_dirty must return true after a task completes"
+        );
+        // Reset invariant: second call must return false.
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "take_graph_dirty must return false on the second call (reset invariant)"
+        );
+    }
+
+    #[test]
+    fn take_graph_dirty_true_after_task_fails() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(0),
+            RunningTask {
+                agent_handle_id: "h0".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: std::time::Instant::now(),
+                admission_permit: None,
+            },
+        );
+
+        let event = TaskEvent {
+            task_id: TaskId(0),
+            agent_handle_id: "h0".to_string(),
+            outcome: TaskOutcome::Failed {
+                error: "boom".to_string(),
+            },
+        };
+        scheduler.buffered_events.push_back(event);
+        scheduler.tick();
+
+        assert!(
+            scheduler.take_graph_dirty(),
+            "take_graph_dirty must return true after a task fails"
+        );
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "take_graph_dirty must return false on the second call (reset invariant)"
+        );
+    }
+
+    #[test]
+    fn take_graph_dirty_true_after_fatal_spawn_failure() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+        let fatal = zeph_subagent::SubAgentError::Spawn("provider gone".to_string());
+        scheduler.record_spawn_failure(TaskId(0), &fatal);
+
+        assert!(
+            scheduler.take_graph_dirty(),
+            "take_graph_dirty must return true after a fatal spawn failure marks task Failed"
+        );
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "take_graph_dirty must reset to false on second call"
+        );
+    }
+
+    #[test]
+    fn take_graph_dirty_false_after_transient_concurrency_failure() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+        // Transient: task reverts to Ready — no terminal state change.
+        let transient = zeph_subagent::SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+        scheduler.record_spawn_failure(TaskId(0), &transient);
+
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "transient concurrency deferral must not set graph_dirty (no terminal mutation)"
+        );
+    }
+
+    #[test]
+    fn take_graph_dirty_true_after_cancel_all() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let mut scheduler = make_scheduler(graph);
+
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(0),
+            RunningTask {
+                agent_handle_id: "h0".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: std::time::Instant::now(),
+                admission_permit: None,
+            },
+        );
+
+        scheduler.cancel_all();
+
+        assert!(
+            scheduler.take_graph_dirty(),
+            "take_graph_dirty must return true after cancel_all"
+        );
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "take_graph_dirty must reset to false on second call"
+        );
+    }
+
+    #[test]
+    fn take_graph_dirty_true_after_timeout() {
+        let graph = graph_from_nodes(vec![make_node(0, &[])]);
+        let config = zeph_config::OrchestrationConfig {
+            task_timeout_secs: 1,
+            ..make_config()
+        };
+        let defs = vec![make_def("worker")];
+        let mut scheduler =
+            DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        scheduler.running.insert(
+            TaskId(0),
+            RunningTask {
+                agent_handle_id: "h0".to_string(),
+                agent_def_name: "worker".to_string(),
+                started_at: std::time::Instant::now()
+                    .checked_sub(Duration::from_secs(2))
+                    .unwrap(),
+                admission_permit: None,
+            },
+        );
+
+        scheduler.tick();
+
+        assert!(
+            scheduler.take_graph_dirty(),
+            "take_graph_dirty must return true after a task times out"
+        );
+        assert!(
+            !scheduler.take_graph_dirty(),
+            "take_graph_dirty must reset to false on second call"
         );
     }
 }

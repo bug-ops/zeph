@@ -288,6 +288,10 @@ pub struct DagScheduler {
     /// Agents with `model = None` or `Inherit` are absent from this map; their tasks
     /// bypass the gate (treated as ungated).
     pub(super) agent_provider_map: HashMap<String, String>,
+    /// Set to `true` when any graph mutation occurs during a tick (task status transitions,
+    /// spawn-failure cascades, cancellations). Consumed by [`DagScheduler::take_graph_dirty`]
+    /// to drive persistence checkpoints without the scheduler holding a persistence reference.
+    pub(super) graph_dirty: bool,
 }
 
 impl std::fmt::Debug for DagScheduler {
@@ -342,38 +346,6 @@ impl DagScheduler {
             }
         }
 
-        let agent_provider_map: HashMap<String, String> = available_agents
-            .iter()
-            .filter_map(|def| {
-                if let Some(zeph_subagent::ModelSpec::Named(provider)) = &def.model {
-                    Some((def.name.clone(), provider.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let (event_tx, event_rx) = mpsc::channel(64);
-
-        let task_timeout = if config.task_timeout_secs > 0 {
-            Duration::from_secs(config.task_timeout_secs)
-        } else {
-            Duration::from_mins(10)
-        };
-
-        let topology = TopologyClassifier::analyze(&graph, config);
-        let max_parallel = topology.max_parallel;
-        let config_max_parallel = config.max_parallel as usize;
-
-        if config.topology_selection {
-            tracing::debug!(
-                topology = ?topology.topology,
-                strategy = ?topology.strategy,
-                max_parallel,
-                "topology-aware concurrency limit applied"
-            );
-        }
-
         // Validate cascade_routing dependency on topology_selection.
         if config.cascade_routing && !config.topology_selection {
             tracing::warn!(
@@ -382,56 +354,14 @@ impl DagScheduler {
             );
         }
 
-        let cascade_detector = if config.cascade_routing && config.topology_selection {
-            Some(CascadeDetector::new(CascadeConfig {
-                failure_threshold: config.cascade_failure_threshold,
-            }))
-        } else {
-            None
-        };
-
-        Ok(Self {
+        Ok(Self::init_common(
             graph,
-            max_parallel,
-            config_max_parallel,
-            running: HashMap::new(),
-            event_rx,
-            event_tx,
-            task_timeout,
+            HashMap::new(),
+            config,
             router,
             available_agents,
-            dependency_context_budget: config.dependency_context_budget,
-            buffered_events: VecDeque::new(),
-            sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
-            deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
-            consecutive_spawn_failures: 0,
-            topology,
-            topology_dirty: false,
-            current_level: 0,
-            verify_completeness: config.verify_completeness,
-            verify_provider: config.verify_provider.as_str().trim().to_owned(),
-            task_replan_counts: HashMap::new(),
-            global_replan_count: 0,
-            max_replans: config.max_replans,
-            completeness_threshold_value: config.completeness_threshold,
-            cascade_detector,
-            tree_optimized_dispatch: config.tree_optimized_dispatch,
-            cascade_routing: config.cascade_routing && config.topology_selection,
-            lineage_chains: HashMap::new(),
-            cascade_chain_threshold: config.cascade_chain_threshold,
-            cascade_failure_rate_abort_threshold: config.cascade_failure_rate_abort_threshold,
-            lineage_ttl_secs: config.lineage_ttl_secs,
-            verify_predicate_enabled: config.verify_predicate_enabled,
-            predicate_provider: config.predicate_provider.as_str().trim().to_owned(),
-            orchestrator_provider: config.orchestrator_provider.as_str().trim().to_owned(),
-            max_predicate_replans: config.max_predicate_replans,
-            predicate_replans_used: 0,
-            predicate_reasons: HashMap::new(),
             admission_gate,
-            default_task_budget_cents: config.default_task_budget_cents,
-            pending_permits: HashMap::new(),
-            agent_provider_map,
-        })
+        ))
     }
 
     /// Create a scheduler from a graph that is in `Paused` or `Failed` status.
@@ -490,6 +420,69 @@ impl DagScheduler {
             })
             .collect();
 
+        // `pending_permits` is not persisted; resume always starts with an empty map.
+        // Resumed tasks that were `Running` start without an admission permit (see
+        // `RunningTask::admission_permit: None` above). This is intentional: their
+        // slots were released when the process exited and must be re-acquired on next
+        // dispatch if the task is re-spawned.
+        Ok(Self::init_common(
+            graph,
+            running,
+            config,
+            router,
+            available_agents,
+            admission_gate,
+        ))
+    }
+
+    /// Validate that `verify_provider` references a known provider name.
+    ///
+    /// Call this after construction when `verify_completeness = true` to catch
+    /// misconfiguration early rather than failing open at runtime.
+    ///
+    /// - Empty `verify_provider` is always valid (falls back to the primary provider).
+    /// - If `provider_names` is empty, validation is skipped (provider set is unknown).
+    /// - Provider names are compared case-sensitively (matching the existing resolution convention).
+    ///
+    /// # Errors
+    ///
+    /// Returns `OrchestrationError::InvalidConfig` when `verify_completeness = true`,
+    /// `verify_provider` is non-empty, and the name is not present in `provider_names`.
+    pub fn validate_verify_config(
+        &self,
+        provider_names: &[&str],
+    ) -> Result<(), OrchestrationError> {
+        if !self.verify_completeness {
+            return Ok(());
+        }
+        let name = self.verify_provider.as_str();
+        if name.is_empty() || provider_names.is_empty() {
+            return Ok(());
+        }
+        if !provider_names.contains(&name) {
+            return Err(OrchestrationError::InvalidConfig(format!(
+                "verify_provider \"{}\" not found in [[llm.providers]]; available: [{}]",
+                name,
+                provider_names.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// Build a fully-initialized `DagScheduler` from the supplied pre-configured state.
+    ///
+    /// Called by both [`DagScheduler::new`] and [`DagScheduler::resume_from`] after they
+    /// perform their graph-state-specific setup (status transitions, root-task marking,
+    /// running-map reconstruction). Centralizes all field construction that is identical
+    /// between the two constructors.
+    fn init_common(
+        graph: TaskGraph,
+        running: HashMap<TaskId, RunningTask>,
+        config: &OrchestrationConfig,
+        router: Box<dyn AgentRouter>,
+        available_agents: Vec<zeph_subagent::SubAgentDef>,
+        admission_gate: Option<super::admission::AdmissionGate>,
+    ) -> Self {
         let agent_provider_map: HashMap<String, String> = available_agents
             .iter()
             .filter_map(|def| {
@@ -513,6 +506,15 @@ impl DagScheduler {
         let max_parallel = topology.max_parallel;
         let config_max_parallel = config.max_parallel as usize;
 
+        if config.topology_selection {
+            tracing::debug!(
+                topology = ?topology.topology,
+                strategy = ?topology.strategy,
+                max_parallel,
+                "topology-aware concurrency limit applied"
+            );
+        }
+
         let cascade_detector = if config.cascade_routing && config.topology_selection {
             Some(CascadeDetector::new(CascadeConfig {
                 failure_threshold: config.cascade_failure_threshold,
@@ -521,7 +523,7 @@ impl DagScheduler {
             None
         };
 
-        Ok(Self {
+        Self {
             graph,
             max_parallel,
             config_max_parallel,
@@ -560,48 +562,10 @@ impl DagScheduler {
             predicate_reasons: HashMap::new(),
             admission_gate,
             default_task_budget_cents: config.default_task_budget_cents,
-            // `pending_permits` is not persisted; resume always starts with an empty map.
-            // Resumed tasks that were `Running` start without an admission permit (see
-            // `RunningTask::admission_permit: None` above). This is intentional: their
-            // slots were released when the process exited and must be re-acquired on next
-            // dispatch if the task is re-spawned.
             pending_permits: HashMap::new(),
             agent_provider_map,
-        })
-    }
-
-    /// Validate that `verify_provider` references a known provider name.
-    ///
-    /// Call this after construction when `verify_completeness = true` to catch
-    /// misconfiguration early rather than failing open at runtime.
-    ///
-    /// - Empty `verify_provider` is always valid (falls back to the primary provider).
-    /// - If `provider_names` is empty, validation is skipped (provider set is unknown).
-    /// - Provider names are compared case-sensitively (matching the existing resolution convention).
-    ///
-    /// # Errors
-    ///
-    /// Returns `OrchestrationError::InvalidConfig` when `verify_completeness = true`,
-    /// `verify_provider` is non-empty, and the name is not present in `provider_names`.
-    pub fn validate_verify_config(
-        &self,
-        provider_names: &[&str],
-    ) -> Result<(), OrchestrationError> {
-        if !self.verify_completeness {
-            return Ok(());
+            graph_dirty: false,
         }
-        let name = self.verify_provider.as_str();
-        if name.is_empty() || provider_names.is_empty() {
-            return Ok(());
-        }
-        if !provider_names.contains(&name) {
-            return Err(OrchestrationError::InvalidConfig(format!(
-                "verify_provider \"{}\" not found in [[llm.providers]]; available: [{}]",
-                name,
-                provider_names.join(", ")
-            )));
-        }
-        Ok(())
     }
 
     /// Get a clone of the event sender for injection into sub-agent loops.
@@ -684,6 +648,23 @@ impl DagScheduler {
     #[must_use]
     pub fn has_running_tasks(&self) -> bool {
         !self.running.is_empty()
+    }
+
+    /// Check whether the graph was mutated since the last call and reset the flag.
+    ///
+    /// The scheduler sets `graph_dirty` on every operation that changes task or graph state:
+    /// task completions, failures, timeouts, fatal spawn-failure cascades, and cancellations.
+    /// The caller (scheduler loop in `zeph-core`) consumes the flag after each tick to decide
+    /// whether to issue a persistence checkpoint — without the scheduler holding a persistence
+    /// reference.
+    ///
+    /// Returns `true` if the graph was mutated since the previous call, and resets the flag
+    /// to `false`.
+    #[must_use]
+    pub fn take_graph_dirty(&mut self) -> bool {
+        let dirty = self.graph_dirty;
+        self.graph_dirty = false;
+        dirty
     }
 }
 

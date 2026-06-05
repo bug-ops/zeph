@@ -6,11 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(orchestration)`: extract `DagScheduler::init_common()` private helper from `::new` and
+  `::resume_from`, eliminating ~75 lines of duplicated struct initialization code. Only
+  graph-state-specific setup (pre-validation, tracing) differs between the two constructors. Closes #4781.
+
 ### Fixed
 
 - `fix(config)`: `migrate_worktree_config` now uses a line-anchored check (`lines().any(|l| l.trim() == "[worktree]")`) instead of a bare `contains("[worktree]")`, preventing false-positive idempotency detection when `[worktree]` appears inside a config value string. Adds regression test `step_54_does_not_skip_when_worktree_in_value`. Closes #4793.
 - `OpenAiProvider::context_window()` now returns `Some(200_000)` for o-series models
   (o1, o1-mini, o3, o3-mini, o4-mini) instead of `None`, preventing silent context overflow (#4801)
+
+- `fix(orchestration)`: add `graph_dirty: bool` field to `DagScheduler` that is set on all durable
+  graph mutations (task completion, failure, fatal spawn failure, cancel_all, timeout).
+  `GraphPersistence::save()` in the scheduler loop now fires only when `graph_dirty` is true,
+  ensuring task states (`TaskStatus` transitions, retry counts, predicate outcomes, lineage chains)
+  survive mid-execution process crashes. Previously, a SIGKILL between task completions discarded
+  all in-flight progress. Adds 8 unit tests for the flag lifecycle. Closes #4747.
 - `fix(memory,scheduler)`: `MemoryError` and `SchedulerError` now use distinct display strings for
   their `Sqlx` and `Db` variants (`"sqlx error: {0}"` and `"db error: {0}"` respectively), making
   it possible to distinguish raw SQLx query failures from zeph-db lifecycle/migration errors in log
