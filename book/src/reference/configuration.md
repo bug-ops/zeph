@@ -238,6 +238,12 @@ model = "whisper-1"
 # Requires `stt` feature. When base_url is set, targets a local server (no API key needed).
 # When omitted, uses the OpenAI API key from the openai [[llm.providers]] entry or ZEPH_OPENAI_API_KEY.
 
+[llm.stream_limits]
+# Configurable SSE buffer caps for streaming LLM responses.
+# max_tool_json_bytes = 4194304          # Max bytes for tool call JSON (default: 4 MiB)
+# max_thinking_bytes = 1048576           # Max bytes for Claude thinking content (default: 1 MiB)
+# max_compaction_bytes = 32768           # Max bytes for context compaction responses (default: 32 KiB)
+
 [skills]
 # Defaults to the user config dir when omitted
 # (for example ~/.config/zeph/skills on Linux,
@@ -359,6 +365,10 @@ importance_weight = 0.15              # Blend weight for importance in ranking, 
 [memory.routing]
 strategy = "heuristic"        # Routing strategy for memory backend selection (default: "heuristic")
 
+[memory.retrieval]
+# MemORAI adaptive retrieval settings for graph-based memory
+# deep_reasoning_query_conditioned = false  # Use query-adaptive SYNAPSE weighting when deep reasoning active (default: false)
+
 # [memory.admission]
 # enabled = false                    # Enable A-MAC adaptive memory admission control (default: false)
 # threshold = 0.40                   # Composite score threshold; messages below this are rejected (default: 0.40)
@@ -433,6 +443,10 @@ recall_limit = 10                      # Max graph facts injected into context (
 temporal_decay_rate = 0.0              # Recency boost for graph recall; 0.0 = disabled (default: 0.0)
                                        # Range: [0.0, 10.0]. Formula: 1/(1 + age_days * rate)
 edge_history_limit = 100               # Max historical edge versions per source+predicate pair (default: 100)
+# Benna-Fusi multi-timescale synaptic variables for edge confidence
+# bennad_alpha = 0.5                   # Weight between fast and slow timescales, [0.0, 1.0] (default: 0.5)
+# bennad_eta_fast = 0.6                # Learning rate for fast variable, [0.0, 1.0] (default: 0.6)
+# bennad_eta_slow = 0.1                # Learning rate for slow variable, [0.0, 1.0] (default: 0.1)
 
 [memory.graph.spreading_activation]
 # enabled = false                     # Replace BFS with spreading activation (default: false)
@@ -454,6 +468,10 @@ on_resume = true              # Auto-generate recap when resuming a stored conve
 # recap_provider = ""           # Provider name for recap generation; empty = primary provider (default: "")
 max_tokens = 500              # Max tokens for the recap summary (default: 500)
 max_input_messages = 50       # Max messages included in recap context (default: 50)
+
+[session.provider_persistence]
+enabled = true                # Persist channel-level provider overrides across restarts (default: true)
+# persist_provider_overrides = true  # Store reasoning_effort per session (default: true)
 
 [tools]
 enabled = true
@@ -624,6 +642,9 @@ endpoint = "http://localhost:4317"
 enabled = false
 max_daily_cents = 500       # Daily budget in cents (USD), UTC midnight reset
 
+[cocoon]
+# show_balance = true              # Display TON balance in TUI sidebar (default: true). Set to false to show "*** TON" instead
+
 [a2a]
 enabled = false
 host = "0.0.0.0"
@@ -664,6 +685,12 @@ tool_timeout_secs = 30               # Default timeout for tool execution via MC
 # timeout = 30
 # trust_level = "untrusted" # trusted, untrusted (default), or sandboxed
 # tool_allowlist = []       # Tools to expose from this server; empty = all (untrusted) or none (sandboxed)
+
+[worktree]
+enabled = false                    # Enable native worktree isolation for background sub-agents (default: false)
+# bg_isolation = "none"             # Isolation mode: "none", "worktree" (default: "none", requires `enabled = true`)
+# base_ref = "head"                 # Worktree base ref: "head" (current HEAD) or "fresh" (clone from main) (default: "head")
+# git_timeout_secs = 30             # Git operation timeout in seconds (default: 30)
 
 [agents]
 enabled = false            # Enable sub-agent system (default: false)

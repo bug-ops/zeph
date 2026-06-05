@@ -25,6 +25,7 @@ zeph [OPTIONS] [COMMAND]
 | `schedule` | Manage cron-based scheduled jobs — list, add, remove, show (requires `scheduler` feature; see [Scheduler](../concepts/scheduler.md)) |
 | `db` | Database management — run migrations, check status (see [Database Abstraction](../concepts/database.md)) |
 | `migrate-config` | Add missing config parameters as commented-out blocks and reformat the file (see [Migrate Config](../guides/migrate-config.md)) |
+| `worktree` | Manage background sub-agent git worktrees — list active, remove stale (requires `[worktree] enabled = true`; see [Worktree Isolation](../guides/worktree.md)) |
 
 When no subcommand is given, Zeph starts the agent loop.
 
@@ -131,6 +132,24 @@ zeph plugin disable my-plugin --force
 **Overlay flag note:** `--overlay` shows which plugins contributed to the active config and which were skipped (with reasons like "integrity mismatch", "invalid manifest", etc.). This is evaluated against the default config — use `--config <path>` in the agent to see the live intersection with your active config.
 
 **Integrity checks:** When you install a plugin, Zeph records a sha256 digest of its `.plugin.toml`. At startup and hot-reload, the digest is verified. If it doesn't match, the plugin is skipped and the mismatch is visible in `plugin list --overlay`. See [Plugin Manifest Integrity](security.md#plugin-manifest-integrity) for details.
+
+**Ephemeral plugins (session-scoped):** Use the global `--plugin-url` flag to load plugins for a single session without permanent installation:
+
+```bash
+# Load a plugin from a remote URL (HTTPS only)
+zeph --plugin-url https://example.com/my-plugin.tar.gz
+
+# Multiple plugins
+zeph --plugin-url https://example.com/plugin1.tar.gz --plugin-url https://example.com/plugin2.tar.gz
+
+# Pin a plugin version using url@sha256 syntax
+zeph --plugin-url https://example.com/plugin.tar.gz@abc123def456789
+
+# Combine ephemeral and permanent plugins
+zeph --plugin-url https://example.com/plugin.tar.gz
+```
+
+Ephemeral plugins are scanned for security issues before loading and removed when the session ends. They cannot be disabled or permanently installed; use `zeph plugin add` for persistent plugins.
 
 ### `zeph memory`
 
@@ -294,6 +313,25 @@ zeph migrate-config --config config.toml
 ```
 
 See [Migrate Config](../guides/migrate-config.md) for a full walkthrough.
+
+### `zeph worktree`
+
+Manage background sub-agent git worktrees for isolation. Requires `[worktree] enabled = true` in the config. See [Worktree Isolation](../guides/worktree.md) for details.
+
+| Subcommand | Description |
+|------------|-------------|
+| `worktree list` | List all active worktrees managed by Zeph with paths and creation timestamps |
+| `worktree clean` | Remove stale worktrees (those no longer tracked by active sub-agents) |
+
+```bash
+# List all active worktrees
+zeph worktree list
+
+# Clean up unused worktrees (safe operation, only removes untracked ones)
+zeph worktree clean
+```
+
+Each sub-agent spawned with background isolation gets its own git worktree cloned from your repository. The `list` command shows which worktrees are active; `clean` removes ones that are no longer in use.
 
 ### `zeph router`
 
@@ -630,6 +668,8 @@ Configuration: Set `[session.recap]` in your config to control which LLM provide
 | `--log-file <PATH>` | Override the log file path for this session. Set to empty string (`""`) to disable file logging. See [Logging](../concepts/logging.md) |
 | `--tafc` | Enable Think-Augmented Function Calling for this session, overriding `tools.tafc.enabled`. See [Tools — TAFC](../concepts/tools.md#think-augmented-function-calling-tafc) |
 | `--debug-dump [PATH]` | Write LLM requests/responses and raw tool output to files. Omit `PATH` to use `debug.output_dir` from config (default: `.zeph/debug`). See [Debug Dump](../advanced/debug-dump.md) |
+| `--plugin-url <URL>` | Load a plugin from a remote URL for this session only (ephemeral). Accepts multiple values. Use `url@sha256` syntax to pin a version, e.g., `--plugin-url https://example.com/plugin.tar.gz@abc123def456`. Requires HTTPS. See [Plugins](../guides/plugins.md) |
+| `--worktree-base-ref <REF>` | Override the base ref for worktree creation: `head` (current HEAD) or `fresh` (clone main). Requires `[worktree] enabled = true`. See [Worktree Isolation](../guides/worktree.md) |
 | `--version` | Print version and exit |
 | `--help` | Print help and exit |
 

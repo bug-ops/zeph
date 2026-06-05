@@ -189,11 +189,52 @@ correct field name automatically (commit #4591). This applies to:
 - `chat` / `chat_stream` requests (uses `max_completion_tokens` when model is o-series)
 - `chat_with_tools` requests
 
+The o-series path also uses a separate `context_window` branch for context-length calculation
+(#4811): when the model is o-series, context window is looked up from an internal table keyed
+by model prefix rather than from the default `max_tokens` field.
+
 ### Key Invariants
 
 - o-series detection uses model name prefix match — NEVER hardcode specific model names
 - `max_tokens` must NOT be sent for o-series models — use `max_completion_tokens` only
 - Non-o-series models continue to use `max_tokens`
+- o-series `context_window` lookup uses the prefix table — NEVER fall back to the generic default
+
+## Configurable SSE Buffer Caps (`StreamLimits`) (#4750, #4808, #4790)
+
+`StreamLimits` in `LlmConfig` caps the size of SSE streaming buffers to prevent runaway
+memory growth from malformed or oversized provider responses:
+
+```toml
+[llm.stream_limits]
+max_tool_json_bytes = 4194304    # 4 MiB — tool call JSON accumulator
+max_thinking_bytes = 1048576     # 1 MiB — thinking/reasoning block accumulator
+max_compaction_bytes = 32768     # 32 KiB — compaction response accumulator
+```
+
+`ClaudeProvider` accepts `StreamLimits` via `.with_stream_limits()` builder. The fields are
+wired through `LlmConfig`, `provider_factory`, and `src/init`. Migration step 56 injects a
+commented `[llm.stream_limits]` hint into existing configs.
+
+### Key Invariants
+
+- `max_tool_json_bytes` default is 4 MiB — NEVER lower the default below 512 KiB (real tool schemas can be large)
+- When a streaming buffer exceeds its cap, the stream is terminated with an error — NEVER silently truncate
+- `StreamLimits` applies only to Claude streaming paths — other providers use equivalent internal caps
+
+## Embedding Helpers in `LlmConfig` (#4850, #4840)
+
+`effective_embedding_model` and `stable_skill_embedding_model` are moved from
+`zeph_core::provider_factory` to `LlmConfig` in `zeph_config`, consistent with the
+`stt_provider_entry` precedent. `impl Default for LlmConfig` is derived via serde
+deserialization of an empty TOML string, so all `#[serde(default)]` fields produce a
+well-typed default. All call sites in `src/bootstrap/` and `src/runner.rs` are updated
+accordingly.
+
+### Key Invariants
+
+- `effective_embedding_model` and `stable_skill_embedding_model` live in `LlmConfig` — NEVER re-add them to `provider_factory`
+- `LlmConfig::default()` must round-trip through empty TOML — NEVER implement `Default` by hand
 
 ## Key Invariants
 

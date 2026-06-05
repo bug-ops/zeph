@@ -104,6 +104,7 @@ root = ".claude/worktrees"         # relative to repo root; canonicalised at boo
 branch_prefix = "agent/"           # branch = "{prefix}{subagent_id}"
 prune_branch_on_remove = false     # delete the branch after removing the worktree
 cleanup_on_completion = true       # remove worktree when agent completes or is cancelled
+git_timeout_secs = 30              # per-git-invocation timeout; clamped to ≥ 1 (#4784)
 ```
 
 Per-agent opt-in in subagent definition frontmatter:

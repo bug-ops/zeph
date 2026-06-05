@@ -108,20 +108,32 @@ references-on-rename configuration.
 
 ## Step 11: Sub-Agents
 
-
 Configure the sub-agent system:
 
 - **Enable sub-agents** — toggle parallel sub-agent execution
 - **Max concurrent** — maximum sub-agents running at the same time (default: 1)
 
-## Step 12: Router
+## Step 12: Worktree Isolation
+
+Configure native git worktree isolation for background sub-agents:
+
+- **Enable worktree isolation** — create isolated git worktrees for each spawned sub-agent (default: disabled)
+  - When disabled, sub-agents operate in the same directory as the main agent
+  - When enabled, each sub-agent gets its own shallow clone via `git worktree`
+- **Isolation mode** — how to isolate sub-agents: `none` (shared directory) or `worktree` (isolated checkout) (default: `none`, only available when worktree isolation is enabled)
+- **Base ref** — which reference to use for worktree creation: `head` (current working tree state) or `fresh` (clone from main/master) (default: `head`)
+- **Git timeout** — timeout in seconds for git operations when creating/removing worktrees (default: `30`)
+
+Skip this step if you do not plan to use sub-agents or prefer not to isolate their file system access.
+
+## Step 13: Router
 
 Configure the Thompson Sampling model router (requires `router` feature):
 
 - **Enable router** — toggle router on/off
 - **State file path** — where to persist alpha/beta statistics (default: `~/.zeph/router_thompson_state.json`)
 
-## Step 13: Experiments
+## Step 14: Experiments
 
 Configure autonomous self-experimentation:
 
@@ -132,7 +144,7 @@ Configure autonomous self-experimentation:
 
 When enabled, the agent can autonomously tune its own inference parameters by running A/B trials against a benchmark dataset. See [Experiments](../concepts/experiments.md) for details.
 
-## Step 14: Self-Learning
+## Step 15: Self-Learning
 
 Configure the self-learning feedback detector:
 
@@ -141,7 +153,7 @@ Configure the self-learning feedback detector:
   - **judge** — LLM-backed classifier for borderline cases; you can specify a dedicated model
 - **Correction confidence threshold** — Jaccard overlap threshold (default: 0.7)
 
-## Step 15: Compaction Probe
+## Step 16: Compaction Probe
 
 Configure post-compression context integrity validation:
 
@@ -153,7 +165,7 @@ Configure post-compression context integrity validation:
 
 When enabled, each hard compaction is followed by a quality check. If the summary fails to preserve critical facts (HardFail), compaction is blocked and original messages are preserved. See [Context Engineering — Compaction Probe](../advanced/context.md#post-compression-validation-compaction-probe) for tuning guidance.
 
-## Step 16: Debug Dump
+## Step 17: Debug Dump
 
 Enable debug dump at startup:
 
@@ -161,7 +173,7 @@ Enable debug dump at startup:
 
 Debug dump is intended for context debugging — use it when you need to inspect exactly what is sent to the LLM and what comes back. See [Debug Dump](../advanced/debug-dump.md) for details.
 
-## Step 17: Security
+## Step 18: Security
 
 Configure security features:
 
