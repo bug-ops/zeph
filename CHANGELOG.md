@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ContextLengthExceeded` construction to `crate::http::map_error_response`, consistent with all
   other backends (claude, openai, gonka, cocoon). Gemini-specific `RESOURCE_EXHAUSTED → RateLimited`
   handling is preserved. (#4868)
+- refactor(memory): remove `ScoredCandidate` single-field wrapper in `tiered_retrieval.rs` ([#4867](https://github.com/bug-ops/zeph/issues/4867))
+- fix(memory): replace `.entered()` span guard with removal in `tiered_retrieval.rs` async fn ([#4866](https://github.com/bug-ops/zeph/issues/4866))
 
 ### Fixed
 

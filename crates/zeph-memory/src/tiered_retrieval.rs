@@ -210,10 +210,7 @@ async fn escalation_loop(
             .instrument(tracing::debug_span!("memory.tiered.score_candidates", tier = %intent))
             .await?;
 
-        let (messages, tokens_used) = {
-            let _span = tracing::debug_span!("memory.tiered.assemble").entered();
-            assemble_within_budget(candidates, effective_budget)
-        };
+        let (messages, tokens_used) = assemble_within_budget(candidates, effective_budget);
 
         // Validate evidence quality if enabled and a validator is available.
         if config.validation_enabled
@@ -321,11 +318,6 @@ async fn retrieve_tier(
 
 // ── Five-signal retrieval scoring ─────────────────────────────────────────────
 
-/// Intermediate struct for multi-signal scoring of a single candidate.
-struct ScoredCandidate {
-    recalled: RecalledMessage,
-}
-
 /// Re-score `candidates` using up to five signals and return them sorted by final score.
 ///
 /// Overwrites `RecalledMessage::score` with the combined weighted score.
@@ -415,7 +407,7 @@ async fn score_candidates(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0_i64, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
 
-    let mut scored: Vec<ScoredCandidate> = candidates
+    let mut scored: Vec<RecalledMessage> = candidates
         .into_iter()
         .zip(tfidf_scores)
         .map(|(recalled, tfidf)| {
@@ -456,25 +448,22 @@ async fn score_candidates(
                 + config.cognitive_signal_weight * cognitive
                 + config.tier_boost_weight * tier_signal;
 
-            ScoredCandidate {
-                recalled: RecalledMessage {
-                    // f64 → f32: deliberate truncation, score precision is adequate.
-                    #[allow(clippy::cast_possible_truncation)]
-                    score: final_score as f32,
-                    ..recalled
-                },
+            RecalledMessage {
+                // f64 → f32: deliberate truncation, score precision is adequate.
+                #[allow(clippy::cast_possible_truncation)]
+                score: final_score as f32,
+                ..recalled
             }
         })
         .collect();
 
     scored.sort_by(|a, b| {
-        b.recalled
-            .score
-            .partial_cmp(&a.recalled.score)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    Ok(scored.into_iter().map(|s| s.recalled).collect())
+    Ok(scored)
 }
 
 /// Compute recency score in `[0.0, 1.0]` using exponential half-life decay.
