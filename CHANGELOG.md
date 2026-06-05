@@ -47,6 +47,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instrumentation coverage for the context assembler. Previously `gather` was the only async
   function in `ContextAssembler` without a tracing span, making it invisible in traces.
   Closes #4783.
+- `zeph-sanitizer`: `UNICODE_BYPASS_RE` extended from 5 explicit codepoints to `\p{Cf}` (full
+  Unicode Format category) plus U+034F (COMBINING GRAPHEME JOINER, category Mn). Covers BIDI
+  overrides/isolates (U+202A–202E, U+2066–2069), soft hyphen (U+00AD), Mongolian vowel separator
+  (U+180E), invisible math operators (U+2061–2064), deprecated format chars (U+206A–206F), and the
+  TAGS block (U+E0000–E007F). Adds 9 regression tests. Closes #4760.
 - `zeph-sanitizer`: `UNICODE_BYPASS_RE` now includes U+2060 (WORD JOINER) in its character class,
   closing a bypass where inserting that invisible character between `!` and `[` evaded markdown image
   exfiltration detection. Closes #4752.

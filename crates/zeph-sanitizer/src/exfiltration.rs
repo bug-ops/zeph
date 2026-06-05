@@ -70,14 +70,18 @@ static HTML_IMG_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid HTML_IMG_RE")
 });
 
-/// Detects zero-width Unicode characters between `!` and `[` used to bypass markdown regex.
+/// Detects invisible Unicode characters between `!` and `[` used to bypass markdown regex.
 ///
-/// Adversaries insert U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ), U+2060 (WJ), or U+FEFF (BOM)
-/// between the `!` and `[` characters to prevent standard regex matchers from recognising the
-/// markdown image syntax. This pattern catches those sequences for stripping.
-static UNICODE_BYPASS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("![\u{200B}\u{200C}\u{200D}\u{2060}\u{FEFF}]+\\[").expect("valid UNICODE_BYPASS_RE")
-});
+/// Adversaries insert invisible formatting or combining characters between `!` and `[` to prevent
+/// standard regex matchers from recognising the markdown image syntax. This pattern covers:
+///
+/// - `\p{Cf}` (Unicode Format category): zero-width joiners/non-joiners, BIDI overrides and
+///   isolates (U+202A–202E, U+2066–2069), deprecated format chars (U+206A–206F), soft hyphen
+///   (U+00AD), Mongolian vowel separator (U+180E), and the entire TAGS block (U+E0000–E007F).
+/// - U+034F (COMBINING GRAPHEME JOINER, category Mn): invisible combining mark; not in `\p{Cf}`,
+///   added explicitly.
+static UNICODE_BYPASS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!(?:[\p{Cf}\x{034F}])+\[").expect("valid UNICODE_BYPASS_RE"));
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -715,6 +719,159 @@ mod tests {
         let (cleaned, events) = guard_disabled().scan_output(input);
         assert_eq!(cleaned, input);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn unicode_bidi_override_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        let input = "!\u{202E}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert!(
+            !cleaned.contains('\u{202E}'),
+            "U+202E BIDI override must be stripped: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_bidi_isolate_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        let input = "!\u{2066}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert!(
+            !cleaned.contains('\u{2066}'),
+            "U+2066 BIDI isolate must be stripped: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_soft_hyphen_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        let input = "!\u{00AD}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert!(
+            !cleaned.contains('\u{00AD}'),
+            "U+00AD soft hyphen must be stripped: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_tags_block_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        let input = "!\u{E0041}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert!(
+            !cleaned.contains('\u{E0041}'),
+            "U+E0041 TAGS char must be stripped: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_cgj_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        // U+034F (CGJ) is category Mn, not Cf — must be covered by explicit addition.
+        let input = "!\u{034F}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert!(
+            !cleaned.contains('\u{034F}'),
+            "U+034F CGJ must be stripped: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_heterogeneous_run_bypass_blocked() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        // Mixed run: ZWSP + BIDI override + TAGS char — the `+` quantifier must consume all.
+        let input = "!\u{200B}\u{202E}\u{E0001}[alt](https://evil.com/track)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert!(
+            !cleaned.contains('\u{200B}'),
+            "U+200B must be stripped in mixed run: {cleaned}"
+        );
+        assert!(
+            !cleaned.contains('\u{202E}'),
+            "U+202E must be stripped in mixed run: {cleaned}"
+        );
+        assert!(
+            !cleaned.contains('\u{E0001}'),
+            "U+E0001 must be stripped in mixed run: {cleaned}"
+        );
+        assert!(
+            !cleaned.starts_with('!'),
+            "image trigger `!` must be removed: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn unicode_bypass_no_false_positive_on_space() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        // Literal space between `!` and `[` is NOT an invisible bypass char — must not be matched.
+        let input = "! [text](https://example.com/)";
+        let (cleaned, _events) = guard.scan_output(input);
+        assert_eq!(
+            cleaned, input,
+            "literal space between ! and [ must not trigger bypass detection"
+        );
+    }
+
+    #[test]
+    fn unicode_bypass_no_false_positive_on_clean_image() {
+        let guard = ExfiltrationGuard::new(ExfiltrationGuardConfig {
+            block_markdown_images: true,
+            ..ExfiltrationGuardConfig::default()
+        });
+        // Legitimate inline image is handled by Pass 1, not double-processed by Pass 4.
+        let (cleaned, events) = guard.scan_output("![alt](https://evil.com/track.gif)");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ExfiltrationEvent::MarkdownImageBlocked { .. })),
+            "should produce MarkdownImageBlocked event, not bypass event"
+        );
+        assert!(
+            !cleaned.contains("![alt]("),
+            "clean image must be stripped by Pass 1: {cleaned}"
+        );
     }
 
     // --- validate_tool_call ---
