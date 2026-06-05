@@ -18,10 +18,10 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum MemoryError {
-    #[error("database error: {0}")]
+    #[error("sqlx error: {0}")]
     Sqlx(#[from] zeph_db::SqlxError),
 
-    #[error("database error: {0}")]
+    #[error("db error: {0}")]
     Db(#[from] zeph_db::DbError),
 
     #[error("Qdrant error: {0}")]
@@ -83,4 +83,29 @@ pub enum MemoryError {
     /// Wraps errors from clustering, skill generation, evaluator calls, or disk writes.
     #[error("promotion scan failed: {0}")]
     Promotion(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryError;
+
+    #[test]
+    fn sqlx_variant_display() {
+        let inner = zeph_db::SqlxError::RowNotFound;
+        let err = MemoryError::Sqlx(inner);
+        assert!(
+            err.to_string().starts_with("sqlx error:"),
+            "unexpected display: {err}"
+        );
+    }
+
+    #[test]
+    fn db_variant_display() {
+        let inner = zeph_db::DbError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "test"));
+        let err = MemoryError::Db(inner);
+        assert!(
+            err.to_string().starts_with("db error:"),
+            "unexpected display: {err}"
+        );
+    }
 }

@@ -14,11 +14,11 @@ pub enum SchedulerError {
     InvalidCron(String),
 
     /// A low-level `SQLx` error occurred during a database operation.
-    #[error("database error: {0}")]
+    #[error("sqlx error: {0}")]
     Database(#[from] zeph_db::SqlxError),
 
     /// A high-level `zeph-db` error occurred (e.g. during migrations or connection setup).
-    #[error("database error: {0}")]
+    #[error("db error: {0}")]
     Db(#[from] zeph_db::DbError),
 
     /// The [`crate::TaskHandler`] returned an error during task execution.
@@ -76,4 +76,29 @@ pub enum SchedulerError {
         /// Name of the task that was quarantined.
         task_name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SchedulerError;
+
+    #[test]
+    fn database_variant_display() {
+        let inner = zeph_db::SqlxError::RowNotFound;
+        let err = SchedulerError::Database(inner);
+        assert!(
+            err.to_string().starts_with("sqlx error:"),
+            "unexpected display: {err}"
+        );
+    }
+
+    #[test]
+    fn db_variant_display() {
+        let inner = zeph_db::DbError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "test"));
+        let err = SchedulerError::Db(inner);
+        assert!(
+            err.to_string().starts_with("db error:"),
+            "unexpected display: {err}"
+        );
+    }
 }

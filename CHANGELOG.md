@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(memory,scheduler)`: `MemoryError` and `SchedulerError` now use distinct display strings for
+  their `Sqlx` and `Db` variants (`"sqlx error: {0}"` and `"db error: {0}"` respectively), making
+  it possible to distinguish raw SQLx query failures from zeph-db lifecycle/migration errors in log
+  output. Adds 4 regression tests. Closes #4782.
+
 ### Added
 
 - `feat(worktree): make DefaultGitRunner timeout configurable via WorktreeConfig (#4704)` — adds
