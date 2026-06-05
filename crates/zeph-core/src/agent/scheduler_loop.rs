@@ -512,11 +512,11 @@ impl<C: crate::channel::Channel> Agent<C> {
                 m.orchestration_graph = Some(snapshot);
             });
 
-            if scheduler.take_graph_dirty() {
-                if let Some(ref persistence) = self.services.orchestration.graph_persistence {
-                    let graph_clone = scheduler.graph().clone();
-                    save_graph_snapshot(persistence, graph_clone).await;
-                }
+            if scheduler.take_graph_dirty()
+                && let Some(ref persistence) = self.services.orchestration.graph_persistence
+            {
+                let graph_clone = scheduler.graph().clone();
+                save_graph_snapshot(persistence, graph_clone).await;
             }
 
             tokio::select! {
