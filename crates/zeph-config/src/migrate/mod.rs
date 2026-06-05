@@ -3992,7 +3992,7 @@ pub fn migrate_worktree_git_timeout(toml_src: &str) -> Result<MigrationResult, M
 /// This function is infallible in practice; the `Result` return type matches the
 /// migration function convention for use in chained pipelines.
 pub fn migrate_llm_stream_limits(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[llm.stream_limits]") || !toml_src.contains("[llm]") {
+    if section_header_present(toml_src, "llm.stream_limits") || !toml_src.contains("[llm]") {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,

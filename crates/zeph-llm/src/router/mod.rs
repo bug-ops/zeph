@@ -1538,14 +1538,6 @@ impl LlmProvider for RouterProvider {
             .and_then(LlmProvider::context_window)
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.router.chat",
-            skip_all,
-            fields(model = self.model_identifier())
-        )
-    )]
     #[allow(clippy::too_many_lines)] // CoE + quality-gate inline logic; extracting would obscure the control flow
     fn chat(
         &self,
@@ -1554,10 +1546,12 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
+        #[cfg(feature = "profiling")]
+        let model = self.model_identifier().to_owned();
         // NOTE: `chat` and `chat_stream` share error-path logic via `record_fallback_error`.
         // Their success paths diverge (quality gate + CoE vs. plain stream-open), so a
         // shared loop helper would reduce clarity without removing significant duplication.
-        Box::pin(async move {
+        let fut = Box::pin(async move {
             // Increment turn counter once per top-level chat() call. All concurrent sub-calls
             // (tool schema fetches, embed probes) that re-enter chat() will see the same
             // turn_id via the shared Arc<AtomicU64>, enabling ASI debounce.
@@ -1709,13 +1703,15 @@ impl LlmProvider for RouterProvider {
             }
 
             Err(LlmError::NoProviders)
-        })
+        });
+        #[cfg(feature = "profiling")]
+        let fut = {
+            use tracing::Instrument as _;
+            fut.instrument(tracing::info_span!("llm.router.chat", model = model))
+        };
+        fut
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.router.chat_stream", skip_all, fields(model = self.model_identifier()))
-    )]
     fn chat_stream(
         &self,
         messages: &[Message],
@@ -1723,7 +1719,9 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
-        Box::pin(async move {
+        #[cfg(feature = "profiling")]
+        let model = self.model_identifier().to_owned();
+        let fut = Box::pin(async move {
             // NOTE: see DRY design decision above `chat()` — error path shared via
             // `record_fallback_error`; success paths diverge intentionally.
             if router.strategy == RouterStrategy::Cascade {
@@ -1777,7 +1775,13 @@ impl LlmProvider for RouterProvider {
                 }
             }
             Err(LlmError::NoProviders)
-        })
+        });
+        #[cfg(feature = "profiling")]
+        let fut = {
+            use tracing::Instrument as _;
+            fut.instrument(tracing::info_span!("llm.router.chat_stream", model = model))
+        };
+        fut
     }
 
     fn supports_streaming(&self) -> bool {
@@ -1787,10 +1791,7 @@ impl LlmProvider for RouterProvider {
             .any(LlmProvider::supports_streaming)
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.router.embed", skip_all, fields(model = self.model_identifier()))
-    )]
+    #[allow(clippy::too_many_lines)] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
     fn embed(
         &self,
         text: &str,
@@ -1800,7 +1801,9 @@ impl LlmProvider for RouterProvider {
         let text = text.to_owned();
         let router = self.clone();
         let embed_timeout_ms = self.embed_timeout_ms;
-        Box::pin(async move {
+        #[cfg(feature = "profiling")]
+        let model = self.model_identifier().to_owned();
+        let fut = Box::pin(async move {
             for p in &providers {
                 if !p.supports_embeddings() {
                     continue;
@@ -1892,13 +1895,15 @@ impl LlmProvider for RouterProvider {
                 }
             }
             Err(LlmError::NoProviders)
-        })
+        });
+        #[cfg(feature = "profiling")]
+        let fut = {
+            use tracing::Instrument as _;
+            fut.instrument(tracing::info_span!("llm.router.embed", model = model))
+        };
+        fut
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.router.embed_batch", skip_all, fields(model = self.model_identifier()))
-    )]
     fn embed_batch(
         &self,
         texts: &[&str],
@@ -1908,7 +1913,9 @@ impl LlmProvider for RouterProvider {
         let owned = owned_strs(texts);
         let router = self.clone();
         let semaphore = self.state.embed_semaphore.clone();
-        Box::pin(async move {
+        #[cfg(feature = "profiling")]
+        let model = self.model_identifier().to_owned();
+        let fut = Box::pin(async move {
             // Acquire embed semaphore permit before any HTTP work to cap concurrency.
             let _permit = if let Some(ref sem) = semaphore {
                 Some(sem.acquire().await.map_err(|_| LlmError::NoProviders)?)
@@ -1991,7 +1998,13 @@ impl LlmProvider for RouterProvider {
                 }
             }
             Err(LlmError::NoProviders)
-        })
+        });
+        #[cfg(feature = "profiling")]
+        let fut = {
+            use tracing::Instrument as _;
+            fut.instrument(tracing::info_span!("llm.router.embed_batch", model = model))
+        };
+        fut
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -2026,14 +2039,6 @@ impl LlmProvider for RouterProvider {
             .collect()
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.router.chat_with_tools",
-            skip_all,
-            fields(model = self.model_identifier(), tool_count = tools.len())
-        )
-    )]
     #[allow(refining_impl_trait_reachable)]
     fn chat_with_tools(
         &self,
@@ -2041,10 +2046,14 @@ impl LlmProvider for RouterProvider {
         tools: &[ToolDefinition],
     ) -> impl std::future::Future<Output = Result<ChatResponse, LlmError>> + Send {
         let messages = messages.to_vec();
+        #[cfg(feature = "profiling")]
+        let tool_count = tools.len();
         let tools = tools.to_vec();
         let status_tx = self.status_tx.clone();
         let router = self.clone();
-        Box::pin(async move {
+        #[cfg(feature = "profiling")]
+        let model = self.model_identifier().to_owned();
+        let fut = Box::pin(async move {
             // Bandit routing for tool calls: select a single provider, no quality escalation.
             if router.strategy == RouterStrategy::Bandit {
                 let query = messages
@@ -2114,7 +2123,17 @@ impl LlmProvider for RouterProvider {
                 }
             }
             Err(LlmError::NoProviders)
-        })
+        });
+        #[cfg(feature = "profiling")]
+        let fut = {
+            use tracing::Instrument as _;
+            fut.instrument(tracing::info_span!(
+                "llm.router.chat_with_tools",
+                model = model,
+                tool_count = tool_count
+            ))
+        };
+        fut
     }
 
     fn debug_request_json(
