@@ -227,6 +227,7 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if the recall backend returns an error.
+    #[tracing::instrument(name = "agent_context.service.inject_semantic_recall", skip_all, err)]
     pub async fn inject_semantic_recall(
         &self,
         query: &str,
@@ -270,6 +271,11 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if the recall backend returns an error.
+    #[tracing::instrument(
+        name = "agent_context.service.inject_semantic_recall_bare",
+        skip_all,
+        err
+    )]
     pub async fn inject_semantic_recall_bare(
         &self,
         params: SemanticRecallParams<'_>,
@@ -372,6 +378,11 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if the memory backend returns an error.
+    #[tracing::instrument(
+        name = "agent_context.service.inject_cross_session_context",
+        skip_all,
+        err
+    )]
     pub async fn inject_cross_session_context(
         &self,
         query: &str,
@@ -407,6 +418,7 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if the memory backend returns an error.
+    #[tracing::instrument(name = "agent_context.service.inject_summaries", skip_all, err)]
     pub async fn inject_summaries(
         &self,
         token_budget: usize,
@@ -435,6 +447,7 @@ impl ContextService {
     ///
     /// Returns the reordered index list with the most likely skill first, or `None` if the
     /// LLM call fails (caller falls back to original score order).
+    #[tracing::instrument(name = "agent_context.service.disambiguate_skills", skip_all)]
     pub async fn disambiguate_skills(
         &self,
         query: &str,
@@ -506,6 +519,7 @@ impl ContextService {
     /// Returns [`ContextError::Memory`] if recall fails or [`ContextError::Assembler`]
     /// if the context assembler encounters an internal error.
     #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
+    #[tracing::instrument(name = "agent_context.service.prepare_context", skip_all, err)]
     pub async fn prepare_context(
         &self,
         query: &str,
@@ -1063,6 +1077,7 @@ impl ContextService {
         clippy::cast_sign_loss,
         clippy::too_many_lines
     )]
+    #[tracing::instrument(name = "agent_context.service.maybe_compact", skip_all, err)]
     pub async fn maybe_compact(
         &self,
         summ: &mut ContextSummarizationView<'_>,
@@ -1386,6 +1401,7 @@ impl ContextService {
     /// Drains the backlog of unsummarized tool-use/result pairs in a single pass,
     /// storing results as `deferred_summary` on message metadata. Applied lazily
     /// by [`Self::maybe_apply_deferred_summaries`] when context pressure rises.
+    #[tracing::instrument(name = "agent_context.service.maybe_summarize_tool_pair", skip_all)]
     pub async fn maybe_summarize_tool_pair(
         &self,
         summ: &mut ContextSummarizationView<'_>,
@@ -1412,6 +1428,7 @@ impl ContextService {
     ///
     /// Calls `apply_tool_pair_summaries` to soft-delete the original tool pairs and
     /// persist the summaries. Always clears both deferred queues regardless of outcome.
+    #[tracing::instrument(name = "agent_context.service.flush_deferred_summaries", skip_all)]
     pub async fn flush_deferred_summaries(&self, summ: &mut ContextSummarizationView<'_>) {
         if let Err(e) = crate::summarization::deferred::flush_deferred_summaries(summ).await {
             tracing::warn!(%e, "flush_deferred_summaries failed");
@@ -1441,6 +1458,7 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError`] if summarization fails (LLM error or timeout).
+    #[tracing::instrument(name = "agent_context.service.compact_context", skip_all, err)]
     pub async fn compact_context(
         &self,
         summ: &mut ContextSummarizationView<'_>,
@@ -1463,6 +1481,7 @@ impl ContextService {
     /// Uses the `compact_context_with_budget` path (LLM summarization with an optional
     /// token cap). Skips when server compaction is active unless context exceeds 95% of
     /// the budget. Does not impose a post-compaction cooldown.
+    #[tracing::instrument(name = "agent_context.service.maybe_proactive_compress", skip_all)]
     pub async fn maybe_proactive_compress(
         &self,
         summ: &mut ContextSummarizationView<'_>,

@@ -95,6 +95,7 @@ pub fn effective_recall_timeout_ms(configured: u64) -> u64 {
 /// # Errors
 ///
 /// Returns [`ContextError::Memory`] when the graph recall backend returns an error.
+#[tracing::instrument(name = "agent_context.helpers.fetch_graph_facts", skip_all, err)]
 pub async fn fetch_graph_facts(
     view: &ContextAssemblyView<'_>,
     query: &str,
@@ -123,6 +124,7 @@ pub async fn fetch_graph_facts(
 ///
 /// Returns [`zeph_memory::MemoryError`] when the graph recall backend returns an error.
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
+#[tracing::instrument(name = "agent_context.helpers.fetch_graph_facts_raw", skip_all, err)]
 pub async fn fetch_graph_facts_raw(
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
     graph_config: &zeph_config::GraphConfig,
@@ -727,6 +729,11 @@ pub async fn fetch_graph_facts_raw(
 ///
 /// Returns [`zeph_memory::MemoryError`] when the memory backend returns an error.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    name = "agent_context.helpers.fetch_semantic_recall_raw",
+    skip_all,
+    err
+)]
 pub async fn fetch_semantic_recall_raw(
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
     recall_limit: usize,
@@ -835,6 +842,7 @@ pub async fn fetch_semantic_recall_raw(
 /// # Errors
 ///
 /// Returns [`zeph_memory::MemoryError`] when the memory backend returns an error.
+#[tracing::instrument(name = "agent_context.helpers.fetch_summaries_raw", skip_all, err)]
 pub async fn fetch_summaries_raw(
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
     conversation_id: Option<zeph_memory::ConversationId>,
@@ -885,6 +893,7 @@ pub async fn fetch_summaries_raw(
 /// # Errors
 ///
 /// Returns [`zeph_memory::MemoryError`] when the memory backend returns an error.
+#[tracing::instrument(name = "agent_context.helpers.fetch_cross_session_raw", skip_all, err)]
 pub async fn fetch_cross_session_raw(
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
     conversation_id: Option<zeph_memory::ConversationId>,
@@ -946,6 +955,7 @@ pub async fn fetch_cross_session_raw(
 /// # Errors
 ///
 /// Returns [`ContextError::Memory`] when the memory recall backend returns an error.
+#[tracing::instrument(name = "agent_context.helpers.fetch_semantic_recall", skip_all, err)]
 pub async fn fetch_semantic_recall(
     view: &ContextAssemblyView<'_>,
     query: &str,
@@ -1010,6 +1020,7 @@ fn format_structured_recall_entry(item: &zeph_memory::RecalledMessage) -> String
 /// # Errors
 ///
 /// Returns [`ContextError::Memory`] when the memory backend returns an error.
+#[tracing::instrument(name = "agent_context.helpers.fetch_summaries", skip_all, err)]
 pub async fn fetch_summaries(
     view: &ContextAssemblyView<'_>,
     token_budget: usize,
@@ -1038,6 +1049,7 @@ pub async fn fetch_summaries(
 /// # Errors
 ///
 /// Returns [`ContextError::Memory`] when the memory backend returns an error.
+#[tracing::instrument(name = "agent_context.helpers.fetch_cross_session", skip_all, err)]
 pub async fn fetch_cross_session(
     view: &ContextAssemblyView<'_>,
     query: &str,

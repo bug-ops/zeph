@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// tracing::instrument on large async fns in zeph-agent-context increases the
+// Future type depth beyond the default limit of 128.
+#![recursion_limit = "256"]
+
 //! Zeph core agent: multi-model inference, semantic memory, skills orchestration, and tool execution.
 //!
 //! This crate provides the [`Agent`] struct — the autonomous AI system at the heart of Zeph.

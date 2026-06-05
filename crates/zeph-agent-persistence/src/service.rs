@@ -66,6 +66,7 @@ impl PersistenceService {
     /// # Errors
     ///
     /// Returns [`PersistenceError`] if `SQLite` fails during history load or soft-delete.
+    #[tracing::instrument(name = "persistence.service.load_history", skip_all, err)]
     pub async fn load_history(
         &self,
         params: LoadHistoryParams<'_>,
@@ -174,6 +175,7 @@ impl PersistenceService {
     /// Returns a [`PersistMessageOutcome`] even on write failure (the outcome's `message_id`
     /// will be `None`). Callers should log failures but continue — conversation continuity
     /// is more important than individual message persistence.
+    #[tracing::instrument(name = "persistence.service.persist_message", skip_all)]
     pub async fn persist_message(
         &self,
         request: PersistMessageRequest,
