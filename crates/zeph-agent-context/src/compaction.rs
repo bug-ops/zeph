@@ -526,14 +526,13 @@ pub struct SubgoalExtractionResult {
 ///
 /// Returns an error if the provider call returns an error or if the 20-second timeout
 /// elapses before the provider responds.
+#[tracing::instrument(name = "ctx.compaction.focus_auto_consolidate", skip_all)]
 pub async fn run_focus_auto_consolidation(
     messages: &[Message],
     min_window: usize,
     provider: impl LlmProvider,
     max_chars: usize,
 ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-    let _span = tracing::info_span!("ctx.compaction.focus_auto_consolidate").entered();
-
     if messages.len() < min_window {
         return Ok(None);
     }

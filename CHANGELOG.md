@@ -14,6 +14,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-agent-context`: replace four synchronous `EnteredSpan` guards held across `.await`
+  boundaries with `#[tracing::instrument]` (standalone async fns) and `.instrument(span).await`
+  (inline futures). Affected functions: `fetch_graph_facts_raw` (`helpers.rs`),
+  `prepare_context` fidelity block (`service.rs`), `maybe_compact` regrade block (`service.rs`),
+  `run_focus_auto_consolidation` (`compaction.rs`). Under the tokio multi-thread scheduler,
+  holding a synchronous span guard across an await point causes spans to be attributed to the
+  wrong worker thread and `Span::current().record()` to silently write to the wrong span.
+  Closes #4815.
+
 - `fix(config)`: `migrate_worktree_config` now uses a line-anchored check (`lines().any(|l| l.trim() == "[worktree]")`) instead of a bare `contains("[worktree]")`, preventing false-positive idempotency detection when `[worktree]` appears inside a config value string. Adds regression test `step_54_does_not_skip_when_worktree_in_value`. Closes #4793.
 - `OpenAiProvider::context_window()` now returns `Some(200_000)` for o-series models
   (o1, o1-mini, o3, o3-mini, o4-mini) instead of `None`, preventing silent context overflow (#4801)

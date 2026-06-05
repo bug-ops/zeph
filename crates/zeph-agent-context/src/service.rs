@@ -701,12 +701,7 @@ impl ContextService {
             && fidelity_cfg.enabled
             && !memory_first_active
         {
-            let _span = tracing::info_span!(
-                "context.fidelity.score",
-                message_count = window.messages.len(),
-                query_len = query.len(),
-            )
-            .entered();
+            use tracing::Instrument as _;
             if let Some(ref tx) = view.status_tx {
                 let _ = tx.send("Scoring context fidelity\u{2026}".into());
             }
@@ -718,6 +713,11 @@ impl ContextService {
                 .fidelity_compress_provider
                 .as_deref()
                 .map(|p| p as &dyn zeph_llm::LlmProviderDyn);
+            let fidelity_span = tracing::info_span!(
+                "context.fidelity.score",
+                message_count = window.messages.len(),
+                query_len = query.len(),
+            );
             FidelityScorer
                 .score_and_apply(
                     window.messages,
@@ -730,6 +730,7 @@ impl ContextService {
                     embed_provider,
                     compress_provider,
                 )
+                .instrument(fidelity_span)
                 .await;
             // Persist fidelity tags so subsequent turns see the floor invariant.
             persist_fidelity_tags(window.messages, view.memory.as_deref()).await;
@@ -1158,11 +1159,7 @@ impl ContextService {
                 summ.server_compaction_active,
             )
         {
-            let _regrade_span = tracing::info_span!(
-                "context.fidelity.regrade",
-                budget_ratio = tracing::field::Empty,
-            )
-            .entered();
+            use tracing::Instrument as _;
             let regrade_embed_provider = summ
                 .fidelity_semantic_provider
                 .as_deref()
@@ -1183,6 +1180,10 @@ impl ContextService {
                     regrade_embed_provider,
                     regrade_compress_provider,
                 )
+                .instrument(tracing::info_span!(
+                    "context.fidelity.regrade",
+                    budget_ratio = tracing::field::Empty,
+                ))
                 .await;
             // Persist upgraded fidelity tags so the new levels survive the next turn (F-3).
             persist_fidelity_tags(summ.messages, summ.memory.as_deref()).await;

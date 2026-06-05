@@ -124,7 +124,12 @@ pub async fn fetch_graph_facts(
 ///
 /// Returns [`zeph_memory::MemoryError`] when the graph recall backend returns an error.
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
-#[tracing::instrument(name = "agent_context.helpers.fetch_graph_facts_raw", skip_all, err)]
+#[tracing::instrument(
+    name = "agent_context.helpers.fetch_graph_facts_raw",
+    skip_all,
+    err,
+    fields(effective_strategy)
+)]
 pub async fn fetch_graph_facts_raw(
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
     graph_config: &zeph_config::GraphConfig,
@@ -154,7 +159,10 @@ pub async fn fetch_graph_facts_raw(
         graph_config.retrieval_strategy
     };
 
-    let _span = tracing::info_span!("memory.graph.dispatch", ?effective_strategy).entered();
+    tracing::Span::current().record(
+        "effective_strategy",
+        tracing::field::debug(&effective_strategy),
+    );
     let strategy_str = format!("{effective_strategy:?}").to_lowercase();
     let edge_types_json = serde_json::to_string(&edge_types).ok();
 
