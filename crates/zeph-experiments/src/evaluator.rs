@@ -383,7 +383,10 @@ impl Evaluator {
                 // both proceed, overshooting the budget. We use fetch_add(1) to claim
                 // a reservation slot; if we are already at or above budget we roll back.
                 // The real token cost is added inside score_case_with_provider after the
-                // call completes, at which point the reservation is included in the total.
+                // call completes. The reservation remains in the counter to keep the
+                // budget guard conservative — EvalReport::total_tokens is corrected by
+                // subtracting cases_scored (one reservation per successful call) after
+                // all futures complete, so the reported value reflects only real usage.
                 let prev = tokens_used.fetch_add(1, Ordering::AcqRel);
                 if prev >= budget {
                     tokens_used.fetch_sub(1, Ordering::AcqRel);
@@ -438,13 +441,19 @@ impl Evaluator {
         let cases_scored = scores.len();
         let is_partial = budget_hit || error_count > 0;
 
+        // Each successful judge call left a +1 reservation in tokens_used that was never
+        // rolled back (the reservation is intentionally kept to prevent budget races).
+        // Subtract cases_scored here so EvalReport::total_tokens reflects only real usage.
+        let raw_tokens = tokens_used.load(Ordering::Relaxed);
+        let total_tokens = raw_tokens.saturating_sub(cases_scored as u64);
+
         Ok(build_report(
             scores,
             cases_scored,
             cases_total,
             is_partial,
             error_count,
-            tokens_used.load(Ordering::Relaxed),
+            total_tokens,
         ))
     }
 }
@@ -1131,15 +1140,17 @@ mod tests {
     }
 
     /// R8-GAP-2: Semaphore limits concurrent judge calls.
+    ///
+    /// The judge mock uses `with_concurrency_tracking()` to atomically record the
+    /// peak number of simultaneously-active `chat()` calls.  With `parallel_evals=2`
+    /// the semaphore must prevent more than 2 tasks from executing concurrently.
     #[tokio::test]
     async fn parallel_eval_respects_concurrency_limit() {
+        use std::sync::Arc;
         use std::sync::atomic::Ordering as AOrdering;
-        use std::sync::{Arc, atomic::AtomicUsize};
         use zeph_llm::any::AnyProvider;
         use zeph_llm::mock::MockProvider;
 
-        // We verify the semaphore does not cause panics and respects the configured limit
-        // by running with parallel_evals=1 and checking the report is fully sequential.
         let benchmark = BenchmarkSet {
             cases: vec![
                 BenchmarkCase {
@@ -1167,38 +1178,47 @@ mod tests {
             "A2".into(),
             "A3".into(),
         ]));
-        let judge_mock = AnyProvider::Mock(MockProvider::with_responses(vec![
+
+        // The judge mock tracks how many `chat()` calls overlap at any instant.
+        // A small delay (10 ms) widens the overlap window so tasks actually run concurrently.
+        let (judge_base, peak) = MockProvider::with_responses(vec![
             r#"{"score": 7.0, "reason": "ok"}"#.into(),
             r#"{"score": 8.0, "reason": "ok"}"#.into(),
             r#"{"score": 9.0, "reason": "ok"}"#.into(),
-        ]));
+        ])
+        .with_delay(10)
+        .with_concurrency_tracking();
+        let judge_mock = Arc::new(AnyProvider::Mock(judge_base));
 
-        // Track peak concurrent calls with an atomic counter.
-        let peak = Arc::new(AtomicUsize::new(0));
-        let peak_ref = Arc::clone(&peak);
-
-        let evaluator = Evaluator::new(Arc::new(judge_mock), benchmark, 1_000_000)
+        let evaluator = Evaluator::new(Arc::clone(&judge_mock), benchmark, 1_000_000)
             .unwrap()
             .with_parallel_evals(2); // limit to 2 concurrent
 
         let report = evaluator.evaluate(&subject_mock).await.unwrap();
 
-        // With concurrency=2 and 3 cases all succeeding, all 3 should be scored.
         assert_eq!(report.cases_scored, 3);
         assert!(!report.is_partial);
-        // Peak concurrent is bounded — we cannot directly measure without instrumentation,
-        // but the test verifies no deadlock, panic, or resource leak occurs.
-        drop(peak_ref);
-        assert_eq!(peak.load(AOrdering::Relaxed), 0); // unused, just ensures compilation
+        let observed_peak = peak.load(AOrdering::SeqCst);
+        // Upper bound: semaphore must prevent more than parallel_evals concurrent calls.
+        assert!(
+            observed_peak <= 2,
+            "peak concurrent judge calls exceeded semaphore limit: got {observed_peak}",
+        );
+        // Lower bound: with 3 cases and limit=2 the semaphore must have been exercised.
+        assert!(
+            observed_peak >= 2,
+            "concurrency limit was not exercised: peak={observed_peak}",
+        );
     }
 
     /// Regression test for #4197: atomic budget enforcement under parallel load.
     ///
     /// With `parallel_evals=4` and `budget_tokens=1`, only a single judge call can
     /// claim the reservation slot (fetch_add sees prev=0). All other tasks must see
-    /// prev >= 1 and roll back. The total tokens committed must not exceed 1 plus the
-    /// real token cost of the one permitted call (MockProvider reports 0 tokens, so
-    /// the final counter stays at 1 from the reservation that was not rolled back).
+    /// prev >= 1 and roll back. The reservation slot is kept in the counter so that the
+    /// budget guard remains conservative; EvalReport::total_tokens is corrected by
+    /// subtracting cases_scored at report-build time (MockProvider reports 0 real tokens,
+    /// so the reported total equals 0 after the correction).
     #[tokio::test]
     async fn budget_not_exceeded_under_parallel_load() {
         use std::sync::Arc;
@@ -1266,5 +1286,74 @@ mod tests {
             report.cases_scored
         );
         assert_eq!(report.cases_total, 4);
+    }
+
+    /// Regression test for #4855: per_case ordering is deterministic even when subject
+    /// futures complete in reverse order.
+    ///
+    /// The subject mock is given per-call delays that decrease with each case index so the
+    /// last case finishes first.  `sort_unstable_by_key(|(i, _)| *i)` in Phase 1 must
+    /// restore the original order before Phase 2 begins, meaning `per_case[i].case_index`
+    /// must equal `i` for every successfully scored case.
+    #[tokio::test]
+    async fn subject_responses_ordered_after_parallel_phase1() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let benchmark = BenchmarkSet {
+            cases: vec![
+                BenchmarkCase {
+                    prompt: "Q0".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q1".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q2".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+            ],
+        };
+
+        // Subject delays: case 0 sleeps longest, case 2 sleeps least — futures complete in
+        // reverse order (2 → 1 → 0).  FuturesUnordered will yield them that way.
+        let subject_mock = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["A0".into(), "A1".into(), "A2".into()])
+                .with_per_call_delays(vec![30, 20, 10]),
+        );
+
+        // Judge: one response per case, instant.
+        let judge_mock = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![
+            r#"{"score": 6.0, "reason": "ok"}"#.into(),
+            r#"{"score": 7.0, "reason": "ok"}"#.into(),
+            r#"{"score": 8.0, "reason": "ok"}"#.into(),
+        ])));
+
+        let evaluator = Evaluator::new(judge_mock, benchmark, 1_000_000)
+            .unwrap()
+            .with_parallel_evals(3); // all subject calls fire concurrently
+
+        let report = evaluator.evaluate(&subject_mock).await.unwrap();
+
+        assert_eq!(report.cases_scored, 3, "all cases must be scored");
+        assert!(!report.is_partial);
+
+        // per_case must be sorted by case_index regardless of completion order.
+        for (i, cs) in report.per_case.iter().enumerate() {
+            assert_eq!(
+                cs.case_index, i,
+                "per_case[{i}].case_index must be {i}, got {}",
+                cs.case_index,
+            );
+        }
     }
 }

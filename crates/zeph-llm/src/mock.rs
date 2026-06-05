@@ -46,6 +46,13 @@ pub struct MockProvider {
     pub embed_delay_ms: u64,
     /// Fixed entropy value returned by `chat_with_extras()`. `None` returns `ChatExtras::default()`.
     pub fixed_entropy: Option<f64>,
+    /// Counts currently-in-flight `chat()` calls. Updated atomically before and after the call body.
+    /// Shared with the test via [`MockProvider::with_concurrency_tracking`].
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    /// High-watermark of concurrent `chat()` calls observed so far.
+    peak_concurrent: Arc<std::sync::atomic::AtomicUsize>,
+    /// Per-call delay sequence. Each `chat()` call pops from the front; when empty, falls back to `delay_ms`.
+    per_call_delays: Arc<Mutex<VecDeque<u64>>>,
 }
 
 impl Default for MockProvider {
@@ -69,6 +76,9 @@ impl Default for MockProvider {
             embed_call_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             embed_delay_ms: 0,
             fixed_entropy: None,
+            in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            peak_concurrent: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            per_call_delays: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 }
@@ -192,6 +202,52 @@ impl MockProvider {
         self
     }
 
+    /// Set per-call delay sequence for `chat()`.
+    ///
+    /// Each call pops from the front of the sequence; when the sequence is exhausted,
+    /// `delay_ms` is used as a fallback.  This enables tests to assign distinct delays
+    /// to individual calls so that futures complete in a controlled out-of-order fashion,
+    /// which verifies ordering guarantees in callers that use `FuturesUnordered`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::mock::MockProvider;
+    ///
+    /// // First call sleeps 30 ms, second sleeps 10 ms → second completes first.
+    /// let provider = MockProvider::with_responses(vec!["slow".into(), "fast".into()])
+    ///     .with_per_call_delays(vec![30, 10]);
+    /// ```
+    #[must_use]
+    pub fn with_per_call_delays(mut self, delays: Vec<u64>) -> Self {
+        self.per_call_delays = Arc::new(Mutex::new(VecDeque::from(delays)));
+        self
+    }
+
+    /// Enable in-flight concurrency tracking.
+    ///
+    /// Returns the provider and a shared atomic that holds the peak number of concurrent
+    /// `chat()` calls observed across the provider's lifetime.  Each `chat()` call
+    /// increments `in_flight`, records the new value into the peak if it is higher, then
+    /// decrements after the body (including any `delay_ms` sleep) completes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::mock::MockProvider;
+    /// use std::sync::atomic::Ordering;
+    ///
+    /// let (provider, peak) = MockProvider::default().with_concurrency_tracking();
+    /// // After running concurrent calls, peak.load(Ordering::SeqCst) <= expected_limit.
+    /// ```
+    #[must_use]
+    pub fn with_concurrency_tracking(mut self) -> (Self, Arc<std::sync::atomic::AtomicUsize>) {
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.peak_concurrent = Arc::clone(&peak);
+        (self, peak)
+    }
+
     /// Enable native `tool_use` support with a pre-configured sequence of `ChatResponse`
     /// values returned from `chat_with_tools()`.
     ///
@@ -212,29 +268,44 @@ impl LlmProvider for MockProvider {
     }
 
     async fn chat(&self, messages: &[Message]) -> Result<String, crate::LlmError> {
-        if self.delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        use std::sync::atomic::Ordering as AOrdering;
+        let current = self.in_flight.fetch_add(1, AOrdering::SeqCst) + 1;
+        self.peak_concurrent.fetch_max(current, AOrdering::SeqCst);
+
+        let call_delay = self
+            .per_call_delays
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(self.delay_ms);
+        if call_delay > 0 {
+            // Yield before sleeping so concurrent tasks can register in-flight before
+            // any of them finish, enabling accurate peak measurement.
+            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(call_delay)).await;
         }
         if let Some(buf) = &self.recorded
             && let Ok(mut guard) = buf.lock()
         {
             guard.push(messages.to_vec());
         }
-        if self.fail_chat {
-            return Err(crate::LlmError::Other("mock LLM error".into()));
-        }
-        // Return pre-configured errors first
-        if let Ok(mut errors) = self.errors.lock()
+        let result = if self.fail_chat {
+            Err(crate::LlmError::Other("mock LLM error".into()))
+        } else if let Ok(mut errors) = self.errors.lock()
             && !errors.is_empty()
         {
-            return Err(errors.pop_front().expect("non-empty"));
-        }
-        let mut responses = self.responses.lock().unwrap();
-        if responses.is_empty() {
-            Ok(self.default_response.clone())
+            Err(errors.pop_front().expect("non-empty"))
         } else {
-            Ok(responses.pop_front().expect("non-empty"))
-        }
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                Ok(self.default_response.clone())
+            } else {
+                Ok(responses.pop_front().expect("non-empty"))
+            }
+        };
+
+        self.in_flight.fetch_sub(1, AOrdering::SeqCst);
+        result
     }
 
     async fn chat_with_extras(
