@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
-use zeph_config::{GeminiThinkingLevel, ThinkingConfig, VaultBackend};
+use zeph_config::{
+    BgIsolation, GeminiThinkingLevel, ThinkingConfig, VaultBackend, WorktreeBaseRef,
+};
 use zeph_core::config::{
     AcpConfig, ChannelSkillsConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy,
     McpServerConfig, McpTrustLevel, MemoryConfig, OrchestrationConfig, ProviderEntry, ProviderKind,
@@ -19,12 +21,14 @@ pub(super) mod llm;
 pub(super) mod mcp;
 pub(super) mod memory;
 pub(super) mod security;
+pub(super) mod worktree;
 
 use agents::{step_agents, step_learning, step_orchestration, step_router};
 use llm::step_llm;
 use mcp::{step_mcp_discovery, step_mcp_remote, step_mcpls, write_mcpls_config};
 use memory::{step_context_compression, step_memory};
 use security::{step_policy, step_sandbox, step_security, step_trajectory};
+use worktree::step_worktree;
 
 #[cfg_attr(test, derive(Clone))]
 #[allow(clippy::struct_excessive_bools)]
@@ -255,6 +259,10 @@ pub(crate) struct WizardState {
     // CAM fidelity (#4547)
     /// Enable heuristic fidelity scoring (Full/Compressed/Placeholder).
     pub(crate) fidelity_enabled: bool,
+    // Worktree isolation for sub-agents (#4656)
+    pub(crate) worktree_enabled: bool,
+    pub(crate) worktree_bg_isolation: BgIsolation,
+    pub(crate) worktree_base_ref: WorktreeBaseRef,
 }
 
 impl Default for WizardState {
@@ -431,6 +439,9 @@ impl Default for WizardState {
             cocoon_wants_access_hash: false,
             cocoon_show_balance: true,
             fidelity_enabled: false,
+            worktree_enabled: false,
+            worktree_bg_isolation: BgIsolation::Worktree,
+            worktree_base_ref: WorktreeBaseRef::Head,
         }
     }
 }
@@ -486,6 +497,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_mcp_discovery(&mut state)?;
     step_lsp_context(&mut state)?;
     step_agents(&mut state)?;
+    step_worktree(&mut state)?;
     step_router(&mut state)?;
     step_learning(&mut state)?;
     step_security(&mut state)?;
@@ -889,6 +901,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .user_agents_dir
         .clone_from(&state.agents_user_dir);
     config.agents.default_memory_scope = state.agents_default_memory_scope;
+
+    // Worktree isolation for sub-agents (#4656)
+    if state.worktree_enabled {
+        config.worktree.enabled = true;
+        config.worktree.bg_isolation = state.worktree_bg_isolation;
+        config.worktree.base_ref = state.worktree_base_ref.clone();
+    }
 
     match state.detector_mode.as_deref() {
         Some("judge") => {
@@ -2655,5 +2674,24 @@ mod tests {
         let config = build_config(&state);
         let p = &config.llm.providers[0];
         assert!(p.cocoon_access_hash.is_none());
+    }
+
+    #[test]
+    fn build_config_worktree_disabled_by_default() {
+        let state = WizardState::default();
+        let config = build_config(&state);
+        assert!(!config.worktree.enabled);
+    }
+
+    #[test]
+    fn build_config_worktree_enabled_bg_isolation_none() {
+        let mut state = WizardState::default();
+        state.worktree_enabled = true;
+        state.worktree_bg_isolation = BgIsolation::None;
+        state.worktree_base_ref = WorktreeBaseRef::Fresh;
+        let config = build_config(&state);
+        assert!(config.worktree.enabled);
+        assert_eq!(config.worktree.bg_isolation, BgIsolation::None);
+        assert!(matches!(config.worktree.base_ref, WorktreeBaseRef::Fresh));
     }
 }

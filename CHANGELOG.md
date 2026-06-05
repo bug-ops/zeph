@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `--init` wizard now includes a worktree isolation step: prompts for `worktree.enabled`, `bg_isolation` (`none`/`worktree`), and `base_ref` (`head`/`fresh`) (#4656)
+
 ### Changed
 
 - `refactor(channels)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to 17
