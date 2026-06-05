@@ -131,8 +131,8 @@ pub struct EvalReport {
 ///
 /// # Concurrency
 ///
-/// Subject calls are sequential; judge calls are parallelized up to
-/// `parallel_evals` (default: 3) via a tokio semaphore.
+/// Both subject and judge calls are parallelized up to `parallel_evals`
+/// (default: 3) concurrent tasks via a tokio semaphore.
 ///
 /// # Examples
 ///
@@ -195,10 +195,10 @@ impl Evaluator {
         })
     }
 
-    /// Override the default concurrency limit for judge calls.
+    /// Override the default concurrency limit for both subject and judge calls.
     ///
     /// The default is 3. A value of 0 is silently promoted to 1 (at least one
-    /// judge call can run at a time).
+    /// call can run at a time).
     ///
     /// # Examples
     ///
@@ -290,13 +290,14 @@ impl Evaluator {
 
     /// Run the full benchmark against `subject`, returning aggregate scores.
     ///
-    /// Subject calls are sequential; judge calls are parallelized up to
-    /// `parallel_evals` concurrent tasks. A per-invocation token budget is
-    /// enforced across all judge calls.
+    /// Both subject and judge calls are parallelized up to `parallel_evals` concurrent
+    /// tasks. A per-invocation token budget is enforced across all judge calls.
     ///
     /// # Errors
     ///
-    /// Returns [`EvalError::Llm`] if any subject call fails fatally.
+    /// Returns [`EvalError::Llm`] or [`EvalError::Timeout`] if any subject call fails —
+    /// both are fatal in Phase 1. Under parallel execution the returned error is from
+    /// whichever future completes first; the failing `case_index` is non-deterministic.
     /// Budget exhaustion and judge errors are handled gracefully (excluded from scores).
     #[tracing::instrument(
         name = "experiments.evaluator.evaluate",
@@ -307,30 +308,53 @@ impl Evaluator {
     pub async fn evaluate(&self, subject: &AnyProvider) -> Result<EvalReport, EvalError> {
         let cases_total = self.benchmark.cases.len();
 
-        // Phase 1: call subject model sequentially for each case.
-        let mut subject_responses: Vec<(usize, &BenchmarkCase, String)> =
-            Vec::with_capacity(cases_total);
+        // Phase 1: call subject model in parallel, bounded by `parallel_evals`.
+        let subject_semaphore = Arc::new(Semaphore::new(self.parallel_evals));
+        let mut subject_futures: FuturesUnordered<_> = FuturesUnordered::new();
+
         for (i, case) in self.benchmark.cases.iter().enumerate() {
+            let sem = Arc::clone(&subject_semaphore);
             let messages = build_subject_messages(case);
-            let timeout = std::time::Duration::from_secs(self.subject_timeout_secs);
-            let response = match tokio::time::timeout(timeout, subject.chat(&messages)).await {
-                Ok(Ok(r)) => r,
-                Ok(Err(e)) => return Err(EvalError::Llm(e)),
-                Err(_elapsed) => {
-                    tracing::warn!(
-                        case_index = i,
-                        timeout_secs = self.subject_timeout_secs,
-                        "evaluator: subject LLM call timed out"
-                    );
-                    return Err(EvalError::Timeout {
-                        role: "subject",
-                        timeout_secs: self.subject_timeout_secs,
-                        case_index: i,
-                    });
+            let timeout_secs = self.subject_timeout_secs;
+            let subject_clone = subject.clone();
+
+            subject_futures.push(async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| EvalError::Semaphore(e.to_string()))?;
+                let timeout = std::time::Duration::from_secs(timeout_secs);
+                match tokio::time::timeout(timeout, subject_clone.chat(&messages)).await {
+                    Ok(Ok(r)) => Ok((i, r)),
+                    Ok(Err(e)) => Err(EvalError::Llm(e)),
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            case_index = i,
+                            timeout_secs,
+                            "evaluator: subject LLM call timed out"
+                        );
+                        Err(EvalError::Timeout {
+                            role: "subject",
+                            timeout_secs,
+                            case_index: i,
+                        })
+                    }
                 }
-            };
-            subject_responses.push((i, case, response));
+            });
         }
+
+        // Collect subject responses; any error is fatal (propagate immediately).
+        let mut indexed_responses: Vec<(usize, String)> = Vec::with_capacity(cases_total);
+        while let Some(result) = subject_futures.next().await {
+            indexed_responses.push(result?);
+        }
+        // Restore deterministic order for Phase 2 (FuturesUnordered yields in completion order).
+        indexed_responses.sort_unstable_by_key(|(i, _)| *i);
+
+        let subject_responses: Vec<(usize, &BenchmarkCase, String)> = indexed_responses
+            .into_iter()
+            .map(|(i, response)| (i, &self.benchmark.cases[i], response))
+            .collect();
 
         // Phase 2: score responses in parallel with a per-invocation budget counter.
         let tokens_used = Arc::new(AtomicU64::new(0));
