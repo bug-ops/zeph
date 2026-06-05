@@ -46,6 +46,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   marked `#[non_exhaustive]`. Closes #4749.
 - `zeph-config`: `LearningConfig` gains a `judge_provider` field that accepts a named provider from
   `[[llm.providers]]`, taking precedence over `judge_model` for the judge detector. Closes #4739.
+- `zeph-core`: `build_judge_provider` now correctly falls through from a failed `judge_provider`
+  registry lookup to the `judge_model` branch instead of returning `None` early, restoring the
+  documented three-step fallback chain. Closes #4761.
 - `zeph-core`: `detect_and_record_corrections` now runs `FeedbackDetector::detect` in
   `tokio::task::spawn_blocking` when the message exceeds 4096 bytes, preventing the async agent
   loop from blocking on CPU-bound regex work. Closes #4740.

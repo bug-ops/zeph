@@ -711,3 +711,71 @@ fn auto_budget_tokens_explicit_zero_falls_back_to_128k() {
     let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
     assert_eq!(builder.auto_budget_tokens(&provider), 128_000);
 }
+
+// ── build_judge_provider ──────────────────────────────────────────────────────
+
+fn make_builder_with_judge_config(
+    judge_provider: &str,
+    judge_model: &str,
+    providers: Vec<ProviderEntry>,
+) -> super::AppBuilder {
+    let mut config = zeph_core::config::Config::load(Path::new("/nonexistent")).unwrap();
+    config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Judge;
+    config.skills.learning.judge_provider = judge_provider.to_owned();
+    config.skills.learning.judge_model = judge_model.to_owned();
+    config.llm.providers = providers;
+    super::AppBuilder::for_test(config)
+}
+
+fn ollama_entry(name: &str) -> ProviderEntry {
+    ProviderEntry {
+        provider_type: ProviderKind::Ollama,
+        name: Some(name.to_owned()),
+        model: Some("llama3".into()),
+        ..ProviderEntry::default()
+    }
+}
+
+#[test]
+fn build_judge_provider_regex_mode_returns_none() {
+    let mut config = zeph_core::config::Config::load(Path::new("/nonexistent")).unwrap();
+    config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Regex;
+    let b = super::AppBuilder::for_test(config);
+    assert!(
+        b.build_judge_provider().is_none(),
+        "Regex mode must return None"
+    );
+}
+
+#[test]
+fn build_judge_provider_valid_judge_provider_returns_some() {
+    let b = make_builder_with_judge_config("judge", "", vec![ollama_entry("judge")]);
+    assert!(
+        b.build_judge_provider().is_some(),
+        "Valid judge_provider entry must resolve to Some"
+    );
+}
+
+/// Regression test for #4761: when judge_provider is set but the named provider does not exist,
+/// the function must fall through to judge_model instead of returning None early.
+#[test]
+fn build_judge_provider_invalid_judge_provider_falls_back_to_judge_model() {
+    let b = make_builder_with_judge_config(
+        "nonexistent-provider",
+        "fallback",
+        vec![ollama_entry("fallback")],
+    );
+    assert!(
+        b.build_judge_provider().is_some(),
+        "Failed judge_provider lookup must fall back to judge_model"
+    );
+}
+
+#[test]
+fn build_judge_provider_both_empty_returns_none() {
+    let b = make_builder_with_judge_config("", "", vec![]);
+    assert!(
+        b.build_judge_provider().is_none(),
+        "Empty judge_provider and judge_model must return None"
+    );
+}
