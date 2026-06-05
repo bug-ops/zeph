@@ -46,7 +46,7 @@ pub enum ToolOutcome {
 /// Error type for `PatternStore` operations.
 #[derive(Debug, Error)]
 pub enum PatternError {
-    #[error("database error: {0}")]
+    #[error("sqlx error: {0}")]
     Db(#[from] zeph_db::sqlx::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),

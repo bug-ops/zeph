@@ -217,7 +217,7 @@ fn unix_now() -> i64 {
 #[derive(Debug, thiserror::Error)]
 pub enum PlanCacheError {
     /// A `SQLite` query failed.
-    #[error("database error: {0}")]
+    #[error("sqlx error: {0}")]
     Database(#[from] zeph_db::SqlxError),
     /// JSON serialization or deserialization of a plan template failed.
     #[error("serialization error: {0}")]

@@ -35,7 +35,7 @@ pub enum IndexError {
     /// `SQLite` database error from `sqlx`.
     ///
     /// Raised by metadata reads/writes in [`crate::store::CodeStore`].
-    #[error("database error: {0}")]
+    #[error("sqlx error: {0}")]
     Sqlite(#[from] zeph_db::SqlxError),
 
     /// Qdrant vector store error.

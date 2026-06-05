@@ -37,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   their `Sqlx` and `Db` variants (`"sqlx error: {0}"` and `"db error: {0}"` respectively), making
   it possible to distinguish raw SQLx query failures from zeph-db lifecycle/migration errors in log
   output. Adds 4 regression tests. Closes #4782.
+- `fix(db,index,orchestration,core)`: align `DbError::Sqlx`, `IndexError::Sqlite`,
+  `PlanCacheError::Database`, and `PatternError::Db` display strings to `"sqlx error: {0}"`,
+  consistent with `zeph-memory` and `zeph-scheduler`. Closes #4798.
 
 ### Added
 

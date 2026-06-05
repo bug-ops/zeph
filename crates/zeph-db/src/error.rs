@@ -24,6 +24,6 @@ pub enum DbError {
     Io(#[from] std::io::Error),
 
     /// Generic sqlx error not covered by the above variants.
-    #[error("database error: {0}")]
+    #[error("sqlx error: {0}")]
     Sqlx(#[from] sqlx::Error),
 }
