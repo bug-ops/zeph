@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-06-05
+
 ### Added
 
 - `test(memory)`: add unit tests for `deep_reasoning_query_conditioned` flag in `retrieve_tier` —
@@ -7400,7 +7402,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 - Agent::run() uses tokio::select! to race channel messages against shutdown signal
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.3...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.21.4...HEAD
+[0.21.4]: https://github.com/bug-ops/zeph/compare/v0.21.3...v0.21.4
 [0.21.3]: https://github.com/bug-ops/zeph/compare/v0.21.2...v0.21.3
 [0.21.2]: https://github.com/bug-ops/zeph/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/bug-ops/zeph/compare/v0.21.0...v0.21.1
