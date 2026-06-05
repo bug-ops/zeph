@@ -383,10 +383,7 @@ impl Channel for CliChannel {
     /// This method is cancel-safe: dropping the future does not discard any
     /// buffered input. The background stdin reader task buffers messages in an
     /// mpsc channel; they remain available on the next `recv()` call.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "channel.cli.recv", skip_all, fields(msg_len = tracing::field::Empty))
-    )]
+    #[tracing::instrument(name = "channels.cli.recv", skip_all, fields(msg_len = tracing::field::Empty))]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.ensure_reader().recv().await)
     }
@@ -403,10 +400,7 @@ impl Channel for CliChannel {
     ///
     /// [`send_chunk`]: CliChannel::send_chunk
     /// [`flush_chunks`]: CliChannel::flush_chunks
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "channel.cli.send", skip_all, fields(msg_len = %text.len()))
-    )]
+    #[tracing::instrument(name = "channels.cli.send", skip_all, fields(msg_len = %text.len()))]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         println!("Zeph: {text}");
         Ok(())
@@ -423,6 +417,7 @@ impl Channel for CliChannel {
     /// Returns `Err` if the stdout flush fails.
     ///
     /// [`flush_chunks`]: CliChannel::flush_chunks
+    #[tracing::instrument(name = "channels.cli.send_chunk", skip_all, fields(chunk_len = chunk.len()))]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         use std::io::{Write, stdout};
         print!("{chunk}");
@@ -439,6 +434,7 @@ impl Channel for CliChannel {
     /// # Errors
     ///
     /// Always returns `Ok(())`.
+    #[tracing::instrument(name = "channels.cli.flush_chunks", skip_all)]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         println!();
         self.accumulated.clear();
@@ -455,6 +451,7 @@ impl Channel for CliChannel {
     ///
     /// Returns `Err` if spawning the blocking task fails or if the underlying
     /// readline call returns an I/O error.
+    #[tracing::instrument(name = "channels.cli.confirm", skip_all)]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         if !std::io::stdin().is_terminal() {
             tracing::debug!("non-interactive stdin, auto-declining confirmation");
@@ -493,6 +490,7 @@ impl Channel for CliChannel {
     /// [`ElicitationFieldType`]: zeph_core::channel::ElicitationFieldType
     /// [`ElicitationResponse::Declined`]: zeph_core::channel::ElicitationResponse::Declined
     /// [`ElicitationResponse::Cancelled`]: zeph_core::channel::ElicitationResponse::Cancelled
+    #[tracing::instrument(name = "channels.cli.elicit", skip_all, fields(server = %request.server_name))]
     async fn elicit(
         &mut self,
         request: ElicitationRequest,

@@ -151,7 +151,10 @@ impl SkillSemanticScanner {
     /// # Errors
     ///
     /// Returns [`SkillError::Other`] if the LLM call fails or times out.
-    #[tracing::instrument(skip(self, skill_md_content), fields(skill = %skill_name))]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.scanner.scan", skip(self, skill_md_content), fields(skill = %skill_name))
+    )]
     pub async fn scan(
         &self,
         skill_name: &str,

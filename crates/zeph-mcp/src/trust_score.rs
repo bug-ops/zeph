@@ -130,6 +130,10 @@ impl TrustScoreStore {
     /// # Errors
     ///
     /// Returns an error if any migration fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.trust_score.init", skip_all)
+    )]
     pub async fn init(&self) -> Result<(), zeph_db::DbError> {
         zeph_db::run_migrations(&self.pool).await?;
         Ok(())
@@ -150,6 +154,10 @@ impl TrustScoreStore {
     /// # Errors
     ///
     /// Returns an error if any SQL query fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.trust_score.load", skip(self), fields(server_id))
+    )]
     pub async fn load(
         &self,
         server_id: &str,
@@ -200,6 +208,10 @@ impl TrustScoreStore {
     /// # Errors
     ///
     /// Returns an error if the SQL execution fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.trust_score.apply_delta", skip(self), fields(server_id))
+    )]
     pub async fn apply_delta(
         &self,
         server_id: &str,
@@ -238,6 +250,14 @@ impl TrustScoreStore {
     /// # Errors
     ///
     /// Returns an error if the SQL query or execution fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "mcp.trust_score.load_and_apply_delta",
+            skip(self),
+            fields(server_id)
+        )
+    )]
     pub async fn load_and_apply_delta(
         &self,
         server_id: &str,
@@ -279,6 +299,10 @@ impl TrustScoreStore {
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.trust_score.load_all", skip_all)
+    )]
     pub async fn load_all(&self) -> Result<Vec<ServerTrustScore>, zeph_db::SqlxError> {
         let rows: Vec<(String, f64, i64, i64, i64)> = zeph_db::query_as(sql!(
             "SELECT server_id, score, success_count, failure_count, updated_at_secs

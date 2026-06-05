@@ -93,7 +93,7 @@ impl DiscordChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.send_or_edit", skip_all, level = "debug", fields(buf_len = %self.buffer.len()))
+        tracing::instrument(name = "channels.discord.send_or_edit", skip_all, level = "debug", fields(buf_len = %self.buffer.len()))
     )]
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let channel_id = self
@@ -174,7 +174,7 @@ impl Channel for DiscordChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.recv", skip_all, fields(msg_len = tracing::field::Empty))
+        tracing::instrument(name = "channels.discord.recv", skip_all, fields(msg_len = tracing::field::Empty))
     )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         loop {
@@ -205,7 +205,7 @@ impl Channel for DiscordChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.send", skip_all, fields(msg_len = %text.len()))
+        tracing::instrument(name = "channels.discord.send", skip_all, fields(msg_len = %text.len()))
     )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         let channel_id = self
@@ -232,7 +232,7 @@ impl Channel for DiscordChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
+        tracing::instrument(name = "channels.discord.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
     )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.buffer.push(chunk);
@@ -244,7 +244,7 @@ impl Channel for DiscordChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.flush_chunks", skip_all, level = "debug")
+        tracing::instrument(name = "channels.discord.flush_chunks", skip_all, level = "debug")
     )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         if self.message_id.is_some() || !self.buffer.is_empty() {
@@ -257,7 +257,7 @@ impl Channel for DiscordChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.send_typing", skip_all, level = "debug")
+        tracing::instrument(name = "channels.discord.send_typing", skip_all, level = "debug")
     )]
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
         let Some(channel_id) = self.channel_id.as_deref() else {
@@ -283,7 +283,7 @@ impl Channel for DiscordChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.confirm", skip_all, fields(prompt_len = %prompt.len()))
+        tracing::instrument(name = "channels.discord.confirm", skip_all, fields(prompt_len = %prompt.len()))
     )]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         self.send(&format!(

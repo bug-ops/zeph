@@ -156,7 +156,7 @@ impl RestClient {
     /// Returns an error if the HTTP request fails or rate-limit retries are exhausted.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.rest.send_message", skip_all)
+        tracing::instrument(name = "channels.discord.rest.send_message", skip_all)
     )]
     pub async fn send_message(
         &self,
@@ -181,7 +181,7 @@ impl RestClient {
     /// Returns an error if the HTTP request fails or rate-limit retries are exhausted.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.rest.edit_message", skip_all)
+        tracing::instrument(name = "channels.discord.rest.edit_message", skip_all)
     )]
     pub async fn edit_message(
         &self,
@@ -209,7 +209,7 @@ impl RestClient {
     /// never returns an error (fire-and-forget caller pattern).
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.rest.register_slash_commands", skip_all)
+        tracing::instrument(name = "channels.discord.rest.register_slash_commands", skip_all)
     )]
     pub async fn register_slash_commands(&self) {
         let app_id = match self
@@ -252,7 +252,7 @@ impl RestClient {
     /// Returns an error if the HTTP request fails or rate-limit retries are exhausted.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.discord.rest.trigger_typing", skip_all)
+        tracing::instrument(name = "channels.discord.rest.trigger_typing", skip_all)
     )]
     pub async fn trigger_typing(&self, channel_id: &str) -> Result<(), reqwest::Error> {
         let url = format!("{BASE_URL}/channels/{channel_id}/typing");

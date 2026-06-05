@@ -137,6 +137,10 @@ impl McpToolRegistry {
     /// # Errors
     ///
     /// Returns an error if Qdrant communication fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.registry.sync", skip_all)
+    )]
     pub async fn sync<F>(
         &mut self,
         tools: &[McpTool],
@@ -181,6 +185,14 @@ impl McpToolRegistry {
     ///
     /// Note: returned tools have an empty `input_schema` because Qdrant payloads only
     /// store the description fields needed for prompt construction.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "mcp.registry.search",
+            skip(self, embed_fn),
+            fields(query, limit)
+        )
+    )]
     pub async fn search<F>(&self, query: &str, limit: usize, embed_fn: F) -> Vec<McpTool>
     where
         F: Fn(&str) -> EmbedFuture,

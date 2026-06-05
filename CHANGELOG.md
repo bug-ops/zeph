@@ -12,6 +12,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(tracing)`: complete tracing instrumentation sweep across `zeph-channels`,
+  `zeph-skills`, and `zeph-mcp` (issues #4849, #4827, #4819):
+  - **zeph-channels**: add always-on `#[tracing::instrument]` to all hot-path async fns in
+    `telegram.rs` and `cli.rs`; unify span namespace from `channel.*` to `channels.*` across all
+    6 channel source files (discord, slack, telegram_api_ext, telegram_moderation — 46 spans total).
+  - **zeph-skills**: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to 13 pub async
+    fns across `proactive.rs`, `trace_extractor.rs`, `semantic_scanner.rs`, `miner.rs`,
+    `qdrant_matcher.rs`, `evaluator.rs`, `generator.rs`; remove redundant inner `.instrument()`
+    calls; rename stale `core.proactive.classify` span to `skills.proactive.classify`.
+  - **zeph-mcp**: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to 21 pub async
+    fns across 8 files (`manager.rs`, `client.rs`, `trust_score.rs`, `pruning.rs`,
+    `semantic_index.rs`, `registry.rs`, `prober.rs`, `oauth.rs`).
+  Span naming convention: `<crate>.<module>.<operation>` throughout.
+  Closes #4849, #4827, #4819.
+
 - `refactor(channels)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to 17
   uninstrumented async fns in `zeph-channels` — Telegram API ext (8 fns), Discord REST client
   (4 fns), and Slack API client (4 fns) plus `bot_is_admin` in telegram moderation. Span names

@@ -191,7 +191,10 @@ impl SkillEvaluator {
     /// # Errors
     ///
     /// Currently always returns `Ok(_)`. Error propagation is reserved for future use.
-    #[tracing::instrument(name = "skills.eval.evaluate", skip_all, fields(skill_name = %req.name))]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.evaluator.evaluate", skip_all, fields(skill_name = %req.name))
+    )]
     pub async fn evaluate(
         &self,
         req: &SkillEvaluationRequest<'_>,

@@ -259,7 +259,7 @@ impl TelegramApiClient {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.get_me", skip_all)
+        tracing::instrument(name = "channels.telegram.get_me", skip_all)
     )]
     pub async fn get_me(&self) -> Result<GuestUser, TelegramApiError> {
         self.post("getMe", &serde_json::json!({})).await
@@ -359,7 +359,7 @@ impl TelegramApiClient {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.answer_guest_query", skip_all)
+        tracing::instrument(name = "channels.telegram.answer_guest_query", skip_all)
     )]
     pub async fn answer_guest_query(
         &self,
@@ -405,7 +405,7 @@ impl TelegramApiClient {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.get_managed_bot_access_settings", skip_all)
+        tracing::instrument(name = "channels.telegram.get_managed_bot_access_settings", skip_all)
     )]
     pub async fn get_managed_bot_access_settings(
         &self,
@@ -439,7 +439,7 @@ impl TelegramApiClient {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.set_managed_bot_access_settings", skip_all)
+        tracing::instrument(name = "channels.telegram.set_managed_bot_access_settings", skip_all)
     )]
     pub async fn set_managed_bot_access_settings(
         &self,
@@ -477,7 +477,7 @@ impl TelegramApiClient {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.delete_message_reaction", skip_all)
+        tracing::instrument(name = "channels.telegram.delete_message_reaction", skip_all)
     )]
     pub async fn delete_message_reaction(
         &self,
@@ -533,7 +533,7 @@ impl TelegramApiClient {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.get_chat_member", skip_all)
+        tracing::instrument(name = "channels.telegram.get_chat_member", skip_all)
     )]
     pub async fn get_chat_member(
         &self,
@@ -576,7 +576,7 @@ impl TelegramApiClient {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.delete_all_message_reactions", skip_all)
+        tracing::instrument(name = "channels.telegram.delete_all_message_reactions", skip_all)
     )]
     pub async fn delete_all_message_reactions(
         &self,

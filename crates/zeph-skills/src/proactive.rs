@@ -155,7 +155,10 @@ impl ProactiveExplorer {
     ///
     /// Returns `None` when no keyword in the query matches a known domain.
     /// Returns the first matching [`DomainLabel`] otherwise.
-    #[tracing::instrument(name = "core.proactive.classify", skip_all)]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.proactive.classify", skip_all)
+    )]
     pub fn classify(&self, query: &str) -> Option<DomainLabel> {
         let lower = query.to_lowercase();
         for token in lower.split_whitespace() {
@@ -191,7 +194,10 @@ impl ProactiveExplorer {
     /// # Errors
     ///
     /// Returns [`SkillError`] if SKILL.md generation or the filesystem write fails.
-    #[tracing::instrument(name = "core.proactive.explore", skip_all, fields(domain = %domain.0))]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.proactive.explore", skip_all, fields(domain = %domain.0))
+    )]
     pub async fn explore(&self, domain: &DomainLabel) -> Result<(), SkillError> {
         let description = format!(
             "World-knowledge reference skill for {domain}. \

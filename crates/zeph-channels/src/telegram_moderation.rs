@@ -76,7 +76,7 @@ impl TelegramModerationBackend {
     /// Returns [`ModerationError`] on API or transport failure.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.telegram.bot_is_admin", skip_all)
+        tracing::instrument(name = "channels.telegram.bot_is_admin", skip_all)
     )]
     pub async fn bot_is_admin(
         &self,

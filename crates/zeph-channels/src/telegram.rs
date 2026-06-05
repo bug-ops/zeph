@@ -451,6 +451,7 @@ impl TelegramChannel {
         }
     }
 
+    #[tracing::instrument(name = "channels.telegram.send_or_edit", skip_all)]
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
             return Err(ChannelError::NoActiveSession);
@@ -686,6 +687,7 @@ fn spawn_guest_proxy(
 ///    correctly and the same updates are never replayed.  Teloxide's
 ///    `Update::filter_message()` handler simply ignores unknown `UpdateKind`
 ///    variants, so the extra entries are silently dropped by the dispatcher.
+#[tracing::instrument(name = "channels.telegram.proxy_handler", skip_all)]
 async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>) -> Response {
     // Path structure from teloxide: /bot<TOKEN>/<method>
     // proxy_url passed to Bot::set_api_url is http://127.0.0.1:<port>/bot<TOKEN>
@@ -787,6 +789,7 @@ async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>)
 }
 
 /// Parse a raw `guest_message` JSON value and forward it to the agent.
+#[tracing::instrument(name = "channels.telegram.extract_and_forward_guest_message", skip_all)]
 async fn extract_and_forward_guest_message(
     gm_val: &serde_json::Value,
     tx: &mpsc::Sender<IncomingMessage>,
@@ -872,6 +875,7 @@ fn compute_chain_depth(msg: &Message, cap: u32) -> u32 {
 /// attachments, and forwards the assembled [`IncomingMessage`] to the agent
 /// via `tx`.  Returns `respond(())` in all branches so teloxide considers the
 /// update handled.
+#[tracing::instrument(name = "channels.telegram.handle_message", skip_all)]
 #[allow(clippy::too_many_arguments)]
 async fn handle_telegram_message(
     bot: Bot,
@@ -982,6 +986,7 @@ async fn handle_telegram_message(
     respond(())
 }
 
+#[tracing::instrument(name = "channels.telegram.download_file", skip(bot), fields(file_id))]
 async fn download_file(bot: &Bot, file_id: String, capacity: u32) -> Result<Vec<u8>, String> {
     use teloxide::net::Download;
 
@@ -1039,10 +1044,7 @@ impl Channel for TelegramChannel {
     /// # Errors
     ///
     /// Returns `Err` if sending the welcome reply for `/start` fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "channel.telegram.recv", skip_all, fields(msg_len = tracing::field::Empty))
-    )]
+    #[tracing::instrument(name = "channels.telegram.recv", skip_all, fields(msg_len = tracing::field::Empty))]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         loop {
             let Some(incoming) = self.rx.recv().await else {
@@ -1105,10 +1107,7 @@ impl Channel for TelegramChannel {
     /// Returns `Err(ChannelError::NoActiveSession)` if no active chat has been
     /// established yet (i.e. `recv` has never returned a message), or
     /// `Err(ChannelError::Telegram)` if the Telegram API call fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "channel.telegram.send", skip_all, fields(msg_len = %text.len()))
-    )]
+    #[tracing::instrument(name = "channels.telegram.send", skip_all, fields(msg_len = %text.len()))]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         // Guest context: accumulate full response — flush_chunks calls answerGuestQuery once.
         if self.guest_query_id.is_some() {
@@ -1196,6 +1195,7 @@ impl Channel for TelegramChannel {
     /// # Errors
     ///
     /// Returns `Err` if the final Telegram edit fails.
+    #[tracing::instrument(name = "channels.telegram.flush_chunks", skip_all)]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         tracing::debug!(
             "flushing chunks (message_id: {:?}, accumulated: {} bytes)",
@@ -1250,6 +1250,7 @@ impl Channel for TelegramChannel {
     /// # Errors
     ///
     /// Returns `Err` if the Telegram API call fails.
+    #[tracing::instrument(name = "channels.telegram.send_typing", skip_all)]
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
         let Some(chat_id) = self.chat_id else {
             return Ok(());
@@ -1277,6 +1278,7 @@ impl Channel for TelegramChannel {
     /// Returns `Err` if sending the prompt message fails.
     ///
     /// [`CONFIRM_TIMEOUT`]: crate::CONFIRM_TIMEOUT
+    #[tracing::instrument(name = "channels.telegram.confirm", skip_all)]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         self.send(&format!(
             "{prompt}\nReply 'yes' to confirm (timeout: {}s).",
@@ -1340,6 +1342,7 @@ impl Channel for TelegramChannel {
     /// [`ELICITATION_TIMEOUT`]: crate::ELICITATION_TIMEOUT
     /// [`ElicitationResponse::Cancelled`]: zeph_core::channel::ElicitationResponse::Cancelled
     /// [`ElicitationResponse::Declined`]: zeph_core::channel::ElicitationResponse::Declined
+    #[tracing::instrument(name = "channels.telegram.elicit", skip_all, fields(server = %request.server_name))]
     async fn elicit(
         &mut self,
         request: ElicitationRequest,

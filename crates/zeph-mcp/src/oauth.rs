@@ -24,6 +24,14 @@ use crate::error::McpError;
 ///
 /// Returns `McpError::OAuthCallbackTimeout` if no callback arrives within `timeout`,
 /// or `McpError::OAuthError` on parse failures.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(
+        name = "mcp.oauth.await_oauth_callback",
+        skip(listener),
+        fields(server_id)
+    )
+)]
 pub async fn await_oauth_callback(
     listener: tokio::net::TcpListener,
     timeout: Duration,
@@ -146,6 +154,14 @@ fn hex_val(b: u8) -> Option<u8> {
 /// # Errors
 ///
 /// Returns `McpError::OAuthError` if any endpoint resolves to a private/reserved IP.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(
+        name = "mcp.oauth.validate_oauth_metadata_urls",
+        skip(metadata),
+        fields(server_id)
+    )
+)]
 pub async fn validate_oauth_metadata_urls(
     server_id: &str,
     metadata: &rmcp::transport::auth::AuthorizationMetadata,

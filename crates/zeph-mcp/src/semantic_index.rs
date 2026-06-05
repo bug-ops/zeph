@@ -87,6 +87,10 @@ impl SemanticToolIndex {
     ///
     /// Returns [`SemanticIndexError::AllEmbeddingsFailed`] when every tool's embedding
     /// fails.  The caller should fall back to the `None` strategy (all tools).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.semantic_index.build", skip_all)
+    )]
     pub async fn build<F>(tools: &[McpTool], embed_fn: &F) -> Result<Self, SemanticIndexError>
     where
         F: Fn(&str) -> zeph_llm::provider::EmbedFuture + Send + Sync,

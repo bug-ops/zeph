@@ -106,7 +106,7 @@ impl SlackChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.slack.send_or_edit", skip_all, level = "debug", fields(buf_len = %self.buffer.len()))
+        tracing::instrument(name = "channels.slack.send_or_edit", skip_all, level = "debug", fields(buf_len = %self.buffer.len()))
     )]
     async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
         let channel_id = self
@@ -166,7 +166,7 @@ impl Channel for SlackChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.slack.recv", skip_all, fields(msg_len = tracing::field::Empty))
+        tracing::instrument(name = "channels.slack.recv", skip_all, fields(msg_len = tracing::field::Empty))
     )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         let Some(incoming) = self.rx.recv().await else {
@@ -203,7 +203,7 @@ impl Channel for SlackChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.slack.send", skip_all, fields(msg_len = %text.len()))
+        tracing::instrument(name = "channels.slack.send", skip_all, fields(msg_len = %text.len()))
     )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         let channel_id = self
@@ -220,7 +220,7 @@ impl Channel for SlackChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.slack.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
+        tracing::instrument(name = "channels.slack.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
     )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.buffer.push(chunk);
@@ -232,7 +232,7 @@ impl Channel for SlackChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.slack.flush_chunks", skip_all, level = "debug")
+        tracing::instrument(name = "channels.slack.flush_chunks", skip_all, level = "debug")
     )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         if self.message_ts.is_some() || !self.buffer.is_empty() {
@@ -259,7 +259,7 @@ impl Channel for SlackChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "channel.slack.confirm", skip_all, fields(prompt_len = %prompt.len()))
+        tracing::instrument(name = "channels.slack.confirm", skip_all, fields(prompt_len = %prompt.len()))
     )]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         self.send(&format!(

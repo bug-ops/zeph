@@ -421,6 +421,14 @@ impl McpManager {
     ///
     /// Instructions are captured from `ServerInfo.instructions` after the MCP handshake
     /// and truncated to `max_instructions_bytes`.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "mcp.manager.server_instructions",
+            skip(self),
+            fields(server_id)
+        )
+    )]
     pub async fn server_instructions(&self, server_id: &str) -> Option<String> {
         self.server_instructions
             .read()
@@ -833,6 +841,10 @@ impl McpManager {
     ///
     /// # Panics
     ///
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.manager.connect_oauth_deferred", skip_all)
+    )]
     pub async fn connect_oauth_deferred(&self) {
         let limits = IngestLimits {
             description_bytes: self.max_description_bytes,
@@ -1208,6 +1220,10 @@ impl McpManager {
     ///
     /// # Panics
     ///
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.manager.add_server", skip(self, entry), fields(server_id = %entry.id))
+    )]
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         self.check_not_already_connected(&entry.id).await?;
 
@@ -1402,6 +1418,10 @@ impl McpManager {
     ///
     /// # Panics
     ///
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.manager.remove_server", skip(self), fields(server_id))
+    )]
     pub async fn remove_server(&self, server_id: &str) -> Result<(), McpError> {
         // Serialize with commit_added_server to prevent orphaned trust/tools entries.
         let add_remove_guard = self.add_remove_lock.lock().await;
@@ -1428,6 +1448,10 @@ impl McpManager {
     }
 
     /// Return all non-empty server instructions, concatenated with double newlines.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.manager.all_server_instructions", skip_all)
+    )]
     pub async fn all_server_instructions(&self) -> String {
         let map = self.server_instructions.read().await;
         let mut parts: Vec<&str> = map.values().map(String::as_str).collect();
@@ -1436,6 +1460,10 @@ impl McpManager {
     }
 
     /// Return sorted list of connected server IDs.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.manager.list_servers", skip_all)
+    )]
     pub async fn list_servers(&self) -> Vec<String> {
         let clients = self.clients.read().await;
         let mut ids: Vec<String> = clients.keys().cloned().collect();
@@ -1471,6 +1499,10 @@ impl McpManager {
     ///
     /// # Panics
     ///
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.manager.shutdown_all_shared", skip_all)
+    )]
     pub async fn shutdown_all_shared(&self) {
         // Signal all in-flight startup retry tasks to stop sleeping and exit immediately.
         // Must be the very first action so that retry sleeps are interrupted before we

@@ -195,57 +195,53 @@ impl TraceExtractor {
     /// Returns `SkillError::Other` when the LLM extraction call fails. Individual candidate
     /// failures (parse error, injection, merge failure) are logged and counted but do not
     /// propagate as errors.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.trace_extractor.extract_from_trace", skip(self, messages, existing_embeddings), fields(session_id, msg_count = messages.len()))
+    )]
     pub async fn extract_from_trace(
         &self,
         messages: &[UserMessage],
         existing_embeddings: &[(SkillMeta, SkillEmbedding)],
         session_id: &str,
     ) -> Result<TraceExtractionResult, SkillError> {
-        async move {
-            let mut result = TraceExtractionResult::default();
+        let mut result = TraceExtractionResult::default();
 
-            let truncated: Vec<_> = messages.iter().take(self.max_turns as usize).collect();
-            let prompt_text = self.build_prompt_text(&truncated);
+        let truncated: Vec<_> = messages.iter().take(self.max_turns as usize).collect();
+        let prompt_text = self.build_prompt_text(&truncated);
 
-            if prompt_text.is_empty() {
-                tracing::debug!(session_id, "trace_extractor: no user messages, skipping");
-                return Ok(result);
-            }
-
-            let raw = self.call_extract_llm(&prompt_text).await?;
-
-            if raw.trim() == "NONE" || raw.trim().is_empty() {
-                tracing::debug!(session_id, "trace_extractor: LLM returned no candidates");
-                return Ok(result);
-            }
-
-            let raw_candidates: Vec<&str> = raw.split(SKILL_SEPARATOR).collect();
-            result.candidates_proposed = u32::try_from(raw_candidates.len()).unwrap_or(u32::MAX);
-
-            for raw_candidate in raw_candidates {
-                self.process_candidate(raw_candidate, existing_embeddings, session_id, &mut result)
-                    .await;
-            }
-
-            tracing::info!(
-                session_id,
-                proposed = result.candidates_proposed,
-                parse_failed = result.candidates_parse_failed,
-                saved = result.candidates_saved,
-                merged = result.candidates_merged,
-                discarded = result.candidates_discarded,
-                rejected_injection = result.candidates_rejected_injection,
-                "trace_extractor: extraction complete"
-            );
-
-            Ok(result)
+        if prompt_text.is_empty() {
+            tracing::debug!(session_id, "trace_extractor: no user messages, skipping");
+            return Ok(result);
         }
-        .instrument(tracing::info_span!(
-            "skills.trace_extraction.extract",
+
+        let raw = self.call_extract_llm(&prompt_text).await?;
+
+        if raw.trim() == "NONE" || raw.trim().is_empty() {
+            tracing::debug!(session_id, "trace_extractor: LLM returned no candidates");
+            return Ok(result);
+        }
+
+        let raw_candidates: Vec<&str> = raw.split(SKILL_SEPARATOR).collect();
+        result.candidates_proposed = u32::try_from(raw_candidates.len()).unwrap_or(u32::MAX);
+
+        for raw_candidate in raw_candidates {
+            self.process_candidate(raw_candidate, existing_embeddings, session_id, &mut result)
+                .await;
+        }
+
+        tracing::info!(
             session_id,
-            message_count = messages.len(),
-        ))
-        .await
+            proposed = result.candidates_proposed,
+            parse_failed = result.candidates_parse_failed,
+            saved = result.candidates_saved,
+            merged = result.candidates_merged,
+            discarded = result.candidates_discarded,
+            rejected_injection = result.candidates_rejected_injection,
+            "trace_extractor: extraction complete"
+        );
+
+        Ok(result)
     }
 
     /// Process a single raw candidate string through the parse → scan → embed → decide pipeline.
@@ -547,6 +543,10 @@ impl TraceExtractor {
     ///
     /// Returns `SkillError::Other` if the embed provider fails catastrophically.
     /// Skills that time out are skipped with a warning.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.trace_extractor.embed_existing", skip(self, skills), fields(skill_count = skills.len()))
+    )]
     pub async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(SkillMeta, SkillEmbedding)> {
         let mut result = Vec::with_capacity(skills.len());
         for skill in skills {

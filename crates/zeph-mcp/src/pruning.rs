@@ -186,6 +186,10 @@ pub fn tool_list_hash(tools: &[McpTool]) -> u64 {
 /// Propagates `PruningError` from [`prune_tools`] on the first (uncached) LLM
 /// failure.  Subsequent calls with the same key return `Ok(all_tools.to_vec())`
 /// from the negative cache entry.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "mcp.pruning.prune_tools_cached", skip_all)
+)]
 pub async fn prune_tools_cached<P: LlmProvider>(
     cache: &mut PruningCache,
     all_tools: &[McpTool],
@@ -277,6 +281,10 @@ impl Default for PruningParams {
 ///
 /// Returns `PruningError::LlmError` if the provider call fails.
 /// Returns `PruningError::ParseError` if the response cannot be parsed as a JSON array.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "mcp.pruning.prune_tools", skip_all)
+)]
 pub async fn prune_tools<P: LlmProvider>(
     all_tools: &[McpTool],
     task_context: &str,

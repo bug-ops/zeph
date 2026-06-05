@@ -230,6 +230,10 @@ impl SkillGenerator {
     /// Returns `SkillError::AlreadyExists` if the skill directory already exists.
     /// Returns `SkillError::Invalid` if the evaluator rejects the skill.
     /// Returns `SkillError::Io` on filesystem errors.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.generator.approve_and_save", skip(self, skill), fields(skill_name = %skill.name))
+    )]
     pub async fn approve_and_save(&self, skill: &GeneratedSkill) -> Result<PathBuf, SkillError> {
         // Validate name (paranoia — already validated during generation).
         validate_generated_name(&skill.name)?;
@@ -310,6 +314,10 @@ impl SkillGenerator {
     ///     assert!(path.to_str().unwrap().contains("_quarantine"));
     /// }
     /// ```
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.generator.write_quarantined", skip(self, skill), fields(skill_name = %skill.name))
+    )]
     pub async fn write_quarantined(&self, skill: &GeneratedSkill) -> Result<PathBuf, SkillError> {
         validate_generated_name(&skill.name)?;
         let quarantine_dir = self.output_dir.join("_quarantine").join(&skill.name);

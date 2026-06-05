@@ -148,50 +148,46 @@ impl SkillMiner {
     /// # Errors
     ///
     /// Returns `SkillError::Other` on unrecoverable pipeline failures.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.miner.run", skip(self, existing_skills), fields(query_count = self.config.queries.len(), existing_skills_count = existing_skills.len()))
+    )]
     pub async fn run(&self, existing_skills: &[SkillMeta]) -> Result<Vec<MinedSkill>, SkillError> {
-        async move {
-            // Pre-compute embeddings for all existing skill descriptions once.
-            let existing_embeddings = self.embed_existing(existing_skills).await;
+        // Pre-compute embeddings for all existing skill descriptions once.
+        let existing_embeddings = self.embed_existing(existing_skills).await;
 
-            let delay_between_requests = self.request_delay();
-            let mut results: Vec<MinedSkill> = Vec::new();
+        let delay_between_requests = self.request_delay();
+        let mut results: Vec<MinedSkill> = Vec::new();
 
-            for query in &self.config.queries {
-                tracing::info!(query = %query, "mining: searching GitHub");
-                let repos = match self.search_repos(query).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(query = %query, error = %e, "GitHub search failed, skipping");
-                        continue;
-                    }
-                };
-                tokio::time::sleep(delay_between_requests).await;
-
-                for repo in repos {
-                    match self
-                        .process_repo(&repo, &existing_embeddings, self.config.dry_run)
-                        .await
-                    {
-                        Ok(Some(mined)) => {
-                            results.push(mined);
-                        }
-                        Ok(None) => {} // deduped or dry-run
-                        Err(e) => {
-                            tracing::warn!(repo = %repo.full_name, error = %e, "failed to process repo");
-                        }
-                    }
-                    tokio::time::sleep(delay_between_requests).await;
+        for query in &self.config.queries {
+            tracing::info!(query = %query, "mining: searching GitHub");
+            let repos = match self.search_repos(query).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(query = %query, error = %e, "GitHub search failed, skipping");
+                    continue;
                 }
-            }
+            };
+            tokio::time::sleep(delay_between_requests).await;
 
-            Ok(results)
+            for repo in repos {
+                match self
+                    .process_repo(&repo, &existing_embeddings, self.config.dry_run)
+                    .await
+                {
+                    Ok(Some(mined)) => {
+                        results.push(mined);
+                    }
+                    Ok(None) => {} // deduped or dry-run
+                    Err(e) => {
+                        tracing::warn!(repo = %repo.full_name, error = %e, "failed to process repo");
+                    }
+                }
+                tokio::time::sleep(delay_between_requests).await;
+            }
         }
-        .instrument(tracing::info_span!(
-            "skills.miner.run",
-            query_count = self.config.queries.len(),
-            existing_skills_count = existing_skills.len(),
-        ))
-        .await
+
+        Ok(results)
     }
 
     /// Pre-compute embeddings for existing skill descriptions.
@@ -447,95 +443,91 @@ impl SkillMiner {
     /// # Errors
     ///
     /// Returns `SkillError::Other` on network or rate-limit errors.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.miner.search_repos", skip(self), fields(query_len = query.len(), max_repos = self.config.max_repos_per_query))
+    )]
     pub async fn search_repos(&self, query: &str) -> Result<Vec<RepoCandidate>, SkillError> {
-        async move {
-            let per_page = self.config.max_repos_per_query.min(100);
-            // Build URL manually to avoid needing reqwest's query param serialization feature.
-            let encoded_query: String = query
-                .chars()
-                .flat_map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
-                        vec![c]
-                    } else {
-                        format!("%{:02X}", c as u32).chars().collect()
-                    }
-                })
-                .collect();
-            let url = format!(
-                "https://api.github.com/search/repositories?q={encoded_query}&sort=stars&per_page={per_page}"
-            );
+        let per_page = self.config.max_repos_per_query.min(100);
+        // Build URL manually to avoid needing reqwest's query param serialization feature.
+        let encoded_query: String = query
+            .chars()
+            .flat_map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
+                    vec![c]
+                } else {
+                    format!("%{:02X}", c as u32).chars().collect()
+                }
+            })
+            .collect();
+        let url = format!(
+            "https://api.github.com/search/repositories?q={encoded_query}&sort=stars&per_page={per_page}"
+        );
 
-            let resp = self
-                .http
-                .get(&url)
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", self.github_token.expose()),
-                )
-                .header("Accept", "application/vnd.github.v3+json")
-                .send()
-                .await
-                .map_err(|e| SkillError::Other(format!("GitHub search request failed: {e}")))?;
+        let resp = self
+            .http
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.github_token.expose()),
+            )
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await
+            .map_err(|e| SkillError::Other(format!("GitHub search request failed: {e}")))?;
 
-            if resp.status() == reqwest::StatusCode::FORBIDDEN
-                || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-            {
-                return Err(SkillError::Other(format!(
-                    "GitHub rate limit exceeded ({})",
-                    resp.status()
-                )));
+        if resp.status() == reqwest::StatusCode::FORBIDDEN
+            || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            return Err(SkillError::Other(format!(
+                "GitHub rate limit exceeded ({})",
+                resp.status()
+            )));
+        }
+
+        if !resp.status().is_success() {
+            return Err(SkillError::Other(format!(
+                "GitHub search returned {}: {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            )));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| SkillError::Other(format!("GitHub search JSON parse failed: {e}")))?;
+
+        let items = json["items"].as_array().cloned().unwrap_or_default();
+        let mut candidates = Vec::with_capacity(items.len());
+
+        for item in &items {
+            let full_name = item["full_name"].as_str().unwrap_or_default().to_string();
+            let description = item["description"].as_str().unwrap_or_default().to_string();
+            let stars =
+                u32::try_from(item["stargazers_count"].as_u64().unwrap_or(0)).unwrap_or(u32::MAX);
+
+            if full_name.is_empty() {
+                continue;
             }
 
-            if !resp.status().is_success() {
-                return Err(SkillError::Other(format!(
-                    "GitHub search returned {}: {}",
-                    resp.status(),
-                    resp.text().await.unwrap_or_default()
-                )));
-            }
-
-            let json: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| SkillError::Other(format!("GitHub search JSON parse failed: {e}")))?;
-
-            let items = json["items"].as_array().cloned().unwrap_or_default();
-            let mut candidates = Vec::with_capacity(items.len());
-
-            for item in &items {
-                let full_name = item["full_name"].as_str().unwrap_or_default().to_string();
-                let description = item["description"].as_str().unwrap_or_default().to_string();
-                let stars =
-                    u32::try_from(item["stargazers_count"].as_u64().unwrap_or(0)).unwrap_or(u32::MAX);
-
-                if full_name.is_empty() {
+            let readme = match self.fetch_readme(&full_name).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(repo = %full_name, error = %e, "README fetch failed, skipping");
                     continue;
                 }
+            };
 
-                let readme = match self.fetch_readme(&full_name).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::debug!(repo = %full_name, error = %e, "README fetch failed, skipping");
-                        continue;
-                    }
-                };
-
-                candidates.push(RepoCandidate {
-                    full_name,
-                    description,
-                    readme_content: readme,
-                    stars,
-                });
-            }
-
-            Ok(candidates)
+            candidates.push(RepoCandidate {
+                full_name,
+                description,
+                readme_content: readme,
+                stars,
+            });
         }
-        .instrument(tracing::info_span!(
-            "skills.miner.search_repos",
-            query_len = query.len(),
-            max_repos = self.config.max_repos_per_query,
-        ))
-        .await
+
+        Ok(candidates)
     }
 
     /// Fetch and truncate the README for a repository.
@@ -637,29 +629,25 @@ impl SkillMiner {
     /// # Errors
     ///
     /// Returns `SkillError::Other` if the embedding call fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.miner.is_novel", skip(self, candidate, existing_embeddings), fields(candidate_name = %candidate.name, existing_count = existing_embeddings.len()))
+    )]
     pub async fn is_novel(
         &self,
         candidate: &GeneratedSkill,
         existing_embeddings: &[(SkillMeta, SkillEmbedding)],
     ) -> Result<(bool, f32), SkillError> {
-        async move {
-            if existing_embeddings.is_empty() {
-                return Ok((true, 0.0));
-            }
-
-            let candidate_emb = self.embed_candidate(candidate).await?;
-
-            let max_sim =
-                find_nearest(&candidate_emb, existing_embeddings).map_or(0.0_f32, |(_, sim)| sim);
-
-            Ok((max_sim < self.config.dedup_threshold, max_sim))
+        if existing_embeddings.is_empty() {
+            return Ok((true, 0.0));
         }
-        .instrument(tracing::info_span!(
-            "skills.miner.is_novel",
-            candidate_name = %candidate.name,
-            existing_count = existing_embeddings.len(),
-        ))
-        .await
+
+        let candidate_emb = self.embed_candidate(candidate).await?;
+
+        let max_sim =
+            find_nearest(&candidate_emb, existing_embeddings).map_or(0.0_f32, |(_, sim)| sim);
+
+        Ok((max_sim < self.config.dedup_threshold, max_sim))
     }
 }
 

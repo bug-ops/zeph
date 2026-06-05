@@ -46,6 +46,10 @@ impl DefaultMcpProber {
     /// Scoring:
     /// - No injection found: `+0.1` (small positive signal for cooperative server)
     /// - Injection found: `INJECTION_PENALTY` reduction + `block = true`
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.prober.probe", skip(self, client), fields(server_id))
+    )]
     pub async fn probe(&self, server_id: &str, client: &McpClient) -> ProbeResult {
         let mut descriptions = Vec::new();
         descriptions.extend(client.probe_resource_descriptions().await);

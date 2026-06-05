@@ -763,6 +763,10 @@ impl McpClient {
     ///
     /// Returns `McpError::OAuthError` if token exchange fails or the connection
     /// cannot be established.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.client.complete_oauth", skip(pending, code, csrf_token))
+    )]
     pub async fn complete_oauth(
         mut pending: OAuthPending,
         code: &str,
@@ -954,6 +958,10 @@ impl McpClient {
     /// List resource descriptions for injection scanning (probe path).
     ///
     /// Returns an empty vec if the server does not support resources or the call fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.client.probe_resource_descriptions", skip(self))
+    )]
     pub async fn probe_resource_descriptions(&self) -> Vec<String> {
         if !self.server_supports_resources() {
             return Vec::new();
@@ -976,6 +984,10 @@ impl McpClient {
     /// List prompt descriptions for injection scanning (probe path).
     ///
     /// Returns an empty vec if the server does not support prompts or the call fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "mcp.client.probe_prompt_descriptions", skip(self))
+    )]
     pub async fn probe_prompt_descriptions(&self) -> Vec<String> {
         if !self.server_supports_prompts() {
             return Vec::new();
