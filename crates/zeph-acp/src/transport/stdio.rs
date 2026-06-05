@@ -106,7 +106,6 @@ pub(crate) async fn build_agent_state(
     if !server_config.auth_methods.is_empty() {
         agent = agent.with_auth_methods(server_config.auth_methods);
     }
-    agent = agent.with_message_ids_enabled(server_config.message_ids_enabled);
     agent = agent.with_timeouts(server_config.timeouts);
 
     let state = Arc::new(agent);

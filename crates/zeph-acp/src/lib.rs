@@ -38,7 +38,6 @@
 //! | `unstable-session-fork` | ACP session fork extension |
 //! | `unstable-session-resume` | ACP session resume (stable since acp 0.12.1; no SDK gate needed) |
 //! | `unstable-session-usage` | ACP session token-usage extension |
-//! | `unstable-session-model` | ACP session model-switching extension |
 //! | `unstable-elicitation` | ACP elicitation schema types |
 //! | `unstable-logout` | ACP logout extension |
 //!

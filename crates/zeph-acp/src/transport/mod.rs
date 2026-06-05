@@ -122,7 +122,7 @@ pub struct AcpServerConfig {
     pub additional_directories: Vec<zeph_core::config::AdditionalDir>,
     /// Auth methods to advertise in the `initialize` response.
     pub auth_methods: Vec<zeph_core::config::AcpAuthMethod>,
-    /// When `true`, echo `PromptRequest.message_id` through responses and chunks.
+    /// Retained for config compatibility. `PromptRequest.message_id` was removed in acp 0.14.0.
     pub message_ids_enabled: bool,
     /// Per-request timeout configuration for elicitation, terminal, and MCP operations.
     pub timeouts: zeph_config::AcpTimeoutsConfig,

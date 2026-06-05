@@ -17,31 +17,32 @@ default = [
     "unstable-session-delete",
     "unstable-session-fork",
     "unstable-session-usage",
-    "unstable-session-model",
     "unstable-logout",
     "unstable-elicitation",
     "unstable-llm-providers",
 ]
 acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
-# session/close is now exposed as session/delete in acp 0.12.1
-unstable-session-delete = ["agent-client-protocol/unstable_session_delete"]
+# session/close and session/delete stabilized in acp 0.14.0; no upstream feature gate needed
+unstable-session-delete = []
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
 # session/resume is stable in acp 0.12.1; no feature gate needed
 unstable-session-resume = []
-unstable-session-usage = ["agent-client-protocol/unstable_session_usage"]
-unstable-session-model = ["agent-client-protocol/unstable_session_model"]
-unstable-elicitation = ["dep:agent-client-protocol-schema", "agent-client-protocol-schema/unstable_elicitation"]
+# renamed from unstable_session_usage in acp 0.14.0; Usage struct + PromptResponse.usage remain gated
+unstable-session-usage = ["agent-client-protocol/unstable_end_turn_token_usage"]
+unstable-elicitation = ["dep:agent-client-protocol-schema", "agent-client-protocol-schema/unstable_elicitation", "agent-client-protocol/unstable_elicitation"]
 unstable-llm-providers = ["dep:agent-client-protocol-schema", "agent-client-protocol-schema/unstable_llm_providers"]
-unstable-logout = ["agent-client-protocol/unstable_logout"]
+# logout stabilized in acp 0.13.0; no upstream feature gate needed
+unstable-logout = []
 unstable-auth-methods = ["agent-client-protocol/unstable_auth_methods"]
 unstable-boolean-config = ["agent-client-protocol/unstable_boolean_config"]
-unstable-message-id = ["agent-client-protocol/unstable_message_id"]
-unstable-session-add-dirs = ["agent-client-protocol/unstable_session_additional_directories"]
+# message-id stabilized in acp 0.14.0; no upstream feature gate needed
+unstable-message-id = []
+# session-add-dirs stabilized in acp 0.14.0; no upstream feature gate needed
+unstable-session-add-dirs = []
 
 [dependencies]
 agent-client-protocol = { workspace = true }
 agent-client-protocol-schema = { workspace = true, optional = true }
-agent-client-protocol-tokio = { workspace = true }
 async-stream = { workspace = true, optional = true }
 axum = { workspace = true, features = ["ws"], optional = true }
 base64.workspace = true

@@ -92,58 +92,31 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.11.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2af62fb84df2af0f933d8f5fd78b843fa5eb0ec5a48fa1b528c41951d0bbe36c"
+checksum = "5efba6592048ef8a9ac97de8d79b2d9933d8ac4d94f7a2de102348fed0c61103"
 dependencies = [
  "agent-client-protocol-derive",
- "agent-client-protocol-schema 0.12.0",
- "anyhow",
- "futures",
- "futures-concurrency",
- "jsonrpcmsg",
- "rmcp",
- "rustc-hash 2.1.2",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "agent-client-protocol"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4361ba6627e51de955b10f3c77fb9eb959c85191a236c1c2c84e32f4ff240faf"
-dependencies = [
- "agent-client-protocol-derive",
- "agent-client-protocol-schema 0.13.2",
+ "agent-client-protocol-schema",
  "async-process",
  "blocking",
  "futures",
  "futures-concurrency",
  "jsonrpcmsg",
- "rmcp",
  "rustc-hash 2.1.2",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "shell-words",
- "tokio",
- "tokio-util",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "0.11.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cabdc9d845d08ec7ed2d0c9de1ae4a1b198301407d55855261572761be90ec9f"
+checksum = "4d176a10d4cb06e0262a738c3c5bf21ff0968db13a666e31cbca94a3d3d72e7c"
 dependencies = [
  "quote",
  "syn 2.0.117",
@@ -151,9 +124,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "0.12.0"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49bae57dad1c28a362fbdcf7bab0583316a02b45a70792109fced55780a3b63c"
+checksum = "c290bfa00c6b52339db66f8e9cf711d5f08530800529f7d619ff24d6cba253d0"
 dependencies = [
  "anyhow",
  "derive_more 2.1.1",
@@ -163,37 +136,6 @@ dependencies = [
  "serde_with",
  "strum 0.28.0",
  "tracing",
-]
-
-[[package]]
-name = "agent-client-protocol-schema"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b957d8391ac3933e2a940446171c508d2b8ffc386d8fa7d0b9c936a2575b463e"
-dependencies = [
- "anyhow",
- "derive_more 2.1.1",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "serde_with",
- "strum 0.28.0",
- "tracing",
-]
-
-[[package]]
-name = "agent-client-protocol-tokio"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e1572b219f22c4b3be0f20f934c8b6f1d1457126ce72923c4f6608f96153b65"
-dependencies = [
- "agent-client-protocol 0.11.1",
- "futures",
- "serde",
- "serde_json",
- "shell-words",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -4872,7 +4814,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -10582,9 +10524,8 @@ dependencies = [
 name = "zeph-acp"
 version = "0.21.4"
 dependencies = [
- "agent-client-protocol 0.12.1",
- "agent-client-protocol-schema 0.13.2",
- "agent-client-protocol-tokio",
+ "agent-client-protocol",
+ "agent-client-protocol-schema",
  "async-stream",
  "axum 0.8.9",
  "base64 0.22.1",

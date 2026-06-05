@@ -363,7 +363,6 @@ The `initialize` response includes an `auth_hint` key in its metadata map. For s
 | `unstable-session-fork` | unstable | Enables the `fork_session` ACP method. See below. |
 | `unstable-session-resume` | unstable | Enables the `resume_session` ACP method. See below. |
 | `unstable-session-usage` | unstable | Enables `UsageUpdate` events — token counts (input, output, cache) sent to the IDE after each turn. See below. |
-| `unstable-session-model` | unstable | Enables `SetSessionModel` — IDE-driven model switching via a native picker without `session/configure`. See below. |
 | `unstable-session-info-update` | unstable | Enables `SessionInfoUpdate` — agent-generated session title emitted to the IDE after the first turn. See below. |
 | `unstable-elicitation` | unstable | Exposes elicitation schema types (`ElicitationRequest`, etc.) for future agent-loop integration. SDK methods not yet available in 0.10.3. |
 | `unstable-logout` | unstable | Enables the `logout` ACP method and advertises `auth.logout` capability. Zeph logout is a no-op (vault-based auth). |
@@ -379,7 +378,6 @@ zeph-acp = { version = "*", features = [
     "unstable-session-fork",
     "unstable-session-resume",
     "unstable-session-usage",
-    "unstable-session-model",
     "unstable-session-info-update",
     "unstable-elicitation",
     "unstable-logout",
@@ -422,16 +420,6 @@ Enables `UsageUpdate` session events. After each agent turn `ZephAcpAgent` emits
 - `cache_read_tokens` / `cache_write_tokens` — cache activity when the provider supports prompt caching.
 
 The IDE can use this data to display running cost estimates or token budgets without polling a separate endpoint.
-
-### `unstable-session-model`
-
-Enables `SetSessionModel` handling. When the IDE sends a `set_session_model` request (e.g., from a native model-picker dropdown), `ZephAcpAgent`:
-
-1. Resolves the requested `"provider:model"` key via `ProviderFactory`.
-2. Stores the resolved provider in the session-scoped `provider_override`.
-3. Returns a confirmation to the IDE so the picker reflects the active selection.
-
-This avoids the need to wrap model selection in a `session/configure` call and maps directly to the Zed AI model picker interaction.
 
 ### `unstable-session-info-update`
 

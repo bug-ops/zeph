@@ -21,15 +21,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `refactor(llm)`: `OpenAiProvider::generation_params()` private helper extracted; removes 4
   duplicate `generation_overrides` tuple expansions in `send_request`, `send_stream_request`,
   `debug_request_json`, and `chat_with_tools`. (#4873)
+- `build(acp)`: bump `agent-client-protocol` 0.12.1 → 0.14.0 and `agent-client-protocol-schema` = 0.13.6; remove dead `agent-client-protocol-tokio` dependency
+- `feat(acp)`: `unstable-session-usage` feature now maps to upstream `unstable_end_turn_token_usage` gate (renamed, not stabilized in 0.14.0)
+- `feat(acp)`: `unstable-elicitation` feature now also enables `agent-client-protocol/unstable_elicitation` core passthrough for `elicitation/create` handler wiring
+- `refactor(acp)`: provider ext-method types renamed to singular: `SetProvidersRequest/Response` → `SetProviderRequest/Response`, `DisableProvidersRequest/Response` → `DisableProviderRequest/Response`
+- `refactor(acp)`: logout, session/close, session/delete, session/resume, and additional-directories handlers are now unconditional (feature flags retained as no-op tombstones for workspace forwarding compatibility)
+
+### Removed
+
+- `refactor(acp)`: `session/set_model` dedicated RPC method removed (deleted upstream in 0.14.0); model switching remains fully available via `session/set_config_option` (config_id="model") and the `$/model` slash command
+- `refactor(acp)`: inbound/outbound message-id echo removed (`PromptRequest.message_id` and `PromptResponse.user_message_id` were removed upstream in 0.14.0)
+
+### Fixed
+
 - `refactor(llm)`: `parse_gemini_error` in `zeph-llm` now delegates the base `ApiError` and
   `ContextLengthExceeded` construction to `crate::http::map_error_response`, consistent with all
   other backends (claude, openai, gonka, cocoon). Gemini-specific `RESOURCE_EXHAUSTED → RateLimited`
   handling is preserved. (#4868)
 - refactor(memory): remove `ScoredCandidate` single-field wrapper in `tiered_retrieval.rs` ([#4867](https://github.com/bug-ops/zeph/issues/4867))
 - fix(memory): replace `.entered()` span guard with removal in `tiered_retrieval.rs` async fn ([#4866](https://github.com/bug-ops/zeph/issues/4866))
-
-### Fixed
-
 - `docs(config)`: `CandleConfig` in `zeph-config` now has a `///` doc comment describing its
   purpose (`[llm.candle]` TOML section) and its relationship to `CandleInlineConfig`. (#4869)
 

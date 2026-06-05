@@ -1468,7 +1468,6 @@ async fn initialize_advertises_session_capabilities() {
                 session_caps.resume.is_some(),
                 "resume capability must be advertised"
             );
-            #[cfg(feature = "unstable-session-delete")]
             assert!(
                 session_caps.close.is_some(),
                 "close capability must be advertised"
@@ -1961,7 +1960,6 @@ async fn fork_session_creates_new_session_from_existing() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-resume")]
 #[tokio::test]
 async fn resume_session_returns_ok_for_active() {
     let local = tokio::task::LocalSet::new();
@@ -1983,7 +1981,6 @@ async fn resume_session_returns_ok_for_active() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-resume")]
 #[tokio::test]
 async fn resume_session_errors_for_unknown() {
     let local = tokio::task::LocalSet::new();
@@ -2332,62 +2329,6 @@ fn loopback_tool_output_multiline_preserves_newlines_in_terminal_data() {
         }
         other => panic!("expected final ToolCallUpdate, got {other:?}"),
     }
-}
-
-// --- #958 SetSessionModel ---
-
-#[cfg(feature = "unstable-session-model")]
-#[tokio::test]
-async fn set_session_model_no_factory_errors() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (agent, mut rx) = make_agent();
-            let resp = agent
-                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                .await
-                .unwrap();
-            while let Ok((_, ack)) = rx.try_recv() {
-                let _ = ack.send(());
-            }
-            let result = agent
-                .set_session_model(acp::SetSessionModelRequest::new(
-                    resp.session_id,
-                    "some:model",
-                ))
-                .await;
-            assert!(result.is_err());
-        })
-        .await;
-}
-
-#[cfg(feature = "unstable-session-model")]
-#[tokio::test]
-async fn set_session_model_rejects_unknown_model() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            let conn_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-            let factory: ProviderFactory = Arc::new(|_| None);
-            let agent = ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None)
-                .with_provider_factory(
-                    factory,
-                    shared_models(vec!["claude:claude-sonnet-4-6".to_owned()]),
-                );
-            let resp = agent
-                .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                .await
-                .unwrap();
-            let result = agent
-                .set_session_model(acp::SetSessionModelRequest::new(
-                    resp.session_id,
-                    "ollama:llama3",
-                ))
-                .await;
-            assert!(result.is_err());
-        })
-        .await;
 }
 
 #[tokio::test]
@@ -3789,7 +3730,6 @@ async fn non_llm_slash_commands_all_complete_without_hanging() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-delete")]
 #[tokio::test]
 async fn close_session_removes_entry() {
     let local = tokio::task::LocalSet::new();
@@ -3819,7 +3759,6 @@ async fn close_session_removes_entry() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-delete")]
 #[tokio::test]
 async fn close_session_unknown_id_is_ok() {
     let local = tokio::task::LocalSet::new();
@@ -3948,7 +3887,6 @@ async fn set_config_option_model_emits_session_info_update() {
         .await;
 }
 
-#[cfg(feature = "unstable-session-delete")]
 #[tokio::test]
 async fn close_session_signals_cancel() {
     let local = tokio::task::LocalSet::new();
