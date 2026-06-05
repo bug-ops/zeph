@@ -246,6 +246,65 @@ embed_timeout_secs = 5   # per-embed timeout; 0 = disabled
 This is separate from `context.fidelity.max_embed_input_tokens` (which limits input size) —
 `embed_timeout_secs` limits wall-clock duration of the embed call itself.
 
+## Benna-Fusi Multi-Timescale SYNAPSE Edges (#3709, #3710, #3994)
+
+### Fast/Slow Synaptic Variables (#3709)
+
+Graph `Edge` gains two additional floating-point fields alongside the existing `confidence`:
+
+| Field | Description |
+|-------|-------------|
+| `confidence_fast` | Short-timescale synaptic variable; high learning rate, fast decay |
+| `confidence_slow` | Long-timescale synaptic variable; low learning rate, slow decay |
+
+Both variables evolve on every reassertion (APEX and legacy paths) via a two-timescale
+leaky cascade:
+
+```
+confidence_fast ← (1 - η_fast) * confidence_fast + η_fast * new_evidence
+confidence_slow ← (1 - η_slow) * confidence_slow + η_slow * new_evidence
+```
+
+SYNAPSE spreading activation uses an `α * fast + (1 − α) * slow` blend as the traversal weight.
+The `slow` variable gates the conflict resolver's recency fallback. Rates (`α`, `η_fast`,
+`η_slow`) are config-tunable and validated at startup.
+
+```toml
+[memory.graph]
+benna_fusi_alpha  = 0.7    # blend weight for fast variable in spread
+benna_fusi_eta_fast = 0.3  # learning rate for fast variable
+benna_fusi_eta_slow = 0.05 # learning rate for slow variable
+```
+
+### MemORAI Graph Retrieval Improvements (#3710)
+
+Migration 096 adds `confidence_fast`, `confidence_slow`, and `turn_index` to `graph_edges`
+(both SQLite and PostgreSQL schemas). A fail-open `MemoryWriteGate` prefilter in `insert_edges`
+drops low-confidence, low-signal edges before storage. `turn_index` is threaded through
+`GraphExtractionConfig` and both insert paths (APEX and legacy); population from the agent
+turn counter is wired at extraction time.
+
+### DeepReasoning Query-Conditioned Routing (#3994)
+
+`memory.retrieval.deep_reasoning_query_conditioned = true` (opt-in, fail-open) routes
+`DeepReasoning` tier calls through `recall_graph_hela` instead of the static-weight path.
+The static-weight path remains the default when the flag is `false`.
+
+```toml
+[memory.retrieval]
+deep_reasoning_query_conditioned = false   # opt-in
+```
+
+### Key Invariants
+
+- `η_fast > η_slow` MUST be enforced at config validation — equal or reversed rates collapse the two-timescale model
+- `α` MUST be in `[0.0, 1.0]` — validated at startup; out-of-range is a config error
+- `confidence_fast` and `confidence_slow` are updated on every reassertion — NEVER skip the update for legacy insert paths
+- Migration 096 is append-only — existing rows get `NULL` fast/slow until first reassertion; read code handles `NULL` gracefully
+- `deep_reasoning_query_conditioned = true` must be fail-open — if `recall_graph_hela` errors, fall back to static-weight path
+
+---
+
 ## JoinSet and CancellationToken Fixes
 
 - `spawn_graph_extraction` now receives a `CancellationToken` from `LifecycleState` for clean shutdown (commit #4635)

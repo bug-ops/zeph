@@ -393,7 +393,32 @@ Is temperature=0.8 better than control?
 
 ---
 
-## 11. See Also
+## 11. Evaluator Phase 1 Parallelization (#4794, #4853)
+
+`Evaluator::evaluate` previously ran Phase 1 subject model calls sequentially. The evaluator
+now mirrors the existing Phase 2 pattern: `FuturesUnordered` + `Arc<Semaphore>` bounded by
+`parallel_evals` (default 3) for both phases.
+
+After all Phase 1 subject futures complete, results are sorted by case index to restore
+deterministic ordering before Phase 2 begins.
+
+Error semantics are unchanged: any subject failure (`Llm` or `Timeout`) is fatal and
+propagates immediately.
+
+```toml
+[experiments]
+parallel_evals = 3   # max concurrent subject model calls in Phase 1 and Phase 2
+```
+
+### Key Invariants
+
+- Phase 1 parallelism is bounded by `parallel_evals` — NEVER unbounded concurrency
+- Results MUST be sorted by case index before Phase 2 — NEVER rely on future completion order
+- Fatal error semantics are preserved — Phase 1 error aborts the entire evaluation, same as Phase 2
+
+---
+
+## 12. See Also
 
 - [[MOC-specs]] — all specifications
 - [[029-feature-flags/spec]] — compile-time feature flags

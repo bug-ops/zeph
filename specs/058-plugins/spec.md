@@ -524,7 +524,52 @@ This helps operators identify token-heavy plugins before they cause context pres
 
 ---
 
-## 15. Open Questions
+## 15. Multiple `--plugin-url` Values and `PluginName` Newtype (#4675, #4674, #4680)
+
+### Multiple `--plugin-url` Values
+
+The `--plugin-url` CLI flag now accepts multiple values in a single invocation:
+
+```bash
+zeph --plugin-url https://example.com/plugin-a.tar.gz \
+     --plugin-url https://example.com/plugin-b.tar.gz
+```
+
+Each URL is validated and downloaded in sequence. Validation enforces HTTPS-only (HTTP is
+rejected at parse time). Download, extraction, and installation follow the same
+`add_remote_ephemeral` path as single-URL invocation.
+
+### `PluginName` Newtype
+
+`PluginName(Arc<str>)` replaces `String` as the canonical type for plugin names throughout the
+crate. The newtype:
+- Derives `Clone`, `Eq`, `Hash`, `Display`, `Debug`, `Serialize`, `Deserialize`
+- Validates the plugin name regex `^[a-z0-9][a-z0-9-]*$` in its constructor
+- Provides `as_str() -> &str` for low-overhead string access
+
+All internal maps keyed on plugin names use `PluginName` instead of `String`.
+
+### `add_remote_ephemeral` Async Fix (#4845)
+
+`add_remote_ephemeral` previously used `std::fs` reads inside an async function. All file
+I/O in `add_remote_ephemeral` is now `tokio::fs` to prevent blocking the async executor.
+
+### `.bundled` Marker Stripping in Ephemeral Plugins (#4676)
+
+`extract_archive_safe` now also strips `.bundled` marker files from ephemeral plugin archives
+during extraction, before any skill loading. This prevents a scenario where an ephemeral plugin
+bundle includes `.bundled` markers that would incorrectly grant `Trusted` trust to its skills.
+
+### Key Invariants
+
+- `--plugin-url` MUST reject non-HTTPS URLs — `http://` is a hard block, not a warning
+- `PluginName` constructor MUST validate the regex — NEVER create a `PluginName` from a string that has not been validated
+- `add_remote_ephemeral` MUST use `tokio::fs` — NEVER use `std::fs` inside an async fn
+- `.bundled` markers MUST be stripped during ephemeral extraction — NEVER load ephemeral plugins with bundled trust
+
+---
+
+## 16. Open Questions
 
 None.
 

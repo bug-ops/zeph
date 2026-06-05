@@ -174,6 +174,17 @@ When using the TUI dashboard with Cocoon enabled, check sidecar status and avail
 
 Status updates automatically every 30 seconds in the background.
 
+### TON Balance Display
+
+The TUI sidebar can display your Cocoon TON balance in real time. By default, the balance is shown. To hide it for privacy (displays `*** TON` instead), configure:
+
+```toml
+[cocoon]
+show_balance = false    # Hide TON balance in TUI sidebar (default: true)
+```
+
+This setting is interactive during the `zeph init` wizard under the Cocoon setup step.
+
 ## Configuration Reference
 
 | Field | Type | Default | Description |

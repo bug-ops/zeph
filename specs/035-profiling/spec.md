@@ -518,7 +518,7 @@ When profiling is active, a `MetricsBridge` layer derives timing from span durat
 Profiling and tracing system is complete when:
 
 - [ ] Phase 1 foundation merged: TelemetryConfig, profiling feature, chrome layer, 4 agent span instruments, LLM instruments
-- [ ] Phase 2 deep instrumentation merged: all subsystem spans, InstrumentedChannel wrappers, MetricsBridge validation
+- [x] Phase 2 deep instrumentation merged: all subsystem spans, InstrumentedChannel wrappers, MetricsBridge validation
 - [ ] Phase 3 allocation + metrics merged: profiling-alloc feature, AllocLayer, sysinfo task
 - [ ] Phase 4 production tier merged: OTLP export, profiling-pyroscope, Grafana stack
 - [ ] Chrome traces export valid W3C format (verified with Perfetto UI)
@@ -527,6 +527,48 @@ Profiling and tracing system is complete when:
 - [ ] Feature flag compile-time elimination verified: `profiling` disabled = zero instrumentation in binary
 - [ ] Live testing playbook created and tested: `.local/testing/playbooks/profiling.md`
 - [ ] Coverage status updated: `.local/testing/coverage-status.md`
+
+---
+
+## Phase 2 Shipped: Deep Instrumentation Roll-Out (#4788–#4864)
+
+Phase 2 deep instrumentation was completed across a series of PRs. Key changes:
+
+### `EnteredSpan`-across-`.await` Fixes (#4788, #4795, #4825, #4834, #4844)
+
+All occurrences of `let _guard = span.enter()` across `.await` points were replaced with
+`.instrument(span)` (or `#[tracing::instrument]` on async fns). The `EnteredSpan`-across-await
+pattern is undefined behavior under the tokio multi-thread runtime because span guards are
+`!Send` and may panic on thread-switch. Affected crates: `zeph-agent-context`, `zeph-context`,
+`zeph-memory`.
+
+**Key invariant added:** NEVER use `let _guard = span.enter()` in an `async fn` body or across
+an `.await` point. Always use `.instrument(span)` / `future.instrument(span)` or the
+`#[tracing::instrument]` attribute macro.
+
+### Hot-Path `#[tracing::instrument]` Roll-Out (#4821, #4826, #4833, #4852)
+
+`#[cfg_attr(feature = "profiling", tracing::instrument(...))]` added to hot-path async
+functions in:
+- `zeph-agent-context` and `zeph-agent-persistence` (turn context build, persist, restore)
+- `zeph-index`, `zeph-commands`, `zeph-subagent`
+- `zeph-channels` (CLI, Telegram, Discord, Slack adapters)
+- `zeph-orchestration` hot paths
+- LLM provider hot paths (claude, openai, gemini, compatible, router)
+- `zeph-mcp` (connect, list_tools, call_tool, shutdown)
+- `zeph-skills` (match, hot_reload, scan)
+
+Span naming follows the `<crate_short>.<subsystem>.<operation>` convention established in FR-036.
+
+### ACP Instrumentation (#4851)
+
+`#[tracing::instrument]` added to permission check and all HTTP handlers in `zeph-acp`.
+
+### MCP and Telegram Span Naming Fix (#4864)
+
+Incorrect span names in `zeph-mcp` (`mcp.connect_url` named as `mcp.connect`) and missing
+Telegram instrumentation were corrected. Telegram adapter now spans: `channel.telegram.send`,
+`channel.telegram.send_chunk`, `channel.telegram.poll`.
 
 ---
 

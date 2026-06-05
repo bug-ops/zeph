@@ -67,6 +67,48 @@ zeph vault set ZEPH_SECRET_GITHUB_ORG my-org
 
 See [Vault — Custom Secrets](../reference/security.md#custom-secrets) for full details.
 
+### Skill Extensions (UI/Keybindings/Monitors)
+
+Add optional UI elements, keybindings, and performance monitors to your skill with the `extensions` field:
+
+```markdown
+---
+name: my-skill
+description: My skill with UI enhancements.
+extensions: |
+  [[ui_elements]]
+  type = "button"
+  label = "Run My Action"
+  
+  [[keybindings]]
+  key = "Ctrl+M"
+  label = "Execute My Task"
+  
+  [[monitors]]
+  name = "status"
+  type = "gauge"
+  label = "Task Progress"
+---
+```
+
+The `extensions` field is optional and ignored if not recognized. Valid extension types:
+
+**UI Elements:**
+- `type = "button"` — clickable button in TUI (label, optional tooltip)
+- `type = "toggle"` — on/off toggle widget (label, default state)
+- `type = "text-input"` — single-line text field (label, placeholder, max_length)
+
+**Keybindings:**
+- `key` — keyboard sequence (e.g., `Ctrl+M`, `Alt+A`, `Shift+F12`)
+- `label` — action description shown in keymap help
+
+**Monitors:**
+- `name` — unique identifier (lowercase, hyphens)
+- `type` — `gauge`, `counter`, `timer`, `status`
+- `label` — display name
+
+If the `extensions` block fails to parse (malformed YAML/TOML), the skill loads normally but extensions are silently skipped — skill functionality is never blocked by extension metadata errors.
+
 ### Channel Allowlist
 
 Restrict a skill to specific I/O channels with `x-channels`. When set, the skill is excluded from matching on channels not in the list:

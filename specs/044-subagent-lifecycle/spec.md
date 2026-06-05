@@ -210,7 +210,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | `SubAgentManager` | Lifecycle manager | Concurrency limit, active handles map, cancellation registry |
 | `SubAgentHandle` | Reference to a running task | Task ID (UUID), status channel, cancellation token |
 | `SubAgentStatus` | Current state of a task | Variants: `Running`, `Completed`, `Failed`, `Cancelled` |
-| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_names` |
+| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_names`, `max_trust_level`, `inherited_tool_allowlist` |
 | `PermissionGrants` | TTL-bounded permission registry | Map of `GrantKind` → expiry timestamp |
 | `Grant` | Single permission grant | `kind: GrantKind`, `ttl_secs`, expiry instant |
 | `GrantKind` | Type of permission | Variants: `VaultSecret`, `Tool` |
@@ -331,7 +331,45 @@ whether the worktree is still referenced by any other active subagent before rem
 
 ---
 
-## 12. Open Questions
+## 12. Transitive Constraint Propagation (#4681, #4690, #4693, #4694)
+
+Addresses constraint drift (arXiv:2605.10481): safety constraints set at orchestration time
+were silently dropped when a subagent spawned its own subagents, allowing trust-level and
+tool-allowlist escalation deep in delegation chains.
+
+### New `SpawnContext` Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_trust_level` | `Option<SkillTrustLevel>` | Maximum trust level allowed for skills invoked by this subagent or its children |
+| `inherited_tool_allowlist` | `Option<HashSet<String>>` | Tool allowlist inherited from parent; used to restrict what the child may be granted |
+
+### `apply_constraint_propagation(def, ctx)` — `zeph-subagent`
+
+Called during `spawn()` and `resume()` before building the `FilteredToolExecutor`:
+
+1. **Trust clamping**: executor trust is set to `min(def.trust_level, ctx.max_trust_level)` — narrows only, never raises.
+2. **Allowlist intersection**: if `ctx.inherited_tool_allowlist` is `Some(parent_set)`:
+   - `AllowList(child_set)` → `AllowList(child_set ∩ parent_set)`
+   - `InheritAll` → `AllowList(parent_set)` (parent set becomes the effective allowlist)
+   - `DenyList(deny_entries)` → `AllowList(parent_set \ deny_entries)` (fail-closed conversion)
+3. Constraint narrowing is logged at `info` level for auditability.
+
+The propagated fields are passed transitively: when the newly spawned agent itself spawns
+children, it sets `max_trust_level` and `inherited_tool_allowlist` from its own (already-clamped)
+constraints.
+
+### Key Invariants
+
+- Constraint propagation MUST run in both `spawn()` and `resume()` — applying it in spawn only is incomplete
+- Propagation MUST be transitive: grandchild constraints are bounded by the grandparent's, not just the parent's
+- NEVER raise trust level via propagation — `min()` is the only allowed operation on `max_trust_level`
+- `InheritAll` tool policy with a non-None parent allowlist MUST be converted to `AllowList(parent_set)` — `InheritAll` must not survive into a constrained delegation chain
+- Constraint narrowing MUST be logged — silent narrowing is a security observability gap
+
+---
+
+## 13. Open Questions
 
 None.
 

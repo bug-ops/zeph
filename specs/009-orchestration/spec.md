@@ -583,3 +583,37 @@ lineage_ttl_secs = 300                    # must be > 0
 - NEVER store lineage on `TaskNode` or serialize it to the database — lineage is a runtime-only signal
 - Audit log MUST emit ONE structured `tracing::error!` per abort with `root`, `chain_depth`, and `cause`
 
+---
+
+## `graph_dirty` Consistency (#4809, #4831, #4832, #4835, #4836, #4848)
+
+`graph_dirty` is the flag used by `GraphPersistence` to decide whether the in-memory DAG state
+needs to be flushed to SQLite. A missing `graph_dirty = true` write after a terminal transition
+causes silent status loss on crash or restart.
+
+All state-mutating operations MUST set `graph_dirty = true`:
+
+| Operation | Affected method |
+|-----------|----------------|
+| Task transitions to `Completed` | `check_graph_completion` |
+| DAG enters deadlock → transitions to `Failed` | `check_graph_completion` |
+| Tasks injected via `inject_tasks()` | `inject_tasks` |
+| Predicate outcome recorded | `record_predicate_outcome` |
+
+`refactor(orchestration)` (#4809) extracted `init_common()` to consolidate initialisation paths
+and added a `graph_dirty` checkpoint after the common init block.
+
+### PlanCache Instrumentation (#4835, #4836)
+
+`PlanCache::new` and `PlanCache::evict` gain `#[tracing::instrument]` annotations (conditional
+on the `profiling` feature). `new` records the current `embedding_model` as a span field. This
+makes cache initialisation and eviction latency visible in local Chrome JSON traces.
+
+### Key Invariants
+
+- `graph_dirty = true` MUST be set in ALL task state transitions — a missing write is a durability bug
+- Both terminal transitions (Completed and deadlock→Failed) MUST set `graph_dirty` in `check_graph_completion`
+- `inject_tasks` MUST set `graph_dirty` after successful injection — not only on task completion
+- `record_predicate_outcome` MUST set `graph_dirty` when an outcome is recorded
+- PlanCache span names follow the `<crate>.<subsystem>.<operation>` convention
+

@@ -45,6 +45,7 @@
 - [Deploy with Docker](guides/docker.md)
 - [Daemon Mode](guides/daemon-mode.md)
 - [Prometheus Monitoring](guides/prometheus.md)
+- [Worktree Isolation](guides/worktree.md)
 
 # Advanced
 

@@ -82,6 +82,7 @@ When using `--connect`, the TUI renders token-by-token streaming from the remote
 | `Ctrl+J` | Insert newline (multiline input) |
 | `/` | Open slash-command autocomplete (when input is empty) |
 | `@` | Open file picker (fuzzy file search) |
+| `Ctrl+R` | Open reverse search in session prompt history |
 | `Escape` | Switch to Normal mode |
 | `Ctrl+C` | Quit application |
 | `Ctrl+U` | Clear input line |
@@ -122,6 +123,21 @@ Typing `@` in Insert mode opens a fuzzy file search popup above the input area. 
 | `Escape` | Close picker without inserting |
 
 All other keys are blocked while the picker is visible.
+
+### Prompt History (Reverse Search)
+
+Press `Ctrl+R` in Insert mode to search through your session prompt history. This is useful for re-running similar prompts without typing from scratch.
+
+| Key | Action |
+|-----|--------|
+| Any character | Search history by substring (incremental) |
+| `Ctrl+R` / `Up` | Move to previous match |
+| `Ctrl+S` | Move to next match |
+| `Enter` | Insert selected prompt into input and close |
+| `Backspace` | Remove last query character (dismisses if query is empty) |
+| `Escape` | Close search without inserting |
+
+History is session-scoped (in-memory only, not persisted across restarts) and includes all prompts submitted in the current TUI session. Search matches are displayed in reverse chronological order (newest first). The search is case-insensitive.
 
 ### Command Palette
 
