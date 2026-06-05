@@ -64,6 +64,7 @@ pub mod group;
 pub mod loader;
 pub mod manager;
 pub mod matcher;
+pub(crate) mod merge_prompts;
 pub mod merger;
 pub mod miner;
 pub mod proactive;
