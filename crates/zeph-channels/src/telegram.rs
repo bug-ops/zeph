@@ -1163,6 +1163,7 @@ impl Channel for TelegramChannel {
     /// Returns `Err` if the periodic Telegram edit fails.
     ///
     /// [`flush_chunks`]: TelegramChannel::flush_chunks
+    #[tracing::instrument(name = "channels.telegram.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.buffer.push(chunk);
         tracing::debug!(

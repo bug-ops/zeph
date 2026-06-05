@@ -695,7 +695,7 @@ impl McpManager {
     /// Does not panic under normal conditions.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.connect_all", skip_all, fields(connected = tracing::field::Empty, failed = tracing::field::Empty))
+        tracing::instrument(name = "mcp.manager.connect_all", skip_all, fields(connected = tracing::field::Empty, failed = tracing::field::Empty))
     )]
     pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
         let join_set = self.spawn_non_oauth_connections(&self.last_refresh);
@@ -1175,7 +1175,7 @@ impl McpManager {
     /// or `McpError::ServerNotFound` if the server is not connected.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.manager_call_tool", skip_all, fields(server_id = %server_id, tool_name = %tool_name))
+        tracing::instrument(name = "mcp.manager.call_tool", skip_all, fields(server_id = %server_id, tool_name = %tool_name))
     )]
     pub async fn call_tool(
         &self,
@@ -1486,7 +1486,7 @@ impl McpManager {
     /// Graceful shutdown of all connections (takes ownership).
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.shutdown_all", skip_all)
+        tracing::instrument(name = "mcp.manager.shutdown_all", skip_all)
     )]
     pub async fn shutdown_all(self) {
         self.shutdown_all_shared().await;

@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `docs(config)`: fix `judge_model` doc comment in `LearningConfig` — field accepts a provider
   name from `[[llm.providers]]`, not a raw model string; mark as legacy, prefer `judge_provider` (#4791)
+- `refactor(mcp,channels)`: fix tracing span naming convention violations and add missing instrumentation (#4860, #4859):
+  - **zeph-mcp**: rename `mcp.manager_call_tool` → `mcp.manager.call_tool`, `mcp.connect_all` → `mcp.manager.connect_all`, `mcp.shutdown_all` → `mcp.manager.shutdown_all` in `manager.rs` to comply with `<crate>.<subsystem>.<operation>` convention.
+  - **zeph-channels**: add `#[tracing::instrument(name = "channels.telegram.send_chunk", ...)]` to `TelegramChannel::send_chunk`, matching the existing instrumentation in `DiscordChannel` and `SlackChannel`.
 - `refactor(tracing)`: complete tracing instrumentation sweep across `zeph-channels`,
   `zeph-skills`, and `zeph-mcp` (issues #4849, #4827, #4819):
   - **zeph-channels**: add always-on `#[tracing::instrument]` to all hot-path async fns in
