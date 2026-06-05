@@ -173,7 +173,7 @@ Enable debug dump at startup:
 
 Debug dump is intended for context debugging — use it when you need to inspect exactly what is sent to the LLM and what comes back. See [Debug Dump](../advanced/debug-dump.md) for details.
 
-## Step 18: Security
+## Step 19: Security
 
 Configure security features:
 
@@ -185,7 +185,7 @@ Configure security features:
   - Shell tools checked by default: `bash`, `shell`, `terminal` (configurable in `config.toml` via `security.pre_execution_verify.destructive_commands.shell_tools`)
 - **Guardrail** (requires `guardrail` feature) — LLM-based prompt injection pre-screening via a dedicated safety model (e.g. `llama-guard-3:1b`)
 
-## Step 18: Review and Save
+## Step 20: Review and Save
 
 Inspect the generated TOML, confirm the output path, and save. If the file already exists, the wizard asks before overwriting.
 
