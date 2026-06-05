@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `refactor(orchestration)`: add `#[tracing::instrument]` to `PlanCache::find_similar` and
   `PlanCache::cache_plan` in `plan_cache.rs`, making plan-cache lookup and store latency visible
   as child spans inside `orchestration.plan_cache.plan`. Closes #4807.
+- `refactor(orchestration)`: add `#[tracing::instrument]` to `PlanCache::new` and `PlanCache::evict`,
+  recording `current_embedding_model` on init and making eviction latency visible in traces (#4835)
 - `refactor(llm)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to
   `OllamaProvider::chat_with_tools`, completing profiling coverage across all `LlmProvider`
   backends (Claude, OpenAI, Gemini, Compatible, Ollama). Closes #4824.
@@ -41,6 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   graph-state-specific setup (pre-validation, tracing) differs between the two constructors. Closes #4781.
 
 ### Fixed
+
+- `fix(orchestration)`: `check_graph_completion` deadlock→Failed branch now sets `graph_dirty` flag,
+  preventing silent loss of terminal status on crash (#4832)
 
 - `zeph-context`: replace three synchronous `EnteredSpan` guards held across `.await` boundaries in
   `fidelity.rs` with `.instrument(span).await` (inline futures) and `#[tracing::instrument]` (function

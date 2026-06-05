@@ -116,6 +116,7 @@ impl DagScheduler {
         if all_terminal {
             self.graph.status = GraphStatus::Completed;
             self.graph.finished_at = Some(crate::graph::chrono_now());
+            self.graph_dirty = true;
             return vec![SchedulerAction::Done {
                 status: GraphStatus::Completed,
             }];
@@ -138,6 +139,7 @@ impl DagScheduler {
             );
             self.graph.status = GraphStatus::Failed;
             self.graph.finished_at = Some(crate::graph::chrono_now());
+            self.graph_dirty = true;
             debug_assert!(
                 self.running.is_empty(),
                 "deadlock branch reached with non-empty running map"

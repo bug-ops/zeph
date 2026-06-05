@@ -243,6 +243,11 @@ impl PlanCache {
     /// # Errors
     ///
     /// Returns `PlanCacheError` if the stale embedding invalidation query fails.
+    #[tracing::instrument(
+        name = "orchestration.plan_cache.new",
+        skip_all,
+        fields(current_embedding_model = current_embedding_model)
+    )]
     pub async fn new(
         pool: DbPool,
         config: PlanCacheConfig,
@@ -416,6 +421,7 @@ impl PlanCache {
     /// # Errors
     ///
     /// Returns `PlanCacheError::Database` on query failure.
+    #[tracing::instrument(name = "orchestration.plan_cache.evict", skip_all)]
     pub async fn evict(&self) -> Result<u32, PlanCacheError> {
         let now = unix_now();
         let ttl_secs = i64::from(self.config.ttl_days) * 86_400;
