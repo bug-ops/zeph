@@ -539,6 +539,71 @@ async fn integration_openai_chat_stream() {
 }
 
 #[test]
+fn context_window_o1() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o1".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
+    assert_eq!(p.context_window(), Some(200_000));
+}
+
+#[test]
+fn context_window_o1_mini() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o1-mini".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
+    assert_eq!(p.context_window(), Some(200_000));
+}
+
+#[test]
+fn context_window_o3() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
+    assert_eq!(p.context_window(), Some(200_000));
+}
+
+#[test]
+fn context_window_o3_mini() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3-mini".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
+    assert_eq!(p.context_window(), Some(200_000));
+}
+
+#[test]
+fn context_window_o4_mini() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o4-mini".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+    });
+    assert_eq!(p.context_window(), Some(200_000));
+}
+
+#[test]
 fn context_window_gpt35() {
     let p = OpenAiProvider::new(OpenAiConfig {
         api_key: "k".into(),

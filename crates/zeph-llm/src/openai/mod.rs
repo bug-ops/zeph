@@ -354,10 +354,7 @@ impl OpenAiProvider {
                 presence_penalty,
             };
             send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
-                self.client
-                    .post(format!("{}/chat/completions", self.base_url))
-                    .header("Authorization", format!("Bearer {}", self.api_key))
-                    .header("Content-Type", "application/json")
+                self.openai_post(format!("{}/chat/completions", self.base_url))
                     .json(&body)
                     .send()
             })
@@ -376,10 +373,7 @@ impl OpenAiProvider {
                 presence_penalty,
             };
             send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
-                self.client
-                    .post(format!("{}/chat/completions", self.base_url))
-                    .header("Authorization", format!("Bearer {}", self.api_key))
-                    .header("Content-Type", "application/json")
+                self.openai_post(format!("{}/chat/completions", self.base_url))
                     .json(&body)
                     .send()
             })
@@ -451,10 +445,7 @@ impl OpenAiProvider {
         };
 
         let response = send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
-            self.client
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("Content-Type", "application/json")
+            self.openai_post(format!("{}/chat/completions", self.base_url))
                 .json(&body)
                 .send()
         })
@@ -478,6 +469,13 @@ impl OpenAiProvider {
 
         Ok(response)
     }
+
+    fn openai_post(&self, url: String) -> reqwest::RequestBuilder {
+        self.client
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .header("Content-Type", "application/json")
+    }
 }
 
 impl LlmProvider for OpenAiProvider {
@@ -488,6 +486,8 @@ impl LlmProvider for OpenAiProvider {
             Some(16_385)
         } else if self.model.starts_with("gpt-5") {
             Some(1_000_000)
+        } else if starts_with_o_digit(&self.model) {
+            Some(200_000)
         } else {
             None
         }
@@ -554,10 +554,7 @@ impl LlmProvider for OpenAiProvider {
         };
 
         let response = self
-            .client
-            .post(format!("{}/embeddings", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
+            .openai_post(format!("{}/embeddings", self.base_url))
             .json(&body)
             .send()
             .await?;
@@ -610,10 +607,7 @@ impl LlmProvider for OpenAiProvider {
         let body = EmbeddingBatchRequest { model, input: refs };
 
         let response = self
-            .client
-            .post(format!("{}/embeddings", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
+            .openai_post(format!("{}/embeddings", self.base_url))
             .json(&body)
             .send()
             .await?;
@@ -810,10 +804,7 @@ impl LlmProvider for OpenAiProvider {
         };
 
         let response = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
+            .openai_post(format!("{}/chat/completions", self.base_url))
             .json(&body)
             .send()
             .await?;
@@ -916,10 +907,7 @@ impl LlmProvider for OpenAiProvider {
         };
 
         let response = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
+            .openai_post(format!("{}/chat/completions", self.base_url))
             .json(&body)
             .send()
             .await?;
