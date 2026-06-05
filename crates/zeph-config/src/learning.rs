@@ -219,7 +219,7 @@ pub struct LearningConfig {
     /// Detector strategy: "regex" (default) or "judge".
     #[serde(default)]
     pub detector_mode: DetectorMode,
-    /// Model for the judge detector (e.g. "claude-sonnet-4-6"). Empty = use primary provider.
+    /// Named provider from `[[llm.providers]]` for the judge detector (legacy field, prefer `judge_provider`). Empty = use primary provider.
     #[serde(default)]
     pub judge_model: String,
     /// Named provider from `[[llm.providers]]` for the judge detector (`detector_mode = "judge"`).

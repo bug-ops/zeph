@@ -8,10 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `test(memory)`: add unit tests for `deep_reasoning_query_conditioned` flag in `retrieve_tier` —
+  covers HELA-empty fallback path (`flag=true`) and direct `recall_routed` path (`flag=false`) (#4724)
+
 - `--init` wizard now includes a worktree isolation step: prompts for `worktree.enabled`, `bg_isolation` (`none`/`worktree`), and `base_ref` (`head`/`fresh`) (#4656)
 
 ### Changed
 
+- `docs(config)`: fix `judge_model` doc comment in `LearningConfig` — field accepts a provider
+  name from `[[llm.providers]]`, not a raw model string; mark as legacy, prefer `judge_provider` (#4791)
 - `refactor(tracing)`: complete tracing instrumentation sweep across `zeph-channels`,
   `zeph-skills`, and `zeph-mcp` (issues #4849, #4827, #4819):
   - **zeph-channels**: add always-on `#[tracing::instrument]` to all hot-path async fns in

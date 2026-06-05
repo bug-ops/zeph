@@ -1312,4 +1312,75 @@ mod tests {
         assert_eq!(result.tokens_used, 0);
         assert!(!result.tier_escalated);
     }
+
+    /// Test 6: `deep_reasoning_query_conditioned = true` with an empty HELA graph falls back to
+    /// `recall_routed` without panicking.
+    ///
+    /// `mock_semantic_memory` has no `graph_store`, so `recall_graph_hela` returns
+    /// `Ok(Vec::new())`.  The code at `tiered_retrieval.rs:307` logs "no results" and falls
+    /// through to `recall_routed`, which must succeed and return a valid `TieredRetrievalResult`.
+    #[tokio::test]
+    async fn deep_reasoning_query_conditioned_true_falls_back_when_hela_empty() {
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+
+        let config = TieredRetrievalConfig {
+            deep_reasoning_query_conditioned: true,
+            validation_enabled: false,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = retrieve_tier(
+            &memory,
+            "multi-hop reasoning query",
+            None,
+            IntentClass::DeepReasoning,
+            &config,
+        )
+        .await
+        .expect("retrieve_tier with empty HELA must not fail");
+
+        // HELA returned nothing → fallback to recall_routed → empty result (no stored msgs).
+        assert!(
+            result.is_empty(),
+            "expected empty result from fallback recall_routed, got {}",
+            result.len()
+        );
+    }
+
+    /// Test 7: `deep_reasoning_query_conditioned = false` with `DeepReasoning` intent completes
+    /// without panicking.
+    ///
+    /// Verifies that the pipeline completes successfully and returns a valid (empty) result when
+    /// the flag is disabled. The mock has no stored messages, so `recall_routed` returns empty.
+    #[tokio::test]
+    async fn deep_reasoning_query_conditioned_false_completes_without_panic() {
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+
+        let config = TieredRetrievalConfig {
+            deep_reasoning_query_conditioned: false,
+            validation_enabled: false,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = retrieve_tier(
+            &memory,
+            "multi-hop reasoning query",
+            None,
+            IntentClass::DeepReasoning,
+            &config,
+        )
+        .await
+        .expect("retrieve_tier with deep_reasoning_query_conditioned=false must not fail");
+
+        // recall_routed path used; no messages stored so result is empty.
+        assert!(
+            result.is_empty(),
+            "expected empty result from recall_routed path, got {}",
+            result.len()
+        );
+    }
 }
