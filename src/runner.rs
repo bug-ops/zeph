@@ -2803,7 +2803,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                      Set `worktree.enabled = false` to disable."
                 )
             })?;
-            let runner = zeph_worktree::DefaultGitRunner::new();
+            let timeout_secs = agents_config.worktree.git_timeout_secs.max(1);
+            let runner = zeph_worktree::DefaultGitRunner::with_timeout(
+                std::time::Duration::from_secs(timeout_secs),
+            );
             zeph_worktree::probe_capabilities(&runner, &repo_root)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;

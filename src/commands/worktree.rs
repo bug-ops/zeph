@@ -33,7 +33,8 @@ pub(crate) async fn handle_worktree_command(
         anyhow::anyhow!("Not inside a git repository. Worktree commands require a git repo.")
     })?;
 
-    let runner = DefaultGitRunner::new();
+    let timeout_secs = config.worktree.git_timeout_secs.max(1);
+    let runner = DefaultGitRunner::with_timeout(std::time::Duration::from_secs(timeout_secs));
     probe_capabilities(&runner, &repo_root).await?;
     let wm = DefaultWorktreeManager::new(repo_root, config.worktree.clone(), runner)?;
 

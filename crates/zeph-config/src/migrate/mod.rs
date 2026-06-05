@@ -3420,6 +3420,7 @@ use steps::{
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
     MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
+    MigrateWorktreeGitTimeout,
 };
 
 /// Step 45: add an advisory comment above `GonkaGate` provider entries pointing users to
@@ -3638,6 +3639,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateCocoonShowBalance),
             // Step 54 — add [worktree] section with defaults (#4679)
             Box::new(MigrateWorktreeConfig),
+            // Step 55 — add git_timeout_secs to [worktree] (#4704)
+            Box::new(MigrateWorktreeGitTimeout),
         ]
     });
 
@@ -3898,6 +3901,37 @@ pub fn migrate_worktree_config(toml_src: &str) -> Result<MigrationResult, Migrat
     })
 }
 
+/// Add a commented-out `git_timeout_secs` field to `[worktree]` when the section
+/// is present but the key is absent (#4704).
+///
+/// The field defaults to `30` when absent; this step surfaces it for discovery
+/// so operators can tune the value for slow networks or large repositories.
+/// Only runs when `[worktree]` is present — configs without the section are unchanged.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_worktree_git_timeout(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("git_timeout_secs") || !toml_src.contains("[worktree]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# git_timeout_secs = 30  \
+        # per-command timeout for git invocations (seconds)\n";
+    let output = toml_src.replacen("[worktree]\n", &format!("[worktree]\n{comment}"), 1);
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["worktree".to_owned()],
+    })
+}
+
 // Helper to create a formatted value (used in tests).
 #[cfg(test)]
 fn make_formatted_str(s: &str) -> Value {
@@ -3913,8 +3947,8 @@ mod tests {
     fn migrations_registry_has_all_steps() {
         assert_eq!(
             MIGRATIONS.len(),
-            54,
-            "MIGRATIONS registry must contain all 54 sequential steps"
+            55,
+            "MIGRATIONS registry must contain all 55 sequential steps"
         );
         for m in MIGRATIONS.iter() {
             assert!(
@@ -5501,7 +5535,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_has_fifty_entries() {
-        assert_eq!(MIGRATIONS.len(), 54);
+        assert_eq!(MIGRATIONS.len(), 55);
     }
 
     #[test]
@@ -5540,7 +5574,7 @@ prompt_cache_ttl = "1h"
 
     #[test]
     fn registry_preserves_order_matches_dispatch() {
-        // Names must follow the documented step order (steps 1–53).
+        // Names must follow the documented step order (steps 1–55).
         let expected = [
             "migrate_stt_to_provider",
             "migrate_planner_model_to_provider",
@@ -5596,6 +5630,7 @@ prompt_cache_ttl = "1h"
             "migrate_session_persist_provider_overrides",
             "migrate_cocoon_show_balance",
             "migrate_worktree_config",
+            "migrate_worktree_git_timeout",
         ];
         let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
         assert_eq!(actual, expected);
@@ -6100,5 +6135,42 @@ trace_extraction_embed_provider = \"live\"\n";
             result.changed_count, 0,
             "commented [worktree] counts as present"
         );
+    }
+
+    // ── migrate_worktree_git_timeout tests (#4704) ───────────────────────────
+
+    #[test]
+    fn step_55_inserts_git_timeout_comment_when_worktree_present() {
+        let input = "[worktree]\nenabled = true\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result.output.contains("git_timeout_secs"),
+            "should insert git_timeout_secs comment"
+        );
+        assert_eq!(result.sections_changed, vec!["worktree"]);
+    }
+
+    #[test]
+    fn step_55_is_noop_when_no_worktree_section() {
+        let input = "[agent]\nmax_turns = 10\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, input);
+    }
+
+    #[test]
+    fn step_55_is_idempotent_when_git_timeout_already_present() {
+        let input = "[worktree]\ngit_timeout_secs = 60\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, input);
+    }
+
+    #[test]
+    fn step_55_is_idempotent_when_git_timeout_commented() {
+        let input = "[worktree]\n# git_timeout_secs = 30\n";
+        let result = migrate_worktree_git_timeout(input).unwrap();
+        assert_eq!(result.changed_count, 0);
     }
 }

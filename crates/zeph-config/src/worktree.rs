@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(!cfg.enabled);
 /// assert_eq!(cfg.root, ".claude/worktrees");
 /// assert_eq!(cfg.branch_prefix, "agent/");
+/// assert_eq!(cfg.git_timeout_secs, 30);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -73,6 +74,17 @@ pub struct WorktreeConfig {
     /// Controls whether background subagents receive a dedicated worktree or
     /// edit the working copy directly.
     pub bg_isolation: BgIsolation,
+    /// Per-command timeout for `git` invocations, in seconds.
+    ///
+    /// Applied to every `git` call issued by the worktree subsystem (e.g.
+    /// `git worktree add`, `git fetch`, `git rev-parse`).  Increase this value
+    /// on repositories that are slow to clone or when running over high-latency
+    /// network links.  A value of `0` is treated as `1` at the call site.
+    pub git_timeout_secs: u64,
+}
+
+fn default_git_timeout_secs() -> u64 {
+    30
 }
 
 impl Default for WorktreeConfig {
@@ -86,6 +98,7 @@ impl Default for WorktreeConfig {
             prune_branch_on_remove: false,
             cleanup_on_completion: true,
             bg_isolation: BgIsolation::default(),
+            git_timeout_secs: default_git_timeout_secs(),
         }
     }
 }
@@ -163,6 +176,7 @@ mod tests {
         assert!(!cfg.prune_branch_on_remove);
         assert!(cfg.cleanup_on_completion);
         assert_eq!(cfg.bg_isolation, BgIsolation::Worktree);
+        assert_eq!(cfg.git_timeout_secs, 30);
     }
 
     #[test]
@@ -174,6 +188,7 @@ mod tests {
         assert_eq!(deserialized.root, cfg.root);
         assert_eq!(deserialized.branch_prefix, cfg.branch_prefix);
         assert_eq!(deserialized.bg_isolation, cfg.bg_isolation);
+        assert_eq!(deserialized.git_timeout_secs, 30);
     }
 
     #[test]
@@ -243,5 +258,23 @@ bg_isolation = "none"
         assert!(cfg.prune_branch_on_remove);
         assert!(!cfg.cleanup_on_completion);
         assert_eq!(cfg.bg_isolation, BgIsolation::None);
+        // git_timeout_secs not set → must fall back to default
+        assert_eq!(cfg.git_timeout_secs, 30);
+    }
+
+    #[test]
+    fn worktree_config_git_timeout_secs_custom() {
+        let toml_src = "enabled = true\ngit_timeout_secs = 120\n";
+        let cfg: WorktreeConfig = toml::from_str(toml_src).expect("deserialize");
+        assert_eq!(cfg.git_timeout_secs, 120);
+    }
+
+    #[test]
+    fn worktree_config_git_timeout_secs_defaults_when_absent() {
+        // Configs written before this field was added must parse without error
+        // and resolve to the 30-second default.
+        let toml_src = "enabled = false\n";
+        let cfg: WorktreeConfig = toml::from_str(toml_src).expect("deserialize");
+        assert_eq!(cfg.git_timeout_secs, 30);
     }
 }

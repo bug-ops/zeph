@@ -13,7 +13,8 @@
 //! `embed_timeout_secs` and `compress_timeout_secs` to `[memory.fidelity]` (#4645, #4651);
 //! step 52 adds `[session] persist_provider_overrides` (#4654);
 //! step 53 adds `[cocoon] show_balance` advisory notice (#4649);
-//! step 54 adds `[worktree]` section with defaults (#4679).
+//! step 54 adds `[worktree]` section with defaults (#4679);
+//! step 55 adds `git_timeout_secs` to `[worktree]` (#4704).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -41,9 +42,10 @@ use super::{
     migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
     migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
     migrate_trace_metadata, migrate_vigil_config, migrate_worktree_config,
+    migrate_worktree_git_timeout,
 };
 
-// ── Wrapper structs for all 54 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 55 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -636,5 +638,16 @@ impl Migration for MigrateWorktreeConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_worktree_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateWorktreeGitTimeout;
+impl Migration for MigrateWorktreeGitTimeout {
+    fn name(&self) -> &'static str {
+        "migrate_worktree_git_timeout"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_worktree_git_timeout(toml_src)
     }
 }

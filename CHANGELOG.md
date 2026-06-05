@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(worktree): make DefaultGitRunner timeout configurable via WorktreeConfig (#4704)` — adds
+  `git_timeout_secs: u64` (default `30`) to `WorktreeConfig`; both production construction sites
+  now use `DefaultGitRunner::with_timeout(Duration::from_secs(...))`. Configs without the field
+  parse as before (backward compatible). Migration step 55 injects a commented-out
+  `# git_timeout_secs = 30` hint into existing `[worktree]` sections.
+
 - `zeph-skills`: add `SkillExtensions` manifest parsing for UI/keybinding/monitor declarations in
   `SKILL.md` `extensions:` frontmatter block (`SkillExtensions`, `SkillUiElement`,
   `SkillKeybinding`, `SkillMonitor`). Parse failures log a warning and fall back to `None` so
