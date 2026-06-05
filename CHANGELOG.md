@@ -82,6 +82,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`acp.http.post`, `acp.http.get`, `acp.http.health`, `acp.http.list_sessions`,
   `acp.http.session_messages`), making ACP permission round-trip and HTTP session latency
   visible in traces. Closes #4837, #4806, #4842.
+- `refactor(skills)`: extract shared `MERGE_SYSTEM_PROMPT` constant and `build_merge_messages()`
+  helper into `zeph-skills::merge_prompts` module; remove duplicate code from `miner.rs` and
+  `trace_extractor.rs`. Closes #4857.
 
 ### Fixed
 
