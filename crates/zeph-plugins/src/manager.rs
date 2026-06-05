@@ -1314,8 +1314,9 @@ impl PluginManager {
         // Read manifest to get skill entries for blocking scan.
         let manifest_path = tmp.path().join("plugin.toml");
         if manifest_path.exists() {
-            let manifest_str =
-                std::fs::read_to_string(&manifest_path).map_err(|e| PluginError::Io {
+            let manifest_str = tokio::fs::read_to_string(&manifest_path)
+                .await
+                .map_err(|e| PluginError::Io {
                     path: manifest_path.clone(),
                     source: e,
                 })?;
@@ -1323,7 +1324,7 @@ impl PluginManager {
                 // Blocking scan: treat any injection match as a hard error.
                 for entry in &manifest.skills {
                     let skill_md_path = tmp.path().join(&entry.path).join("SKILL.md");
-                    if let Ok(content) = std::fs::read_to_string(&skill_md_path) {
+                    if let Ok(content) = tokio::fs::read_to_string(&skill_md_path).await {
                         let result = zeph_skills::scanner::scan_skill_body(&content);
                         if result.has_matches() {
                             return Err(PluginError::SemanticViolation {
