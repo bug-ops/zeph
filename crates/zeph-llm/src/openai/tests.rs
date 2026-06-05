@@ -30,6 +30,7 @@ fn test_provider() -> OpenAiProvider {
         max_tokens: 4096,
         embedding_model: Some("text-embedding-3-small".into()),
         reasoning_effort: None,
+        context_window: None,
     })
 }
 
@@ -42,6 +43,7 @@ fn context_window_gpt4o() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(128_000));
 }
@@ -52,7 +54,7 @@ fn context_window_gpt5() {
 }
 
 #[test]
-fn context_window_unknown() {
+fn context_window_unknown_falls_back_to_128k() {
     let p = OpenAiProvider::new(OpenAiConfig {
         api_key: "k".into(),
         base_url: "https://api.openai.com/v1".into(),
@@ -60,8 +62,38 @@ fn context_window_unknown() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
-    assert!(p.context_window().is_none());
+    assert_eq!(p.context_window(), Some(128_000));
+}
+
+#[test]
+fn context_window_override_takes_precedence() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "gpt-4o".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: Some(256_000),
+    });
+    assert_eq!(p.context_window(), Some(256_000));
+}
+
+#[test]
+fn context_window_override_via_builder() {
+    let p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "custom-model".into(),
+        max_tokens: 1024,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+    })
+    .with_context_window(200_000);
+    assert_eq!(p.context_window(), Some(200_000));
 }
 
 fn test_provider_no_embed() -> OpenAiProvider {
@@ -72,6 +104,7 @@ fn test_provider_no_embed() -> OpenAiProvider {
         max_tokens: 4096,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     })
 }
 
@@ -95,6 +128,7 @@ fn new_with_reasoning_effort() {
         max_tokens: 4096,
         embedding_model: None,
         reasoning_effort: Some("high".into()),
+        context_window: None,
     });
     assert_eq!(p.reasoning_effort.as_deref(), Some("high"));
 }
@@ -382,6 +416,7 @@ async fn chat_unreachable_endpoint_errors() {
         max_tokens: 100,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -401,6 +436,7 @@ async fn stream_unreachable_endpoint_errors() {
         max_tokens: 100,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -420,6 +456,7 @@ async fn embed_unreachable_endpoint_errors() {
         max_tokens: 100,
         embedding_model: Some("embed-model".into()),
         reasoning_effort: None,
+        context_window: None,
     });
     assert!(p.embed("test").await.is_err());
 }
@@ -446,6 +483,7 @@ fn base_url_strips_trailing_slash() {
         max_tokens: 100,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.base_url, "https://api.openai.com/v1");
 }
@@ -492,6 +530,7 @@ async fn integration_openai_chat() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
 
     let messages = vec![Message {
@@ -516,6 +555,7 @@ async fn integration_openai_chat_stream() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
 
     let messages = vec![Message {
@@ -547,6 +587,7 @@ fn context_window_o1() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -560,6 +601,7 @@ fn context_window_o1_mini() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -573,6 +615,7 @@ fn context_window_o3() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -586,6 +629,7 @@ fn context_window_o3_mini() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -599,6 +643,7 @@ fn context_window_o4_mini() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(200_000));
 }
@@ -612,6 +657,7 @@ fn context_window_gpt35() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(16_385));
 }
@@ -625,6 +671,7 @@ fn context_window_gpt4_turbo() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.context_window(), Some(128_000));
 }
@@ -640,6 +687,7 @@ async fn integration_openai_embed() {
         max_tokens: 256,
         embedding_model: Some("text-embedding-3-small".into()),
         reasoning_effort: None,
+        context_window: None,
     });
 
     let embedding = provider.embed("Hello world").await.unwrap();
@@ -1053,6 +1101,7 @@ fn cache_slug_openai() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.cache_slug(), "api_openai_com");
 }
@@ -1066,6 +1115,7 @@ fn cache_slug_custom_host() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.cache_slug(), "my_llm_example_com");
 }
@@ -1079,6 +1129,7 @@ fn cache_slug_localhost_with_port() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert_eq!(p.cache_slug(), "localhost");
 }
@@ -1181,6 +1232,7 @@ async fn list_models_remote_http_error_propagates() {
         max_tokens: 1024,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let result = p.list_models_remote().await;
     assert!(result.is_err());
@@ -1212,6 +1264,7 @@ async fn chat_happy_path_wiremock() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1257,6 +1310,7 @@ async fn chat_with_tools_handles_null_assistant_content() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1311,6 +1365,7 @@ async fn chat_429_rate_limit_propagates() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1343,6 +1398,7 @@ async fn chat_401_auth_error_propagates() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1375,6 +1431,7 @@ async fn chat_500_server_error_propagates() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     let messages = vec![Message {
         role: Role::User,
@@ -1395,6 +1452,7 @@ fn with_generation_overrides_stores_overrides() {
         max_tokens: 256,
         embedding_model: None,
         reasoning_effort: None,
+        context_window: None,
     });
     assert!(provider.generation_overrides.is_none());
     let overrides = GenerationOverrides {
@@ -1559,6 +1617,7 @@ async fn embed_batch_empty_returns_empty_without_network() {
         max_tokens: 4096,
         embedding_model: Some("text-embedding-3-small".into()),
         reasoning_effort: None,
+        context_window: None,
     });
     let result = p.embed_batch(&[]).await.unwrap();
     assert!(result.is_empty());

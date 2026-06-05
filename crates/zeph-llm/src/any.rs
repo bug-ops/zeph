@@ -717,6 +717,7 @@ mod tests {
                 max_tokens: 1024,
                 embedding_model: None,
                 reasoning_effort: None,
+                context_window: None,
             },
         ));
         assert_eq!(provider.name(), "openai");
@@ -732,6 +733,7 @@ mod tests {
                 max_tokens: 1024,
                 embedding_model: None,
                 reasoning_effort: None,
+                context_window: None,
             },
         ));
         assert!(provider.supports_streaming());
@@ -747,6 +749,7 @@ mod tests {
                 max_tokens: 1024,
                 embedding_model: Some("text-embedding-3-small".into()),
                 reasoning_effort: None,
+                context_window: None,
             },
         ));
         assert!(with_embed.supports_embeddings());
@@ -759,6 +762,7 @@ mod tests {
                 max_tokens: 1024,
                 embedding_model: None,
                 reasoning_effort: None,
+                context_window: None,
             },
         ));
         assert!(!without_embed.supports_embeddings());
@@ -774,6 +778,7 @@ mod tests {
                 max_tokens: 1024,
                 embedding_model: None,
                 reasoning_effort: None,
+                context_window: None,
             },
         ));
         let debug = format!("{provider:?}");
@@ -810,6 +815,7 @@ mod tests {
                 max_tokens: 1024,
                 embedding_model: None,
                 reasoning_effort: None,
+                context_window: None,
             },
         ));
         assert!(provider.supports_structured_output());
@@ -841,6 +847,7 @@ mod tests {
                 max_tokens: 1024,
                 embedding_model: None,
                 reasoning_effort: None,
+                context_window: None,
             },
         ));
         assert!(provider.supports_vision());

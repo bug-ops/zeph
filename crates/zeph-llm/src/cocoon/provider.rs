@@ -172,6 +172,7 @@ impl CocoonProvider {
             max_tokens,
             embedding_model: embedding_model.clone(),
             reasoning_effort: None,
+            context_window: None,
         });
         Self {
             inner,

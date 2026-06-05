@@ -225,6 +225,7 @@ fn build_openai_provider(
             max_tokens,
             embedding_model: entry.embedding_model.clone(),
             reasoning_effort: entry.reasoning_effort.clone(),
+            context_window: None,
         })
         .with_client(llm_client(config.timeouts.llm_request_timeout_secs))
         .with_output_schema_forwarding(

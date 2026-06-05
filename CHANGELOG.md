@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(llm)`: `OpenAiProvider` now resolves context window via three-step lookup: explicit
+  `context_window` field in `OpenAiConfig` → model-prefix table → `128_000` fallback for unknown
+  models. Eliminates silent `None` for unrecognised model names. (#4876)
+
+- `refactor(llm)`: `OpenAiProvider::generation_params()` private helper extracted; removes 4
+  duplicate `generation_overrides` tuple expansions in `send_request`, `send_stream_request`,
+  `debug_request_json`, and `chat_with_tools`. (#4873)
+
 - `refactor(llm)`: `parse_gemini_error` in `zeph-llm` now delegates the base `ApiError` and
   `ContextLengthExceeded` construction to `crate::http::map_error_response`, consistent with all
   other backends (claude, openai, gonka, cocoon). Gemini-specific `RESOURCE_EXHAUSTED → RateLimited`

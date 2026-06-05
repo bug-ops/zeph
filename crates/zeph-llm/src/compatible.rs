@@ -87,6 +87,7 @@ impl CompatibleProvider {
             max_tokens: cfg.max_tokens,
             embedding_model: cfg.embedding_model,
             reasoning_effort: None,
+            context_window: None,
         });
         Self {
             inner,

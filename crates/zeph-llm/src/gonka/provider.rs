@@ -190,6 +190,7 @@ impl GonkaProvider {
             max_tokens: cfg.max_tokens,
             embedding_model: cfg.embedding_model.clone(),
             reasoning_effort: None,
+            context_window: None,
         });
         // HTTP client timeout is generous to avoid double-timeout with tokio::time::timeout.
         let client = crate::http::llm_client(cfg.timeout.as_secs().saturating_add(30));

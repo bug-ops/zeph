@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 ///     max_tokens: 4096,
 ///     embedding_model: Some("text-embedding-3-small".into()),
 ///     reasoning_effort: None,
+///     context_window: None,
 /// };
 /// let provider = OpenAiProvider::new(cfg);
 /// ```
@@ -71,6 +72,12 @@ pub struct OpenAiConfig {
     /// Reasoning effort level for `o*` models (`"low"`, `"medium"`, or `"high"`).
     /// Leave `None` for standard chat models.
     pub reasoning_effort: Option<String>,
+    /// Explicit context-window size override in tokens.
+    ///
+    /// When set, this value is returned by [`LlmProvider::context_window`] instead of the
+    /// built-in prefix-match table. Use this to supply the correct value for models that are
+    /// not yet in the table (e.g. newly released or fine-tuned variants).
+    pub context_window: Option<u32>,
 }
 
 use crate::provider::{
@@ -91,6 +98,7 @@ const MAX_RETRIES: u32 = 3;
 /// Construct with [`OpenAiProvider::new`] and chain optional builder methods:
 /// - [`with_generation_overrides`](Self::with_generation_overrides)
 /// - [`with_status_tx`](Self::with_status_tx)
+/// - [`with_context_window`](Self::with_context_window)
 pub struct OpenAiProvider {
     client: reqwest::Client,
     api_key: String,
@@ -109,6 +117,9 @@ pub struct OpenAiProvider {
     output_schema_hint_bytes: usize,
     /// Maximum bytes of the combined description (base + hint). `usize::MAX` means no cap.
     max_tool_description_bytes: usize,
+    /// Explicit context-window override set via [`OpenAiConfig::context_window`] or
+    /// [`OpenAiProvider::with_context_window`]. Takes precedence over the prefix-match table.
+    context_window_override: Option<usize>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -130,6 +141,7 @@ impl fmt::Debug for OpenAiProvider {
                 "max_tool_description_bytes",
                 &self.max_tool_description_bytes,
             )
+            .field("context_window_override", &self.context_window_override)
             .finish()
     }
 }
@@ -150,6 +162,7 @@ impl Clone for OpenAiProvider {
             forward_output_schema: self.forward_output_schema,
             output_schema_hint_bytes: self.output_schema_hint_bytes,
             max_tool_description_bytes: self.max_tool_description_bytes,
+            context_window_override: self.context_window_override,
         }
     }
 }
@@ -176,6 +189,7 @@ impl OpenAiProvider {
             forward_output_schema: false,
             output_schema_hint_bytes: 1024,
             max_tool_description_bytes: usize::MAX,
+            context_window_override: cfg.context_window.map(|v| v as usize),
         }
     }
 
@@ -214,6 +228,53 @@ impl OpenAiProvider {
     pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
         self.status_tx = Some(tx);
         self
+    }
+
+    /// Override the context-window size reported by [`LlmProvider::context_window`].
+    ///
+    /// Use this when the model identifier is not yet in the built-in prefix table.
+    /// The value takes precedence over the table and the default fallback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::openai::{OpenAiConfig, OpenAiProvider};
+    /// use zeph_llm::provider::LlmProvider;
+    ///
+    /// let provider = OpenAiProvider::new(OpenAiConfig {
+    ///     api_key: "k".into(),
+    ///     base_url: "https://api.openai.com/v1".into(),
+    ///     model: "custom-model-v1".into(),
+    ///     max_tokens: 4096,
+    ///     embedding_model: None,
+    ///     reasoning_effort: None,
+    ///     context_window: None,
+    /// })
+    /// .with_context_window(200_000);
+    /// assert_eq!(provider.context_window(), Some(200_000));
+    /// ```
+    #[must_use]
+    pub fn with_context_window(mut self, tokens: usize) -> Self {
+        self.context_window_override = Some(tokens);
+        self
+    }
+
+    /// Extract generation override parameters as a flat tuple.
+    ///
+    /// Returns `(temperature, top_p, frequency_penalty, presence_penalty)`.
+    /// All values are `None` when no override is set.
+    fn generation_params(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
+        self.generation_overrides
+            .as_ref()
+            .map(|ov| {
+                (
+                    ov.temperature,
+                    ov.top_p,
+                    ov.frequency_penalty,
+                    ov.presence_penalty,
+                )
+            })
+            .unwrap_or_default()
     }
 
     /// Derive a filesystem-safe cache slug from the provider's base URL hostname.
@@ -328,17 +389,7 @@ impl OpenAiProvider {
             .as_deref()
             .map(|effort| Reasoning { effort });
 
-        let (temperature, top_p, frequency_penalty, presence_penalty) =
-            if let Some(ref ov) = self.generation_overrides {
-                (
-                    ov.temperature,
-                    ov.top_p,
-                    ov.frequency_penalty,
-                    ov.presence_penalty,
-                )
-            } else {
-                (None, None, None, None)
-            };
+        let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
 
         let response = if has_image_parts(messages) {
             let vision_messages = convert_messages_vision(messages);
@@ -412,17 +463,7 @@ impl OpenAiProvider {
             .as_deref()
             .map(|effort| Reasoning { effort });
 
-        let (temperature, top_p, frequency_penalty, presence_penalty) =
-            if let Some(ref ov) = self.generation_overrides {
-                (
-                    ov.temperature,
-                    ov.top_p,
-                    ov.frequency_penalty,
-                    ov.presence_penalty,
-                )
-            } else {
-                (None, None, None, None)
-            };
+        let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
 
         let body = ChatRequest {
             model: &self.model,
@@ -464,7 +505,17 @@ impl OpenAiProvider {
 }
 
 impl LlmProvider for OpenAiProvider {
+    /// Returns the context-window size for the configured model.
+    ///
+    /// Resolution order:
+    /// 1. Explicit override set via [`OpenAiConfig::context_window`] or [`Self::with_context_window`].
+    /// 2. Built-in prefix table for well-known `OpenAI` model families.
+    /// 3. Default fallback of `128_000` tokens for unrecognised models, so callers always receive
+    ///    a usable value rather than `None`.
     fn context_window(&self) -> Option<usize> {
+        if let Some(override_size) = self.context_window_override {
+            return Some(override_size);
+        }
         if self.model.starts_with("gpt-4o") || self.model.starts_with("gpt-4") {
             Some(128_000)
         } else if self.model.starts_with("gpt-3.5") {
@@ -474,7 +525,8 @@ impl LlmProvider for OpenAiProvider {
         } else if starts_with_o_digit(&self.model) {
             Some(200_000)
         } else {
-            None
+            // Unknown model: fall back to 128k so callers always get a usable budget.
+            Some(128_000)
         }
     }
 
@@ -670,18 +722,7 @@ impl LlmProvider for OpenAiProvider {
             .reasoning_effort
             .as_deref()
             .map(|effort| Reasoning { effort });
-        let (temperature, top_p, frequency_penalty, presence_penalty) = self
-            .generation_overrides
-            .as_ref()
-            .map(|ov| {
-                (
-                    ov.temperature,
-                    ov.top_p,
-                    ov.frequency_penalty,
-                    ov.presence_penalty,
-                )
-            })
-            .unwrap_or_default();
+        let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
 
         if !tools.is_empty() {
             let api_messages = convert_messages_structured(messages);
@@ -867,18 +908,7 @@ impl LlmProvider for OpenAiProvider {
             })
             .collect();
 
-        let (temperature, top_p, frequency_penalty, presence_penalty) = self
-            .generation_overrides
-            .as_ref()
-            .map(|ov| {
-                (
-                    ov.temperature,
-                    ov.top_p,
-                    ov.frequency_penalty,
-                    ov.presence_penalty,
-                )
-            })
-            .unwrap_or_default();
+        let (temperature, top_p, frequency_penalty, presence_penalty) = self.generation_params();
         let body = ToolChatRequest {
             model: &self.model,
             messages: &api_messages,
