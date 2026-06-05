@@ -2685,10 +2685,12 @@ mod tests {
 
     #[test]
     fn build_config_worktree_enabled_bg_isolation_none() {
-        let mut state = WizardState::default();
-        state.worktree_enabled = true;
-        state.worktree_bg_isolation = BgIsolation::None;
-        state.worktree_base_ref = WorktreeBaseRef::Fresh;
+        let state = WizardState {
+            worktree_enabled: true,
+            worktree_bg_isolation: BgIsolation::None,
+            worktree_base_ref: WorktreeBaseRef::Fresh,
+            ..WizardState::default()
+        };
         let config = build_config(&state);
         assert!(config.worktree.enabled);
         assert_eq!(config.worktree.bg_isolation, BgIsolation::None);
