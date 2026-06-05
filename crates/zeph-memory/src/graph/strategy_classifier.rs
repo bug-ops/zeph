@@ -38,9 +38,8 @@ Query: "#;
 /// assert!(["astar", "watercircles", "beam_search", "synapse"].contains(&strategy.as_str()));
 /// # }
 /// ```
+#[tracing::instrument(skip_all, name = "memory.graph.classify_strategy")]
 pub async fn classify_retrieval_strategy(provider: &AnyProvider, query: &str) -> String {
-    let _span = tracing::info_span!("memory.graph.classify_strategy").entered();
-
     let prompt = format!("{CLASSIFY_PROMPT}{query}");
     let messages = [Message {
         role: Role::User,

@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use petgraph::algo::astar;
 use petgraph::graph::{NodeIndex, UnGraph};
+use tracing::Instrument as _;
 
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
@@ -95,7 +96,9 @@ pub(crate) fn cap_node_map<V>(
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+#[tracing::instrument(skip_all, name = "memory.graph.astar", fields(query_len = query.len()))]
 pub async fn graph_recall_astar(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,
@@ -110,8 +113,6 @@ pub async fn graph_recall_astar(
     query_sensitive_cost: bool,
     embed_timeout: std::time::Duration,
 ) -> Result<Vec<GraphFact>, MemoryError> {
-    let _span = tracing::info_span!("memory.graph.astar", query_len = query.len()).entered();
-
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -165,11 +166,12 @@ pub async fn graph_recall_astar(
         match embeddings {
             Some(emb_store) => {
                 const PRISM_EMBED_TIMEOUT: Duration = Duration::from_secs(10);
-                let _embed_span = tracing::info_span!("memory.graph.astar.prism_embed").entered();
+                let prism_span = tracing::info_span!("memory.graph.astar.prism_embed");
                 match tokio::time::timeout(
                     PRISM_EMBED_TIMEOUT,
                     zeph_llm::LlmProvider::embed(provider, query),
                 )
+                .instrument(prism_span)
                 .await
                 {
                     Err(_elapsed) => {

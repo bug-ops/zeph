@@ -102,13 +102,12 @@ impl ExperienceStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] if any database insert fails.
+    #[tracing::instrument(skip_all, name = "memory.experience.link_entities", fields(exp = experience_id.0))]
     pub async fn link_to_entities(
         &self,
         experience_id: ExperienceId,
         entity_ids: &[EntityId],
     ) -> Result<(), MemoryError> {
-        let _span =
-            tracing::info_span!("memory.experience.link_entities", exp = experience_id.0).entered();
         for &entity_id in entity_ids {
             zeph_db::query(sql!(
                 "INSERT INTO experience_entity_links

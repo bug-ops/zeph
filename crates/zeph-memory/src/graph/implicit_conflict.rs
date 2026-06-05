@@ -126,6 +126,7 @@ impl ImplicitConflictDetector {
     /// # Errors
     ///
     /// Returns a [`MemoryError`] on database write failure.
+    #[tracing::instrument(skip_all, name = "memory.graph.implicit_conflict.stage", fields(count = candidates.len()))]
     pub async fn stage_candidates(
         &self,
         candidates: &[ConflictCandidate],
@@ -135,12 +136,6 @@ impl ImplicitConflictDetector {
         if candidates.is_empty() {
             return Ok(());
         }
-
-        let _span = tracing::info_span!(
-            "memory.graph.implicit_conflict.stage",
-            count = candidates.len(),
-        )
-        .entered();
 
         #[allow(clippy::cast_possible_wrap)]
         let now = SystemTime::now()
@@ -215,6 +210,7 @@ impl ImplicitConflictDetector {
 /// # Errors
 ///
 /// Returns a [`MemoryError`] on database query failure.
+#[tracing::instrument(skip_all, name = "memory.graph.implicit_conflict.annotate", fields(facts = facts.len()))]
 pub async fn annotate_conflicts(
     facts: &mut [ActivatedFact],
     tx: &mut DbTransaction<'_>,
@@ -222,12 +218,6 @@ pub async fn annotate_conflicts(
     if facts.is_empty() {
         return Ok(());
     }
-
-    let _span = tracing::info_span!(
-        "memory.graph.implicit_conflict.annotate",
-        facts = facts.len(),
-    )
-    .entered();
 
     let edge_ids: Vec<i64> = facts.iter().map(|f| f.edge.id).collect();
 

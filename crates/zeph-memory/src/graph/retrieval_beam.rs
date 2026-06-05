@@ -29,7 +29,9 @@ const DEFAULT_COMMUNITY_CAP: usize = 3;
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
+#[tracing::instrument(skip_all, name = "memory.graph.beam", fields(query_len = query.len()))]
 pub async fn graph_recall_beam(
     store: &GraphStore,
     embeddings: Option<&EmbeddingStore>,
@@ -44,8 +46,6 @@ pub async fn graph_recall_beam(
     hebbian_lr: f32,
     embed_timeout: std::time::Duration,
 ) -> Result<Vec<GraphFact>, MemoryError> {
-    let _span = tracing::info_span!("memory.graph.beam", query_len = query.len()).entered();
-
     if limit == 0 {
         return Ok(Vec::new());
     }
