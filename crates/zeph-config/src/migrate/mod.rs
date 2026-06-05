@@ -3873,7 +3873,14 @@ pub fn migrate_cocoon_show_balance(toml_src: &str) -> Result<MigrationResult, Mi
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_worktree_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    if toml_src.contains("[worktree]") {
+    // Only treat `[worktree]` as present when it appears as a standalone line
+    // (section header) or as a commented-out header `# [worktree]`.
+    // A bare `contains` would fire on values like `description = "uses [worktree] isolation"`.
+    let already_present = toml_src.lines().any(|line| {
+        let t = line.trim();
+        t == "[worktree]" || t == "# [worktree]"
+    });
+    if already_present {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -6128,12 +6135,27 @@ trace_extraction_embed_provider = \"live\"\n";
 
     #[test]
     fn step_54_is_idempotent_when_worktree_commented() {
-        // String-contains check treats "# [worktree]" as present — conservative, acceptable for MVP.
+        // A `# [worktree]` line (commented-out header) counts as present — conservative.
         let input = "# [worktree]\n[agent]\nmax_turns = 10\n";
         let result = migrate_worktree_config(input).unwrap();
         assert_eq!(
             result.changed_count, 0,
             "commented [worktree] counts as present"
+        );
+    }
+
+    #[test]
+    fn step_54_does_not_skip_when_worktree_in_value() {
+        // Regression: `[worktree]` inside a string value must NOT suppress the migration.
+        let input = "[agent]\ndescription = \"uses [worktree] isolation\"\n";
+        let result = migrate_worktree_config(input).unwrap();
+        assert_eq!(
+            result.changed_count, 1,
+            "[worktree] in a value must not suppress migration"
+        );
+        assert!(
+            result.output.contains("# [worktree]"),
+            "output should contain the inserted worktree comment block"
         );
     }
 
