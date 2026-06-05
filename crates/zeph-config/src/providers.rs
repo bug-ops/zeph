@@ -1087,6 +1087,12 @@ impl Default for BanditConfig {
     }
 }
 
+/// Configuration for the Candle local-inference backend.
+///
+/// Corresponds to the `[llm.candle]` section in `config.toml`. Used when the
+/// agent runs inference locally via `HuggingFace` Candle rather than a remote API.
+/// For inline provider definitions inside `[[llm.providers]]`, use
+/// [`CandleInlineConfig`] instead.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandleConfig {
     #[serde(default = "default_candle_source")]

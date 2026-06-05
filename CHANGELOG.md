@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(llm)`: `parse_gemini_error` in `zeph-llm` now delegates the base `ApiError` and
+  `ContextLengthExceeded` construction to `crate::http::map_error_response`, consistent with all
+  other backends (claude, openai, gonka, cocoon). Gemini-specific `RESOURCE_EXHAUSTED → RateLimited`
+  handling is preserved. (#4868)
+
+### Fixed
+
+- `docs(config)`: `CandleConfig` in `zeph-config` now has a `///` doc comment describing its
+  purpose (`[llm.candle]` TOML section) and its relationship to `CandleInlineConfig`. (#4869)
+
 
 ## [0.21.4] - 2026-06-05
 

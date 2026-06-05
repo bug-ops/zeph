@@ -445,10 +445,7 @@ fn parse_gemini_error(body: &str, status: reqwest::StatusCode) -> LlmError {
     } else {
         tracing::error!("Gemini API request failed (status {status}): {body}");
     }
-    LlmError::ApiError {
-        provider: "gemini".into(),
-        status: status.as_u16(),
-    }
+    crate::http::map_error_response(status, body, "gemini")
 }
 
 // ---------------------------------------------------------------------------
