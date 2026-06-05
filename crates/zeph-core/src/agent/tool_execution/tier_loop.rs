@@ -2566,7 +2566,11 @@ impl<C: Channel> Agent<C> {
             thinking_blocks,
         } = chat_result
         else {
-            unreachable!();
+            tracing::warn!(
+                ?chat_result,
+                "unexpected ChatResponse variant in native tool loop"
+            );
+            return Ok(Some(()));
         };
         self.preserve_thinking_blocks(thinking_blocks);
         self.handle_native_tool_calls(text.as_deref(), &tool_calls)

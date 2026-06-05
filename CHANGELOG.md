@@ -44,6 +44,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   missing `requires_auth` coverage: `/trajectory`, `/scope`, `/loop`, `/lsp`, `/cache-stats`,
   `/notify-test`, `/status`, `/guardrail`, `/focus`, `/sidequest`. Also registers `/trajectory`
   and `/scope` in the `COMMANDS` static list so they appear in `/help` output. Closes #4755.
+- `zeph-core`: `process_single_native_turn` in `tier_loop.rs` now handles unknown `ChatResponse`
+  variants gracefully instead of panicking. The `else` branch of the `ChatResponse::ToolUse`
+  destructure logs a `warn!` with the discriminant and returns `Ok(Some(()))` (terminate the loop
+  cleanly). This prevents a panic if a new variant is ever added to the `#[non_exhaustive]`
+  `ChatResponse` enum in `zeph-llm`. Closes #4778.
 - `zeph-tools`: three `EgressEvent` construction sites in `fetch_html` (non-2xx, body-too-large, and
   success paths) now call `redact_url_for_log` instead of passing the raw `current_url`. This
   completes the redaction coverage started in #4713; the connection-error and SSRF-blocked paths were
