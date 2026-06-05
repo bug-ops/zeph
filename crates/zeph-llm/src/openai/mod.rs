@@ -470,6 +470,7 @@ impl OpenAiProvider {
         Ok(response)
     }
 
+    /// Builds an authenticated POST request with `Content-Type: application/json`.
     fn openai_post(&self, url: String) -> reqwest::RequestBuilder {
         self.client
             .post(url)

@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `fix(config)`: `migrate_worktree_config` now uses a line-anchored check (`lines().any(|l| l.trim() == "[worktree]")`) instead of a bare `contains("[worktree]")`, preventing false-positive idempotency detection when `[worktree]` appears inside a config value string. Adds regression test `step_54_does_not_skip_when_worktree_in_value`. Closes #4793.
-- fix(llm): `OpenAiProvider::context_window()` now returns `Some(200_000)` for o-series models
+- `OpenAiProvider::context_window()` now returns `Some(200_000)` for o-series models
   (o1, o1-mini, o3, o3-mini, o4-mini) instead of `None`, preventing silent context overflow (#4801)
 - `fix(memory,scheduler)`: `MemoryError` and `SchedulerError` now use distinct display strings for
   their `Sqlx` and `Db` variants (`"sqlx error: {0}"` and `"db error: {0}"` respectively), making
