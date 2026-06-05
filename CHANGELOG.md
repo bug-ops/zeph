@@ -26,6 +26,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `semantic_index.rs`, `registry.rs`, `prober.rs`, `oauth.rs`).
   Span naming convention: `<crate>.<module>.<operation>` throughout.
   Closes #4849, #4827, #4819.
+- `perf(experiments)`: parallelize Phase 1 (subject model calls) in `Evaluator::evaluate` using
+  `FuturesUnordered` + `Semaphore`, mirroring the existing Phase 2 (judge) pattern. Concurrency is
+  bounded by `parallel_evals` (default: 3). Wall-time for Phase 1 drops from O(n) to O(⌈n/k⌉);
+  at k=3 the hill-climbing loop evaluates ~3× more variation candidates within the same
+  `max_wall_time_secs` budget. Closes #4794.
 
 - `refactor(channels)`: add `#[cfg_attr(feature = "profiling", tracing::instrument)]` to 17
   uninstrumented async fns in `zeph-channels` — Telegram API ext (8 fns), Discord REST client
