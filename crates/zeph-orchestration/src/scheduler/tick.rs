@@ -1868,21 +1868,9 @@ mod tests {
     // ── Admission gate wiring tests ──────────────────────────────────────────────────────────────
 
     fn make_def_with_provider(name: &str, provider: &str) -> zeph_subagent::SubAgentDef {
-        use zeph_subagent::{SkillFilter, SubAgentPermissions, SubagentHooks, ToolPolicy};
-        zeph_subagent::SubAgentDef {
-            name: name.to_string(),
-            description: format!("{name} agent"),
-            model: Some(zeph_subagent::ModelSpec::Named(provider.to_string())),
-            tools: ToolPolicy::InheritAll,
-            disallowed_tools: vec![],
-            permissions: SubAgentPermissions::default(),
-            skills: SkillFilter::default(),
-            system_prompt: String::new(),
-            hooks: SubagentHooks::default(),
-            memory: None,
-            source: None,
-            file_path: None,
-        }
+        let mut d = zeph_subagent::SubAgentDef::for_test(name);
+        d.model = Some(zeph_subagent::ModelSpec::Named(provider.to_string()));
+        d
     }
 
     #[test]

@@ -329,6 +329,8 @@ pub fn sweep_old_transcripts(dir: &Path, max_files: usize) -> io::Result<usize> 
     Ok(deleted)
 }
 
+/// Returns the current UTC time as an ISO 8601 string (`"YYYY-MM-DDTHH:MM:SSZ"`).
+#[must_use]
 pub(crate) fn utc_now() -> String {
     // Use SystemTime for a zero-dependency ISO 8601 timestamp.
     // Format: 2026-03-05T00:18:16Z

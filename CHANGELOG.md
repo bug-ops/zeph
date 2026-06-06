@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the built-in prefix table so fine-tuned or newly-released models that don't follow the
   `o<digit>` / `gpt-5` naming convention no longer produce 400 API errors. (#4890)
 
+### Refactored
+
+- `zeph-subagent`: split `manager.rs` (5732 lines) into `manager/{mod,spawn,collect,worktree,secrets}.rs` (#4882)
+- `zeph-subagent`: add `SubAgentDef::for_test()` constructor; replace 5 duplicated test helpers in `zeph-orchestration` (#4887)
+- `zeph-subagent`: remove `utc_now_pub` wrapper; make `utc_now` `pub(crate)` (#4882)
+- `zeph-subagent`: add `#[tracing::instrument]` to `SubAgentManager::resume` (#4882)
+
 ### Changed
 
 - `perf(context)`: add `#[tracing::instrument]` to `embed_prepass_dyn` and `render_compressed`

@@ -438,23 +438,12 @@ mod tests {
     #![allow(clippy::needless_pass_by_value)]
 
     use super::*;
-    use zeph_subagent::{SkillFilter, SubAgentDef, SubAgentPermissions, SubagentHooks, ToolPolicy};
+    use zeph_subagent::{SubAgentDef, ToolPolicy};
 
     fn make_agent(name: &str, tools: ToolPolicy) -> SubAgentDef {
-        SubAgentDef {
-            name: name.to_string(),
-            description: format!("{name} agent"),
-            model: None,
-            tools,
-            disallowed_tools: Vec::new(),
-            permissions: SubAgentPermissions::default(),
-            skills: SkillFilter::default(),
-            system_prompt: String::new(),
-            hooks: SubagentHooks::default(),
-            memory: None,
-            source: None,
-            file_path: None,
-        }
+        let mut d = SubAgentDef::for_test(name);
+        d.tools = tools;
+        d
     }
 
     fn make_planned(

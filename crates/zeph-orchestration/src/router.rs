@@ -140,7 +140,7 @@ mod tests {
 
     use super::*;
     use crate::graph::{TaskId, TaskNode, TaskStatus};
-    use zeph_subagent::{SkillFilter, SubAgentPermissions, ToolPolicy};
+    use zeph_subagent::ToolPolicy;
 
     fn make_task(id: u32, desc: &str, hint: Option<&str>) -> TaskNode {
         TaskNode {
@@ -165,20 +165,9 @@ mod tests {
     }
 
     fn make_def(name: &str, tools: ToolPolicy) -> SubAgentDef {
-        SubAgentDef {
-            name: name.to_string(),
-            description: format!("{name} agent"),
-            model: None,
-            tools,
-            disallowed_tools: vec![],
-            permissions: SubAgentPermissions::default(),
-            skills: SkillFilter::default(),
-            system_prompt: String::new(),
-            hooks: zeph_subagent::SubagentHooks::default(),
-            memory: None,
-            source: None,
-            file_path: None,
-        }
+        let mut d = SubAgentDef::for_test(name);
+        d.tools = tools;
+        d
     }
 
     fn make_def_with_disallowed(
@@ -186,20 +175,10 @@ mod tests {
         tools: ToolPolicy,
         disallowed: Vec<String>,
     ) -> SubAgentDef {
-        SubAgentDef {
-            name: name.to_string(),
-            description: format!("{name} agent"),
-            model: None,
-            tools,
-            disallowed_tools: disallowed,
-            permissions: SubAgentPermissions::default(),
-            skills: SkillFilter::default(),
-            system_prompt: String::new(),
-            hooks: zeph_subagent::SubagentHooks::default(),
-            memory: None,
-            source: None,
-            file_path: None,
-        }
+        let mut d = SubAgentDef::for_test(name);
+        d.tools = tools;
+        d.disallowed_tools = disallowed;
+        d
     }
 
     // --- AgentRouter tests ---

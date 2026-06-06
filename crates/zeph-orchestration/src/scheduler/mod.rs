@@ -704,21 +704,7 @@ mod tests {
     }
 
     pub(super) fn make_def(name: &str) -> zeph_subagent::SubAgentDef {
-        use zeph_subagent::{SkillFilter, SubAgentPermissions, SubagentHooks, ToolPolicy};
-        zeph_subagent::SubAgentDef {
-            name: name.to_string(),
-            description: format!("{name} agent"),
-            model: None,
-            tools: ToolPolicy::InheritAll,
-            disallowed_tools: vec![],
-            permissions: SubAgentPermissions::default(),
-            skills: SkillFilter::default(),
-            system_prompt: String::new(),
-            hooks: SubagentHooks::default(),
-            memory: None,
-            source: None,
-            file_path: None,
-        }
+        zeph_subagent::SubAgentDef::for_test(name)
     }
 
     pub(super) fn make_config() -> zeph_config::OrchestrationConfig {

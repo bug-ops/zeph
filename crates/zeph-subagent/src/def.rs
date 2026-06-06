@@ -146,6 +146,31 @@ pub struct SubAgentDef {
     pub file_path: Option<PathBuf>,
 }
 
+impl SubAgentDef {
+    /// Construct a minimal `SubAgentDef` for use in unit tests across crates.
+    ///
+    /// Produces an agent with `InheritAll` tools, default permissions, and empty
+    /// prompt/skills/hooks. Tests that need a specific `tools`, `model`, or
+    /// `disallowed_tools` mutate the returned value.
+    #[must_use]
+    pub fn for_test(name: &str) -> SubAgentDef {
+        SubAgentDef {
+            name: name.to_string(),
+            description: format!("{name} agent"),
+            model: None,
+            tools: ToolPolicy::InheritAll,
+            disallowed_tools: Vec::new(),
+            permissions: SubAgentPermissions::default(),
+            skills: SkillFilter::default(),
+            system_prompt: String::new(),
+            hooks: SubagentHooks::default(),
+            memory: None,
+            source: None,
+            file_path: None,
+        }
+    }
+}
+
 /// Runtime permission settings for a sub-agent.
 ///
 /// All fields have defaults that apply when the `permissions` section is absent from
