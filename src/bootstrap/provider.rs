@@ -219,6 +219,53 @@ pub fn create_named_provider(
     build_provider_from_entry(entry, config)
 }
 
+/// Resolve the embedding provider for the code indexer and retriever.
+///
+/// Reads `config.index.embedding_provider`. When the name is non-empty and present in
+/// `[[llm.providers]]`, constructs that provider. When unset, empty, or unknown, logs a
+/// warning and returns `fallback` (the main agent provider).
+///
+/// Use this function as the single resolution point so the provider is constructed exactly
+/// once and shared between the indexer and the retriever.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_config::Config;
+/// use zeph_llm::any::AnyProvider;
+/// use crate::bootstrap::resolve_index_embed_provider;
+///
+/// # fn get_config() -> Config { unimplemented!() }
+/// # fn get_fallback() -> AnyProvider { unimplemented!() }
+/// let config = get_config();
+/// let fallback = get_fallback();
+/// // Resolved once; passed to both the indexer and the retriever/search executor.
+/// let index_provider = resolve_index_embed_provider(&config, fallback);
+/// ```
+pub fn resolve_index_embed_provider(config: &Config, fallback: AnyProvider) -> AnyProvider {
+    let Some(name) = config
+        .index
+        .embedding_provider
+        .as_ref()
+        .and_then(|p| p.as_non_empty())
+    else {
+        return fallback;
+    };
+    match create_named_provider(name, config) {
+        Ok(p) => {
+            tracing::info!(provider = %name, "Using dedicated embedding provider for indexer");
+            p
+        }
+        Err(e) => {
+            tracing::warn!(
+                provider = %name,
+                "Index embedding_provider resolution failed, using main provider: {e:#}"
+            );
+            fallback
+        }
+    }
+}
+
 /// Create an `AnyProvider` for use as the summarization provider.
 ///
 /// `model_spec` format (set via `[llm] summary_model`):
@@ -563,6 +610,7 @@ mod tests {
     use std::path::Path;
 
     use zeph_core::config::{Config, ProviderEntry, ProviderKind};
+    use zeph_llm::any::AnyProvider;
 
     use super::build_all_pool_providers;
 
@@ -676,5 +724,70 @@ mod tests {
         // For Ollama, provider construction succeeds without a live server.
         let result = build_single_provider_from_pool(&config.llm.providers, &config);
         assert!(result.is_ok(), "expected Ok but got: {result:?}");
+    }
+
+    // ── resolve_index_embed_provider ─────────────────────────────────────────
+
+    fn make_fallback() -> AnyProvider {
+        use zeph_llm::ollama::OllamaProvider;
+        AnyProvider::Ollama(OllamaProvider::new(
+            "http://127.0.0.1:1",
+            "fallback".into(),
+            "fallback-embed".into(),
+        ))
+    }
+
+    #[test]
+    fn resolve_index_embed_provider_empty_returns_fallback() {
+        use super::resolve_index_embed_provider;
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        // IndexConfig.embedding_provider defaults to None — empty path.
+        let result = resolve_index_embed_provider(&config, make_fallback());
+        assert!(
+            matches!(result, AnyProvider::Ollama(_)),
+            "expected fallback Ollama provider"
+        );
+    }
+
+    #[test]
+    fn resolve_index_embed_provider_unknown_name_returns_fallback() {
+        use super::resolve_index_embed_provider;
+        use zeph_common::ProviderName;
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.index.embedding_provider = Some(ProviderName::from("does-not-exist"));
+        // No matching entry in llm.providers — should warn and return fallback.
+        let result = resolve_index_embed_provider(&config, make_fallback());
+        assert!(
+            matches!(result, AnyProvider::Ollama(_)),
+            "expected fallback Ollama provider on unknown name"
+        );
+    }
+
+    #[test]
+    fn resolve_index_embed_provider_known_name_resolves() {
+        use super::resolve_index_embed_provider;
+        use zeph_common::ProviderName;
+        use zeph_llm::provider::LlmProvider as _;
+        let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![ProviderEntry {
+            provider_type: ProviderKind::Ollama,
+            name: Some("index-embed".into()),
+            model: Some("nomic-embed-text".into()),
+            embed: true,
+            ..ProviderEntry::default()
+        }];
+        config.index.embedding_provider = Some(ProviderName::from("index-embed"));
+        let result = resolve_index_embed_provider(&config, make_fallback());
+        // model_identifier() proves the resolved provider was constructed, not the fallback returned.
+        assert_ne!(
+            result.model_identifier(),
+            "fallback",
+            "should not return the fallback"
+        );
+        assert_eq!(
+            result.model_identifier(),
+            "nomic-embed-text",
+            "should use configured model"
+        );
     }
 }

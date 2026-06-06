@@ -34,6 +34,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- fix(index): resolve `[index] embedding_provider` once in the binary runner and pass the resolved
+  `AnyProvider` into both the code indexer and the code retriever, eliminating the previous
+  double-construction where `build_provider_from_entry` was called twice for the same provider name
+  on every startup. Adds `embedding_provider: String` (record-keeping, not resolution) to
+  `IndexerConfig` and `RetrievalConfig` in `zeph-index`. Extracts `resolve_index_embed_provider`
+  helper in `bootstrap/provider.rs` as the canonical single resolution point. (#4885)
 - `refactor(llm)`: `parse_gemini_error` in `zeph-llm` now delegates the base `ApiError` and
   `ContextLengthExceeded` construction to `crate::http::map_error_response`, consistent with all
   other backends (claude, openai, gonka, cocoon). Gemini-specific `RESOURCE_EXHAUSTED → RateLimited`

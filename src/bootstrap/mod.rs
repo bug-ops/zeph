@@ -16,7 +16,7 @@ pub use mcp::{create_mcp_manager_with_vault, create_mcp_registry, wire_trust_cal
 pub use oauth::VaultCredentialStore;
 pub use provider::{
     BootstrapError, build_provider_from_entry, create_named_provider, create_provider,
-    create_summary_provider,
+    create_summary_provider, resolve_index_embed_provider,
 };
 pub use skills::{
     create_embedding_provider, create_skill_matcher, managed_skills_dir, plugins_dir,

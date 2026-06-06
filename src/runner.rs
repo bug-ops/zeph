@@ -2186,27 +2186,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     .await;
 
     let index_pool = memory.sqlite().pool().clone();
-    let index_provider = config
-        .index
-        .embedding_provider
-        .as_ref()
-        .and_then(|p| p.as_non_empty())
-        .and_then(
-            |name| match crate::bootstrap::create_named_provider(name, config) {
-                Ok(p) => {
-                    tracing::info!(provider = %name, "Using dedicated embedding provider for indexer");
-                    Some(p)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        provider = %name,
-                        "Index embedding_provider resolution failed, using main provider: {e:#}"
-                    );
-                    None
-                }
-            },
-        )
-        .unwrap_or_else(|| provider.clone());
+    let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
     let index_qdrant_ops = app.qdrant_ops().cloned();
     let config_path = app.config_path().to_owned();
     let cache_pool = memory.sqlite().pool().clone();
@@ -2591,7 +2571,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
         agent_setup::apply_code_indexer(
             config,
             index_qdrant_ops,
-            provider.clone(),
+            index_provider.clone(),
             index_pool,
             is_cli,
             Some(agent_status_tx.clone()),

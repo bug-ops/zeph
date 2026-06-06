@@ -90,6 +90,13 @@ pub struct IndexerConfig {
     ///
     /// Keep this low when using hosted embedding APIs with strict TPM rate limits.
     pub embed_concurrency: usize,
+    /// Configured `[index] embedding_provider` name (record-keeping only).
+    ///
+    /// Stores the raw name from config, regardless of whether resolution succeeded or
+    /// fell back to the main provider. This field is **not** read by `zeph-index` —
+    /// resolution happens in the binary bootstrap before this struct is constructed.
+    /// Setting this field does not change which provider is used.
+    pub embedding_provider: String,
 }
 
 impl Default for IndexerConfig {
@@ -101,6 +108,7 @@ impl Default for IndexerConfig {
             memory_batch_size: 16,
             max_file_bytes: 512 * 1024,
             embed_concurrency: 1,
+            embedding_provider: String::new(),
         }
     }
 }
@@ -717,6 +725,7 @@ mod tests {
         assert_eq!(config.concurrency, 2);
         assert_eq!(config.batch_size, 16);
         assert_eq!(config.embed_concurrency, 1);
+        assert_eq!(config.embedding_provider, "");
     }
 
     #[test]

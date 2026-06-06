@@ -1021,7 +1021,7 @@ pub(crate) fn apply_causal_analyzer_with_cfg<C: Channel>(
 pub(crate) async fn apply_code_indexer(
     full_config: &Config,
     qdrant_ops: Option<QdrantOps>,
-    provider: zeph_llm::any::AnyProvider,
+    embed_provider: zeph_llm::any::AnyProvider,
     pool: zeph_db::DbPool,
     cli_mode: bool,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
@@ -1032,31 +1032,18 @@ pub(crate) async fn apply_code_indexer(
         return (None, None);
     }
 
+    let embedding_provider_name = config
+        .embedding_provider
+        .as_ref()
+        .and_then(|p| p.as_non_empty())
+        .map(str::to_owned)
+        .unwrap_or_default();
+
     let init = async {
         let ops = qdrant_ops.ok_or_else(|| {
             anyhow::anyhow!("code index requires Qdrant backend (vector_backend = \"qdrant\")")
         })?;
         let store = CodeStore::with_ops(ops, pool);
-        let embed_provider = config
-            .embedding_provider
-            .as_ref()
-            .and_then(|p| p.as_non_empty())
-            .and_then(|name| {
-                match crate::bootstrap::create_named_provider(name, full_config) {
-                    Ok(p) => {
-                        tracing::info!(provider = %name, "Using dedicated embed provider for indexer");
-                        Some(p)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            provider = %name,
-                            "Index embedding_provider resolution failed, falling back to main provider: {e:#}"
-                        );
-                        None
-                    }
-                }
-            })
-            .unwrap_or(provider);
         let provider_arc = std::sync::Arc::new(embed_provider);
         let base_indexer = CodeIndexer::new(
             store,
@@ -1067,6 +1054,7 @@ pub(crate) async fn apply_code_indexer(
                 memory_batch_size: config.memory_batch_size,
                 max_file_bytes: config.max_file_bytes,
                 embed_concurrency: config.embed_concurrency,
+                embedding_provider: embedding_provider_name,
                 ..IndexerConfig::default()
             },
         );
@@ -1264,10 +1252,17 @@ pub(crate) fn apply_code_rag_retriever<C: Channel>(
     };
 
     let store = CodeStore::with_ops(ops, pool);
+    let embedding_provider_name = config
+        .embedding_provider
+        .as_ref()
+        .and_then(|p| p.as_non_empty())
+        .map(str::to_owned)
+        .unwrap_or_default();
     let retrieval_config = zeph_index::retriever::RetrievalConfig {
         max_chunks: config.max_chunks,
         score_threshold: config.score_threshold,
         budget_ratio: config.budget_ratio,
+        embedding_provider: embedding_provider_name,
         ..zeph_index::retriever::RetrievalConfig::default()
     };
     let retriever = std::sync::Arc::new(zeph_index::retriever::CodeRetriever::new(
@@ -1893,43 +1888,6 @@ mod tests {
         )
         .await;
         assert!(watcher.is_none()); // watch = false
-    }
-
-    // When embedding_provider names an unknown provider, apply_code_indexer must fall back to
-    // the main provider and log a warning rather than panicking or returning an error.
-    // The indexer still starts (Qdrant fails to connect, so watcher stays None, but init
-    // proceeds far enough to exercise the resolution branch).
-    #[tokio::test]
-    async fn apply_code_indexer_unknown_embedding_provider_falls_back_to_main() {
-        use zeph_common::ProviderName;
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let full_config = Config {
-            index: IndexConfig {
-                enabled: true,
-                watch: false,
-                workspace_root: Some(tmp_dir.path().to_path_buf()),
-                embedding_provider: Some(ProviderName::from("nonexistent-provider")),
-                ..IndexConfig::default()
-            },
-            ..Config::default()
-        };
-        let tmp_db = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp_db.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
-        let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
-
-        // Must not panic; unknown embedding_provider falls back to main provider.
-        let (watcher, _) = apply_code_indexer(
-            &full_config,
-            Some(qdrant),
-            offline_provider(),
-            pool,
-            false,
-            None,
-            None,
-        )
-        .await;
-        assert!(watcher.is_none());
     }
 
     #[tokio::test]

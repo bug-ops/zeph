@@ -87,6 +87,13 @@ pub struct RetrievalConfig {
     /// Maximum seconds to wait for `provider.embed()` before returning
     /// [`crate::error::IndexError::EmbedTimeout`]. Defaults to `10`.
     pub embed_timeout_secs: u64,
+    /// Configured `[index] embedding_provider` name (record-keeping only).
+    ///
+    /// Stores the raw name from config, regardless of whether resolution succeeded or
+    /// fell back to the main provider. This field is **not** read by `zeph-index` —
+    /// resolution happens in the binary bootstrap before this struct is constructed.
+    /// Setting this field does not change which provider is used.
+    pub embedding_provider: String,
 }
 
 impl Default for RetrievalConfig {
@@ -96,6 +103,7 @@ impl Default for RetrievalConfig {
             score_threshold: 0.25,
             budget_ratio: 0.40,
             embed_timeout_secs: 10,
+            embedding_provider: String::new(),
         }
     }
 }
@@ -592,5 +600,6 @@ mod tests {
         assert_eq!(cfg.max_chunks, 12);
         assert!(cfg.score_threshold > 0.0);
         assert!(cfg.budget_ratio > 0.0 && cfg.budget_ratio < 1.0);
+        assert_eq!(cfg.embedding_provider, "");
     }
 }

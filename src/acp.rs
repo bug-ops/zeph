@@ -367,25 +367,7 @@ async fn build_acp_deps(
             zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
         ),
     );
-    let index_provider = config
-        .index
-        .embedding_provider
-        .as_ref()
-        .and_then(|p| p.as_non_empty())
-        .and_then(|name| match crate::bootstrap::create_named_provider(name, config) {
-            Ok(p) => {
-                tracing::info!(provider = %name, "Using dedicated embedding provider for indexer (acp)");
-                Some(p)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    provider = %name,
-                    "Index embedding_provider resolution failed, using main provider (acp): {e:#}"
-                );
-                None
-            }
-        })
-        .unwrap_or_else(|| provider.clone());
+    let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
     let tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
             zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
