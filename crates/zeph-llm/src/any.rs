@@ -718,6 +718,7 @@ mod tests {
                 embedding_model: None,
                 reasoning_effort: None,
                 context_window: None,
+                completion_tokens_param: None,
             },
         ));
         assert_eq!(provider.name(), "openai");
@@ -734,6 +735,7 @@ mod tests {
                 embedding_model: None,
                 reasoning_effort: None,
                 context_window: None,
+                completion_tokens_param: None,
             },
         ));
         assert!(provider.supports_streaming());
@@ -750,6 +752,7 @@ mod tests {
                 embedding_model: Some("text-embedding-3-small".into()),
                 reasoning_effort: None,
                 context_window: None,
+                completion_tokens_param: None,
             },
         ));
         assert!(with_embed.supports_embeddings());
@@ -763,6 +766,7 @@ mod tests {
                 embedding_model: None,
                 reasoning_effort: None,
                 context_window: None,
+                completion_tokens_param: None,
             },
         ));
         assert!(!without_embed.supports_embeddings());
@@ -779,6 +783,7 @@ mod tests {
                 embedding_model: None,
                 reasoning_effort: None,
                 context_window: None,
+                completion_tokens_param: None,
             },
         ));
         let debug = format!("{provider:?}");
@@ -816,6 +821,7 @@ mod tests {
                 embedding_model: None,
                 reasoning_effort: None,
                 context_window: None,
+                completion_tokens_param: None,
             },
         ));
         assert!(provider.supports_structured_output());
@@ -848,6 +854,7 @@ mod tests {
                 embedding_model: None,
                 reasoning_effort: None,
                 context_window: None,
+                completion_tokens_param: None,
             },
         ));
         assert!(provider.supports_vision());

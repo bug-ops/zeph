@@ -23,7 +23,7 @@
 use std::fmt;
 
 use crate::error::LlmError;
-use crate::openai::{OpenAiConfig, OpenAiProvider};
+use crate::openai::{CompletionTokensParam, OpenAiConfig, OpenAiProvider};
 use crate::provider::{
     ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx,
     ToolDefinition,
@@ -46,6 +46,7 @@ use crate::provider::{
 ///     model: "meta-llama/Llama-3.3-70B-Instruct-Turbo".into(),
 ///     max_tokens: 4096,
 ///     embedding_model: None,
+///     completion_tokens_param: None,
 /// };
 /// let provider = CompatibleProvider::new(cfg);
 /// ```
@@ -63,6 +64,12 @@ pub struct CompatibleConfig {
     pub max_tokens: u32,
     /// Embedding model identifier. Set to `None` when the endpoint does not support embeddings.
     pub embedding_model: Option<String>,
+    /// Override which token-limit parameter is used in API requests.
+    ///
+    /// When `None`, the provider infers the correct field from the model name via the built-in
+    /// prefix table. Set explicitly for models the table does not recognise (e.g. fine-tuned
+    /// reasoning models whose names do not start with `o` + digit).
+    pub completion_tokens_param: Option<CompletionTokensParam>,
 }
 
 /// [`LlmProvider`] adapter for OpenAI-compatible REST endpoints.
@@ -88,6 +95,7 @@ impl CompatibleProvider {
             embedding_model: cfg.embedding_model,
             reasoning_effort: None,
             context_window: None,
+            completion_tokens_param: cfg.completion_tokens_param,
         });
         Self {
             inner,
@@ -137,6 +145,34 @@ impl CompatibleProvider {
     #[must_use]
     pub fn with_generation_overrides(mut self, overrides: GenerationOverrides) -> Self {
         self.inner = self.inner.with_generation_overrides(overrides);
+        self
+    }
+
+    /// Override which token-limit parameter is sent in API requests.
+    ///
+    /// Delegates to the inner [`OpenAiProvider`]. Use this when the model name is not covered
+    /// by the built-in prefix table and the inferred field would produce a 400 error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::compatible::{CompatibleConfig, CompatibleProvider};
+    /// use zeph_llm::openai::CompletionTokensParam;
+    ///
+    /// let provider = CompatibleProvider::new(CompatibleConfig {
+    ///     provider_name: "my-provider".into(),
+    ///     api_key: "key".into(),
+    ///     base_url: "https://api.example.com/v1".into(),
+    ///     model: "my-ft-reasoner-v1".into(),
+    ///     max_tokens: 4096,
+    ///     embedding_model: None,
+    ///     completion_tokens_param: None,
+    /// })
+    /// .with_completion_tokens_param(CompletionTokensParam::MaxCompletionTokens);
+    /// ```
+    #[must_use]
+    pub fn with_completion_tokens_param(mut self, param: CompletionTokensParam) -> Self {
+        self.inner = self.inner.with_completion_tokens_param(param);
         self
     }
 
@@ -297,6 +333,7 @@ mod tests {
             model: "llama-3.3-70b".into(),
             max_tokens: 4096,
             embedding_model: None,
+            completion_tokens_param: None,
         })
     }
 
@@ -330,6 +367,7 @@ mod tests {
             model: "m".into(),
             max_tokens: 100,
             embedding_model: Some("embed-model".into()),
+            completion_tokens_param: None,
         });
         assert!(p.supports_embeddings());
     }
@@ -357,6 +395,7 @@ mod tests {
             model: "m".into(),
             max_tokens: 100,
             embedding_model: None,
+            completion_tokens_param: None,
         });
         let msgs = vec![Message::from_legacy(crate::provider::Role::User, "hello")];
         assert!(p.chat(&msgs).await.is_err());

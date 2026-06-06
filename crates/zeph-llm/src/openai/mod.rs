@@ -35,6 +35,40 @@ use crate::tool_desc::build_tool_description;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
+/// Which token-limit field to use in the API request body.
+///
+/// `OpenAI` introduced `max_completion_tokens` for reasoning (`o*`) models while keeping
+/// `max_tokens` for legacy ones.  The [`OpenAiProvider`] infers the correct field from the
+/// model name via a prefix table, but that table cannot cover every fine-tuned or
+/// newly-released variant.  Set this override when the inference would be wrong for your model.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::openai::{CompletionTokensParam, OpenAiConfig, OpenAiProvider};
+///
+/// // Force max_completion_tokens for a fine-tuned reasoning model
+/// // whose name does not start with "o" + digit.
+/// let cfg = OpenAiConfig {
+///     api_key: "sk-...".into(),
+///     base_url: "https://api.openai.com/v1".into(),
+///     model: "my-ft-reasoner-v1".into(),
+///     max_tokens: 8192,
+///     embedding_model: None,
+///     reasoning_effort: None,
+///     context_window: None,
+///     completion_tokens_param: Some(CompletionTokensParam::MaxCompletionTokens),
+/// };
+/// let provider = OpenAiProvider::new(cfg);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionTokensParam {
+    /// Use the legacy `max_tokens` field (standard chat models).
+    MaxTokens,
+    /// Use `max_completion_tokens` (required by `o*` reasoning models and `gpt-5`).
+    MaxCompletionTokens,
+}
+
 /// Configuration for [`OpenAiProvider`].
 ///
 /// Pass to [`OpenAiProvider::new`] instead of individual positional arguments to avoid
@@ -53,6 +87,7 @@ use serde::{Deserialize, Serialize};
 ///     embedding_model: Some("text-embedding-3-small".into()),
 ///     reasoning_effort: None,
 ///     context_window: None,
+///     completion_tokens_param: None,
 /// };
 /// let provider = OpenAiProvider::new(cfg);
 /// ```
@@ -78,6 +113,12 @@ pub struct OpenAiConfig {
     /// built-in prefix-match table. Use this to supply the correct value for models that are
     /// not yet in the table (e.g. newly released or fine-tuned variants).
     pub context_window: Option<u32>,
+    /// Override which token-limit parameter is used in API requests.
+    ///
+    /// When `None`, the provider infers the correct field from the model name via the built-in
+    /// prefix table. Set explicitly for models the table does not recognise (e.g. fine-tuned
+    /// reasoning models whose names do not start with `o` + digit).
+    pub completion_tokens_param: Option<CompletionTokensParam>,
 }
 
 use crate::provider::{
@@ -120,6 +161,9 @@ pub struct OpenAiProvider {
     /// Explicit context-window override set via [`OpenAiConfig::context_window`] or
     /// [`OpenAiProvider::with_context_window`]. Takes precedence over the prefix-match table.
     context_window_override: Option<usize>,
+    /// Override which token-limit field to use. `None` means infer from the model name prefix
+    /// table via [`CompletionTokens::for_model`].
+    completion_tokens_override: Option<CompletionTokensParam>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -142,6 +186,10 @@ impl fmt::Debug for OpenAiProvider {
                 &self.max_tool_description_bytes,
             )
             .field("context_window_override", &self.context_window_override)
+            .field(
+                "completion_tokens_override",
+                &self.completion_tokens_override,
+            )
             .finish()
     }
 }
@@ -163,6 +211,7 @@ impl Clone for OpenAiProvider {
             output_schema_hint_bytes: self.output_schema_hint_bytes,
             max_tool_description_bytes: self.max_tool_description_bytes,
             context_window_override: self.context_window_override,
+            completion_tokens_override: self.completion_tokens_override,
         }
     }
 }
@@ -190,6 +239,7 @@ impl OpenAiProvider {
             output_schema_hint_bytes: 1024,
             max_tool_description_bytes: usize::MAX,
             context_window_override: cfg.context_window.map(|v| v as usize),
+            completion_tokens_override: cfg.completion_tokens_param,
         }
     }
 
@@ -249,6 +299,7 @@ impl OpenAiProvider {
     ///     embedding_model: None,
     ///     reasoning_effort: None,
     ///     context_window: None,
+    ///     completion_tokens_param: None,
     /// })
     /// .with_context_window(200_000);
     /// assert_eq!(provider.context_window(), Some(200_000));
@@ -257,6 +308,55 @@ impl OpenAiProvider {
     pub fn with_context_window(mut self, tokens: usize) -> Self {
         self.context_window_override = Some(tokens);
         self
+    }
+
+    /// Override which token-limit parameter is sent in API requests.
+    ///
+    /// Use this when the model name is not covered by the built-in prefix table and the inferred
+    /// field would produce a 400 error.  Mirrors the config-level
+    /// [`OpenAiConfig::completion_tokens_param`] field but can also be set after construction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::openai::{CompletionTokensParam, OpenAiConfig, OpenAiProvider};
+    ///
+    /// let provider = OpenAiProvider::new(OpenAiConfig {
+    ///     api_key: "k".into(),
+    ///     base_url: "https://api.openai.com/v1".into(),
+    ///     model: "my-ft-reasoner-v1".into(),
+    ///     max_tokens: 4096,
+    ///     embedding_model: None,
+    ///     reasoning_effort: None,
+    ///     context_window: None,
+    ///     completion_tokens_param: None,
+    /// })
+    /// .with_completion_tokens_param(CompletionTokensParam::MaxCompletionTokens);
+    /// ```
+    #[must_use]
+    pub fn with_completion_tokens_param(mut self, param: CompletionTokensParam) -> Self {
+        self.completion_tokens_override = Some(param);
+        self
+    }
+
+    /// Resolve which [`CompletionTokens`] variant to use for this request.
+    ///
+    /// Resolution order:
+    /// 1. Explicit override set via [`OpenAiConfig::completion_tokens_param`] or
+    ///    [`Self::with_completion_tokens_param`].
+    /// 2. Built-in prefix table via [`CompletionTokens::for_model`].
+    fn completion_tokens(&self) -> CompletionTokens {
+        match self.completion_tokens_override {
+            Some(CompletionTokensParam::MaxCompletionTokens) => {
+                CompletionTokens::MaxCompletionTokens {
+                    max_completion_tokens: self.max_tokens,
+                }
+            }
+            Some(CompletionTokensParam::MaxTokens) => CompletionTokens::MaxTokens {
+                max_tokens: self.max_tokens,
+            },
+            None => CompletionTokens::for_model(&self.model, self.max_tokens),
+        }
     }
 
     /// Extract generation override parameters as a flat tuple.
@@ -396,7 +496,7 @@ impl OpenAiProvider {
             let body = VisionChatRequest {
                 model: &self.model,
                 messages: vision_messages,
-                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+                completion_tokens: self.completion_tokens(),
                 stream: false,
                 reasoning,
                 temperature,
@@ -415,7 +515,7 @@ impl OpenAiProvider {
             let body = ChatRequest {
                 model: &self.model,
                 messages: &api_messages,
-                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+                completion_tokens: self.completion_tokens(),
                 stream: false,
                 reasoning,
                 temperature,
@@ -462,7 +562,7 @@ impl OpenAiProvider {
         let body = ChatRequest {
             model: &self.model,
             messages: &api_messages,
-            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            completion_tokens: self.completion_tokens(),
             stream: true,
             reasoning,
             temperature,
@@ -746,7 +846,7 @@ impl LlmProvider for OpenAiProvider {
             let body = ToolChatRequest {
                 model: &self.model,
                 messages: &api_messages,
-                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+                completion_tokens: self.completion_tokens(),
                 tools: &api_tools,
                 reasoning,
                 temperature,
@@ -763,7 +863,7 @@ impl LlmProvider for OpenAiProvider {
             let body = VisionChatRequest {
                 model: &self.model,
                 messages: vision_messages,
-                completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+                completion_tokens: self.completion_tokens(),
                 stream,
                 reasoning,
                 temperature,
@@ -779,7 +879,7 @@ impl LlmProvider for OpenAiProvider {
         let body = ChatRequest {
             model: &self.model,
             messages: &api_messages,
-            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            completion_tokens: self.completion_tokens(),
             stream,
             reasoning,
             temperature,
@@ -810,7 +910,7 @@ impl LlmProvider for OpenAiProvider {
         let body = TypedChatRequest {
             model: &self.model,
             messages: &api_messages,
-            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            completion_tokens: self.completion_tokens(),
             response_format: ResponseFormat {
                 r#type: "json_schema",
                 json_schema: JsonSchemaFormat {
@@ -899,7 +999,7 @@ impl LlmProvider for OpenAiProvider {
         let body = ToolChatRequest {
             model: &self.model,
             messages: &api_messages,
-            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            completion_tokens: self.completion_tokens(),
             tools: &api_tools,
             reasoning,
             temperature,
@@ -1038,7 +1138,7 @@ impl OpenAiProvider {
         let body = TypedChatRequest {
             model: &self.model,
             messages: &api_messages,
-            completion_tokens: CompletionTokens::for_model(&self.model, self.max_tokens),
+            completion_tokens: self.completion_tokens(),
             response_format: ResponseFormat {
                 r#type: "json_schema",
                 json_schema: JsonSchemaFormat {

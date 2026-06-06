@@ -173,6 +173,7 @@ impl CocoonProvider {
             embedding_model: embedding_model.clone(),
             reasoning_effort: None,
             context_window: None,
+            completion_tokens_param: None,
         });
         Self {
             inner,

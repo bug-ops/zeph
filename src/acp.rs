@@ -1195,6 +1195,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                             embedding_model: embed.clone(),
                             reasoning_effort: reasoning_effort.clone(),
                             context_window: None,
+                            completion_tokens_param: None,
                         }),
                     ));
                 }
@@ -1214,6 +1215,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                                 model: model.clone(),
                                 max_tokens: *max_tokens,
                                 embedding_model: embed.clone(),
+                                completion_tokens_param: None,
                             },
                         ),
                     ));

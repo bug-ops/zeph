@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(llm)`: `OpenAiProvider` now applies a 2-layer resolution strategy to the
+  `max_tokens` / `max_completion_tokens` field selection: (1) explicit config override,
+  (2) built-in model-name prefix table.
+  Added `CompletionTokensParam` enum and `completion_tokens_param` field on `OpenAiConfig`;
+  added builder `OpenAiProvider::with_completion_tokens_param`. When set, the override bypasses
+  the built-in prefix table so fine-tuned or newly-released models that don't follow the
+  `o<digit>` / `gpt-5` naming convention no longer produce 400 API errors. (#4890)
+
 ### Changed
 
 - `perf(context)`: add `#[tracing::instrument]` to `embed_prepass_dyn` and `render_compressed`
