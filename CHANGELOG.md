@@ -35,6 +35,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   methods. The shared `impl` block is now split across files, so the four extraction entrypoints
   called from `persist_message` are `pub(super)`. No public API change — `load_history` (pub) and
   `persist_message` (pub(crate)) keep their visibility. (#4878)
+- `refactor(config)`: split `memory.rs` (4825 lines, 68 config types) into focused submodules —
+  `memory/{root,graph,hebbian,retrieval,fidelity,consolidation,session,persona,reasoning}.rs` —
+  grouped by memory concern, with the three test modules moved to `memory/tests.rs`. `mod.rs`
+  (now ~85 lines) retains only the module declarations, glob re-exports, and the two helper
+  functions shared across submodules. Public API is unchanged: every type is re-exported from
+  `memory`, so `zeph_config::memory::*` paths remain stable. (#4916)
 - `zeph-config`: split `providers.rs` (2969 lines) into `providers/{mod,thinking,llm,router,candle,entry,tests}.rs` grouped by provider family. Public API unchanged — all types re-exported from `providers/mod.rs`, so `zeph_config::providers::*` paths remain stable. (#4879)
 - `refactor(config)`: split `migrate/mod.rs` (6380 lines, 56 `migrate_*` functions) into
   subsystem submodules — `migrate/{llm,memory,mcp,tools,session,infra,features}.rs` — and moved
