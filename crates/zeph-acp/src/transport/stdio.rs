@@ -113,11 +113,24 @@ pub(crate) async fn build_agent_state(
     state
 }
 
+/// Stack size for the dedicated stdio agent thread.
+///
+/// Agent futures are deeply nested (~512 KiB measured on overflow). The tokio
+/// multi-thread runtime uses a 2 MiB worker-thread stack by default, which was
+/// insufficient for complex sessions. 8 MiB provides comfortable headroom.
+const ACP_AGENT_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 /// Run the ACP server over stdin/stdout until the connection closes.
+///
+/// Agent futures are `!Send` and deeply nested, so the dispatcher runs on a
+/// dedicated OS thread with an 8 MiB stack and a `current_thread` Tokio runtime
+/// rather than on the caller's multi-thread runtime worker (which uses the
+/// default 2 MiB stack and would overflow for complex sessions).
 ///
 /// # Errors
 ///
-/// Returns `AcpError::Transport` if the underlying JSON-RPC I/O fails.
+/// Returns `AcpError::Transport` if the underlying JSON-RPC I/O fails or if the
+/// agent thread cannot be spawned.
 pub async fn serve_stdio(
     spawner: AgentSpawner,
     server_config: AcpServerConfig,
@@ -137,15 +150,39 @@ pub async fn serve_stdio(
 
     let state = build_agent_state(spawner, server_config).await;
 
-    // Agent session tasks use spawn_local (agent futures are !Send), so the
-    // dispatcher loop must run within a LocalSet.
-    tokio::task::LocalSet::new()
-        .run_until(run_agent(
-            state,
-            acp::ByteStreams::new(stdout, tokio::io::stdin().compat()),
-        ))
-        .await
-        .map_err(|e| AcpError::Transport(e.to_string()))
+    // Run the agent on a dedicated thread with a larger stack.
+    // Agent session tasks use spawn_local (futures are !Send), so the thread
+    // uses a current_thread runtime wrapped in a LocalSet.
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), AcpError>>();
+    std::thread::Builder::new()
+        .name("acp-stdio".into())
+        .stack_size(ACP_AGENT_STACK_SIZE)
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(Err(AcpError::Transport(format!(
+                        "failed to build tokio runtime: {e}"
+                    ))));
+                    return;
+                }
+            };
+            let local = tokio::task::LocalSet::new();
+            let result = rt
+                .block_on(local.run_until(run_agent(
+                    state,
+                    acp::ByteStreams::new(stdout, tokio::io::stdin().compat()),
+                )))
+                .map_err(|e| AcpError::Transport(e.to_string()));
+            let _ = tx.send(result);
+        })
+        .map_err(|e| AcpError::Transport(format!("failed to spawn stdio agent thread: {e}")))?;
+
+    rx.await
+        .map_err(|_| AcpError::Transport("stdio agent thread panicked".into()))?
 }
 
 /// Run the ACP server over arbitrary async byte streams.

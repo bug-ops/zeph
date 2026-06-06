@@ -73,8 +73,8 @@ struct HealthResponse {
 
 /// Handler for `POST /webhook`.
 ///
-/// Validates the payload, sanitises `sender` and `channel` by stripping control
-/// characters, then forwards the message as `"[sender@channel] body"` on the
+/// Validates the payload, sanitises `sender`, `channel`, and `body` by stripping
+/// control characters, then forwards the message as `"[sender@channel] body"` on the
 /// internal webhook channel.
 ///
 /// The send is wrapped in a timeout (`AppState::webhook_send_timeout`).  If the
@@ -118,7 +118,8 @@ pub(crate) async fn webhook_handler(
     }
     let sender = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.sender);
     let channel = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.channel);
-    let msg = format!("[{}@{}] {}", sender, channel, payload.body);
+    let body = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&payload.body);
+    let msg = format!("[{sender}@{channel}] {body}");
     match tokio::time::timeout(state.webhook_send_timeout, state.webhook_tx.send(msg)).await {
         Ok(Ok(())) => Json(WebhookResponse { status: "accepted" }).into_response(),
         Ok(Err(_)) => (
@@ -341,5 +342,31 @@ mod tests {
             body: "b".repeat(65536),
         };
         assert!(payload.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn webhook_handler_sanitizes_body() {
+        use axum::extract::State;
+        use axum::response::IntoResponse as _;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4);
+        let state = AppState {
+            webhook_tx: tx,
+            started_at: Instant::now(),
+            webhook_send_timeout: Duration::from_secs(1),
+        };
+
+        let payload = WebhookPayload {
+            channel: "ch".into(),
+            sender: "user".into(),
+            body: "hel\x01lo\x7fworld".into(),
+        };
+
+        let response = webhook_handler(State(state), Ok(axum::Json(payload)))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let msg = rx.try_recv().expect("message must be forwarded");
+        assert_eq!(msg, "[user@ch] helloworld");
     }
 }
