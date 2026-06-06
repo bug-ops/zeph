@@ -15,6 +15,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use tracing::Instrument as _;
+use tracing::info_span;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
@@ -232,28 +234,41 @@ impl GuardrailFilter {
     /// - On timeout or LLM error, returns `GuardrailVerdict::Error` and applies
     ///   `fail_strategy` (the caller decides whether to block or allow).
     pub async fn check(&self, content: &str) -> GuardrailVerdict {
-        // Empty or whitespace-only input is trivially safe — skip the LLM call.
-        if content.trim().is_empty() {
-            return GuardrailVerdict::Safe;
-        }
-        let start = std::time::Instant::now();
-        let verdict = self.check_inner(content).await;
-        let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-        self.total_checks.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_ms
-            .fetch_add(elapsed_ms, Ordering::Relaxed);
-        match &verdict {
-            GuardrailVerdict::Flagged { .. } => {
-                self.flagged_count.fetch_add(1, Ordering::Relaxed);
+        let span = info_span!(
+            "sanitizer.guardrail.check",
+            text_len = content.len(),
+            allowed = tracing::field::Empty
+        );
+        async move {
+            // Empty or whitespace-only input is trivially safe — skip the LLM call.
+            if content.trim().is_empty() {
+                tracing::Span::current().record("allowed", true);
+                return GuardrailVerdict::Safe;
             }
-            GuardrailVerdict::Error { .. } => {
-                self.error_count.fetch_add(1, Ordering::Relaxed);
-            }
-            GuardrailVerdict::Safe => {}
-        }
+            let start = std::time::Instant::now();
+            let verdict = self.check_inner(content).await;
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-        verdict
+            self.total_checks.fetch_add(1, Ordering::Relaxed);
+            self.total_latency_ms
+                .fetch_add(elapsed_ms, Ordering::Relaxed);
+            let is_allowed = match &verdict {
+                GuardrailVerdict::Flagged { .. } => {
+                    self.flagged_count.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
+                GuardrailVerdict::Error { .. } => {
+                    self.error_count.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
+                GuardrailVerdict::Safe => true,
+            };
+            tracing::Span::current().record("allowed", is_allowed);
+
+            verdict
+        }
+        .instrument(span)
+        .await
     }
 
     /// Whether to block on an `Error` verdict (respects `fail_strategy`).
@@ -293,48 +308,59 @@ impl GuardrailFilter {
 
     // Internal: performs the LLM call with truncation and timeout.
     async fn check_inner(&self, content: &str) -> GuardrailVerdict {
-        // Truncate to guard model context limit (MEDIUM-06).
-        // max_input_chars counts Unicode scalar values (chars), not bytes.
-        let truncated = if content.chars().count() > self.max_input_chars {
-            tracing::debug!(
-                original_chars = content.chars().count(),
-                max_input_chars = self.max_input_chars,
-                "guardrail input truncated"
-            );
-            // Find the byte offset after the max_input_chars-th char.
-            let byte_end = content
-                .char_indices()
-                .nth(self.max_input_chars)
-                .map_or(content.len(), |(i, _)| i);
-            &content[..byte_end]
-        } else {
-            content
-        };
-
-        let messages = vec![
-            Message::from_legacy(Role::System, GUARDRAIL_SYSTEM_PROMPT),
-            Message::from_legacy(Role::User, truncated),
-        ];
-
-        let call = self.provider.chat(&messages);
-        match tokio::time::timeout(self.timeout, call).await {
-            Ok(Ok(response)) => parse_response(response.trim(), self.action),
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "guardrail LLM call failed");
-                GuardrailVerdict::Error {
-                    error: e.to_string(),
-                }
-            }
-            Err(_elapsed) => {
-                tracing::warn!(
-                    timeout_ms = self.timeout.as_millis(),
-                    "guardrail check timed out"
+        let span = info_span!(
+            "sanitizer.guardrail.check_inner",
+            text_len = content.len(),
+            allowed = tracing::field::Empty
+        );
+        async move {
+            // Truncate to guard model context limit (MEDIUM-06).
+            // max_input_chars counts Unicode scalar values (chars), not bytes.
+            let truncated = if content.chars().count() > self.max_input_chars {
+                tracing::debug!(
+                    original_chars = content.chars().count(),
+                    max_input_chars = self.max_input_chars,
+                    "guardrail input truncated"
                 );
-                GuardrailVerdict::Error {
-                    error: format!("guardrail check timed out after {}ms", self.timeout_ms()),
+                // Find the byte offset after the max_input_chars-th char.
+                let byte_end = content
+                    .char_indices()
+                    .nth(self.max_input_chars)
+                    .map_or(content.len(), |(i, _)| i);
+                &content[..byte_end]
+            } else {
+                content
+            };
+
+            let messages = vec![
+                Message::from_legacy(Role::System, GUARDRAIL_SYSTEM_PROMPT),
+                Message::from_legacy(Role::User, truncated),
+            ];
+
+            let call = self.provider.chat(&messages);
+            let verdict = match tokio::time::timeout(self.timeout, call).await {
+                Ok(Ok(response)) => parse_response(response.trim(), self.action),
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "guardrail LLM call failed");
+                    GuardrailVerdict::Error {
+                        error: e.to_string(),
+                    }
                 }
-            }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        timeout_ms = self.timeout.as_millis(),
+                        "guardrail check timed out"
+                    );
+                    GuardrailVerdict::Error {
+                        error: format!("guardrail check timed out after {}ms", self.timeout_ms()),
+                    }
+                }
+            };
+            tracing::Span::current().record("allowed", matches!(verdict, GuardrailVerdict::Safe));
+            verdict
         }
+        .instrument(span)
+        .await
     }
 }
 

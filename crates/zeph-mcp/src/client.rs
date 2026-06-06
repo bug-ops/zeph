@@ -223,7 +223,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.tool_refresh", skip_all, fields(server_id = %self.server_id))
+        tracing::instrument(name = "mcp.client.tool_refresh", skip_all, fields(server_id = %self.server_id))
     )]
     async fn on_tool_list_changed(&self, context: NotificationContext<RoleClient>) {
         // Rate limit: skip if last refresh was too recent.
@@ -381,7 +381,7 @@ impl McpClient {
     /// Returns `McpError::Connection` if the process cannot be spawned or handshake fails.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.connect", skip_all, fields(server_id = %server_id))
+        tracing::instrument(name = "mcp.client.connect", skip_all, fields(server_id = %server_id))
     )]
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn connect(
@@ -474,7 +474,7 @@ impl McpClient {
     /// `McpError::Connection` if the HTTP connection or handshake fails.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.connect_url", skip_all, fields(server_id = %server_id))
+        tracing::instrument(name = "mcp.client.connect_url", skip_all, fields(server_id = %server_id))
     )]
     pub async fn connect_url(
         server_id: &str,
@@ -531,7 +531,7 @@ impl McpClient {
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.connect_url", skip_all, fields(server_id = %server_id))
+        tracing::instrument(name = "mcp.client.connect_url", skip_all, fields(server_id = %server_id))
     )]
     pub async fn connect_url_with_headers(
         server_id: &str,
@@ -616,7 +616,7 @@ impl McpClient {
     // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.connect_url", skip_all, fields(server_id = %server_id))
+        tracing::instrument(name = "mcp.client.connect_url", skip_all, fields(server_id = %server_id))
     )]
     pub async fn connect_url_oauth(
         server_id: &str,
@@ -823,7 +823,7 @@ impl McpClient {
     /// or `McpError::ToolCall` if listing fails.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.list_tools", skip_all, fields(tool_count = tracing::field::Empty))
+        tracing::instrument(name = "mcp.client.list_tools", skip_all, fields(tool_count = tracing::field::Empty))
     )]
     pub async fn list_tools(&self) -> Result<Vec<McpTool>, McpError> {
         let tools = tokio::time::timeout(self.timeout, self.service.list_all_tools())
@@ -875,7 +875,7 @@ impl McpClient {
     /// Returns `McpError::Timeout` or `McpError::ToolCall` on failure.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.call_tool", skip_all, fields(server_id = %self.server_id, tool_name = %name))
+        tracing::instrument(name = "mcp.client.call_tool", skip_all, fields(server_id = %self.server_id, tool_name = %name))
     )]
     pub async fn call_tool(
         &self,
@@ -897,7 +897,7 @@ impl McpClient {
     /// `McpError::ToolCall` if the server returns an error response.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.call_tool", skip_all, fields(server_id = %self.server_id, tool_name = %name))
+        tracing::instrument(name = "mcp.client.call_tool", skip_all, fields(server_id = %self.server_id, tool_name = %name))
     )]
     pub async fn call_tool_with_timeout(
         &self,
@@ -1040,7 +1040,7 @@ impl McpClient {
     /// Graceful shutdown.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.shutdown", skip_all, fields(server_id = %self.server_id))
+        tracing::instrument(name = "mcp.client.shutdown", skip_all, fields(server_id = %self.server_id))
     )]
     pub async fn shutdown(self) {
         match Arc::try_unwrap(self.service) {
