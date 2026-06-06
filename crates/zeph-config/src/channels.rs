@@ -607,6 +607,9 @@ pub struct A2aServerConfig {
     /// Tasks that have reached a terminal state and whose age exceeds this value are evicted
     /// from memory by a background loop running every 60 seconds. Non-terminal tasks (submitted,
     /// working) are never evicted. Default: 3600 (1 hour).
+    ///
+    /// Set to `0` to disable eviction entirely. In that case the task store grows without bound
+    /// and the operator is responsible for managing memory (e.g., via process restart).
     #[serde(default = "default_task_ttl_secs")]
     pub task_ttl_secs: u64,
 }

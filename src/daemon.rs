@@ -67,6 +67,11 @@ fn spawn_a2a_server(
             sanitizer,
             drain_timeout: std::time::Duration::from_millis(config.a2a.drain_timeout_ms),
         });
+    let task_ttl = if config.a2a.task_ttl_secs == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(config.a2a.task_ttl_secs))
+    };
     let a2a_server = zeph_a2a::A2aServer::new(
         card,
         processor,
@@ -80,7 +85,8 @@ fn spawn_a2a_server(
     .with_max_body_size(config.a2a.max_body_size)
     .with_request_timeout(std::time::Duration::from_millis(
         config.a2a.request_timeout_ms,
-    ));
+    ))
+    .with_task_ttl(task_ttl);
 
     tracing::info!(
         "A2A server spawned on {}:{}",

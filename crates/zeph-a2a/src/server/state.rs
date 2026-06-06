@@ -305,7 +305,7 @@ pub enum CancelError {
 }
 
 pub(super) fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339()
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[cfg(test)]
@@ -564,9 +564,7 @@ mod tests {
         // Even when a non-terminal task is older than the TTL it must NOT be removed,
         // because it may still be actively polled or streamed by a client.
         let tm = TaskManager::new();
-        let old = Instant::now()
-            .checked_sub(Duration::from_secs(2))
-            .unwrap();
+        let old = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
 
         for state in [
             TaskState::Submitted,
