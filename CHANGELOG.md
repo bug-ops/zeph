@@ -28,6 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `refactor(core)`: split `agent/persistence.rs` (3537 lines, single `impl<C: Channel> Agent<C>`
+  block) into focused submodules — `persistence/{mod,history,store,extract,tests}.rs`. `history.rs`
+  holds `load_history`; `store.rs` holds `persist_message` plus summarization / `MemCoT` scheduling;
+  `extract.rs` holds the background graph / persona / trajectory / reasoning extraction enqueue
+  methods. The shared `impl` block is now split across files, so the four extraction entrypoints
+  called from `persist_message` are `pub(super)`. No public API change — `load_history` (pub) and
+  `persist_message` (pub(crate)) keep their visibility. (#4878)
 - `zeph-config`: split `providers.rs` (2969 lines) into `providers/{mod,thinking,llm,router,candle,entry,tests}.rs` grouped by provider family. Public API unchanged — all types re-exported from `providers/mod.rs`, so `zeph_config::providers::*` paths remain stable. (#4879)
 - `refactor(config)`: split `migrate/mod.rs` (6380 lines, 56 `migrate_*` functions) into
   subsystem submodules — `migrate/{llm,memory,mcp,tools,session,infra,features}.rs` — and moved
