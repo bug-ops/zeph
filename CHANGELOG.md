@@ -65,6 +65,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   helper, and the ASI rate-limit statics. Public API is unchanged: `RouterStrategy`, the three
   `*RouterConfig` types, and `RouterProvider` are re-exported from `router`. (#4875)
 - `zeph-plugins`: split `manager.rs` (4253 lines) into `manager/{mod,install,registry,security,store,tests}.rs` grouped by concern — `install` (add/remove/enable/disable + dependency guards), `registry` (remote download, archive extraction, auto-update, ephemeral install), `security` (URL/name/overlay validation, MCP allowlisting, archive safety, skill scanning), `store` (filesystem state and manifest reading). `mod.rs` (249 lines) retains the public data types, `PluginManager` constructors, and re-exports. Public API unchanged — `PluginManager`, `MAX_ARCHIVE_BYTES`, `download_and_extract`, `validate_url_scheme_ephemeral`, `validate_plugin_name`, and `validate_overlay_keys` remain reachable at their existing paths. (#4917)
+- `refactor(mcp)`: split `manager.rs` (3883 lines, one monolithic `impl McpManager` plus
+  scattered free functions) into focused submodules — `manager/{builder,connect,retry,server,
+  call,ingest}.rs` — and moved the test module to `manager/tests.rs`. `mod.rs` (324 lines)
+  retains the shared data types (`McpManager`, `ServerEntry`, `McpTransport`,
+  `ServerConnectOutcome`, `ConnectOutput`, `IngestConfig`, …), the `McpTrustLevel` re-export,
+  and module declarations. The largest submodule is now 816 lines. Public API is unchanged:
+  `McpManager`, `McpTransport`, `ServerConnectOutcome`, and `ServerEntry` are still re-exported
+  from the crate root, and all inherent methods keep their original visibility. (#4919)
 
 ### Changed
 
