@@ -6,12 +6,14 @@ applyTo: "**"
 
 ## Project Context
 
-Zeph is a Rust AI agent workspace (Edition 2024, resolver 3) with 10 crates. Review all changes against these standards.
+Zeph is a Rust AI agent workspace (Edition 2024, resolver 3) with 31 library crates under `crates/` plus the `zeph` CLI binary. Review all changes against these standards.
 
 ## Architecture Rules
 
 - `zeph-core` orchestrates all leaf crates; no reverse dependencies allowed
-- `zeph-a2a`, `zeph-mcp`, `zeph-tui` are feature-gated and optional
+- `zeph-agent-context`, `zeph-agent-persistence`, and `zeph-agent-tools` MUST NOT depend on `zeph-core` — the dependency runs `zeph-core` → these crates, never the reverse; flag any new `zeph-core` import added to them
+- `zeph-durable` is a Layer-0 infra crate (alongside `zeph-db`, `zeph-common`); it MUST NOT depend on `zeph-llm`, `zeph-memory`, `zeph-core`, `zeph-sanitizer`, or any business-layer crate
+- `zeph-tui`, `zeph-a2a`, `zeph-acp`, `zeph-gateway`, `zeph-scheduler`, and `zeph-bench` are feature-gated and optional
 - All dependencies defined in root `[workspace.dependencies]` with no features at workspace level
 - Crates inherit via `workspace = true` and specify features locally
 - TLS: `rustls` only — reject any `openssl-sys` introduction
