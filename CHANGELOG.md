@@ -61,6 +61,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `feat(acp)`: `unstable-elicitation` feature now also enables `agent-client-protocol/unstable_elicitation` core passthrough for `elicitation/create` handler wiring
 - `refactor(acp)`: provider ext-method types renamed to singular: `SetProvidersRequest/Response` → `SetProviderRequest/Response`, `DisableProvidersRequest/Response` → `DisableProviderRequest/Response`
 - `refactor(acp)`: logout, session/close, session/delete, session/resume, and additional-directories handlers are now unconditional (feature flags retained as no-op tombstones for workspace forwarding compatibility)
+- `refactor(zeph-agent-feedback)`: `JUDGE_RATE_LIMIT` and `JUDGE_RATE_WINDOW` constants removed;
+  rate-limit parameters are now configurable via `LearningConfig` fields `judge_rate_limit`
+  (default: `5`) and `judge_rate_window_secs` (default: `60`); existing TOML configs without
+  these fields continue to use the same defaults. `JudgeDetector::new()` now accepts
+  `rate_limit: usize` and `rate_window: Duration` arguments. (#4892)
+- `refactor(zeph-scheduler)`: introduced `CronExpr` validated newtype wrapping a `String`; raw
+  `String` fields for cron expressions replaced with `Option<CronExpr>`; hydration from SQLite
+  validates stored expressions and emits a `tracing::warn!` for invalid rows instead of
+  propagating hard errors. (#4884)
 
 ### Removed
 

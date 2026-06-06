@@ -302,10 +302,25 @@ impl Scheduler {
             if job.task_mode != "periodic" || static_names.contains(&job.name) {
                 continue;
             }
+            // `list_jobs_full` already attempted CronExpr validation; None means the stored
+            // expression was empty or invalid. Mark the row as error and skip hydration.
+            let Some(ref cron_expr) = job.cron_expr else {
+                tracing::error!(
+                    task = %job.name,
+                    "skipping persisted periodic job with missing or invalid cron expression"
+                );
+                if let Err(db_err) = self.store.mark_error(&job.name).await {
+                    tracing::warn!(
+                        task = %job.name,
+                        "failed to mark job as error in store: {db_err}"
+                    );
+                }
+                continue;
+            };
             let hydrated_provenance = TaskProvenance::from_provenance_str(&job.provenance);
             match ScheduledTask::periodic_with_provenance(
                 job.name.clone(),
-                &job.cron_expr,
+                cron_expr.as_ref(),
                 crate::task::TaskKind::from_str_kind(&job.kind),
                 serde_json::Value::Null,
                 hydrated_provenance,
@@ -340,7 +355,7 @@ impl Scheduler {
                 Err(e) => {
                     tracing::error!(
                         task = %job.name,
-                        cron_expr = %job.cron_expr,
+                        cron_expr = %cron_expr,
                         "skipping persisted job with invalid cron expression: {e}"
                     );
                     if let Err(db_err) = self.store.mark_error(&job.name).await {

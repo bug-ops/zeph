@@ -96,7 +96,7 @@ pub use sanitize::{sanitize_task_prompt, sanitize_task_prompt_checked};
 pub use scheduler::{Scheduler, SchedulerMessage};
 pub use store::{JobStore, ScheduledTaskInfo, ScheduledTaskRecord};
 pub use task::{
-    ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode, TaskProvenance,
+    CronExpr, ScheduledTask, TaskDescriptor, TaskHandler, TaskKind, TaskMode, TaskProvenance,
     normalize_cron_expr,
 };
 

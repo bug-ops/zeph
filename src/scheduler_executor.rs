@@ -365,11 +365,7 @@ impl SchedulerExecutor {
         let lines: Vec<String> = jobs
             .iter()
             .map(|t| {
-                let cron = if t.cron_expr.is_empty() {
-                    "-"
-                } else {
-                    &t.cron_expr
-                };
+                let cron = t.cron_expr.as_ref().map_or("-", |e| e.as_ref());
                 let next = if t.next_run.is_empty() {
                     "-"
                 } else {

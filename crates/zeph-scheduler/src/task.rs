@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::borrow::Cow;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use cron::Schedule as CronSchedule;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::SchedulerError;
 
@@ -35,6 +37,93 @@ pub fn normalize_cron_expr(expr: &str) -> Cow<'_, str> {
         Cow::Owned(format!("0 {expr}"))
     } else {
         Cow::Borrowed(expr)
+    }
+}
+
+/// A validated cron expression that can only be constructed from a well-formed cron string.
+///
+/// `CronExpr` guarantees that the wrapped string is accepted by both [`normalize_cron_expr`]
+/// and `cron::Schedule::from_str`. Constructing one via [`TryFrom`] validates the expression
+/// eagerly, so any code that holds a `CronExpr` can assume the schedule is syntactically valid.
+///
+/// The raw `String` stored in the database column is not changed — `CronExpr` is a type-level
+/// wrapper that enforces validity at the boundary where cron strings enter the system.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_scheduler::CronExpr;
+///
+/// // Valid 6-field expression.
+/// let expr: CronExpr = "0 0 3 * * *".try_into().expect("valid cron");
+/// assert_eq!(expr.as_ref(), "0 0 3 * * *");
+///
+/// // Valid 5-field expression (auto-normalised to 6-field).
+/// let expr: CronExpr = "0 3 * * *".try_into().expect("valid 5-field cron");
+/// assert_eq!(expr.as_ref(), "0 0 3 * * *");
+///
+/// // Invalid expression returns an error.
+/// assert!(CronExpr::try_from("not a cron").is_err());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CronExpr(String);
+
+impl CronExpr {
+    /// Return the validated cron expression string.
+    ///
+    /// The returned string is always in the normalised 6-field form accepted by the `cron` crate.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for CronExpr {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CronExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for CronExpr {
+    type Error = SchedulerError;
+
+    /// Validate and normalise a cron expression string.
+    ///
+    /// Accepts both 5-field and 6-field expressions. Returns [`SchedulerError::InvalidCron`]
+    /// if the expression is not accepted by the `cron` parser after normalisation.
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        let normalized = normalize_cron_expr(&s);
+        CronSchedule::from_str(&normalized)
+            .map_err(|e| SchedulerError::InvalidCron(format!("{s}: {e}")))?;
+        // Store the normalised form so the string round-trips consistently.
+        Ok(Self(normalized.into_owned()))
+    }
+}
+
+impl TryFrom<&str> for CronExpr {
+    type Error = SchedulerError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::try_from(s.to_owned())
+    }
+}
+
+impl Serialize for CronExpr {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for CronExpr {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::try_from(s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -609,6 +698,53 @@ mod tests {
         assert!(TaskProvenance::External.is_external());
         assert!(!TaskProvenance::Static.is_external());
         assert!(!TaskProvenance::UserAdded.is_external());
+    }
+
+    #[test]
+    fn cron_expr_valid_six_field() {
+        let expr = CronExpr::try_from("0 0 3 * * *").expect("valid 6-field");
+        assert_eq!(expr.as_ref(), "0 0 3 * * *");
+    }
+
+    #[test]
+    fn cron_expr_valid_five_field_normalised() {
+        let expr = CronExpr::try_from("0 3 * * *").expect("valid 5-field");
+        // 5-field is normalised by prepending "0 "
+        assert_eq!(expr.as_ref(), "0 0 3 * * *");
+    }
+
+    #[test]
+    fn cron_expr_invalid_returns_error() {
+        assert!(CronExpr::try_from("not a cron").is_err());
+        assert!(CronExpr::try_from("").is_err());
+    }
+
+    #[test]
+    fn cron_expr_display_and_as_str_consistent() {
+        let expr = CronExpr::try_from("* * * * * *").expect("wildcard cron");
+        assert_eq!(expr.as_str(), expr.to_string());
+    }
+
+    #[test]
+    fn cron_expr_clone_and_eq() {
+        let a = CronExpr::try_from("0 0 * * * *").expect("valid");
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn cron_expr_serialize_deserialize_roundtrip() {
+        let expr = CronExpr::try_from("0 0 3 * * *").expect("valid");
+        let json = serde_json::to_string(&expr).expect("serialize");
+        assert_eq!(json, r#""0 0 3 * * *""#);
+        let decoded: CronExpr = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(expr, decoded);
+    }
+
+    #[test]
+    fn cron_expr_deserialize_invalid_returns_error() {
+        let result: Result<CronExpr, _> = serde_json::from_str(r#""not-a-cron""#);
+        assert!(result.is_err());
     }
 
     #[test]

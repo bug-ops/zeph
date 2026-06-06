@@ -5,6 +5,11 @@
 use crate::cli::ScheduleCommand;
 
 #[cfg(feature = "scheduler")]
+fn cron_display(expr: Option<&zeph_scheduler::CronExpr>) -> &str {
+    expr.map_or("-", zeph_scheduler::CronExpr::as_str)
+}
+
+#[cfg(feature = "scheduler")]
 pub(crate) async fn handle_schedule_command(
     cmd: ScheduleCommand,
     config_path: Option<&std::path::Path>,
@@ -45,7 +50,11 @@ pub(crate) async fn handle_schedule_command(
             for job in &jobs {
                 println!(
                     "{:<32} {:<16} {:<10} {:<22} {}",
-                    job.name, job.kind, job.task_mode, job.next_run, job.cron_expr
+                    job.name,
+                    job.kind,
+                    job.task_mode,
+                    job.next_run,
+                    cron_display(job.cron_expr.as_ref())
                 );
             }
         }
@@ -96,20 +105,18 @@ pub(crate) async fn handle_schedule_command(
         }
 
         ScheduleCommand::Show { name } => {
-            let jobs = store
+            let job = store
                 .list_jobs_full()
                 .await
-                .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?;
-
-            let job = jobs
-                .iter()
+                .map_err(|e| anyhow::anyhow!("failed to list jobs: {e}"))?
+                .into_iter()
                 .find(|j| j.name == name)
                 .ok_or_else(|| anyhow::anyhow!("no scheduled job named '{name}'"))?;
 
             println!("Name:     {}", job.name);
             println!("Kind:     {}", job.kind);
             println!("Mode:     {}", job.task_mode);
-            println!("Cron:     {}", job.cron_expr);
+            println!("Cron:     {}", cron_display(job.cron_expr.as_ref()));
             println!("Next run: {}", job.next_run);
             if !job.task_data.is_empty() {
                 println!("Prompt:   {}", job.task_data);

@@ -261,12 +261,31 @@ impl<C: crate::channel::Channel> Agent<C> {
                 .config
                 .as_ref()
                 .map_or(0.8, |c| c.judge_adaptive_high);
+            let rate_limit = self
+                .services
+                .learning_engine
+                .config
+                .as_ref()
+                .map_or(5, |c| c.judge_rate_limit);
+            let rate_window = self
+                .services
+                .learning_engine
+                .config
+                .as_ref()
+                .map_or(std::time::Duration::from_mins(1), |c| {
+                    std::time::Duration::from_secs(c.judge_rate_window_secs)
+                });
             let should_invoke = self
                 .services
                 .feedback
                 .judge
                 .get_or_insert_with(|| {
-                    feedback_detector::JudgeDetector::new(adaptive_low, adaptive_high)
+                    feedback_detector::JudgeDetector::new(
+                        adaptive_low,
+                        adaptive_high,
+                        rate_limit,
+                        rate_window,
+                    )
                 })
                 .should_invoke(regex_signal);
             should_invoke
