@@ -33,6 +33,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `refactor(tui)`: split `app/mod.rs` (4235 lines) into focused submodules —
+  `app/{mod,state,transcript,tests}.rs` — joining the existing `draw`/`events`/`keys` split.
+  `mod.rs` (now 660 lines) retains the type definitions (`App`, `Panel`, `AgentViewTarget`,
+  `TuiTranscriptEntry`, `TranscriptCache`, `SubAgentSidebarState`, `ConfirmState`,
+  `ElicitationState`) and the shared free functions; `state.rs` holds construction, builder
+  configuration, and accessors; `transcript.rs` holds sub-agent transcript loading, polling,
+  and projection into chat messages. The 188-test `#[cfg(test)]` module (≈67% of the file)
+  moves to `tests.rs`. The shared `impl App` block is now split across files, so three
+  cross-module methods (`trim_messages`, `auto_scroll`, `maybe_reload_transcript`) are
+  `pub(super)`. Production code is byte-identical; no public API change. (#4918)
 - `refactor(core)`: split `agent/mod.rs` (4120 lines, single `impl<C: Channel> Agent<C>`
   block of 58 methods) into focused submodules — `shutdown.rs` (session-summary + orphaned
   tool-use flush), `subagent_commands.rs` (`/agent` command handlers, sub-agent polling, and
