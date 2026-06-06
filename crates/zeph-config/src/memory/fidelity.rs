@@ -401,6 +401,7 @@ impl AconConfig {
     /// # Errors
     ///
     /// Returns a descriptive error string when any threshold invariant is violated.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.passthrough_threshold >= self.summarize_threshold {
             return Err(format!(

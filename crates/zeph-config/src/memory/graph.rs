@@ -271,6 +271,7 @@ impl SpreadingActivationConfig {
     /// # Errors
     ///
     /// Returns an error string if `activation_threshold >= inhibition_threshold`.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.activation_threshold >= self.inhibition_threshold {
             return Err(format!(
