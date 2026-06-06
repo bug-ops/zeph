@@ -625,6 +625,7 @@ impl UtilityScoringConfig {
     /// # Errors
     ///
     /// Returns a description of the first invalid field found.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         let fields = [
             ("threshold", self.threshold),

@@ -53,22 +53,6 @@ fn default_three_class_threshold() -> f32 {
     0.7
 }
 
-fn validate_unit_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "threshold must be a finite number",
-        ));
-    }
-    if !(value > 0.0 && value <= 1.0) {
-        return Err(serde::de::Error::custom("threshold must be in (0.0, 1.0]"));
-    }
-    Ok(value)
-}
-
 /// Enforcement mode for the injection classifier.
 ///
 /// `warn` (default): scores above `injection_threshold` emit WARN and increment metrics
@@ -143,7 +127,7 @@ pub struct ClassifiersConfig {
     /// Range: `(0.0, 1.0]`. Default `0.5`. Must be ≤ `injection_threshold`.
     #[serde(
         default = "default_injection_threshold_soft",
-        deserialize_with = "validate_unit_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_open"
     )]
     pub injection_threshold_soft: f32,
 
@@ -155,7 +139,7 @@ pub struct ClassifiersConfig {
     /// defense-in-depth via regex fallback and spotlighting is mandatory.
     #[serde(
         default = "default_injection_threshold",
-        deserialize_with = "validate_unit_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_open"
     )]
     pub injection_threshold: f32,
 
@@ -181,7 +165,7 @@ pub struct ClassifiersConfig {
     /// Range: `(0.0, 1.0]`. Default `0.7`.
     #[serde(
         default = "default_three_class_threshold",
-        deserialize_with = "validate_unit_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_open"
     )]
     pub three_class_threshold: f32,
 

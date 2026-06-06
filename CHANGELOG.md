@@ -33,6 +33,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `refactor(config)`: dedup 9 copy-pasted unit-interval serde validators into two shared
+  generic helpers in `de_helpers.rs` — `de_unit_open` (half-open `(0.0, 1.0]`) and
+  `de_unit_closed` (closed `[0.0, 1.0]`), each generic over `f32`/`f64` via a crate-private
+  `UnitFloat` trait. The `(0.0, 1.0]` fields (`embedding_guard.threshold`, `causal_ipi.threshold`,
+  `shadow_memory.drift_threshold`, the three classifier thresholds, `decay_lambda`,
+  `link_weight_decay_lambda`) and the `[0.0, 1.0]` fields (`similarity_threshold`, admission
+  `threshold` / `fast_path_margin`) now reference the shared helpers via `deserialize_with`.
+  Range and finiteness semantics are unchanged; the offending field is still pinpointed by the
+  TOML parse span, so the inline field-name prefix in the error message was dropped. Follow-up
+  to #4928. (#4935)
+- `refactor(config)`: add `#[must_use = "validation result must be checked"]` to the remaining
+  7 `validate(&self) -> Result<(), String>` methods — `GatewayConfig`, `TrajectorySentinelConfig`,
+  `UtilityScoringConfig`, `LearningConfig`, `FidelityConfig`, `PlanCacheConfig`, and
+  `ExperimentConfig` — so callers can no longer silently discard the validation error via a bare
+  `config.validate();` statement. Completes the sweep started in #4930/#4934. (#4936)
 - `refactor(tui)`: split `app/mod.rs` (4235 lines) into focused submodules —
   `app/{mod,state,transcript,tests}.rs` — joining the existing `draw`/`events`/`keys` split.
   `mod.rs` (now 660 lines) retains the type definitions (`App`, `Panel`, `AgentViewTarget`,

@@ -10,8 +10,6 @@ use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 use zeph_common::memory::EdgeType;
 
-use super::validate_similarity_threshold;
-
 fn default_write_gate_min_edge_relevance() -> f32 {
     0.3
 }
@@ -36,7 +34,7 @@ pub struct WriteGateConfig {
     /// Range: `[0.0, 1.0]`.
     #[serde(
         default = "default_write_gate_min_edge_relevance",
-        deserialize_with = "validate_similarity_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_closed"
     )]
     pub min_edge_relevance: f32,
 }
@@ -63,7 +61,7 @@ pub struct ConflictRecencyConfig {
     /// edges below the threshold fall back to `valid_from` comparison. Range: `[0.0, 1.0]`.
     #[serde(
         default = "default_conflict_recency_slow_threshold",
-        deserialize_with = "validate_similarity_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_closed"
     )]
     pub recency_slow_threshold: f32,
 }
@@ -84,7 +82,7 @@ pub struct BeliefRevisionConfig {
     pub enabled: bool,
     /// Cosine similarity threshold for considering two facts as contradictory.
     /// Only edges with similarity >= this value are candidates for revision. Default: `0.85`.
-    #[serde(deserialize_with = "validate_similarity_threshold")]
+    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
     pub similarity_threshold: f32,
 }
 
@@ -109,7 +107,7 @@ pub struct RpeConfig {
     pub enabled: bool,
     /// RPE threshold. Turns with RPE < this value skip graph extraction. Range: `[0.0, 1.0]`.
     /// Default: `0.3`.
-    #[serde(deserialize_with = "validate_similarity_threshold")]
+    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
     pub threshold: f32,
     /// Maximum consecutive turns to skip before forcing extraction (safety valve). Default: `5`.
     pub max_skip_turns: u32,

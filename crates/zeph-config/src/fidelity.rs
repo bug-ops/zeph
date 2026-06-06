@@ -148,6 +148,7 @@ impl FidelityConfig {
     /// let invalid = FidelityConfig { full_threshold: 0.2, compressed_threshold: 0.5, ..FidelityConfig::default() };
     /// assert!(invalid.validate().is_err());
     /// ```
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.compressed_threshold < 0.0 {
             return Err("memory.fidelity: compressed_threshold must be >= 0.0".into());

@@ -200,6 +200,7 @@ impl PlanCacheConfig {
     /// # Errors
     ///
     /// Returns a description string if any field is outside the allowed range.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if !(0.5..=1.0).contains(&self.similarity_threshold) {
             return Err(format!(
@@ -595,6 +596,7 @@ impl ExperimentConfig {
     /// # Errors
     ///
     /// Returns a description string if any field is outside allowed range.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if !(1..=1_000).contains(&self.max_experiments) {
             return Err(format!(

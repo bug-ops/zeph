@@ -75,6 +75,7 @@ pub mod channels;
 pub mod classifiers;
 pub mod cli;
 pub mod cocoon;
+mod de_helpers;
 pub mod defaults;
 pub mod dump_format;
 mod env;

@@ -264,6 +264,7 @@ impl TrajectorySentinelConfig {
     /// # Errors
     ///
     /// Returns a description of the first validation failure found.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.decay_per_turn <= 0.0 || self.decay_per_turn > 1.0 {
             return Err(format!(

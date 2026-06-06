@@ -856,6 +856,7 @@ impl GatewayConfig {
     /// - `webhook_send_timeout_secs` is `0` or exceeds `300`
     /// - `max_body_size` exceeds `10 MiB` (`10485760` bytes)
     /// - `rate_limit` is `0` (causes division-by-zero in the token-bucket rate limiter)
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.webhook_send_timeout_secs == 0 || self.webhook_send_timeout_secs > 300 {
             return Err("webhook_send_timeout_secs must be between 1 and 300".to_owned());

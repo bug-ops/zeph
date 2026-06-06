@@ -39,25 +39,6 @@ pub use retrieval::*;
 pub use root::*;
 pub use session::*;
 
-// Shared helpers referenced by serde attributes in more than one submodule.
-pub(crate) fn validate_similarity_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "similarity_threshold must be a finite number",
-        ));
-    }
-    if !(0.0..=1.0).contains(&value) {
-        return Err(serde::de::Error::custom(
-            "similarity_threshold must be in [0.0, 1.0]",
-        ));
-    }
-    Ok(value)
-}
-
 pub(crate) fn default_embed_timeout_secs() -> u64 {
     5
 }

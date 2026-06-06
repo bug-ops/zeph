@@ -24,7 +24,7 @@ pub struct EmbeddingGuardConfig {
     /// Cosine distance threshold above which outputs are flagged as anomalous.
     #[serde(
         default = "default_embedding_threshold",
-        deserialize_with = "validate_embedding_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_open"
     )]
     pub threshold: f64,
     /// Minimum clean samples before centroid-based detection activates.
@@ -42,24 +42,6 @@ pub struct EmbeddingGuardConfig {
     /// changes. Default: 0.01 (1% per sample).
     #[serde(default = "default_ema_floor")]
     pub ema_floor: f32,
-}
-
-fn validate_embedding_threshold<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "embedding_guard.threshold must be a finite number",
-        ));
-    }
-    if !(value > 0.0 && value <= 1.0) {
-        return Err(serde::de::Error::custom(
-            "embedding_guard.threshold must be in (0.0, 1.0]",
-        ));
-    }
-    Ok(value)
 }
 
 fn validate_min_samples<'de, D>(deserializer: D) -> Result<usize, D::Error>
@@ -654,24 +636,6 @@ fn default_causal_threshold() -> f32 {
     0.7
 }
 
-fn validate_causal_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "causal_ipi.threshold must be a finite number",
-        ));
-    }
-    if !(value > 0.0 && value <= 1.0) {
-        return Err(serde::de::Error::custom(
-            "causal_ipi.threshold must be in (0.0, 1.0]",
-        ));
-    }
-    Ok(value)
-}
-
 fn default_probe_max_tokens() -> u32 {
     100
 }
@@ -699,7 +663,7 @@ pub struct CausalIpiConfig {
     /// Content is never blocked — this is an observation layer only.
     #[serde(
         default = "default_causal_threshold",
-        deserialize_with = "validate_causal_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_open"
     )]
     pub threshold: f32,
 
@@ -782,24 +746,6 @@ where
     Ok(value)
 }
 
-fn validate_shadow_drift_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "shadow_memory.drift_threshold must be a finite number",
-        ));
-    }
-    if !(value > 0.0 && value <= 1.0) {
-        return Err(serde::de::Error::custom(
-            "shadow_memory.drift_threshold must be in (0.0, 1.0]",
-        ));
-    }
-    Ok(value)
-}
-
 /// Per-session append-only event store for cross-turn trajectory analysis.
 ///
 /// Detects multi-turn attacks that distribute payload across several turns —
@@ -839,7 +785,7 @@ pub struct ShadowMemoryConfig {
     /// Goal drift score threshold for flagging. Range: (0.0, 1.0]. Default: 0.6.
     #[serde(
         default = "default_shadow_drift_threshold",
-        deserialize_with = "validate_shadow_drift_threshold"
+        deserialize_with = "crate::de_helpers::de_unit_open"
     )]
     pub drift_threshold: f32,
 }

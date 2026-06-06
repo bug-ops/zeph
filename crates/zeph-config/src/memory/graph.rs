@@ -9,10 +9,7 @@
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    BeliefRevisionConfig, ConflictRecencyConfig, RpeConfig, WriteGateConfig,
-    validate_similarity_threshold,
-};
+use super::{BeliefRevisionConfig, ConflictRecencyConfig, RpeConfig, WriteGateConfig};
 
 fn default_graph_max_entities_per_message() -> usize {
     10
@@ -155,7 +152,7 @@ pub struct SpreadingActivationConfig {
     /// Enable spreading activation (replaces BFS in graph recall when `true`). Default: `false`.
     pub enabled: bool,
     /// Per-hop activation decay factor. Range: `(0.0, 1.0]`. Default: `0.85`.
-    #[serde(deserialize_with = "validate_decay_lambda")]
+    #[serde(deserialize_with = "crate::de_helpers::de_unit_open")]
     pub decay_lambda: f32,
     /// Maximum propagation depth. Must be `>= 1`. Default: `3`.
     #[serde(deserialize_with = "validate_max_hops")]
@@ -202,24 +199,6 @@ pub struct SpreadingActivationConfig {
         deserialize_with = "validate_benna_rate"
     )]
     pub benna_slow_rate: f32,
-}
-
-fn validate_decay_lambda<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "decay_lambda must be a finite number",
-        ));
-    }
-    if !(value > 0.0 && value <= 1.0) {
-        return Err(serde::de::Error::custom(
-            "decay_lambda must be in (0.0, 1.0]",
-        ));
-    }
-    Ok(value)
 }
 
 fn validate_max_hops<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -321,7 +300,7 @@ pub struct NoteLinkingConfig {
     /// Enable A-MEM note linking after graph extraction. Default: `false`.
     pub enabled: bool,
     /// Minimum cosine similarity score to create a `similar_to` edge. Default: `0.85`.
-    #[serde(deserialize_with = "validate_similarity_threshold")]
+    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
     pub similarity_threshold: f32,
     /// Maximum number of similar entities to link per extracted entity. Default: `10`.
     pub top_k: usize,
@@ -585,7 +564,7 @@ pub struct GraphConfig {
     /// for un-retrieved edges each decay pass. Range: `(0.0, 1.0]`. Default: `0.95`.
     #[serde(
         default = "default_link_weight_decay_lambda",
-        deserialize_with = "validate_link_weight_decay_lambda"
+        deserialize_with = "crate::de_helpers::de_unit_open"
     )]
     pub link_weight_decay_lambda: f64,
     /// Seconds between link weight decay passes. Default: `86400` (24 hours).
@@ -996,22 +975,4 @@ fn default_link_weight_decay_lambda() -> f64 {
 
 fn default_link_weight_decay_interval_secs() -> u64 {
     86400
-}
-
-fn validate_link_weight_decay_lambda<'de, D>(deserializer: D) -> Result<f64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "link_weight_decay_lambda must be a finite number",
-        ));
-    }
-    if !(value > 0.0 && value <= 1.0) {
-        return Err(serde::de::Error::custom(
-            "link_weight_decay_lambda must be in (0.0, 1.0]",
-        ));
-    }
-    Ok(value)
 }

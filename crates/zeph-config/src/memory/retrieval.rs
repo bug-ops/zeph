@@ -503,40 +503,6 @@ fn default_consolidation_llm_timeout_secs() -> u64 {
     30
 }
 
-fn validate_admission_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "threshold must be a finite number",
-        ));
-    }
-    if !(0.0..=1.0).contains(&value) {
-        return Err(serde::de::Error::custom("threshold must be in [0.0, 1.0]"));
-    }
-    Ok(value)
-}
-
-fn validate_admission_fast_path_margin<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if value.is_nan() || value.is_infinite() {
-        return Err(serde::de::Error::custom(
-            "fast_path_margin must be a finite number",
-        ));
-    }
-    if !(0.0..=1.0).contains(&value) {
-        return Err(serde::de::Error::custom(
-            "fast_path_margin must be in [0.0, 1.0]",
-        ));
-    }
-    Ok(value)
-}
-
 fn default_admission_threshold() -> f32 {
     0.40
 }
@@ -661,11 +627,11 @@ pub struct AdmissionConfig {
     pub enabled: bool,
     /// Composite score threshold below which messages are rejected. Range: `[0.0, 1.0]`.
     /// Default: `0.40`.
-    #[serde(deserialize_with = "validate_admission_threshold")]
+    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
     pub threshold: f32,
     /// Margin above threshold at which the fast path admits without an LLM call. Range: `[0.0, 1.0]`.
     /// When heuristic score >= threshold + margin, LLM call is skipped. Default: `0.15`.
-    #[serde(deserialize_with = "validate_admission_fast_path_margin")]
+    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
     pub fast_path_margin: f32,
     /// Provider name from `[[llm.providers]]` for `future_utility` LLM evaluation.
     /// Falls back to the primary provider when empty. Default: `""`.

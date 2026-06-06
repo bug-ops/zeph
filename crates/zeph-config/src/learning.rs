@@ -514,6 +514,7 @@ impl LearningConfig {
     /// # Errors
     ///
     /// Returns an error string if `merge_threshold >= dedup_threshold`.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.merge_threshold >= self.dedup_threshold {
             return Err(format!(
