@@ -1,0 +1,888 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Sub-agent command handlers and spawn-context assembly.
+//!
+//! Extracted from `agent/mod.rs` (#4923). Handles `/agent` command dispatch (list,
+//! status, approve/deny, spawn, cancel, resume), background polling of running
+//! sub-agents, and construction of the bounded parent-message context handed to a
+//! freshly spawned sub-agent.
+
+use std::sync::Arc;
+
+use super::{Agent, error};
+use crate::channel::Channel;
+
+impl<C: Channel> Agent<C> {
+    /// Poll all active sub-agents for completed/failed/canceled results.
+    ///
+    /// Non-blocking: returns immediately with a list of `(task_id, result)` pairs
+    /// for agents that have finished. Each completed agent is removed from the manager.
+    #[tracing::instrument(name = "core.agent.poll_subagents", skip_all, level = "debug")]
+    pub async fn poll_subagents(&mut self) -> Vec<(String, String)> {
+        let Some(mgr) = &mut self.services.orchestration.subagent_manager else {
+            return vec![];
+        };
+
+        let finished: Vec<String> = mgr
+            .statuses()
+            .into_iter()
+            .filter_map(|(id, status)| {
+                if matches!(
+                    status.state,
+                    zeph_subagent::SubAgentState::Completed
+                        | zeph_subagent::SubAgentState::Failed
+                        | zeph_subagent::SubAgentState::Canceled
+                ) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut results = vec![];
+        for task_id in finished {
+            match mgr.collect(&task_id).await {
+                Ok(result) => results.push((task_id, result)),
+                Err(e) => {
+                    tracing::warn!(task_id, error = %e, "failed to collect sub-agent result");
+                }
+            }
+        }
+        results
+    }
+    /// Run the chat loop, receiving messages via the channel until EOF or shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if channel I/O or LLM communication fails.
+    /// Refresh sub-agent metrics snapshot for the TUI metrics panel.
+    pub(super) fn refresh_subagent_metrics(&mut self) {
+        let Some(ref mgr) = self.services.orchestration.subagent_manager else {
+            return;
+        };
+        let sub_agent_metrics: Vec<crate::metrics::SubAgentMetrics> = mgr
+            .statuses()
+            .into_iter()
+            .map(|(id, s)| {
+                let def = mgr.agents_def(&id);
+                crate::metrics::SubAgentMetrics {
+                    name: def.map_or_else(|| id[..8.min(id.len())].to_owned(), |d| d.name.clone()),
+                    id: id.clone(),
+                    state: format!("{:?}", s.state).to_lowercase(),
+                    turns_used: s.turns_used,
+                    max_turns: def.map_or(20, |d| d.permissions.max_turns),
+                    background: def.is_some_and(|d| d.permissions.background),
+                    elapsed_secs: s.started_at.elapsed().as_secs(),
+                    permission_mode: def.map_or_else(String::new, |d| {
+                        use zeph_subagent::def::PermissionMode;
+                        match d.permissions.permission_mode {
+                            PermissionMode::AcceptEdits => "accept_edits".into(),
+                            PermissionMode::DontAsk => "dont_ask".into(),
+                            PermissionMode::BypassPermissions => "bypass_permissions".into(),
+                            PermissionMode::Plan => "plan".into(),
+                            _ => String::new(),
+                        }
+                    }),
+                    transcript_dir: mgr
+                        .agent_transcript_dir(&id)
+                        .map(|p| p.to_string_lossy().into_owned()),
+                }
+            })
+            .collect();
+        self.update_metrics(|m| m.sub_agents = sub_agent_metrics);
+    }
+    /// Non-blocking poll: notify the user when background sub-agents complete.
+    pub(super) async fn notify_completed_subagents(&mut self) -> Result<(), error::AgentError> {
+        let completed = self.poll_subagents().await;
+        for (task_id, result) in completed {
+            let notice = if result.is_empty() {
+                format!("[sub-agent {id}] completed (no output)", id = &task_id[..8])
+            } else {
+                format!("[sub-agent {id}] completed:\n{result}", id = &task_id[..8])
+            };
+            if let Err(e) = self.channel.send(&notice).await {
+                tracing::warn!(error = %e, "failed to send sub-agent completion notice");
+            }
+        }
+        Ok(())
+    }
+    /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
+    /// channel. Returns a human-readable status string and success flag suitable for
+    /// sending to the user and emitting lifecycle events.
+    async fn poll_subagent_until_done(
+        &mut self,
+        task_id: &str,
+        label: &str,
+    ) -> Option<(String, bool)> {
+        use zeph_subagent::SubAgentState;
+        let result = loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            // Bridge secret requests from sub-agent to channel.confirm().
+            // Fetch the pending request first, then release the borrow before
+            // calling channel.confirm() (which requires &mut self).
+            #[allow(clippy::redundant_closure_for_method_calls)]
+            let pending = self
+                .services
+                .orchestration
+                .subagent_manager
+                .as_mut()
+                .and_then(|m| m.try_recv_secret_request());
+            if let Some((req_task_id, req)) = pending {
+                // req.secret_key is pre-validated to [a-zA-Z0-9_-] in manager.rs
+                // (SEC-P1-02), so it is safe to embed in the prompt string.
+                let confirm_prompt = format!(
+                    "Sub-agent requests secret '{}'. Allow?",
+                    crate::text::truncate_to_chars(&req.secret_key, 100)
+                );
+                let approved = self.channel.confirm(&confirm_prompt).await.unwrap_or(false);
+                if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
+                    if approved {
+                        let ttl = std::time::Duration::from_mins(5);
+                        let key = req.secret_key.clone();
+                        if mgr.approve_secret(&req_task_id, &key, ttl).is_ok() {
+                            let _ = mgr.deliver_secret(&req_task_id, key);
+                        }
+                    } else {
+                        let _ = mgr.deny_secret(&req_task_id);
+                    }
+                }
+            }
+
+            let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+            let statuses = mgr.statuses();
+            let Some((_, status)) = statuses.iter().find(|(id, _)| id == task_id) else {
+                break (format!("{label} completed (no status available)."), true);
+            };
+            match status.state {
+                SubAgentState::Completed => {
+                    let msg = status.last_message.clone().unwrap_or_else(|| "done".into());
+                    break (format!("{label} completed: {msg}"), true);
+                }
+                SubAgentState::Failed => {
+                    let msg = status
+                        .last_message
+                        .clone()
+                        .unwrap_or_else(|| "unknown error".into());
+                    break (format!("{label} failed: {msg}"), false);
+                }
+                SubAgentState::Canceled => {
+                    break (format!("{label} was cancelled."), false);
+                }
+                _ => {
+                    let _ = self
+                        .channel
+                        .send_status(&format!(
+                            "{label}: turn {}/{}",
+                            status.turns_used,
+                            self.services
+                                .orchestration
+                                .subagent_manager
+                                .as_ref()
+                                .and_then(|m| m.agents_def(task_id))
+                                .map_or(20, |d| d.permissions.max_turns)
+                        ))
+                        .await;
+                }
+            }
+        };
+        Some(result)
+    }
+    /// Resolve a unique full `task_id` from a prefix. Returns `None` if the manager is absent,
+    /// `Some(Err(msg))` on ambiguity/not-found, `Some(Ok(full_id))` on success.
+    fn resolve_agent_id_prefix(&mut self, prefix: &str) -> Option<Result<String, String>> {
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+        let full_ids: Vec<String> = mgr
+            .statuses()
+            .into_iter()
+            .map(|(tid, _)| tid)
+            .filter(|tid| tid.starts_with(prefix))
+            .collect();
+        Some(match full_ids.as_slice() {
+            [] => Err(format!("No sub-agent with id prefix '{prefix}'")),
+            [fid] => Ok(fid.clone()),
+            _ => Err(format!(
+                "Ambiguous id prefix '{prefix}': matches {} agents",
+                full_ids.len()
+            )),
+        })
+    }
+    fn handle_agent_list(&self) -> Option<String> {
+        use std::fmt::Write as _;
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        let defs = mgr.definitions();
+        if defs.is_empty() {
+            return Some("No sub-agent definitions found.".into());
+        }
+        let mut out = String::from("Available sub-agents:\n");
+        for d in defs {
+            let memory_label = match d.memory {
+                Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
+                Some(zeph_subagent::MemoryScope::Project) => " [memory:project]",
+                Some(zeph_subagent::MemoryScope::Local) => " [memory:local]",
+                Some(_) => " [memory:unknown]",
+                None => "",
+            };
+            if let Some(ref src) = d.source {
+                let _ = writeln!(
+                    out,
+                    "  {}{} — {} ({})",
+                    d.name, memory_label, d.description, src
+                );
+            } else {
+                let _ = writeln!(out, "  {}{} — {}", d.name, memory_label, d.description);
+            }
+        }
+        Some(out)
+    }
+    fn handle_agent_status(&self) -> Option<String> {
+        use std::fmt::Write as _;
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        let statuses = mgr.statuses();
+        if statuses.is_empty() {
+            return Some("No active sub-agents.".into());
+        }
+        let mut out = String::from("Active sub-agents:\n");
+        for (id, s) in &statuses {
+            let state = format!("{:?}", s.state).to_lowercase();
+            let elapsed = s.started_at.elapsed().as_secs();
+            let _ = writeln!(
+                out,
+                "  [{short}] {state}  turns={t}  elapsed={elapsed}s  {msg}",
+                short = &id[..8.min(id.len())],
+                t = s.turns_used,
+                msg = s.last_message.as_deref().unwrap_or(""),
+            );
+            // Show memory directory path for agents with memory enabled.
+            if let Some(def) = mgr.agents_def(id)
+                && let Some(scope) = def.memory
+                && let Ok(dir) = zeph_subagent::memory::resolve_memory_dir(scope, &def.name)
+            {
+                let _ = writeln!(out, "       memory: {}", dir.display());
+            }
+        }
+        Some(out)
+    }
+    fn handle_agent_approve(&mut self, id: &str) -> Option<String> {
+        let full_id = match self.resolve_agent_id_prefix(id)? {
+            Ok(fid) => fid,
+            Err(msg) => return Some(msg),
+        };
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+        if let Some((tid, req)) = mgr.try_recv_secret_request()
+            && tid == full_id
+        {
+            let key = req.secret_key.clone();
+            let ttl = std::time::Duration::from_mins(5);
+            if let Err(e) = mgr.approve_secret(&full_id, &key, ttl) {
+                return Some(format!("Approve failed: {e}"));
+            }
+            if let Err(e) = mgr.deliver_secret(&full_id, key.clone()) {
+                return Some(format!("Secret delivery failed: {e}"));
+            }
+            return Some(format!("Secret '{key}' approved for sub-agent {full_id}."));
+        }
+        Some(format!(
+            "No pending secret request for sub-agent '{full_id}'."
+        ))
+    }
+    fn handle_agent_deny(&mut self, id: &str) -> Option<String> {
+        let full_id = match self.resolve_agent_id_prefix(id)? {
+            Ok(fid) => fid,
+            Err(msg) => return Some(msg),
+        };
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+        match mgr.deny_secret(&full_id) {
+            Ok(()) => Some(format!("Secret request denied for sub-agent '{full_id}'.")),
+            Err(e) => Some(format!("Deny failed: {e}")),
+        }
+    }
+    pub(super) async fn handle_agent_command(
+        &mut self,
+        cmd: zeph_subagent::AgentCommand,
+    ) -> Option<String> {
+        use zeph_subagent::AgentCommand;
+
+        match cmd {
+            AgentCommand::List => self.handle_agent_list(),
+            AgentCommand::Background { name, prompt } => {
+                self.handle_agent_background(&name, &prompt)
+            }
+            AgentCommand::Spawn { name, prompt }
+            | AgentCommand::Mention {
+                agent: name,
+                prompt,
+            } => self.handle_agent_spawn_foreground(&name, &prompt).await,
+            AgentCommand::Status => self.handle_agent_status(),
+            AgentCommand::Cancel { id } => self.handle_agent_cancel(&id),
+            AgentCommand::Approve { id } => self.handle_agent_approve(&id),
+            AgentCommand::Deny { id } => self.handle_agent_deny(&id),
+            AgentCommand::Resume { id, prompt } => self.handle_agent_resume(&id, &prompt).await,
+            _ => None,
+        }
+    }
+    /// Return the sub-agent definitions section formatted for the `/agents` fleet view.
+    ///
+    /// Produces a "Sub-agents:" header followed by one line per definition.
+    /// Returns an empty string when no sub-agent manager is configured.
+    pub(crate) fn handle_agents_definitions_list(&self) -> String {
+        use std::fmt::Write as _;
+
+        let Some(mgr) = self.services.orchestration.subagent_manager.as_ref() else {
+            return String::new();
+        };
+        let defs = mgr.definitions();
+        if defs.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("Sub-agents:\n");
+        for d in defs {
+            let memory_label = match d.memory {
+                Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
+                Some(zeph_subagent::MemoryScope::Project) => " [memory:project]",
+                Some(zeph_subagent::MemoryScope::Local) => " [memory:local]",
+                Some(_) => " [memory:unknown]",
+                None => "",
+            };
+            if let Some(ref src) = d.source {
+                let _ = writeln!(
+                    out,
+                    "  {}{} — {} ({})",
+                    d.name, memory_label, d.description, src
+                );
+            } else {
+                let _ = writeln!(out, "  {}{} — {}", d.name, memory_label, d.description);
+            }
+        }
+        out
+    }
+    /// Execute an `/agents` CRUD subcommand and return a formatted string.
+    ///
+    /// Handles `show`, `create`, `edit`, `delete` (the `list` case is handled by
+    /// [`handle_agents_definitions_list`] and never reaches this method).
+    pub(crate) fn handle_agents_crud(&mut self, cmd: zeph_subagent::AgentsCommand) -> String {
+        use zeph_subagent::AgentsCommand;
+
+        let Some(mgr) = self.services.orchestration.subagent_manager.as_ref() else {
+            return "Sub-agent manager is not available.".to_owned();
+        };
+
+        match cmd {
+            AgentsCommand::List => self.handle_agents_definitions_list(),
+            AgentsCommand::Show { name } => {
+                match mgr.definitions().iter().find(|d| d.name == name) {
+                    Some(d) => format!(
+                        "Agent: {}\nDescription: {}\nSource: {}\n",
+                        d.name,
+                        d.description,
+                        d.source.as_deref().unwrap_or("unknown"),
+                    ),
+                    None => format!("No sub-agent definition named '{name}'."),
+                }
+            }
+            AgentsCommand::Create { name } => {
+                format!(
+                    "To create a sub-agent definition, create a file at `.zeph/agents/{name}.md`.\n\
+                     See the sub-agent documentation for the required frontmatter."
+                )
+            }
+            AgentsCommand::Edit { name } => {
+                format!("To edit '{name}', open its definition file in `.zeph/agents/{name}.md`.")
+            }
+            AgentsCommand::Delete { name } => {
+                format!("To delete '{name}', remove the file `.zeph/agents/{name}.md`.")
+            }
+            _ => "Unknown agents command.".to_owned(),
+        }
+    }
+    fn handle_agent_background(&mut self, name: &str, prompt: &str) -> Option<String> {
+        let provider = self.provider.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let skills = self.filtered_skills_for(name);
+        let cfg = self.services.orchestration.subagent_config.clone();
+        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+        match mgr.spawn(
+            name,
+            prompt,
+            provider,
+            tool_executor,
+            skills,
+            &cfg,
+            spawn_ctx,
+        ) {
+            Ok(id) => Some(format!(
+                "Sub-agent '{name}' started in background (id: {short})",
+                short = &id[..8.min(id.len())]
+            )),
+            Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
+        }
+    }
+    async fn handle_agent_spawn_foreground(&mut self, name: &str, prompt: &str) -> Option<String> {
+        let provider = self.provider.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let skills = self.filtered_skills_for(name);
+        let cfg = self.services.orchestration.subagent_config.clone();
+        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+        let task_id = match mgr.spawn(
+            name,
+            prompt,
+            provider,
+            tool_executor,
+            skills,
+            &cfg,
+            spawn_ctx,
+        ) {
+            Ok(id) => id,
+            Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
+        };
+        let short = task_id[..8.min(task_id.len())].to_owned();
+        let _ = self
+            .channel
+            .send(&format!("Sub-agent '{name}' running... (id: {short})"))
+            .await;
+        let _ = self
+            .channel
+            .notify_foreground_subagent_started(&task_id, name)
+            .await;
+        let label = format!("Sub-agent '{name}'");
+        let Some((result, success)) = self.poll_subagent_until_done(&task_id, &label).await else {
+            // Manager was dropped mid-poll; emit completed(false) so TUI does not stay stuck.
+            let _ = self
+                .channel
+                .notify_foreground_subagent_completed(&task_id, name, false)
+                .await;
+            return None;
+        };
+        let _ = self
+            .channel
+            .notify_foreground_subagent_completed(&task_id, name, success)
+            .await;
+        Some(result)
+    }
+    fn handle_agent_cancel(&mut self, id: &str) -> Option<String> {
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+        // Accept prefix match on task_id.
+        let ids: Vec<String> = mgr
+            .statuses()
+            .into_iter()
+            .map(|(task_id, _)| task_id)
+            .filter(|task_id| task_id.starts_with(id))
+            .collect();
+        match ids.as_slice() {
+            [] => Some(format!("No sub-agent with id prefix '{id}'")),
+            [full_id] => {
+                let full_id = full_id.clone();
+                match mgr.cancel(&full_id) {
+                    Ok(()) => Some(format!("Cancelled sub-agent {full_id}.")),
+                    Err(e) => Some(format!("Cancel failed: {e}")),
+                }
+            }
+            _ => Some(format!(
+                "Ambiguous id prefix '{id}': matches {} agents",
+                ids.len()
+            )),
+        }
+    }
+    async fn handle_agent_resume(&mut self, id: &str, prompt: &str) -> Option<String> {
+        let cfg = self.services.orchestration.subagent_config.clone();
+        // Resolve definition name from transcript meta before spawning so we can
+        // look up skills by definition name rather than the UUID prefix (S1 fix).
+        let def_name = {
+            let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+            match mgr.def_name_for_resume(id, &cfg) {
+                Ok(name) => name,
+                Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
+            }
+        };
+        let skills = self.filtered_skills_for(&def_name);
+        let provider = self.provider.clone();
+        let tool_executor = Arc::clone(&self.tool_executor);
+        let mgr = self.services.orchestration.subagent_manager.as_mut()?;
+        let (task_id, _) = match mgr.resume(id, prompt, provider, tool_executor, skills, &cfg, None)
+        {
+            Ok(pair) => pair,
+            Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
+        };
+        let short = task_id[..8.min(task_id.len())].to_owned();
+        let _ = self
+            .channel
+            .send(&format!("Resuming sub-agent '{id}'... (new id: {short})"))
+            .await;
+        let _ = self
+            .channel
+            .notify_foreground_subagent_started(&task_id, &def_name)
+            .await;
+        let Some((result, success)) = self
+            .poll_subagent_until_done(&task_id, "Resumed sub-agent")
+            .await
+        else {
+            // Manager was dropped mid-poll; emit completed(false) so TUI does not stay stuck.
+            let _ = self
+                .channel
+                .notify_foreground_subagent_completed(&task_id, &def_name, false)
+                .await;
+            return None;
+        };
+        let _ = self
+            .channel
+            .notify_foreground_subagent_completed(&task_id, &def_name, success)
+            .await;
+        Some(result)
+    }
+    pub(super) fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
+        let reg = self.services.skill.registry.read();
+        match zeph_subagent::filter_skills(&reg, &def.skills) {
+            Ok(skills) => {
+                let bodies: Vec<String> = skills.into_iter().map(|s| s.body.clone()).collect();
+                if bodies.is_empty() {
+                    None
+                } else {
+                    Some(bodies)
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "skill filtering failed for sub-agent");
+                None
+            }
+        }
+    }
+    /// Build a `SpawnContext` from current agent state for sub-agent spawning.
+    pub(super) fn build_spawn_context(
+        &self,
+        cfg: &zeph_config::SubAgentConfig,
+    ) -> zeph_subagent::SpawnContext {
+        zeph_subagent::SpawnContext {
+            parent_messages: self.extract_parent_messages(cfg),
+            parent_cancel: Some(self.runtime.lifecycle.cancel_token.clone()),
+            parent_provider_name: {
+                let name = &self.runtime.config.active_provider_name;
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name.clone())
+                }
+            },
+            spawn_depth: self.runtime.config.spawn_depth,
+            mcp_tool_names: self.extract_mcp_tool_names(),
+            // F3 spec 050 §4: propagate seeded score when parent is >= Elevated.
+            seed_trajectory_score: {
+                let child = self.services.security.trajectory.spawn_child();
+                let score = child.score_now();
+                if score > 0.0 { Some(score) } else { None }
+            },
+            content_isolation: self.runtime.config.security.content_isolation.clone(),
+            orchestrator_name: Some("zeph".to_owned()),
+            orchestrator_role: Some("orchestrator".to_owned()),
+            session_mcp_servers: Vec::new(),
+            // Constraint propagation (#3993): populated by orchestration layer when spawning
+            // with explicit trust/tool restrictions. Top-level agent sessions leave these None.
+            ..Default::default()
+        }
+    }
+    /// Extract recent parent messages for history propagation (Section 5.7 in spec).
+    ///
+    /// Filters system messages, applies `context_window_turns` and `max_parent_messages` caps,
+    /// applies a 25% context window cap using a 4-chars-per-token heuristic, prunes orphaned
+    /// `ToolUse`/`ToolResult` pairs at the slice boundary, and optionally sanitizes text parts
+    /// through the IPI pipeline according to `parent_context_policy`.
+    fn extract_parent_messages(
+        &self,
+        config: &zeph_config::SubAgentConfig,
+    ) -> Vec<zeph_llm::provider::Message> {
+        use zeph_config::ParentContextPolicy;
+        use zeph_llm::provider::Role;
+
+        if config.parent_context_policy == ParentContextPolicy::None
+            || config.context_window_turns == 0
+        {
+            return Vec::new();
+        }
+
+        let non_system: Vec<_> = self
+            .msg
+            .messages
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .cloned()
+            .collect();
+
+        let take_count = config
+            .context_window_turns
+            .saturating_mul(2)
+            .min(config.max_parent_messages);
+        let start = non_system.len().saturating_sub(take_count);
+        let mut msgs = non_system[start..].to_vec();
+
+        // Cap at 25% of model context window and prune orphaned tool pairs.
+        let max_chars = 128_000usize / 4;
+        let requested = msgs.len();
+        trim_parent_messages(&mut msgs, max_chars);
+        if msgs.len() < requested {
+            tracing::info!(
+                kept = msgs.len(),
+                requested,
+                "[subagent] truncated parent history due to token budget or orphan pruning"
+            );
+        }
+
+        if config.parent_context_policy == ParentContextPolicy::InheritSanitized {
+            use zeph_sanitizer::{ContentSource, ContentSourceKind};
+            let source =
+                ContentSource::new(ContentSourceKind::A2aMessage).with_identifier("parent_history");
+            msgs = sanitize_parent_messages(msgs, &self.services.security.sanitizer, &source);
+        }
+
+        msgs
+    }
+    /// Extract MCP tool names from the tool executor for diagnostic annotation.
+    fn extract_mcp_tool_names(&self) -> Vec<String> {
+        self.tool_executor
+            .tool_definitions_erased()
+            .into_iter()
+            .filter(|t| t.id.starts_with("mcp_"))
+            .map(|t| t.id.to_string())
+            .collect()
+    }
+    /// Classify a skill directory's source kind using on-disk markers and the bundled allowlist.
+    ///
+    /// Must be called from a blocking context (uses synchronous FS I/O).
+    pub(super) fn classify_source_kind(
+        skill_dir: &std::path::Path,
+        managed_dir: Option<&std::path::PathBuf>,
+        bundled_names: &std::collections::HashSet<String>,
+    ) -> zeph_memory::store::SourceKind {
+        if managed_dir.is_some_and(|d| skill_dir.starts_with(d)) {
+            let skill_name = skill_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let has_marker = skill_dir.join(".bundled").exists();
+            if has_marker && bundled_names.contains(skill_name) {
+                zeph_memory::store::SourceKind::Bundled
+            } else {
+                if has_marker {
+                    tracing::warn!(
+                        skill = %skill_name,
+                        "skill has .bundled marker but is not in the bundled skill \
+                         allowlist — classifying as Hub"
+                    );
+                }
+                zeph_memory::store::SourceKind::Hub
+            }
+        } else {
+            zeph_memory::store::SourceKind::Local
+        }
+    }
+}
+
+/// Estimates the JSON payload size of a single [`zeph_llm::provider::Message`] for token-budget
+/// accounting.
+///
+/// When `parts` is empty the message is a legacy text-only message and `content.len()` is used
+/// directly. Otherwise each part is measured individually so that structured variants (images,
+/// tool invocations, thinking blocks) are accounted for rather than relying on the already-flat
+/// `content` string, which may not reflect the actual API payload size.
+pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
+    use zeph_llm::provider::MessagePart;
+    if m.parts.is_empty() {
+        return m.content.len();
+    }
+    m.parts
+        .iter()
+        .map(|p| match p {
+            MessagePart::Text { text }
+            | MessagePart::Recall { text }
+            | MessagePart::CodeContext { text }
+            | MessagePart::Summary { text }
+            | MessagePart::CrossSession { text } => text.len(),
+            MessagePart::ToolOutput { body, .. } => body.len(),
+            MessagePart::ToolUse { id, name, input } => {
+                50 + id.len() + name.len() + input.to_string().len()
+            }
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => 50 + tool_use_id.len() + content.len(),
+            MessagePart::Image(img) => img.data.len() * 4 / 3,
+            MessagePart::ThinkingBlock {
+                thinking,
+                signature,
+            } => 50 + thinking.len() + signature.len(),
+            MessagePart::RedactedThinkingBlock { data } => data.len(),
+            MessagePart::Compaction { summary } => summary.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Applies token-budget truncation and orphaned-tool-pair pruning to a parent message slice.
+///
+/// Budget truncation keeps the **most recent** messages that fit within `max_chars`
+/// (a suffix), so the subagent always receives the freshest context.
+///
+/// Two passes are performed after budget truncation:
+///
+/// 1. Remove `ToolResult` parts from user messages whose matching `ToolUse` is no longer in the
+///    slice (truncated away).
+/// 2. Remove `ToolUse` parts from **interior** assistant messages whose matching `ToolResult`
+///    was removed in pass 1 or was already absent. The trailing assistant message is exempt —
+///    its unanswered `ToolUse` calls are not orphaned; the slice just ends before the result.
+///
+/// Messages that become fully empty after pruning are removed from `msgs`.
+///
+/// `rebuild_content` is called **only** when `retain` actually removed parts — preserving the
+/// existing `content` field (and any `ThinkingBlock` text embedded there) for unmodified
+/// messages.
+pub(crate) fn trim_parent_messages(msgs: &mut Vec<zeph_llm::provider::Message>, max_chars: usize) {
+    use zeph_llm::provider::{MessagePart, Role};
+
+    // Token-budget cap: keep the most recent messages that fit within max_chars.
+    // We iterate from the end (newest) and drain from the front once the budget is exceeded,
+    // so the subagent always receives the most recent context rather than stale early messages.
+    let mut total_chars = 0usize;
+    let mut drop_before = 0usize; // index of the first message to keep
+    for (i, m) in msgs.iter().enumerate().rev() {
+        total_chars += estimate_parts_size(m);
+        if total_chars > max_chars {
+            drop_before = i + 1;
+            break;
+        }
+    }
+    if drop_before > 0 {
+        msgs.drain(..drop_before);
+    }
+
+    // Pass 1: collect ToolUse IDs emitted by assistant messages; prune orphaned ToolResult
+    // parts from user messages that reference a ToolUse no longer present in the slice.
+    // Use owned Strings to avoid holding immutable borrows across the subsequent mutable loop.
+    let emitted_tool_ids: std::collections::HashSet<String> = msgs
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|p| {
+            if let MessagePart::ToolUse { id, .. } = p {
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut orphans_removed = 0usize;
+    for m in msgs.iter_mut() {
+        if m.role != Role::User || m.parts.is_empty() {
+            continue;
+        }
+        let before = m.parts.len();
+        m.parts.retain(|p| match p {
+            MessagePart::ToolResult { tool_use_id, .. } => {
+                emitted_tool_ids.contains(tool_use_id.as_str())
+            }
+            _ => true,
+        });
+        let dropped = before - m.parts.len();
+        if dropped > 0 {
+            orphans_removed += dropped;
+            if m.parts.is_empty() {
+                m.content.clear();
+            } else {
+                m.rebuild_content();
+            }
+        }
+    }
+
+    // Pass 2: collect ToolResult IDs present in user messages after pass 1; prune ToolUse
+    // parts from assistant messages whose result is confirmed absent.
+    //
+    // The trailing assistant message is exempt: it may legitimately contain unanswered
+    // ToolUse calls (the slice ends before the result arrives). Only interior assistant
+    // messages — those followed by at least one user message — can have provably orphaned
+    // ToolUse parts (the conversation moved on without answering them).
+    let consumed_tool_ids: std::collections::HashSet<String> = msgs
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|p| {
+            if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                Some(tool_use_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Index of the last assistant message — exempt from pass 2.
+    let last_assistant_idx = msgs
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, m)| m.role == Role::Assistant)
+        .map(|(i, _)| i);
+
+    for (idx, m) in msgs.iter_mut().enumerate() {
+        if m.role != Role::Assistant || m.parts.is_empty() {
+            continue;
+        }
+        // Skip the trailing assistant message — its unanswered ToolUse calls are not orphaned.
+        if Some(idx) == last_assistant_idx {
+            continue;
+        }
+        let before = m.parts.len();
+        m.parts.retain(|p| match p {
+            MessagePart::ToolUse { id, .. } => consumed_tool_ids.contains(id.as_str()),
+            _ => true,
+        });
+        let dropped = before - m.parts.len();
+        if dropped > 0 {
+            orphans_removed += dropped;
+            if m.parts.is_empty() {
+                m.content.clear();
+            } else {
+                m.rebuild_content();
+            }
+        }
+    }
+
+    // Remove messages that were emptied by orphan pruning.
+    msgs.retain(|m| !m.content.is_empty() || !m.parts.is_empty());
+
+    if orphans_removed > 0 {
+        tracing::debug!(
+            orphans = orphans_removed,
+            "[subagent] pruned orphaned ToolUse/ToolResult parts from parent context boundary"
+        );
+    }
+}
+
+/// Sanitize text parts of `msgs` through the IPI pipeline.
+///
+/// Only [`MessagePart::Text`] parts are passed through the sanitizer; structured parts
+/// (`ToolUse`, `ToolResult`, `Recall`, `CodeContext`) are left untouched.  After sanitization
+/// the message `content` field is rebuilt to stay consistent with the updated parts.
+fn sanitize_parent_messages(
+    mut msgs: Vec<zeph_llm::provider::Message>,
+    sanitizer: &zeph_sanitizer::ContentSanitizer,
+    source: &zeph_sanitizer::ContentSource,
+) -> Vec<zeph_llm::provider::Message> {
+    use zeph_llm::provider::MessagePart;
+    for msg in &mut msgs {
+        let mut changed = false;
+        for part in &mut msg.parts {
+            if let MessagePart::Text { text } = part {
+                let clean = sanitizer.sanitize(text, source.clone());
+                if clean.body != *text {
+                    *text = clean.body;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            msg.rebuild_content();
+        }
+    }
+    msgs
+}

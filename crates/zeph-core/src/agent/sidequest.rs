@@ -21,10 +21,13 @@
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
-use zeph_llm::provider::{Message, MessagePart};
+use zeph_llm::provider::{LlmProvider, Message, MessagePart};
 use zeph_memory::TokenCounter;
 
+use crate::channel::Channel;
 use crate::config::SidequestConfig;
+
+use super::Agent;
 
 /// A tracked tool output entry with its position in the message list.
 #[derive(Debug, Clone)]
@@ -266,6 +269,190 @@ impl SidequestState {
 impl Default for SidequestState {
     fn default() -> Self {
         Self::new(SidequestConfig::default())
+    }
+}
+
+/// Agent-level `SideQuest` orchestration: evaluates and applies tool-output eviction
+/// at turn boundaries. Extracted from `agent/mod.rs` (#4923).
+impl<C: Channel> Agent<C> {
+    /// Run `SideQuest` tool output eviction pass (#1885).
+    ///
+    /// PERF-1 fix: two-phase non-blocking design.
+    ///
+    /// Phase 1 (apply, this turn): check for a background LLM result spawned last turn,
+    /// validate and apply it immediately.
+    ///
+    /// Phase 2 (schedule, this turn): rebuild cursors and spawn a background `tokio::spawn`
+    /// task for the LLM call. The result is stored in `pending_sidequest_result` and applied
+    /// next turn, so the current agent turn is never blocked by the LLM call.
+    pub(super) fn maybe_sidequest_eviction(&mut self) {
+        // S1 runtime guard: warn when SideQuest is enabled alongside a non-Reactive pruning
+        // strategy — the two systems share the same pool of evictable tool outputs and can
+        // interfere. Disable sidequest.enabled when pruning_strategy != Reactive.
+        if self.services.sidequest.config.enabled {
+            use crate::config::PruningStrategy;
+            if !matches!(
+                self.context_manager.compression.pruning_strategy,
+                PruningStrategy::Reactive
+            ) {
+                tracing::warn!(
+                    strategy = ?self.context_manager.compression.pruning_strategy,
+                    "sidequest is enabled alongside a non-Reactive pruning strategy; \
+                     consider disabling sidequest.enabled to avoid redundant eviction"
+                );
+            }
+        }
+
+        // Guard: do not evict while a focus session is active.
+        if self.services.focus.is_active() {
+            tracing::debug!("sidequest: skipping — focus session active");
+            // Drop any pending result — cursors may be stale relative to focus truncation.
+            self.services.compression.pending_sidequest_result = None;
+            return;
+        }
+
+        // Phase 1: apply pending result from last turn's background LLM call.
+        self.sidequest_apply_pending();
+
+        // Phase 2: rebuild cursors and schedule the next background eviction LLM call.
+        self.sidequest_schedule_next();
+    }
+    fn sidequest_apply_pending(&mut self) {
+        let Some(handle) = self.services.compression.pending_sidequest_result.take() else {
+            return;
+        };
+        // `try_join` is non-blocking: if the task isn't done yet, `Err(handle)` is returned
+        // and we reschedule below.
+        let result = match handle.try_join() {
+            Ok(result) => result,
+            Err(_handle) => {
+                // Task still running — drop it; a fresh one is scheduled below.
+                tracing::debug!("sidequest: background LLM task not yet complete, rescheduling");
+                return;
+            }
+        };
+        match result {
+            Ok(Some(evicted_indices)) if !evicted_indices.is_empty() => {
+                let cursors_snapshot = self.services.sidequest.tool_output_cursors.clone();
+                let freed = self.services.sidequest.apply_eviction(
+                    &mut self.msg.messages,
+                    &evicted_indices,
+                    &self.runtime.metrics.token_counter,
+                );
+                if freed > 0 {
+                    self.recompute_prompt_tokens();
+                    // C1 fix: prevent maybe_compact() from firing in the same turn.
+                    // cooldown=0: eviction does not impose post-compaction cooldown.
+                    self.context_manager.set_compaction_state(
+                        crate::agent::context_manager::CompactionState::CompactedThisTurn {
+                            cooldown: 0,
+                        },
+                    );
+                    tracing::info!(
+                        freed_tokens = freed,
+                        evicted_cursors = evicted_indices.len(),
+                        pass = self.services.sidequest.passes_run,
+                        "sidequest eviction complete"
+                    );
+                    if let Some(ref d) = self.runtime.debug.debug_dumper {
+                        d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
+                    }
+                    if let Some(ref tx) = self.services.session.status_tx {
+                        let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
+                    }
+                } else {
+                    // apply_eviction returned 0 — clear spinner so it doesn't dangle.
+                    if let Some(ref tx) = self.services.session.status_tx {
+                        let _ = tx.send(String::new());
+                    }
+                }
+            }
+            Ok(None | Some(_)) => {
+                tracing::debug!("sidequest: pending result: no cursors to evict");
+                if let Some(ref tx) = self.services.session.status_tx {
+                    let _ = tx.send(String::new());
+                }
+            }
+            Err(e) => {
+                tracing::debug!("sidequest: background task error: {e}");
+                if let Some(ref tx) = self.services.session.status_tx {
+                    let _ = tx.send(String::new());
+                }
+            }
+        }
+    }
+    fn sidequest_schedule_next(&mut self) {
+        use zeph_llm::provider::{Message, MessageMetadata, Role};
+
+        self.services
+            .sidequest
+            .rebuild_cursors(&self.msg.messages, &self.runtime.metrics.token_counter);
+
+        if self.services.sidequest.tool_output_cursors.is_empty() {
+            tracing::debug!("sidequest: no eligible cursors");
+            return;
+        }
+
+        let prompt = self.services.sidequest.build_eviction_prompt();
+        let max_eviction_ratio = self.services.sidequest.config.max_eviction_ratio;
+        let n_cursors = self.services.sidequest.tool_output_cursors.len();
+        // Clone the provider so the spawn closure owns it without borrowing self.
+        let provider = self.summary_or_primary_provider().clone();
+
+        let eviction_future = async move {
+            let msgs = [Message {
+                role: Role::User,
+                content: prompt,
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }];
+            let response =
+                match tokio::time::timeout(std::time::Duration::from_secs(5), provider.chat(&msgs))
+                    .await
+                {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        tracing::debug!("sidequest bg: LLM call failed: {e:#}");
+                        return None;
+                    }
+                    Err(_) => {
+                        tracing::debug!("sidequest bg: LLM call timed out");
+                        return None;
+                    }
+                };
+
+            let start = response.find('{')?;
+            let end = response.rfind('}')?;
+            if start > end {
+                return None;
+            }
+            let json_slice = &response[start..=end];
+            let parsed: EvictionResponse = serde_json::from_str(json_slice).ok()?;
+            let mut valid: Vec<usize> = parsed
+                .del_cursors
+                .into_iter()
+                .filter(|&c| c < n_cursors)
+                .collect();
+            valid.sort_unstable();
+            valid.dedup();
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            let max_evict = ((n_cursors as f32) * max_eviction_ratio).ceil() as usize;
+            valid.truncate(max_evict);
+            Some(valid)
+        };
+        let handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
+            std::sync::Arc::from("agent.sidequest.eviction"),
+            move || eviction_future,
+        );
+        self.services.compression.pending_sidequest_result = Some(handle);
+        tracing::debug!("sidequest: background LLM eviction task spawned");
+        if let Some(ref tx) = self.services.session.status_tx {
+            let _ = tx.send("SideQuest: scoring tool outputs...".into());
+        }
     }
 }
 

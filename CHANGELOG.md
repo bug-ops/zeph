@@ -28,6 +28,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `refactor(core)`: split `agent/mod.rs` (4120 lines, single `impl<C: Channel> Agent<C>`
+  block of 58 methods) into focused submodules — `shutdown.rs` (session-summary + orphaned
+  tool-use flush), `subagent_commands.rs` (`/agent` command handlers, sub-agent polling, and
+  spawn-context assembly incl. the `estimate_parts_size` / `trim_parent_messages` /
+  `sanitize_parent_messages` helpers), `skill_reload.rs` (skill/instruction hot-reload),
+  `config_reload.rs` (config overlay hot-reload), and `hooks_dispatch.rs` (`CwdChanged` /
+  `FileChanged` hook dispatch + the `McpManagerDispatch` adapter). The three `SideQuest`
+  eviction methods moved into the existing `sidequest.rs`. `mod.rs` (now ~2000 lines) retains
+  the struct, constructors, and the main agent loop. The shared `impl` block is now split
+  across files, so cross-module entrypoints are `pub(super)`. No public API change. (#4923)
 - `refactor`: extract inline `#[cfg(test)]` blocks from two files into dedicated `tests`
   submodules, matching the monolith-refactor convention. `zeph-subagent/src/manager/mod.rs`
   (4118 → 527 lines) moves its three test modules to `manager/tests.rs`; the two named

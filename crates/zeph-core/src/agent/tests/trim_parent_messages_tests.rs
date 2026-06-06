@@ -4,7 +4,7 @@
 use serde_json::json;
 use zeph_llm::provider::{Message, MessagePart, Role};
 
-use crate::agent::{estimate_parts_size, trim_parent_messages};
+use crate::agent::subagent_commands::{estimate_parts_size, trim_parent_messages};
 
 fn text_msg(role: Role, text: &str) -> Message {
     Message::from_parts(
