@@ -20,20 +20,6 @@ fn default_conflict_recency_slow_threshold() -> f32 {
     0.2
 }
 
-fn validate_unit_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if !value.is_finite() {
-        return Err(serde::de::Error::custom("value must be a finite number"));
-    }
-    if !(0.0..=1.0).contains(&value) {
-        return Err(serde::de::Error::custom("value must be in [0.0, 1.0]"));
-    }
-    Ok(value)
-}
-
 /// `MemORAI` write-gate prefilter configuration (#3709).
 ///
 /// When `enabled = true`, low-signal edges (confidence below threshold + generic relation type)
@@ -50,7 +36,7 @@ pub struct WriteGateConfig {
     /// Range: `[0.0, 1.0]`.
     #[serde(
         default = "default_write_gate_min_edge_relevance",
-        deserialize_with = "validate_unit_f32"
+        deserialize_with = "validate_similarity_threshold"
     )]
     pub min_edge_relevance: f32,
 }
@@ -77,7 +63,7 @@ pub struct ConflictRecencyConfig {
     /// edges below the threshold fall back to `valid_from` comparison. Range: `[0.0, 1.0]`.
     #[serde(
         default = "default_conflict_recency_slow_threshold",
-        deserialize_with = "validate_unit_f32"
+        deserialize_with = "validate_similarity_threshold"
     )]
     pub recency_slow_threshold: f32,
 }
