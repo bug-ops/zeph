@@ -10863,6 +10863,7 @@ version = "0.21.4"
 dependencies = [
  "blake3",
  "bytes",
+ "futures",
  "metrics",
  "serde",
  "serde_json",

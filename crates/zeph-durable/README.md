@@ -12,10 +12,11 @@ point of failure instead of restarting from scratch.
 > [!IMPORTANT]
 > This crate is **under active construction** (spec-064, epic
 > [#4707](https://github.com/bug-ops/zeph/issues/4707)). The type-level foundation, the AEAD payload
-> contract, and the persistence engine — `LocalBackend` (a dedicated `durable.db` pool), the
-> background `JournalWriter` actor, and the sealed `ExecutionBackend` dispatcher — have landed. The
-> `DurableContext` facade, the replay cursor, the promise/timer layer, and the consuming adapters
-> land in follow-up issues of the epic.
+> contract, the persistence engine (`LocalBackend`, the background `JournalWriter` actor, the sealed
+> `ExecutionBackend` dispatcher), and the execution heart — the `&self` `DurableContext` with
+> deterministic step ids, the fingerprint-guarded replay cursor, the exactly-once intent/result
+> protocol, and `parallel()` batches — have landed. The promise/timer layer, journal retention, the
+> CLI/TUI integration, and the consuming adapters land in follow-up issues of the epic.
 
 ## Overview
 
@@ -37,7 +38,15 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
 - **journal** — the `Journal` trait plus its data model: `JournalEntry`, the closed `EntryKind`
   enum, and `ExecutionStatus`.
 - **effect** — `EffectClass`, the per-step side-effect contract (`Idempotent` / `AtLeastOnce` /
-  `ExactlyOnceGuarded`).
+  `ExactlyOnceGuarded`), plus `EffectIntentSubClass` and the `OnAmbiguous` policy that govern the
+  ambiguous window.
+- **step** — the durable step typestate: `StepDescriptor` (with the construction-time ambiguity
+  rule), `StepHandle` (exposes the idempotency key for boundary dedup), `StepError`, the
+  `Live`/`Replayed` `StepOutcome`, and the `DurableStep` record.
+- **handle** — the `&self` `DurableContext` front door: `step()` / `step_recorded()` /
+  `parallel()`, deterministic `AtomicU32` step ids, a BLAKE3 replay-divergence guard, the
+  exactly-once intent/result protocol, and the `ParallelScope` for completion-order-independent
+  batches.
 - **cipher** — the `PayloadCipher` AEAD seal/open contract, the `PayloadAad` location binding, and
   the read-side `ensure_payload_within_limit` guard. The concrete cipher lives in a consuming crate
   (INV-1).
@@ -122,6 +131,34 @@ let cfg: DurableConfig = toml::from_str("").unwrap(); // empty table => all defa
 assert!(!cfg.enabled);
 assert_eq!(cfg.journal_ack_timeout_ms, 5_000);
 assert_eq!(cfg.max_payload_bytes, 1_048_576);
+```
+
+A `DurableContext` wraps each unit of work in a step. A fresh run executes the closure and journals
+its result; a resumed run replays the journaled result without re-running it. The closure receives a
+`StepHandle` carrying the step's idempotency key for boundary deduplication:
+
+```rust,ignore
+use zeph_durable::{DurableContext, EffectIntentSubClass, OnAmbiguous, StepDescriptor};
+
+// Read-only work is idempotent and replays for free.
+let preview: String = ctx
+    .step(StepDescriptor::idempotent("read_head", b"tool:read:/var/log".to_vec()),
+          |_handle| async { Ok(read_first_line().await?) })
+    .await?;
+
+// A paid call is exactly-once-guarded: its intent is journaled before the call and its result
+// after, and the idempotency key is forwarded to the provider for boundary dedup.
+let reply: String = ctx
+    .step(
+        StepDescriptor::exactly_once_guarded(
+            "llm_call",
+            EffectIntentSubClass::CostBearingOrBoundaryIdempotent,
+            Some(OnAmbiguous::Skip),
+            b"llm:gpt:summarize".to_vec(),
+        )?,
+        |handle| async move { Ok(call_provider(handle.idempotency_key()).await?) },
+    )
+    .await?;
 ```
 
 ## MSRV

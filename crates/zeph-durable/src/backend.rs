@@ -24,9 +24,11 @@
 //! promise-resolution, and timer-scan methods named in the spec land alongside the
 //! `DurableContext` (the trait can gain them without breaking callers).
 
+use std::sync::Arc;
+
 use crate::config::RetentionPolicy;
 use crate::error::DurableError;
-use crate::ids::{ExecutionId, JournalSeq};
+use crate::ids::{ExecutionId, IdempotencyKey, JournalSeq};
 use crate::journal::{ExecutionStatus, Journal, JournalEntry};
 
 pub mod local;
@@ -82,6 +84,25 @@ pub struct BackendCapabilities {
 pub trait ExecutionBackend: Journal + Send + Sync + crate::sealed::Sealed {
     /// Return this backend's stable capability description.
     fn capabilities(&self) -> BackendCapabilities;
+
+    /// Look up a committed `StepResult` anywhere in an execution by its [`IdempotencyKey`].
+    ///
+    /// This is the point-lookup behind INV-13: after a [`DurableError::ReplayDivergence`] the
+    /// execution restarts fresh, but a guarded effect that already committed its result must not
+    /// re-fire. Before invoking a guarded operation the durable step consults this lookup; a `Some`
+    /// result means the effect already succeeded and its journaled value is returned instead. The
+    /// key uniquely locates the row via the `idx_durable_journal_idem_key` index, so the lookup is
+    /// `O(log n)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Decode`] if the located row cannot be reconstructed, or
+    /// [`DurableError::Storage`] if the query fails.
+    fn lookup_committed_result(
+        &self,
+        id: ExecutionId,
+        idem_key: IdempotencyKey,
+    ) -> impl std::future::Future<Output = Result<Option<JournalEntry>, DurableError>> + Send;
 }
 
 /// Closed enum dispatch over the compiled-in backends.
@@ -108,7 +129,12 @@ pub trait ExecutionBackend: Journal + Send + Sync + crate::sealed::Sealed {
 #[non_exhaustive]
 pub enum DurableBackendEnum {
     /// The always-compiled local backend journaling to a dedicated `durable.db`.
-    Local(LocalBackend),
+    ///
+    /// Held behind an [`Arc`] so the same backing instance can be shared with the
+    /// [`JournalWriter`](crate::JournalWriter) (which owns the write path) while this enum serves
+    /// the read path consumed by the [`ReplayCursor`](crate::DurableContext) — both observe one
+    /// `durable.db` pool.
+    Local(Arc<LocalBackend>),
 }
 
 impl crate::sealed::Sealed for DurableBackendEnum {}
@@ -154,6 +180,16 @@ impl ExecutionBackend for DurableBackendEnum {
     fn capabilities(&self) -> BackendCapabilities {
         match self {
             Self::Local(backend) => backend.capabilities(),
+        }
+    }
+
+    async fn lookup_committed_result(
+        &self,
+        id: ExecutionId,
+        idem_key: IdempotencyKey,
+    ) -> Result<Option<JournalEntry>, DurableError> {
+        match self {
+            Self::Local(backend) => backend.lookup_committed_result(id, idem_key).await,
         }
     }
 }

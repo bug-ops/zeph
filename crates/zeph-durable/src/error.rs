@@ -106,6 +106,38 @@ pub enum DurableError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    /// A step's operation closure returned an error on a fresh execution. The step did not complete,
+    /// so no `StepResult` is journaled; on a later resume the step re-runs (or, for a guarded effect,
+    /// its [`OnAmbiguous`](crate::OnAmbiguous) policy applies). The closure's own error is attached
+    /// as the source.
+    #[error("step '{step}' operation failed")]
+    StepFailed {
+        /// The name of the step whose operation closure failed.
+        step: &'static str,
+        /// The closure's underlying error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// A guarded step resumed inside the ambiguous window (an `EffectIntent` is journaled but no
+    /// `StepResult`) and its policy is [`OnAmbiguous::Fail`](crate::OnAmbiguous::Fail): the layer
+    /// refuses to guess whether the irreversible effect fired and surfaces the decision to the
+    /// operator instead of re-running or skipping it.
+    #[error("step {step_id} resumed in the ambiguous window and its on_ambiguous policy is 'fail'")]
+    AmbiguousEffect {
+        /// The step caught in the ambiguous window.
+        step_id: StepId,
+    },
+
+    /// A step result could not be serialized into journal bytes before sealing. The step's value is
+    /// the consumer's serializable type, so this indicates a faulty `Serialize` implementation; it
+    /// fails closed rather than journaling a partial payload. Per INV-5 only the step name is named.
+    #[error("step '{step}' result could not be serialized for the journal")]
+    Serialize {
+        /// The name of the step whose result failed to serialize.
+        step: &'static str,
+    },
 }
 
 impl DurableError {
@@ -120,6 +152,17 @@ impl DurableError {
         Self::Storage {
             op,
             source: source.into(),
+        }
+    }
+
+    /// Wrap a step operation closure's failure as a [`DurableError::StepFailed`].
+    ///
+    /// Keeps the originating error reachable via [`std::error::Error::source`] while the `Display`
+    /// line stays metadata-only (INV-5).
+    pub(crate) fn step_failed(step: &'static str, source: crate::step::StepError) -> Self {
+        Self::StepFailed {
+            step,
+            source: source.into_inner(),
         }
     }
 }
@@ -157,5 +200,28 @@ mod tests {
         // never inlined into Display (INV-5).
         assert!(!rendered.contains("secret-bind-value"));
         assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn step_failed_names_step_but_not_the_source_detail() {
+        let err = DurableError::step_failed(
+            "transfer_funds",
+            crate::step::StepError::new("secret-operation-detail"),
+        );
+        let rendered = err.to_string();
+        assert!(rendered.contains("transfer_funds"));
+        assert!(!rendered.contains("secret-operation-detail"));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn ambiguous_and_serialize_messages_are_metadata_only() {
+        let ambiguous = DurableError::AmbiguousEffect {
+            step_id: StepId::new(4),
+        };
+        assert!(ambiguous.to_string().contains("step 4"));
+
+        let serialize = DurableError::Serialize { step: "persist" };
+        assert!(serialize.to_string().contains("persist"));
     }
 }

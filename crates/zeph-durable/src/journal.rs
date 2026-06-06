@@ -164,6 +164,28 @@ impl EntryKind {
     pub fn tag(&self) -> &'static str {
         self.tag_enum().as_str()
     }
+
+    /// Return the entry's [`IdempotencyKey`], for the two step-bearing kinds that carry one.
+    ///
+    /// The replay-divergence guard (INV-3) compares the journaled key of a `StepResult` /
+    /// `EffectIntent` against the key freshly derived from the replayed descriptor; control and
+    /// promise/timer entries have no idempotency key and return `None`.
+    #[must_use]
+    pub fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        match self {
+            Self::StepResult {
+                idempotency_key, ..
+            }
+            | Self::EffectIntent {
+                idempotency_key, ..
+            } => Some(*idempotency_key),
+            Self::PromiseCreated { .. }
+            | Self::PromiseResolved { .. }
+            | Self::TimerArmed { .. }
+            | Self::TimerFired { .. }
+            | Self::Checkpoint { .. } => None,
+        }
+    }
 }
 
 /// One ordered entry in a journal.

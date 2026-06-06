@@ -40,7 +40,15 @@
 //!   [`JournalWriterHandle`]: group-commit for buffered appends, flush-before-commit ACKs for
 //!   exactly-once entries, and `MAX(seq)` restart resume.
 //!
-//! The replay cursor and the durable step primitive build on these in follow-up issues.
+//! Execution surface:
+//!
+//! - [`step`] — the durable step typestate: [`StepDescriptor`] (with the construction-time
+//!   ambiguity rule), [`StepHandle`], [`StepError`], [`StepOutcome`], and [`DurableStep`].
+//! - [`handle`] — the `&self` [`DurableContext`] front door: deterministic step ids, replay with a
+//!   BLAKE3 divergence guard, the exactly-once intent/result protocol, and [`ParallelScope`] for
+//!   completion-order-independent parallel batches.
+//!
+//! The promise, timer, and retention layers build on these in follow-up issues.
 //!
 //! # Schema ownership
 //!
@@ -62,6 +70,7 @@
 //! assert_eq!(key, IdempotencyKey::derive(execution, StepId::new(0), b"tool:read_file"));
 //! ```
 
+mod replay;
 mod sealed;
 
 pub mod backend;
@@ -69,8 +78,10 @@ pub mod cipher;
 pub mod config;
 pub mod effect;
 pub mod error;
+pub mod handle;
 pub mod ids;
 pub mod journal;
+pub mod step;
 pub mod writer;
 
 #[doc(hidden)]
@@ -81,8 +92,10 @@ pub use cipher::{
     CipherError, EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit,
 };
 pub use config::{DurableBackend, DurableConfig, EncryptionGate, RetentionPolicy};
-pub use effect::EffectClass;
+pub use effect::{EffectClass, EffectIntentSubClass, OnAmbiguous};
 pub use error::DurableError;
+pub use handle::{DurableContext, ParallelScope};
 pub use ids::{ExecutionId, ExecutionKind, IdempotencyKey, JournalSeq, PromiseId, StepId, TimerId};
 pub use journal::{EntryKind, ExecutionStatus, Journal, JournalEntry};
+pub use step::{DurableStep, StepDescriptor, StepError, StepHandle, StepOutcome};
 pub use writer::{JournalWriter, JournalWriterHandle};

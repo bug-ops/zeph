@@ -47,6 +47,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DurableBackendEnum` enum dispatcher keep the backend surface closed with no `Box<dyn>` on the
   hot path. Promise, timer, and checkpoint journal entries fail closed
   (`DurableError::UnsupportedEntryKind`) until the promise/timer layer lands. (#4946)
+- `feat(durable)`: added the durable step primitive and the `&self` `DurableContext` — the execution
+  heart every adapter wraps. `ctx.step()` runs an operation closure and journals its result; on
+  resume it replays the journaled result without re-invoking the closure (INV-10, FR-DE-02), and
+  `ctx.step_recorded()` / `StepOutcome::{Live, Replayed}` expose the live-vs-replayed distinction for
+  double-emit suppression. Step ids are assigned structurally via an `AtomicU32` (INV-2):
+  `parallel()` returns a `ParallelScope` whose children get contiguous, eagerly-assigned ids, so a
+  parallel batch's ids are independent of completion order. Before replaying a result the context
+  compares the journaled step's `IdempotencyKey` (a BLAKE3 structural fingerprint folding the step
+  name, effect, and op fingerprint) against the current descriptor's; a mismatch raises
+  `DurableError::ReplayDivergence`, marks the journal `aborted`, and disables replay so the execution
+  restarts fresh (INV-3, FR-DE-03). `StepDescriptor::exactly_once_guarded` enforces the
+  construction-time ambiguity rule — a destructive, security-relevant, money-moving, or custom
+  guarded step without an explicit `OnAmbiguous` is rejected with
+  `DurableError::AmbiguityPolicyRequired` (FR-DE-09). A guarded step commits its `EffectIntent`
+  (ACKed) before the closure runs and its `StepResult` (ACKed) after (FR-DE-04); a guarded effect
+  that already committed a result is recognized by an idempotency-key point lookup and not re-fired,
+  even on a post-divergence fresh run (INV-13). Every ambiguous-window resolution emits a mandatory
+  structured audit record (FR-DE-10), and a writer timeout degrades the step to non-durable mode
+  rather than blocking (INV-12). The `ReplayCursor` reads the journal in bounded step-range segments
+  (NFR-DE-02). The promise, timer, and retention layers land in follow-up issues. (#4947)
 
 ### Fixed
 

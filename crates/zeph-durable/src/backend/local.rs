@@ -23,11 +23,14 @@
 //!
 //! This revision journals the step-execution entries — [`EntryKind::StepResult`] and
 //! [`EntryKind::EffectIntent`] — that the durable step primitive records, plus execution
-//! lifecycle (open and [`finalize`](Journal::finalize)) and the writer's restart anchor
-//! (`max_seq`). Promise, timer, and checkpoint entries are journaled by the
-//! promise/timer and retention layers; until then [`append`](Journal::append) of those kinds fails
-//! closed with [`DurableError::UnsupportedEntryKind`] rather than dropping their state. The
-//! retention sweep ([`prune`](Journal::prune)) is a no-op stub here.
+//! lifecycle (open and [`finalize`](Journal::finalize)), the writer's restart anchor (`max_seq`),
+//! and the idempotency-key point lookup
+//! ([`lookup_committed_result`](ExecutionBackend::lookup_committed_result)) that lets a guarded step
+//! recognize an already-committed effect after a replay divergence (INV-13). Promise, timer, and
+//! checkpoint entries are journaled by the promise/timer and retention layers; until then
+//! [`append`](Journal::append) of those kinds fails closed with
+//! [`DurableError::UnsupportedEntryKind`] rather than dropping their state. The retention sweep
+//! ([`prune`](Journal::prune)) is a no-op stub here.
 
 use std::fmt;
 use std::sync::Arc;
@@ -263,6 +266,49 @@ impl LocalBackend {
             .await
             .map_err(|e| DurableError::storage("append_batch", e))?;
         Ok(())
+    }
+
+    /// Look up a committed `StepResult` anywhere in an execution by its [`IdempotencyKey`].
+    ///
+    /// Backs INV-13: a guarded effect that already committed its result must not re-fire after a
+    /// replay divergence restarts the execution fresh. Returns the (opened) `StepResult` entry when
+    /// one exists, or `None`. The `idx_durable_journal_idem_key` partial index makes this an
+    /// `O(log n)` point lookup rather than a scan.
+    ///
+    /// Span: `durable.journal.lookup_idem`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::Decode`] if the
+    /// located row cannot be reconstructed.
+    pub(crate) async fn lookup_committed_result(
+        &self,
+        id: ExecutionId,
+        idem_key: IdempotencyKey,
+    ) -> Result<Option<JournalEntry>, DurableError> {
+        let span = tracing::info_span!(
+            "durable.journal.lookup_idem",
+            execution_id = %id.as_uuid(),
+            found = tracing::field::Empty,
+        );
+        async move {
+            let rows: Vec<JournalRowRead> = zeph_db::query_as(sql!(
+                "SELECT seq, step_id, entry_kind, idem_key, effect_class, payload, payload_version, hmac, created_at
+                 FROM durable_journal
+                 WHERE execution_id = ? AND idem_key = ? AND entry_kind = 'step_result'
+                 ORDER BY seq LIMIT 1"
+            ))
+            .bind(id.as_uuid().to_string())
+            .bind(idem_key.as_bytes().to_vec())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("lookup_idem", e))?;
+            let entry = self.rows_to_entries(id, rows).await?.into_iter().next();
+            tracing::Span::current().record("found", entry.is_some());
+            Ok(entry)
+        }
+        .instrument(span)
+        .await
     }
 
     /// Read the highest committed [`JournalSeq`], or `None` for an empty journal.
@@ -654,6 +700,14 @@ impl ExecutionBackend for LocalBackend {
             max_payload: usize::try_from(self.max_payload_bytes).unwrap_or(usize::MAX),
         }
     }
+
+    async fn lookup_committed_result(
+        &self,
+        id: ExecutionId,
+        idem_key: IdempotencyKey,
+    ) -> Result<Option<JournalEntry>, DurableError> {
+        LocalBackend::lookup_committed_result(self, id, idem_key).await
+    }
 }
 
 /// Column values for a single `durable_journal` row, ready to bind.
@@ -689,7 +743,7 @@ type JournalRowRead = (
 );
 
 /// Current Unix time in milliseconds, clamped into `i64` and never panicking.
-fn now_unix_millis() -> i64 {
+pub(crate) fn now_unix_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -1029,6 +1083,44 @@ mod tests {
         assert_eq!(segment.len(), 2);
         assert_eq!(segment[0].step_id, StepId::new(2));
         assert_eq!(segment[1].step_id, StepId::new(3));
+    }
+
+    #[tokio::test]
+    async fn lookup_committed_result_finds_by_idem_key() {
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let entry = step_result(exec, 0, b"committed");
+        let idem_key = match &entry.entry {
+            EntryKind::StepResult {
+                idempotency_key, ..
+            } => *idempotency_key,
+            other => panic!("unexpected entry kind: {other:?}"),
+        };
+        backend.append(entry).await.unwrap();
+
+        let found = backend
+            .lookup_committed_result(exec, idem_key)
+            .await
+            .unwrap()
+            .expect("committed result is located by its idempotency key");
+        match &found.entry {
+            EntryKind::StepResult { payload, .. } => assert_eq!(payload.as_ref(), b"committed"),
+            other => panic!("unexpected entry kind: {other:?}"),
+        }
+
+        // A key that was never committed yields nothing rather than erroring.
+        let absent = IdempotencyKey::derive(exec, StepId::new(99), b"never");
+        assert!(
+            backend
+                .lookup_committed_result(exec, absent)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
