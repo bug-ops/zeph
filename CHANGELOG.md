@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fix(acp)`: spawn agent connection thread with explicit 8 MiB stack (`thread::Builder::new().stack_size(ACP_AGENT_STACK_SIZE)`) in HTTP and WebSocket transports; bare `thread::spawn` overflowed the default 512 KiB macOS stack on `session/prompt`. `spawn_agent_connection` now returns `io::Result` — spawn failure responds 503 on HTTP and cleanly releases the WS slot. Follow-up: stdio transport tracked in #4901. (#4897)
 - `fix(acp)`: `serve_stdio` now spawns a dedicated OS thread with an explicit 8 MiB stack and a `current_thread` Tokio runtime; the previous implementation ran the agent future on a tokio worker thread (2 MiB default), which was insufficient for deeply nested agent sessions. The thread name is `acp-stdio`; spawn failures and runtime-build errors propagate as `AcpError::Transport`. (#4901)
 - `fix(gateway)`: webhook `body` field is now sanitized with `strip_control_chars_preserve_whitespace` before being forwarded to the agent, consistent with `sender` and `channel`; previously raw control characters (null bytes, ANSI escapes) in `body` bypassed sanitization. (#4904)
+- `fix(a2a)`: `TaskManager` now evicts terminal tasks (Completed, Failed, Canceled,
+  Rejected) after a configurable TTL (default 1 hour) via a background loop in
+  `A2aServer::serve`. The in-memory `HashMap` previously grew without bound.
+  New `A2aServer::with_task_ttl(Option<Duration>)` builder method; new
+  `A2aServerConfig::task_ttl_secs` config field (default 3600). (#4903)
+- `fix(a2a)`: Replace 45-line hand-rolled `now_rfc3339()` (custom leap-year arithmetic)
+  with `chrono::Utc::now().to_rfc3339()`. (#4905)
 - `fix(llm)`: `OpenAiProvider` now applies a 2-layer resolution strategy to the
   `max_tokens` / `max_completion_tokens` field selection: (1) explicit config override,
   (2) built-in model-name prefix table.
