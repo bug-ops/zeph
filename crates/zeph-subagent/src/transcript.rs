@@ -329,27 +329,7 @@ pub fn sweep_old_transcripts(dir: &Path, max_files: usize) -> io::Result<usize> 
     Ok(deleted)
 }
 
-/// Returns the current UTC time as an ISO 8601 string (`"YYYY-MM-DDTHH:MM:SSZ"`).
-///
-/// This is the public companion of the internal `utc_now()` helper, exposed for
-/// use by [`SubAgentManager`][crate::SubAgentManager] when writing transcript sidecars.
-///
-/// # Examples
-///
-/// ```rust
-/// use zeph_subagent::transcript::utc_now_pub;
-///
-/// let ts = utc_now_pub();
-/// assert_eq!(ts.len(), 20, "expected 20-char ISO 8601 timestamp");
-/// assert!(ts.ends_with('Z'));
-/// assert!(ts.contains('T'));
-/// ```
-#[must_use]
-pub fn utc_now_pub() -> String {
-    utc_now()
-}
-
-fn utc_now() -> String {
+pub(crate) fn utc_now() -> String {
     // Use SystemTime for a zero-dependency ISO 8601 timestamp.
     // Format: 2026-03-05T00:18:16Z
     let secs = std::time::SystemTime::now()

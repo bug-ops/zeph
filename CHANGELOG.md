@@ -46,6 +46,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handling is preserved. (#4868)
 - refactor(memory): remove `ScoredCandidate` single-field wrapper in `tiered_retrieval.rs` ([#4867](https://github.com/bug-ops/zeph/issues/4867))
 - fix(memory): replace `.entered()` span guard with removal in `tiered_retrieval.rs` async fn ([#4866](https://github.com/bug-ops/zeph/issues/4866))
+- `zeph-subagent`: removed public `transcript::utc_now_pub()` — use `transcript::utc_now()` (now `pub(crate)`) from within the crate instead. Closes #4886.
+- `zeph-subagent`: `SubAgentManager::resume` now emits `subagent.manager.resume` tracing span. Closes #4883.
+
+### Fixed
 - `docs(config)`: `CandleConfig` in `zeph-config` now has a `///` doc comment describing its
   purpose (`[llm.candle]` TOML section) and its relationship to `CandleInlineConfig`. (#4869)
 

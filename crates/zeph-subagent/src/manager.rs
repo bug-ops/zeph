@@ -1350,7 +1350,7 @@ impl SubAgentManager {
             grants: PermissionGrants::default(),
             pending_secret_rx,
             secret_tx,
-            started_at_str: crate::transcript::utc_now_pub(),
+            started_at_str: crate::transcript::utc_now(),
             transcript_dir: handle_transcript_dir,
             mcp_tool_names: handle_mcp_tool_names,
         };
@@ -1363,7 +1363,7 @@ impl SubAgentManager {
             let info = FleetSessionInfo {
                 id: task_id.clone(),
                 agent_name: def_name.to_owned(),
-                started_at: crate::transcript::utc_now_pub(),
+                started_at: crate::transcript::utc_now(),
             };
             self.spawn_hook_task(async move {
                 if let Err(e) = registry.register_active(&info).await {
@@ -1439,7 +1439,7 @@ impl SubAgentManager {
                     agent_name: agent_name.to_owned(),
                     def_name: agent_name.to_owned(),
                     status: SubAgentState::Submitted,
-                    started_at: crate::transcript::utc_now_pub(),
+                    started_at: crate::transcript::utc_now(),
                     finished_at: None,
                     resumed_from: resumed_from.map(str::to_owned),
                     turns_used: 0,
@@ -1728,7 +1728,7 @@ impl SubAgentManager {
                 def_name: handle.def.name.clone(),
                 status: final_state,
                 started_at: handle.started_at_str.clone(),
-                finished_at: Some(crate::transcript::utc_now_pub()),
+                finished_at: Some(crate::transcript::utc_now()),
                 resumed_from: None,
                 turns_used,
                 mcp_tool_names: handle.mcp_tool_names.clone(),
@@ -1762,6 +1762,7 @@ impl SubAgentManager {
     /// [`SubAgentError::Transcript`] on I/O or parse failure,
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    #[tracing::instrument(name = "subagent.manager.resume", skip_all, fields(id_prefix = id_prefix))]
     pub fn resume(
         &mut self,
         id_prefix: &str,
@@ -1946,7 +1947,7 @@ impl SubAgentManager {
             grants: PermissionGrants::default(),
             pending_secret_rx,
             secret_tx,
-            started_at_str: crate::transcript::utc_now_pub(),
+            started_at_str: crate::transcript::utc_now(),
             transcript_dir: resume_handle_transcript_dir,
             mcp_tool_names: resumed_mcp_tool_names,
         };
