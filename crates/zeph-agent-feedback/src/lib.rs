@@ -28,7 +28,7 @@
 //!   inside longer compounds. Mitigated by using 2+ character patterns only for unanchored CJK.
 //! - **Unsupported languages** (e.g., Korean, Arabic): regex returns `None`; every message
 //!   triggers a judge call, rate-limited to `judge_rate_limit` calls per `judge_rate_window_secs`
-//!   seconds (configurable via [`zeph_config::LearningConfig`]).
+//!   seconds (configurable via `LearningConfig`).
 
 use std::collections::VecDeque;
 use std::sync::LazyLock;
