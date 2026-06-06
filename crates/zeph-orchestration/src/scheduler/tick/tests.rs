@@ -1,0 +1,1432 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Unit tests for the orchestration scheduler tick loop.
+
+use std::time::Duration;
+
+use super::*;
+use crate::scheduler::tests::*;
+
+#[test]
+fn test_tick_produces_spawn_for_ready() {
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    let actions = scheduler.tick();
+    let spawns: Vec<_> = actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+        .collect();
+    assert_eq!(spawns.len(), 2);
+}
+
+#[test]
+fn test_tick_dispatches_all_regardless_of_max_parallel() {
+    // tick() enforces max_parallel as a pre-dispatch cap.
+    // With 5 independent tasks and max_parallel=2, only 2 are dispatched per tick.
+    let graph = graph_from_nodes(vec![
+        make_node(0, &[]),
+        make_node(1, &[]),
+        make_node(2, &[]),
+        make_node(3, &[]),
+        make_node(4, &[]),
+    ]);
+    let mut config = make_config();
+    config.max_parallel = 2;
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+    let actions = scheduler.tick();
+    let spawn_count = actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+        .count();
+    assert_eq!(
+        spawn_count, 2,
+        "max_parallel=2 caps dispatched tasks per tick"
+    );
+}
+
+#[test]
+fn test_tick_detects_completion() {
+    let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
+    graph.tasks[0].status = TaskStatus::Completed;
+    let config = make_config();
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+    // Manually set graph to Running since new() validated Created status
+    // — but all tasks are terminal. tick() should detect completion.
+    let actions = scheduler.tick();
+    let has_done = actions.iter().any(|a| {
+        matches!(
+            a,
+            SchedulerAction::Done {
+                status: GraphStatus::Completed
+            }
+        )
+    });
+    assert!(
+        has_done,
+        "should emit Done(Completed) when all tasks are terminal"
+    );
+}
+
+#[test]
+fn test_completion_event_marks_deps_ready() {
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+    let mut scheduler = make_scheduler(graph);
+
+    // Simulate task 0 running.
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "handle-0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "handle-0".to_string(),
+        outcome: TaskOutcome::Completed {
+            output: "done".to_string(),
+            artifacts: vec![],
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+
+    let actions = scheduler.tick();
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Completed);
+    // Task 1 should now be Ready or Spawn action emitted.
+    let has_spawn_1 = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(1)));
+    assert!(
+        has_spawn_1 || scheduler.graph.tasks[1].status == TaskStatus::Ready,
+        "task 1 should be spawned or marked Ready"
+    );
+}
+
+#[test]
+fn test_failure_abort_cancels_running() {
+    let graph = graph_from_nodes(vec![
+        make_node(0, &[]),
+        make_node(1, &[]),
+        make_node(2, &[0, 1]),
+    ]);
+    let mut scheduler = make_scheduler(graph);
+
+    // Simulate tasks 0 and 1 running.
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+    scheduler.graph.tasks[1].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(1),
+        RunningTask {
+            agent_handle_id: "h1".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    // Task 0 fails with default Abort strategy.
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "h0".to_string(),
+        outcome: TaskOutcome::Failed {
+            error: "boom".to_string(),
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+
+    let actions = scheduler.tick();
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+    let cancel_ids: Vec<_> = actions
+        .iter()
+        .filter_map(|a| {
+            if let SchedulerAction::Cancel { agent_handle_id } = a {
+                Some(agent_handle_id.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(cancel_ids.contains(&"h1"), "task 1 should be canceled");
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Done { .. }))
+    );
+}
+
+#[test]
+fn test_failure_skip_propagates() {
+    use crate::graph::FailureStrategy;
+
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+    let mut scheduler = make_scheduler(graph);
+
+    // Set failure strategy to Skip on task 0.
+    scheduler.graph.tasks[0].failure_strategy = Some(FailureStrategy::Skip);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "h0".to_string(),
+        outcome: TaskOutcome::Failed {
+            error: "skip me".to_string(),
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+    scheduler.tick();
+
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Skipped);
+    assert_eq!(scheduler.graph.tasks[1].status, TaskStatus::Skipped);
+}
+
+#[test]
+fn test_failure_retry_reschedules() {
+    use crate::graph::FailureStrategy;
+
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].failure_strategy = Some(FailureStrategy::Retry);
+    scheduler.graph.tasks[0].max_retries = Some(3);
+    scheduler.graph.tasks[0].retry_count = 0;
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "h0".to_string(),
+        outcome: TaskOutcome::Failed {
+            error: "transient".to_string(),
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+    let actions = scheduler.tick();
+
+    // Task should be rescheduled (Ready) and a Spawn action emitted.
+    let has_spawn = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(0)));
+    assert!(
+        has_spawn || scheduler.graph.tasks[0].status == TaskStatus::Ready,
+        "retry should produce spawn or Ready status"
+    );
+    // retry_count incremented
+    assert_eq!(scheduler.graph.tasks[0].retry_count, 1);
+}
+
+#[test]
+fn test_process_event_failed_retry() {
+    use crate::graph::FailureStrategy;
+
+    // End-to-end: send Failed event, verify retry path produces Ready -> Spawn.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].failure_strategy = Some(FailureStrategy::Retry);
+    scheduler.graph.tasks[0].max_retries = Some(2);
+    scheduler.graph.tasks[0].retry_count = 0;
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "h0".to_string(),
+        outcome: TaskOutcome::Failed {
+            error: "first failure".to_string(),
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+    let actions = scheduler.tick();
+
+    // After retry: retry_count = 1, status = Ready or Spawn emitted.
+    assert_eq!(scheduler.graph.tasks[0].retry_count, 1);
+    let spawned = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(0)));
+    assert!(
+        spawned || scheduler.graph.tasks[0].status == TaskStatus::Ready,
+        "retry should emit Spawn or set Ready"
+    );
+    // Graph must still be Running.
+    assert_eq!(scheduler.graph.status, GraphStatus::Running);
+}
+
+#[test]
+fn test_timeout_cancels_stalled() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut config = make_config();
+    config.task_timeout_secs = 1; // 1 second timeout
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    // Simulate a running task that started just over 1 second ago.
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap(), // already timed out
+            admission_permit: None,
+        },
+    );
+
+    let actions = scheduler.tick();
+    let has_cancel = actions.iter().any(
+        |a| matches!(a, SchedulerAction::Cancel { agent_handle_id } if agent_handle_id == "h0"),
+    );
+    assert!(has_cancel, "timed-out task should emit Cancel action");
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+}
+
+#[test]
+fn test_cancel_all() {
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+    scheduler.graph.tasks[1].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(1),
+        RunningTask {
+            agent_handle_id: "h1".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    let actions = scheduler.cancel_all();
+
+    assert_eq!(scheduler.graph.status, GraphStatus::Canceled);
+    assert!(scheduler.running.is_empty());
+    let cancel_count = actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Cancel { .. }))
+        .count();
+    assert_eq!(cancel_count, 2);
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        SchedulerAction::Done {
+            status: GraphStatus::Canceled
+        }
+    )));
+}
+
+#[test]
+fn test_record_spawn_failure() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    // Simulate task marked Running (by tick) but spawn failed.
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    let error = SubAgentError::Spawn("spawn error".to_string());
+    let actions = scheduler.record_spawn_failure(TaskId(0), &error);
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+    // With Abort strategy and no other running tasks, graph should be Failed.
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Done { .. }))
+    );
+}
+
+#[test]
+fn test_record_spawn_failure_concurrency_limit_reverts_to_ready() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    // Simulate tick() optimistically marking the task Running before spawn.
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    // Concurrency limit hit — transient, should not fail the task.
+    let error = SubAgentError::ConcurrencyLimit { active: 4, max: 4 };
+    let actions = scheduler.record_spawn_failure(TaskId(0), &error);
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Ready,
+        "task must revert to Ready so the next tick can retry"
+    );
+    assert_eq!(
+        scheduler.graph.status,
+        GraphStatus::Running,
+        "graph must stay Running, not transition to Failed"
+    );
+    assert!(
+        actions.is_empty(),
+        "no cancel or done actions expected for a transient deferral"
+    );
+}
+
+#[test]
+fn test_record_spawn_failure_concurrency_limit_variant_spawn_for_task() {
+    // Both spawn() and resume() now return SubAgentError::ConcurrencyLimit — verify handling.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    let error = SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+    let actions = scheduler.record_spawn_failure(TaskId(0), &error);
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Ready);
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn test_concurrency_deferral_does_not_affect_running_task() {
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    // Simulate both tasks optimistically marked Running by tick().
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+    scheduler.graph.tasks[1].status = TaskStatus::Running;
+
+    // Task 1 spawn fails with concurrency limit.
+    let error = SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+    let actions = scheduler.record_spawn_failure(TaskId(1), &error);
+
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Running,
+        "task 0 must remain Running"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[1].status,
+        TaskStatus::Ready,
+        "task 1 must revert to Ready"
+    );
+    assert_eq!(
+        scheduler.graph.status,
+        GraphStatus::Running,
+        "graph must stay Running"
+    );
+    assert!(actions.is_empty(), "no cancel or done actions expected");
+}
+
+#[test]
+fn test_max_concurrent_zero_no_infinite_loop() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        max_parallel: 0,
+        ..make_config()
+    };
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &config,
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    let actions1 = scheduler.tick();
+    assert!(
+        actions1
+            .iter()
+            .all(|a| !matches!(a, SchedulerAction::Spawn { .. })),
+        "no Spawn expected when max_parallel=0"
+    );
+    assert!(
+        actions1
+            .iter()
+            .all(|a| !matches!(a, SchedulerAction::Done { .. })),
+        "no Done(Failed) expected — ready tasks exist, so no deadlock"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Running);
+
+    let actions2 = scheduler.tick();
+    assert!(
+        actions2
+            .iter()
+            .all(|a| !matches!(a, SchedulerAction::Done { .. })),
+        "second tick must not emit Done(Failed) — ready tasks still exist"
+    );
+    assert_eq!(
+        scheduler.graph.status,
+        GraphStatus::Running,
+        "graph must remain Running"
+    );
+}
+
+#[test]
+fn test_all_tasks_deferred_graph_stays_running() {
+    let graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    // First tick emits Spawn for both tasks and marks them Running.
+    let actions = scheduler.tick();
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+            .count(),
+        2,
+        "expected 2 Spawn actions on first tick"
+    );
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Running);
+    assert_eq!(scheduler.graph.tasks[1].status, TaskStatus::Running);
+
+    // Both spawns fail — both revert to Ready.
+    let error = SubAgentError::ConcurrencyLimit { active: 2, max: 2 };
+    let r0 = scheduler.record_spawn_failure(TaskId(0), &error);
+    let r1 = scheduler.record_spawn_failure(TaskId(1), &error);
+    assert!(r0.is_empty() && r1.is_empty(), "no cancel/done on deferral");
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Ready);
+    assert_eq!(scheduler.graph.tasks[1].status, TaskStatus::Ready);
+    assert_eq!(scheduler.graph.status, GraphStatus::Running);
+
+    // Second tick must retry both deferred tasks.
+    let retry_actions = scheduler.tick();
+    let spawn_count = retry_actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+        .count();
+    assert!(
+        spawn_count > 0,
+        "second tick must re-emit Spawn for deferred tasks"
+    );
+    assert!(
+        retry_actions.iter().all(|a| !matches!(
+            a,
+            SchedulerAction::Done {
+                status: GraphStatus::Failed,
+                ..
+            }
+        )),
+        "no Done(Failed) expected"
+    );
+}
+
+#[test]
+fn test_no_agent_routes_inline() {
+    // NoneRouter: when no agent matches, task falls back to RunInline.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler_with_router(graph, Box::new(NoneRouter));
+    let actions = scheduler.tick();
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Running);
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::RunInline { .. }))
+    );
+}
+
+#[test]
+fn test_stale_event_rejected() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    // Simulate task running with handle "current-handle".
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "current-handle".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    // Send a completion event from the OLD agent (stale handle).
+    let stale_event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "old-handle".to_string(),
+        outcome: TaskOutcome::Completed {
+            output: "stale output".to_string(),
+            artifacts: vec![],
+        },
+    };
+    scheduler.buffered_events.push_back(stale_event);
+    let actions = scheduler.tick();
+
+    assert_ne!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Completed,
+        "stale event must not complete the task"
+    );
+    let has_done = actions
+        .iter()
+        .any(|a| matches!(a, SchedulerAction::Done { .. }));
+    assert!(
+        !has_done,
+        "no Done action should be emitted for a stale event"
+    );
+    assert!(
+        scheduler.running.contains_key(&TaskId(0)),
+        "running task must remain after stale event"
+    );
+}
+
+#[test]
+fn test_duration_ms_computed_correctly() {
+    // Regression test for C1: duration_ms must be non-zero after completion.
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_millis(50))
+                .unwrap(),
+            admission_permit: None,
+        },
+    );
+
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "h0".to_string(),
+        outcome: TaskOutcome::Completed {
+            output: "result".to_string(),
+            artifacts: vec![],
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+    scheduler.tick();
+
+    let result = scheduler.graph.tasks[0].result.as_ref().unwrap();
+    assert!(
+        result.duration_ms > 0,
+        "duration_ms should be > 0, got {}",
+        result.duration_ms
+    );
+}
+
+// --- #1619 regression tests: consecutive_spawn_failures + exponential backoff ---
+
+#[test]
+fn test_consecutive_spawn_failures_increments_on_concurrency_limit() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    assert_eq!(scheduler.consecutive_spawn_failures, 0, "starts at zero");
+
+    let error = SubAgentError::ConcurrencyLimit { active: 4, max: 4 };
+    scheduler.record_spawn_failure(TaskId(0), &error);
+    scheduler.record_batch_backoff(false, true);
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 1,
+        "first deferral tick: consecutive_spawn_failures must be 1"
+    );
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.record_spawn_failure(TaskId(0), &error);
+    scheduler.record_batch_backoff(false, true);
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 2,
+        "second deferral tick: consecutive_spawn_failures must be 2"
+    );
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.record_spawn_failure(TaskId(0), &error);
+    scheduler.record_batch_backoff(false, true);
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 3,
+        "third deferral tick: consecutive_spawn_failures must be 3"
+    );
+}
+
+#[test]
+fn test_consecutive_spawn_failures_resets_on_success() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    let error = SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+    scheduler.record_spawn_failure(TaskId(0), &error);
+    scheduler.record_batch_backoff(false, true);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.record_spawn_failure(TaskId(0), &error);
+    scheduler.record_batch_backoff(false, true);
+    assert_eq!(scheduler.consecutive_spawn_failures, 2);
+
+    scheduler.record_spawn(TaskId(0), "handle-0".to_string(), "worker".to_string());
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 0,
+        "record_spawn must reset consecutive_spawn_failures to 0"
+    );
+}
+
+#[tokio::test]
+async fn test_exponential_backoff_duration() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        deferral_backoff_ms: 50,
+        ..make_config()
+    };
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &config,
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    // consecutive_spawn_failures=0 → sleep ≈ 50ms (base).
+    assert_eq!(scheduler.consecutive_spawn_failures, 0);
+    let start = tokio::time::Instant::now();
+    scheduler.wait_event().await;
+    let elapsed0 = start.elapsed();
+    assert!(
+        elapsed0.as_millis() >= 50,
+        "backoff with 0 deferrals must be >= base (50ms), got {}ms",
+        elapsed0.as_millis()
+    );
+
+    // Simulate 3 consecutive deferrals: multiplier = 2^3 = 8 → 400ms, capped at 5000ms.
+    scheduler.consecutive_spawn_failures = 3;
+    let start = tokio::time::Instant::now();
+    scheduler.wait_event().await;
+    let elapsed3 = start.elapsed();
+    assert!(
+        elapsed3.as_millis() >= 400,
+        "backoff with 3 deferrals must be >= 400ms (50 * 8), got {}ms",
+        elapsed3.as_millis()
+    );
+
+    // Simulate 20 consecutive deferrals: exponent capped at 10 → 50 * 1024 = 51200 → capped at 5000ms.
+    scheduler.consecutive_spawn_failures = 20;
+    let start = tokio::time::Instant::now();
+    scheduler.wait_event().await;
+    let elapsed_capped = start.elapsed();
+    assert!(
+        elapsed_capped.as_millis() >= 5000,
+        "backoff must be capped at 5000ms with high deferrals, got {}ms",
+        elapsed_capped.as_millis()
+    );
+}
+
+#[tokio::test]
+async fn test_wait_event_sleeps_deferral_backoff_when_running_empty() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        deferral_backoff_ms: 50,
+        ..make_config()
+    };
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &config,
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    assert!(scheduler.running.is_empty());
+
+    let start = tokio::time::Instant::now();
+    scheduler.wait_event().await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_millis() >= 50,
+        "wait_event must sleep at least deferral_backoff (50ms) when running is empty, but only slept {}ms",
+        elapsed.as_millis()
+    );
+}
+
+#[test]
+fn test_current_deferral_backoff_exponential_growth() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        deferral_backoff_ms: 250,
+        ..make_config()
+    };
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &config,
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        scheduler.current_deferral_backoff(),
+        Duration::from_millis(250)
+    );
+
+    scheduler.consecutive_spawn_failures = 1;
+    assert_eq!(
+        scheduler.current_deferral_backoff(),
+        Duration::from_millis(500)
+    );
+
+    scheduler.consecutive_spawn_failures = 2;
+    assert_eq!(scheduler.current_deferral_backoff(), Duration::from_secs(1));
+
+    scheduler.consecutive_spawn_failures = 3;
+    assert_eq!(scheduler.current_deferral_backoff(), Duration::from_secs(2));
+
+    scheduler.consecutive_spawn_failures = 4;
+    assert_eq!(scheduler.current_deferral_backoff(), Duration::from_secs(4));
+
+    // Cap at 5 seconds.
+    scheduler.consecutive_spawn_failures = 5;
+    assert_eq!(scheduler.current_deferral_backoff(), Duration::from_secs(5));
+
+    scheduler.consecutive_spawn_failures = 100;
+    assert_eq!(scheduler.current_deferral_backoff(), Duration::from_secs(5));
+}
+
+#[test]
+fn test_record_spawn_resets_consecutive_failures() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &make_config(),
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    scheduler.consecutive_spawn_failures = 3;
+    let task_id = TaskId(0);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.record_spawn(task_id, "handle-1".into(), "worker".into());
+
+    assert_eq!(scheduler.consecutive_spawn_failures, 0);
+}
+
+#[test]
+fn test_record_spawn_failure_reverts_to_ready_no_counter_change() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &make_config(),
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(scheduler.consecutive_spawn_failures, 0);
+    let task_id = TaskId(0);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    let error = SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+    scheduler.record_spawn_failure(task_id, &error);
+
+    assert_eq!(scheduler.consecutive_spawn_failures, 0);
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Ready);
+}
+
+#[test]
+fn test_parallel_dispatch_all_ready() {
+    let nodes: Vec<_> = (0..6).map(|i| make_node(i, &[])).collect();
+    let graph = graph_from_nodes(nodes);
+    let config = zeph_config::OrchestrationConfig {
+        max_parallel: 2,
+        ..make_config()
+    };
+    let mut scheduler = DagScheduler::new(
+        graph,
+        &config,
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    let actions = scheduler.tick();
+    let spawn_count = actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+        .count();
+    assert_eq!(
+        spawn_count, 2,
+        "only max_parallel=2 tasks dispatched per tick"
+    );
+
+    let running_count = scheduler
+        .graph
+        .tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Running)
+        .count();
+    assert_eq!(running_count, 2, "only 2 tasks marked Running");
+}
+
+#[test]
+fn test_batch_backoff_partial_success() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.consecutive_spawn_failures = 3;
+
+    scheduler.record_batch_backoff(true, true);
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 0,
+        "any success in batch must reset counter"
+    );
+}
+
+#[test]
+fn test_batch_backoff_all_failed() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.consecutive_spawn_failures = 2;
+
+    scheduler.record_batch_backoff(false, true);
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 3,
+        "all-failure tick must increment counter"
+    );
+}
+
+#[test]
+fn test_batch_backoff_no_spawns() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.consecutive_spawn_failures = 5;
+
+    scheduler.record_batch_backoff(false, false);
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 5,
+        "no spawns must not change counter"
+    );
+}
+
+#[test]
+fn test_buffer_guard_uses_task_count() {
+    let nodes: Vec<_> = (0..10).map(|i| make_node(i, &[])).collect();
+    let graph = graph_from_nodes(nodes);
+    let config = zeph_config::OrchestrationConfig {
+        max_parallel: 2,
+        ..make_config()
+    };
+    let scheduler = DagScheduler::new(
+        graph,
+        &config,
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+    assert_eq!(scheduler.graph.tasks.len() * 2, 20);
+    assert_eq!(scheduler.max_parallel * 2, 4);
+}
+
+#[test]
+fn test_batch_mixed_concurrency_and_fatal_failure() {
+    use crate::graph::FailureStrategy;
+
+    let mut nodes = vec![make_node(0, &[]), make_node(1, &[])];
+    nodes[1].failure_strategy = Some(FailureStrategy::Skip);
+    let graph = graph_from_nodes(nodes);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.graph.tasks[1].status = TaskStatus::Running;
+
+    let concurrency_err = SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+    let actions0 = scheduler.record_spawn_failure(TaskId(0), &concurrency_err);
+    assert!(
+        actions0.is_empty(),
+        "ConcurrencyLimit must produce no extra actions"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Ready,
+        "task 0 must revert to Ready"
+    );
+
+    let fatal_err = SubAgentError::Spawn("provider unavailable".to_string());
+    let actions1 = scheduler.record_spawn_failure(TaskId(1), &fatal_err);
+    assert_eq!(
+        scheduler.graph.tasks[1].status,
+        TaskStatus::Skipped,
+        "task 1: Skip strategy turns Failed into Skipped via propagate_failure"
+    );
+    assert!(
+        actions1
+            .iter()
+            .all(|a| !matches!(a, SchedulerAction::Done { .. })),
+        "no Done action expected: task 0 is still Ready"
+    );
+
+    scheduler.consecutive_spawn_failures = 0;
+    scheduler.record_batch_backoff(false, true);
+    assert_eq!(
+        scheduler.consecutive_spawn_failures, 1,
+        "batch with only ConcurrencyLimit must increment counter"
+    );
+}
+
+#[test]
+fn test_deadlock_marks_non_terminal_tasks_canceled() {
+    let mut nodes = vec![make_node(0, &[]), make_node(1, &[0]), make_node(2, &[0])];
+    nodes[0].status = TaskStatus::Failed;
+    nodes[1].status = TaskStatus::Pending;
+    nodes[2].status = TaskStatus::Pending;
+
+    let mut graph = graph_from_nodes(nodes);
+    graph.status = GraphStatus::Failed;
+
+    let mut scheduler = DagScheduler::resume_from(
+        graph,
+        &make_config(),
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    let actions = scheduler.tick();
+
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            SchedulerAction::Done {
+                status: GraphStatus::Failed
+            }
+        )),
+        "deadlock must emit Done(Failed); got: {actions:?}"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Failed);
+    assert_eq!(
+        scheduler.graph.tasks[1].status,
+        TaskStatus::Canceled,
+        "Pending task must be Canceled on deadlock"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[2].status,
+        TaskStatus::Canceled,
+        "Pending task must be Canceled on deadlock"
+    );
+}
+
+#[test]
+fn test_deadlock_not_triggered_when_task_running() {
+    let mut nodes = vec![make_node(0, &[]), make_node(1, &[0])];
+    nodes[0].status = TaskStatus::Running;
+    nodes[0].assigned_agent = Some("handle-1".into());
+    nodes[1].status = TaskStatus::Pending;
+
+    let mut graph = graph_from_nodes(nodes);
+    graph.status = GraphStatus::Failed;
+
+    let mut scheduler = DagScheduler::resume_from(
+        graph,
+        &make_config(),
+        Box::new(FirstRouter),
+        vec![make_def("worker")],
+        None,
+    )
+    .unwrap();
+
+    let actions = scheduler.tick();
+
+    assert!(
+        actions
+            .iter()
+            .all(|a| !matches!(a, SchedulerAction::Done { .. })),
+        "no Done action expected when a task is running; got: {actions:?}"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Running);
+}
+
+// ── Admission gate wiring tests ──────────────────────────────────────────────────────────────
+
+fn make_def_with_provider(name: &str, provider: &str) -> zeph_subagent::SubAgentDef {
+    let mut d = zeph_subagent::SubAgentDef::for_test(name);
+    d.model = Some(zeph_subagent::ModelSpec::Named(provider.to_string()));
+    d
+}
+
+#[test]
+fn admission_gate_saturated_defers_task() {
+    // Gate with capacity=1, already at capacity → task must not be spawned.
+    let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 1usize)]);
+    // Exhaust the single permit so the gate is at capacity.
+    let _held_permit = gate
+        .try_acquire("quality")
+        .expect("first permit must succeed");
+
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = make_config();
+    let defs = vec![make_def_with_provider("worker", "quality")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+    let actions = scheduler.tick();
+    let spawn_count = actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+        .count();
+    assert_eq!(
+        spawn_count, 0,
+        "saturated gate must defer task — no Spawn emitted"
+    );
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Ready,
+        "deferred task must stay Ready"
+    );
+}
+
+#[test]
+fn admission_gate_permit_transferred_to_running() {
+    // After a successful spawn cycle the permit must live in RunningTask, not pending_permits.
+    let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 2usize)]);
+
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = make_config();
+    let defs = vec![make_def_with_provider("worker", "quality")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+    let actions = scheduler.tick();
+    let spawned = actions.iter().find_map(|a| {
+        if let SchedulerAction::Spawn { task_id, .. } = a {
+            Some(*task_id)
+        } else {
+            None
+        }
+    });
+    let task_id = spawned.expect("task must be spawned");
+
+    // Permit must be in pending_permits before record_spawn.
+    assert!(
+        scheduler.pending_permits.contains_key(&task_id),
+        "permit must be in pending_permits after dispatch"
+    );
+
+    scheduler.graph.tasks[task_id.index()].status = TaskStatus::Running;
+    scheduler.record_spawn(task_id, "handle-1".into(), "worker".into());
+
+    assert!(
+        !scheduler.pending_permits.contains_key(&task_id),
+        "pending_permits must be empty after record_spawn"
+    );
+    assert!(
+        scheduler.running[&task_id].admission_permit.is_some(),
+        "admission_permit must be set in RunningTask"
+    );
+}
+
+#[test]
+fn admission_gate_bypass_for_ungated_provider() {
+    // Agent uses a provider not in the gate → task dispatched normally.
+    let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 1usize)]);
+
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = make_config();
+    // Agent maps to "fast" which has no gate entry.
+    let defs = vec![make_def_with_provider("worker", "fast")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+    let actions = scheduler.tick();
+    let spawn_count = actions
+        .iter()
+        .filter(|a| matches!(a, SchedulerAction::Spawn { .. }))
+        .count();
+    assert_eq!(spawn_count, 1, "ungated provider must not be blocked");
+}
+
+#[test]
+fn record_spawn_failure_releases_pending_permit() {
+    // A fatal spawn failure must remove the pending admission permit (C2 fix).
+    let gate = crate::admission::AdmissionGate::new(&[("quality".to_string(), 2usize)]);
+
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = make_config();
+    let defs = vec![make_def_with_provider("worker", "quality")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, Some(gate)).unwrap();
+
+    // Simulate dispatch: insert a permit manually as tick() would.
+    let permit = scheduler
+        .admission_gate
+        .as_ref()
+        .unwrap()
+        .try_acquire("quality")
+        .expect("permit must be available");
+    let task_id = TaskId(0);
+    scheduler.pending_permits.insert(task_id, permit);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    assert!(scheduler.pending_permits.contains_key(&task_id));
+
+    let fatal = zeph_subagent::SubAgentError::Spawn("provider unavailable".to_string());
+    scheduler.record_spawn_failure(task_id, &fatal);
+
+    assert!(
+        !scheduler.pending_permits.contains_key(&task_id),
+        "pending permit must be removed after fatal spawn failure"
+    );
+}
+
+// --- graph_dirty / take_graph_dirty checkpoint flag tests ---
+
+#[test]
+fn graph_dirty_clear_at_construction() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let scheduler = make_scheduler(graph);
+    assert!(
+        !scheduler.graph_dirty,
+        "graph_dirty must be false immediately after construction"
+    );
+}
+
+#[test]
+fn take_graph_dirty_returns_false_when_no_mutations() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    // No tick or mutation — flag must stay false.
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "take_graph_dirty must return false when no mutations occurred"
+    );
+    // Calling again must still return false (idempotent on clean state).
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "take_graph_dirty must remain false after a second call"
+    );
+}
+
+#[test]
+fn take_graph_dirty_true_after_task_completes() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "h0".to_string(),
+        outcome: TaskOutcome::Completed {
+            output: "done".to_string(),
+            artifacts: vec![],
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+    scheduler.tick();
+
+    assert!(
+        scheduler.take_graph_dirty(),
+        "take_graph_dirty must return true after a task completes"
+    );
+    // Reset invariant: second call must return false.
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "take_graph_dirty must return false on the second call (reset invariant)"
+    );
+}
+
+#[test]
+fn take_graph_dirty_true_after_task_fails() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    let event = TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "h0".to_string(),
+        outcome: TaskOutcome::Failed {
+            error: "boom".to_string(),
+        },
+    };
+    scheduler.buffered_events.push_back(event);
+    scheduler.tick();
+
+    assert!(
+        scheduler.take_graph_dirty(),
+        "take_graph_dirty must return true after a task fails"
+    );
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "take_graph_dirty must return false on the second call (reset invariant)"
+    );
+}
+
+#[test]
+fn take_graph_dirty_true_after_fatal_spawn_failure() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    let fatal = zeph_subagent::SubAgentError::Spawn("provider gone".to_string());
+    scheduler.record_spawn_failure(TaskId(0), &fatal);
+
+    assert!(
+        scheduler.take_graph_dirty(),
+        "take_graph_dirty must return true after a fatal spawn failure marks task Failed"
+    );
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "take_graph_dirty must reset to false on second call"
+    );
+}
+
+#[test]
+fn take_graph_dirty_false_after_transient_concurrency_failure() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    // Transient: task reverts to Ready — no terminal state change.
+    let transient = zeph_subagent::SubAgentError::ConcurrencyLimit { active: 1, max: 1 };
+    scheduler.record_spawn_failure(TaskId(0), &transient);
+
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "transient concurrency deferral must not set graph_dirty (no terminal mutation)"
+    );
+}
+
+#[test]
+fn take_graph_dirty_true_after_cancel_all() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now(),
+            admission_permit: None,
+        },
+    );
+
+    scheduler.cancel_all();
+
+    assert!(
+        scheduler.take_graph_dirty(),
+        "take_graph_dirty must return true after cancel_all"
+    );
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "take_graph_dirty must reset to false on second call"
+    );
+}
+
+#[test]
+fn take_graph_dirty_true_after_timeout() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let config = zeph_config::OrchestrationConfig {
+        task_timeout_secs: 1,
+        ..make_config()
+    };
+    let defs = vec![make_def("worker")];
+    let mut scheduler =
+        DagScheduler::new(graph, &config, Box::new(FirstRouter), defs, None).unwrap();
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    scheduler.running.insert(
+        TaskId(0),
+        RunningTask {
+            agent_handle_id: "h0".to_string(),
+            agent_def_name: "worker".to_string(),
+            started_at: std::time::Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap(),
+            admission_permit: None,
+        },
+    );
+
+    scheduler.tick();
+
+    assert!(
+        scheduler.take_graph_dirty(),
+        "take_graph_dirty must return true after a task times out"
+    );
+    assert!(
+        !scheduler.take_graph_dirty(),
+        "take_graph_dirty must reset to false on second call"
+    );
+}

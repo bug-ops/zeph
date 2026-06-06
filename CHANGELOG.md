@@ -28,6 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `refactor`: extract inline `#[cfg(test)]` blocks from two files into dedicated `tests`
+  submodules, matching the monolith-refactor convention. `zeph-subagent/src/manager/mod.rs`
+  (4118 → 527 lines) moves its three test modules to `manager/tests.rs`; the two named
+  modules (`worktree_predicate_tests`, `worktree_cleanup_guard_tests`) become submodules of
+  `tests`. `zeph-orchestration/src/scheduler/tick.rs` (2200 lines) becomes a directory:
+  `tick/mod.rs` (production) plus `tick/tests.rs`. Production code is byte-identical; pure
+  mechanical move, no behavior change. (#4924)
 - `refactor(core)`: split `agent/persistence.rs` (3537 lines, single `impl<C: Channel> Agent<C>`
   block) into focused submodules — `persistence/{mod,history,store,extract,tests}.rs`. `history.rs`
   holds `load_history`; `store.rs` holds `persist_message` plus summarization / `MemCoT` scheduling;
