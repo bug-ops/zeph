@@ -26,9 +26,9 @@ related:
 
 # Spec-064: Native Durable Execution Layer (`zeph-durable`)
 
-**GitHub:** (implementation issue to be filed)
-**Branch:** `feat/064-durable-execution`
-**Crate:** `zeph-durable` (new Layer 0), plus integration adapters in `zeph-agent-tools`,
+**GitHub:** #4707 (epic) — child issues #4944–#4954 (milestone M28)
+**Branch:** `feat/m28/{issue}-durable-*` (one branch per child issue)
+**Crate:** `zeph-durable` (new Layer 0), plus integration adapters in `zeph-core`,
 `zeph-orchestration`, `zeph-scheduler`, `zeph-subagent`
 
 ---
@@ -132,7 +132,7 @@ deserialization are bounded. Wire format is versioned via a `payload_version` di
 field. Corrupt or tampered entries → `DurableError::Decode`, fail closed.
 
 **INV-12 — JournalWriter is supervised; ACK awaits time out.**
-The `JournalWriter` tokio task MUST be tracked in a `JoinSet` supervised by the daemon supervisor
+The `JournalWriter` tokio task MUST be tracked via `zeph-common::TaskSupervisor` (the unified `JoinSet` wrapper, spec-039) supervised by the daemon supervisor
 (consistent with spec-039 background-task rules). On panic/restart, the writer re-reads the last
 committed `JournalSeq` and resumes. `AppendAcked` MUST time out after `journal_ack_timeout_ms`
 (default 5000 ms) with `DurableError::JournalUnavailable`; on timeout the calling path degrades
@@ -215,7 +215,7 @@ helper; deferred post-v1. Both options comply with 031.
 - `ReplayDivergence` fingerprint guard.
 - `ReplayCursor` with range-read segmentation (O(segment) memory at resume).
 - Integration adapters:
-  - P1: agent tool-loop in `zeph-agent-tools`/`tier_loop.rs` (explicit loop rewrite, LLM gate).
+  - P1: agent tool-loop in `zeph-core` (`src/agent/tool_execution/tier_loop.rs`) (explicit loop rewrite, LLM gate).
   - P2: orchestration `/plan resume` path, restore replan/lineage/predicate counters.
   - P3: scheduler exactly-once job fire via `JobStore.record_run()` seam.
   - P4: subagent durable spawn/await via `DurablePromise<SubagentResult>`.
@@ -272,7 +272,7 @@ src/
 ```
 
 **Layer placement rationale.** Consumers span L0c (`zeph-scheduler`), L2 (`zeph-subagent`), and
-L3 (`zeph-orchestration`, `zeph-agent-tools`). A crate used by all four must sit at Layer 0.
+L3 (`zeph-orchestration`, `zeph-core`). A crate used by all four must sit at Layer 0.
 `zeph-durable` is a pure infrastructure primitive — no business logic — exactly analogous to
 `zeph-db` and `zeph-common` in the existing layered DAG.
 
@@ -286,7 +286,7 @@ workspace-wide migration runner (031 §12 "single source of truth"; the only `sq
 the workspace lives in `zeph-db/src/migrate.rs`). `zeph-durable` itself contains NO `.sql` files
 and NO `sqlx::migrate!`. The `JobStore` precedent cited in rev-C.3 covers the *pool* only:
 `JobStore::init` calls `zeph_db::run_migrations` — it does not own schema files
-(`zeph-scheduler/src/store.rs:136`; its schema is `051_scheduler_jobs.sql` inside `zeph-db`).
+(`zeph-scheduler/src/store.rs:137`; its schema is `051_scheduler_jobs.sql` inside `zeph-db`).
 
 ---
 
@@ -680,6 +680,16 @@ New tables added as numbered migration files in `zeph-db/migrations/sqlite/` and
 `sql!()` macro for dialect-agnostic placeholder compatibility; the pool type is `zeph_db::DbPool`
 from a `DatabaseDriver`-typed configuration — dual-backend correctness is preserved.
 
+> **Pre-existing parity caveat (verified 2026-06-06, HEAD `b15adeb9`).** The `sqlite/` and
+> `postgres/` migration sequences have already diverged: numbering drifts apart from `075` onward
+> (the same logical migrations carry different numbers per dialect), and at least two migrations
+> exist in only one dialect by name (`091_five_signal_retrieval.sql` is SQLite-only;
+> `088_trajectory_memory_cascade.sql` is Postgres-only). File counts are SQLite=96 vs Postgres=95;
+> the next unused SQLite number is `097`. C1 implementors MUST audit the Postgres sequence and
+> assign the four new `durable_*` files so both dialects end with matching counts and
+> schema-equivalent content — do NOT blindly mirror `097–100` into Postgres without reconciling
+> the existing gap. This divergence predates spec-064 and is tracked as a separate issue (#4957).
+
 ```sql
 -- durable_executions: one row per execution
 CREATE TABLE durable_executions (
@@ -788,11 +798,11 @@ compaction beyond this fold is deferred to post-v1.
 
 ## Integration Adapters
 
-### P1 — Agent Tool Loop (`zeph-agent-tools`, `tier_loop.rs`)
+### P1 — Agent Tool Loop (`zeph-core`, `src/agent/tool_execution/tier_loop.rs`)
 
 This integration is an **explicit rewrite of the agent-loop control flow**, not a hook. A
 `&mut DurableContext` (or `Arc<DurableContext>` for `&self`) is threaded through the loop in
-`zeph-agent-tools` / `tier_loop.rs`. The LLM call and each tool dispatch are wrapped as
+`zeph-core` (`src/agent/tool_execution/tier_loop.rs`). The LLM call and each tool dispatch are wrapped as
 `ctx.step(...)`. Concretely:
 
 - LLM call: `ExactlyOnceGuarded`, `CostBearingOrBoundaryIdempotent`, `on_ambiguous: Skip`.
@@ -810,7 +820,7 @@ This integration is an **explicit rewrite of the agent-loop control flow**, not 
   does not flow through `RuntimeLayer`.
 
 **LLM-serialization gate (MANDATORY for P1 PR).** The P1 implementation touches the LLM call
-serialization path (`tier_loop.rs`, `zeph-agent-tools`). Before the PR is merged:
+serialization path (`zeph-core/src/agent/tool_execution/tier_loop.rs`). Before the PR is merged:
 1. Run a live API session test: multi-turn prompt + at least one tool call.
 2. Verify: no 400/422 errors in log, debug dump shows a well-formed `messages` array,
    LLM returns a coherent response.
@@ -820,8 +830,9 @@ This matches the LLM serialization gate defined in `branching.md`.
 ### P2 — Orchestration `/plan resume` (`zeph-orchestration`)
 
 Thin adapter in `zeph-orchestration/src/durable.rs`. Scope: the `/plan resume <id>` user command
-path (`plan.rs:1161` → `handle_plan_resume_as_string` → `resume_loaded_graph` → `DagScheduler::
-resume_from`).
+path (`zeph-core/src/agent/plan.rs`: `handle_plan_resume_as_string` defined at L1006, dispatched
+at L1161 → `resume_loaded_graph` at L935 → `DagScheduler::resume_from` in
+`zeph-orchestration/src/scheduler/mod.rs:380`).
 
 **What the journal carries that resume_from resets today:**
 `task_replan_counts`, `global_replan_count`, `predicate_replans_used`, `predicate_reasons`,
@@ -870,7 +881,7 @@ respawn) — durable resume reuses the existing respawn path.
 ### 1. Replay determinism vs Zeph's native parallel tool execution
 
 Restate enforces single-threaded deterministic replay; Zeph runs tool calls concurrently via
-`join_all` in `tier_loop.rs:execute_tier_join`. Naive journaling would assign StepIds in
+`join_all` in `zeph-core/src/agent/tool_execution/tier_loop.rs` (`execute_tier_join`, L1705). Naive journaling would assign StepIds in
 completion order, racing under concurrency.
 
 **Resolution (INV-2):** StepId is assigned at call time (structural), not at completion
@@ -1129,7 +1140,7 @@ wiring; `zeph-durable` provides the key via `StepHandle`, not a config field.
 | **029** feature flags | Flags gate real optional deps; no behavioral markers | `restate` flag gates `dep:restate-sdk`. Core has no flag. |
 | **031** database abstraction | Single migration runner (`sqlx::migrate!` only in `zeph-db`); `DbPool` from `DatabaseDriver` | Dedicated `durable.db` pool (own `DbConfig::connect()` — valid precedent from `JobStore`). Schema files added to `zeph-db/migrations/{sqlite,postgres}/`; applied via `zeph_db::run_migrations(&durable_pool)`. `zeph-durable` owns NO `.sql` files and NO `sqlx::migrate!` — single source of truth preserved (031 §12). |
 | **038** vault | All secrets vault-resolved; `ZEPH_*` keys | `ZEPH_DURABLE_KEY`, `ZEPH_RESTATE_*` are vault-resolved; never inline TOML. |
-| **039** background-task-supervisor | Tracked tasks in `JoinSet`; supervised restart | `JournalWriter` tokio task is tracked in a `JoinSet` under the daemon supervisor; on panic, supervisor restarts the writer, which re-reads the last committed `JournalSeq` and resumes (INV-12, FR-DE-12). |
+| **039** background-task-supervisor | Tracked via `TaskSupervisor`; supervised restart | `JournalWriter` tokio task is tracked via `zeph-common::TaskSupervisor` (the unified `JoinSet` wrapper, spec-039) under the daemon supervisor; on panic, supervisor restarts the writer, which re-reads the last committed `JournalSeq` and resumes (INV-12, FR-DE-12). |
 | **044** subagent lifecycle | Transcript JSONL + `.meta.json` remains the human record | P4 adds a durable promise for control state; transcript unchanged. |
 | **057** agent persistence | `NEVER double-persist`; `sanitize_tool_pairs` discards orphans | P1 replays journaled steps (no re-insert). `Idempotent` step replay skips `op`. The discard becomes a resume (INV-10). |
 | **063** worktree subsystem | Subagent spawning, cwd isolation | P4 durable resume reuses the existing respawn path; CwdGuard discipline is unaffected. |
@@ -1162,7 +1173,7 @@ wiring; `zeph-durable` provides the key via `StepHandle`, not a config field.
 
 | ID | Requirement | Method |
 |----|------------|--------|
-| NFR-DE-01 | `bench_step_run_exactly_once_n` at N=5 steps: p99 ≤ 5 ms (criterion; CI gate) | `zeph-bench` criterion harness |
+| NFR-DE-01 | `bench_step_run_exactly_once_n` at N=5 steps: p99 ≤ 5 ms (criterion; CI gate) | per-crate `crates/zeph-durable/benches/` criterion harness (workspace convention; not `zeph-bench`) |
 | NFR-DE-02 | Resume read latency for a 5000-step execution using range cursor: ≤ 5 ms total (50 × 100-entry segments × 0.1 ms) | Integration test with synthetic journal |
 | NFR-DE-03 | `AppendBuffered` group-commit overhead: ≤ 1 µs per `send()` on an un-filled channel | Criterion microbench |
 | NFR-DE-04 | `AppendAcked` round-trip latency (writer WAL commit): ≤ 3 ms p99 on local SQLite WAL-Normal | Criterion bench |
