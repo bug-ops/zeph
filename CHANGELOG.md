@@ -28,6 +28,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `refactor(config)`: split `migrate/mod.rs` (6380 lines, 56 `migrate_*` functions) into
+  subsystem submodules — `migrate/{llm,memory,mcp,tools,session,infra,features}.rs` — and moved
+  the test module to `migrate/tests.rs`. `mod.rs` (now 718 lines) retains only the shared TOML
+  helpers, the `Migration` trait, and the `MIGRATIONS` registry. Public API is unchanged: every
+  `migrate_*` function and type is re-exported from `migrate`. (#4874)
 - `zeph-subagent`: split `manager.rs` (5732 lines) into `manager/{mod,spawn,collect,worktree,secrets}.rs` (#4882)
 - `zeph-subagent`: add `SubAgentDef::for_test()` constructor; replace 5 duplicated test helpers in `zeph-orchestration` (#4887)
 - `zeph-subagent`: remove `utc_now_pub` wrapper; make `utc_now` `pub(crate)` (#4882)
