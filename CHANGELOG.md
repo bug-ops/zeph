@@ -38,6 +38,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-subagent`: add `SubAgentDef::for_test()` constructor; replace 5 duplicated test helpers in `zeph-orchestration` (#4887)
 - `zeph-subagent`: remove `utc_now_pub` wrapper; make `utc_now` `pub(crate)` (#4882)
 - `zeph-subagent`: add `#[tracing::instrument]` to `SubAgentManager::resume` (#4882)
+- `refactor(llm)`: split `router/mod.rs` (4140 lines, 4 scattered `impl RouterProvider`
+  blocks) into focused submodules — `router/{config,embed_cache,builder,select,chat,provider_impl}.rs`
+  — and moved the test module to `router/tests.rs`. `mod.rs` (now ~170 lines) retains only the
+  module docs, declarations/re-exports, the `RouterProvider` struct, the shared `blocking_load`
+  helper, and the ASI rate-limit statics. Public API is unchanged: `RouterStrategy`, the three
+  `*RouterConfig` types, and `RouterProvider` are re-exported from `router`. (#4875)
 
 ### Changed
 
