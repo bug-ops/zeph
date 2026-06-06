@@ -69,6 +69,18 @@ pub enum DurableError {
         /// The configured hard step cap.
         cap: u32,
     },
+
+    /// AEAD payload encryption was disabled (`encrypt_payload = false`) for a deployment where it
+    /// is mandatory — a non-local backend or a shared database (INV-8). The DB-file trust boundary
+    /// does not hold in multi-client environments, so this fails closed at startup.
+    #[error(
+        "AEAD payload encryption is required for the '{context}' deployment and cannot be disabled"
+    )]
+    EncryptionRequired {
+        /// A non-sensitive label for the deployment that mandates encryption (e.g. `"restate"` or
+        /// `"shared-database"`).
+        context: &'static str,
+    },
 }
 
 #[cfg(test)]

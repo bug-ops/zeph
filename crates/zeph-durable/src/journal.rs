@@ -15,6 +15,7 @@ use std::future::Future;
 
 use bytes::Bytes;
 
+use crate::cipher::EntryKindTag;
 use crate::config::RetentionPolicy;
 use crate::effect::EffectClass;
 use crate::error::DurableError;
@@ -137,21 +138,31 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
+    /// Return the data-free [`EntryKindTag`] discriminator for this entry.
+    ///
+    /// This is the bridge a backend uses to build the [`PayloadAad`](crate::PayloadAad) for an
+    /// entry without exposing the payload to the cipher binding logic.
+    #[must_use]
+    pub fn tag_enum(&self) -> EntryKindTag {
+        match self {
+            Self::StepResult { .. } => EntryKindTag::StepResult,
+            Self::EffectIntent { .. } => EntryKindTag::EffectIntent,
+            Self::PromiseCreated { .. } => EntryKindTag::PromiseCreated,
+            Self::PromiseResolved { .. } => EntryKindTag::PromiseResolved,
+            Self::TimerArmed { .. } => EntryKindTag::TimerArmed,
+            Self::TimerFired { .. } => EntryKindTag::TimerFired,
+            Self::Checkpoint { .. } => EntryKindTag::Checkpoint,
+        }
+    }
+
     /// Return the canonical string used in the `entry_kind` column.
     ///
     /// The `step_result` tag in particular is the predicate of the unique partial index that
-    /// enforces "at most one committed result per step".
+    /// enforces "at most one committed result per step". Delegates to [`EntryKindTag::as_str`] so
+    /// the column strings have a single source of truth.
     #[must_use]
     pub fn tag(&self) -> &'static str {
-        match self {
-            Self::StepResult { .. } => "step_result",
-            Self::EffectIntent { .. } => "effect_intent",
-            Self::PromiseCreated { .. } => "promise_created",
-            Self::PromiseResolved { .. } => "promise_resolved",
-            Self::TimerArmed { .. } => "timer_armed",
-            Self::TimerFired { .. } => "timer_fired",
-            Self::Checkpoint { .. } => "checkpoint",
-        }
+        self.tag_enum().as_str()
     }
 }
 

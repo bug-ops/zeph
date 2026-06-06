@@ -25,6 +25,8 @@
 //!   [`IdempotencyKey`], [`PromiseId`], [`TimerId`]) and the [`ExecutionKind`] discriminator.
 //! - [`journal`] — the [`Journal`] trait plus the [`JournalEntry`] / [`EntryKind`] /
 //!   [`ExecutionStatus`] data model.
+//! - [`cipher`] — the [`PayloadCipher`] AEAD contract, [`PayloadAad`] binding, and the read-side
+//!   `max_payload` guard. The concrete cipher lives in a consuming crate (INV-1).
 //! - [`effect`] — the [`EffectClass`] side-effect contract referenced by journal entries.
 //! - [`config`] — the pure-data [`DurableConfig`] and [`RetentionPolicy`] mirroring the
 //!   `[durable]` TOML section.
@@ -55,6 +57,7 @@
 
 mod sealed;
 
+pub mod cipher;
 pub mod config;
 pub mod effect;
 pub mod error;
@@ -64,7 +67,10 @@ pub mod journal;
 #[doc(hidden)]
 pub use sealed::Sealed;
 
-pub use config::{DurableBackend, DurableConfig, RetentionPolicy};
+pub use cipher::{
+    CipherError, EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit,
+};
+pub use config::{DurableBackend, DurableConfig, EncryptionGate, RetentionPolicy};
 pub use effect::EffectClass;
 pub use error::DurableError;
 pub use ids::{ExecutionId, ExecutionKind, IdempotencyKey, JournalSeq, PromiseId, StepId, TimerId};

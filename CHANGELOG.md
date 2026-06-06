@@ -20,6 +20,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tables (`durable_executions`, `durable_journal`, `durable_promises`, `durable_timers`) were added
   as numbered migrations `097`–`100` in both `zeph-db/migrations/sqlite/` and `.../postgres/`;
   `zeph-durable` owns no `.sql` files and no `sqlx::migrate!` (INV-14). (#4944)
+- `feat(durable)`: added the journal payload AEAD boundary. `zeph-durable` now defines the
+  `PayloadCipher` seal/open trait, the `PayloadAad` location binding
+  (`execution_id`/`step_id`/`entry_kind`/`idem_key`) with a deterministic injective
+  `canonical_bytes` encoding, the `EntryKindTag` discriminator (`EntryKind::tag_enum`/`tag` now
+  delegate to a single source of truth), the metadata-only `CipherError` (with a fail-closed
+  `From<CipherError>` for `DurableError`), and the `ensure_payload_within_limit` read-side
+  `max_payload` guard (INV-11, no decode before the size check). `DurableConfig::encryption_gate`
+  enforces INV-8: AEAD may be disabled only for a single-user local backend (startup `WARN`), and
+  is rejected for shared-database or Restate deployments (`DurableError::EncryptionRequired`). The
+  concrete XChaCha20-Poly1305 cipher lives in `zeph-core::durable::XChaCha20Poly1305Cipher` (keeps
+  `zeph-durable` crypto-dependency-free, INV-1): fresh 192-bit CSPRNG nonce per seal (INV-7),
+  `key_id || nonce(24) || ciphertext || tag(16)` blob layout with a one-key rotation window, and
+  zeroized key material. Keyed from the vault `ZEPH_DURABLE_KEY`; see the new "Durable Journal
+  Encryption" security reference page for the key-rotation policy. (#4945)
 
 ### Fixed
 

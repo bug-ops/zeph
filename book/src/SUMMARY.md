@@ -99,6 +99,7 @@
   - [Untrusted Content Isolation](reference/security/untrusted-content-isolation.md)
   - [File Read Sandbox](reference/security/file-sandbox.md)
   - [ShadowSentinel Safety Probing](reference/security/shadow-sentinel.md)
+  - [Durable Journal Encryption](reference/security/durable-encryption.md)
 
 # Development
 

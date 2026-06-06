@@ -77,6 +77,7 @@ pub mod context;
 pub mod cost;
 pub mod daemon;
 pub mod debug_dump;
+pub mod durable;
 pub mod file_watcher;
 pub mod goal;
 pub mod instructions;

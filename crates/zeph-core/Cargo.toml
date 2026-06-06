@@ -22,16 +22,17 @@ cocoon = ["zeph-llm/cocoon", "zeph-commands/cocoon"]
 index = ["zeph-agent-context/index"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
-postgres = ["zeph-db/postgres", "zeph-agent-context/postgres", "zeph-agent-persistence/postgres"]
+postgres = ["zeph-db/postgres", "zeph-agent-context/postgres", "zeph-agent-persistence/postgres", "zeph-durable/postgres"]
 profiling = ["dep:tracing-subscriber", "zeph-commands/profiling"]
 profiling-alloc = ["profiling"]
 scheduler  = []
-sqlite = ["zeph-db/sqlite", "zeph-agent-context/sqlite", "zeph-agent-persistence/sqlite"]
+sqlite = ["zeph-db/sqlite", "zeph-agent-context/sqlite", "zeph-agent-persistence/sqlite", "zeph-durable/sqlite"]
 sysinfo = ["dep:sysinfo"]
 
 [dependencies]
 base64.workspace = true
 blake3.workspace = true
+chacha20poly1305.workspace = true
 chrono.workspace = true
 cpu-time.workspace = true
 dirs.workspace = true
@@ -71,6 +72,7 @@ zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-context.workspace = true
 zeph-db.workspace = true
+zeph-durable.workspace = true
 zeph-experiments.workspace = true
 zeph-index.workspace = true
 zeph-llm.workspace = true

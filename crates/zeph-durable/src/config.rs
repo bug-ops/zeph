@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::DurableError;
+
 /// Which journal backend an execution uses.
 ///
 /// `Restate` is only meaningful when the `restate` feature and an external Restate server are
@@ -95,6 +97,64 @@ impl Default for DurableConfig {
     }
 }
 
+/// Outcome of evaluating the INV-8 AEAD requirement for a deployment.
+///
+/// Returned by [`DurableConfig::encryption_gate`]. The error case
+/// ([`DurableError::EncryptionRequired`]) covers the forbidden combinations; this enum distinguishes
+/// the two *permitted* outcomes so the caller can act on the development-override warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionGate {
+    /// AEAD payload encryption is enabled — proceed normally.
+    Enabled,
+    /// AEAD is disabled on a single-user local backend (a development override). The caller MUST
+    /// emit a startup `WARN` so the weakened posture is visible in the logs.
+    DisabledLocalWarn,
+}
+
+impl DurableConfig {
+    /// Evaluate whether the configured `encrypt_payload` setting is permitted for this deployment
+    /// (INV-8).
+    ///
+    /// AEAD is default-on. Disabling it is a development-only override that is permitted **only** for
+    /// a single-user local backend on a non-shared database. `shared_db` MUST be `true` whenever the
+    /// journal lives on a multi-client database (Postgres, or any file shared across processes),
+    /// where the DB-file trust boundary does not hold.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::EncryptionRequired`] when `encrypt_payload = false` is combined with
+    /// a non-local backend or a shared database.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_durable::{DurableConfig, EncryptionGate};
+    ///
+    /// // Default config keeps AEAD on regardless of deployment.
+    /// let cfg = DurableConfig::default();
+    /// assert_eq!(cfg.encryption_gate(true).unwrap(), EncryptionGate::Enabled);
+    ///
+    /// // Disabling AEAD is tolerated only on a single-user local backend.
+    /// let dev = DurableConfig { encrypt_payload: false, ..DurableConfig::default() };
+    /// assert_eq!(dev.encryption_gate(false).unwrap(), EncryptionGate::DisabledLocalWarn);
+    /// assert!(dev.encryption_gate(true).is_err(), "forbidden on a shared database");
+    /// ```
+    pub fn encryption_gate(&self, shared_db: bool) -> Result<EncryptionGate, DurableError> {
+        if self.encrypt_payload {
+            return Ok(EncryptionGate::Enabled);
+        }
+        if self.backend != DurableBackend::Local {
+            return Err(DurableError::EncryptionRequired { context: "restate" });
+        }
+        if shared_db {
+            return Err(DurableError::EncryptionRequired {
+                context: "shared-database",
+            });
+        }
+        Ok(EncryptionGate::DisabledLocalWarn)
+    }
+}
+
 /// Journal retention and compaction policy (`[durable.retention]`).
 ///
 /// Drives the background prune sweep, which never runs on the dispatch hot path.
@@ -175,6 +235,60 @@ mod tests {
     fn default_impl_matches_serde_default() {
         let from_toml: DurableConfig = toml::from_str("").unwrap();
         assert_eq!(from_toml, DurableConfig::default());
+    }
+
+    #[test]
+    fn encryption_gate_passes_when_aead_enabled() {
+        let cfg = DurableConfig::default();
+        assert!(cfg.encrypt_payload);
+        assert_eq!(cfg.encryption_gate(false).unwrap(), EncryptionGate::Enabled);
+        assert_eq!(cfg.encryption_gate(true).unwrap(), EncryptionGate::Enabled);
+        let restate = DurableConfig {
+            backend: DurableBackend::Restate,
+            ..DurableConfig::default()
+        };
+        assert_eq!(
+            restate.encryption_gate(true).unwrap(),
+            EncryptionGate::Enabled
+        );
+    }
+
+    #[test]
+    fn encryption_gate_warns_for_local_single_user_override() {
+        let cfg = DurableConfig {
+            encrypt_payload: false,
+            backend: DurableBackend::Local,
+            ..DurableConfig::default()
+        };
+        assert_eq!(
+            cfg.encryption_gate(false).unwrap(),
+            EncryptionGate::DisabledLocalWarn
+        );
+    }
+
+    #[test]
+    fn encryption_gate_rejects_disabled_aead_on_shared_or_restate() {
+        let local_shared = DurableConfig {
+            encrypt_payload: false,
+            backend: DurableBackend::Local,
+            ..DurableConfig::default()
+        };
+        assert!(matches!(
+            local_shared.encryption_gate(true),
+            Err(DurableError::EncryptionRequired {
+                context: "shared-database"
+            })
+        ));
+
+        let restate = DurableConfig {
+            encrypt_payload: false,
+            backend: DurableBackend::Restate,
+            ..DurableConfig::default()
+        };
+        assert!(matches!(
+            restate.encryption_gate(false),
+            Err(DurableError::EncryptionRequired { context: "restate" })
+        ));
     }
 
     #[test]

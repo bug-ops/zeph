@@ -34,6 +34,7 @@ bytes = "1.11.1"
 candle-core = { version = "0.10.2", default-features = false }
 candle-nn = { version = "0.10.2", default-features = false }
 candle-transformers = { version = "0.10.2", default-features = false }
+chacha20poly1305 = "0.10.1"
 chrono = { version = "0.4.44", default-features = false }
 clap = "4.6.1"
 cpu-time = "1.0"
@@ -162,6 +163,7 @@ zeph-config = { path = "crates/zeph-config", version = "0.21.4" }
 zeph-context = { path = "crates/zeph-context", version = "0.21.4" }
 zeph-core = { path = "crates/zeph-core", version = "0.21.4" }
 zeph-db = { path = "crates/zeph-db", default-features = false, version = "0.21.4" }
+zeph-durable = { path = "crates/zeph-durable", default-features = false, version = "0.21.4" }
 zeph-experiments = { path = "crates/zeph-experiments", version = "0.21.4" }
 zeph-gateway = { path = "crates/zeph-gateway", version = "0.21.4" }
 zeph-index = { path = "crates/zeph-index", version = "0.21.4" }
