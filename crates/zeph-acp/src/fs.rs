@@ -125,11 +125,11 @@ impl AcpFileExecutor {
     }
 
     /// Resolve a potentially relative path to an absolute path
-    fn resolve_path(&self, path: &Path) -> PathBuf {
+    fn resolve_path(cwd: &Path, path: &Path) -> PathBuf {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.cwd.join(path)
+            cwd.join(path)
         }
     }
 
@@ -327,7 +327,7 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
             "read_file" if self.can_read => {
                 let params: ReadFileParams = deserialize_params(&call.params)?;
                 let path = validate_path(&params.path)?;
-                let resolved = self.resolve_path(&path);
+                let resolved = Self::resolve_path(&self.cwd, &path);
                 // Defense-in-depth: reject paths that escape cwd. The IDE enforces its own
                 // sandbox; we use parent-dir canonicalization to handle non-existent paths
                 // and resolve symlinks in the directory component.
@@ -370,11 +370,11 @@ impl zeph_tools::ToolExecutor for AcpFileExecutor {
             }
             "list_directory" if self.can_read => {
                 let params: ListDirectoryParams = deserialize_params(&call.params)?;
-                self.handle_list_directory(params)
+                self.handle_list_directory(params).await
             }
             "find_path" if self.can_read => {
                 let params: FindPathParams = deserialize_params(&call.params)?;
-                self.handle_find_path(&params)
+                self.handle_find_path(params).await
             }
             _ => Ok(None),
         }
@@ -399,7 +399,7 @@ impl AcpFileExecutor {
             });
         }
         let path = validate_path(&params.path)?;
-        let resolved = self.resolve_path(&path);
+        let resolved = Self::resolve_path(&self.cwd, &path);
         validate_within_sandbox(&resolved, &self.cwd)?;
 
         // Read current file for diff (None if new file).
@@ -488,13 +488,30 @@ impl AcpFileExecutor {
         }))
     }
 
-    fn handle_list_directory(
+    /// Offload the synchronous directory walk to the blocking pool.
+    ///
+    /// `std::fs::read_dir` and the per-entry `symlink_metadata` calls are blocking
+    /// syscalls; dispatching them through `spawn_blocking` keeps the Tokio executor
+    /// thread free while a large workspace is enumerated.
+    async fn handle_list_directory(
         &self,
         params: ListDirectoryParams,
     ) -> Result<Option<ToolOutput>, ToolError> {
+        let cwd = self.cwd.clone();
+        tokio::task::spawn_blocking(move || Self::list_directory_blocking(&cwd, params))
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("list_directory task failed: {e}"),
+            })?
+    }
+
+    fn list_directory_blocking(
+        cwd: &Path,
+        params: ListDirectoryParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
         let path = validate_path(&params.path)?;
-        let dir = self.resolve_path(&path);
-        validate_within_sandbox(&dir, &self.cwd)?;
+        let dir = Self::resolve_path(cwd, &path);
+        validate_within_sandbox(&dir, cwd)?;
         let entries = std::fs::read_dir(&dir).map_err(|e| ToolError::InvalidParams {
             message: format!("cannot read directory {}: {e}", params.path),
         })?;
@@ -511,8 +528,7 @@ impl AcpFileExecutor {
                     message: format!("metadata error: {e}"),
                 })?;
             // Skip symlinks whose canonical target escapes the sandbox.
-            if meta.file_type().is_symlink()
-                && validate_within_sandbox(&entry.path(), &self.cwd).is_err()
+            if meta.file_type().is_symlink() && validate_within_sandbox(&entry.path(), cwd).is_err()
             {
                 continue;
             }
@@ -543,11 +559,30 @@ impl AcpFileExecutor {
         }))
     }
 
-    fn handle_find_path(&self, params: &FindPathParams) -> Result<Option<ToolOutput>, ToolError> {
+    /// Offload the synchronous glob walk to the blocking pool.
+    ///
+    /// `glob::glob` walks the filesystem synchronously; dispatching it through
+    /// `spawn_blocking` keeps the Tokio executor thread free for large workspaces.
+    async fn handle_find_path(
+        &self,
+        params: FindPathParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        let cwd = self.cwd.clone();
+        tokio::task::spawn_blocking(move || Self::find_path_blocking(&cwd, &params))
+            .await
+            .map_err(|e| ToolError::InvalidParams {
+                message: format!("find_path task failed: {e}"),
+            })?
+    }
+
+    fn find_path_blocking(
+        cwd: &Path,
+        params: &FindPathParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
         const MAX_RESULTS: usize = 1000;
 
         let path = validate_path(&params.path)?;
-        let base = self.resolve_path(&path);
+        let base = Self::resolve_path(cwd, &path);
 
         // Reject traversal components in the pattern to prevent escaping the base directory.
         if params
@@ -560,7 +595,7 @@ impl AcpFileExecutor {
             });
         }
 
-        validate_within_sandbox(&base, &self.cwd)?;
+        validate_within_sandbox(&base, cwd)?;
 
         let glob_str = format!("{}/{}", params.path, params.pattern);
         let mut matches: Vec<String> = Vec::new();
@@ -572,7 +607,7 @@ impl AcpFileExecutor {
             }
             if let Ok(p) = entry {
                 // Skip paths that escape the sandbox via symlinks.
-                if validate_within_sandbox(&p, &self.cwd).is_err() {
+                if validate_within_sandbox(&p, cwd).is_err() {
                     continue;
                 }
                 matches.push(p.display().to_string());

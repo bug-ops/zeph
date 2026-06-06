@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `perf(acp)`: `list_directory` and `find_path` tools now offload their synchronous
+  filesystem walks (`std::fs::read_dir`, `glob::glob`, per-entry `symlink_metadata` and
+  sandbox canonicalization) to `tokio::task::spawn_blocking` instead of running inline on
+  the Tokio executor thread inside `async fn execute_tool_call`. Listing a large workspace
+  no longer stalls the async runtime, matching the actor-channel offload already used by
+  `read_file` / `write_file`. `AcpFileExecutor::resolve_path` became an associated function
+  `resolve_path(cwd, path)` so the blocking helpers can resolve paths without `&self`. (#4937)
 - `fix(config)`: added `#[must_use = "validation result must be checked"]` to
   `SpreadingActivationConfig::validate` (`memory/graph.rs`) and `AconConfig::validate`
   (`memory/fidelity.rs`). Both return `Result<(), String>`; the attribute (with an explicit
