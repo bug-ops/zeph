@@ -3,7 +3,8 @@
 
 use std::num::NonZeroUsize;
 
-use crate::providers::{ProviderEntry, SttConfig, default_stt_language, default_stt_provider};
+use crate::ProviderName;
+use crate::providers::{ProviderEntry, SttConfig, default_stt_language};
 use crate::root::Config;
 
 impl Config {
@@ -220,14 +221,14 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ZEPH_STT_PROVIDER") {
             let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
-                provider: default_stt_provider(),
+                provider: ProviderName::default(),
                 language: default_stt_language(),
             });
-            stt.provider = v;
+            stt.provider = ProviderName::new(v);
         }
         if let Ok(v) = std::env::var("ZEPH_STT_LANGUAGE") {
             let stt = self.llm.stt.get_or_insert_with(|| SttConfig {
-                provider: default_stt_provider(),
+                provider: ProviderName::default(),
                 language: default_stt_language(),
             });
             stt.language = v;

@@ -156,7 +156,7 @@ embedding_model = "qwen3-embedding"
 # filename = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
 # local_path = ""                       # used when source = "local"
 # chat_template = "chatml"              # llama3, chatml, mistral, phi3, raw
-# device = "cpu"                        # auto, cpu, metal, cuda
+# device = "cpu"                        # cpu, metal, cuda, auto
 
 # Multi-provider example:
 #

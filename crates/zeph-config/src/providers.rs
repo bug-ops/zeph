@@ -114,16 +114,8 @@ fn default_embedding_model() -> String {
     "qwen3-embedding".into()
 }
 
-fn default_candle_source() -> String {
-    "huggingface".into()
-}
-
 fn default_chat_template() -> String {
     "chatml".into()
-}
-
-fn default_candle_device() -> String {
-    "cpu".into()
 }
 
 fn default_temperature() -> f64 {
@@ -172,12 +164,6 @@ fn default_reputation_weight() -> f64 {
 
 fn default_reputation_min_observations() -> u64 {
     5
-}
-
-/// Returns the default STT provider name (empty string — auto-detect).
-#[must_use]
-pub fn default_stt_provider() -> String {
-    String::new()
 }
 
 /// Returns the default STT transcription language hint (`"auto"`).
@@ -603,17 +589,17 @@ impl LlmConfig {
         let found = self
             .providers
             .iter()
-            .find(|p| p.effective_name() == stt.provider);
+            .find(|p| p.effective_name() == stt.provider.as_str());
         match found {
             None => {
                 return Err(ConfigError::Validation(format!(
                     "[llm.stt].provider = {:?} does not match any [[llm.providers]] entry",
-                    stt.provider
+                    stt.provider.as_str()
                 )));
             }
             Some(entry) if entry.stt_model.is_none() => {
                 tracing::warn!(
-                    provider = stt.provider,
+                    provider = stt.provider.as_str(),
                     "[[llm.providers]] entry exists but has no `stt_model` — STT will not be activated"
                 );
             }
@@ -717,10 +703,10 @@ pub const FAST_TIER_MODEL_HINTS: &[&str] = &[
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SttConfig {
-    /// Provider name from `[[llm.providers]]`. Empty string means auto-detect first provider
+    /// Provider name from `[[llm.providers]]`. Empty means auto-detect the first provider
     /// with `stt_model` set.
-    #[serde(default = "default_stt_provider")]
-    pub provider: String,
+    #[serde(default)]
+    pub provider: ProviderName,
     /// Language hint for transcription (e.g. `"en"`, `"auto"`).
     #[serde(default = "default_stt_language")]
     pub language: String,
@@ -1087,6 +1073,43 @@ impl Default for BanditConfig {
     }
 }
 
+/// Model source for the Candle local-inference backend.
+///
+/// Controls whether the model is downloaded from Hugging Face Hub or loaded
+/// from a local filesystem path specified in `local_path`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CandleSource {
+    /// Download model weights from Hugging Face Hub using the `repo_id` from
+    /// the provider's `model` field.
+    #[default]
+    Huggingface,
+    /// Load model weights from the local filesystem path in `local_path`.
+    Local,
+}
+
+/// Compute device for the Candle local-inference backend.
+///
+/// Determines which hardware accelerator is used for inference. Feature flags
+/// `candle/metal` and `candle/cuda` must be enabled at compile time for the
+/// corresponding variants to succeed at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CandleDevice {
+    /// Run inference on the CPU.
+    #[default]
+    Cpu,
+    /// Run inference on an NVIDIA CUDA GPU (requires `cuda` feature).
+    Cuda,
+    /// Run inference on Apple Silicon via Metal (requires `metal` feature).
+    Metal,
+    /// Auto-detect the best available device: Metal → CUDA → CPU.
+    ///
+    /// Requires the corresponding `metal` or `cuda` feature to be enabled at compile time.
+    /// Falls back to CPU when no GPU features are compiled in.
+    Auto,
+}
+
 /// Configuration for the Candle local-inference backend.
 ///
 /// Corresponds to the `[llm.candle]` section in `config.toml`. Used when the
@@ -1095,16 +1118,16 @@ impl Default for BanditConfig {
 /// [`CandleInlineConfig`] instead.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandleConfig {
-    #[serde(default = "default_candle_source")]
-    pub source: String,
+    #[serde(default)]
+    pub source: CandleSource,
     #[serde(default)]
     pub local_path: String,
     #[serde(default)]
     pub filename: Option<String>,
     #[serde(default = "default_chat_template")]
     pub chat_template: String,
-    #[serde(default = "default_candle_device")]
-    pub device: String,
+    #[serde(default)]
+    pub device: CandleDevice,
     #[serde(default)]
     pub embedding_repo: Option<String>,
     /// Resolved `HuggingFace` Hub API token for authenticated model downloads.
@@ -1374,16 +1397,16 @@ pub struct GonkaNode {
 /// Re-uses the generation params from `CandleConfig`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CandleInlineConfig {
-    #[serde(default = "default_candle_source")]
-    pub source: String,
+    #[serde(default)]
+    pub source: CandleSource,
     #[serde(default)]
     pub local_path: String,
     #[serde(default)]
     pub filename: Option<String>,
     #[serde(default = "default_chat_template")]
     pub chat_template: String,
-    #[serde(default = "default_candle_device")]
-    pub device: String,
+    #[serde(default)]
+    pub device: CandleDevice,
     #[serde(default)]
     pub embedding_repo: Option<String>,
     /// Resolved `HuggingFace` Hub API token for authenticated model downloads.
@@ -1402,11 +1425,11 @@ pub struct CandleInlineConfig {
 impl Default for CandleInlineConfig {
     fn default() -> Self {
         Self {
-            source: default_candle_source(),
+            source: CandleSource::default(),
             local_path: String::new(),
             filename: None,
             chat_template: default_chat_template(),
-            device: default_candle_device(),
+            device: CandleDevice::default(),
             embedding_repo: None,
             hf_token: None,
             generation: GenerationParams::default(),
@@ -2461,8 +2484,8 @@ language = "en"
 
     #[test]
     fn stt_config_default_provider_is_empty() {
-        // Verify that W4 fix: default_stt_provider() returns "" not "whisper".
-        assert_eq!(default_stt_provider(), "");
+        // Verify that W4 fix: default provider is empty (auto-detect), not "whisper".
+        assert!(ProviderName::default().is_empty());
     }
 
     #[test]

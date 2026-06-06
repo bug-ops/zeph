@@ -25,6 +25,8 @@ use zeph_llm::openai::OpenAiProvider;
 use zeroize::Zeroizing;
 
 use crate::agent::state::ProviderConfigSnapshot;
+#[cfg(feature = "candle")]
+use crate::config::{CandleDevice, CandleSource};
 use crate::config::{Config, ProviderEntry, ProviderKind};
 
 #[non_exhaustive]
@@ -517,11 +519,11 @@ fn build_candle_provider(
             "candle provider requires 'candle' section in [[llm.providers]]".into(),
         )
     })?;
-    let source = match candle.source.as_str() {
-        "local" => zeph_llm::candle_provider::loader::ModelSource::Local {
+    let source = match candle.source {
+        CandleSource::Local => zeph_llm::candle_provider::loader::ModelSource::Local {
             path: std::path::PathBuf::from(&candle.local_path),
         },
-        _ => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
+        CandleSource::Huggingface => zeph_llm::candle_provider::loader::ModelSource::HuggingFace {
             repo_id: entry
                 .model
                 .clone()
@@ -540,7 +542,7 @@ fn build_candle_provider(
         repeat_penalty: candle.generation.repeat_penalty,
         repeat_last_n: candle.generation.repeat_last_n,
     };
-    let device = select_device(&candle.device)?;
+    let device = select_device(candle.device)?;
     // Floor at 1s so that inference_timeout_secs = 0 does not cause every request to
     // immediately time out.
     let inference_timeout = std::time::Duration::from_secs(candle.inference_timeout_secs.max(1));
@@ -557,22 +559,18 @@ fn build_candle_provider(
     .map_err(|e| BootstrapError::Provider(e.to_string()))
 }
 
-/// Select the candle compute device based on a string preference.
-///
-/// Resolution order: `"metal"` → Metal GPU (requires `metal` feature),
-/// `"cuda"` → CUDA GPU (requires `cuda` feature), `"auto"` → best available,
-/// anything else → CPU.
+/// Select the candle compute device from a [`CandleDevice`] config value.
 ///
 /// # Errors
 ///
 /// Returns `BootstrapError::Provider` when the requested device is not available (e.g.
-/// `"metal"` requested but compiled without the `metal` feature).
+/// `CandleDevice::Metal` requested but compiled without the `metal` feature).
 #[cfg(feature = "candle")]
 pub fn select_device(
-    preference: &str,
+    preference: CandleDevice,
 ) -> Result<zeph_llm::candle_provider::Device, BootstrapError> {
     match preference {
-        "metal" => {
+        CandleDevice::Metal => {
             #[cfg(feature = "metal")]
             return zeph_llm::candle_provider::Device::new_metal(0)
                 .map_err(|e| BootstrapError::Provider(e.to_string()));
@@ -581,7 +579,7 @@ pub fn select_device(
                 "candle compiled without metal feature".into(),
             ));
         }
-        "cuda" => {
+        CandleDevice::Cuda => {
             #[cfg(feature = "cuda")]
             return zeph_llm::candle_provider::Device::new_cuda(0)
                 .map_err(|e| BootstrapError::Provider(e.to_string()));
@@ -590,7 +588,8 @@ pub fn select_device(
                 "candle compiled without cuda feature".into(),
             ));
         }
-        "auto" => {
+        CandleDevice::Cpu => Ok(zeph_llm::candle_provider::Device::Cpu),
+        CandleDevice::Auto => {
             #[cfg(feature = "metal")]
             if let Ok(device) = zeph_llm::candle_provider::Device::new_metal(0) {
                 return Ok(device);
@@ -601,7 +600,6 @@ pub fn select_device(
             }
             Ok(zeph_llm::candle_provider::Device::Cpu)
         }
-        _ => Ok(zeph_llm::candle_provider::Device::Cpu),
     }
 }
 
@@ -609,25 +607,20 @@ pub fn select_device(
 mod tests {
     #[cfg(feature = "candle")]
     use super::select_device;
+    #[cfg(feature = "candle")]
+    use crate::config::CandleDevice;
 
     #[cfg(feature = "candle")]
     #[test]
     fn select_device_cpu_default() {
-        let device = select_device("cpu").unwrap();
-        assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
-    }
-
-    #[cfg(feature = "candle")]
-    #[test]
-    fn select_device_unknown_defaults_to_cpu() {
-        let device = select_device("unknown").unwrap();
+        let device = select_device(CandleDevice::Cpu).unwrap();
         assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
     }
 
     #[cfg(all(feature = "candle", not(feature = "metal")))]
     #[test]
     fn select_device_metal_without_feature_errors() {
-        let result = select_device("metal");
+        let result = select_device(CandleDevice::Metal);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("metal feature"));
     }
@@ -635,21 +628,9 @@ mod tests {
     #[cfg(all(feature = "candle", not(feature = "cuda")))]
     #[test]
     fn select_device_cuda_without_feature_errors() {
-        let result = select_device("cuda");
+        let result = select_device(CandleDevice::Cuda);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cuda feature"));
-    }
-
-    #[cfg(feature = "candle")]
-    #[test]
-    fn select_device_auto_fallback() {
-        let device = select_device("auto").unwrap();
-        assert!(matches!(
-            device,
-            zeph_llm::candle_provider::Device::Cpu
-                | zeph_llm::candle_provider::Device::Cuda(_)
-                | zeph_llm::candle_provider::Device::Metal(_)
-        ));
     }
 
     #[cfg(any(feature = "gonka", feature = "cocoon"))]

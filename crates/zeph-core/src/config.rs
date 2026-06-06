@@ -9,22 +9,22 @@
 // Re-export Config types from zeph-config for internal use.
 pub use zeph_config::{
     AcpAuthMethod, AcpConfig, AcpLspConfig, AcpTransport, AdditionalDir, AdditionalDirError,
-    AgentConfig, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
-    ClassifiersConfig, CompressionConfig, CompressionStrategy, Config, ConfigError, ContextFormat,
-    CostConfig, DaemonConfig, DebugConfig, DetectorMode, DiscordConfig, DocumentConfig, DumpFormat,
-    ExperimentConfig, ExperimentSchedule, FocusConfig, GatewayConfig, GenerationParams, GonkaNode,
-    GraphConfig, HookAction, HookDef, HookMatcher, IndexConfig, LearningConfig, LlmConfig,
-    LlmRoutingStrategy, LogRotation, LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig,
-    McpServerConfig, McpTrustLevel, MemoryConfig, MemoryScope, NoteLinkingConfig,
-    OAuthTokenStorage, OrchestrationConfig, PermissionMode, ProviderEntry, ProviderKind,
-    ProviderName, PruningStrategy, RateLimitConfig, ResolvedSecrets, RetrievalConfig, RouterConfig,
-    RouterStrategyConfig, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig,
-    SchedulerDaemonConfig, SchedulerSecurityConfig, SecurityConfig, SemanticConfig, SessionsConfig,
-    SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig, SlackConfig, StoreRoutingConfig,
-    StoreRoutingStrategy, SttConfig, SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks,
-    TaskSupervisorConfig, TelegramConfig, TimeoutConfig, ToolDiscoveryConfig,
-    ToolDiscoveryStrategyConfig, ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig,
-    VaultConfig, VectorBackend,
+    AgentConfig, CandleConfig, CandleDevice, CandleInlineConfig, CandleSource,
+    CascadeClassifierMode, CascadeConfig, ClassifiersConfig, CompressionConfig,
+    CompressionStrategy, Config, ConfigError, ContextFormat, CostConfig, DaemonConfig, DebugConfig,
+    DetectorMode, DiscordConfig, DocumentConfig, DumpFormat, ExperimentConfig, ExperimentSchedule,
+    FocusConfig, GatewayConfig, GenerationParams, GonkaNode, GraphConfig, HookAction, HookDef,
+    HookMatcher, IndexConfig, LearningConfig, LlmConfig, LlmRoutingStrategy, LogRotation,
+    LoggingConfig, MAX_TOKENS_CAP, McpConfig, McpOAuthConfig, McpServerConfig, McpTrustLevel,
+    MemoryConfig, MemoryScope, NoteLinkingConfig, OAuthTokenStorage, OrchestrationConfig,
+    PermissionMode, ProviderEntry, ProviderKind, ProviderName, PruningStrategy, RateLimitConfig,
+    ResolvedSecrets, RetrievalConfig, RouterConfig, RouterStrategyConfig, ScheduledTaskConfig,
+    ScheduledTaskKind, SchedulerConfig, SchedulerDaemonConfig, SchedulerSecurityConfig,
+    SecurityConfig, SemanticConfig, SessionsConfig, SidequestConfig, SkillFilter, SkillPromptMode,
+    SkillsConfig, SlackConfig, StoreRoutingConfig, StoreRoutingStrategy, SttConfig, SubAgentConfig,
+    SubAgentLifecycleHooks, SubagentHooks, TaskSupervisorConfig, TelegramConfig, TimeoutConfig,
+    ToolDiscoveryConfig, ToolDiscoveryStrategyConfig, ToolFilterConfig, ToolPolicy, TraceConfig,
+    TrustConfig, TuiConfig, VaultConfig, VectorBackend,
 };
 
 pub use zeph_config::{
@@ -52,7 +52,7 @@ pub use zeph_config::{
     is_legacy_default_sqlite_path,
 };
 
-pub use zeph_config::providers::{default_stt_language, default_stt_provider, validate_pool};
+pub use zeph_config::providers::{default_stt_language, validate_pool};
 
 pub mod migrate {
     pub use zeph_config::migrate::*;

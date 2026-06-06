@@ -156,14 +156,15 @@ pub use memory::{
 };
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;
+pub use providers::default_stt_language;
 pub use providers::{
-    BanditConfig, CacheTtl, CandleConfig, CandleInlineConfig, CascadeClassifierMode, CascadeConfig,
-    CocoonPricing, CoeConfig, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
-    GenerationParams, GonkaNode, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry,
-    ProviderKind, ProviderName, ProviderOverrides, RouterConfig, RouterStrategyConfig,
-    StreamLimits, SttConfig, ThinkingConfig, ThinkingEffort, TierMapping, validate_pool,
+    BanditConfig, CacheTtl, CandleConfig, CandleDevice, CandleInlineConfig, CandleSource,
+    CascadeClassifierMode, CascadeConfig, CocoonPricing, CoeConfig, ComplexityRoutingConfig,
+    FAST_TIER_MODEL_HINTS, GeminiThinkingLevel, GenerationParams, GonkaNode, LlmConfig,
+    LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry, ProviderKind, ProviderName,
+    ProviderOverrides, RouterConfig, RouterStrategyConfig, StreamLimits, SttConfig, ThinkingConfig,
+    ThinkingEffort, TierMapping, validate_pool,
 };
-pub use providers::{default_stt_language, default_stt_provider};
 pub use quality::{QualityConfig, TriggerPolicy};
 pub use rate_limit::RateLimitConfig;
 pub use sanitizer::{

@@ -234,26 +234,21 @@ fn create_provider_openai_missing_api_key_errors() {
 }
 
 #[cfg(feature = "candle")]
+use zeph_config::CandleDevice;
+#[cfg(feature = "candle")]
 use zeph_core::provider_factory::select_device;
 
 #[cfg(feature = "candle")]
 #[test]
 fn select_device_cpu_default() {
-    let device = select_device("cpu").unwrap();
-    assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
-}
-
-#[cfg(feature = "candle")]
-#[test]
-fn select_device_unknown_defaults_to_cpu() {
-    let device = select_device("unknown").unwrap();
+    let device = select_device(CandleDevice::Cpu).unwrap();
     assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
 }
 
 #[cfg(all(feature = "candle", not(feature = "metal")))]
 #[test]
 fn select_device_metal_without_feature_errors() {
-    let result = select_device("metal");
+    let result = select_device(CandleDevice::Metal);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("metal feature"));
 }
@@ -261,7 +256,7 @@ fn select_device_metal_without_feature_errors() {
 #[cfg(all(feature = "candle", not(feature = "cuda")))]
 #[test]
 fn select_device_cuda_without_feature_errors() {
-    let result = select_device("cuda");
+    let result = select_device(CandleDevice::Cuda);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("cuda feature"));
 }
@@ -269,7 +264,7 @@ fn select_device_cuda_without_feature_errors() {
 #[cfg(feature = "candle")]
 #[test]
 fn select_device_auto_fallback() {
-    let device = select_device("auto").unwrap();
+    let device = select_device(CandleDevice::Auto).unwrap();
     assert!(matches!(
         device,
         zeph_llm::candle_provider::Device::Cpu

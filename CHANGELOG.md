@@ -26,6 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(config)`: `SttConfig.provider` changed from `String` to `ProviderName` — enables
+  type-safe provider cross-references and removes the `default_stt_provider()` helper function.
+  `ProviderName::default()` (empty sentinel) serves the same auto-detect semantics. (#4899)
+- `refactor(config)`: `CandleConfig.source` and `.device` (and `CandleInlineConfig` equivalents)
+  changed from `String` to new `CandleSource` and `CandleDevice` enums respectively. Invalid
+  values that previously silently fell through to CPU/HuggingFace are now rejected at
+  deserialization. `select_device` in `zeph-core` now takes `CandleDevice` instead of `&str`. (#4900)
+
 - `perf(context)`: add `#[tracing::instrument]` to `embed_prepass_dyn` and `render_compressed`
   in `zeph-context/fidelity.rs` — both async hot-path functions were invisible to local Chrome
   JSON traces and Jaeger; now emit `context.fidelity.embed_prepass_dyn` and
