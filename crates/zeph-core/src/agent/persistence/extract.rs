@@ -473,6 +473,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// Embeds `content`, computes RPE via the router, and updates the router state.
     /// Returns `false` (do not skip) on any error — conservative fallback.
+    #[tracing::instrument(name = "core.persist.rpe_should_skip", skip_all, level = "debug")]
     async fn rpe_should_skip(&mut self, content: &str) -> bool {
         let Some(ref rpe_mutex) = self.services.memory.extraction.rpe_router else {
             return false;
