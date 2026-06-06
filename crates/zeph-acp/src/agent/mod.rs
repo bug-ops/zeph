@@ -65,21 +65,6 @@ use crate::transport::SharedAvailableModels;
 /// ```
 pub type ProviderFactory = Arc<dyn Fn(&str) -> Option<AnyProvider> + Send + Sync>;
 
-/// Session-scoped provider configuration set via `providers/set`.
-///
-/// Overrides the global provider routing for one provider id within a single ACP session.
-/// Vault-resolved API keys are never stored here — only the public routing fields.
-#[cfg(feature = "unstable-llm-providers")]
-pub(crate) struct ProviderSetOverride {
-    /// Protocol type for this provider override.
-    pub api_type: agent_client_protocol_schema::LlmProtocol,
-    /// Base URL for requests sent through this provider.
-    pub base_url: String,
-    /// Additional headers (e.g. routing headers, not auth secrets).
-    #[allow(dead_code)]
-    pub headers: HashMap<String, String>,
-}
-
 /// Per-session context passed to the agent spawner.
 ///
 /// Provides the session identity and persistence handles needed to bootstrap
@@ -371,19 +356,6 @@ pub(crate) type NotifySender =
 pub(crate) type NotifyReceiver =
     mpsc::Receiver<(acp::schema::SessionNotification, oneshot::Sender<()>)>;
 
-/// Per-turn token totals accumulated inside `drain_agent_events` for `PromptResponse.usage`.
-///
-/// Holds the sum of all `LoopbackEvent::Usage` events received within a single prompt turn.
-#[cfg(feature = "unstable-session-usage")]
-#[allow(clippy::struct_field_names)] // all fields intentionally share `_tokens` postfix for clarity
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct TurnUsage {
-    pub(crate) input_tokens: u64,
-    pub(crate) output_tokens: u64,
-    pub(crate) cache_read_tokens: u64,
-    pub(crate) cache_write_tokens: u64,
-}
-
 /// Return value of [`ZephAcpAgentState::drain_agent_events`].
 ///
 /// Bundles cancelled flag, stop hint, recycled receiver, and per-turn usage totals.
@@ -394,50 +366,6 @@ struct DrainResult {
     rx: tokio::sync::mpsc::Receiver<LoopbackEvent>,
     #[cfg(feature = "unstable-session-usage")]
     turn_usage: TurnUsage,
-}
-
-/// Per-session token and cost totals used to populate the session-close usage summary.
-///
-/// Token fields accumulate per-call deltas. `last_cost_cents` and `last_context_window`
-/// are overwritten on each update (already-cumulative / most-recent-valid values from
-/// `LoopbackEvent::Usage`).
-#[cfg(feature = "unstable-session-usage")]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct SessionUsageAccumulator {
-    pub(crate) total_input_tokens: u64,
-    pub(crate) total_output_tokens: u64,
-    pub(crate) total_cache_read_tokens: u64,
-    pub(crate) total_cache_write_tokens: u64,
-    /// Cumulative cost in USD cents — overwrite on each update, do not sum.
-    pub(crate) last_cost_cents: f64,
-    /// Most recent context window size in tokens — overwrite on each update.
-    pub(crate) last_context_window: u64,
-}
-
-#[cfg(feature = "unstable-session-usage")]
-impl SessionUsageAccumulator {
-    /// Record one LLM call's token deltas, latest cumulative cost, and context window size.
-    pub(crate) fn record(
-        &mut self,
-        input_tokens: u64,
-        output_tokens: u64,
-        cache_read_tokens: u64,
-        cache_write_tokens: u64,
-        cost_cents: f64,
-        context_window: u64,
-    ) {
-        self.total_input_tokens = self.total_input_tokens.saturating_add(input_tokens);
-        self.total_output_tokens = self.total_output_tokens.saturating_add(output_tokens);
-        self.total_cache_read_tokens = self
-            .total_cache_read_tokens
-            .saturating_add(cache_read_tokens);
-        self.total_cache_write_tokens = self
-            .total_cache_write_tokens
-            .saturating_add(cache_write_tokens);
-        // cost_cents and context_window are snapshot values — overwrite, do not accumulate.
-        self.last_cost_cents = cost_cents;
-        self.last_context_window = context_window;
-    }
 }
 
 pub(crate) struct SessionEntry {
@@ -649,22 +577,6 @@ impl ZephAcpAgentState {
     #[must_use]
     pub fn with_timeouts(mut self, timeouts: zeph_config::AcpTimeoutsConfig) -> Self {
         self.timeouts = timeouts;
-        self
-    }
-
-    /// Configure available providers for `providers/list`.
-    ///
-    /// Each entry is `(name, protocol)` where `name` matches a `[[llm.providers]]` entry
-    /// and `protocol` is the wire type used to build the default `current` config.
-    /// Vault-resolved API keys are never passed here.
-    #[cfg(feature = "unstable-llm-providers")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-llm-providers")))]
-    #[must_use]
-    pub fn with_provider_names(
-        mut self,
-        names: Vec<(String, agent_client_protocol_schema::LlmProtocol)>,
-    ) -> Self {
-        self.provider_names = names;
         self
     }
 
@@ -2867,148 +2779,6 @@ impl ZephAcpAgentState {
             )),
         }
     }
-
-    /// Dispatch `providers/*` ext methods.
-    ///
-    /// Returns `Some(ExtResponse)` when the method is handled, `None` when the caller should
-    /// fall through to `ext_method_mcp`.
-    #[cfg(feature = "unstable-llm-providers")]
-    fn ext_method_providers(
-        &self,
-        args: &acp::schema::ExtRequest,
-    ) -> acp::Result<Option<acp::schema::ExtResponse>> {
-        use agent_client_protocol_schema as schema;
-        let method = args.method.as_ref();
-        match method {
-            "providers/list" => {
-                let req: schema::ListProvidersRequest = serde_json::from_str(args.params.get())
-                    .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
-                let resp = self.do_list_providers(req)?;
-                let json = serde_json::to_string(&resp)
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                let raw = serde_json::value::RawValue::from_string(json)
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
-            }
-            "providers/set" => {
-                let req: schema::SetProviderRequest = serde_json::from_str(args.params.get())
-                    .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
-                let resp = self.do_set_providers(req)?;
-                let json = serde_json::to_string(&resp)
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                let raw = serde_json::value::RawValue::from_string(json)
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
-            }
-            "providers/disable" => {
-                let req: schema::DisableProviderRequest =
-                    serde_json::from_str(args.params.get())
-                        .map_err(|e| acp::Error::invalid_request().data(e.to_string()))?;
-                let resp = self.do_disable_providers(req)?;
-                let json = serde_json::to_string(&resp)
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                let raw = serde_json::value::RawValue::from_string(json)
-                    .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    /// Handle `providers/list` — return all known providers without vault keys.
-    ///
-    /// # Errors
-    ///
-    /// Never fails; returns `Ok` in all cases.
-    #[cfg(feature = "unstable-llm-providers")]
-    #[tracing::instrument(skip_all, name = "acp.handler.list_providers")]
-    pub(crate) fn do_list_providers(
-        &self,
-        _req: agent_client_protocol_schema::ListProvidersRequest,
-    ) -> acp::Result<agent_client_protocol_schema::ListProvidersResponse> {
-        let disabled = self.global_disabled_providers.lock();
-        let overrides = self.global_provider_overrides.lock();
-        let providers: Vec<agent_client_protocol_schema::ProviderInfo> = self
-            .provider_names
-            .iter()
-            .map(|(name, protocol)| {
-                let is_disabled = disabled.contains(name.as_str());
-                let current = if is_disabled {
-                    None
-                } else if let Some(ov) = overrides.get(name.as_str()) {
-                    Some(agent_client_protocol_schema::ProviderCurrentConfig::new(
-                        ov.api_type.clone(),
-                        ov.base_url.clone(),
-                    ))
-                } else {
-                    // Default — no base_url exposed; provider is available via global config.
-                    Some(agent_client_protocol_schema::ProviderCurrentConfig::new(
-                        protocol.clone(),
-                        String::new(),
-                    ))
-                };
-                agent_client_protocol_schema::ProviderInfo::new(
-                    name.clone(),
-                    vec![protocol.clone()],
-                    false,
-                    current,
-                )
-            })
-            .collect();
-        Ok(agent_client_protocol_schema::ListProvidersResponse::new(
-            providers,
-        ))
-    }
-
-    /// Handle `providers/set` — store a connection-scoped provider override.
-    ///
-    /// The override is stored in global state (no `session_id` in the ACP schema) and
-    /// takes effect on the next turn's provider resolution.
-    ///
-    /// # Errors
-    ///
-    /// Returns `invalid_params` if `req.id` is not in the registered provider list.
-    #[cfg(feature = "unstable-llm-providers")]
-    #[tracing::instrument(skip_all, name = "acp.handler.set_providers")]
-    pub(crate) fn do_set_providers(
-        &self,
-        req: agent_client_protocol_schema::SetProviderRequest,
-    ) -> acp::Result<agent_client_protocol_schema::SetProviderResponse> {
-        if !self.provider_names.iter().any(|(name, _)| name == &req.id) {
-            return Err(
-                acp::Error::invalid_params().data(format!("unknown provider id: {}", req.id))
-            );
-        }
-        self.global_provider_overrides.lock().insert(
-            req.id.clone(),
-            ProviderSetOverride {
-                api_type: req.api_type,
-                base_url: req.base_url,
-                headers: req.headers,
-            },
-        );
-        tracing::debug!(provider_id = %req.id, "provider override set");
-        Ok(agent_client_protocol_schema::SetProviderResponse::new())
-    }
-
-    /// Handle `providers/disable` — mark a provider as disabled for this connection.
-    ///
-    /// Takes effect on the next turn's provider resolution.
-    ///
-    /// # Errors
-    ///
-    /// Always succeeds; returns `DisableProviderResponse`.
-    #[cfg(feature = "unstable-llm-providers")]
-    #[tracing::instrument(skip_all, name = "acp.handler.disable_providers")]
-    pub(crate) fn do_disable_providers(
-        &self,
-        req: agent_client_protocol_schema::DisableProviderRequest,
-    ) -> acp::Result<agent_client_protocol_schema::DisableProviderResponse> {
-        let id = req.id;
-        tracing::debug!(provider_id = %id, "provider disabled");
-        self.global_disabled_providers.lock().insert(id);
-        Ok(agent_client_protocol_schema::DisableProviderResponse::new())
-    }
 }
 
 /// Returns `true` when `trimmed_text` is an ACP-native slash command that should
@@ -3066,6 +2836,14 @@ fn build_prompt_response(
 
 #[cfg(feature = "unstable-elicitation")]
 pub(crate) mod elicitation;
+#[cfg(feature = "unstable-llm-providers")]
+mod providers;
+#[cfg(feature = "unstable-llm-providers")]
+pub(crate) use providers::ProviderSetOverride;
+#[cfg(feature = "unstable-session-usage")]
+mod usage;
+#[cfg(feature = "unstable-session-usage")]
+pub(crate) use usage::{SessionUsageAccumulator, TurnUsage};
 pub(super) mod helpers;
 use helpers::{
     DEFAULT_MODE_ID, DIAGNOSTICS_MIME_TYPE, build_available_commands, build_config_options,
@@ -3239,225 +3017,6 @@ const _: () = {
 
 #[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
 mod tests;
-
-#[cfg(all(test, feature = "unstable-llm-providers"))]
-mod providers_tests {
-    use super::*;
-    use agent_client_protocol_schema as schema;
-
-    fn make_state() -> ZephAcpAgentState {
-        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
-        ZephAcpAgentState::new(spawner, 4, 1800, None).with_provider_names(vec![
-            ("openai".to_owned(), schema::LlmProtocol::OpenAi),
-            ("claude".to_owned(), schema::LlmProtocol::Anthropic),
-        ])
-    }
-
-    #[test]
-    fn list_providers_returns_all_registered() {
-        let state = make_state();
-        let resp = state
-            .do_list_providers(schema::ListProvidersRequest::new())
-            .unwrap();
-        assert_eq!(resp.providers.len(), 2);
-        let ids: Vec<&str> = resp.providers.iter().map(|p| p.id.as_str()).collect();
-        assert!(ids.contains(&"openai"));
-        assert!(ids.contains(&"claude"));
-    }
-
-    #[test]
-    fn list_providers_empty_when_none_registered() {
-        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
-        let state = ZephAcpAgentState::new(spawner, 4, 1800, None).with_provider_names(vec![]);
-        let resp = state
-            .do_list_providers(schema::ListProvidersRequest::new())
-            .unwrap();
-        assert!(resp.providers.is_empty());
-    }
-
-    #[test]
-    fn protocol_type_reflected_in_default_current_config() {
-        let state = make_state();
-        let resp = state
-            .do_list_providers(schema::ListProvidersRequest::new())
-            .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
-        let current = openai
-            .current
-            .as_ref()
-            .expect("openai must have current config");
-        assert_eq!(
-            current.api_type,
-            schema::LlmProtocol::OpenAi,
-            "openai provider must report OpenAi protocol"
-        );
-        let claude = resp.providers.iter().find(|p| p.id == "claude").unwrap();
-        let current = claude
-            .current
-            .as_ref()
-            .expect("claude must have current config");
-        assert_eq!(
-            current.api_type,
-            schema::LlmProtocol::Anthropic,
-            "claude provider must report Anthropic protocol"
-        );
-    }
-
-    #[test]
-    fn disable_provider_hides_current_config_in_list() {
-        let state = make_state();
-        state
-            .do_disable_providers(schema::DisableProviderRequest::new("openai"))
-            .unwrap();
-        let resp = state
-            .do_list_providers(schema::ListProvidersRequest::new())
-            .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
-        assert!(
-            openai.current.is_none(),
-            "disabled provider must have no current config"
-        );
-        let claude = resp.providers.iter().find(|p| p.id == "claude").unwrap();
-        assert!(
-            claude.current.is_some(),
-            "non-disabled provider must still have current config"
-        );
-    }
-
-    #[test]
-    fn disable_unknown_provider_succeeds() {
-        let state = make_state();
-        state
-            .do_disable_providers(schema::DisableProviderRequest::new("nonexistent"))
-            .unwrap();
-    }
-
-    #[test]
-    fn set_provider_unknown_id_returns_error() {
-        let state = make_state();
-        let err = state
-            .do_set_providers(
-                schema::SetProviderRequest::new(
-                    "unknown_provider",
-                    schema::LlmProtocol::OpenAi,
-                    "https://evil.example.com",
-                )
-                .headers(std::collections::HashMap::new()),
-            )
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unknown provider id"),
-            "expected 'unknown provider id' in error, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn set_provider_override_appears_in_list() {
-        let state = make_state();
-        state
-            .do_set_providers(
-                schema::SetProviderRequest::new(
-                    "openai",
-                    schema::LlmProtocol::OpenAi,
-                    "https://custom.example.com",
-                )
-                .headers(std::collections::HashMap::new()),
-            )
-            .unwrap();
-        let resp = state
-            .do_list_providers(schema::ListProvidersRequest::new())
-            .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
-        let current = openai.current.as_ref().expect("override must be present");
-        assert_eq!(current.base_url, "https://custom.example.com");
-    }
-
-    #[test]
-    fn disable_after_set_clears_current_config() {
-        let state = make_state();
-        state
-            .do_set_providers(
-                schema::SetProviderRequest::new(
-                    "openai",
-                    schema::LlmProtocol::OpenAi,
-                    "https://custom.example.com",
-                )
-                .headers(std::collections::HashMap::new()),
-            )
-            .unwrap();
-        state
-            .do_disable_providers(schema::DisableProviderRequest::new("openai"))
-            .unwrap();
-        let resp = state
-            .do_list_providers(schema::ListProvidersRequest::new())
-            .unwrap();
-        let openai = resp.providers.iter().find(|p| p.id == "openai").unwrap();
-        assert!(
-            openai.current.is_none(),
-            "provider disabled after set must have no current config"
-        );
-    }
-}
-
-#[cfg(all(test, feature = "unstable-session-usage"))]
-mod usage_tests {
-    use super::*;
-
-    #[test]
-    fn session_accumulator_sums_tokens_and_overwrites_cost_and_context_window() {
-        let mut acc = SessionUsageAccumulator::default();
-        acc.record(100, 50, 10, 5, 1.5, 128_000);
-        acc.record(200, 80, 0, 0, 3.0, 64_000); // cost and context_window must overwrite
-        assert_eq!(acc.total_input_tokens, 300);
-        assert_eq!(acc.total_output_tokens, 130);
-        assert_eq!(acc.total_cache_read_tokens, 10);
-        assert_eq!(acc.total_cache_write_tokens, 5);
-        assert!((acc.last_cost_cents - 3.0).abs() < f64::EPSILON);
-        assert_eq!(acc.last_context_window, 64_000);
-    }
-
-    #[test]
-    fn session_accumulator_default_is_zero() {
-        let acc = SessionUsageAccumulator::default();
-        assert_eq!(acc.total_input_tokens, 0);
-        assert!(acc.last_cost_cents.abs() < f64::EPSILON);
-        assert_eq!(acc.last_context_window, 0);
-    }
-
-    #[test]
-    fn build_prompt_response_attaches_usage() {
-        let turn_usage = TurnUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_tokens: 10,
-            cache_write_tokens: 0,
-        };
-        let resp = build_prompt_response(acp::schema::StopReason::EndTurn, turn_usage);
-        let u = resp.usage.expect("usage should be set");
-        assert_eq!(u.total_tokens, 150);
-        assert_eq!(u.input_tokens, 100);
-        assert_eq!(u.output_tokens, 50);
-        // cache_read_tokens > 0 → field should be set
-        assert_eq!(u.cached_read_tokens, Some(10));
-        // cache_write_tokens == 0 → field should be None
-        assert_eq!(u.cached_write_tokens, None);
-        // thought_tokens not tracked for MVP
-        assert_eq!(u.thought_tokens, None);
-    }
-
-    #[test]
-    fn build_prompt_response_zero_usage_still_attaches() {
-        let turn_usage = TurnUsage::default();
-        let resp = build_prompt_response(acp::schema::StopReason::EndTurn, turn_usage);
-        let u = resp
-            .usage
-            .expect("usage should be set even for zero tokens");
-        assert_eq!(u.total_tokens, 0);
-        assert_eq!(u.cached_read_tokens, None);
-        assert_eq!(u.cached_write_tokens, None);
-    }
-}
 
 /// Regression tests for #4528: `send_notification` must not block indefinitely.
 #[cfg(test)]

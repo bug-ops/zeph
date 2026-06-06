@@ -55,6 +55,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `UtilityScoringConfig`, `LearningConfig`, `FidelityConfig`, `PlanCacheConfig`, and
   `ExperimentConfig` — so callers can no longer silently discard the validation error via a bare
   `config.validate();` statement. Completes the sweep started in #4930/#4934. (#4936)
+- `refactor(acp)`: extract the two largest self-contained `#[cfg(feature)]` clusters out of
+  `agent/mod.rs` (3510 → 3069 lines) into dedicated feature-gated submodules, continuing the
+  monolith-split work tracked in #4843. `agent/usage.rs` (`unstable-session-usage`) now owns
+  `TurnUsage`, `SessionUsageAccumulator`, and their tests; `agent/providers.rs`
+  (`unstable-llm-providers`) now owns `ProviderSetOverride`, the `with_provider_names` builder,
+  the `providers/list|set|disable` handlers (`ext_method_providers`, `do_list_providers`,
+  `do_set_providers`, `do_disable_providers`), and their tests. Each module is gated once at the
+  declaration, collapsing the per-item gates; the two types are re-exported into `agent` via
+  `pub(crate) use`, and `ext_method_providers` is bumped to `pub(crate)` for the cross-module
+  call. Remaining gates in `mod.rs` are the irreducible ones on shared `ZephAcpAgentState` /
+  `SessionEntry` / `DrainResult` fields and inside shared method bodies. No public API or
+  behavior change. (#4843)
 - `refactor(tui)`: split `app/mod.rs` (4235 lines) into focused submodules —
   `app/{mod,state,transcript,tests}.rs` — joining the existing `draw`/`events`/`keys` split.
   `mod.rs` (now 660 lines) retains the type definitions (`App`, `Panel`, `AgentViewTarget`,
