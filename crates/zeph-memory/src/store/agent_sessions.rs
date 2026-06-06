@@ -219,7 +219,11 @@ impl SqliteStore {
         .bind(&s.model)
         .bind(&s.created_at)
         .bind(&s.last_active_at)
-        .bind(s.turns)
+        // `turns` maps to an `INTEGER` column in both dialects; bind it as `i32` so the query
+        // stays backend-agnostic. A bare `u32` only implements `Type<Sqlite>` (Postgres has no
+        // unsigned integer types), which pins the query to the SQLite driver and breaks the
+        // Postgres backend (#4964).
+        .bind(s.turns.cast_signed())
         .bind(s.prompt_tokens.cast_signed())
         .bind(s.completion_tokens.cast_signed())
         .bind(s.reasoning_tokens.cast_signed())
@@ -309,7 +313,9 @@ impl SqliteStore {
             String,
             String,
             String,
-            i64,
+            // `turns` is an `INTEGER` column (INT4 on Postgres); decode it as `i32` so the
+            // Postgres driver does not reject it as an `i64`/BIGINT mismatch (#4964).
+            i32,
             i64,
             i64,
             i64,

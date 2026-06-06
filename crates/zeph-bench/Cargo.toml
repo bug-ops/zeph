@@ -11,6 +11,13 @@ categories.workspace = true
 description = "Benchmark harness for evaluating Zeph agent performance on standardized datasets"
 publish = true
 
+[features]
+# `zeph-memory`/`zeph-db` require a backend to compile; default to `sqlite` so this crate
+# builds in isolation, and expose `postgres` for PostgreSQL deployments (#4956).
+default = ["sqlite"]
+sqlite = ["zeph-memory/sqlite"]
+postgres = ["zeph-memory/postgres"]
+
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 schemars.workspace = true

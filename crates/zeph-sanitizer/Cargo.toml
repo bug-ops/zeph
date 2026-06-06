@@ -35,7 +35,12 @@ toml.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 
 [features]
-default = []
+# `zeph-memory` (and transitively `zeph-db`) needs exactly one backend selected to
+# compile. Default to `sqlite` so `cargo {check,test,doc} -p zeph-sanitizer` works in
+# isolation; the workspace build unifies on the backend chosen by the binary (#4956).
+default = ["sqlite"]
+sqlite = ["zeph-memory/sqlite"]
+postgres = ["zeph-memory/postgres"]
 classifiers = ["zeph-llm/classifiers"]
 
 [lints]

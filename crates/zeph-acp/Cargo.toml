@@ -14,6 +14,7 @@ readme = "README.md"
 
 [features]
 default = [
+    "sqlite",
     "unstable-session-delete",
     "unstable-session-fork",
     "unstable-session-usage",
@@ -21,6 +22,10 @@ default = [
     "unstable-elicitation",
     "unstable-llm-providers",
 ]
+# `zeph-memory`/`zeph-db` require a backend to compile; default to `sqlite` so this crate
+# builds in isolation, and expose `postgres` for PostgreSQL deployments (#4956).
+sqlite = ["zeph-memory/sqlite"]
+postgres = ["zeph-memory/postgres"]
 acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
 # session/close and session/delete stabilized in acp 0.14.0; no upstream feature gate needed
 unstable-session-delete = []

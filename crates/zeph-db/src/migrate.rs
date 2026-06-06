@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// Both items are only referenced by the backend-gated `run_migrations` definitions below;
+// gate the import so a no-backend build surfaces only the crate-level `compile_error!`
+// rather than a spurious unused-import warning (#4956).
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use crate::{DbPool, error::DbError};
 
 /// Run all pending migrations for the active backend.

@@ -14,9 +14,13 @@ readme = "README.md"
 
 [features]
 profiling = []
-default = []
+default = ["sqlite"]
 miner = ["anyhow", "clap", "dirs", "toml", "tracing-subscriber"]
 qdrant = ["dep:zeph-memory", "dep:qdrant-client"]
+# `zeph-memory` is optional (pulled in by `qdrant`); when present it requires a backend.
+# These no-op unless `qdrant` activates `zeph-memory`, then select its backend (#4956).
+sqlite = ["zeph-memory?/sqlite"]
+postgres = ["zeph-memory?/postgres"]
 
 [dependencies]
 anyhow = { workspace = true, optional = true }

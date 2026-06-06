@@ -1,0 +1,11 @@
+-- Parity placeholder for postgres/088_trajectory_memory_cascade.sql.
+--
+-- PostgreSQL cannot alter a foreign-key constraint in place, so it applies the
+-- trajectory_memory ON DELETE CASCADE behavior through a dedicated drop-and-re-add migration.
+-- SQLite defines the same cascade inline at table creation (069_trajectory_memory.sql), so no
+-- schema change is required here. This file keeps the two dialect migration sequences at an
+-- equal file count (system-invariant 001 §13) and documents the asymmetry (#4957).
+--
+-- The statement below is an idempotent no-op on any existing database (the index was created in
+-- 069_trajectory_memory.sql); it exists only so the migration carries a valid SQL statement.
+CREATE INDEX IF NOT EXISTS idx_trajectory_conversation ON trajectory_memory(conversation_id);

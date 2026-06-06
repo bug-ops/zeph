@@ -23,6 +23,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: `SqliteStore::upsert_agent_session` bound the `turns` count as a bare `u32`,
+  which only implements `sqlx::Type<Sqlite>` (PostgreSQL has no unsigned integer types). This
+  pinned the query to the SQLite driver and broke the PostgreSQL backend with `E0271`
+  ("expected `Sqlite`, found `Postgres`") on any build that activates the `postgres` feature
+  (including `--all-features`). `turns` is now bound via `cast_signed()` (`i32`, matching the
+  `INTEGER` column) and the `list_agent_sessions` read tuple decodes it as `i32`, so PostgreSQL
+  does not reject the `INTEGER`/INT4 column as an `i64` mismatch. The PostgreSQL backend now
+  compiles end-to-end (`cargo check --no-default-features --features postgres`). (#4964)
+- `fix(db,memory)`: data-layer consumer crates that depend on `zeph-memory`/`zeph-db` without
+  selecting a database backend (`zeph-sanitizer`, `zeph-acp`, `zeph-bench`, `zeph-tui`, and
+  `zeph-skills` via its optional `qdrant` dependency) could not be built or doc-checked in
+  isolation (`cargo {check,test,doc} -p <crate>`): the transitive `zeph-db` had no backend
+  feature and tripped its `compile_error!` plus a cascade of follow-on errors. Each crate now
+  carries the standard `default = ["sqlite"]` / `sqlite` / `postgres` feature trio forwarding to
+  `zeph-memory`, matching the pattern already used by `zeph-mcp`/`zeph-index`/etc. The
+  backend-only imports in `zeph-db/src/migrate.rs` are now gated behind
+  `any(feature = "sqlite", feature = "postgres")` so a no-backend build surfaces only the clear
+  `compile_error!` instead of a spurious unused-import warning. (#4956)
+- `fix(db)`: the PostgreSQL migration set was missing the `fact_access_log` table and the
+  `messages.memory_tier`/`messages.qdrant_promoted` columns (five-signal SYNAPSE retrieval,
+  #4374) and the `implicit_conflict_candidates` table (graph conflict detection) — both present
+  only in the SQLite dialect, so PostgreSQL deployments ran a divergent schema (system-invariant
+  001 §13). Added forward-only PostgreSQL migrations `101_five_signal_retrieval.sql` and
+  `102_implicit_conflict_candidates.sql` (integer columns sized `BIGINT` to match the `i64` Rust
+  accessors). Added a SQLite parity placeholder `101_trajectory_memory_cascade.sql` (the cascade
+  is inline on SQLite but needs a dedicated drop-and-re-add migration on PostgreSQL) so the two
+  sequences keep an equal file count, plus a `migration_parity` integration test that fails the
+  build if the dialects ever diverge in file count, logical migration name, or defined table set.
+  (#4957)
 - `perf(acp)`: `list_directory` and `find_path` tools now offload their synchronous
   filesystem walks (`std::fs::read_dir`, `glob::glob`, per-entry `symlink_metadata` and
   sandbox canonicalization) to `tokio::task::spawn_blocking` instead of running inline on
