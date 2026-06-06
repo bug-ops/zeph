@@ -193,6 +193,14 @@ impl IdempotencyKey {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Reconstruct a key from its 32 stored bytes.
+    ///
+    /// Used by a journal backend to rebuild a key read back from storage; the bytes MUST originate
+    /// from a prior [`IdempotencyKey::as_bytes`] of a key produced by [`IdempotencyKey::derive`].
+    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 /// Reference to an external-completion handle (HITL, A2A async, subagent result).
@@ -305,6 +313,22 @@ impl ExecutionKind {
             Self::ScheduledJob => "scheduled_job",
             Self::SubagentSession => "subagent_session",
             Self::Custom(name) => name,
+        }
+    }
+
+    /// Reconstruct a standard execution kind from its canonical column string.
+    ///
+    /// Returns `None` for an unrecognized tag. [`ExecutionKind::Custom`] cannot round-trip from
+    /// storage — its inner `&'static str` has no representation recoverable from a dynamic database
+    /// string — so a custom kind read back from the journal is reported as unrecognized rather than
+    /// silently coerced.
+    pub(crate) fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "agent_turn" => Some(Self::AgentTurn),
+            "dag_run" => Some(Self::DagRun),
+            "scheduled_job" => Some(Self::ScheduledJob),
+            "subagent_session" => Some(Self::SubagentSession),
+            _ => None,
         }
     }
 }

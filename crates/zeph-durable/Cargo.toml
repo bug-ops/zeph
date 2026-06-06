@@ -22,13 +22,18 @@ postgres = ["zeph-db/postgres"]
 [dependencies]
 blake3.workspace = true
 bytes.workspace = true
+metrics.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tracing.workspace = true
 uuid = { workspace = true, features = ["serde", "v7"] }
 zeph-db.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 toml.workspace = true
 
 [lints]

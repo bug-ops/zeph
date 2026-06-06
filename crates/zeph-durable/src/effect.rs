@@ -46,6 +46,19 @@ impl EffectClass {
             Self::ExactlyOnceGuarded => "exactly_once_guarded",
         }
     }
+
+    /// Parse the canonical `effect_class` column string back into an [`EffectClass`].
+    ///
+    /// Returns `None` for an unrecognized tag so a corrupt journal row fails closed rather than
+    /// defaulting to a weaker effect class.
+    pub(crate) fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "idempotent" => Some(Self::Idempotent),
+            "at_least_once" => Some(Self::AtLeastOnce),
+            "exactly_once_guarded" => Some(Self::ExactlyOnceGuarded),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

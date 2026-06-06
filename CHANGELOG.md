@@ -34,6 +34,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `key_id || nonce(24) || ciphertext || tag(16)` blob layout with a one-key rotation window, and
   zeroized key material. Keyed from the vault `ZEPH_DURABLE_KEY`; see the new "Durable Journal
   Encryption" security reference page for the key-rotation policy. (#4945)
+- `feat(durable)`: added the durable persistence engine to `zeph-durable`. `LocalBackend` owns a
+  dedicated `durable.db` pool (INV-14, schema applied via `zeph_db::run_migrations`), implements the
+  `Journal` trait (append, full and ranged reads, `finalize`, and a `prune` stub), AEAD-seals
+  payload-bearing entries through the injected `Option<Arc<dyn PayloadCipher>>` with the entry's
+  location bound as associated data, and stamps a keyed-BLAKE3 row HMAC over control entries when a
+  key is configured. The background `JournalWriter` actor decouples writes from the calling path:
+  buffered appends group-commit on a flush interval (dropped with a `WARN` under backpressure),
+  exactly-once appends flush all causally-preceding entries before committing (INV-4) and return
+  their `JournalSeq` over a oneshot bounded by `journal_ack_timeout_ms` (INV-12, FR-DE-11), and the
+  writer resumes from `MAX(seq)` on restart (FR-DE-12). The sealed `ExecutionBackend` trait and the
+  `DurableBackendEnum` enum dispatcher keep the backend surface closed with no `Box<dyn>` on the
+  hot path. Promise, timer, and checkpoint journal entries fail closed
+  (`DurableError::UnsupportedEntryKind`) until the promise/timer layer lands. (#4946)
 
 ### Fixed
 

@@ -17,9 +17,9 @@
 //! business-layer crate (INV-1). Domain meaning lives in thin adapter modules inside each
 //! consuming crate.
 //!
-//! # Scaffold scope
+//! # Module map
 //!
-//! This release establishes the type-level foundation only:
+//! Type-level foundation:
 //!
 //! - [`ids`] — the journal-boundary newtypes ([`ExecutionId`], [`StepId`], [`JournalSeq`],
 //!   [`IdempotencyKey`], [`PromiseId`], [`TimerId`]) and the [`ExecutionKind`] discriminator.
@@ -32,8 +32,15 @@
 //!   `[durable]` TOML section.
 //! - [`error`] — the crate-wide [`DurableError`].
 //!
-//! No execution behavior exists yet: the journal writer, execution backends, replay cursor, and
-//! the durable step primitive land in follow-up issues.
+//! Persistence engine:
+//!
+//! - [`backend`] — the sealed [`ExecutionBackend`] trait, [`BackendCapabilities`], the
+//!   [`DurableBackendEnum`] enum dispatcher, and [`LocalBackend`] (a dedicated `durable.db` pool).
+//! - [`writer`] — the background [`JournalWriter`] actor and its cloneable
+//!   [`JournalWriterHandle`]: group-commit for buffered appends, flush-before-commit ACKs for
+//!   exactly-once entries, and `MAX(seq)` restart resume.
+//!
+//! The replay cursor and the durable step primitive build on these in follow-up issues.
 //!
 //! # Schema ownership
 //!
@@ -57,16 +64,19 @@
 
 mod sealed;
 
+pub mod backend;
 pub mod cipher;
 pub mod config;
 pub mod effect;
 pub mod error;
 pub mod ids;
 pub mod journal;
+pub mod writer;
 
 #[doc(hidden)]
 pub use sealed::Sealed;
 
+pub use backend::{BackendCapabilities, DurableBackendEnum, ExecutionBackend, LocalBackend};
 pub use cipher::{
     CipherError, EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit,
 };
@@ -75,3 +85,4 @@ pub use effect::EffectClass;
 pub use error::DurableError;
 pub use ids::{ExecutionId, ExecutionKind, IdempotencyKey, JournalSeq, PromiseId, StepId, TimerId};
 pub use journal::{EntryKind, ExecutionStatus, Journal, JournalEntry};
+pub use writer::{JournalWriter, JournalWriterHandle};

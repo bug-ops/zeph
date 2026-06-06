@@ -81,6 +81,47 @@ pub enum DurableError {
         /// `"shared-database"`).
         context: &'static str,
     },
+
+    /// A journal entry of a kind whose persistence is provided by a higher layer not yet wired into
+    /// this backend revision. Promise, timer, and checkpoint entries land with the promise/timer and
+    /// retention layers; until then the backend fails closed rather than silently dropping the
+    /// entry's kind-specific state.
+    #[error("journal persistence for '{kind}' entries is not available in this backend revision")]
+    UnsupportedEntryKind {
+        /// The `entry_kind` tag of the entry whose persistence is deferred.
+        kind: &'static str,
+    },
+
+    /// A journal storage operation failed at the database layer (connection, migration, or query).
+    ///
+    /// The static `op` names the failing operation; the underlying database error is attached as
+    /// the error source. Per INV-5 the `Display` message carries only the operation name — the
+    /// boxed source never contains plaintext payloads, since every bind is ciphertext, a hash, or a
+    /// non-secret descriptor.
+    #[error("durable storage operation '{op}' failed")]
+    Storage {
+        /// The static name of the failing operation (e.g. `"append"`, `"finalize"`, `"open"`).
+        op: &'static str,
+        /// The underlying database error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+impl DurableError {
+    /// Wrap a database-layer failure as a [`DurableError::Storage`] for the named operation.
+    ///
+    /// Used at every `zeph-db` call site so storage failures carry a stable, greppable operation
+    /// label while the original error remains reachable via [`std::error::Error::source`].
+    pub(crate) fn storage(
+        op: &'static str,
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        Self::Storage {
+            op,
+            source: source.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -104,5 +145,17 @@ mod tests {
             step_id: StepId::new(12),
         };
         assert!(err.to_string().contains("step 12"));
+    }
+
+    #[test]
+    fn storage_message_names_op_but_not_the_source_detail() {
+        let inner = std::io::Error::other("secret-bind-value");
+        let err = DurableError::storage("append", inner);
+        let rendered = err.to_string();
+        assert!(rendered.contains("append"));
+        // The top-line message is metadata-only: the source detail is reachable via `source()`,
+        // never inlined into Display (INV-5).
+        assert!(!rendered.contains("secret-bind-value"));
+        assert!(std::error::Error::source(&err).is_some());
     }
 }

@@ -10863,10 +10863,14 @@ version = "0.21.4"
 dependencies = [
  "blake3",
  "bytes",
+ "metrics",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml 1.1.2+spec-1.1.0",
+ "tracing",
  "uuid",
  "zeph-db",
 ]

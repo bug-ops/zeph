@@ -10,10 +10,12 @@ flow* of an execution (steps, promises, timers) so a crashed or interrupted run 
 point of failure instead of restarting from scratch.
 
 > [!IMPORTANT]
-> This crate is a **foundational scaffold** (spec-064, issue #4944). It currently exposes
-> *type-level* building blocks only — there is **no execution behavior yet**. The journal writer,
-> execution backends, replay cursor, and the durable step primitive land in follow-up issues of
-> epic [#4707](https://github.com/bug-ops/zeph/issues/4707).
+> This crate is **under active construction** (spec-064, epic
+> [#4707](https://github.com/bug-ops/zeph/issues/4707)). The type-level foundation, the AEAD payload
+> contract, and the persistence engine — `LocalBackend` (a dedicated `durable.db` pool), the
+> background `JournalWriter` actor, and the sealed `ExecutionBackend` dispatcher — have landed. The
+> `DurableContext` facade, the replay cursor, the promise/timer layer, and the consuming adapters
+> land in follow-up issues of the epic.
 
 ## Overview
 
@@ -36,15 +38,25 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
   enum, and `ExecutionStatus`.
 - **effect** — `EffectClass`, the per-step side-effect contract (`Idempotent` / `AtLeastOnce` /
   `ExactlyOnceGuarded`).
+- **cipher** — the `PayloadCipher` AEAD seal/open contract, the `PayloadAad` location binding, and
+  the read-side `ensure_payload_within_limit` guard. The concrete cipher lives in a consuming crate
+  (INV-1).
 - **config** — pure-data `DurableConfig` and `RetentionPolicy` mirroring the `[durable]` TOML
   section, with spec defaults applied on deserialization.
+- **backend** — the sealed `ExecutionBackend` trait, `BackendCapabilities`, the `DurableBackendEnum`
+  enum dispatcher, and `LocalBackend` (a dedicated `durable.db` pool implementing `Journal`, sealing
+  payloads through the injected cipher).
+- **writer** — the background `JournalWriter` actor and its cloneable `JournalWriterHandle`:
+  group-commit for buffered appends, flush-before-commit ACKs for exactly-once entries, and
+  `MAX(seq)` restart resume.
 - **error** — the crate-wide `DurableError`.
 
 ## Architecture & invariants
 
 - **Layer 0, no business-logic dependencies (INV-1).** `zeph-durable` MUST NOT depend on
   `zeph-llm`, `zeph-memory`, `zeph-core`, `zeph-sanitizer`, or any business-layer crate. Its only
-  dependencies are `zeph-db` and `zeph-common`.
+  direct `zeph-*` dependency is `zeph-db`; the rest are infrastructure crates (`tokio`, `tracing`,
+  `metrics`, `bytes`, `blake3`, `serde`, `uuid`). The concrete payload cipher lives in `zeph-core`.
 - **Closed enums make illegal states unrepresentable.** Control entries (`EffectIntent`,
   `PromiseCreated`, `TimerArmed`) carry no payload field — a "control entry with payload" cannot be
   constructed.
