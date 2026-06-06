@@ -66,6 +66,11 @@ use crate::transport::AcpServerConfig;
 #[cfg(feature = "acp-http")]
 const BRIDGE_BUFFER_SIZE: usize = 64 * 1024;
 
+// macOS default is 512 KiB; Linux/Windows are 1–2 MiB. 8 MiB matches the
+// Linux main-thread default and provides headroom for deeply nested agent futures.
+#[cfg(feature = "acp-http")]
+const ACP_AGENT_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 #[cfg(feature = "acp-http")]
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -311,38 +316,49 @@ pub async fn health_handler(State(state): State<AcpHttpState>) -> impl IntoRespo
 /// Agent futures are `!Send` (they call `spawn_local` internally), so each connection
 /// runs on its own current-thread Tokio runtime inside a `LocalSet`. Returns two
 /// `DuplexStream`s: `(reader, writer)` from the caller's perspective.
+///
+/// # Errors
+///
+/// Returns an [`std::io::Error`] if the OS refuses to create the thread.
 #[cfg(feature = "acp-http")]
 pub(crate) fn spawn_agent_connection(
     spawner: crate::agent::SendAgentSpawner,
     server_config: AcpServerConfig,
-) -> (DuplexStream, DuplexStream) {
+) -> std::io::Result<(DuplexStream, DuplexStream)> {
     let (client_w, agent_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
     let (agent_w, client_r) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio current-thread runtime for ACP agent");
-        let local = tokio::task::LocalSet::new();
-        rt.block_on(local.run_until(async move {
-            let writer = agent_w.compat_write();
-            let reader = agent_r.compat();
-            if let Err(e) =
-                crate::transport::stdio::serve_connection(spawner, server_config, writer, reader)
-                    .await
-            {
-                tracing::error!("ACP agent connection error: {e}");
-            }
-        }));
-    });
-    (client_r, client_w)
+    std::thread::Builder::new()
+        .stack_size(ACP_AGENT_STACK_SIZE)
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio current-thread runtime for ACP agent");
+            let local = tokio::task::LocalSet::new();
+            rt.block_on(local.run_until(async move {
+                let writer = agent_w.compat_write();
+                let reader = agent_r.compat();
+                if let Err(e) = crate::transport::stdio::serve_connection(
+                    spawner,
+                    server_config,
+                    writer,
+                    reader,
+                )
+                .await
+                {
+                    tracing::error!("ACP agent connection error: {e}");
+                }
+            }));
+        })?;
+    Ok((client_r, client_w))
 }
 
 /// Create a new HTTP+SSE connection.
 ///
 /// # Errors
 ///
-/// Returns `503 Service Unavailable` when `max_sessions` is already reached.
+/// Returns `503 Service Unavailable` when `max_sessions` is already reached or when
+/// the OS refuses to spawn the agent thread.
 #[cfg(feature = "acp-http")]
 pub(crate) fn create_connection(
     state: &AcpHttpState,
@@ -352,7 +368,12 @@ pub(crate) fn create_connection(
     }
 
     let (reader, writer) =
-        spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone());
+        spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone()).map_err(
+            |e| {
+                tracing::error!("failed to spawn ACP agent thread: {e}");
+                StatusCode::SERVICE_UNAVAILABLE
+            },
+        )?;
 
     let (tx, _) = broadcast::channel(256);
     let tx2 = tx.clone();

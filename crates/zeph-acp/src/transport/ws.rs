@@ -105,12 +105,21 @@ fn register_ws_session(state: &AcpHttpState, session_id: &str) {
 }
 
 #[cfg(feature = "acp-http")]
+#[allow(clippy::too_many_lines)]
 async fn handle_ws(socket: WebSocket, state: AcpHttpState) {
     let session_id = uuid::Uuid::new_v4().to_string();
     register_ws_session(&state, &session_id);
 
     let (reader, mut writer) =
-        spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone());
+        match spawn_agent_connection(state.spawner.clone(), (*state.server_config).clone()) {
+            Ok(streams) => streams,
+            Err(e) => {
+                tracing::error!("failed to spawn ACP agent thread: {e}");
+                state.release_ws_slot();
+                state.remove_connection(&session_id);
+                return;
+            }
+        };
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 

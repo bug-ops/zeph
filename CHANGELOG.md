@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(acp)`: spawn agent connection thread with explicit 8 MiB stack (`thread::Builder::new().stack_size(ACP_AGENT_STACK_SIZE)`) in HTTP and WebSocket transports; bare `thread::spawn` overflowed the default 512 KiB macOS stack on `session/prompt`. `spawn_agent_connection` now returns `io::Result` — spawn failure responds 503 on HTTP and cleanly releases the WS slot. Follow-up: stdio transport tracked in #4901. (#4897)
 - `fix(llm)`: `OpenAiProvider` now applies a 2-layer resolution strategy to the
   `max_tokens` / `max_completion_tokens` field selection: (1) explicit config override,
   (2) built-in model-name prefix table.
