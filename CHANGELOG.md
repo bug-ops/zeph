@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Refactored
 
+- `zeph-config`: split `providers.rs` (2969 lines) into `providers/{mod,thinking,llm,router,candle,entry,tests}.rs` grouped by provider family. Public API unchanged — all types re-exported from `providers/mod.rs`, so `zeph_config::providers::*` paths remain stable. (#4879)
 - `zeph-subagent`: split `manager.rs` (5732 lines) into `manager/{mod,spawn,collect,worktree,secrets}.rs` (#4882)
 - `zeph-subagent`: add `SubAgentDef::for_test()` constructor; replace 5 duplicated test helpers in `zeph-orchestration` (#4887)
 - `zeph-subagent`: remove `utc_now_pub` wrapper; make `utc_now` `pub(crate)` (#4882)
