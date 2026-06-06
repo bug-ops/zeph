@@ -113,8 +113,8 @@ impl SubAgentManager {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`TranscriptReader::find_by_prefix`] and
-    /// [`TranscriptReader::load_meta`].
+    /// Returns the same errors as [`crate::transcript::TranscriptReader::find_by_prefix`] and
+    /// [`crate::transcript::TranscriptReader::load_meta`].
     pub fn def_name_for_resume(
         &self,
         id_prefix: &str,
