@@ -19,6 +19,7 @@ server = ["dep:axum", "dep:tower", "dep:tower-http", "zeph-common/http-middlewar
 [dependencies]
 axum = { workspace = true, optional = true }
 base64.workspace = true
+chrono = { workspace = true, features = ["clock"] }
 eventsource-stream.workspace = true
 futures.workspace = true
 futures-core.workspace = true

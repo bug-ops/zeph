@@ -527,6 +527,10 @@ fn default_a2a_request_timeout_ms() -> u64 {
     300_000
 }
 
+fn default_task_ttl_secs() -> u64 {
+    3600
+}
+
 /// A2A server configuration, nested under `[a2a]` in TOML.
 ///
 /// Controls the Agent-to-Agent HTTP server that exposes the agent via the A2A protocol.
@@ -598,6 +602,13 @@ pub struct A2aServerConfig {
     /// Defaults to 300 000 ms (5 minutes).
     #[serde(default = "default_a2a_request_timeout_ms")]
     pub request_timeout_ms: u64,
+    /// TTL (seconds) for completed, failed, canceled, or rejected tasks in the in-memory store.
+    ///
+    /// Tasks that have reached a terminal state and whose age exceeds this value are evicted
+    /// from memory by a background loop running every 60 seconds. Non-terminal tasks (submitted,
+    /// working) are never evicted. Default: 3600 (1 hour).
+    #[serde(default = "default_task_ttl_secs")]
+    pub task_ttl_secs: u64,
 }
 
 impl std::fmt::Debug for A2aServerConfig {
@@ -625,6 +636,7 @@ impl std::fmt::Debug for A2aServerConfig {
             .field("ibct_ttl_secs", &self.ibct_ttl_secs)
             .field("advertise_files", &self.advertise_files)
             .field("request_timeout_ms", &self.request_timeout_ms)
+            .field("task_ttl_secs", &self.task_ttl_secs)
             .finish()
     }
 }
@@ -648,6 +660,7 @@ impl Default for A2aServerConfig {
             ibct_ttl_secs: default_ibct_ttl(),
             advertise_files: false,
             request_timeout_ms: default_a2a_request_timeout_ms(),
+            task_ttl_secs: default_task_ttl_secs(),
         }
     }
 }

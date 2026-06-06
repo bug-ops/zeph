@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
@@ -107,9 +107,14 @@ pub trait TaskProcessor: Send + Sync {
 ///
 /// History trimming is done lazily on reads via `history_length` — the full history is
 /// always stored, but responses return at most `N` most-recent messages when requested.
+///
+/// Expired terminal tasks are removed by [`evict_expired`](Self::evict_expired), which is
+/// typically called from a background loop spawned by [`A2aServer`](crate::server::A2aServer).
 #[derive(Clone)]
 pub struct TaskManager {
     tasks: Arc<RwLock<HashMap<String, Task>>>,
+    /// Insertion timestamp for each task, used to compute age for TTL eviction.
+    created_at: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 impl TaskManager {
@@ -118,6 +123,7 @@ impl TaskManager {
     pub fn new() -> Self {
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
+            created_at: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -139,6 +145,10 @@ impl TaskManager {
             history: vec![message],
             metadata: None,
         };
+        self.created_at
+            .write()
+            .await
+            .insert(id.clone(), Instant::now());
         self.tasks.write().await.insert(id, task.clone());
         task
     }
@@ -230,6 +240,51 @@ impl TaskManager {
         };
         Ok(task.clone())
     }
+
+    /// Remove terminal tasks that have exceeded `ttl`.
+    ///
+    /// Only tasks in a terminal state ([`TaskState::Completed`], [`TaskState::Failed`],
+    /// [`TaskState::Canceled`], or [`TaskState::Rejected`]) are eligible for removal.
+    /// Non-terminal tasks are never evicted regardless of age, because they may still be
+    /// actively polled or streamed by a client.
+    ///
+    /// This method is designed to be called periodically from a background task. The caller
+    /// is responsible for choosing a suitable interval (e.g., every 60 seconds).
+    pub async fn evict_expired(&self, ttl: Duration) {
+        let now = Instant::now();
+
+        let mut ages = self.created_at.write().await;
+        let mut tasks = self.tasks.write().await;
+
+        let expired: Vec<String> = ages
+            .iter()
+            .filter_map(|(id, created)| {
+                if now.duration_since(*created) < ttl {
+                    return None;
+                }
+                let is_terminal = tasks.get(id).is_some_and(|t| {
+                    matches!(
+                        t.status.state,
+                        TaskState::Completed
+                            | TaskState::Failed
+                            | TaskState::Canceled
+                            | TaskState::Rejected
+                    )
+                });
+                is_terminal.then(|| id.clone())
+            })
+            .collect();
+
+        let count = expired.len();
+        for id in expired {
+            tasks.remove(&id);
+            ages.remove(&id);
+        }
+
+        if count > 0 {
+            tracing::debug!(evicted = count, "a2a task manager: evicted expired tasks");
+        }
+    }
 }
 
 impl Default for TaskManager {
@@ -250,51 +305,7 @@ pub enum CancelError {
 }
 
 pub(super) fn now_rfc3339() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Simple ISO 8601 without external dep
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let minutes = (time_secs % 3600) / 60;
-    let seconds = time_secs % 60;
-
-    // Days since epoch to Y-M-D (simplified leap year calc)
-    let (year, month, day) = days_to_ymd(days);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let month_days: [u64; 12] = if is_leap(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month = 0;
-    for (i, &md) in month_days.iter().enumerate() {
-        if days < md {
-            month = i as u64 + 1;
-            break;
-        }
-        days -= md;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap(y: u64) -> bool {
-    y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
+    chrono::Utc::now().to_rfc3339()
 }
 
 #[cfg(test)]
@@ -451,10 +462,135 @@ mod tests {
     }
 
     #[test]
-    fn now_rfc3339_format() {
+    fn now_rfc3339_is_valid_rfc3339() {
         let ts = now_rfc3339();
-        assert!(ts.ends_with('Z'));
-        assert!(ts.contains('T'));
-        assert_eq!(ts.len(), 20);
+        assert!(ts.contains('T'), "must contain date/time separator");
+        // chrono produces RFC3339 with timezone offset or 'Z'; parse back to verify
+        chrono::DateTime::parse_from_rfc3339(&ts)
+            .expect("now_rfc3339 must produce a valid RFC3339 string");
+    }
+
+    #[tokio::test]
+    async fn evict_expired_removes_terminal_tasks_past_ttl() {
+        let tm = TaskManager::new();
+
+        // Create three tasks
+        let t_completed = tm.create_task(test_message("done")).await;
+        let t_failed = tm.create_task(test_message("fail")).await;
+        let t_working = tm.create_task(test_message("active")).await;
+
+        // Transition to terminal / non-terminal states
+        tm.update_status(&t_completed.id, TaskState::Completed, None)
+            .await;
+        tm.update_status(&t_failed.id, TaskState::Failed, None)
+            .await;
+        tm.update_status(&t_working.id, TaskState::Working, None)
+            .await;
+
+        // Back-date the completed and failed tasks by inserting a past Instant.
+        // We use a zero-duration TTL and a slightly-past instant to avoid
+        // relying on sub-millisecond timing precision in CI environments.
+        {
+            let mut ages = tm.created_at.write().await;
+            // Subtract 2s to ensure elapsed > TTL of 1s used below
+            let old = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+            ages.insert(t_completed.id.clone(), old);
+            ages.insert(t_failed.id.clone(), old);
+            // t_working keeps its real (recent) instant
+        }
+
+        tm.evict_expired(Duration::from_secs(1)).await;
+
+        assert!(
+            tm.get_task(&t_completed.id, None).await.is_none(),
+            "completed task past TTL must be evicted"
+        );
+        assert!(
+            tm.get_task(&t_failed.id, None).await.is_none(),
+            "failed task past TTL must be evicted"
+        );
+        assert!(
+            tm.get_task(&t_working.id, None).await.is_some(),
+            "non-terminal task must not be evicted"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_expired_keeps_terminal_tasks_within_ttl() {
+        let tm = TaskManager::new();
+
+        let task = tm.create_task(test_message("recent done")).await;
+        tm.update_status(&task.id, TaskState::Completed, None).await;
+
+        // task was just created — elapsed ≈ 0, well within 1-hour TTL
+        tm.evict_expired(Duration::from_hours(1)).await;
+
+        assert!(
+            tm.get_task(&task.id, None).await.is_some(),
+            "recently completed task within TTL must not be evicted"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_expired_handles_all_terminal_states() {
+        let tm = TaskManager::new();
+
+        for state in [
+            TaskState::Completed,
+            TaskState::Failed,
+            TaskState::Canceled,
+            TaskState::Rejected,
+        ] {
+            let task = tm.create_task(test_message("terminal")).await;
+            tm.update_status(&task.id, state, None).await;
+
+            // Back-date the task by 2s so elapsed > TTL of 1s used below
+            {
+                let old = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+                tm.created_at.write().await.insert(task.id.clone(), old);
+            }
+
+            tm.evict_expired(Duration::from_secs(1)).await;
+
+            assert!(
+                tm.get_task(&task.id, None).await.is_none(),
+                "terminal state {state:?} past TTL must be evicted"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn evict_expired_never_evicts_non_terminal_tasks_past_ttl() {
+        // Even when a non-terminal task is older than the TTL it must NOT be removed,
+        // because it may still be actively polled or streamed by a client.
+        let tm = TaskManager::new();
+        let old = Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .unwrap();
+
+        for state in [
+            TaskState::Submitted,
+            TaskState::Working,
+            TaskState::InputRequired,
+        ] {
+            let task = tm.create_task(test_message("active")).await;
+            tm.update_status(&task.id, state, None).await;
+            tm.created_at.write().await.insert(task.id.clone(), old);
+
+            tm.evict_expired(Duration::from_secs(1)).await;
+
+            assert!(
+                tm.get_task(&task.id, None).await.is_some(),
+                "non-terminal state {state:?} must not be evicted even past TTL"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn evict_expired_empty_store_is_noop() {
+        let tm = TaskManager::new();
+        // Must not panic on an empty store.
+        tm.evict_expired(Duration::from_secs(0)).await;
+        assert!(tm.get_task("any", None).await.is_none());
     }
 }

@@ -102,6 +102,8 @@ pub struct A2aServer {
     auth_cfg: AuthConfig,
     rate_limit: u32,
     max_body_size: usize,
+    /// TTL for terminal tasks; `None` disables background eviction.
+    task_ttl: Option<Duration>,
 }
 
 impl A2aServer {
@@ -140,6 +142,7 @@ impl A2aServer {
             auth_cfg: AuthConfig::new(None, false),
             rate_limit: 0,
             max_body_size: 1_048_576,
+            task_ttl: Some(Duration::from_hours(1)),
         }
     }
 
@@ -204,6 +207,20 @@ impl A2aServer {
         self
     }
 
+    /// Set the TTL for terminal tasks in the in-memory store (default: 3600 seconds).
+    ///
+    /// Tasks in a terminal state ([`crate::TaskState::Completed`], [`crate::TaskState::Failed`],
+    /// [`crate::TaskState::Canceled`], [`crate::TaskState::Rejected`]) that have been in the
+    /// store longer than this duration are evicted by a background loop running every 60 seconds.
+    ///
+    /// Pass `None` to disable background eviction entirely. In that case the task store grows
+    /// without bound and the operator is responsible for eviction (e.g., via process restart).
+    #[must_use]
+    pub fn with_task_ttl(mut self, ttl: Option<Duration>) -> Self {
+        self.task_ttl = ttl;
+        self
+    }
+
     /// Bind to the configured address and start serving A2A requests.
     ///
     /// Runs until a `true` value is received on the `shutdown_rx` channel provided to
@@ -219,6 +236,17 @@ impl A2aServer {
                 "A2A server running without bearer auth — ensure this is a trusted-network-only deployment"
             );
         }
+
+        let eviction_handle = self.task_ttl.map(|ttl| {
+            let tm = self.state.task_manager.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_mins(1));
+                loop {
+                    interval.tick().await;
+                    tm.evict_expired(ttl).await;
+                }
+            })
+        });
 
         let router = build_router_with_full_config(
             self.state,
@@ -247,6 +275,10 @@ impl A2aServer {
         })
         .await
         .map_err(|e| A2aError::Server(format!("server error: {e}")))?;
+
+        if let Some(handle) = eviction_handle {
+            handle.abort();
+        }
 
         Ok(())
     }

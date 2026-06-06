@@ -10498,6 +10498,7 @@ version = "0.21.4"
 dependencies = [
  "axum 0.8.9",
  "base64 0.22.1",
+ "chrono",
  "eventsource-stream",
  "futures",
  "futures-core",
