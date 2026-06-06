@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `feat(durable)`: scaffolded the new Layer-0 `zeph-durable` crate (spec-064) — the foundation of
+  the native durable execution layer. This first slice is type-level only, with no runtime
+  behavior: journal-boundary newtypes (`ExecutionId`/`PromiseId`/`TimerId` as UUIDv7, `StepId`,
+  `JournalSeq`, `IdempotencyKey`, plus the `ExecutionKind` discriminator), the `Journal` trait and
+  its `JournalEntry`/`EntryKind`/`ExecutionStatus` data model, the `EffectClass` side-effect
+  contract, the pure-data `DurableConfig`/`RetentionPolicy` mirroring `[durable]` TOML (all
+  spec-default-backed), and the `DurableError` type. `IdempotencyKey::derive` uses BLAKE3
+  `derive_key` with a domain-separation context and length-delimited (injective) input. The crate
+  is pure infrastructure with no business-layer dependencies (INV-1). The four `durable_*` schema
+  tables (`durable_executions`, `durable_journal`, `durable_promises`, `durable_timers`) were added
+  as numbered migrations `097`–`100` in both `zeph-db/migrations/sqlite/` and `.../postgres/`;
+  `zeph-durable` owns no `.sql` files and no `sqlx::migrate!` (INV-14). (#4944)
+
 ### Fixed
 
 - `perf(acp)`: `list_directory` and `find_path` tools now offload their synchronous

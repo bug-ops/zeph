@@ -10855,6 +10855,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeph-durable"
+version = "0.21.4"
+dependencies = [
+ "blake3",
+ "bytes",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
+ "uuid",
+ "zeph-db",
+]
+
+[[package]]
 name = "zeph-experiments"
 version = "0.21.4"
 dependencies = [

@@ -1,0 +1,35 @@
+[package]
+name = "zeph-durable"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Native durable execution layer for Zeph: journaled control flow with crash-resume"
+readme = "README.md"
+
+[features]
+# Backend selection forwarded to zeph-db (mutually exclusive, mirrors zeph-scheduler).
+# default = ["sqlite"] keeps standalone `cargo check -p zeph-durable` and rust-analyzer working.
+default = ["sqlite"]
+sqlite = ["zeph-db/sqlite"]
+postgres = ["zeph-db/postgres"]
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["serde", "v7"] }
+zeph-db.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

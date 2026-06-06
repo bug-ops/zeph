@@ -30,6 +30,7 @@ base64 = "0.22.1"
 bech32 = "0.11.1"
 blake3 = "1.8.5"
 bytemuck = "1.25"
+bytes = "1.11.1"
 candle-core = { version = "0.10.2", default-features = false }
 candle-nn = { version = "0.10.2", default-features = false }
 candle-transformers = { version = "0.10.2", default-features = false }
