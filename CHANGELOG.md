@@ -57,6 +57,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   module docs, declarations/re-exports, the `RouterProvider` struct, the shared `blocking_load`
   helper, and the ASI rate-limit statics. Public API is unchanged: `RouterStrategy`, the three
   `*RouterConfig` types, and `RouterProvider` are re-exported from `router`. (#4875)
+- `zeph-plugins`: split `manager.rs` (4253 lines) into `manager/{mod,install,registry,security,store,tests}.rs` grouped by concern — `install` (add/remove/enable/disable + dependency guards), `registry` (remote download, archive extraction, auto-update, ephemeral install), `security` (URL/name/overlay validation, MCP allowlisting, archive safety, skill scanning), `store` (filesystem state and manifest reading). `mod.rs` (249 lines) retains the public data types, `PluginManager` constructors, and re-exports. Public API unchanged — `PluginManager`, `MAX_ARCHIVE_BYTES`, `download_and_extract`, `validate_url_scheme_ephemeral`, `validate_plugin_name`, and `validate_overlay_keys` remain reachable at their existing paths. (#4917)
 
 ### Changed
 
