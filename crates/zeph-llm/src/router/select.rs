@@ -37,6 +37,10 @@ impl RouterProvider {
     /// - No embedding provider is configured.
     /// - The embedding call exceeds `embedding_timeout_ms`.
     /// - The embedding is shorter than `dim` or is all-zero.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.bandit_features", skip_all)
+    )]
     pub(crate) async fn bandit_features(&self, query: &str) -> Option<Vec<f32>> {
         let cfg = self.bandit_config.as_ref()?;
         let key = Self::query_hash(query);
@@ -82,6 +86,10 @@ impl RouterProvider {
     /// Falls through to Thompson or first available provider when bandit cannot decide.
     /// Budget enforcement via global `CostTracker` is handled at the caller level.
     /// Per-provider budget fractions are intentionally NOT implemented (scope creep, see #2230).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.bandit_select_provider", skip_all)
+    )]
     pub(crate) async fn bandit_select_provider(&self, query: &str) -> Option<AnyProvider> {
         let Some(ref bandit_arc) = self.bandit else {
             return self.state.providers.first().cloned();
@@ -471,6 +479,10 @@ impl RouterProvider {
     ///
     /// For `ClassifierMode::Judge`, calls the summary provider and falls back to heuristic
     /// on any error or timeout. For `ClassifierMode::Heuristic`, evaluates synchronously.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.evaluate_quality", skip_all)
+    )]
     pub(crate) async fn evaluate_quality(
         response: &str,
         threshold: f64,
@@ -519,6 +531,10 @@ impl RouterProvider {
     /// Checks `cache` before calling the underlying provider. On a cache hit, increments
     /// `embed_cache_hits`; on a miss, embeds via `self.embed()` and populates the cache.
     /// Either way, `embed_call_count` is incremented for observability.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.embed_cached", skip_all)
+    )]
     pub(crate) async fn embed_cached(
         &self,
         text: &str,

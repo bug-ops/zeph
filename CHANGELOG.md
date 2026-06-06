@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(config)`: added `#[must_use = "validation result must be checked"]` to
+  `SpreadingActivationConfig::validate` (`memory/graph.rs`) and `AconConfig::validate`
+  (`memory/fidelity.rs`). Both return `Result<(), String>`; the attribute (with an explicit
+  reason, to satisfy `clippy::double_must_use`) prevents callers from silently discarding the
+  validation error via a bare `config.validate();` statement. (#4930)
 - `fix(acp)`: spawn agent connection thread with explicit 8 MiB stack (`thread::Builder::new().stack_size(ACP_AGENT_STACK_SIZE)`) in HTTP and WebSocket transports; bare `thread::spawn` overflowed the default 512 KiB macOS stack on `session/prompt`. `spawn_agent_connection` now returns `io::Result` — spawn failure responds 503 on HTTP and cleanly releases the WS slot. Follow-up: stdio transport tracked in #4901. (#4897)
 - `fix(acp)`: `serve_stdio` now spawns a dedicated OS thread with an explicit 8 MiB stack and a `current_thread` Tokio runtime; the previous implementation ran the agent future on a tokio worker thread (2 MiB default), which was insufficient for deeply nested agent sessions. The thread name is `acp-stdio`; spawn failures and runtime-build errors propagate as `AcpError::Transport`. (#4901)
 - `fix(gateway)`: webhook `body` field is now sanitized with `strip_control_chars_preserve_whitespace` before being forwarded to the agent, consistent with `sender` and `channel`; previously raw control characters (null bytes, ANSI escapes) in `body` bypassed sanitization. (#4904)
@@ -38,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   eviction methods moved into the existing `sidequest.rs`. `mod.rs` (now ~2000 lines) retains
   the struct, constructors, and the main agent loop. The shared `impl` block is now split
   across files, so cross-module entrypoints are `pub(super)`. No public API change. (#4923)
+- `refactor(config)`: removed the duplicate `validate_unit_f32` from
+  `zeph-config/src/memory/hebbian.rs`; it was semantically identical to the `pub(crate)`
+  `validate_similarity_threshold` in `memory/mod.rs` (both reject non-finite values and values
+  outside `[0.0, 1.0]`). The write-gate `min_edge_relevance` fields now share
+  `validate_similarity_threshold` via `deserialize_with`, matching the existing usage for the
+  other Hebbian unit-interval fields. (#4928)
 - `refactor`: extract inline `#[cfg(test)]` blocks from two files into dedicated `tests`
   submodules, matching the monolith-refactor convention. `zeph-subagent/src/manager/mod.rs`
   (4118 → 527 lines) moves its three test modules to `manager/tests.rs`; the two named
@@ -83,6 +94,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and module declarations. The largest submodule is now 816 lines. Public API is unchanged:
   `McpManager`, `McpTransport`, `ServerConnectOutcome`, and `ServerEntry` are still re-exported
   from the crate root, and all inherent methods keep their original visibility. (#4919)
+
+### Performance
+
+- `perf(llm)`: added profiling-gated tracing spans
+  (`#[cfg_attr(feature = "profiling", tracing::instrument(name = "llm.router.<fn>", skip_all))]`)
+  to the four `pub(crate) async` methods in `zeph-llm/src/router/select.rs` that perform embedding
+  I/O or an LLM-judge call — `bandit_features`, `bandit_select_provider`, `evaluate_quality`,
+  `embed_cached` — so they surface in local Chrome JSON traces / Perfetto for latency analysis.
+  The split in #4920 left them uninstrumented. (#4926)
+- `perf(core)`: added a `#[tracing::instrument(name = "core.persist.rpe_should_skip", skip_all,
+  level = "debug")]` span to `rpe_should_skip` in `zeph-core/src/agent/persistence/extract.rs`,
+  which performs an embedding call with a timeout on the persistence path. The sibling
+  `enqueue_graph_extraction_task` and `load_history` were already instrumented in #4921. (#4929)
 
 ### Changed
 
