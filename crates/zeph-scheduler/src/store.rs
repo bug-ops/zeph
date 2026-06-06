@@ -6,6 +6,7 @@ use zeph_db::DbPool;
 use zeph_db::sql;
 
 use crate::error::SchedulerError;
+use crate::task::CronExpr;
 
 /// A scheduled task row returned by [`JobStore::list_jobs`].
 ///
@@ -56,8 +57,9 @@ pub struct ScheduledTaskInfo {
     pub kind: String,
     /// Execution mode: `"periodic"` or `"oneshot"`.
     pub task_mode: String,
-    /// Cron expression for periodic tasks, empty string for one-shot tasks.
-    pub cron_expr: String,
+    /// Validated cron expression for periodic tasks; `None` for one-shot tasks or rows
+    /// whose stored expression is invalid (those are marked `status = "error"` in the DB).
+    pub cron_expr: Option<CronExpr>,
     /// Next scheduled run time as an ISO 8601 / RFC 3339 string, or empty if unknown.
     pub next_run: String,
     /// Stored task prompt for custom tasks; empty for config-driven built-in tasks.
@@ -390,6 +392,11 @@ impl JobStore {
 
     /// List all active (non-done) jobs with full details for display.
     ///
+    /// The `cron_expr` field of each returned [`ScheduledTaskInfo`] is `Some` for periodic tasks
+    /// with a valid expression and `None` for one-shot tasks or rows whose stored expression
+    /// failed validation. Invalid rows are not filtered out — callers can check `status` to
+    /// distinguish error rows.
+    ///
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
@@ -405,7 +412,23 @@ impl JobStore {
         Ok(rows
             .into_iter()
             .map(
-                |(name, kind, task_mode, cron_expr, next_run, task_data, status, provenance)| {
+                |(name, kind, task_mode, raw_cron, next_run, task_data, status, provenance)| {
+                    // Empty string = oneshot task (no cron). Non-empty = validate eagerly.
+                    let cron_expr = if raw_cron.is_empty() {
+                        None
+                    } else {
+                        match CronExpr::try_from(raw_cron.as_str()) {
+                            Ok(expr) => Some(expr),
+                            Err(e) => {
+                                tracing::warn!(
+                                    task = %name,
+                                    cron_expr = %raw_cron,
+                                    "invalid cron expression in DB row: {e}"
+                                );
+                                None
+                            }
+                        }
+                    };
                     ScheduledTaskInfo {
                         name,
                         kind,
@@ -633,12 +656,15 @@ mod tests {
         let periodic = jobs.iter().find(|j| j.name == "periodic_job").unwrap();
         assert_eq!(periodic.kind, "memory_cleanup");
         assert_eq!(periodic.task_mode, "periodic");
-        assert_eq!(periodic.cron_expr, "0 0 3 * * *");
+        assert_eq!(
+            periodic.cron_expr.as_ref().map(CronExpr::as_str),
+            Some("0 0 3 * * *")
+        );
 
         let oneshot = jobs.iter().find(|j| j.name == "oneshot_job").unwrap();
         assert_eq!(oneshot.kind, "custom");
         assert_eq!(oneshot.task_mode, "oneshot");
-        assert!(oneshot.cron_expr.is_empty());
+        assert!(oneshot.cron_expr.is_none());
         assert_eq!(oneshot.next_run, "2030-01-01T10:00:00Z");
     }
 

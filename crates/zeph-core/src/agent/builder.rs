@@ -1986,6 +1986,8 @@ impl<C: Channel> Agent<C> {
                 self.services.feedback.judge = Some(zeph_agent_feedback::JudgeDetector::new(
                     config.judge_adaptive_low,
                     config.judge_adaptive_high,
+                    config.judge_rate_limit,
+                    std::time::Duration::from_secs(config.judge_rate_window_secs),
                 ));
             }
         }

@@ -152,6 +152,14 @@ fn default_heuristic_promotion_interval_hours() -> u64 {
     24
 }
 
+fn default_judge_rate_limit() -> usize {
+    5
+}
+
+fn default_judge_rate_window_secs() -> u64 {
+    60
+}
+
 /// Strategy for detecting implicit user corrections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -417,6 +425,19 @@ pub struct LearningConfig {
     /// Interval in hours between promotion evaluation runs. Default: `24`.
     #[serde(default = "default_heuristic_promotion_interval_hours")]
     pub heuristic_promotion_interval_hours: u64,
+
+    /// Maximum number of judge LLM calls allowed within the rate window. Default: `5`.
+    ///
+    /// Applies to `detector_mode = "judge"` and `detector_mode = "model"`. When the limit
+    /// is reached, borderline messages are classified by regex alone until the window expires.
+    #[serde(default = "default_judge_rate_limit")]
+    pub judge_rate_limit: usize,
+
+    /// Sliding window duration for judge rate limiting, in seconds. Default: `60`.
+    ///
+    /// Calls older than this are evicted from the rate limiter before each new call is checked.
+    #[serde(default = "default_judge_rate_window_secs")]
+    pub judge_rate_window_secs: u64,
 }
 
 impl Default for LearningConfig {
@@ -481,6 +502,8 @@ impl Default for LearningConfig {
             heuristic_promotion_provider: ProviderName::default(),
             heuristic_promotion_threshold: default_heuristic_promotion_threshold(),
             heuristic_promotion_interval_hours: default_heuristic_promotion_interval_hours(),
+            judge_rate_limit: default_judge_rate_limit(),
+            judge_rate_window_secs: default_judge_rate_window_secs(),
         }
     }
 }
@@ -793,5 +816,30 @@ detector_mode = "judge"
             "missing judge_provider must default to empty string"
         );
         assert_eq!(cfg.judge_model, "gpt-4o");
+    }
+
+    #[test]
+    fn judge_rate_limit_defaults() {
+        let cfg = LearningConfig::default();
+        assert_eq!(cfg.judge_rate_limit, 5);
+        assert_eq!(cfg.judge_rate_window_secs, 60);
+    }
+
+    #[test]
+    fn judge_rate_limit_empty_section_uses_defaults() {
+        let cfg: LearningConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.judge_rate_limit, 5);
+        assert_eq!(cfg.judge_rate_window_secs, 60);
+    }
+
+    #[test]
+    fn judge_rate_limit_serde_roundtrip() {
+        let toml = r"
+judge_rate_limit = 10
+judge_rate_window_secs = 120
+";
+        let cfg: LearningConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.judge_rate_limit, 10);
+        assert_eq!(cfg.judge_rate_window_secs, 120);
     }
 }

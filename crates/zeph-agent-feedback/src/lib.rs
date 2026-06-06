@@ -27,7 +27,8 @@
 //! - **CJK false-positive risk**: without word boundaries, CJK substring patterns could match
 //!   inside longer compounds. Mitigated by using 2+ character patterns only for unanchored CJK.
 //! - **Unsupported languages** (e.g., Korean, Arabic): regex returns `None`; every message
-//!   triggers a judge call, which is rate-limited to 5/min.
+//!   triggers a judge call, rate-limited to `judge_rate_limit` calls per `judge_rate_window_secs`
+//!   seconds (configurable via `LearningConfig`).
 
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -507,10 +508,6 @@ impl FeedbackDetector {
 const JUDGE_USER_MSG_MAX_CHARS: usize = 1000;
 /// Maximum assistant response length included in the judge prompt.
 const JUDGE_ASSISTANT_MAX_CHARS: usize = 500;
-/// Rate limiter: max judge calls per window.
-const JUDGE_RATE_LIMIT: usize = 5;
-/// Rate limiter: sliding window duration.
-const JUDGE_RATE_WINDOW: Duration = Duration::from_mins(1);
 
 const JUDGE_SYSTEM_PROMPT: &str = "\
 You are a user satisfaction classifier for an AI assistant.
@@ -605,16 +602,28 @@ pub struct JudgeDetector {
     adaptive_low: f32,
     /// Upper bound: at or above this, regex "is correction" is trusted without judge.
     adaptive_high: f32,
+    /// Maximum calls allowed within `rate_window`.
+    rate_limit: usize,
+    /// Sliding window duration for rate limiting.
+    rate_window: Duration,
     /// Sliding-window timestamps for rate limiting (owned, not shared across spawns).
     call_times: VecDeque<Instant>,
 }
 
 impl JudgeDetector {
-    /// Creates a new `JudgeDetector` with adaptive thresholds.
+    /// Creates a new `JudgeDetector` with adaptive thresholds and rate-limit parameters.
+    ///
+    /// - `rate_limit`: maximum calls allowed per `rate_window`.
+    /// - `rate_window`: sliding window duration for rate limiting.
     ///
     /// Logs a warning if `adaptive_low >= adaptive_high` (empty borderline zone).
     #[must_use]
-    pub fn new(adaptive_low: f32, adaptive_high: f32) -> Self {
+    pub fn new(
+        adaptive_low: f32,
+        adaptive_high: f32,
+        rate_limit: usize,
+        rate_window: Duration,
+    ) -> Self {
         if adaptive_low >= adaptive_high {
             tracing::warn!(
                 adaptive_low,
@@ -626,6 +635,8 @@ impl JudgeDetector {
         Self {
             adaptive_low,
             adaptive_high,
+            rate_limit,
+            rate_window,
             call_times: VecDeque::new(),
         }
     }
@@ -651,8 +662,8 @@ impl JudgeDetector {
         let now = Instant::now();
         // Evict timestamps outside the sliding window.
         self.call_times
-            .retain(|t| now.duration_since(*t) <= JUDGE_RATE_WINDOW);
-        if self.call_times.len() >= JUDGE_RATE_LIMIT {
+            .retain(|t| now.duration_since(*t) <= self.rate_window);
+        if self.call_times.len() >= self.rate_limit {
             return false;
         }
         self.call_times.push_back(now);
@@ -1077,13 +1088,13 @@ mod tests {
 
     #[test]
     fn should_invoke_no_regex_signal_returns_true() {
-        let jd = JudgeDetector::new(0.5, 0.8);
+        let jd = JudgeDetector::new(0.5, 0.8, 5, Duration::from_mins(1));
         assert!(jd.should_invoke(None));
     }
 
     #[test]
     fn should_invoke_high_confidence_returns_false() {
-        let jd = JudgeDetector::new(0.5, 0.8);
+        let jd = JudgeDetector::new(0.5, 0.8, 5, Duration::from_mins(1));
         let signal = CorrectionSignal {
             confidence: 0.85,
             kind: CorrectionKind::ExplicitRejection,
@@ -1094,7 +1105,7 @@ mod tests {
 
     #[test]
     fn should_invoke_borderline_returns_true() {
-        let jd = JudgeDetector::new(0.5, 0.8);
+        let jd = JudgeDetector::new(0.5, 0.8, 5, Duration::from_mins(1));
         let signal = CorrectionSignal {
             confidence: 0.75,
             kind: CorrectionKind::Repetition,
@@ -1105,7 +1116,7 @@ mod tests {
 
     #[test]
     fn should_invoke_below_adaptive_low_returns_false() {
-        let jd = JudgeDetector::new(0.5, 0.8);
+        let jd = JudgeDetector::new(0.5, 0.8, 5, Duration::from_mins(1));
         let signal = CorrectionSignal {
             confidence: 0.3,
             kind: CorrectionKind::AlternativeRequest,
@@ -1118,16 +1129,18 @@ mod tests {
 
     #[test]
     fn rate_limiter_allows_up_to_limit() {
-        let mut jd = JudgeDetector::new(0.5, 0.8);
-        for _ in 0..JUDGE_RATE_LIMIT {
+        let rate_limit = 5;
+        let mut jd = JudgeDetector::new(0.5, 0.8, rate_limit, Duration::from_mins(1));
+        for _ in 0..rate_limit {
             assert!(jd.check_rate_limit(), "should allow within limit");
         }
     }
 
     #[test]
     fn rate_limiter_blocks_after_limit() {
-        let mut jd = JudgeDetector::new(0.5, 0.8);
-        for _ in 0..JUDGE_RATE_LIMIT {
+        let rate_limit = 5;
+        let mut jd = JudgeDetector::new(0.5, 0.8, rate_limit, Duration::from_mins(1));
+        for _ in 0..rate_limit {
             jd.check_rate_limit();
         }
         assert!(!jd.check_rate_limit(), "should block after limit exceeded");
@@ -1136,12 +1149,14 @@ mod tests {
     #[tokio::test]
     async fn rate_limiter_evicts_expired_entries() {
         tokio::time::pause();
-        let mut jd = JudgeDetector::new(0.5, 0.8);
-        for _ in 0..JUDGE_RATE_LIMIT {
+        let rate_limit = 5;
+        let rate_window = Duration::from_mins(1);
+        let mut jd = JudgeDetector::new(0.5, 0.8, rate_limit, rate_window);
+        for _ in 0..rate_limit {
             assert!(jd.check_rate_limit());
         }
         // Advance time past the rate-limit window so all entries expire.
-        tokio::time::advance(JUDGE_RATE_WINDOW + Duration::from_secs(1)).await;
+        tokio::time::advance(rate_window + Duration::from_secs(1)).await;
         assert!(
             jd.check_rate_limit(),
             "expired entries should be evicted, new call must be allowed"
@@ -1162,7 +1177,7 @@ mod tests {
 
     #[test]
     fn should_invoke_at_adaptive_low_boundary_inclusive() {
-        let jd = JudgeDetector::new(0.5, 0.8);
+        let jd = JudgeDetector::new(0.5, 0.8, 5, Duration::from_mins(1));
         let signal = CorrectionSignal {
             confidence: 0.5,
             kind: CorrectionKind::AlternativeRequest,
@@ -1176,7 +1191,7 @@ mod tests {
 
     #[test]
     fn should_invoke_at_adaptive_high_boundary_exclusive() {
-        let jd = JudgeDetector::new(0.5, 0.8);
+        let jd = JudgeDetector::new(0.5, 0.8, 5, Duration::from_mins(1));
         let signal = CorrectionSignal {
             confidence: 0.8,
             kind: CorrectionKind::ExplicitRejection,
@@ -1192,7 +1207,7 @@ mod tests {
 
     #[test]
     fn judge_detector_inverted_thresholds_logs_warn() {
-        let jd = JudgeDetector::new(0.9, 0.5);
+        let jd = JudgeDetector::new(0.9, 0.5, 5, Duration::from_mins(1));
         assert!(jd.should_invoke(None));
         let signal = CorrectionSignal {
             confidence: 0.7,

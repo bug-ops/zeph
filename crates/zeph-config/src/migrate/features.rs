@@ -1,0 +1,311 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Feature-specific (compaction, autodream, goals, orchestration persistence) config migration steps.
+//!
+//! Extracted from the former `migrate/mod.rs` monolith (#4874). Shared TOML helpers,
+//! the [`Migration`](super::Migration) trait, and the [`MIGRATIONS`](super::MIGRATIONS)
+//! registry remain in the parent module.
+
+use super::{MigrateError, MigrationResult};
+
+/// Strip any existing `[memory.compression.predictor]` section from the config (#3251).
+///
+/// The compression predictor feature was removed. This migration cleans up both active
+/// and commented-out sections that previous `--migrate-config` runs may have injected.
+/// # Errors
+///
+/// This function is a pure string operation and always returns `Ok`. The `Result`
+/// return type is kept for API consistency with other migration functions.
+pub fn migrate_compression_predictor_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    // Strip any [memory.compression.predictor] section (active or commented-out) that
+    // prior migrate-config runs may have injected. The feature is removed (#3251).
+    let has_active = toml_src.contains("[memory.compression.predictor]");
+    let has_commented = toml_src.contains("# [memory.compression.predictor]");
+    if !has_active && !has_commented {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Remove lines that belong to the section header variants and their key lines.
+    // A line belongs to the section when the section header has been seen and the
+    // line is not a new `[section]` header (excluding the predictor header itself).
+    let mut output_lines: Vec<&str> = Vec::new();
+    let mut in_predictor = false;
+    for line in toml_src.lines() {
+        let trimmed = line.trim();
+        // Detect active or commented-out section header.
+        if trimmed == "[memory.compression.predictor]"
+            || trimmed == "# [memory.compression.predictor]"
+        {
+            in_predictor = true;
+            continue;
+        }
+        // Any new `[section]` header (not commented-out) ends the predictor block.
+        if in_predictor && trimmed.starts_with('[') && !trimmed.starts_with("# [") {
+            in_predictor = false;
+        }
+        if !in_predictor {
+            output_lines.push(line);
+        }
+    }
+    // Preserve trailing newline if original had one.
+    let mut output = output_lines.join("\n");
+    if toml_src.ends_with('\n') {
+        output.push('\n');
+    }
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.compression.predictor".to_owned()],
+    })
+}
+
+/// Add a commented-out `[memory.microcompact]` block if absent (#2699).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_microcompact_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("[memory.microcompact]") || toml_src.contains("# [memory.microcompact]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Time-based microcompact (#2699). Strips stale low-value tool outputs after idle.\n\
+         # [memory.microcompact]\n\
+         # enabled = false\n\
+         # gap_threshold_minutes = 60   # idle gap before clearing stale outputs\n\
+         # keep_recent = 3              # always keep this many recent outputs intact\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.microcompact".to_owned()],
+    })
+}
+
+/// Add a commented-out `[memory.autodream]` block if absent (#2697).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_autodream_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("[memory.autodream]") || toml_src.contains("# [memory.autodream]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# autoDream background memory consolidation (#2697). Disabled by default.\n\
+         # [memory.autodream]\n\
+         # enabled = false\n\
+         # min_sessions = 5             # sessions since last consolidation\n\
+         # min_hours = 8                # hours since last consolidation\n\
+         # consolidation_provider = \"\" # provider name from [[llm.providers]]; empty = primary\n\
+         # max_iterations = 5\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.autodream".to_owned()],
+    })
+}
+
+/// Add a commented-out `[magic_docs]` block if absent (#2702).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_magic_docs_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    use toml_edit::{Item, Table};
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    if doc.contains_key("magic_docs") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    doc.insert("magic_docs", Item::Table(Table::new()));
+    let comment = "# MagicDocs auto-maintained markdown (#2702). Disabled by default.\n\
+         # [magic_docs]\n\
+         # enabled = false\n\
+         # min_turns_between_updates = 10\n\
+         # update_provider = \"\"         # provider name from [[llm.providers]]; empty = primary\n\
+         # max_iterations = 3\n";
+    // Remove the just-inserted empty table and replace with a comment.
+    doc.remove("magic_docs");
+    // Append as a trailing comment on the document root.
+    let raw = doc.to_string();
+    let output = format!("{raw}\n{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["magic_docs".to_owned()],
+    })
+}
+
+/// Add a commented-out `persistence_enabled` key under `[orchestration]` when absent (#3107).
+///
+/// Existing configs that omit this key pick up `true` via `#[serde(default)]`, so this
+/// migration is informational — it surfaces the new option without changing behaviour.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML document cannot be parsed.
+pub fn migrate_orchestration_persistence(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Skip if the key is already present (active or commented).
+    if toml_src.contains("persistence_enabled") || toml_src.contains("# persistence_enabled") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Only inject under an existing [orchestration] section.
+    if !toml_src.contains("[orchestration]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Insert the commented key right after the `[orchestration]` header line.
+    let comment = "# persistence_enabled = true  \
+        # persist task graphs to SQLite after each tick; enables `/plan resume <id>` (#3107)\n";
+    let output = toml_src.replacen(
+        "[orchestration]\n",
+        &format!("[orchestration]\n{comment}"),
+        1,
+    );
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["orchestration.persistence_enabled".to_owned()],
+    })
+}
+
+/// Add the `[goals]` section as commented-out defaults when it is absent.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_goals_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[goals]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Long-horizon goal lifecycle tracking (#3567).\n\
+         # [goals]\n\
+         # enabled = false\n\
+         # inject_into_system_prompt = true\n\
+         # max_text_chars = 2000\n\
+         # max_history = 50\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["goals".to_owned()],
+    })
+}
+
+/// Add a commented-out `[memory.five_signal]` section if absent (#4374).
+///
+/// All five-signal fields have `#[serde(default)]` so existing configs parse without changes.
+/// This step surfaces the new section for users upgrading from older configs.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_five_signal_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[memory.five_signal]") || toml_src.contains("# [memory.five_signal]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Five-signal SYNAPSE retrieval (#4374). Disabled by default.\n\
+         # [memory.five_signal]\n\
+         # enabled = false\n\
+         # w_recency = 0.35\n\
+         # w_relevance = 0.35\n\
+         # w_frequency = 0.15\n\
+         # w_causal = 0.10\n\
+         # w_novelty = 0.05\n\
+         # causal_bfs_max_depth = 10\n\
+         # neutral_causal_distance = 5\n\
+         # novelty_decay_rate = 0.1\n\
+         #\n\
+         # [memory.five_signal.consolidation_daemon]\n\
+         # enabled = false\n\
+         # interval_seconds = 7200\n\
+         # batch_size = 500\n\
+         # promotion_score_threshold = 0.70\n\
+         # demotion_score_threshold = 0.20\n\
+         # top_k_per_run = 500\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.five_signal".to_owned()],
+    })
+}
