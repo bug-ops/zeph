@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEvent};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use zeph_core::metrics::MetricsSnapshot;
@@ -76,6 +76,7 @@ impl EventSource for CrosstermEventSource {
                 Ok(CrosstermEvent::Key(key)) => Some(AppEvent::Key(key)),
                 Ok(CrosstermEvent::Resize(w, h)) => Some(AppEvent::Resize(w, h)),
                 Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Paste(text)),
+                Ok(CrosstermEvent::Mouse(mouse)) => Some(AppEvent::Mouse(mouse)),
                 _ => Some(AppEvent::Tick),
             }
         } else {
@@ -115,6 +116,8 @@ pub enum AppEvent {
     /// inserts it verbatim into the input buffer; Enter is still required
     /// to submit (matching vim/neovim behaviour).
     Paste(String),
+    /// A mouse event from crossterm (scroll wheel, click, drag).
+    Mouse(MouseEvent),
 }
 
 /// Events produced by the agent and forwarded to the TUI via [`crate::TuiChannel`].

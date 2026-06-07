@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: TUI transcript cannot be scrolled in Insert mode (#4988).
+  - `PageUp`/`PageDown` now scroll the transcript in Insert mode (previously silently ignored).
+  - Mouse scroll wheel (`ScrollUp`/`ScrollDown`) now scrolls the transcript in both Insert and Normal modes via native `MouseEvent` handling — `EnableMouseCapture` is enabled at startup.
+  - `EnableAlternateScroll` (DECSET 1007h, added in #3685) is removed; it was mutually exclusive with `EnableMouseCapture` and its behaviour was terminal-dependent when both were active. Native click-drag text selection now requires holding Shift or Option (standard behaviour when mouse capture is active).
+  - `auto_scroll` suppresses auto-scrolling to the bottom when the user has manually scrolled up (offset > 1), preserving the user's position during streaming.
+
 - `fix(init)`: align the default config output path in the init wizard with the runtime config search order. The wizard now defaults to `$XDG_CONFIG_HOME/zeph/config.toml` (same as `resolve_config_path`), so a config written during `zeph init` is found automatically on the next `zeph` invocation (closes #4984)
 - `fix(skills)`: when the embedding matcher is unavailable (no embedding provider configured, or embed/Qdrant infrastructure failure), skill injection now uses the description-only compact format (`format_skills_prompt_compact`) instead of injecting all skill bodies. Eliminates the ~57k-token baseline footprint for Claude-only and Ollama-without-embeddings setups; affected sessions see a `tracing::warn` pointing to embedding provider configuration (closes #4989)
 - `fix(durable)`: emit `durable.journal.writer.degraded_appends_total` metrics counter in `append_acked_degrading` when `JournalUnavailable` is returned — the degradation path was previously observable only via `WARN` log (closes #4973)

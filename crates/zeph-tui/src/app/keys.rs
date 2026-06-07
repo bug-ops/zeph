@@ -931,6 +931,9 @@ impl App {
         if self.handle_insert_delete_keys(key) {
             return;
         }
+        if self.handle_insert_scroll_keys(key) {
+            return;
+        }
         if self.handle_insert_history_keys(key) {
             return;
         }
@@ -938,6 +941,24 @@ impl App {
             return;
         }
         self.handle_insert_control_keys(key);
+    }
+
+    /// Handle transcript scroll keys in Insert mode: `PageUp`, `PageDown`.
+    ///
+    /// Returns `true` when the key was handled.
+    fn handle_insert_scroll_keys(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::PageUp => {
+                self.sessions.current_mut().scroll_offset =
+                    self.sessions.current().scroll_offset.saturating_add(10);
+            }
+            KeyCode::PageDown => {
+                self.sessions.current_mut().scroll_offset =
+                    self.sessions.current().scroll_offset.saturating_sub(10);
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Insert a newline character at the current cursor position.
