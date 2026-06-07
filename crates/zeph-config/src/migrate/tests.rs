@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        59,
-        "MIGRATIONS registry must contain all 59 sequential steps"
+        60,
+        "MIGRATIONS registry must contain all 60 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
