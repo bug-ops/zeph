@@ -265,9 +265,9 @@ mod tests {
 
         let mut stack = CheckpointStack::new(2);
 
-        let cp0 = make_checkpoint(&[p.clone()]);
-        let cp1 = make_checkpoint(&[p.clone()]);
-        let cp2 = make_checkpoint(&[p.clone()]);
+        let cp0 = make_checkpoint(std::slice::from_ref(&p));
+        let cp1 = make_checkpoint(std::slice::from_ref(&p));
+        let cp2 = make_checkpoint(std::slice::from_ref(&p));
         stack.record(cp0);
         stack.record(cp1);
         // At cap; recording cp2 must evict cp0 (oldest).
@@ -282,13 +282,13 @@ mod tests {
         std::fs::write(&p, "v0").unwrap();
 
         let mut stack = CheckpointStack::new(10);
-        stack.record(make_checkpoint(&[p.clone()]));
+        stack.record(make_checkpoint(std::slice::from_ref(&p)));
         stack.undo(1, 0); // moves entry to redo
         assert_eq!(stack.redo.len(), 1);
 
         // A new record must clear redo.
         std::fs::write(&p, "v1").unwrap();
-        stack.record(make_checkpoint(&[p.clone()]));
+        stack.record(make_checkpoint(std::slice::from_ref(&p)));
         assert_eq!(stack.redo.len(), 0);
     }
 
@@ -301,7 +301,7 @@ mod tests {
         std::fs::write(&p, "v0").unwrap();
 
         let mut stack = CheckpointStack::new(10);
-        stack.record(make_checkpoint(&[p.clone()]));
+        stack.record(make_checkpoint(std::slice::from_ref(&p)));
         // Request more than available — must not panic.
         let r = stack.undo(99, 0);
         assert_eq!(r.reverted_commands, 1);
@@ -317,11 +317,11 @@ mod tests {
 
         let mut stack = CheckpointStack::new(10);
 
-        let mut cp_a = make_checkpoint(&[p.clone()]);
+        let mut cp_a = make_checkpoint(std::slice::from_ref(&p));
         cp_a.command = "cmd_a".to_owned();
         cp_a.captured_at_secs = 1;
 
-        let mut cp_b = make_checkpoint(&[p.clone()]);
+        let mut cp_b = make_checkpoint(std::slice::from_ref(&p));
         cp_b.command = "cmd_b".to_owned();
         cp_b.captured_at_secs = 2;
 
@@ -343,7 +343,7 @@ mod tests {
         std::fs::write(&p, "before").unwrap();
 
         let mut stack = CheckpointStack::new(10);
-        stack.record(make_checkpoint(&[p.clone()]));
+        stack.record(make_checkpoint(std::slice::from_ref(&p)));
 
         // Simulate the write that followed the snapshot.
         std::fs::write(&p, "after").unwrap();
@@ -369,7 +369,7 @@ mod tests {
 
         let mut stack = CheckpointStack::new(10);
         // Capture before deletion (file exists).
-        stack.record(make_checkpoint(&[p.clone()]));
+        stack.record(make_checkpoint(std::slice::from_ref(&p)));
         // Simulate deletion.
         std::fs::remove_file(&p).unwrap();
 

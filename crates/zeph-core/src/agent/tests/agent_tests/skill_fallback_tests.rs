@@ -23,10 +23,10 @@ use super::{MockChannel, MockToolExecutor};
 
 /// Create a test registry and return the tempdir so the skill files stay on disk.
 ///
-/// `create_test_registry()` from common.rs drops the TempDir, which deletes the
+/// `create_test_registry()` from common.rs drops the `TempDir`, which deletes the
 /// `SKILL.md` file.  `registry.skill(name)` lazily reads from disk, so if the dir
 /// is gone the call returns `Err` and the skill is filtered from `active_skills`.
-/// Keeping the TempDir alive for the duration of the test prevents this.
+/// Keeping the `TempDir` alive for the duration of the test prevents this.
 fn create_registry_with_live_dir() -> (SkillRegistry, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().unwrap();
     let skill_dir = temp_dir.path().join("test-skill");
