@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Add `#[must_use]` to public validate/scan functions across workspace (zeph-config, zeph-skills, zeph-orchestration, zeph-experiments, zeph-common, zeph-core, zeph-mcp, zeph-plugins, zeph-tools) to prevent silent discard of validation errors (closes #4943, #4961, #4963)
+- `docs(acp)`: fix broken intra-doc links in `transport/` and `client/error` — feature-gated items referenced as plain backtick text; private `SubagentCommand::Close` link removed from public doc (closes #4941)
+- `refactor(tools)`: extract `build_audit_entry` private helper in `ShellExecutor`; `log_audit` and `log_audit_with_context` now delegate to it (closes #4960)
+- `refactor(memory)`: extract `lock_entries` and `lock_next_id` private helpers in `InMemoryFacade` to eliminate repeated lock-poisoning boilerplate (closes #4962)
 
 ### Added
 

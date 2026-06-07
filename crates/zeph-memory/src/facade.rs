@@ -231,29 +231,34 @@ impl InMemoryFacade {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    fn lock_entries(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, BTreeMap<i64, MemoryEntry>>, MemoryError> {
+        self.entries
+            .lock()
+            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))
+    }
+
+    fn lock_next_id(&self) -> Result<std::sync::MutexGuard<'_, i64>, MemoryError> {
+        self.next_id
+            .lock()
+            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))
+    }
 }
 
 impl MemoryFacade for InMemoryFacade {
     async fn remember(&self, entry: MemoryEntry) -> Result<MessageId, MemoryError> {
-        let mut id_guard = self
-            .next_id
-            .lock()
-            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
+        let mut id_guard = self.lock_next_id()?;
         *id_guard += 1;
         let id = *id_guard;
-        let mut entries = self
-            .entries
-            .lock()
-            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
+        let mut entries = self.lock_entries()?;
         entries.insert(id, entry);
         Ok(MessageId(id))
     }
 
     async fn recall(&self, query: &str, limit: usize) -> Result<Vec<MemoryMatch>, MemoryError> {
-        let entries = self
-            .entries
-            .lock()
-            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
+        let entries = self.lock_entries()?;
         let query_lower = query.to_lowercase();
         let mut matches: Vec<MemoryMatch> = entries
             .values()
@@ -271,10 +276,7 @@ impl MemoryFacade for InMemoryFacade {
     }
 
     async fn summarize(&self, conv_id: ConversationId) -> Result<String, MemoryError> {
-        let entries = self
-            .entries
-            .lock()
-            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
+        let entries = self.lock_entries()?;
         let texts: Vec<&str> = entries
             .values()
             .filter(|e| e.conversation_id == conv_id)
@@ -284,10 +286,7 @@ impl MemoryFacade for InMemoryFacade {
     }
 
     async fn compact(&self, ctx: &CompactionContext) -> Result<CompactionResult, MemoryError> {
-        let mut entries = self
-            .entries
-            .lock()
-            .map_err(|e| MemoryError::LockPoisoned(format!("InMemoryFacade lock poisoned: {e}")))?;
+        let mut entries = self.lock_entries()?;
         let ids_to_remove: Vec<i64> = entries
             .iter()
             .filter(|(_, e)| e.conversation_id == ctx.conversation_id)
