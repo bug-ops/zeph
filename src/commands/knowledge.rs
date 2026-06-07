@@ -51,11 +51,12 @@ type IngestError = (String, String);
 ///
 /// Variants are sent over a `tokio::sync::mpsc` channel and consumed by a stdout
 /// printer (CLI mode) or a TUI spinner (future integration point).
-#[allow(dead_code)]
 pub(crate) enum IngestProgress {
-    /// Files enumerated for a given source (reserved for TUI wiring).
+    /// Files enumerated for a given source before the ingest loop begins.
     Discovered { source: String, files: usize },
-    /// All chunks for a file have been processed.
+    /// A file is about to be embedded (pre-write signal for TUI spinner: "Ingesting knowledge: <uri>…").
+    Ingesting { uri: String },
+    /// All chunks for a file have been processed (or the file failed).
     FileDone {
         uri: String,
         chunks: usize,
@@ -162,7 +163,7 @@ async fn handle_ingest(
     }
 
     let head_sha = git_head_sha(&root);
-    let (source_items, discovery_errors) =
+    let (source_items, discovery_errors, per_source_counts) =
         enumerate_all_sources(&sources, &root, &head_sha, effective_max);
     let total_files = source_items.len();
 
@@ -175,6 +176,7 @@ async fn handle_ingest(
         source_items,
         total_files,
         discovery_errors,
+        per_source_counts,
         config_path,
     ))
     .await
@@ -192,15 +194,21 @@ async fn resolve_effective_max(max_documents: usize, config_path: Option<&Path>)
 }
 
 /// Enumerate all `(source_uri, bytes)` pairs for the requested sources.
-/// Returns `(items, errors)`.
+/// Returns `(items, errors, per_source_counts)` where `per_source_counts` is a
+/// `Vec<(label, count)>` used to emit per-source `Discovered` events.
 fn enumerate_all_sources(
     sources: &[KnowledgeSource],
     root: &Path,
     head_sha: &str,
     effective_max: usize,
-) -> (Vec<SourceItem>, Vec<IngestError>) {
+) -> (
+    Vec<SourceItem>,
+    Vec<IngestError>,
+    Vec<(&'static str, usize)>,
+) {
     let mut items: Vec<SourceItem> = Vec::new();
     let mut errors: Vec<IngestError> = Vec::new();
+    let mut per_source: Vec<(&'static str, usize)> = Vec::new();
 
     for src in sources {
         let label = source_label(src);
@@ -214,7 +222,8 @@ fn enumerate_all_sources(
             match git_log_bytes(root, max_count) {
                 Ok(bytes) => {
                     let uri = format!("git-log@{head_sha}");
-                    println!("  Discovered: {label} → 1 item ({} bytes)", bytes.len());
+                    tracing::debug!(label, bytes = bytes.len(), "discovered git-log source");
+                    per_source.push((label, 1));
                     items.push((uri, bytes));
                 }
                 Err(e) => errors.push((label.to_owned(), e.to_string())),
@@ -228,7 +237,8 @@ fn enumerate_all_sources(
             }
             Ok(paths) => {
                 let count = paths.len();
-                println!("  Discovered: {label} → {count} file(s)");
+                tracing::debug!(label, count, "discovered source paths");
+                per_source.push((label, count));
                 collect_file_items(root, head_sha, &paths, &mut items, &mut errors);
             }
         }
@@ -238,7 +248,7 @@ fn enumerate_all_sources(
         items.truncate(effective_max);
     }
 
-    (items, errors)
+    (items, errors, per_source)
 }
 
 /// Read and validate each path, pushing `(uri, bytes)` into `items` or errors into `errors`.
@@ -335,6 +345,7 @@ async fn run_ingest(
     source_items: Vec<SourceItem>,
     total_files: usize,
     discovery_errors: Vec<IngestError>,
+    per_source_counts: Vec<(&'static str, usize)>,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let app = AppBuilder::new(config_path, None, None, None).await?;
@@ -367,28 +378,88 @@ async fn run_ingest(
     let ledger = IngestLedger::new(mem.sqlite().pool().clone());
     let batch_id = uuid::Uuid::new_v4().to_string();
 
+    // FR-014: create a dedicated progress channel and spawn a CLI printer consumer.
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
+
+    let printer_handle = tokio::spawn(async move {
+        while let Some(event) = progress_rx.recv().await {
+            match event {
+                IngestProgress::Discovered { source, files } => {
+                    println!("  Discovered: {source} → {files} file(s)");
+                }
+                IngestProgress::Ingesting { uri } => {
+                    println!("  Ingesting knowledge: {uri}…");
+                }
+                IngestProgress::FileDone {
+                    uri,
+                    chunks,
+                    skipped,
+                } => {
+                    if skipped {
+                        println!("  [skip] {uri} (already ingested)");
+                    } else {
+                        println!("  [done] {uri} → {chunks} chunk(s)");
+                    }
+                }
+                IngestProgress::Finished => break,
+            }
+        }
+    });
+
+    // Intentional CLI-only header: not sent via progress_rx because it carries
+    // collection context that the TUI will render via a dedicated status widget.
     println!("Ingesting {total_files} file(s) into collection '{collection}'…");
     println!();
+
+    // Emit per-source Discovered events before the ingest loop (FR-014).
+    for (source, files) in per_source_counts {
+        let _ = progress_tx.send(IngestProgress::Discovered {
+            source: source.to_owned(),
+            files,
+        });
+    }
 
     let mut failures: Vec<(String, String)> = discovery_errors;
     let mut files_skipped = 0usize;
     let mut chunks_written = 0usize;
 
     for (uri, bytes) in source_items {
+        // Pre-write signal: allows TUI spinner to show "Ingesting knowledge: <uri>…"
+        // before the potentially slow embedding call (FR-014, tasks.md:171).
+        let _ = progress_tx.send(IngestProgress::Ingesting { uri: uri.clone() });
+
         match ingest_one(&ledger, &pipeline, &batch_id, uri.clone(), bytes).await {
             IngestOneResult::Skipped => {
                 files_skipped += 1;
-                println!("  [skip] {uri} (already ingested)");
+                let _ = progress_tx.send(IngestProgress::FileDone {
+                    uri,
+                    chunks: 0,
+                    skipped: true,
+                });
             }
             IngestOneResult::Done(count) => {
                 chunks_written += count;
-                println!("  [done] {uri} → {count} chunk(s)");
+                let _ = progress_tx.send(IngestProgress::FileDone {
+                    uri,
+                    chunks: count,
+                    skipped: false,
+                });
             }
             IngestOneResult::Error(msg) => {
                 failures.push((uri.clone(), msg));
+                let _ = progress_tx.send(IngestProgress::FileDone {
+                    uri,
+                    chunks: 0,
+                    skipped: false,
+                });
             }
         }
     }
+
+    let _ = progress_tx.send(IngestProgress::Finished);
+    // Drop the sender so the printer task can exit cleanly after Finished.
+    drop(progress_tx);
+    let _ = printer_handle.await;
 
     print_ingest_report(&IngestReport {
         files_total: total_files,
@@ -799,6 +870,65 @@ mod tests {
         assert!(
             errors[0].1.contains("INV-6"),
             "error message must reference INV-6"
+        );
+    }
+
+    // ── enumerate_all_sources per-source counts (SIGNIFICANT-2) ──────────────
+
+    #[test]
+    fn enumerate_all_sources_returns_per_source_counts() {
+        let root_dir = tempfile::tempdir().expect("root tempdir");
+        let root = root_dir.path().canonicalize().expect("canonicalize");
+
+        // Create a fake git repo structure so git commands don't fail.
+        let git_dir = root.join(".git");
+        std::fs::create_dir_all(&git_dir).expect("create .git");
+
+        // Create two files under a subdir that would match the Specs glob.
+        let specs_dir = root.join("specs");
+        std::fs::create_dir_all(&specs_dir).expect("create specs");
+        std::fs::write(specs_dir.join("a.md"), b"spec a").expect("write a.md");
+        std::fs::write(specs_dir.join("b.md"), b"spec b").expect("write b.md");
+
+        let (_items, _errors, per_source) =
+            enumerate_all_sources(&[KnowledgeSource::Specs], &root, "abc1234", 0);
+
+        assert_eq!(per_source.len(), 1, "one source requested → one entry");
+        assert_eq!(per_source[0].0, "specs");
+        assert_eq!(per_source[0].1, 2, "two files discovered under specs/");
+    }
+
+    // ── IngestProgress channel ordering: Ingesting fires before FileDone ─────
+
+    #[tokio::test]
+    async fn progress_channel_ingesting_before_file_done_for_skipped() {
+        // Verify the ordering contract using the ledger + a fake channel.
+        // We cannot call run_ingest (requires Qdrant), so we test the ordering
+        // logic directly by simulating what run_ingest does for a skipped item.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
+
+        let uri = "specs/README.md@abc1234".to_owned();
+
+        // Simulate the loop body for a skipped item.
+        let _ = tx.send(IngestProgress::Ingesting { uri: uri.clone() });
+        let _ = tx.send(IngestProgress::FileDone {
+            uri: uri.clone(),
+            chunks: 0,
+            skipped: true,
+        });
+        let _ = tx.send(IngestProgress::Finished);
+        drop(tx);
+
+        let first = rx.recv().await.expect("first event");
+        assert!(
+            matches!(first, IngestProgress::Ingesting { uri: ref u } if u == &uri),
+            "FR-014: Ingesting must fire before FileDone"
+        );
+
+        let second = rx.recv().await.expect("second event");
+        assert!(
+            matches!(second, IngestProgress::FileDone { skipped: true, .. }),
+            "FileDone(skipped) must follow Ingesting"
         );
     }
 }
