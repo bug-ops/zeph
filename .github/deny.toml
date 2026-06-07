@@ -13,7 +13,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # rustls-pemfile unmaintained (RUSTSEC-2025-0134, via qdrant-client -> tonic 0.12)
 # Verified in qdrant-client 1.18 (tonic 0.12.3); remove once qdrant/rust-client#255 merges
 # number_prefix unmaintained (via indicatif -> hf-hub, candle transitive dep)
-ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2024-0436"]
+# proc-macro-error2 unmaintained (RUSTSEC-2026-0173, via aquamarine -> teloxide and i18n-embed-fl -> age)
+# Both are transitive; remove once teloxide/age update their proc-macro dependencies
+ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2024-0436", "RUSTSEC-2026-0173"]
 
 [licenses]
 confidence-threshold = 0.93
