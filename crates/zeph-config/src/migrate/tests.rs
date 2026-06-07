@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        58,
-        "MIGRATIONS registry must contain all 58 sequential steps"
+        59,
+        "MIGRATIONS registry must contain all 59 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 58);
+    assert_eq!(MIGRATIONS.len(), 59);
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–57).
+    // Names must follow the documented step order (steps 1–59).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1744,6 +1744,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_llm_stream_limits",
         "migrate_durable_config",
         "migrate_eval_model_to_provider",
+        "migrate_caveman_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

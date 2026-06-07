@@ -272,6 +272,8 @@ pub(crate) struct WizardState {
     /// A freshly generated base64 `ZEPH_DURABLE_KEY`, set when durable execution is enabled. Written
     /// to the age vault during review, never serialized into the config TOML.
     pub(crate) durable_key_b64: Option<String>,
+    /// Start every session in ultra-compressed (caveman) output mode (#4985).
+    pub(crate) caveman_default_on: bool,
 }
 
 impl Default for WizardState {
@@ -453,6 +455,7 @@ impl Default for WizardState {
             worktree_base_ref: WorktreeBaseRef::Head,
             durable: zeph_core::config::DurableConfig::default(),
             durable_key_b64: None,
+            caveman_default_on: false,
         }
     }
 }
@@ -523,6 +526,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_telemetry(&mut state)?;
     step_prometheus(&mut state)?;
     step_session_recap(&mut state)?;
+    step_caveman(&mut state)?;
     step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -809,6 +813,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.digest.enabled = state.digest_enabled;
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.persist_provider_overrides = state.persist_provider_overrides;
+    config.caveman.default_on = state.caveman_default_on;
     config.cocoon.show_balance = state.cocoon_show_balance;
     config.mcp.elicitation_enabled = state.mcp_elicitation_enabled;
     config.mcp.elicitation_warn_sensitive_fields = state.mcp_elicitation_warn_sensitive;
@@ -1595,6 +1600,20 @@ fn step_session_recap(state: &mut WizardState) -> anyhow::Result<()> {
             .default(true)
             .interact()?;
     }
+
+    println!();
+    Ok(())
+}
+
+fn step_caveman(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Output Style ==\n");
+    state.caveman_default_on = Confirm::new()
+        .with_prompt(
+            "Enable caveman (ultra-terse, telegraphic) output by default? [y/N]\n  \
+             (drops articles/filler; keeps code blocks and paths verbatim; toggleable at runtime with /caveman)",
+        )
+        .default(false)
+        .interact()?;
 
     println!();
     Ok(())

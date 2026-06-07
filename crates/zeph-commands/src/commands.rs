@@ -326,4 +326,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Debugging,
         feature_gate: None,
     },
+    CommandInfo {
+        name: "/caveman",
+        args: "[on|off|status]",
+        description: "Toggle ultra-compressed telegraphic output mode",
+        category: SlashCategory::Configuration,
+        feature_gate: None,
+    },
 ];

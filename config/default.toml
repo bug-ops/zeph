@@ -1595,3 +1595,8 @@ max_journal_bytes = 1073741824
 prune_batch_size = 500
 # Background prune poll interval (seconds).
 prune_interval_secs = 3600
+
+[caveman]
+# Start every session in ultra-compressed (telegraphic) output mode.
+# Toggle at runtime with /caveman [on|off] or via the bundled caveman skill.
+default_on = false

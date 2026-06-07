@@ -139,6 +139,11 @@ pub struct Config {
     /// Durable execution layer configuration (`[durable]`).
     #[serde(default)]
     pub durable: crate::durable::DurableConfig,
+    /// Ultra-compressed telegraphic output mode configuration (`[caveman]`).
+    ///
+    /// Toggle at runtime with `/caveman [on|off]` or via the bundled `caveman` skill.
+    #[serde(default)]
+    pub caveman: crate::features::CavemanConfig,
 }
 
 /// Secrets resolved from the vault at runtime.
@@ -342,6 +347,7 @@ impl Default for Config {
             secrets: ResolvedSecrets::default(),
             worktree: crate::worktree::WorktreeConfig::default(),
             durable: crate::durable::DurableConfig::default(),
+            caveman: crate::features::CavemanConfig::default(),
         }
     }
 }

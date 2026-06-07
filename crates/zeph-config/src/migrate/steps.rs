@@ -24,7 +24,7 @@
 use super::{
     MigrateError, Migration, MigrationResult, migrate_acp_subagents_config,
     migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_autodream_config,
-    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_caveman_config, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
     migrate_compression_predictor_config, migrate_database_url, migrate_durable_config,
     migrate_egress_config, migrate_embed_provider_rename, migrate_eval_model_to_provider,
     migrate_fidelity_timeout_defaults, migrate_five_signal_config,
@@ -48,7 +48,7 @@ use super::{
     migrate_worktree_git_timeout,
 };
 
-// ── Wrapper structs for all 58 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 59 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -685,5 +685,16 @@ impl Migration for MigrateEvalModelToProvider {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_eval_model_to_provider(toml_src)
+    }
+}
+
+pub(super) struct MigrateCavemanConfig;
+impl Migration for MigrateCavemanConfig {
+    fn name(&self) -> &'static str {
+        "migrate_caveman_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_caveman_config(toml_src)
     }
 }

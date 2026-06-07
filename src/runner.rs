@@ -2641,6 +2641,7 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
     };
     let agent = agent.with_channel_skills(channel_skills_config);
     let agent = agent.with_channel_tool_allowlist(channel_tool_allowlist);
+    let agent = agent.with_caveman_config(&config.caveman);
     let agent = agent.with_learning(config.skills.learning.clone());
 
     // Wire SkillEvaluator — enabled in both normal and bare mode (quality gate only).

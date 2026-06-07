@@ -1383,3 +1383,27 @@ impl Default for DebugConfig {
         }
     }
 }
+
+/// Output style configuration for caveman ultra-compressed mode (`[caveman]`).
+///
+/// When `default_on = true` every new session starts in caveman mode. The mode can also be
+/// toggled at runtime via the `/caveman` command or activated by the bundled `caveman` skill.
+///
+/// All fields have `#[serde(default)]` so existing configs parse without changes.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::CavemanConfig;
+/// let cfg = CavemanConfig::default();
+/// assert!(!cfg.default_on);
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CavemanConfig {
+    /// Start every session in ultra-compressed (telegraphic) output mode.
+    ///
+    /// Default: `false` (opt-in). Can be toggled at runtime with `/caveman [on|off]`.
+    // TODO(critic): style knobs deferred — see #4985 MVP scope
+    #[serde(default)]
+    pub default_on: bool,
+}

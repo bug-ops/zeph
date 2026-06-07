@@ -19,7 +19,11 @@ mod memory;
 mod session;
 mod tools;
 
-pub use features::*;
+pub use features::{
+    migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
+    migrate_five_signal_config, migrate_goals_config, migrate_magic_docs_config,
+    migrate_microcompact_config, migrate_orchestration_persistence,
+};
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
 pub(crate) use llm::migrate_gonkagate_to_gonka;
@@ -588,27 +592,28 @@ pub trait Migration: Send + Sync {
 mod steps;
 use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
-    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateDurableConfig,
-    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
-    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
-    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateLlmStreamLimits,
-    MigrateMagicDocsConfig, MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
-    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
-    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
+    MigrateAutodreamConfig, MigrateCavemanConfig, MigrateCocoonProviderNotice,
+    MigrateCocoonShowBalance, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
+    MigrateDurableConfig, MigrateEgressConfig, MigrateEmbedProviderRename,
+    MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
+    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
+    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
+    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
+    MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
+    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
+    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
+    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
+    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
+    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateProviderMaxConcurrent,
+    MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
+    MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
     MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
     MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–58).
+/// Ordered registry of all sequential migration steps (steps 1–59).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -707,6 +712,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateDurableConfig),
             // Step 58 — rename [experiments] eval_model → eval_provider (#4987)
             Box::new(MigrateEvalModelToProvider),
+            // Step 59 — add [caveman] ultra-compressed output section (#4985)
+            Box::new(MigrateCavemanConfig),
         ]
     });
 

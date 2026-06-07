@@ -134,10 +134,10 @@ pub use experiment::{
     PlanCacheConfig,
 };
 pub use features::{
-    CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig, IndexConfig,
-    ProactiveExplorationConfig, ScheduledTaskConfig, ScheduledTaskKind, SchedulerConfig,
-    SchedulerDaemonConfig, SchedulerSecurityConfig, SkillEvaluationConfig, SkillMiningConfig,
-    SkillPromptMode, SkillsConfig, TraceConfig, VaultBackend, VaultConfig,
+    CavemanConfig, CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig,
+    IndexConfig, ProactiveExplorationConfig, ScheduledTaskConfig, ScheduledTaskKind,
+    SchedulerConfig, SchedulerDaemonConfig, SchedulerSecurityConfig, SkillEvaluationConfig,
+    SkillMiningConfig, SkillPromptMode, SkillsConfig, TraceConfig, VaultBackend, VaultConfig,
 };
 pub use fidelity::FidelityConfig;
 pub use hooks::{FileChangedConfig, HooksConfig};

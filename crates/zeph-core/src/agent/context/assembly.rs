@@ -46,6 +46,23 @@ impl zeph_agent_context::state::SecurityEventSink for SecuritySink<'_> {
     }
 }
 
+/// System prompt directive injected in the volatile block when caveman mode is active.
+///
+/// Mirrors the `caveman/SKILL.md` rules so that command-activation and skill-activation
+/// produce identical compression behaviour.
+const CAVEMAN_DIRECTIVE: &str = "\
+[OUTPUT STYLE: CAVEMAN MODE ACTIVE]\n\
+Rules:\n\
+- Drop articles (a/an/the) and filler (please, just, simply, basically, essentially).\n\
+- Telegraphic fragments, not full sentences. Imperative voice.\n\
+- Minimal punctuation. No greetings, no sign-offs, no hedging.\n\
+- One idea per line. Prefer lists over prose.\n\
+\n\
+NEVER compress these (keep verbatim):\n\
+- Code blocks (``` fences) — copy exactly.\n\
+- File paths, shell commands, identifiers, URLs, error strings.\n\
+- Numbers, flags, config keys.";
+
 impl<C: Channel> Agent<C> {
     /// Construct a `ProviderHandles` bundle from the agent's primary and embedding providers.
     pub(in crate::agent) fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
@@ -1334,6 +1351,14 @@ impl<C: Channel> Agent<C> {
                  Provide a concise, self-contained response — \
                  the recipient may not have prior conversation context.]",
             );
+        }
+
+        // Inject caveman ultra-compressed output directive (#4985).
+        // Placed in the volatile block so toggling does not invalidate the stable/semi-stable cache.
+        // TODO(critic): de-dup CAVEMAN_DIRECTIVE when caveman skill is also active
+        if self.services.session.caveman_active {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(CAVEMAN_DIRECTIVE);
         }
 
         // If memory_save was used this session, remind the model to use memory_search

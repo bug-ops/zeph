@@ -776,6 +776,7 @@ pub(crate) struct ToolState {
 }
 
 /// Groups per-session I/O and policy state.
+#[allow(clippy::struct_excessive_bools)] // runtime state — boolean flags are idiomatic here
 pub(crate) struct SessionState {
     pub(crate) env_context: EnvironmentContext,
     /// Timestamp of the last assistant message appended to context.
@@ -824,6 +825,13 @@ pub(crate) struct SessionState {
     /// output (spec-064 §INV-001 §15 `RuntimeLayer` double-print suppression). Cleared at the
     /// start of each turn.
     pub(crate) durable_turn_replayed: bool,
+    /// When `true`, the system prompt volatile block includes the `CAVEMAN_DIRECTIVE` on every
+    /// turn, instructing the LLM to use ultra-compressed telegraphic output.
+    ///
+    /// Initialized from `config.caveman.default_on` in `builder.rs`. Toggled at runtime by
+    /// `/caveman [on|off]`. Preserved across `/new` (session resets do not clear style flags —
+    /// only process restart returns to `default_on`).
+    pub(crate) caveman_active: bool,
 }
 
 /// Extracted hook lists from `[hooks]` config, stored in `SessionState`.
@@ -1191,6 +1199,7 @@ impl SessionState {
             durable_ctx: None,
             durable_subagent: false,
             durable_turn_replayed: false,
+            caveman_active: false,
         }
     }
 }

@@ -1918,10 +1918,16 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach the durable execution config and cipher for the P2 orchestration adapter.
+    /// Initialize `caveman_active` from the `[caveman]` config section.
     ///
-    /// When `config.enabled && config.orchestration` are both `true`, `/plan resume` will
-    /// restore the replan budget from the durable journal instead of zeroing it (FR-DE-13).
+    /// Sets `services.session.caveman_active` to `config.default_on`. Can be overridden at
+    /// runtime via `/caveman [on|off]`.
+    #[must_use]
+    pub fn with_caveman_config(mut self, config: &zeph_config::CavemanConfig) -> Self {
+        self.services.session.caveman_active = config.default_on;
+        self
+    }
+
     /// `db_url` is the `sqlite://…/durable.db` connection string (a sibling of the main DB).
     /// The `cipher` is `None` when `config.encrypt_payload = false` (development mode only).
     #[must_use]

@@ -588,6 +588,7 @@ impl<C: Channel> Agent<C> {
                     acp::AcpCommand,
                     agent_cmd::AgentCommand,
                     agents_fleet::AgentsFleetCommand,
+                    caveman::CavemanCommand,
                     compaction::{CompactCommand, NewConversationCommand, RecapCommand},
                     experiment::ExperimentCommand,
                     goal::GoalCommand,
@@ -607,6 +608,7 @@ impl<C: Channel> Agent<C> {
                 };
 
                 let mut agent_reg = CommandRegistry::new();
+                agent_reg.register(CavemanCommand);
                 agent_reg.register(MemoryCommand);
                 agent_reg.register(GraphCommand);
                 agent_reg.register(GuidelinesCommand);

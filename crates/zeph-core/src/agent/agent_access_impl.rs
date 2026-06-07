@@ -721,6 +721,42 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         )
     }
 
+    // ----- /caveman -----
+
+    fn handle_caveman<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async move {
+            let active = &mut self.services.session.caveman_active;
+            match arg.trim() {
+                "on" | "enable" => {
+                    *active = true;
+                    "caveman: on".to_owned()
+                }
+                "off" | "disable" => {
+                    *active = false;
+                    "caveman: off".to_owned()
+                }
+                "status" => {
+                    if *active {
+                        "caveman: on".to_owned()
+                    } else {
+                        "caveman: off".to_owned()
+                    }
+                }
+                _ => {
+                    *active = !*active;
+                    if *active {
+                        "caveman: on".to_owned()
+                    } else {
+                        "caveman: off".to_owned()
+                    }
+                }
+            }
+        })
+    }
+
     // ----- /model, /provider -----
 
     fn handle_model<'a>(

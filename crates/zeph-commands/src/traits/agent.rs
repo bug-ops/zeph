@@ -135,6 +135,21 @@ pub trait AgentAccess: Send {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 
+    // ----- /caveman -----
+
+    /// Handle `/caveman [on|off|status]` and return a user-visible result.
+    ///
+    /// - `""` — toggle current state.
+    /// - `"on"` / `"enable"` — activate ultra-compressed output.
+    /// - `"off"` / `"disable"` — deactivate ultra-compressed output.
+    /// - `"status"` — report current state without changing it.
+    ///
+    /// Returns a one-line confirmation string (e.g. `"caveman: on"`).
+    fn handle_caveman<'a>(
+        &'a mut self,
+        arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+
     // ----- /model, /provider -----
 
     /// Handle `/model [arg]` and return a user-visible result.
@@ -568,6 +583,13 @@ impl AgentAccess for NullAgent {
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
+    }
+
+    fn handle_caveman<'a>(
+        &'a mut self,
+        _arg: &'a str,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async { "caveman: unavailable".to_owned() })
     }
 
     fn handle_model<'a>(

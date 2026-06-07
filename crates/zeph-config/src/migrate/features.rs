@@ -255,6 +255,37 @@ pub fn migrate_goals_config(toml_src: &str) -> Result<MigrationResult, MigrateEr
     })
 }
 
+/// Add a commented-out `[caveman]` block if absent (#4985).
+///
+/// All `CavemanConfig` fields have `#[serde(default)]` so existing configs parse without changes;
+/// this migration only surfaces the section so users can discover and enable it.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the
+/// migration function convention for use in chained pipelines.
+pub fn migrate_caveman_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[caveman]") || toml_src.contains("# [caveman]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [caveman] — ultra-compressed telegraphic output mode (#4985).\n\
+         # Toggle at runtime with /caveman [on|off] or via the bundled caveman skill.\n\
+         # [caveman]\n\
+         # default_on = false\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["caveman".to_owned()],
+    })
+}
+
 /// Add a commented-out `[memory.five_signal]` section if absent (#4374).
 ///
 /// All five-signal fields have `#[serde(default)]` so existing configs parse without changes.
