@@ -355,6 +355,23 @@ impl AnyProvider {
         }
     }
 
+    /// Apply a `reasoning_effort` override to the active provider.
+    ///
+    /// Delegates to [`OpenAiProvider::set_reasoning_effort`] when the inner variant is
+    /// `AnyProvider::OpenAi` or `AnyProvider::Compatible` (which wraps an [`OpenAiProvider`]
+    /// internally). No-op for all other provider types — `reasoning_effort` is an OpenAI-specific
+    /// parameter and has no equivalent in Ollama, Claude, Gemini, etc.
+    ///
+    /// Called by the session restore path after a provider switch to propagate a persisted
+    /// effort level (e.g. `"high"`) into the live provider instance.
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        match self {
+            Self::OpenAi(p) => p.set_reasoning_effort(effort),
+            Self::Compatible(p) => p.set_reasoning_effort(effort),
+            _ => {}
+        }
+    }
+
     /// Propagate a status sender to the inner provider (where supported).
     pub fn set_status_tx(&mut self, tx: StatusTx) {
         match self {

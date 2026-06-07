@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: apply restored `reasoning_effort` to the active OpenAI / Compatible provider on startup. `restore_provider_overrides` (Phase 1, #4668) stored the value but never called `set_reasoning_effort` — LLM requests silently used the config-file default instead of the user-set runtime override. `AnyProvider::set_reasoning_effort` now covers both `OpenAi` and `Compatible` arms; invalid effort values are rejected with a warning (closes #5007)
+
 - `fix(tui)`: TUI transcript cannot be scrolled in Insert mode (#4988).
   - `PageUp`/`PageDown` now scroll the transcript in Insert mode (previously silently ignored).
   - `EnableAlternateScroll` (DECSET 1007h) is retained; native terminal scroll and click-drag text selection work without holding Shift or Option.

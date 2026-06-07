@@ -193,6 +193,15 @@ impl CompatibleProvider {
                 .with_output_schema_forwarding(enabled, hint_bytes, max_description_bytes);
         self
     }
+
+    /// Apply a `reasoning_effort` override to the inner [`OpenAiProvider`].
+    ///
+    /// Delegates to [`OpenAiProvider::set_reasoning_effort`], which validates the value
+    /// (`"low"`, `"medium"`, or `"high"`) and logs a warning for any unknown value.
+    /// Pass `None` to clear a previously-set effort level.
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.inner.set_reasoning_effort(effort);
+    }
 }
 
 impl LlmProvider for CompatibleProvider {
@@ -418,5 +427,29 @@ mod tests {
         // Smoke-test that the builder compiles and returns self without panicking.
         let p = test_provider().with_output_schema_forwarding(true, 512, usize::MAX);
         assert_eq!(p.name(), "groq");
+    }
+
+    // ── reasoning_effort restore path (#5007 Phase 2) ────────────────────────
+
+    #[test]
+    fn set_reasoning_effort_applies_via_compatible() {
+        let mut p = test_provider();
+        p.set_reasoning_effort(Some("high".into()));
+        assert_eq!(p.inner.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn any_provider_set_reasoning_effort_delegates_to_compatible() {
+        use crate::any::AnyProvider;
+        let mut any = AnyProvider::Compatible(test_provider());
+        any.set_reasoning_effort(Some("high".into()));
+        let AnyProvider::Compatible(ref p) = any else {
+            panic!("variant must remain Compatible");
+        };
+        assert_eq!(
+            p.inner.reasoning_effort.as_deref(),
+            Some("high"),
+            "Compatible inner OpenAiProvider must have reasoning_effort applied"
+        );
     }
 }

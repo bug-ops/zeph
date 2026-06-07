@@ -148,7 +148,7 @@ pub struct OpenAiProvider {
     max_tokens: u32,
     embedding_model: Option<String>,
     /// Reasoning effort level for `o*` models (`"low"`, `"medium"`, or `"high"`).
-    reasoning_effort: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
     pub(crate) status_tx: Option<StatusTx>,
     usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
@@ -337,6 +337,42 @@ impl OpenAiProvider {
     pub fn with_completion_tokens_param(mut self, param: CompletionTokensParam) -> Self {
         self.completion_tokens_override = Some(param);
         self
+    }
+
+    /// Apply a `reasoning_effort` override at runtime, replacing the value set at construction.
+    ///
+    /// Called by the restore path after a provider switch so that a persisted `reasoning_effort`
+    /// value (e.g. `"high"`) is reflected in all outgoing requests for this session.
+    /// Pass `None` to clear a previously-set effort level.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::openai::{OpenAiConfig, OpenAiProvider};
+    ///
+    /// let mut provider = OpenAiProvider::new(OpenAiConfig {
+    ///     api_key: "k".into(),
+    ///     base_url: "https://api.openai.com/v1".into(),
+    ///     model: "o3".into(),
+    ///     max_tokens: 8192,
+    ///     embedding_model: None,
+    ///     reasoning_effort: None,
+    ///     context_window: None,
+    ///     completion_tokens_param: None,
+    /// });
+    /// provider.set_reasoning_effort(Some("high".into()));
+    /// ```
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        if let Some(ref v) = effort
+            && !matches!(v.as_str(), "low" | "medium" | "high")
+        {
+            tracing::warn!(
+                value = v,
+                "ignoring unknown reasoning_effort value — expected low|medium|high"
+            );
+            return;
+        }
+        self.reasoning_effort = effort;
     }
 
     /// Resolve which [`CompletionTokens`] variant to use for this request.

@@ -163,30 +163,35 @@ impl<C: Channel> Agent<C> {
             }
         };
 
-        // Phase 1: reasoning_effort is only meaningful for OpenAI providers.
+        // reasoning_effort applies to OpenAI and OpenAI-compatible providers.
         if let Some(ref effort) = overrides.reasoning_effort {
             let provider_name = self.provider.name();
-            // Check whether the active provider is OpenAI-backed by inspecting the pool entry.
-            let is_openai = self
+            let supports_reasoning_effort = self
                 .runtime
                 .providers
                 .provider_pool
                 .iter()
                 .find(|e| e.effective_name().eq_ignore_ascii_case(provider_name))
-                .is_some_and(|e| e.provider_type == zeph_config::ProviderKind::OpenAi);
+                .is_some_and(|e| {
+                    matches!(
+                        e.provider_type,
+                        zeph_config::ProviderKind::OpenAi | zeph_config::ProviderKind::Compatible
+                    )
+                });
 
-            if is_openai {
-                tracing::debug!(
+            if supports_reasoning_effort {
+                self.provider.set_reasoning_effort(Some(effort.clone()));
+                tracing::info!(
                     channel_type,
                     reasoning_effort = effort,
-                    "restored provider override: reasoning_effort (Phase 1 storage groundwork)"
+                    "restored provider override: reasoning_effort applied to active provider"
                 );
             } else {
                 tracing::warn!(
                     channel_type,
                     provider = provider_name,
                     reasoning_effort = effort,
-                    "persisted reasoning_effort is not applicable to non-OpenAI provider — skipping"
+                    "persisted reasoning_effort is not applicable to this provider — skipping"
                 );
             }
         }

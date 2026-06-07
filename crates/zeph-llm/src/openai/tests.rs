@@ -1895,3 +1895,91 @@ fn with_completion_tokens_param_builder_sets_override() {
     let json = serde_json::to_string(&p.completion_tokens()).unwrap();
     assert!(json.contains("\"max_completion_tokens\":2048"));
 }
+
+// ── reasoning_effort restore path (#5007 Phase 2) ──────────────────────────
+
+#[test]
+fn set_reasoning_effort_applies_value() {
+    let mut p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3".into(),
+        max_tokens: 8192,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    assert!(p.reasoning_effort.is_none(), "starts without effort");
+    p.set_reasoning_effort(Some("high".into()));
+    assert_eq!(p.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn set_reasoning_effort_clears_value() {
+    let mut p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3".into(),
+        max_tokens: 8192,
+        embedding_model: None,
+        reasoning_effort: Some("medium".into()),
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    p.set_reasoning_effort(None);
+    assert!(p.reasoning_effort.is_none());
+}
+
+#[test]
+fn any_provider_set_reasoning_effort_delegates_to_openai() {
+    use crate::any::AnyProvider;
+    let inner = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3".into(),
+        max_tokens: 8192,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    let mut any = AnyProvider::OpenAi(inner);
+    any.set_reasoning_effort(Some("high".into()));
+    let AnyProvider::OpenAi(ref p) = any else {
+        panic!("variant must remain OpenAi");
+    };
+    assert_eq!(p.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn any_provider_set_reasoning_effort_noop_for_non_openai() {
+    use crate::any::AnyProvider;
+    use crate::ollama::OllamaProvider;
+    let mut any = AnyProvider::Ollama(OllamaProvider::new(
+        "http://localhost:11434",
+        "qwen3:8b".into(),
+        "nomic-embed-text".into(),
+    ));
+    // Must not panic; Ollama silently ignores the call.
+    any.set_reasoning_effort(Some("high".into()));
+}
+
+#[test]
+fn set_reasoning_effort_rejects_invalid_value() {
+    let mut p = OpenAiProvider::new(OpenAiConfig {
+        api_key: "k".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model: "o3".into(),
+        max_tokens: 8192,
+        embedding_model: None,
+        reasoning_effort: None,
+        context_window: None,
+        completion_tokens_param: None,
+    });
+    p.set_reasoning_effort(Some("ultra".into()));
+    assert!(
+        p.reasoning_effort.is_none(),
+        "invalid value must be rejected and field must remain None"
+    );
+}
