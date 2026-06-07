@@ -2468,3 +2468,46 @@ fn step_55_value_substring_is_noop() {
     );
     assert_eq!(result.output, input);
 }
+
+// ── Step 59 — migrate_caveman_config (#5027) ─────────────────────────────────────────────────
+
+#[test]
+fn migrate_caveman_config_appends_block_when_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_caveman_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.sections_changed.contains(&"caveman".to_owned()),
+        "sections_changed must include 'caveman'"
+    );
+    assert!(
+        result.output.contains("# [caveman]"),
+        "output must contain commented-out [caveman] block"
+    );
+    assert!(
+        result.output.contains("default_on"),
+        "output must include the default_on key hint"
+    );
+}
+
+#[test]
+fn migrate_caveman_config_noop_when_caveman_section_present() {
+    let src = "[agent]\nname = \"Zeph\"\n\n[caveman]\ndefault_on = false\n";
+    let result = migrate_caveman_config(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 0,
+        "must not modify config already containing [caveman]"
+    );
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_caveman_config_noop_when_commented_block_present() {
+    let src = "[agent]\nname = \"Zeph\"\n\n# [caveman]\n# default_on = false\n";
+    let result = migrate_caveman_config(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 0,
+        "must be idempotent when commented block already present"
+    );
+    assert_eq!(result.output, src);
+}

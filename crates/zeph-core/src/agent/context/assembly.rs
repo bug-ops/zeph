@@ -63,6 +63,29 @@ NEVER compress these (keep verbatim):\n\
 - File paths, shell commands, identifiers, URLs, error strings.\n\
 - Numbers, flags, config keys.";
 
+/// Returns `true` when `CAVEMAN_DIRECTIVE` should be appended to the system prompt.
+///
+/// Dedup rule: when `caveman_active` is set via `/caveman on` AND the caveman skill was matched
+/// by embedding, we skip the explicit push only if the skill body was actually included in the
+/// prompt (Full mode). In Compact or fallback mode, the skill body is omitted, so the directive
+/// must still be injected to preserve the compression rules.
+fn should_inject_caveman_directive(
+    caveman_active: bool,
+    active_skill_names: &[String],
+    effective_mode: crate::config::SkillPromptMode,
+    skill_fallback_mode: bool,
+) -> bool {
+    if !caveman_active {
+        return false;
+    }
+    let caveman_skill_active = active_skill_names.iter().any(|n| n == "caveman");
+    // Body is included only in Full mode without fallback — skip explicit push only then.
+    let body_included = caveman_skill_active
+        && effective_mode == crate::config::SkillPromptMode::Full
+        && !skill_fallback_mode;
+    !body_included
+}
+
 impl<C: Channel> Agent<C> {
     /// Construct a `ProviderHandles` bundle from the agent's primary and embedding providers.
     pub(in crate::agent) fn providers(&self) -> zeph_agent_context::state::ProviderHandles {
@@ -1355,8 +1378,12 @@ impl<C: Channel> Agent<C> {
 
         // Inject caveman ultra-compressed output directive (#4985).
         // Placed in the volatile block so toggling does not invalidate the stable/semi-stable cache.
-        // TODO(critic): de-dup CAVEMAN_DIRECTIVE when caveman skill is also active
-        if self.services.session.caveman_active {
+        if should_inject_caveman_directive(
+            self.services.session.caveman_active,
+            &self.services.skill.active_skill_names,
+            effective_mode,
+            skill_fallback_mode,
+        ) {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(CAVEMAN_DIRECTIVE);
         }
@@ -2354,5 +2381,82 @@ mod tests {
         // "ab" would be 2 bytes (< 3 bytes) but also < 3 chars → rejected
         let result2 = validate_query_rewrite("搜索", "ab");
         assert!(result2.is_none());
+    }
+
+    // ── should_inject_caveman_directive tests (#5026) ─────────────────────────
+
+    fn caveman_names() -> Vec<String> {
+        vec!["caveman".to_owned()]
+    }
+
+    fn no_names() -> Vec<String> {
+        Vec::new()
+    }
+
+    #[test]
+    fn caveman_inactive_never_injects() {
+        // caveman_active=false → always false regardless of skill state or mode
+        assert!(!should_inject_caveman_directive(
+            false,
+            &caveman_names(),
+            crate::config::SkillPromptMode::Full,
+            false
+        ));
+        assert!(!should_inject_caveman_directive(
+            false,
+            &no_names(),
+            crate::config::SkillPromptMode::Compact,
+            false
+        ));
+    }
+
+    #[test]
+    fn caveman_active_no_skill_always_injects() {
+        // No skill match → body never in prompt → must inject regardless of mode
+        assert!(should_inject_caveman_directive(
+            true,
+            &no_names(),
+            crate::config::SkillPromptMode::Full,
+            false
+        ));
+        assert!(should_inject_caveman_directive(
+            true,
+            &no_names(),
+            crate::config::SkillPromptMode::Compact,
+            false
+        ));
+    }
+
+    #[test]
+    fn caveman_active_skill_full_mode_deduplicates() {
+        // Skill matched + Full mode → body included → skip explicit push (exactly once)
+        assert!(!should_inject_caveman_directive(
+            true,
+            &caveman_names(),
+            crate::config::SkillPromptMode::Full,
+            false
+        ));
+    }
+
+    #[test]
+    fn caveman_active_skill_compact_mode_still_injects() {
+        // Skill matched + Compact mode → body NOT included → must inject
+        assert!(should_inject_caveman_directive(
+            true,
+            &caveman_names(),
+            crate::config::SkillPromptMode::Compact,
+            false
+        ));
+    }
+
+    #[test]
+    fn caveman_active_skill_full_mode_fallback_still_injects() {
+        // Skill matched + Full mode + fallback → compact format used → must inject
+        assert!(should_inject_caveman_directive(
+            true,
+            &caveman_names(),
+            crate::config::SkillPromptMode::Full,
+            true
+        ));
     }
 }
