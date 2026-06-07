@@ -65,7 +65,7 @@ pub enum AcpClientError {
     Timeout,
 
     /// The session was closed by a call to [`super::SubagentHandle::close`] or via
-    /// a [`super::SubagentCommand::Close`] command.
+    /// a `SubagentCommand::Close` command.
     #[error("session is closed")]
     Closed,
 

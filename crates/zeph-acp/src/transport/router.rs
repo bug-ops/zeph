@@ -4,8 +4,7 @@
 //! Axum router construction for the ACP HTTP transport.
 //!
 //! The router is the single axum `Router` that wires up all ACP endpoints.
-//! Callers attach it to their axum `Server` and call
-//! [`AcpHttpState::mark_ready`](crate::transport::http::AcpHttpState::mark_ready) after
+//! Callers attach it to their axum `Server` and call `AcpHttpState::mark_ready` after
 //! initialization.
 
 #[cfg(feature = "acp-http")]

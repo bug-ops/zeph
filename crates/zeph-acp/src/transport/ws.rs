@@ -9,8 +9,7 @@
 //!
 //! A 30-second ping keepalive detects stale connections; the handler closes after
 //! 90 seconds without a pong. Each connection is registered in
-//! [`AcpHttpState::connections`](crate::transport::http::AcpHttpState) for lifecycle
-//! tracking and counted against `max_sessions`.
+//! `AcpHttpState::connections` for lifecycle tracking and counted against `max_sessions`.
 
 #[cfg(feature = "acp-http")]
 use std::sync::Arc;

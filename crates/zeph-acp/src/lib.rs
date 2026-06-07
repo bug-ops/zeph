@@ -26,8 +26,8 @@
 //! | Transport | Entry point | Feature flag |
 //! |-----------|-------------|--------------|
 //! | stdio (default) | [`serve_stdio`] | always |
-//! | HTTP + SSE | [`acp_router`] | `acp-http` |
-//! | WebSocket | [`acp_router`] | `acp-http` |
+//! | HTTP + SSE | `acp_router` | `acp-http` |
+//! | WebSocket | `acp_router` | `acp-http` |
 //!
 //! # Feature flags
 //!

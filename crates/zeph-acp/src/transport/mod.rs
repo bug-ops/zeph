@@ -12,8 +12,8 @@
 //! | Transport | Function/Type |
 //! |-----------|---------------|
 //! | stdio | [`serve_stdio`], [`serve_connection`] |
-//! | HTTP + SSE | [`acp_router`] (feature `acp-http`) |
-//! | WebSocket | part of [`acp_router`] (feature `acp-http`) |
+//! | HTTP + SSE | `acp_router` (feature `acp-http`) |
+//! | WebSocket | part of `acp_router` (feature `acp-http`) |
 //!
 //! [`ZephAcpAgentState`]: crate::agent::ZephAcpAgentState
 
