@@ -1664,7 +1664,14 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
     println!("{toml_str}");
     println!("------------------------\n");
 
-    let default_path = PathBuf::from("config.toml");
+    let default_path = dirs::config_dir()
+        .unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map_or_else(|_| PathBuf::from("~"), PathBuf::from)
+                .join(".config")
+        })
+        .join("zeph")
+        .join("config.toml");
     let path = output.unwrap_or_else(|| {
         Input::new()
             .with_prompt("Write config to")
