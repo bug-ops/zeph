@@ -260,6 +260,19 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             .default(false)
             .interact()?;
     }
+    state.shell_checkpoints_enabled = Confirm::new()
+        .with_prompt(
+            "Enable /undo and /redo checkpoints? (captures file state before write commands for session-scoped undo/redo; requires [tools.shell] checkpoints_enabled = true)",
+        )
+        .default(false)
+        .interact()?;
+    if state.shell_checkpoints_enabled {
+        let max_str: String = dialoguer::Input::new()
+            .with_prompt("Maximum number of undo checkpoints (0 = unlimited)")
+            .default("20".to_owned())
+            .interact_text()?;
+        state.shell_max_checkpoints = max_str.trim().parse::<usize>().unwrap_or(20);
+    }
 
     let deny_raw: String = dialoguer::Input::new()
         .with_prompt(

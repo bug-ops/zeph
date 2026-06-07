@@ -21,6 +21,8 @@ fn default_config() -> ShellConfig {
         max_background_runs: 8,
         background_timeout_secs: 1800,
         risk_chain_threshold: None,
+        checkpoints_enabled: false,
+        max_checkpoints: 20,
     }
 }
 

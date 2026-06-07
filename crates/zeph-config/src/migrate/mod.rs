@@ -607,13 +607,13 @@ use steps::{
     MigrateOtelFilter, MigratePlannerModelToProvider, MigrateProviderMaxConcurrent,
     MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
     MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
-    MigrateWorktreeGitTimeout,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
+    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
+    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–59).
+/// Ordered registry of all sequential migration steps (steps 1–60).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -714,6 +714,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateEvalModelToProvider),
             // Step 59 — add [caveman] ultra-compressed output section (#4985)
             Box::new(MigrateCavemanConfig),
+            // Step 60 — add [tools.shell] checkpoints_enabled and max_checkpoints (#4990)
+            Box::new(MigrateShellCheckpointsConfig),
         ]
     });
 

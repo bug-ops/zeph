@@ -217,3 +217,30 @@ pub fn migrate_tools_compression_config(toml_src: &str) -> Result<MigrationResul
         sections_changed: vec!["tools.compression".to_owned()],
     })
 }
+
+/// Add `checkpoints_enabled` and `max_checkpoints` to `[tools.shell]` as commented-out defaults.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_shell_checkpoints_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("checkpoints_enabled") || toml_src.contains("max_checkpoints") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Session-scoped /undo and /redo checkpoint history (#4990).\n\
+         # Checkpoints are in-memory only and lost on agent restart.\n\
+         # [tools.shell]\n\
+         # checkpoints_enabled = false\n\
+         # max_checkpoints = 20\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["tools.shell".to_owned()],
+    })
+}

@@ -27,6 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `PageUp`/`PageDown` now scroll the transcript in Insert mode (previously silently ignored).
   - `EnableAlternateScroll` (DECSET 1007h) is retained; native terminal scroll and click-drag text selection work without holding Shift or Option.
   - `auto_scroll` suppresses auto-scrolling to the bottom when the user has manually scrolled up (offset > 1), preserving the user's position during streaming.
+- `fix(core)`: add regression tests for `skill_fallback_mode` compact-prompt paths — covers
+  no-matcher, embed-infra-error, and healthy-matcher scenarios (#5000). Root cause: `TempDir`
+  dropped before lazy `load_skill_body()` disk read; fixed by keeping `TempDir` alive in caller.
 
 - `fix(init)`: align the default config output path in the init wizard with the runtime config search order. The wizard now defaults to `$XDG_CONFIG_HOME/zeph/config.toml` (same as `resolve_config_path`), so a config written during `zeph init` is found automatically on the next `zeph` invocation (closes #4984)
 - `fix(skills)`: when the embedding matcher is unavailable (no embedding provider configured, or embed/Qdrant infrastructure failure), skill injection now uses the description-only compact format (`format_skills_prompt_compact`) instead of injecting all skill bodies. Eliminates the ~57k-token baseline footprint for Claude-only and Ollama-without-embeddings setups; affected sessions see a `tracing::warn` pointing to embedding provider configuration (closes #4989)
@@ -35,6 +38,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `feat(skills,commands)`: add caveman ultra-compressed output mode (#4985). Two cooperating mechanisms: (1) bundled `caveman/SKILL.md` — natural-language activates telegraphic style via skill matcher; (2) `/caveman [on|off|status]` command — explicit runtime toggle. `SessionState::caveman_active` flag drives `CAVEMAN_DIRECTIVE` injection into the volatile system-prompt block on every turn. `CavemanConfig { default_on: bool }` in `[caveman]` config section (migration step 59). Preserves code blocks, file paths, and commands verbatim.
+- `feat(commands)`: add `/undo [N|list]` and `/redo` session commands (#4990). Session-scoped
+  checkpoint system that captures file state before write commands. Requires
+  `[tools.shell] checkpoints_enabled = true`. Checkpoints are in-memory only (lost on restart)
+  and cover regular files within `transaction_scope`. Redo-of-delete is supported. The undo
+  stack is bounded by `max_checkpoints` (default 20). Out-of-sandbox paths and symlinks are
+  excluded from snapshots. Migration step 60.
 - `feat(cli)`: add `--json` flag to `zeph durable list`, `zeph durable show`, and `zeph durable inspect`. When set, structured JSON is emitted to stdout instead of a human-readable table. `ExecutionSummary`, `RedactedEntry`, and `ExecutionStatus` now implement `serde::Serialize`; `ExecutionStatus` serializes in `snake_case` to match the DB column values. `--reveal` and `--json` are mutually exclusive (Clap `conflicts_with`) to prevent silent non-JSON output (closes #4978)
 - `feat(zeph-durable)`: criterion benchmarks for `zeph-durable` — all 10 groups from spec-064 §Benchmarks (`bench_step_run_idempotent`, `bench_step_run_atleastonce`, `bench_step_run_exactly_once_n`, `bench_parallel_n`, `bench_replay_cursor_n`, `bench_journal_append_buffered`, `bench_journal_append_acked`, `bench_payload_seal`, `bench_payload_open`, `bench_prune_batch`). NFR gate tests added in `tests/nfr_gates.rs`: NFR-DE-07 runs in CI; NFR-DE-01/02 are `#[ignore]` (5 ms bound requires release builds). Closes #4950.
 - `feat(zeph-subagent)`: durable promise adapter for subagent spawn/await (spec-064 §P4, closes #4954). `zeph-subagent` gains `durable.rs` with `make_durable_promise`, `await_durable_subagent`, `resolve_durable_promise`, `DurableResolverSeat`, and `SubagentResult`. The resolver seat carries a `Zeroizing<[u8; 32]>` token from parent to child background task (INV-9 channel rule). On parent resume after crash, `await_durable_subagent` returns the journaled `SubagentResult` immediately (spec §1038 finished-child replay). `zeph-core` wires the gate via `maybe_make_durable_seat` in `handle_agent_background` and `handle_agent_spawn_foreground`.

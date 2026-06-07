@@ -213,6 +213,9 @@ pub(crate) struct WizardState {
     // Transactional shell (#2414)
     pub(crate) shell_transactional: bool,
     pub(crate) shell_auto_rollback: bool,
+    // Undo/redo checkpoints (#4990)
+    pub(crate) shell_checkpoints_enabled: bool,
+    pub(crate) shell_max_checkpoints: usize,
     // File read sandbox (#2525)
     pub(crate) file_deny_read: Vec<String>,
     pub(crate) file_allow_read: Vec<String>,
@@ -421,6 +424,8 @@ impl Default for WizardState {
             database_url: None,
             shell_transactional: false,
             shell_auto_rollback: false,
+            shell_checkpoints_enabled: false,
+            shell_max_checkpoints: 20,
             file_deny_read: Vec::new(),
             file_allow_read: Vec::new(),
             sandbox_enabled: false,
@@ -991,6 +996,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.security.vigil.strict_mode = state.vigil_strict_mode;
     config.tools.shell.transactional = state.shell_transactional;
     config.tools.shell.auto_rollback = state.shell_auto_rollback;
+    config.tools.shell.checkpoints_enabled = state.shell_checkpoints_enabled;
+    config.tools.shell.max_checkpoints = state.shell_max_checkpoints;
     config
         .tools
         .file

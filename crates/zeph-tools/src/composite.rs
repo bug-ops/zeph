@@ -107,6 +107,33 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
         self.first.set_effective_trust(level);
         self.second.set_effective_trust(level);
     }
+
+    /// Delegate undo to the first inner executor that supports checkpoints.
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        let result = self.first.checkpoint_undo(n);
+        if result.supported {
+            return result;
+        }
+        self.second.checkpoint_undo(n)
+    }
+
+    /// Delegate redo to the first inner executor that supports checkpoints.
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        let result = self.first.checkpoint_redo();
+        if result.supported {
+            return result;
+        }
+        self.second.checkpoint_redo()
+    }
+
+    /// Delegate list to the first inner executor that supports checkpoints.
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        let result = self.first.checkpoint_list();
+        if result.supported {
+            return result;
+        }
+        self.second.checkpoint_list()
+    }
 }
 
 #[cfg(test)]

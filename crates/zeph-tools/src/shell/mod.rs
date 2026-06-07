@@ -57,6 +57,9 @@ pub use deobfuscate::deobfuscate as deobfuscate_command;
 pub mod safe_fix;
 pub use safe_fix::SafeFixSuggestion;
 
+mod checkpoint;
+use checkpoint::{Checkpoint, CheckpointStack};
+
 mod transaction;
 use transaction::{TransactionSnapshot, affected_paths, build_scope_matchers, is_write_command};
 
@@ -311,6 +314,7 @@ pub(crate) struct BashParams {
 /// # }
 /// ```
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ShellExecutor {
     timeout: Duration,
     policy: Arc<ArcSwap<ShellPolicy>>,
@@ -328,6 +332,10 @@ pub struct ShellExecutor {
     snapshot_required: bool,
     max_snapshot_bytes: u64,
     transaction_scope_matchers: Vec<globset::GlobMatcher>,
+    /// Session-scoped undo/redo checkpoint stack.
+    checkpoint_stack: Arc<Mutex<CheckpointStack>>,
+    /// Whether checkpoint capture is enabled (from config).
+    checkpoints_enabled: bool,
     sandbox: Option<Arc<dyn Sandbox>>,
     sandbox_policy: Option<SandboxPolicy>,
     /// Registry of in-flight background runs. Bounded by `max_background_runs`.
@@ -414,6 +422,8 @@ impl ShellExecutor {
             snapshot_required: config.snapshot_required,
             max_snapshot_bytes: config.max_snapshot_bytes,
             transaction_scope_matchers: build_scope_matchers(&config.transaction_scope),
+            checkpoint_stack: Arc::new(Mutex::new(CheckpointStack::new(config.max_checkpoints))),
+            checkpoints_enabled: config.checkpoints_enabled,
             sandbox: None,
             sandbox_policy: None,
             background_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -700,7 +710,7 @@ impl ShellExecutor {
         self.check_permissions(block, skip_confirm).await?;
         self.validate_sandbox_with_cwd(block, &resolved.cwd)?;
 
-        let (snapshot, snapshot_warning) = self.capture_snapshot_for(block)?;
+        let (snapshot, snapshot_warning, snap_paths) = self.capture_snapshot_for(block)?;
 
         if let Some(ref tx) = self.tool_event_tx {
             let sandbox_profile = self
@@ -745,9 +755,13 @@ impl ShellExecutor {
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        if let Some(snap) = snapshot {
-            self.maybe_rollback(snap, block, exit_code, duration_ms)
-                .await;
+        if let Some(snap) = snapshot
+            && let Some(surviving) = self
+                .maybe_rollback(snap, block, exit_code, duration_ms)
+                .await
+            && self.checkpoints_enabled
+        {
+            self.record_checkpoint(surviving, block, snap_paths);
         }
 
         if let Some(err) = self
@@ -801,6 +815,7 @@ impl ShellExecutor {
     ///
     /// This is the structured-tool-call path — it uses the resolved CWD and env directly
     /// instead of re-reading process state on every call.
+    #[allow(clippy::too_many_lines)]
     #[tracing::instrument(name = "tools.shell.execute_block", skip(self, resolved), level = "info",
         fields(cwd = %resolved.cwd.display(), env_name = resolved.name.as_deref().unwrap_or("")))]
     async fn execute_block_with_context(
@@ -813,7 +828,7 @@ impl ShellExecutor {
         self.check_permissions(command, skip_confirm).await?;
         self.validate_sandbox_with_cwd(command, &resolved.cwd)?;
 
-        let (snapshot, snapshot_warning) = self.capture_snapshot_for(command)?;
+        let (snapshot, snapshot_warning, snap_paths) = self.capture_snapshot_for(command)?;
 
         if let Some(ref tx) = self.tool_event_tx {
             let sandbox_profile = self
@@ -857,9 +872,13 @@ impl ShellExecutor {
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        if let Some(snap) = snapshot {
-            self.maybe_rollback(snap, command, exit_code, duration_ms)
-                .await;
+        if let Some(snap) = snapshot
+            && let Some(surviving) = self
+                .maybe_rollback(snap, command, exit_code, duration_ms)
+                .await
+            && self.checkpoints_enabled
+        {
+            self.record_checkpoint(surviving, command, snap_paths);
         }
 
         if let Some(err) = self
@@ -919,16 +938,63 @@ impl ShellExecutor {
         }))
     }
 
+    #[allow(clippy::type_complexity)]
     fn capture_snapshot_for(
         &self,
         block: &str,
-    ) -> Result<(Option<TransactionSnapshot>, Option<String>), ToolError> {
-        if !self.transactional || !is_write_command(block) {
-            return Ok((None, None));
+    ) -> Result<
+        (
+            Option<TransactionSnapshot>,
+            Option<String>,
+            Vec<std::path::PathBuf>,
+        ),
+        ToolError,
+    > {
+        if !(self.transactional || self.checkpoints_enabled) || !is_write_command(block) {
+            return Ok((None, None, Vec::new()));
         }
-        let paths = affected_paths(block, &self.transaction_scope_matchers);
+        let raw_paths = affected_paths(block, &self.transaction_scope_matchers);
+        if raw_paths.is_empty() {
+            return Ok((None, None, Vec::new()));
+        }
+        // Filter out paths that would escape the sandbox before capturing.
+        // `affected_paths()` strips redirect operators (`>`, `>>`, `2>`) and yields bare path
+        // strings; glued redirect tokens (e.g. `>../../etc/foo`) can produce out-of-sandbox
+        // paths that `validate_sandbox_with_cwd` never saw.  Reject any path with traversal
+        // sequences or that falls outside `allowed_paths_canonical`.
+        let paths: Vec<std::path::PathBuf> = raw_paths
+            .into_iter()
+            .filter(|p| {
+                let s = p.to_string_lossy();
+                if has_traversal(&s) {
+                    tracing::warn!(
+                        path = %p.display(),
+                        "checkpoint: skipping path with traversal sequence"
+                    );
+                    return false;
+                }
+                if !self.allowed_paths_canonical.is_empty() {
+                    let canonical = p
+                        .canonicalize()
+                        .or_else(|_| std::path::absolute(p))
+                        .unwrap_or_else(|_| p.clone());
+                    if !self
+                        .allowed_paths_canonical
+                        .iter()
+                        .any(|a| canonical.starts_with(a))
+                    {
+                        tracing::warn!(
+                            path = %p.display(),
+                            "checkpoint: skipping out-of-sandbox path"
+                        );
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
         if paths.is_empty() {
-            return Ok((None, None));
+            return Ok((None, None, Vec::new()));
         }
         match TransactionSnapshot::capture(&paths, self.max_snapshot_bytes) {
             Ok(snap) => {
@@ -937,7 +1003,7 @@ impl ShellExecutor {
                     bytes = snap.total_bytes(),
                     "transaction snapshot captured"
                 );
-                Ok((Some(snap), None))
+                Ok((Some(snap), None, paths))
             }
             Err(e) if self.snapshot_required => Err(ToolError::SnapshotFailed {
                 reason: e.to_string(),
@@ -947,18 +1013,24 @@ impl ShellExecutor {
                 Ok((
                     None,
                     Some(format!("[warn] snapshot failed: {e}; rollback unavailable")),
+                    Vec::new(),
                 ))
             }
         }
     }
 
+    /// Perform auto-rollback if conditions are met, consuming the snapshot.
+    ///
+    /// Returns `Some(snap)` when the snapshot survived (no rollback fired) — the caller
+    /// must then either record it as a checkpoint or drop it. Returns `None` when rollback
+    /// consumed the snapshot. This design ensures exactly one consumer per snapshot (S1 fix).
     async fn maybe_rollback(
         &self,
         snap: TransactionSnapshot,
         block: &str,
         exit_code: i32,
         duration_ms: u64,
-    ) {
+    ) -> Option<TransactionSnapshot> {
         let should_rollback = self.auto_rollback
             && if self.auto_rollback_exit_codes.is_empty() {
                 exit_code >= 2
@@ -966,8 +1038,8 @@ impl ShellExecutor {
                 self.auto_rollback_exit_codes.contains(&exit_code)
             };
         if !should_rollback {
-            // Snapshot dropped here; TempDir auto-cleans.
-            return;
+            // Snapshot survives — return to caller for optional checkpoint recording.
+            return Some(snap);
         }
         match snap.rollback() {
             Ok(report) => {
@@ -1004,6 +1076,32 @@ impl ShellExecutor {
                 tracing::error!(err = %e, "transaction rollback failed");
             }
         }
+        None
+    }
+
+    /// Record a checkpoint for the given command if checkpoints are enabled.
+    ///
+    /// Called after `maybe_rollback` returns `Some` (snapshot survived). The snapshot
+    /// is consumed into the checkpoint stack; the redo stack is cleared per the standard
+    /// undo/redo invariant.
+    fn record_checkpoint(
+        &self,
+        snap: TransactionSnapshot,
+        command: &str,
+        paths: Vec<std::path::PathBuf>,
+    ) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let captured_at_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut stack = self.checkpoint_stack.lock();
+        stack.record(Checkpoint {
+            before_snapshot: snap,
+            command: command.to_owned(),
+            paths,
+            captured_at_secs,
+        });
     }
 
     async fn classify_and_audit(
@@ -1674,6 +1772,50 @@ impl ToolExecutor for ShellExecutor {
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         ShellExecutor::set_skill_env(self, env);
+    }
+
+    fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
+        let result = self
+            .checkpoint_stack
+            .lock()
+            .undo(n, self.max_snapshot_bytes);
+        crate::executor::CheckpointActionResult {
+            reverted_commands: result.reverted_commands,
+            restored: result.restored,
+            deleted: result.deleted,
+            supported: true,
+            message: result.message,
+        }
+    }
+
+    fn checkpoint_redo(&self) -> crate::executor::CheckpointActionResult {
+        let result = self.checkpoint_stack.lock().redo(self.max_snapshot_bytes);
+        crate::executor::CheckpointActionResult {
+            reverted_commands: result.reverted_commands,
+            restored: result.restored,
+            deleted: result.deleted,
+            supported: true,
+            message: result.message,
+        }
+    }
+
+    fn checkpoint_list(&self) -> crate::executor::CheckpointListResult {
+        let stack = self.checkpoint_stack.lock();
+        let entries = stack
+            .list_undo()
+            .into_iter()
+            .map(|e| crate::executor::CheckpointEntryView {
+                index: e.index,
+                command: e.command,
+                captured_at_secs: e.captured_at_secs,
+                file_count: e.file_count,
+            })
+            .collect();
+        crate::executor::CheckpointListResult {
+            entries,
+            redo_depth: stack.redo_depth(),
+            supported: true,
+        }
     }
 }
 

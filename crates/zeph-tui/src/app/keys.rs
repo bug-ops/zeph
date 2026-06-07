@@ -430,6 +430,12 @@ impl App {
                         .to_owned(),
                 );
             }
+            TuiCommand::Undo => {
+                let _ = self.user_input_tx.try_send("/undo".to_owned());
+            }
+            TuiCommand::Redo => {
+                let _ = self.user_input_tx.try_send("/redo".to_owned());
+            }
             _ => return false,
         }
         true

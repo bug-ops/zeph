@@ -589,6 +589,7 @@ impl<C: Channel> Agent<C> {
                     agent_cmd::AgentCommand,
                     agents_fleet::AgentsFleetCommand,
                     caveman::CavemanCommand,
+                    checkpoint::{RedoCommand, UndoCommand},
                     compaction::{CompactCommand, NewConversationCommand, RecapCommand},
                     experiment::ExperimentCommand,
                     goal::GoalCommand,
@@ -646,6 +647,8 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(TrajectoryCommand);
                 agent_reg.register(ScopeCommand);
                 agent_reg.register(GoalCommand);
+                agent_reg.register(UndoCommand);
+                agent_reg.register(RedoCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,

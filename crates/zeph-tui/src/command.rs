@@ -127,6 +127,9 @@ pub enum TuiCommand {
     // Worktree subsystem (#4679)
     WorktreeList,
     WorktreeClean,
+    // Undo/redo checkpoint commands (#4990)
+    Undo,
+    Redo,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -290,6 +293,20 @@ fn build_session_commands() -> Vec<CommandEntry> {
             category: "session",
             shortcut: None,
             command: TuiCommand::SessionClose,
+        },
+        CommandEntry {
+            id: "session:undo",
+            label: "Undo last shell checkpoint (/undo)",
+            category: "session",
+            shortcut: None,
+            command: TuiCommand::Undo,
+        },
+        CommandEntry {
+            id: "session:redo",
+            label: "Re-apply last undone checkpoint (/redo)",
+            category: "session",
+            shortcut: None,
+            command: TuiCommand::Redo,
         },
     ]
 }
@@ -888,7 +905,7 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 22);
+        assert_eq!(command_registry().len(), 24);
     }
 
     #[test]

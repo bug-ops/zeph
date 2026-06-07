@@ -42,10 +42,10 @@ use super::{
     migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
     migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
     migrate_session_persist_provider_overrides, migrate_session_provider_persistence,
-    migrate_session_recap_config, migrate_shell_transactional, migrate_stt_to_provider,
-    migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
-    migrate_trace_metadata, migrate_vigil_config, migrate_worktree_config,
-    migrate_worktree_git_timeout,
+    migrate_session_recap_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_tools_compression_config, migrate_trace_metadata, migrate_vigil_config,
+    migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
 // ── Wrapper structs for all 59 sequential migration steps ───────────────────────────────────────
@@ -696,5 +696,16 @@ impl Migration for MigrateCavemanConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_caveman_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateShellCheckpointsConfig;
+impl Migration for MigrateShellCheckpointsConfig {
+    fn name(&self) -> &'static str {
+        "migrate_shell_checkpoints_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_shell_checkpoints_config(toml_src)
     }
 }

@@ -66,6 +66,21 @@ pub const COMMANDS: &[CommandInfo] = &[
         category: SlashCategory::Session,
         feature_gate: None,
     },
+    // --- Undo / Redo ---
+    CommandInfo {
+        name: "/undo",
+        args: "[N | list]",
+        description: "Undo the last N file-mutating shell commands (session-scoped)",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
+    CommandInfo {
+        name: "/redo",
+        args: "",
+        description: "Re-apply the last undone shell command",
+        category: SlashCategory::Session,
+        feature_gate: None,
+    },
     // --- Session ---
     CommandInfo {
         name: "/exit",

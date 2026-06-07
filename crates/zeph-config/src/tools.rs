@@ -920,6 +920,10 @@ fn default_background_timeout_secs() -> u64 {
     1800
 }
 
+fn default_max_checkpoints() -> usize {
+    20
+}
+
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
@@ -975,6 +979,19 @@ pub struct ShellConfig {
     /// the command is blocked. Set to `None` to use the built-in default of `0.7`.
     #[serde(default)]
     pub risk_chain_threshold: Option<f32>,
+    /// Enable session-scoped checkpoint history for `/undo` and `/redo`. Default: `false`.
+    ///
+    /// When `true`, file snapshots are captured before each write command and stored
+    /// in an in-memory stack for the duration of the session. Checkpoints are lost
+    /// when the agent process exits.
+    #[serde(default)]
+    pub checkpoints_enabled: bool,
+    /// Maximum number of checkpoints retained in the undo stack. Default: `20`.
+    ///
+    /// When the stack reaches this limit, the oldest entry is evicted to make room.
+    /// Set to `0` for no limit (not recommended for long-running sessions).
+    #[serde(default = "default_max_checkpoints")]
+    pub max_checkpoints: usize,
 }
 
 impl Default for ShellConfig {
@@ -996,6 +1013,8 @@ impl Default for ShellConfig {
             max_background_runs: default_max_background_runs(),
             background_timeout_secs: default_background_timeout_secs(),
             risk_chain_threshold: None,
+            checkpoints_enabled: false,
+            max_checkpoints: default_max_checkpoints(),
         }
     }
 }

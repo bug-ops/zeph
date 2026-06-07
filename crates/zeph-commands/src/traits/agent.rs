@@ -499,6 +499,31 @@ pub trait AgentAccess: Send {
         None
     }
 
+    // ----- /undo, /redo -----
+
+    /// Execute `/undo [N]` or `/undo list`.
+    ///
+    /// `args` is everything after `/undo`. Empty string means undo 1 step.
+    /// Returns a formatted response string. The default returns a "not supported" message.
+    fn handle_undo<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = args;
+        Box::pin(async move { Ok("Undo is not supported in this context.".to_owned()) })
+    }
+
+    /// Execute `/redo`.
+    ///
+    /// Returns a formatted response string. The default returns a "not supported" message.
+    fn handle_redo<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = args;
+        Box::pin(async move { Ok("Redo is not supported in this context.".to_owned()) })
+    }
+
     // ----- /agents -----
 
     /// Handle `/agents [subcommand] [args]` and return a formatted response string.

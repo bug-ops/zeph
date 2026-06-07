@@ -155,6 +155,60 @@ impl FilterStats {
     }
 }
 
+/// Result returned by checkpoint undo/redo operations.
+///
+/// When `supported` is `false`, the executor does not implement checkpoints; callers
+/// should surface an appropriate user-facing message without treating this as an error.
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointActionResult {
+    /// Number of commands actually reverted or re-applied.
+    pub reverted_commands: usize,
+    /// Number of files restored (written from backup).
+    pub restored: usize,
+    /// Number of files deleted (were absent at capture time).
+    pub deleted: usize,
+    /// `false` when this executor does not support checkpoints.
+    pub supported: bool,
+    /// Human-readable summary of what happened.
+    pub message: String,
+}
+
+impl CheckpointActionResult {
+    /// Sentinel returned by executors that do not implement checkpoints.
+    #[must_use]
+    pub fn unsupported() -> Self {
+        Self {
+            supported: false,
+            message: String::new(),
+            ..Default::default()
+        }
+    }
+}
+
+/// A single undo-stack entry for display in `/undo list`.
+#[derive(Debug, Clone)]
+pub struct CheckpointEntryView {
+    /// Zero-based index (0 = most recent).
+    pub index: usize,
+    /// The shell command that produced this checkpoint.
+    pub command: String,
+    /// Unix timestamp (seconds since epoch) when the checkpoint was recorded.
+    pub captured_at_secs: u64,
+    /// Number of files captured.
+    pub file_count: usize,
+}
+
+/// Result returned by the checkpoint list query.
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointListResult {
+    /// Undo stack entries, most-recent first.
+    pub entries: Vec<CheckpointEntryView>,
+    /// Number of redo entries available.
+    pub redo_depth: usize,
+    /// `false` when this executor does not implement checkpoints.
+    pub supported: bool,
+}
+
 /// Provenance of a tool execution result.
 ///
 /// Set by each executor at `ToolOutput` construction time. Used by the sanitizer bridge
@@ -703,6 +757,29 @@ pub trait ToolExecutor: Send + Sync {
         false
     }
 
+    /// Undo the last `n` checkpointed write commands.
+    ///
+    /// Returns [`CheckpointActionResult::unsupported`] by default. Executors that
+    /// implement checkpoints (i.e. [`ShellExecutor`](crate::ShellExecutor) with
+    /// `checkpoints_enabled = true`) override this.
+    fn checkpoint_undo(&self, _n: usize) -> CheckpointActionResult {
+        CheckpointActionResult::unsupported()
+    }
+
+    /// Redo the last undone checkpoint.
+    ///
+    /// Returns [`CheckpointActionResult::unsupported`] by default.
+    fn checkpoint_redo(&self) -> CheckpointActionResult {
+        CheckpointActionResult::unsupported()
+    }
+
+    /// List the current undo stack entries and redo depth.
+    ///
+    /// Returns an empty [`CheckpointListResult`] with `supported = false` by default.
+    fn checkpoint_list(&self) -> CheckpointListResult {
+        CheckpointListResult::default()
+    }
+
     /// Whether a tool call can be safely dispatched speculatively (before the LLM finishes).
     ///
     /// Speculative execution requires the tool to be:
@@ -788,6 +865,21 @@ pub trait ErasedToolExecutor: Send + Sync {
     /// Set the effective trust level for the currently active skill. No-op by default.
     fn set_effective_trust(&self, _level: crate::SkillTrustLevel) {}
 
+    /// Undo the last `n` checkpointed write commands. No-op (unsupported) by default.
+    fn checkpoint_undo_erased(&self, _n: usize) -> CheckpointActionResult {
+        CheckpointActionResult::unsupported()
+    }
+
+    /// Redo the last undone checkpoint. No-op (unsupported) by default.
+    fn checkpoint_redo_erased(&self) -> CheckpointActionResult {
+        CheckpointActionResult::unsupported()
+    }
+
+    /// List the current undo stack entries and redo depth. Returns empty by default.
+    fn checkpoint_list_erased(&self) -> CheckpointListResult {
+        CheckpointListResult::default()
+    }
+
     /// Whether the executor can safely retry this tool call on a transient error.
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool;
 
@@ -856,6 +948,18 @@ impl<T: ToolExecutor> ErasedToolExecutor for T {
         ToolExecutor::set_effective_trust(self, level);
     }
 
+    fn checkpoint_undo_erased(&self, n: usize) -> CheckpointActionResult {
+        ToolExecutor::checkpoint_undo(self, n)
+    }
+
+    fn checkpoint_redo_erased(&self) -> CheckpointActionResult {
+        ToolExecutor::checkpoint_redo(self)
+    }
+
+    fn checkpoint_list_erased(&self) -> CheckpointListResult {
+        ToolExecutor::checkpoint_list(self)
+    }
+
     fn is_tool_retryable_erased(&self, tool_id: &str) -> bool {
         ToolExecutor::is_tool_retryable(self, tool_id)
     }
@@ -922,6 +1026,18 @@ impl ToolExecutor for DynExecutor {
 
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         ErasedToolExecutor::set_effective_trust(self.0.as_ref(), level);
+    }
+
+    fn checkpoint_undo(&self, n: usize) -> CheckpointActionResult {
+        self.0.checkpoint_undo_erased(n)
+    }
+
+    fn checkpoint_redo(&self) -> CheckpointActionResult {
+        self.0.checkpoint_redo_erased()
+    }
+
+    fn checkpoint_list(&self) -> CheckpointListResult {
+        self.0.checkpoint_list_erased()
     }
 
     fn is_tool_retryable(&self, tool_id: &str) -> bool {

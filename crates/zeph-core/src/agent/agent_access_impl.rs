@@ -1414,6 +1414,82 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         })
     }
 
+    // ----- /undo, /redo -----
+
+    fn handle_undo<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let executor = std::sync::Arc::clone(&self.tool_executor);
+        let args_owned = args.trim().to_owned();
+        Box::pin(async move {
+            if args_owned == "list" {
+                let result = executor.checkpoint_list_erased();
+                if !result.supported {
+                    return Ok(
+                        "Checkpoints are not enabled. Set `[tools.shell] checkpoints_enabled = true` in config.".to_owned()
+                    );
+                }
+                if result.entries.is_empty() {
+                    return Ok("Undo stack is empty.".to_owned());
+                }
+                let mut lines = vec![format!("Undo stack ({} entries):", result.entries.len())];
+                for e in &result.entries {
+                    lines.push(format!(
+                        "  [{}] {} ({} file(s))",
+                        e.index, e.command, e.file_count
+                    ));
+                }
+                if result.redo_depth > 0 {
+                    lines.push(format!("Redo depth: {}", result.redo_depth));
+                }
+                return Ok(lines.join("\n"));
+            }
+
+            let n: usize = if args_owned.is_empty() {
+                1
+            } else {
+                match args_owned.parse::<usize>() {
+                    Ok(v) if v > 0 => v,
+                    _ => {
+                        return Err(CommandError::new(format!(
+                            "Invalid argument: expected a positive integer or 'list', got '{args_owned}'"
+                        )));
+                    }
+                }
+            };
+
+            let result = tokio::task::spawn_blocking(move || executor.checkpoint_undo_erased(n))
+                .await
+                .map_err(|e| CommandError::new(format!("undo task panicked: {e}")))?;
+            if !result.supported {
+                return Ok(
+                    "Checkpoints are not enabled. Set `[tools.shell] checkpoints_enabled = true` in config.".to_owned()
+                );
+            }
+            Ok(result.message)
+        })
+    }
+
+    fn handle_redo<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = args;
+        let executor = std::sync::Arc::clone(&self.tool_executor);
+        Box::pin(async move {
+            let result = tokio::task::spawn_blocking(move || executor.checkpoint_redo_erased())
+                .await
+                .map_err(|e| CommandError::new(format!("redo task panicked: {e}")))?;
+            if !result.supported {
+                return Ok(
+                    "Checkpoints are not enabled. Set `[tools.shell] checkpoints_enabled = true` in config.".to_owned()
+                );
+            }
+            Ok(result.message)
+        })
+    }
+
     // ----- /agents -----
 
     fn handle_agents<'a>(
