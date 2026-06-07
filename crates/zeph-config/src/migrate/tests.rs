@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 61);
+    assert_eq!(MIGRATIONS.len(), 62);
 }
 
 #[test]
