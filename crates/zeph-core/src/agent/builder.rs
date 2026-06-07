@@ -2457,9 +2457,8 @@ impl<C: Channel> Agent<C> {
     /// Pre-queue a message into the agent's message queue before the first turn.
     ///
     /// Intended for non-interactive sources (e.g. `url-open` deep-link prompt) that need to
-    /// inject a first user turn without waiting for stdin. The message is appended as a
-    /// [`QueuedMessage`] so it is subject to the same merge-window and queue-size limits as
-    /// channel messages.
+    /// inject a first user turn without waiting for stdin. The message is subject to the same
+    /// merge-window and queue-size limits as channel messages.
     ///
     /// # Examples
     ///

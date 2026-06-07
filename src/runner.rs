@@ -434,6 +434,7 @@ impl Drop for EarlyTuiGuard {
 }
 
 #[allow(clippy::too_many_lines, clippy::large_futures)]
+#[cfg_attr(not(feature = "deep-link"), allow(unused_mut))]
 pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Early-exit flags that do not require config loading.
     if cli.dump_config_defaults {

@@ -347,17 +347,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     // Tracked in `forwarders` so it is aborted cleanly when the TUI or agent exits.
     #[cfg(feature = "deep-link")]
     if let Some(uri) = params.deep_link_uri.take() {
-        let tx = agent_tx.clone();
-        forwarders.spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-            let _ = tx
-                .send(zeph_tui::AgentEvent::Status(format!(
-                    "Opened via deep link: {uri}"
-                )))
-                .await;
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
-        });
+        forwarders.spawn(deep_link_notification_task(agent_tx.clone(), uri));
     }
 
     let mut agent = agent.with_warmup_ready(warmup_rx);
@@ -391,6 +381,22 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     }
 
     run_result
+}
+
+/// Emits a deep-link launch notification in the TUI status bar, then clears it after 3 s.
+#[cfg(feature = "deep-link")]
+async fn deep_link_notification_task(
+    tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+    uri: String,
+) {
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    let _ = tx
+        .send(zeph_tui::AgentEvent::Status(format!(
+            "Opened via deep link: {uri}"
+        )))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
 }
 
 pub(crate) async fn forward_status_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
