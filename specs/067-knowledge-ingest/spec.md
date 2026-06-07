@@ -10,6 +10,7 @@ tags:
   - cross-cutting
 created: 2026-06-07
 status: draft
+spec_id: "067"
 related:
   - "[[MOC-specs]]"
   - "[[001-system-invariants/spec]]"
