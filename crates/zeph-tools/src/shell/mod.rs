@@ -1500,6 +1500,52 @@ impl ShellExecutor {
         None
     }
 
+    fn build_audit_entry(
+        command: &str,
+        result: AuditResult,
+        duration_ms: u64,
+        error: Option<&ToolError>,
+        exit_code: Option<i32>,
+        truncated: bool,
+        resolved: Option<&ResolvedContext>,
+    ) -> AuditEntry {
+        let (error_category, error_domain, error_phase) = error.map_or((None, None, None), |e| {
+            let cat = e.category();
+            (
+                Some(cat.label().to_owned()),
+                Some(cat.domain().label().to_owned()),
+                Some(cat.phase().label().to_owned()),
+            )
+        });
+        AuditEntry {
+            timestamp: chrono_now(),
+            tool: "shell".into(),
+            command: command.into(),
+            result,
+            duration_ms,
+            error_category,
+            error_domain,
+            error_phase,
+            claim_source: Some(ClaimSource::Shell),
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
+            exit_code,
+            truncated,
+            caller_id: None,
+            skill_name: None,
+            policy_match: None,
+            correlation_id: None,
+            vigil_risk: None,
+            execution_env: resolved.and_then(|r| r.name.clone()),
+            resolved_cwd: resolved.map(|r| r.cwd.display().to_string()),
+            scope_at_definition: None,
+            scope_at_dispatch: None,
+        }
+    }
+
     async fn log_audit(
         &self,
         command: &str,
@@ -1510,42 +1556,15 @@ impl ShellExecutor {
         truncated: bool,
     ) {
         if let Some(ref logger) = self.audit_logger {
-            let (error_category, error_domain, error_phase) =
-                error.map_or((None, None, None), |e| {
-                    let cat = e.category();
-                    (
-                        Some(cat.label().to_owned()),
-                        Some(cat.domain().label().to_owned()),
-                        Some(cat.phase().label().to_owned()),
-                    )
-                });
-            let entry = AuditEntry {
-                timestamp: chrono_now(),
-                tool: "shell".into(),
-                command: command.into(),
+            let entry = Self::build_audit_entry(
+                command,
                 result,
                 duration_ms,
-                error_category,
-                error_domain,
-                error_phase,
-                claim_source: Some(ClaimSource::Shell),
-                mcp_server_id: None,
-                injection_flagged: false,
-                embedding_anomalous: false,
-                cross_boundary_mcp_to_acp: false,
-                adversarial_policy_decision: None,
+                error,
                 exit_code,
                 truncated,
-                caller_id: None,
-                skill_name: None,
-                policy_match: None,
-                correlation_id: None,
-                vigil_risk: None,
-                execution_env: None,
-                resolved_cwd: None,
-                scope_at_definition: None,
-                scope_at_dispatch: None,
-            };
+                None,
+            );
             logger.log(&entry).await;
         }
     }
@@ -1562,42 +1581,15 @@ impl ShellExecutor {
         resolved: &ResolvedContext,
     ) {
         if let Some(ref logger) = self.audit_logger {
-            let (error_category, error_domain, error_phase) =
-                error.map_or((None, None, None), |e| {
-                    let cat = e.category();
-                    (
-                        Some(cat.label().to_owned()),
-                        Some(cat.domain().label().to_owned()),
-                        Some(cat.phase().label().to_owned()),
-                    )
-                });
-            let entry = AuditEntry {
-                timestamp: chrono_now(),
-                tool: "shell".into(),
-                command: command.into(),
+            let entry = Self::build_audit_entry(
+                command,
                 result,
                 duration_ms,
-                error_category,
-                error_domain,
-                error_phase,
-                claim_source: Some(ClaimSource::Shell),
-                mcp_server_id: None,
-                injection_flagged: false,
-                embedding_anomalous: false,
-                cross_boundary_mcp_to_acp: false,
-                adversarial_policy_decision: None,
+                error,
                 exit_code,
                 truncated,
-                caller_id: None,
-                skill_name: None,
-                policy_match: None,
-                correlation_id: None,
-                vigil_risk: None,
-                execution_env: resolved.name.clone(),
-                resolved_cwd: Some(resolved.cwd.display().to_string()),
-                scope_at_definition: None,
-                scope_at_dispatch: None,
-            };
+                Some(resolved),
+            );
             logger.log(&entry).await;
         }
     }
