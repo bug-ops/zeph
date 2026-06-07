@@ -12,6 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(core)`: P1 durable adapter for the agent tool-loop (spec-064 §P1, closes #4951).
+  `SessionState` gains `durable_ctx: Option<Arc<DurableContext>>` and `durable_turn_replayed: bool`.
+  The new `call_llm_durable` helper in `tier_loop.rs` wraps each LLM turn as an
+  `ExactlyOnceGuarded / CostBearingOrBoundaryIdempotent / OnAmbiguous::Skip` durable step; a
+  `core.durable.turn` tracing span is emitted with the `execution_id` field for distributed traces.
+  When the step is replayed from the journal, `durable_turn_replayed = true` suppresses re-delivery
+  of the assistant text to the channel (spec-064 §15 RuntimeLayer observe-only). When `durable_ctx`
+  is `None` (durable disabled or `agent_turns = false`) the loop runs exactly as before with zero
+  overhead. On `DurableError` the adapter degrades gracefully to non-durable mode with a `WARN` log.
+
 - `feat(durable)`: scaffolded the new Layer-0 `zeph-durable` crate (spec-064) — the foundation of
   the native durable execution layer. This first slice is type-level only, with no runtime
   behavior: journal-boundary newtypes (`ExecutionId`/`PromiseId`/`TimerId` as UUIDv7, `StepId`,

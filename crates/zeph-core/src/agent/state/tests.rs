@@ -70,6 +70,8 @@ fn make_session_state() -> SessionState {
         hooks_config: HooksConfigSnapshot::default(),
         last_assistant_at: None,
         is_guest_context: false,
+        durable_ctx: None,
+        durable_turn_replayed: false,
     }
 }
 

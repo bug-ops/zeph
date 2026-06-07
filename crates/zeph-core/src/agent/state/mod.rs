@@ -780,6 +780,18 @@ pub(crate) struct SessionState {
     /// When `true`, the agent prompt includes a brief guest-context annotation, and the response
     /// is delivered via `answerGuestQuery` instead of `sendMessage`.
     pub(crate) is_guest_context: bool,
+    /// Active durable execution context for the P1 agent-loop adapter (spec-064 §P1).
+    ///
+    /// `Some` when `[durable] enabled = true` and `agent_turns = true`. The context is opened
+    /// once per session (or resumed from a prior crash) and shared across all turns via `Arc`.
+    /// `None` when durable execution is disabled — in which case the loop runs unmodified.
+    pub(crate) durable_ctx: Option<std::sync::Arc<zeph_durable::DurableContext>>,
+    /// Set to `true` for the duration of a turn whose LLM step was replayed from the journal.
+    ///
+    /// Used by `process_single_native_turn` to suppress re-printing already-emitted assistant
+    /// output (spec-064 §INV-001 §15 `RuntimeLayer` double-print suppression). Cleared at the
+    /// start of each turn.
+    pub(crate) durable_turn_replayed: bool,
 }
 
 /// Extracted hook lists from `[hooks]` config, stored in `SessionState`.
@@ -1144,6 +1156,8 @@ impl SessionState {
             policy_config: None,
             hooks_config: HooksConfigSnapshot::default(),
             is_guest_context: false,
+            durable_ctx: None,
+            durable_turn_replayed: false,
         }
     }
 }

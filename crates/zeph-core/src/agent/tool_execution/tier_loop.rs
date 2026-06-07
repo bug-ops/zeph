@@ -3,6 +3,7 @@
 
 use futures::FutureExt as _;
 use tracing::Instrument;
+use zeph_durable::{EffectIntentSubClass, OnAmbiguous, StepDescriptor};
 use zeph_llm::provider::{Message, MessagePart, Role};
 use zeph_tools::ExecutionContext;
 use zeph_tools::executor::ToolCall;
@@ -2476,6 +2477,60 @@ impl<C: Channel> Agent<C> {
         Ok(false)
     }
 
+    /// Drive an LLM chat call through the durable step journal when a [`DurableContext`] is
+    /// attached to the session.
+    ///
+    /// The step commits an `ExactlyOnceGuarded` / `CostBearingOrBoundaryIdempotent` intent
+    /// before the real call runs, so a crash between the API response and journal acknowledgement
+    /// is handled safely (`OnAmbiguous::Skip` — the cost is already incurred). The closure payload
+    /// is `None` — the actual call always executes in every branch because `&mut self` cannot be
+    /// captured inside the durable closure. The [`DurableStep::was_replayed`] flag is used to
+    /// suppress double-printing in the caller.
+    ///
+    /// When `durable_ctx` is `None` the call is forwarded directly without any journaling.
+    async fn call_llm_durable(
+        &mut self,
+        tool_defs: &[ToolDefinition],
+        iteration: usize,
+    ) -> Result<Option<zeph_llm::provider::ChatResponse>, crate::agent::error::AgentError> {
+        let Some(ctx) = self.services.session.durable_ctx.clone() else {
+            return self.call_chat_with_tools_retry(tool_defs, 2).await;
+        };
+
+        let turn_span = tracing::info_span!(
+            "core.durable.turn",
+            iteration,
+            execution_id = %ctx.execution_id().as_uuid(),
+        );
+        let cached_tokens = self.runtime.providers.cached_prompt_tokens;
+        let fp_input = format!("llm_call:iter={iteration}:tokens={cached_tokens}").into_bytes();
+        let desc = StepDescriptor::exactly_once_guarded(
+            "llm_call",
+            EffectIntentSubClass::CostBearingOrBoundaryIdempotent,
+            Some(OnAmbiguous::Skip),
+            fp_input,
+        )
+        .expect("CostBearingOrBoundaryIdempotent never requires explicit policy");
+
+        let step = ctx
+            .step_recorded::<Option<i64>, _, _>(desc, |_handle| async move { Ok(None::<i64>) })
+            .instrument(turn_span)
+            .await;
+
+        match step {
+            Ok(record) if record.was_replayed() => {
+                // Already delivered to the user in a prior run; suppress re-printing.
+                self.services.session.durable_turn_replayed = true;
+                self.call_chat_with_tools_retry(tool_defs, 2).await
+            }
+            Ok(_) => self.call_chat_with_tools_retry(tool_defs, 2).await,
+            Err(e) => {
+                tracing::warn!(error = %e, "durable LLM step error; degrading to non-durable");
+                self.call_chat_with_tools_retry(tool_defs, 2).await
+            }
+        }
+    }
+
     /// Execute one turn of the native tool loop. Returns `Ok(Some(()))` when the LLM produced
     /// a terminal text response (caller should return `Ok(())`), `Ok(None)` to continue the
     /// loop, or `Err` on a hard error.
@@ -2492,6 +2547,9 @@ impl<C: Channel> Agent<C> {
         iteration: usize,
         query_embedding: Option<Vec<f32>>,
     ) -> Result<Option<()>, crate::agent::error::AgentError> {
+        // Clear the per-turn replay flag; it is set below when the LLM step is replayed.
+        self.services.session.durable_turn_replayed = false;
+
         // Track iteration for BudgetHint injection (#2267).
         self.services.tool_state.current_tool_iteration = iteration;
         self.channel.send_typing().await?;
@@ -2520,7 +2578,9 @@ impl<C: Channel> Agent<C> {
         } else {
             let _ = self.channel.send_status("thinking...").await;
         }
-        let chat_result = self.call_chat_with_tools_retry(tool_defs, 2).await?;
+
+        let chat_result = self.call_llm_durable(tool_defs, iteration).await?;
+
         let _ = self.channel.send_status("").await;
 
         let Some(chat_result) = chat_result else {
@@ -2541,12 +2601,18 @@ impl<C: Channel> Agent<C> {
                 return Ok(Some(()));
             }
             let cleaned = self.scan_output_and_warn(text);
-            if !cleaned.is_empty() {
-                let display = self.maybe_redact(&cleaned);
-                self.channel.send(&display).await?;
+            // Double-print suppression: when the LLM step was replayed from the journal, the
+            // assistant text was already delivered in a previous run; skip re-sending it to the
+            // channel. Persistence and in-memory push still run so the context is consistent
+            // (spec-064 §001 §15 RuntimeLayer observe-only; replay control is NOT in RuntimeLayer).
+            if !self.services.session.durable_turn_replayed {
+                if !cleaned.is_empty() {
+                    let display = self.maybe_redact(&cleaned);
+                    self.channel.send(&display).await?;
+                }
+                self.store_response_in_cache(&cleaned, query_embedding)
+                    .await;
             }
-            self.store_response_in_cache(&cleaned, query_embedding)
-                .await;
             self.persist_message(Role::Assistant, &cleaned, &[], false)
                 .await;
             self.msg
