@@ -2656,7 +2656,7 @@ fn classify_shell_exit(
 }
 
 fn has_traversal(path: &str) -> bool {
-    path.split('/').any(|seg| seg == "..")
+    path.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 fn extract_bash_blocks(text: &str) -> Vec<&str> {

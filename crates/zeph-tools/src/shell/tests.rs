@@ -3339,4 +3339,12 @@ mod resolve_context {
             "rm -fr .git/worktrees must be blocked"
         );
     }
+
+    #[test]
+    fn has_traversal_detects_backslash_sequences() {
+        assert!(has_traversal("..\\..\\etc\\passwd"));
+        assert!(has_traversal("../.."));
+        assert!(!has_traversal("normal/path/file.txt"));
+        assert!(!has_traversal("relative\\path\\file.txt"));
+    }
 }

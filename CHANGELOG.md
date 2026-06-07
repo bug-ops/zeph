@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools)`: `CheckpointStack::undo` now returns a distinct error message ("Undo count must be > 0.") when called with `n = 0` instead of the misleading "Nothing to undo." message, which falsely implied the stack was empty (closes #5033)
+- `fix(tools)`: `has_traversal` now detects Windows-style path traversal sequences using backslash separators (`..\\`) in addition to forward slashes, preventing sandbox escape via `affected_paths` on Windows or cross-platform paths (closes #5032)
+
 - `fix(llm)`: apply restored `reasoning_effort` to the active OpenAI / Compatible provider on startup. `restore_provider_overrides` (Phase 1, #4668) stored the value but never called `set_reasoning_effort` — LLM requests silently used the config-file default instead of the user-set runtime override. `AnyProvider::set_reasoning_effort` now covers both `OpenAi` and `Compatible` arms; invalid effort values are rejected with a warning (closes #5007)
 
 - `fix(tui)`: TUI transcript cannot be scrolled in Insert mode (#4988).

@@ -68,6 +68,17 @@ impl CheckpointStack {
     ///
     /// Returns a summary of what was reverted.
     pub(crate) fn undo(&mut self, n: usize, max_snapshot_bytes: u64) -> UndoRedoResult {
+        // Distinct guard: n == 0 is a caller error, not an empty-stack condition.
+        // Without this, count = 0.min(available) → 0 falls into the same early-return
+        // branch and emits the misleading "Nothing to undo." message even when entries exist.
+        if n == 0 {
+            return UndoRedoResult {
+                reverted_commands: 0,
+                restored: 0,
+                deleted: 0,
+                message: "Undo count must be > 0.".to_owned(),
+            };
+        }
         let available = self.undo.len();
         let count = n.min(available);
         if count == 0 {
@@ -235,6 +246,25 @@ mod tests {
             paths: paths.to_vec(),
             captured_at_secs: 0,
         }
+    }
+
+    // ---- undo(0) on non-empty stack ----
+
+    #[test]
+    fn undo_zero_count_on_non_empty_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f.txt");
+        std::fs::write(&p, "v0").unwrap();
+
+        let mut stack = CheckpointStack::new(10);
+        stack.record(make_checkpoint(std::slice::from_ref(&p)));
+        assert_eq!(stack.undo.len(), 1);
+
+        let r = stack.undo(0, 0);
+        assert_eq!(r.message, "Undo count must be > 0.");
+        assert_eq!(r.reverted_commands, 0);
+        // Stack must be unchanged.
+        assert_eq!(stack.undo.len(), 1);
     }
 
     // ---- empty-stack behaviour ----
