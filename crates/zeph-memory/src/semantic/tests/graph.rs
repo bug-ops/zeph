@@ -34,12 +34,24 @@ async fn recall_graph_returns_facts_for_known_entity() {
     let store = GraphStore::new(memory.sqlite.pool().clone());
 
     let rust_id = store
-        .upsert_entity("rust", "rust", EntityType::Language, Some("a language"))
+        .upsert_entity(
+            "rust",
+            "rust",
+            EntityType::Language,
+            Some("a language"),
+            None,
+        )
         .await
         .unwrap()
         .0;
     let tokio_id = store
-        .upsert_entity("tokio", "tokio", EntityType::Tool, Some("async runtime"))
+        .upsert_entity(
+            "tokio",
+            "tokio",
+            EntityType::Tool,
+            Some("async runtime"),
+            None,
+        )
         .await
         .unwrap()
         .0;
@@ -50,6 +62,7 @@ async fn recall_graph_returns_facts_for_known_entity() {
             "uses",
             "Rust uses tokio for async",
             0.9,
+            None,
             None,
         )
         .await
@@ -70,26 +83,26 @@ async fn recall_graph_sorted_by_composite_score() {
     let store = GraphStore::new(memory.sqlite.pool().clone());
 
     let a_id = store
-        .upsert_entity("entity_a", "entity_a", EntityType::Concept, None)
+        .upsert_entity("entity_a", "entity_a", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b_id = store
-        .upsert_entity("entity_b", "entity_b", EntityType::Concept, None)
+        .upsert_entity("entity_b", "entity_b", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c_id = store
-        .upsert_entity("entity_c", "entity_c", EntityType::Concept, None)
+        .upsert_entity("entity_c", "entity_c", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     store
-        .insert_edge(a_id, b_id, "relates", "a relates b", 0.9, None)
+        .insert_edge(a_id, b_id, "relates", "a relates b", 0.9, None, None)
         .await
         .unwrap();
     store
-        .insert_edge(a_id, c_id, "relates", "a relates c", 0.5, None)
+        .insert_edge(a_id, c_id, "relates", "a relates c", 0.5, None, None)
         .await
         .unwrap();
 
@@ -170,14 +183,14 @@ async fn recall_graph_truncates_to_limit() {
     let store = GraphStore::new(memory.sqlite.pool().clone());
 
     let root_id = store
-        .upsert_entity("root", "root", EntityType::Concept, None)
+        .upsert_entity("root", "root", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     for i in 0..5 {
         let name = format!("target_{i}");
         let tid = store
-            .upsert_entity(&name, &name, EntityType::Concept, None)
+            .upsert_entity(&name, &name, EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
@@ -188,6 +201,7 @@ async fn recall_graph_truncates_to_limit() {
                 "links",
                 &format!("root links {name}"),
                 0.7,
+                None,
                 None,
             )
             .await
@@ -207,27 +221,27 @@ async fn recall_graph_multi_hop_traverses_two_hops() {
     let store = GraphStore::new(memory.sqlite.pool().clone());
 
     let a_id = store
-        .upsert_entity("a_entity", "a_entity", EntityType::Person, None)
+        .upsert_entity("a_entity", "a_entity", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b_id = store
-        .upsert_entity("b_entity", "b_entity", EntityType::Person, None)
+        .upsert_entity("b_entity", "b_entity", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let c_id = store
-        .upsert_entity("c_entity", "c_entity", EntityType::Concept, None)
+        .upsert_entity("c_entity", "c_entity", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
 
     store
-        .insert_edge(a_id, b_id, "knows", "a knows b", 0.9, None)
+        .insert_edge(a_id, b_id, "knows", "a knows b", 0.9, None, None)
         .await
         .unwrap();
     store
-        .insert_edge(b_id, c_id, "uses", "b uses c", 0.8, None)
+        .insert_edge(b_id, c_id, "uses", "b uses c", 0.8, None, None)
         .await
         .unwrap();
 
@@ -400,7 +414,7 @@ async fn seed_entity_with_zero_embedding(
     use serde_json::json;
 
     let id = store
-        .upsert_entity(name, name, EntityType::Concept, None)
+        .upsert_entity(name, name, EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -451,7 +465,7 @@ async fn seed_entity_no_db_point_id(
     use serde_json::json;
 
     let id = store
-        .upsert_entity(name, name, EntityType::Concept, None)
+        .upsert_entity(name, name, EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;

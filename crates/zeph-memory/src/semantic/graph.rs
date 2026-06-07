@@ -18,6 +18,7 @@ use zeph_llm::provider::LlmProvider as _;
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::graph::extractor::ExtractionResult as ExtractorResult;
+use crate::graph::types::GraphProvenance;
 use crate::vector_store::VectorFilter;
 
 use super::SemanticMemory;
@@ -78,6 +79,15 @@ pub struct GraphExtractionConfig {
     ///
     /// Passed to [`crate::graph::GraphStore::with_benna_rates`]. Default: `0.05`.
     pub benna_slow_rate: f32,
+    /// Provenance stamped on every entity and edge written in this pass (spec-067 INV-2).
+    ///
+    /// `None` means conversation origin — all existing callers pass `None` and remain
+    /// unchanged. Only the future ingest path will pass `Some(prov)`.
+    pub provenance: Option<GraphProvenance>,
+    /// When `false`, recall queries exclude edges with `origin = 'ingest'` (spec-067 §3 Phase 0).
+    ///
+    /// Default: `true` (include imported edges in recall).
+    pub recall_include_imported: bool,
 }
 
 impl Default for GraphExtractionConfig {
@@ -105,6 +115,8 @@ impl Default for GraphExtractionConfig {
             write_gate_min_relevance: None,
             benna_fast_rate: 0.5,
             benna_slow_rate: 0.05,
+            provenance: None,
+            recall_include_imported: true,
         }
     }
 }
@@ -358,7 +370,7 @@ async fn insert_similarity_edges(
             let fact = format!("Semantically similar entities (score: {:.3})", point.score);
 
             match store
-                .insert_edge(src, tgt, "similar_to", &fact, point.score, None)
+                .insert_edge(src, tgt, "similar_to", &fact, point.score, None, None)
                 .await
             {
                 Ok(_) => stats.edges_created += 1,
@@ -403,8 +415,9 @@ pub async fn extract_and_store(
     );
     let ctx_refs: Vec<&str> = context_messages.iter().map(String::as_str).collect();
 
-    let store =
-        GraphStore::new(pool).with_benna_rates(config.benna_fast_rate, config.benna_slow_rate);
+    let store = GraphStore::new(pool)
+        .with_benna_rates(config.benna_fast_rate, config.benna_slow_rate)
+        .with_recall_include_imported(config.recall_include_imported);
 
     bump_extraction_count(store.pool()).await?;
 
@@ -433,7 +446,8 @@ pub async fn extract_and_store(
         EntityResolver::new(&store).with_embed_timeout(config.embed_timeout_secs)
     };
 
-    let (entity_name_to_id, entities_upserted) = upsert_entities(&resolver, &result.entities).await;
+    let (entity_name_to_id, entities_upserted) =
+        upsert_entities(&resolver, &result.entities, config.provenance.as_ref()).await;
     let edges_inserted = insert_edges(&resolver, &result.edges, &entity_name_to_id, &config).await;
 
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -481,6 +495,7 @@ async fn bump_extraction_count(pool: &DbPool) -> Result<(), MemoryError> {
 async fn upsert_entities(
     resolver: &crate::graph::EntityResolver<'_>,
     entities: &[crate::graph::extractor::ExtractedEntity],
+    provenance: Option<&GraphProvenance>,
 ) -> (std::collections::HashMap<String, i64>, usize) {
     let mut entity_name_to_id: std::collections::HashMap<String, i64> =
         std::collections::HashMap::new();
@@ -488,7 +503,12 @@ async fn upsert_entities(
 
     for entity in entities {
         match resolver
-            .resolve(&entity.name, &entity.entity_type, entity.summary.as_deref())
+            .resolve(
+                &entity.name,
+                &entity.entity_type,
+                entity.summary.as_deref(),
+                provenance,
+            )
             .await
         {
             Ok((id, _outcome)) => {
@@ -606,6 +626,7 @@ async fn insert_edges(
                     true,
                     None,
                     config.turn_index,
+                    config.provenance.as_ref(),
                 )
                 .await
             {
@@ -631,6 +652,7 @@ async fn insert_edges(
                     None,
                     edge_type,
                     belief_cfg.as_ref(),
+                    config.provenance.as_ref(),
                 )
                 .await
             {
@@ -1407,11 +1429,17 @@ mod tests {
             let gs = GraphStore::new(pool).with_benna_rates(fast_rate, slow_rate);
 
             let alice_id = gs
-                .upsert_entity("Alice", "alice", crate::graph::EntityType::Person, None)
+                .upsert_entity(
+                    "Alice",
+                    "alice",
+                    crate::graph::EntityType::Person,
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             let bob_id = gs
-                .upsert_entity("Bob", "bob", crate::graph::EntityType::Person, None)
+                .upsert_entity("Bob", "bob", crate::graph::EntityType::Person, None, None)
                 .await
                 .unwrap();
 
@@ -1424,6 +1452,7 @@ mod tests {
                 0.6,
                 None,
                 EdgeType::Semantic,
+                None,
             )
             .await
             .unwrap();
@@ -1437,6 +1466,7 @@ mod tests {
                 0.8,
                 None,
                 EdgeType::Semantic,
+                None,
             )
             .await
             .unwrap();

@@ -14,7 +14,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use super::store::GraphStore;
-use super::types::EntityType;
+use super::types::{EntityType, GraphProvenance};
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::graph::extractor::ExtractedEntity;
@@ -201,6 +201,7 @@ impl<'a> EntityResolver<'a> {
         name: &str,
         entity_type: &str,
         summary: Option<&str>,
+        provenance: Option<&GraphProvenance>,
     ) -> Result<(i64, ResolutionOutcome), MemoryError> {
         let normalized = Self::normalize_name(name);
 
@@ -226,7 +227,13 @@ impl<'a> EntityResolver<'a> {
         // Step 3: alias-first lookup (filters by entity_type to prevent cross-type collisions).
         if let Some(entity) = self.store.find_entity_by_alias(&normalized, et).await? {
             self.store
-                .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
+                .upsert_entity(
+                    &surface_name,
+                    &entity.canonical_name,
+                    et,
+                    summary,
+                    provenance,
+                )
                 .await?;
             return Ok((entity.id.0, ResolutionOutcome::ExactMatch));
         }
@@ -234,14 +241,20 @@ impl<'a> EntityResolver<'a> {
         // Step 4: canonical name lookup.
         if let Some(entity) = self.store.find_entity(&normalized, et).await? {
             self.store
-                .upsert_entity(&surface_name, &entity.canonical_name, et, summary)
+                .upsert_entity(
+                    &surface_name,
+                    &entity.canonical_name,
+                    et,
+                    summary,
+                    provenance,
+                )
                 .await?;
             return Ok((entity.id.0, ResolutionOutcome::ExactMatch));
         }
 
         // Step 5: Embedding-based resolution (when configured).
         if let Some(outcome) = self
-            .resolve_via_embedding(&normalized, name, &surface_name, et, summary)
+            .resolve_via_embedding(&normalized, name, &surface_name, et, summary, provenance)
             .await?
         {
             return Ok(outcome);
@@ -250,7 +263,7 @@ impl<'a> EntityResolver<'a> {
         // Step 6: Create new entity (no embedding store, or embedding failure).
         let entity_id = self
             .store
-            .upsert_entity(&surface_name, &normalized, et, summary)
+            .upsert_entity(&surface_name, &normalized, et, summary, provenance)
             .await?;
 
         self.register_aliases(entity_id.0, &normalized, name)
@@ -308,6 +321,7 @@ impl<'a> EntityResolver<'a> {
         normalized: &str,
         et: EntityType,
         summary: Option<&str>,
+        _provenance: Option<&GraphProvenance>,
     ) -> Result<Option<(i64, ResolutionOutcome)>, MemoryError> {
         let entity_id = payload
             .get("entity_id")
@@ -373,6 +387,7 @@ impl<'a> EntityResolver<'a> {
 
     /// Attempt embedding-based resolution. Returns `Ok(Some(...))` if resolved (early return),
     /// `Ok(None)` if no match found (caller should fall through to create), or `Err` on DB error.
+    #[allow(clippy::too_many_lines)]
     async fn resolve_via_embedding(
         &self,
         normalized: &str,
@@ -380,6 +395,7 @@ impl<'a> EntityResolver<'a> {
         surface_name: &str,
         et: EntityType,
         summary: Option<&str>,
+        provenance: Option<&GraphProvenance>,
     ) -> Result<Option<(i64, ResolutionOutcome)>, MemoryError> {
         let (Some(emb_store), Some(provider)) = (self.embedding_store, self.provider) else {
             return Ok(None);
@@ -415,6 +431,7 @@ impl<'a> EntityResolver<'a> {
                         et,
                         summary,
                         &query_vec,
+                        provenance,
                     )
                     .await
                     .map(Some);
@@ -464,6 +481,7 @@ impl<'a> EntityResolver<'a> {
                         normalized,
                         et,
                         summary,
+                        provenance,
                     )
                     .await?
             {
@@ -481,6 +499,7 @@ impl<'a> EntityResolver<'a> {
             et,
             summary,
             &query_vec,
+            provenance,
         )
         .await
         .map(Some)
@@ -497,10 +516,11 @@ impl<'a> EntityResolver<'a> {
         et: EntityType,
         summary: Option<&str>,
         query_vec: &[f32],
+        provenance: Option<&GraphProvenance>,
     ) -> Result<(i64, ResolutionOutcome), MemoryError> {
         let entity_id = self
             .store
-            .upsert_entity(surface_name, normalized, et, summary)
+            .upsert_entity(surface_name, normalized, et, summary, provenance)
             .await?;
         self.register_aliases(entity_id.0, normalized, original_name)
             .await?;
@@ -628,6 +648,7 @@ impl<'a> EntityResolver<'a> {
                 &existing_canonical,
                 entity_type,
                 summary_opt,
+                None,
             )
             .await?;
 
@@ -851,7 +872,9 @@ impl<'a> EntityResolver<'a> {
             let entity_type = e.entity_type.clone();
             let summary = e.summary.clone();
             async move {
-                let result = self.resolve(&name, &entity_type, summary.as_deref()).await;
+                let result = self
+                    .resolve(&name, &entity_type, summary.as_deref(), None)
+                    .await;
                 (i, result)
             }
         }))
@@ -933,6 +956,7 @@ impl<'a> EntityResolver<'a> {
                 &normalized_fact,
                 confidence,
                 episode_id,
+                None,
             )
             .await?;
         Ok(Some(new_id))
@@ -965,6 +989,7 @@ impl<'a> EntityResolver<'a> {
         episode_id: Option<crate::types::MessageId>,
         edge_type: crate::graph::EdgeType,
         belief_revision: Option<&crate::graph::BeliefRevisionConfig>,
+        provenance: Option<&GraphProvenance>,
     ) -> Result<Option<i64>, MemoryError> {
         let relation_clean = strip_control_chars(&relation.trim().to_lowercase());
         let normalized_relation =
@@ -1037,6 +1062,7 @@ impl<'a> EntityResolver<'a> {
                 confidence,
                 episode_id,
                 edge_type,
+                provenance,
             )
             .await?;
 

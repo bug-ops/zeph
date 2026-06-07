@@ -228,6 +228,90 @@ pub struct Community {
     pub updated_at: String,
 }
 
+/// Origin classification for a graph entity or edge (spec-067 INV-2).
+///
+/// Every row in `graph_entities` and `graph_edges` carries an origin so recall can
+/// isolate imported knowledge from conversation-derived knowledge. Stored as a `TEXT`
+/// value in the corresponding `origin` column.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::graph::types::GraphOrigin;
+///
+/// assert_eq!(GraphOrigin::Conversation.as_str(), "conversation");
+/// assert_eq!(GraphOrigin::Ingest.as_str(), "ingest");
+/// assert_eq!(GraphOrigin::default(), GraphOrigin::Conversation);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum GraphOrigin {
+    /// Knowledge extracted from live conversation (the default; existing behaviour).
+    #[default]
+    Conversation,
+    /// Knowledge imported via `knowledge ingest` (spec-067 Phase 1+).
+    Ingest,
+}
+
+impl GraphOrigin {
+    /// The `TEXT` value persisted in the `origin` column.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Conversation => "conversation",
+            Self::Ingest => "ingest",
+        }
+    }
+}
+
+/// Provenance metadata stamped on every imported entity or edge (spec-067 INV-2).
+///
+/// Pass `None` provenance (the default at every existing call site) to write
+/// `origin = 'conversation'`, `import_batch_id = NULL`, `source_uri = NULL`,
+/// preserving current behaviour exactly. Only the future ingest path will pass
+/// `Some(GraphProvenance { origin: GraphOrigin::Ingest, … })`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::graph::types::{GraphOrigin, GraphProvenance};
+///
+/// let prov = GraphProvenance {
+///     origin: GraphOrigin::Ingest,
+///     import_batch_id: "batch-2026-001".to_owned(),
+///     source_uri: Some("subagent:task-42".to_owned()),
+/// };
+/// assert_eq!(prov.origin.as_str(), "ingest");
+/// ```
+#[derive(Debug, Clone)]
+pub struct GraphProvenance {
+    /// Whether this row originates from a live conversation or an ingest run.
+    pub origin: GraphOrigin,
+    /// Rollback key: one identifier per ingest run. `NULL` for conversation rows.
+    pub import_batch_id: String,
+    /// Source locator, e.g. `"subagent:<task_id>"`. `NULL` for conversation rows.
+    pub source_uri: Option<String>,
+}
+
+/// Unpack `Option<&GraphProvenance>` into the three SQL-bind values for `origin`,
+/// `import_batch_id`, and `source_uri`.
+///
+/// Callers that pass `None` get the default conversation values; callers that pass
+/// `Some(prov)` get the ingest-origin values.
+#[must_use]
+pub(crate) fn provenance_parts(
+    prov: Option<&GraphProvenance>,
+) -> (&'static str, Option<&str>, Option<&str>) {
+    match prov {
+        None => ("conversation", None, None),
+        Some(p) => (
+            p.origin.as_str(),
+            Some(p.import_batch_id.as_str()),
+            p.source_uri.as_deref(),
+        ),
+    }
+}
+
 /// A GAAMA episode node — one per conversation.
 ///
 /// Groups entities observed during a single conversation context. Enables

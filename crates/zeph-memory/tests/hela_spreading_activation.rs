@@ -60,7 +60,7 @@ async fn seed_entity(
     vector: Vec<f32>,
 ) -> (i64, String) {
     let entity_id = graph
-        .upsert_entity(name, name, EntityType::Concept, None)
+        .upsert_entity(name, name, EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -184,11 +184,19 @@ async fn hela_depth_one_excludes_two_hop() {
     let (hop2_id, _) = seed_entity(&graph, &embeddings, "C", embed_vec.clone()).await;
 
     graph
-        .insert_edge(anchor_id, hop1_id, "relates_to", "test edge", 0.9, None)
+        .insert_edge(
+            anchor_id,
+            hop1_id,
+            "relates_to",
+            "test edge",
+            0.9,
+            None,
+            None,
+        )
         .await
         .unwrap();
     graph
-        .insert_edge(hop1_id, hop2_id, "relates_to", "test edge", 0.9, None)
+        .insert_edge(hop1_id, hop2_id, "relates_to", "test edge", 0.9, None, None)
         .await
         .unwrap();
 
@@ -229,7 +237,7 @@ async fn hela_respects_max_visited() {
     for i in 0..15i64 {
         let (nid, _) = seed_entity(&graph, &embeddings, &format!("N{i}"), embed_vec.clone()).await;
         graph
-            .insert_edge(hub_id, nid, "relates_to", "test edge", 0.8, None)
+            .insert_edge(hub_id, nid, "relates_to", "test edge", 0.8, None, None)
             .await
             .unwrap();
     }

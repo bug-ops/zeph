@@ -25,7 +25,10 @@ pub mod rpe;
 pub mod strategy_classifier;
 
 pub use store::GraphStore;
-pub use types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType, Episode, GraphFact};
+pub use types::{
+    Community, Edge, EdgeType, Entity, EntityAlias, EntityType, Episode, GraphFact, GraphOrigin,
+    GraphProvenance,
+};
 
 pub use activation::{
     ActivatedFact, ActivatedNode, HelaFact, HelaSpreadParams, SpreadingActivation,

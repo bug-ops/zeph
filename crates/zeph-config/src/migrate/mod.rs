@@ -602,20 +602,21 @@ use steps::{
     MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
     MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
     MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
-    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
-    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
-    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
-    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
-    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
+    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
+    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
+    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig,
+    MigrateOrchestrationPersistence, MigrateOrchestratorProvider, MigrateOtelFilter,
+    MigratePlannerModelToProvider, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
+    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
+    MigrateSessionPersistProviderOverrides, MigrateSessionProviderPersistence,
+    MigrateSessionRecapConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
+    MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–61).
+/// Ordered registry of all sequential migration steps (steps 1–62).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -722,6 +723,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateKnowledgeConfig),
             // Step 62 — add [deep_link] section advisory notice (spec-066, #5011)
             Box::new(MigrateDeepLinkConfig),
+            // Step 63 — add recall_include_imported to [memory.graph] (#5015)
+            Box::new(MigrateMemoryGraphRecallIncludeImported),
         ]
     });
 

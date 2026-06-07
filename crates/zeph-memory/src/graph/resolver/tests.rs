@@ -35,7 +35,7 @@ async fn resolve_creates_new_entity() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
     let (id, outcome) = resolver
-        .resolve("alice", "person", Some("a person"))
+        .resolve("alice", "person", Some("a person"), None)
         .await
         .unwrap();
     assert!(id > 0);
@@ -46,9 +46,12 @@ async fn resolve_creates_new_entity() {
 async fn resolve_updates_existing_entity() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
-    let (id1, _) = resolver.resolve("alice", "person", None).await.unwrap();
+    let (id1, _) = resolver
+        .resolve("alice", "person", None, None)
+        .await
+        .unwrap();
     let (id2, outcome) = resolver
-        .resolve("alice", "person", Some("updated summary"))
+        .resolve("alice", "person", Some("updated summary"), None)
         .await
         .unwrap();
     assert_eq!(id1, id2);
@@ -67,7 +70,7 @@ async fn resolve_unknown_type_falls_back_to_concept() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
     let (id, _) = resolver
-        .resolve("my_thing", "unknown_type", None)
+        .resolve("my_thing", "unknown_type", None, None)
         .await
         .unwrap();
     assert!(id > 0);
@@ -85,14 +88,14 @@ async fn resolve_empty_name_returns_error() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
 
-    let result_empty = resolver.resolve("", "concept", None).await;
+    let result_empty = resolver.resolve("", "concept", None, None).await;
     assert!(result_empty.is_err());
     assert!(matches!(
         result_empty.unwrap_err(),
         MemoryError::GraphStore(_)
     ));
 
-    let result_whitespace = resolver.resolve("   ", "concept", None).await;
+    let result_whitespace = resolver.resolve("   ", "concept", None, None).await;
     assert!(result_whitespace.is_err());
 }
 
@@ -103,14 +106,14 @@ async fn resolve_short_name_below_min_returns_error() {
     let resolver = EntityResolver::new(&gs);
 
     // "go" and "cd" are 2-byte tokens that represent common noise from tool output.
-    let err_go = resolver.resolve("go", "technology", None).await;
+    let err_go = resolver.resolve("go", "technology", None, None).await;
     assert!(err_go.is_err(), "\"go\" (2 bytes) must be rejected");
     assert!(
         matches!(err_go.unwrap_err(), MemoryError::GraphStore(_)),
         "expected GraphStore error for short name"
     );
 
-    let err_cd = resolver.resolve("cd", "concept", None).await;
+    let err_cd = resolver.resolve("cd", "concept", None, None).await;
     assert!(err_cd.is_err(), "\"cd\" (2 bytes) must be rejected");
 }
 
@@ -120,7 +123,7 @@ async fn resolve_name_at_min_length_passes() {
     let resolver = EntityResolver::new(&gs);
 
     // "git" is exactly 3 bytes — must be accepted.
-    let result = resolver.resolve("git", "technology", None).await;
+    let result = resolver.resolve("git", "technology", None, None).await;
     assert!(
         result.is_ok(),
         "\"git\" (3 bytes) must pass min-length check"
@@ -132,8 +135,14 @@ async fn resolve_case_insensitive() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
 
-    let (id1, _) = resolver.resolve("Rust", "language", None).await.unwrap();
-    let (id2, outcome) = resolver.resolve("rust", "language", None).await.unwrap();
+    let (id1, _) = resolver
+        .resolve("Rust", "language", None, None)
+        .await
+        .unwrap();
+    let (id2, outcome) = resolver
+        .resolve("rust", "language", None, None)
+        .await
+        .unwrap();
     assert_eq!(
         id1, id2,
         "'Rust' and 'rust' should resolve to the same entity"
@@ -147,12 +156,12 @@ async fn resolve_edge_inserts_new() {
     let resolver = EntityResolver::new(&gs);
 
     let src = gs
-        .upsert_entity("src", "src", EntityType::Concept, None)
+        .upsert_entity("src", "src", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("tgt", "tgt", EntityType::Concept, None)
+        .upsert_entity("tgt", "tgt", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -171,12 +180,12 @@ async fn resolve_edge_deduplicates_identical() {
     let resolver = EntityResolver::new(&gs);
 
     let src = gs
-        .upsert_entity("a", "a", EntityType::Concept, None)
+        .upsert_entity("a", "a", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("b", "b", EntityType::Concept, None)
+        .upsert_entity("b", "b", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -200,12 +209,12 @@ async fn resolve_edge_supersedes_contradictory() {
     let resolver = EntityResolver::new(&gs);
 
     let src = gs
-        .upsert_entity("x", "x", EntityType::Concept, None)
+        .upsert_entity("x", "x", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("y", "y", EntityType::Concept, None)
+        .upsert_entity("y", "y", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -236,12 +245,12 @@ async fn resolve_edge_direction_sensitive() {
     let resolver = EntityResolver::new(&gs);
 
     let a = gs
-        .upsert_entity("node_a", "node_a", EntityType::Concept, None)
+        .upsert_entity("node_a", "node_a", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("node_b", "node_b", EntityType::Concept, None)
+        .upsert_entity("node_b", "node_b", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -271,12 +280,12 @@ async fn resolve_edge_normalizes_relation_case() {
     let resolver = EntityResolver::new(&gs);
 
     let src = gs
-        .upsert_entity("p", "p", EntityType::Concept, None)
+        .upsert_entity("p", "p", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("q", "q", EntityType::Concept, None)
+        .upsert_entity("q", "q", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -305,7 +314,7 @@ async fn resolve_entity_type_uppercase_parsed_correctly() {
 
     // "Person" (title case from LLM) should parse as EntityType::Person, not fall back to Concept
     let (id, _) = resolver
-        .resolve("test_entity", "Person", None)
+        .resolve("test_entity", "Person", None, None)
         .await
         .unwrap();
     assert!(id > 0);
@@ -322,7 +331,10 @@ async fn resolve_entity_type_all_caps_parsed_correctly() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
 
-    let (id, _) = resolver.resolve("my_lang", "LANGUAGE", None).await.unwrap();
+    let (id, _) = resolver
+        .resolve("my_lang", "LANGUAGE", None, None)
+        .await
+        .unwrap();
     assert!(id > 0);
 
     let entity = gs
@@ -340,7 +352,10 @@ async fn resolve_truncates_long_entity_name() {
     let resolver = EntityResolver::new(&gs);
 
     let long_name = "a".repeat(1024);
-    let (id, _) = resolver.resolve(&long_name, "concept", None).await.unwrap();
+    let (id, _) = resolver
+        .resolve(&long_name, "concept", None, None)
+        .await
+        .unwrap();
     assert!(id > 0);
 
     // Entity should exist with a truncated name (512 bytes)
@@ -361,7 +376,7 @@ async fn resolve_strips_control_chars_from_name() {
     // Name with null byte and a BiDi override
     let name_with_ctrl = "rust\x00lang";
     let (id, _) = resolver
-        .resolve(name_with_ctrl, "language", None)
+        .resolve(name_with_ctrl, "language", None, None)
         .await
         .unwrap();
     assert!(id > 0);
@@ -385,7 +400,7 @@ async fn resolve_strips_bidi_overrides_from_name() {
     // U+202E is RIGHT-TO-LEFT OVERRIDE — a BiDi spoof character
     let name_with_bidi = "rust\u{202E}lang";
     let (id, _) = resolver
-        .resolve(name_with_bidi, "language", None)
+        .resolve(name_with_bidi, "language", None, None)
         .await
         .unwrap();
     assert!(id > 0);
@@ -447,6 +462,7 @@ async fn resolve_with_embedding_store_score_above_threshold_merges() {
             "python programming lang",
             EntityType::Language,
             Some("a programming language"),
+            None,
         )
         .await
         .unwrap()
@@ -485,6 +501,7 @@ async fn resolve_with_embedding_store_score_above_threshold_merges() {
             "python scripting lang",
             "language",
             Some("scripting language"),
+            None,
         )
         .await
         .unwrap();
@@ -501,7 +518,13 @@ async fn resolve_with_embedding_store_score_below_ambiguous_creates_new() {
     let (gs, emb) = setup_with_embedding().await;
     // Insert existing entity with orthogonal vector
     let existing_id = gs
-        .upsert_entity("java", "java", EntityType::Language, Some("java language"))
+        .upsert_entity(
+            "java",
+            "java",
+            EntityType::Language,
+            Some("java language"),
+            None,
+        )
         .await
         .unwrap()
         .0;
@@ -530,7 +553,7 @@ async fn resolve_with_embedding_store_score_below_ambiguous_creates_new() {
         .with_thresholds(0.85, 0.70);
 
     let (id, outcome) = resolver
-        .resolve("kotlin", "language", Some("kotlin language"))
+        .resolve("kotlin", "language", Some("kotlin language"), None)
         .await
         .unwrap();
 
@@ -557,7 +580,7 @@ async fn resolve_with_embedding_failure_falls_back_to_create() {
         .with_provider(&any_provider);
 
     let (id, outcome) = resolver
-        .resolve("testentity", "concept", Some("summary"))
+        .resolve("testentity", "concept", Some("summary"), None)
         .await
         .unwrap();
     assert!(id > 0);
@@ -580,7 +603,10 @@ async fn resolve_fallback_increments_counter() {
     let fallback_count = resolver.fallback_count();
 
     // First call: embed fails → fallback
-    resolver.resolve("entity_a", "concept", None).await.unwrap();
+    resolver
+        .resolve("entity_a", "concept", None, None)
+        .await
+        .unwrap();
 
     assert_eq!(
         fallback_count.load(std::sync::atomic::Ordering::Relaxed),
@@ -640,6 +666,7 @@ async fn merge_combines_summaries() {
             "mergetest v1",
             EntityType::Concept,
             Some("first summary"),
+            None,
         )
         .await
         .unwrap()
@@ -673,7 +700,7 @@ async fn merge_combines_summaries() {
 
     // Resolve "mergetest v2" — no exact match, but embedding is identical → merge
     let (id, outcome) = resolver
-        .resolve("mergetest v2", "concept", Some("second summary"))
+        .resolve("mergetest v2", "concept", Some("second summary"), None)
         .await
         .unwrap();
 
@@ -703,6 +730,7 @@ async fn merge_preserves_older_entity_id() {
             "legacy entity",
             EntityType::Concept,
             Some("old info"),
+            None,
         )
         .await
         .unwrap()
@@ -731,7 +759,7 @@ async fn merge_preserves_older_entity_id() {
         .with_thresholds(0.85, 0.70);
 
     let (returned_id, _) = resolver
-        .resolve("legacy entity variant", "concept", Some("new info"))
+        .resolve("legacy entity variant", "concept", Some("new info"), None)
         .await
         .unwrap();
 
@@ -752,6 +780,7 @@ async fn entity_type_filter_prevents_cross_type_merge() {
             "python",
             EntityType::Person,
             Some("a person named python"),
+            None,
         )
         .await
         .unwrap()
@@ -781,7 +810,7 @@ async fn entity_type_filter_prevents_cross_type_merge() {
 
     // Resolve "python" as Language — should NOT merge with the Person entity
     let (lang_id, outcome) = resolver
-        .resolve("python", "language", Some("python language"))
+        .resolve("python", "language", Some("python language"), None)
         .await
         .unwrap();
 
@@ -808,6 +837,7 @@ async fn custom_thresholds_respected() {
             "threshold_test",
             EntityType::Concept,
             Some("base"),
+            None,
         )
         .await
         .unwrap()
@@ -838,7 +868,7 @@ async fn custom_thresholds_respected() {
         .with_thresholds(0.50, 0.30);
 
     let (id, outcome) = resolver
-        .resolve("new_concept", "concept", Some("different"))
+        .resolve("new_concept", "concept", Some("different"), None)
         .await
         .unwrap();
 
@@ -851,8 +881,14 @@ async fn resolve_outcome_exact_match_no_embedding_store() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
 
-    resolver.resolve("existing", "concept", None).await.unwrap();
-    let (_, outcome) = resolver.resolve("existing", "concept", None).await.unwrap();
+    resolver
+        .resolve("existing", "concept", None, None)
+        .await
+        .unwrap();
+    let (_, outcome) = resolver
+        .resolve("existing", "concept", None, None)
+        .await
+        .unwrap();
     assert_eq!(outcome, ResolutionOutcome::ExactMatch);
 }
 
@@ -890,7 +926,7 @@ async fn seed_entity_with_vector(
     vector: Vec<f32>,
 ) -> i64 {
     let id = gs
-        .upsert_entity(name, name, entity_type, Some(summary))
+        .upsert_entity(name, name, entity_type, Some(summary), None)
         .await
         .unwrap()
         .0;
@@ -941,7 +977,12 @@ async fn resolve_ambiguous_score_llm_says_merge() {
         .with_thresholds(0.85, 0.50);
 
     let (id, outcome) = resolver
-        .resolve("goroutine concurrency", "concept", Some("go concurrency"))
+        .resolve(
+            "goroutine concurrency",
+            "concept",
+            Some("go concurrency"),
+            None,
+        )
         .await
         .unwrap();
 
@@ -980,7 +1021,12 @@ async fn resolve_ambiguous_score_llm_says_different() {
         .with_thresholds(0.85, 0.50);
 
     let (id, outcome) = resolver
-        .resolve("network channel", "concept", Some("networking channel"))
+        .resolve(
+            "network channel",
+            "concept",
+            Some("networking channel"),
+            None,
+        )
         .await
         .unwrap();
 
@@ -1019,7 +1065,12 @@ async fn resolve_ambiguous_score_llm_failure_increments_fallback() {
     let fallback_count = resolver.fallback_count();
 
     let (id, outcome) = resolver
-        .resolve("mutex lock", "concept", Some("synchronization primitive"))
+        .resolve(
+            "mutex lock",
+            "concept",
+            Some("synchronization primitive"),
+            None,
+        )
         .await
         .unwrap();
 
@@ -1042,7 +1093,10 @@ async fn resolve_ambiguous_score_llm_failure_increments_fallback() {
 async fn resolve_creates_entity_with_canonical_name() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
-    let (id, _) = resolver.resolve("Rust", "language", None).await.unwrap();
+    let (id, _) = resolver
+        .resolve("Rust", "language", None, None)
+        .await
+        .unwrap();
     assert!(id > 0);
     let entity = gs
         .find_entity("rust", EntityType::Language)
@@ -1056,7 +1110,10 @@ async fn resolve_creates_entity_with_canonical_name() {
 async fn resolve_adds_alias_on_create() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
-    let (id, _) = resolver.resolve("Rust", "language", None).await.unwrap();
+    let (id, _) = resolver
+        .resolve("Rust", "language", None, None)
+        .await
+        .unwrap();
     let aliases = gs.aliases_for_entity(id).await.unwrap();
     assert!(
         !aliases.is_empty(),
@@ -1071,12 +1128,15 @@ async fn resolve_reuses_entity_by_alias() {
     let resolver = EntityResolver::new(&gs);
 
     // Create entity and register an alias
-    let (id1, _) = resolver.resolve("rust", "language", None).await.unwrap();
+    let (id1, _) = resolver
+        .resolve("rust", "language", None, None)
+        .await
+        .unwrap();
     gs.add_alias(id1, "rust-lang").await.unwrap();
 
     // Resolve using the alias — should return the same entity
     let (id2, _) = resolver
-        .resolve("rust-lang", "language", None)
+        .resolve("rust-lang", "language", None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -1091,10 +1151,16 @@ async fn resolve_alias_match_respects_entity_type() {
     let resolver = EntityResolver::new(&gs);
 
     // "python" as a Language
-    let (lang_id, _) = resolver.resolve("python", "language", None).await.unwrap();
+    let (lang_id, _) = resolver
+        .resolve("python", "language", None, None)
+        .await
+        .unwrap();
 
     // "python" as a Tool should create a separate entity (different type)
-    let (tool_id, _) = resolver.resolve("python", "tool", None).await.unwrap();
+    let (tool_id, _) = resolver
+        .resolve("python", "tool", None, None)
+        .await
+        .unwrap();
     assert_ne!(
         lang_id, tool_id,
         "same name with different type should be separate entities"
@@ -1106,12 +1172,15 @@ async fn resolve_preserves_existing_aliases() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
 
-    let (id, _) = resolver.resolve("rust", "language", None).await.unwrap();
+    let (id, _) = resolver
+        .resolve("rust", "language", None, None)
+        .await
+        .unwrap();
     gs.add_alias(id, "rust-lang").await.unwrap();
 
     // Upserting same entity should not remove prior aliases
     resolver
-        .resolve("rust", "language", Some("updated"))
+        .resolve("rust", "language", Some("updated"), None)
         .await
         .unwrap();
     let aliases = gs.aliases_for_entity(id).await.unwrap();
@@ -1129,7 +1198,7 @@ async fn resolve_original_form_registered_as_alias() {
     // "  Rust  " — original trimmed lowercased form is "rust", same as normalized
     // So only one alias should be registered (no duplicate)
     let (id, _) = resolver
-        .resolve("  Rust  ", "language", None)
+        .resolve("  Rust  ", "language", None, None)
         .await
         .unwrap();
     let aliases = gs.aliases_for_entity(id).await.unwrap();
@@ -1140,7 +1209,7 @@ async fn resolve_original_form_registered_as_alias() {
 async fn resolve_entity_with_many_aliases() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("bigentity", "bigentity", EntityType::Concept, None)
+        .upsert_entity("bigentity", "bigentity", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;

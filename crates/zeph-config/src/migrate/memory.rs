@@ -565,6 +565,51 @@ pub fn migrate_memory_persona_config(toml_src: &str) -> Result<MigrationResult, 
     })
 }
 
+/// Inject a commented-out `recall_include_imported` key into `[memory.graph]` when absent (#5015).
+///
+/// The field defaults to `true` via `#[serde(default = "default_true")]`, so existing configs
+/// parse unchanged. This step surfaces the new key for users who want to isolate conversation
+/// knowledge from ingest-origin edges.
+///
+/// No-op when `[memory.graph]` is absent (graph not configured) or when the key is already
+/// present (active or commented).
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_memory_graph_recall_include_imported(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    // Only inject when [memory.graph] exists as a live section.
+    if !toml_src.lines().any(|l| l.trim() == "[memory.graph]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Idempotent: key already present (active or as comment).
+    if toml_src.contains("recall_include_imported") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Whether to include ingest-origin edges/entities in recall (#5015).\n\
+         # Set false to isolate conversation knowledge from imported knowledge.\n\
+         # recall_include_imported = true\n";
+    let output = insert_after_section(toml_src, "memory.graph", comment);
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.graph.recall_include_imported".to_owned()],
+    })
+}
+
 /// No-op migration for the optional `qdrant_api_key` field added in #3543.
 ///
 /// The field has `#[serde(default)]` so existing configs parse as `None` without changes.

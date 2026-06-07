@@ -160,8 +160,8 @@ pub use graph::experience::{EvolutionSweepStats, ExperienceStore};
 pub use graph::ingest::{IngestLedger, LedgerEntry};
 pub use graph::{
     BeliefMemConfig, BeliefRevisionConfig, BeliefStore, Community, Edge, EdgeType, Entity,
-    EntityType, GraphFact, GraphStore, PendingBelief, RpeRouter, RpeSignal,
-    extract_candidate_entities, noisy_or, time_decayed_prob,
+    EntityType, GraphFact, GraphOrigin, GraphProvenance, GraphStore, PendingBelief, RpeRouter,
+    RpeSignal, extract_candidate_entities, noisy_or, time_decayed_prob,
 };
 pub use hebbian_consolidation::{
     GraphRule, HebbianConsolidationCandidate, HebbianConsolidationOutcome,

@@ -274,17 +274,17 @@ mod tests {
     async fn beam_finds_direct_edge() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None)
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 

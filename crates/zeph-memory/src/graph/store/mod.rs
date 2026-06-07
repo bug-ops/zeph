@@ -19,7 +19,9 @@ use crate::error::MemoryError;
 use crate::graph::conflict::{ApexMetrics, SUPERSEDE_DEPTH_CAP};
 use crate::types::{EntityId, MessageId};
 
-use super::types::{Community, Edge, EdgeType, Entity, EntityAlias, EntityType};
+use super::types::{
+    Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphProvenance, provenance_parts,
+};
 
 /// SQLite-backed persistence layer for the knowledge graph.
 ///
@@ -33,6 +35,9 @@ pub struct GraphStore {
     benna_fast_rate: f32,
     /// Benna-Fusi slow-variable learning rate. Range: `(0.0, 1.0]`. Default: `0.05`.
     benna_slow_rate: f32,
+    /// When `false`, edges with `origin = 'ingest'` are excluded from `query_batch_edges`
+    /// and `edges_for_entity` results (spec-067 FR-003, INV-3). Default: `true`.
+    recall_include_imported: bool,
 }
 
 impl GraphStore {
@@ -45,6 +50,7 @@ impl GraphStore {
             pool,
             benna_fast_rate: 0.5,
             benna_slow_rate: 0.05,
+            recall_include_imported: true,
         }
     }
 
@@ -55,6 +61,17 @@ impl GraphStore {
     pub fn with_benna_rates(mut self, fast_rate: f32, slow_rate: f32) -> Self {
         self.benna_fast_rate = fast_rate;
         self.benna_slow_rate = slow_rate;
+        self
+    }
+
+    /// Control whether ingest-origin edges appear in recall (spec-067 FR-003).
+    ///
+    /// When `false`, edges with `origin = 'ingest'` are excluded from
+    /// [`Self::query_batch_edges`] and [`Self::edges_for_entity`].
+    /// Default: `true` (all edges included).
+    #[must_use]
+    pub fn with_recall_include_imported(mut self, include: bool) -> Self {
+        self.recall_include_imported = include;
         self
     }
 
@@ -72,6 +89,10 @@ impl GraphStore {
     ///   so user-facing output preserves casing. Updated on every upsert to the latest seen form.
     /// - `canonical_name`: the stable normalized key (e.g. `"rust"`) — used for deduplication.
     /// - `summary`: pass `None` to preserve the existing summary; pass `Some("")` to blank it.
+    /// - `provenance`: pass `None` for conversation-origin rows (the default); pass
+    ///   `Some(prov)` from the ingest path to stamp `origin` and `import_batch_id`.
+    ///   The `DO UPDATE` clause intentionally does NOT overwrite `origin` on conflict —
+    ///   an entity first seen in conversation that reappears in an import stays `conversation`.
     ///
     /// # Errors
     ///
@@ -82,11 +103,13 @@ impl GraphStore {
         canonical_name: &str,
         entity_type: EntityType,
         summary: Option<&str>,
+        provenance: Option<&GraphProvenance>,
     ) -> Result<EntityId, MemoryError> {
         let type_str = entity_type.as_str();
+        let (origin, batch_id, _source_uri) = provenance_parts(provenance);
         let id: i64 = zeph_db::query_scalar(sql!(
-            "INSERT INTO graph_entities (name, canonical_name, entity_type, summary)
-             VALUES (?, ?, ?, ?)
+            "INSERT INTO graph_entities (name, canonical_name, entity_type, summary, origin, import_batch_id)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(canonical_name, entity_type) DO UPDATE SET
                name = excluded.name,
                summary = COALESCE(excluded.summary, summary),
@@ -97,6 +120,8 @@ impl GraphStore {
         .bind(canonical_name)
         .bind(type_str)
         .bind(summary)
+        .bind(origin)
+        .bind(batch_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(EntityId(id))
@@ -398,6 +423,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_edge(
         &self,
         source_entity_id: i64,
@@ -406,6 +432,7 @@ impl GraphStore {
         fact: &str,
         confidence: f32,
         episode_id: Option<MessageId>,
+        provenance: Option<&GraphProvenance>,
     ) -> Result<i64, MemoryError> {
         self.insert_edge_typed(
             source_entity_id,
@@ -415,6 +442,7 @@ impl GraphStore {
             confidence,
             episode_id,
             EdgeType::Semantic,
+            provenance,
         )
         .await
     }
@@ -423,6 +451,10 @@ impl GraphStore {
     ///
     /// Identical semantics to [`Self::insert_edge`] but with an explicit `edge_type` parameter.
     /// The dedup key is `(source_entity_id, target_entity_id, relation, edge_type, valid_to IS NULL)`.
+    ///
+    /// The `provenance` parameter stamps `origin`, `import_batch_id`, and `source_uri` on the new
+    /// row. Pass `None` for conversation-origin edges (the default). The dedup UPDATE branch does
+    /// NOT overwrite provenance — an existing edge keeps its original origin on re-encounter.
     ///
     /// # Errors
     ///
@@ -437,6 +469,7 @@ impl GraphStore {
         confidence: f32,
         episode_id: Option<MessageId>,
         edge_type: EdgeType,
+        provenance: Option<&GraphProvenance>,
     ) -> Result<i64, MemoryError> {
         if source_entity_id == target_entity_id {
             return Err(MemoryError::InvalidInput(format!(
@@ -445,6 +478,7 @@ impl GraphStore {
         }
         let confidence = confidence.clamp(0.0, 1.0);
         let edge_type_str = edge_type.as_str();
+        let (origin, batch_id, source_uri) = provenance_parts(provenance);
 
         // Wrap SELECT + INSERT/UPDATE in a single transaction to eliminate the race window
         // between existence check and write. The unique partial index uq_graph_edges_active
@@ -479,6 +513,7 @@ impl GraphStore {
             let stored_slow_f32 = (stored_slow as f32).clamp(0.0, 1.0);
             let new_fast = stored_fast_f32 + self.benna_fast_rate * (confidence - stored_fast_f32);
             let new_slow = stored_slow_f32 + self.benna_slow_rate * (new_fast - stored_slow_f32);
+            // DO NOT update origin/import_batch_id/source_uri — the existing row keeps its origin.
             zeph_db::query(sql!(
                 "UPDATE graph_edges SET confidence = ?, confidence_fast = ?, confidence_slow = ? WHERE id = ?"
             ))
@@ -496,8 +531,8 @@ impl GraphStore {
         let id: i64 = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence,
-              confidence_fast, confidence_slow, episode_id, edge_type)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              confidence_fast, confidence_slow, episode_id, edge_type, origin, import_batch_id, source_uri)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
         ))
         .bind(source_entity_id)
@@ -509,6 +544,9 @@ impl GraphStore {
         .bind(f64::from(confidence))
         .bind(episode_raw)
         .bind(edge_type_str)
+        .bind(origin)
+        .bind(batch_id)
+        .bind(source_uri)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -614,6 +652,13 @@ impl GraphStore {
         let n_ids = entity_ids.len();
         let n_types = edge_types.len();
 
+        // Append recall_include_imported filter when ingest-origin edges should be excluded.
+        let origin_filter = if self.recall_include_imported {
+            String::new()
+        } else {
+            " AND origin = 'conversation'".to_owned()
+        };
+
         let sql = if n_types == 0 {
             // placeholders used twice (source IN and target IN)
             let placeholders = placeholder_list(1, n_ids);
@@ -623,7 +668,7 @@ impl GraphStore {
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
                         edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
                  FROM graph_edges
-                 WHERE valid_to IS NULL
+                 WHERE valid_to IS NULL{origin_filter}
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))"
             )
         } else {
@@ -635,7 +680,7 @@ impl GraphStore {
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
                         edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
                  FROM graph_edges
-                 WHERE valid_to IS NULL
+                 WHERE valid_to IS NULL{origin_filter}
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))
                    AND edge_type IN ({type_placeholders})"
             )
@@ -667,22 +712,30 @@ impl GraphStore {
 
     /// Get all active edges where entity is source or target.
     ///
+    /// When `recall_include_imported` is `false`, ingest-origin edges are excluded.
+    ///
     /// # Errors
     ///
     /// Returns an error if the database query fails.
     pub async fn edges_for_entity(&self, entity_id: i64) -> Result<Vec<Edge>, MemoryError> {
-        let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
+        let origin_filter = if self.recall_include_imported {
+            ""
+        } else {
+            " AND origin = 'conversation'"
+        };
+        let sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
                     edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
              FROM graph_edges
-             WHERE valid_to IS NULL
+             WHERE valid_to IS NULL{origin_filter}
                AND (source_entity_id = ? OR target_entity_id = ?)"
-        ))
-        .bind(entity_id)
-        .bind(entity_id)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let rows: Vec<EdgeRow> = zeph_db::query_as::<_, EdgeRow>(&sql)
+            .bind(entity_id)
+            .bind(entity_id)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(edge_from_row).collect())
     }
 
@@ -692,6 +745,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails or if `limit` overflows `i64`.
+    // Raw access — does not apply recall_include_imported filter; for filtered recall use query_batch_edges / edges_for_entity.
     pub async fn edge_history_for_entity(
         &self,
         entity_id: i64,
@@ -720,6 +774,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    // Raw access — does not apply recall_include_imported filter; for filtered recall use query_batch_edges / edges_for_entity.
     pub async fn edges_between(
         &self,
         entity_a: i64,
@@ -748,6 +803,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    // Raw access — does not apply recall_include_imported filter; for filtered recall use query_batch_edges / edges_for_entity.
     pub async fn edges_exact(
         &self,
         source_entity_id: i64,
@@ -2457,6 +2513,7 @@ impl GraphStore {
             set_supersedes,
             metrics,
             None,
+            None,
         )
         .await
     }
@@ -2465,6 +2522,9 @@ impl GraphStore {
     ///
     /// `turn_index` is stored in the new edge row when a supersession chain is started.
     /// Pass `None` to omit provenance (equivalent to [`Self::insert_or_supersede_with_metrics`]).
+    ///
+    /// `provenance` stamps `origin`, `import_batch_id`, and `source_uri` on the newly inserted
+    /// row. Pass `None` for conversation-origin edges (the default).
     ///
     /// # Errors
     ///
@@ -2483,6 +2543,7 @@ impl GraphStore {
         set_supersedes: bool,
         metrics: Option<&ApexMetrics>,
         turn_index: Option<u32>,
+        provenance: Option<&GraphProvenance>,
     ) -> Result<i64, MemoryError> {
         if source_entity_id == target_entity_id {
             return Err(MemoryError::InvalidInput(format!(
@@ -2537,6 +2598,7 @@ impl GraphStore {
 
         let supersedes_val: Option<i64> = if set_supersedes { prior_head } else { None };
         let turn_index_raw: Option<i64> = turn_index.map(i64::from);
+        let (prov_origin, prov_batch, prov_uri) = provenance_parts(provenance);
         let new_id = insert_new_edge(
             &mut tx,
             source_entity_id,
@@ -2549,6 +2611,9 @@ impl GraphStore {
             edge_type_str,
             supersedes_val,
             turn_index_raw,
+            prov_origin,
+            prov_batch,
+            prov_uri,
         )
         .await?;
 
@@ -3079,12 +3144,16 @@ async fn insert_new_edge(
     edge_type_str: &str,
     supersedes_val: Option<i64>,
     turn_index: Option<i64>,
+    origin: &str,
+    import_batch_id: Option<&str>,
+    source_uri: Option<&str>,
 ) -> Result<i64, MemoryError> {
     Ok(zeph_db::query_scalar(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, canonical_relation, fact,
-          confidence, confidence_fast, confidence_slow, episode_id, edge_type, supersedes, turn_index)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          confidence, confidence_fast, confidence_slow, episode_id, edge_type, supersedes, turn_index,
+          origin, import_batch_id, source_uri)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id"
     ))
     .bind(src)
@@ -3099,6 +3168,9 @@ async fn insert_new_edge(
     .bind(edge_type_str)
     .bind(supersedes_val)
     .bind(turn_index)
+    .bind(origin)
+    .bind(import_batch_id)
+    .bind(source_uri)
     .fetch_one(&mut **tx)
     .await?)
 }

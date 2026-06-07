@@ -1160,6 +1160,8 @@ max_files = 7
 # expired_edge_retention_days = 90
 # # Maximum total entities in the graph (0 = unlimited)
 # max_entities = 0
+# # Whether to include ingest-origin edges/entities in recall (default: true; set false to isolate conversation knowledge)
+# recall_include_imported = true
 #
 # # SYNAPSE spreading activation — verified working in CI-608 (activated=4 facts=15).
 # # Enable when [memory.graph] enabled = true for multi-hop graph retrieval.

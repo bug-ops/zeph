@@ -658,7 +658,7 @@ mod tests {
         let store = setup().await;
         let provider = mock_provider();
         store
-            .upsert_entity("Solo", "Solo", EntityType::Concept, None)
+            .upsert_entity("Solo", "Solo", EntityType::Concept, None, None)
             .await
             .unwrap();
         let count = detect_communities(&store, &provider, usize::MAX, 4, 0)
@@ -674,32 +674,32 @@ mod tests {
 
         // Create 3 connected entities (cluster A) and 1 isolated entity.
         let a = store
-            .upsert_entity("A", "A", EntityType::Concept, None)
+            .upsert_entity("A", "A", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("B", "B", EntityType::Concept, None)
+            .upsert_entity("B", "B", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let c = store
-            .upsert_entity("C", "C", EntityType::Concept, None)
+            .upsert_entity("C", "C", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let iso = store
-            .upsert_entity("Isolated", "Isolated", EntityType::Concept, None)
+            .upsert_entity("Isolated", "Isolated", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
 
         store
-            .insert_edge(a, b, "r", "A relates B", 1.0, None)
+            .insert_edge(a, b, "r", "A relates B", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(b, c, "r", "B relates C", 1.0, None)
+            .insert_edge(b, c, "r", "B relates C", 1.0, None, None)
             .await
             .unwrap();
 
@@ -729,7 +729,7 @@ mod tests {
             for node in 0..3_i64 {
                 let name = format!("c{cluster}_n{node}");
                 let id = store
-                    .upsert_entity(&name, &name, EntityType::Concept, None)
+                    .upsert_entity(&name, &name, EntityType::Concept, None, None)
                     .await
                     .unwrap()
                     .0;
@@ -737,11 +737,11 @@ mod tests {
             }
             // Connect nodes within cluster (chain: 0-1-2).
             store
-                .insert_edge(ids[0], ids[1], "r", "f", 1.0, None)
+                .insert_edge(ids[0], ids[1], "r", "f", 1.0, None, None)
                 .await
                 .unwrap();
             store
-                .insert_edge(ids[1], ids[2], "r", "f", 1.0, None)
+                .insert_edge(ids[1], ids[2], "r", "f", 1.0, None, None)
                 .await
                 .unwrap();
             cluster_ids.push(ids);
@@ -784,6 +784,7 @@ mod tests {
                     &format!("iso_{i}"),
                     EntityType::Concept,
                     None,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -801,16 +802,19 @@ mod tests {
         let store = setup().await;
 
         let a = store
-            .upsert_entity("EA", "EA", EntityType::Concept, None)
+            .upsert_entity("EA", "EA", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("EB", "EB", EntityType::Concept, None)
+            .upsert_entity("EB", "EB", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
-        let edge_id = store.insert_edge(a, b, "r", "f", 1.0, None).await.unwrap();
+        let edge_id = store
+            .insert_edge(a, b, "r", "f", 1.0, None, None)
+            .await
+            .unwrap();
         store.invalidate_edge(edge_id).await.unwrap();
 
         // Manually set expired_at to a date far in the past to trigger deletion.
@@ -831,7 +835,7 @@ mod tests {
         let store = setup().await;
 
         let iso = store
-            .upsert_entity("Orphan", "Orphan", EntityType::Concept, None)
+            .upsert_entity("Orphan", "Orphan", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
@@ -857,7 +861,7 @@ mod tests {
         for i in 0..5_i64 {
             let name = format!("cap_entity_{i}");
             store
-                .upsert_entity(&name, &name, EntityType::Concept, None)
+                .upsert_entity(&name, &name, EntityType::Concept, None, None)
                 .await
                 .unwrap();
         }
@@ -874,7 +878,7 @@ mod tests {
     async fn test_assign_to_community_no_neighbors() {
         let store = setup().await;
         let entity_id = store
-            .upsert_entity("Loner", "Loner", EntityType::Concept, None)
+            .upsert_entity("Loner", "Loner", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
@@ -995,17 +999,17 @@ mod tests {
 
         // Setup: community C1 with members [A, B], then add D with edges to both A and B.
         let a = store
-            .upsert_entity("AA", "AA", EntityType::Concept, None)
+            .upsert_entity("AA", "AA", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("BB", "BB", EntityType::Concept, None)
+            .upsert_entity("BB", "BB", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let d = store
-            .upsert_entity("DD", "DD", EntityType::Concept, None)
+            .upsert_entity("DD", "DD", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
@@ -1015,8 +1019,14 @@ mod tests {
             .await
             .unwrap();
 
-        store.insert_edge(d, a, "r", "f", 1.0, None).await.unwrap();
-        store.insert_edge(d, b, "r", "f", 1.0, None).await.unwrap();
+        store
+            .insert_edge(d, a, "r", "f", 1.0, None, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(d, b, "r", "f", 1.0, None, None)
+            .await
+            .unwrap();
 
         let result = assign_to_community(&store, d).await.unwrap();
         assert!(result.is_some());
@@ -1046,17 +1056,17 @@ mod tests {
         let (provider, call_buf) = recording_provider();
 
         let a = store
-            .upsert_entity("X", "X", EntityType::Concept, None)
+            .upsert_entity("X", "X", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Y", "Y", EntityType::Concept, None)
+            .upsert_entity("Y", "Y", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "r", "X relates Y", 1.0, None)
+            .insert_edge(a, b, "r", "X relates Y", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1085,17 +1095,17 @@ mod tests {
         let (provider, call_buf) = recording_provider();
 
         let a = store
-            .upsert_entity("P", "P", EntityType::Concept, None)
+            .upsert_entity("P", "P", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Q", "Q", EntityType::Concept, None)
+            .upsert_entity("Q", "Q", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "r", "P relates Q", 1.0, None)
+            .insert_edge(a, b, "r", "P relates Q", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1107,7 +1117,7 @@ mod tests {
 
         // Add a new edge within the community to change its fingerprint.
         store
-            .insert_edge(b, a, "r2", "Q also relates P", 1.0, None)
+            .insert_edge(b, a, "r2", "Q also relates P", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1128,17 +1138,17 @@ mod tests {
         let provider = mock_provider();
 
         let a = store
-            .upsert_entity("M1", "M1", EntityType::Concept, None)
+            .upsert_entity("M1", "M1", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("M2", "M2", EntityType::Concept, None)
+            .upsert_entity("M2", "M2", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let edge_id = store
-            .insert_edge(a, b, "r", "M1 relates M2", 1.0, None)
+            .insert_edge(a, b, "r", "M1 relates M2", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1167,16 +1177,19 @@ mod tests {
         let provider = mock_provider();
 
         let a = store
-            .upsert_entity("C1A", "C1A", EntityType::Concept, None)
+            .upsert_entity("C1A", "C1A", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("C1B", "C1B", EntityType::Concept, None)
+            .upsert_entity("C1B", "C1B", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
-        store.insert_edge(a, b, "r", "f", 1.0, None).await.unwrap();
+        store
+            .insert_edge(a, b, "r", "f", 1.0, None, None)
+            .await
+            .unwrap();
 
         let count = detect_communities(&store, &provider, usize::MAX, 1, 0)
             .await
@@ -1230,41 +1243,41 @@ mod tests {
 
         // Build two isolated clusters: A-B-C and D-E.
         let node_alpha = store
-            .upsert_entity("CA", "CA", EntityType::Concept, None)
+            .upsert_entity("CA", "CA", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let node_beta = store
-            .upsert_entity("CB", "CB", EntityType::Concept, None)
+            .upsert_entity("CB", "CB", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let node_gamma = store
-            .upsert_entity("CC", "CC", EntityType::Concept, None)
+            .upsert_entity("CC", "CC", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let node_delta = store
-            .upsert_entity("CD", "CD", EntityType::Concept, None)
+            .upsert_entity("CD", "CD", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let node_epsilon = store
-            .upsert_entity("CE", "CE", EntityType::Concept, None)
+            .upsert_entity("CE", "CE", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
 
         store
-            .insert_edge(node_alpha, node_beta, "r", "A-B fact", 1.0, None)
+            .insert_edge(node_alpha, node_beta, "r", "A-B fact", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(node_beta, node_gamma, "r", "B-C fact", 1.0, None)
+            .insert_edge(node_beta, node_gamma, "r", "B-C fact", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(node_delta, node_epsilon, "r", "D-E fact", 1.0, None)
+            .insert_edge(node_delta, node_epsilon, "r", "D-E fact", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1304,17 +1317,17 @@ mod tests {
         let provider = mock_provider();
 
         let x = store
-            .upsert_entity("MX", "MX", EntityType::Concept, None)
+            .upsert_entity("MX", "MX", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let y = store
-            .upsert_entity("MY", "MY", EntityType::Concept, None)
+            .upsert_entity("MY", "MY", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(x, y, "r", "X-Y fact", 1.0, None)
+            .insert_edge(x, y, "r", "X-Y fact", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1331,17 +1344,17 @@ mod tests {
         let provider = mock_provider();
 
         let p = store
-            .upsert_entity("ZP", "ZP", EntityType::Concept, None)
+            .upsert_entity("ZP", "ZP", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let q = store
-            .upsert_entity("ZQ", "ZQ", EntityType::Concept, None)
+            .upsert_entity("ZQ", "ZQ", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(p, q, "r", "P-Q fact", 1.0, None)
+            .insert_edge(p, q, "r", "P-Q fact", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1363,17 +1376,17 @@ mod tests {
         let (provider, call_buf) = recording_provider();
 
         let a = store
-            .upsert_entity("FA", "FA", EntityType::Concept, None)
+            .upsert_entity("FA", "FA", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("FB", "FB", EntityType::Concept, None)
+            .upsert_entity("FB", "FB", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "r", "edge1 fact", 1.0, None)
+            .insert_edge(a, b, "r", "edge1 fact", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1386,7 +1399,7 @@ mod tests {
 
         // Add another edge — fingerprint must change, triggering a second LLM call.
         store
-            .insert_edge(b, a, "r2", "edge2 fact", 1.0, None)
+            .insert_edge(b, a, "r2", "edge2 fact", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1438,12 +1451,12 @@ mod tests {
 
         // Insert two entities in SQLite.
         let live_id = graph_store
-            .upsert_entity("Live", "live", EntityType::Person, None)
+            .upsert_entity("Live", "live", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let stale_id = graph_store
-            .upsert_entity("Stale", "stale", EntityType::Person, None)
+            .upsert_entity("Stale", "stale", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;

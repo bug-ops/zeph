@@ -823,7 +823,7 @@ mod tests {
     async fn spread_single_seed_no_edges_returns_seed() {
         let store = setup_store().await;
         let alice = store
-            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
@@ -842,26 +842,26 @@ mod tests {
     async fn spread_linear_chain_all_activated_with_decay() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("A", "A", EntityType::Person, None)
+            .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("B", "B", EntityType::Person, None)
+            .upsert_entity("B", "B", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let c = store
-            .upsert_entity("C", "C", EntityType::Person, None)
+            .upsert_entity("C", "C", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "knows", "A knows B", 1.0, None)
+            .insert_edge(a, b, "knows", "A knows B", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(b, c, "knows", "B knows C", 1.0, None)
+            .insert_edge(b, c, "knows", "B knows C", 1.0, None, None)
             .await
             .unwrap();
 
@@ -896,26 +896,26 @@ mod tests {
     async fn spread_linear_chain_max_hops_limits_reach() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("A", "A", EntityType::Person, None)
+            .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("B", "B", EntityType::Person, None)
+            .upsert_entity("B", "B", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let c = store
-            .upsert_entity("C", "C", EntityType::Person, None)
+            .upsert_entity("C", "C", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "knows", "A knows B", 1.0, None)
+            .insert_edge(a, b, "knows", "A knows B", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(b, c, "knows", "B knows C", 1.0, None)
+            .insert_edge(b, c, "knows", "B knows C", 1.0, None, None)
             .await
             .unwrap();
 
@@ -938,39 +938,39 @@ mod tests {
     async fn spread_diamond_graph_convergence() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("A", "A", EntityType::Person, None)
+            .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("B", "B", EntityType::Person, None)
+            .upsert_entity("B", "B", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let c = store
-            .upsert_entity("C", "C", EntityType::Person, None)
+            .upsert_entity("C", "C", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let d = store
-            .upsert_entity("D", "D", EntityType::Person, None)
+            .upsert_entity("D", "D", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "rel", "A-B", 1.0, None)
+            .insert_edge(a, b, "rel", "A-B", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(a, c, "rel", "A-C", 1.0, None)
+            .insert_edge(a, c, "rel", "A-C", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(b, d, "rel", "B-D", 1.0, None)
+            .insert_edge(b, d, "rel", "B-D", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(c, d, "rel", "C-D", 1.0, None)
+            .insert_edge(c, d, "rel", "C-D", 1.0, None, None)
             .await
             .unwrap();
 
@@ -996,7 +996,7 @@ mod tests {
         let store = setup_store().await;
         // Create a hub node connected to many leaves
         let hub = store
-            .upsert_entity("Hub", "Hub", EntityType::Concept, None)
+            .upsert_entity("Hub", "Hub", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
@@ -1008,12 +1008,21 @@ mod tests {
                     &format!("Leaf{i}"),
                     EntityType::Concept,
                     None,
+                    None,
                 )
                 .await
                 .unwrap()
                 .0;
             store
-                .insert_edge(hub, leaf, "has", &format!("Hub has Leaf{i}"), 1.0, None)
+                .insert_edge(
+                    hub,
+                    leaf,
+                    "has",
+                    &format!("Hub has Leaf{i}"),
+                    1.0,
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
             // Connect all leaves back to hub to create a dense cluster
@@ -1024,6 +1033,7 @@ mod tests {
                     "part_of",
                     &format!("Leaf{i} part_of Hub"),
                     1.0,
+                    None,
                     None,
                 )
                 .await
@@ -1052,7 +1062,7 @@ mod tests {
     async fn spread_max_activated_nodes_cap_enforced() {
         let store = setup_store().await;
         let root = store
-            .upsert_entity("Root", "Root", EntityType::Person, None)
+            .upsert_entity("Root", "Root", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
@@ -1065,12 +1075,21 @@ mod tests {
                     &format!("Node{i}"),
                     EntityType::Concept,
                     None,
+                    None,
                 )
                 .await
                 .unwrap()
                 .0;
             store
-                .insert_edge(root, leaf, "has", &format!("Root has Node{i}"), 0.9, None)
+                .insert_edge(
+                    root,
+                    leaf,
+                    "has",
+                    &format!("Root has Node{i}"),
+                    0.9,
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -1097,24 +1116,24 @@ mod tests {
     async fn spread_temporal_decay_recency_effect() {
         let store = setup_store().await;
         let src = store
-            .upsert_entity("Src", "Src", EntityType::Person, None)
+            .upsert_entity("Src", "Src", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let recent = store
-            .upsert_entity("Recent", "Recent", EntityType::Tool, None)
+            .upsert_entity("Recent", "Recent", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         let old = store
-            .upsert_entity("Old", "Old", EntityType::Tool, None)
+            .upsert_entity("Old", "Old", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
 
         // Insert recent edge (default valid_from = now)
         store
-            .insert_edge(src, recent, "uses", "Src uses Recent", 1.0, None)
+            .insert_edge(src, recent, "uses", "Src uses Recent", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1159,24 +1178,24 @@ mod tests {
     async fn spread_edge_type_filter_excludes_other_types() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("A", "A", EntityType::Person, None)
+            .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b_semantic = store
-            .upsert_entity("BSemantic", "BSemantic", EntityType::Tool, None)
+            .upsert_entity("BSemantic", "BSemantic", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         let c_causal = store
-            .upsert_entity("CCausal", "CCausal", EntityType::Concept, None)
+            .upsert_entity("CCausal", "CCausal", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
 
         // Semantic edge from A
         store
-            .insert_edge(a, b_semantic, "uses", "A uses BSemantic", 1.0, None)
+            .insert_edge(a, b_semantic, "uses", "A uses BSemantic", 1.0, None, None)
             .await
             .unwrap();
 
@@ -1225,6 +1244,7 @@ mod tests {
                     &format!("Entity{i}"),
                     &format!("entity{i}"),
                     EntityType::Concept,
+                    None,
                     None,
                 )
                 .await
@@ -1472,12 +1492,12 @@ mod tests {
         };
 
         let src = gs
-            .upsert_entity("Blend_src", "Blend_src", EntityType::Person, None)
+            .upsert_entity("Blend_src", "Blend_src", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let tgt = gs
-            .upsert_entity("Blend_tgt", "Blend_tgt", EntityType::Concept, None)
+            .upsert_entity("Blend_tgt", "Blend_tgt", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
@@ -1491,6 +1511,7 @@ mod tests {
             0.5,
             None,
             crate::graph::types::EdgeType::Semantic,
+            None,
         )
         .await
         .unwrap();
@@ -1503,6 +1524,7 @@ mod tests {
             0.9,
             None,
             crate::graph::types::EdgeType::Semantic,
+            None,
         )
         .await
         .unwrap();

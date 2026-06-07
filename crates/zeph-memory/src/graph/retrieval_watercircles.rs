@@ -256,7 +256,7 @@ mod tests {
     async fn watercircles_ring_limit_auto_respects_limit() {
         let store = setup_store().await;
         let root = store
-            .upsert_entity("Root", "root", EntityType::Concept, None)
+            .upsert_entity("Root", "root", EntityType::Concept, None, None)
             .await
             .unwrap()
             .0;
@@ -267,12 +267,21 @@ mod tests {
                     &format!("t{i}"),
                     EntityType::Concept,
                     None,
+                    None,
                 )
                 .await
                 .unwrap()
                 .0;
             store
-                .insert_edge(root, target, "has", &format!("Root has T{i}"), 0.8, None)
+                .insert_edge(
+                    root,
+                    target,
+                    "has",
+                    &format!("Root has T{i}"),
+                    0.8,
+                    None,
+                    None,
+                )
                 .await
                 .unwrap();
         }

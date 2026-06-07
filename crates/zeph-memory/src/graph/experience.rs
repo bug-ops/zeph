@@ -235,11 +235,11 @@ mod tests {
             .await
             .unwrap();
         let e1 = gs
-            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
             .unwrap();
         let e2 = gs
-            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
             .unwrap();
 
@@ -298,11 +298,11 @@ mod tests {
         let (exp, gs, pool) = setup().await;
 
         let e1 = gs
-            .upsert_entity("Alice", "alice", EntityType::Person, Some("person"))
+            .upsert_entity("Alice", "alice", EntityType::Person, Some("person"), None)
             .await
             .unwrap();
         let e2 = gs
-            .upsert_entity("Bob", "bob", EntityType::Person, Some("person"))
+            .upsert_entity("Bob", "bob", EntityType::Person, Some("person"), None)
             .await
             .unwrap();
 
@@ -336,7 +336,7 @@ mod tests {
         .unwrap();
 
         // Insert a normal edge that must survive the sweep.
-        gs.insert_edge(e1.0, e2.0, "knows", "Alice knows Bob", 0.9, None)
+        gs.insert_edge(e1.0, e2.0, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 

@@ -464,17 +464,17 @@ mod tests {
     async fn astar_finds_direct_edge() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None)
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 
@@ -505,17 +505,17 @@ mod tests {
     async fn astar_query_sensitive_cost_without_embeddings_falls_back() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None)
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 
@@ -555,17 +555,17 @@ mod tests {
 
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alice", "alice", EntityType::Person, None)
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Bob", "bob", EntityType::Person, None)
+            .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "knows", "Alice knows Bob", 0.8, None)
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.8, None, None)
             .await
             .unwrap();
 

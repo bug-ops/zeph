@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
-use crate::graph::types::EdgeType;
+use crate::graph::types::{EdgeType, GraphOrigin, GraphProvenance};
 use crate::store::SqliteStore;
 #[allow(unused_imports)]
 use zeph_db::sql;
@@ -16,7 +16,7 @@ async fn setup() -> GraphStore {
 async fn upsert_entity_insert_new() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("Alice", "Alice", EntityType::Person, Some("a person"))
+        .upsert_entity("Alice", "Alice", EntityType::Person, Some("a person"), None)
         .await
         .unwrap()
         .0;
@@ -27,14 +27,14 @@ async fn upsert_entity_insert_new() {
 async fn upsert_entity_update_existing() {
     let gs = setup().await;
     let id1 = gs
-        .upsert_entity("Alice", "Alice", EntityType::Person, None)
+        .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     // Sleep 1ms to ensure datetime changes; SQLite datetime granularity is 1s,
     // so we verify idempotency instead of timestamp ordering.
     let id2 = gs
-        .upsert_entity("Alice", "Alice", EntityType::Person, Some("updated"))
+        .upsert_entity("Alice", "Alice", EntityType::Person, Some("updated"), None)
         .await
         .unwrap()
         .0;
@@ -50,7 +50,7 @@ async fn upsert_entity_update_existing() {
 #[tokio::test]
 async fn find_entity_found() {
     let gs = setup().await;
-    gs.upsert_entity("Bob", "Bob", EntityType::Tool, Some("a tool"))
+    gs.upsert_entity("Bob", "Bob", EntityType::Tool, Some("a tool"), None)
         .await
         .unwrap();
     let entity = gs
@@ -72,13 +72,13 @@ async fn find_entity_not_found() {
 #[tokio::test]
 async fn find_entities_fuzzy_partial_match() {
     let gs = setup().await;
-    gs.upsert_entity("GraphQL", "GraphQL", EntityType::Concept, None)
+    gs.upsert_entity("GraphQL", "GraphQL", EntityType::Concept, None, None)
         .await
         .unwrap();
-    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
+    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None, None)
         .await
         .unwrap();
-    gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None)
+    gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None, None)
         .await
         .unwrap();
 
@@ -97,10 +97,10 @@ async fn entity_count_empty() {
 #[tokio::test]
 async fn entity_count_non_empty() {
     let gs = setup().await;
-    gs.upsert_entity("A", "A", EntityType::Concept, None)
+    gs.upsert_entity("A", "A", EntityType::Concept, None, None)
         .await
         .unwrap();
-    gs.upsert_entity("B", "B", EntityType::Concept, None)
+    gs.upsert_entity("B", "B", EntityType::Concept, None, None)
         .await
         .unwrap();
     assert_eq!(gs.entity_count().await.unwrap(), 2);
@@ -111,10 +111,10 @@ async fn all_entities_and_stream() {
     use futures::StreamExt as _;
 
     let gs = setup().await;
-    gs.upsert_entity("X", "X", EntityType::Project, None)
+    gs.upsert_entity("X", "X", EntityType::Project, None, None)
         .await
         .unwrap();
-    gs.upsert_entity("Y", "Y", EntityType::Language, None)
+    gs.upsert_entity("Y", "Y", EntityType::Language, None, None)
         .await
         .unwrap();
 
@@ -129,17 +129,25 @@ async fn all_entities_and_stream() {
 async fn insert_edge_without_episode() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Src", "Src", EntityType::Concept, None)
+        .upsert_entity("Src", "Src", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("Tgt", "Tgt", EntityType::Concept, None)
+        .upsert_entity("Tgt", "Tgt", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "relates_to", "Src relates to Tgt", 0.9, None)
+        .insert_edge(
+            src,
+            tgt,
+            "relates_to",
+            "Src relates to Tgt",
+            0.9,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(eid > 0);
@@ -149,24 +157,40 @@ async fn insert_edge_without_episode() {
 async fn insert_edge_deduplicates_active_edge() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Alice", "Alice", EntityType::Person, None)
+        .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("Google", "Google", EntityType::Organization, None)
+        .upsert_entity("Google", "Google", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
 
     let id1 = gs
-        .insert_edge(src, tgt, "works_at", "Alice works at Google", 0.7, None)
+        .insert_edge(
+            src,
+            tgt,
+            "works_at",
+            "Alice works at Google",
+            0.7,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // Re-inserting the same (source, target, relation) must return the same id.
     let id2 = gs
-        .insert_edge(src, tgt, "works_at", "Alice works at Google", 0.9, None)
+        .insert_edge(
+            src,
+            tgt,
+            "works_at",
+            "Alice works at Google",
+            0.9,
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(id1, id2, "duplicate active edge must not be created");
@@ -196,22 +220,22 @@ async fn insert_edge_deduplicates_active_edge() {
 async fn insert_edge_different_relations_are_distinct() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Bob", "Bob", EntityType::Person, None)
+        .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("Acme", "Acme", EntityType::Organization, None)
+        .upsert_entity("Acme", "Acme", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
 
     let id1 = gs
-        .insert_edge(src, tgt, "founded", "Bob founded Acme", 0.8, None)
+        .insert_edge(src, tgt, "founded", "Bob founded Acme", 0.8, None, None)
         .await
         .unwrap();
     let id2 = gs
-        .insert_edge(src, tgt, "chairs", "Bob chairs Acme", 0.8, None)
+        .insert_edge(src, tgt, "chairs", "Bob chairs Acme", 0.8, None, None)
         .await
         .unwrap();
     assert_ne!(id1, id2, "different relations must produce distinct edges");
@@ -229,12 +253,12 @@ async fn insert_edge_different_relations_are_distinct() {
 async fn insert_edge_with_episode() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Src2", "Src2", EntityType::Concept, None)
+        .upsert_entity("Src2", "Src2", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("Tgt2", "Tgt2", EntityType::Concept, None)
+        .upsert_entity("Tgt2", "Tgt2", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -245,7 +269,7 @@ async fn insert_edge_with_episode() {
     // that insert_edge does not panic or return an unexpected error type.
     let episode = MessageId(999);
     let result = gs
-        .insert_edge(src, tgt, "uses", "Src2 uses Tgt2", 1.0, Some(episode))
+        .insert_edge(src, tgt, "uses", "Src2 uses Tgt2", 1.0, Some(episode), None)
         .await;
     match &result {
         Ok(eid) => assert!(*eid > 0, "inserted edge should have positive id"),
@@ -258,17 +282,17 @@ async fn insert_edge_with_episode() {
 async fn invalidate_edge_sets_timestamps() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("E1", "E1", EntityType::Concept, None)
+        .upsert_entity("E1", "E1", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("E2", "E2", EntityType::Concept, None)
+        .upsert_entity("E2", "E2", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "r", "fact", 1.0, None)
+        .insert_edge(src, tgt, "r", "fact", 1.0, None, None)
         .await
         .unwrap();
     gs.invalidate_edge(eid).await.unwrap();
@@ -288,22 +312,26 @@ async fn invalidate_edge_sets_timestamps() {
 async fn edges_for_entity_both_directions() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("A", "A", EntityType::Concept, None)
+        .upsert_entity("A", "A", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("B", "B", EntityType::Concept, None)
+        .upsert_entity("B", "B", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("C", "C", EntityType::Concept, None)
+        .upsert_entity("C", "C", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(c, a, "r", "f2", 1.0, None).await.unwrap();
+    gs.insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(c, a, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
 
     let edges = gs.edges_for_entity(a).await.unwrap();
     assert_eq!(edges.len(), 2);
@@ -313,16 +341,16 @@ async fn edges_for_entity_both_directions() {
 async fn edges_between_both_directions() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("PA", "PA", EntityType::Person, None)
+        .upsert_entity("PA", "PA", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("PB", "PB", EntityType::Person, None)
+        .upsert_entity("PB", "PB", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(a, b, "knows", "PA knows PB", 1.0, None)
+    gs.insert_edge(a, b, "knows", "PA knows PB", 1.0, None, None)
         .await
         .unwrap();
 
@@ -336,17 +364,22 @@ async fn edges_between_both_directions() {
 async fn active_edge_count_excludes_invalidated() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("N1", "N1", EntityType::Concept, None)
+        .upsert_entity("N1", "N1", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("N2", "N2", EntityType::Concept, None)
+        .upsert_entity("N2", "N2", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    let e1 = gs.insert_edge(a, b, "r1", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(a, b, "r2", "f2", 1.0, None).await.unwrap();
+    let e1 = gs
+        .insert_edge(a, b, "r1", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(a, b, "r2", "f2", 1.0, None, None)
+        .await
+        .unwrap();
     gs.invalidate_edge(e1).await.unwrap();
 
     assert_eq!(gs.active_edge_count().await.unwrap(), 1);
@@ -382,12 +415,12 @@ async fn upsert_community_insert_and_update() {
 async fn community_for_entity_found() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("CA", "CA", EntityType::Concept, None)
+        .upsert_entity("CA", "CA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("CB", "CB", EntityType::Concept, None)
+        .upsert_entity("CB", "CB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -429,16 +462,18 @@ async fn metadata_get_set_round_trip() {
 async fn bfs_max_hops_0_returns_only_start() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("BfsA", "BfsA", EntityType::Concept, None)
+        .upsert_entity("BfsA", "BfsA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("BfsB", "BfsB", EntityType::Concept, None)
+        .upsert_entity("BfsB", "BfsB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(a, b, "r", "f", 1.0, None).await.unwrap();
+    gs.insert_edge(a, b, "r", "f", 1.0, None, None)
+        .await
+        .unwrap();
 
     let (entities, edges) = gs.bfs(a, 0).await.unwrap();
     assert_eq!(entities.len(), 1);
@@ -450,22 +485,26 @@ async fn bfs_max_hops_0_returns_only_start() {
 async fn bfs_max_hops_2_chain() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("ChainA", "ChainA", EntityType::Concept, None)
+        .upsert_entity("ChainA", "ChainA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("ChainB", "ChainB", EntityType::Concept, None)
+        .upsert_entity("ChainB", "ChainB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("ChainC", "ChainC", EntityType::Concept, None)
+        .upsert_entity("ChainC", "ChainC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
+    gs.insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(b, c, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
 
     let (entities, edges) = gs.bfs(a, 2).await.unwrap();
     let ids: Vec<i64> = entities.iter().map(|e| e.id.0).collect();
@@ -479,17 +518,21 @@ async fn bfs_max_hops_2_chain() {
 async fn bfs_cycle_no_infinite_loop() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("CycA", "CycA", EntityType::Concept, None)
+        .upsert_entity("CycA", "CycA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("CycB", "CycB", EntityType::Concept, None)
+        .upsert_entity("CycB", "CycB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(b, a, "r", "f2", 1.0, None).await.unwrap();
+    gs.insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(b, a, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
 
     let (entities, _edges) = gs.bfs(a, 3).await.unwrap();
     let ids: Vec<i64> = entities.iter().map(|e| e.id.0).collect();
@@ -503,22 +546,27 @@ async fn bfs_cycle_no_infinite_loop() {
 async fn test_invalidated_edges_excluded_from_bfs() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("InvA", "InvA", EntityType::Concept, None)
+        .upsert_entity("InvA", "InvA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("InvB", "InvB", EntityType::Concept, None)
+        .upsert_entity("InvB", "InvB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("InvC", "InvC", EntityType::Concept, None)
+        .upsert_entity("InvC", "InvC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    let ab = gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
+    let ab = gs
+        .insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(b, c, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
     // Invalidate A->B: BFS from A should not reach B or C.
     gs.invalidate_edge(ab).await.unwrap();
 
@@ -532,7 +580,7 @@ async fn test_invalidated_edges_excluded_from_bfs() {
 async fn test_bfs_empty_graph() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("IsoA", "IsoA", EntityType::Concept, None)
+        .upsert_entity("IsoA", "IsoA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -547,29 +595,37 @@ async fn test_bfs_empty_graph() {
 async fn test_bfs_diamond() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("DiamA", "DiamA", EntityType::Concept, None)
+        .upsert_entity("DiamA", "DiamA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("DiamB", "DiamB", EntityType::Concept, None)
+        .upsert_entity("DiamB", "DiamB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("DiamC", "DiamC", EntityType::Concept, None)
+        .upsert_entity("DiamC", "DiamC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let d = gs
-        .upsert_entity("DiamD", "DiamD", EntityType::Concept, None)
+        .upsert_entity("DiamD", "DiamD", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(a, c, "r", "f2", 1.0, None).await.unwrap();
-    gs.insert_edge(b, d, "r", "f3", 1.0, None).await.unwrap();
-    gs.insert_edge(c, d, "r", "f4", 1.0, None).await.unwrap();
+    gs.insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(a, c, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(b, d, "r", "f3", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(c, d, "r", "f4", 1.0, None, None)
+        .await
+        .unwrap();
 
     let (entities, edges) = gs.bfs(a, 2).await.unwrap();
     let mut ids: Vec<i64> = entities.iter().map(|e| e.id.0).collect();
@@ -598,22 +654,27 @@ async fn all_active_edges_stream_excludes_invalidated() {
     use futures::TryStreamExt as _;
     let gs = setup().await;
     let a = gs
-        .upsert_entity("SA", "SA", EntityType::Concept, None)
+        .upsert_entity("SA", "SA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("SB", "SB", EntityType::Concept, None)
+        .upsert_entity("SB", "SB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("SC", "SC", EntityType::Concept, None)
+        .upsert_entity("SC", "SC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    let e1 = gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
+    let e1 = gs
+        .insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(b, c, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
     gs.invalidate_edge(e1).await.unwrap();
 
     let edges: Vec<_> = gs.all_active_edges_stream().try_collect().await.unwrap();
@@ -650,7 +711,7 @@ async fn delete_all_communities_clears_table() {
 #[tokio::test]
 async fn test_find_entities_fuzzy_no_results() {
     let gs = setup().await;
-    gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
+    gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None, None)
         .await
         .unwrap();
     let results = gs.find_entities_fuzzy("zzzznonexistent", 10).await.unwrap();
@@ -665,7 +726,7 @@ async fn test_find_entities_fuzzy_no_results() {
 #[tokio::test]
 async fn upsert_entity_stores_canonical_name() {
     let gs = setup().await;
-    gs.upsert_entity("rust", "rust", EntityType::Language, None)
+    gs.upsert_entity("rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap();
     let entity = gs
@@ -681,7 +742,7 @@ async fn upsert_entity_stores_canonical_name() {
 async fn add_alias_idempotent() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("rust", "rust", EntityType::Language, None)
+        .upsert_entity("rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -704,7 +765,13 @@ async fn add_alias_idempotent() {
 async fn find_entity_by_id_found() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("FindById", "finbyid", EntityType::Concept, Some("summary"))
+        .upsert_entity(
+            "FindById",
+            "finbyid",
+            EntityType::Concept,
+            Some("summary"),
+            None,
+        )
         .await
         .unwrap()
         .0;
@@ -726,7 +793,13 @@ async fn find_entity_by_id_not_found() {
 async fn set_entity_qdrant_point_id_updates() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("QdrantPoint", "qdrantpoint", EntityType::Concept, None)
+        .upsert_entity(
+            "QdrantPoint",
+            "qdrantpoint",
+            EntityType::Concept,
+            None,
+            None,
+        )
         .await
         .unwrap()
         .0;
@@ -745,6 +818,7 @@ async fn find_entities_fuzzy_matches_summary() {
         "Rust",
         EntityType::Language,
         Some("a systems programming language"),
+        None,
     )
     .await
     .unwrap();
@@ -753,6 +827,7 @@ async fn find_entities_fuzzy_matches_summary() {
         "Go",
         EntityType::Language,
         Some("a compiled language by Google"),
+        None,
     )
     .await
     .unwrap();
@@ -765,7 +840,7 @@ async fn find_entities_fuzzy_matches_summary() {
 #[tokio::test]
 async fn find_entities_fuzzy_empty_query() {
     let gs = setup().await;
-    gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
+    gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None, None)
         .await
         .unwrap();
     // Empty query returns empty vec without hitting the database.
@@ -783,7 +858,7 @@ async fn find_entities_fuzzy_empty_query() {
 async fn find_entity_by_alias_case_insensitive() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("rust", "rust", EntityType::Language, None)
+        .upsert_entity("rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -802,7 +877,7 @@ async fn find_entity_by_alias_case_insensitive() {
 async fn find_entity_by_alias_returns_none_for_unknown() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("rust", "rust", EntityType::Language, None)
+        .upsert_entity("rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -820,7 +895,7 @@ async fn find_entity_by_alias_filters_by_entity_type() {
     // "python" alias for Language should NOT match when looking for Tool type
     let gs = setup().await;
     let lang_id = gs
-        .upsert_entity("python", "python", EntityType::Language, None)
+        .upsert_entity("python", "python", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -847,7 +922,7 @@ async fn find_entity_by_alias_filters_by_entity_type() {
 async fn aliases_for_entity_returns_all() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("rust", "rust", EntityType::Language, None)
+        .upsert_entity("rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -867,12 +942,12 @@ async fn aliases_for_entity_returns_all() {
 async fn find_entities_fuzzy_includes_aliases() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("rust", "rust", EntityType::Language, None)
+        .upsert_entity("rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
     gs.add_alias(id, "rust-lang").await.unwrap();
-    gs.upsert_entity("python", "python", EntityType::Language, None)
+    gs.upsert_entity("python", "python", EntityType::Language, None, None)
         .await
         .unwrap();
 
@@ -886,7 +961,7 @@ async fn find_entities_fuzzy_includes_aliases() {
 async fn orphan_alias_cleanup_on_entity_delete() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("rust", "rust", EntityType::Language, None)
+        .upsert_entity("rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -1217,12 +1292,12 @@ async fn find_entity_by_alias_same_alias_two_entities_deterministic() {
     // Two same-type entities share an alias — ORDER BY id ASC ensures first-registered wins.
     let gs = setup().await;
     let id1 = gs
-        .upsert_entity("python-v2", "python-v2", EntityType::Language, None)
+        .upsert_entity("python-v2", "python-v2", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
     let id2 = gs
-        .upsert_entity("python-v3", "python-v3", EntityType::Language, None)
+        .upsert_entity("python-v3", "python-v3", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -1248,7 +1323,7 @@ async fn find_entity_by_alias_same_alias_two_entities_deterministic() {
 #[tokio::test]
 async fn find_entities_fuzzy_special_chars() {
     let gs = setup().await;
-    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
+    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None, None)
         .await
         .unwrap();
     // FTS5 special characters in query must not cause an error.
@@ -1260,13 +1335,13 @@ async fn find_entities_fuzzy_special_chars() {
 #[tokio::test]
 async fn find_entities_fuzzy_prefix_match() {
     let gs = setup().await;
-    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
+    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None, None)
         .await
         .unwrap();
-    gs.upsert_entity("GraphQL", "GraphQL", EntityType::Concept, None)
+    gs.upsert_entity("GraphQL", "GraphQL", EntityType::Concept, None, None)
         .await
         .unwrap();
-    gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None)
+    gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None, None)
         .await
         .unwrap();
     // "Gra" prefix should match both "Graph" and "GraphQL" via FTS5 "gra*".
@@ -1279,10 +1354,10 @@ async fn find_entities_fuzzy_prefix_match() {
 #[tokio::test]
 async fn find_entities_fuzzy_fts5_operator_injection() {
     let gs = setup().await;
-    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None)
+    gs.upsert_entity("Graph", "Graph", EntityType::Concept, None, None)
         .await
         .unwrap();
-    gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None)
+    gs.upsert_entity("Unrelated", "Unrelated", EntityType::Concept, None, None)
         .await
         .unwrap();
     // "graph OR unrelated" — sanitizer splits on non-alphanumeric chars,
@@ -1308,6 +1383,7 @@ async fn find_entities_fuzzy_after_entity_update() {
         "Foo",
         EntityType::Concept,
         Some("initial summary bar"),
+        None,
     )
     .await
     .unwrap();
@@ -1317,6 +1393,7 @@ async fn find_entities_fuzzy_after_entity_update() {
         "Foo",
         EntityType::Concept,
         Some("updated summary baz"),
+        None,
     )
     .await
     .unwrap();
@@ -1335,7 +1412,7 @@ async fn find_entities_fuzzy_after_entity_update() {
 #[tokio::test]
 async fn find_entities_fuzzy_only_special_chars() {
     let gs = setup().await;
-    gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None)
+    gs.upsert_entity("Alpha", "Alpha", EntityType::Concept, None, None)
         .await
         .unwrap();
     // Queries consisting solely of FTS5 special characters produce no alphanumeric
@@ -1364,6 +1441,7 @@ async fn find_entity_by_name_exact_wins_over_summary_mention() {
         "Alice",
         EntityType::Person,
         Some("A person named Alice"),
+        None,
     )
     .await
     .unwrap();
@@ -1373,6 +1451,7 @@ async fn find_entity_by_name_exact_wins_over_summary_mention() {
         "Google",
         EntityType::Organization,
         Some("Company where Charlie, Alice, and Bob have worked"),
+        None,
     )
     .await
     .unwrap();
@@ -1388,7 +1467,7 @@ async fn find_entity_by_name_exact_wins_over_summary_mention() {
 #[tokio::test]
 async fn find_entity_by_name_case_insensitive_exact() {
     let gs = setup().await;
-    gs.upsert_entity("Bob", "Bob", EntityType::Person, None)
+    gs.upsert_entity("Bob", "Bob", EntityType::Person, None, None)
         .await
         .unwrap();
 
@@ -1400,7 +1479,7 @@ async fn find_entity_by_name_case_insensitive_exact() {
 #[tokio::test]
 async fn find_entity_by_name_falls_back_to_fuzzy_when_no_exact_match() {
     let gs = setup().await;
-    gs.upsert_entity("Charlie", "Charlie", EntityType::Person, None)
+    gs.upsert_entity("Charlie", "Charlie", EntityType::Person, None, None)
         .await
         .unwrap();
 
@@ -1421,7 +1500,7 @@ async fn find_entity_by_name_matches_canonical_name() {
     // Verify the exact-match phase checks canonical_name, not only name.
     let gs = setup().await;
     // upsert_entity sets canonical_name = second arg
-    gs.upsert_entity("Dave (Engineer)", "Dave", EntityType::Person, None)
+    gs.upsert_entity("Dave (Engineer)", "Dave", EntityType::Person, None, None)
         .await
         .unwrap();
 
@@ -1512,23 +1591,32 @@ async fn mark_messages_graph_processed_empty_ids_is_noop() {
 async fn edges_after_id_first_page_returns_all_within_limit() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("PA", "PA", EntityType::Concept, None)
+        .upsert_entity("PA", "PA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("PB", "PB", EntityType::Concept, None)
+        .upsert_entity("PB", "PB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("PC", "PC", EntityType::Concept, None)
+        .upsert_entity("PC", "PC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    let e1 = gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    let e2 = gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
-    let e3 = gs.insert_edge(a, c, "r", "f3", 1.0, None).await.unwrap();
+    let e1 = gs
+        .insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    let e2 = gs
+        .insert_edge(b, c, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
+    let e3 = gs
+        .insert_edge(a, c, "r", "f3", 1.0, None, None)
+        .await
+        .unwrap();
 
     // after_id=0 returns first page.
     let page1 = gs.edges_after_id(0, 2).await.unwrap();
@@ -1556,22 +1644,28 @@ async fn edges_after_id_first_page_returns_all_within_limit() {
 async fn edges_after_id_skips_invalidated_edges() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("IA", "IA", EntityType::Concept, None)
+        .upsert_entity("IA", "IA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("IB", "IB", EntityType::Concept, None)
+        .upsert_entity("IB", "IB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("IC", "IC", EntityType::Concept, None)
+        .upsert_entity("IC", "IC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
-    let e1 = gs.insert_edge(a, b, "r", "f1", 1.0, None).await.unwrap();
-    let e2 = gs.insert_edge(b, c, "r", "f2", 1.0, None).await.unwrap();
+    let e1 = gs
+        .insert_edge(a, b, "r", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    let e2 = gs
+        .insert_edge(b, c, "r", "f2", 1.0, None, None)
+        .await
+        .unwrap();
 
     // Invalidate e1 — it must not appear in edges_after_id results.
     gs.invalidate_edge(e1).await.unwrap();
@@ -1587,16 +1681,16 @@ async fn edges_after_id_skips_invalidated_edges() {
 async fn edges_at_timestamp_returns_active_edge() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("TA", "TA", EntityType::Person, None)
+        .upsert_entity("TA", "TA", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("TB", "TB", EntityType::Person, None)
+        .upsert_entity("TB", "TB", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(a, b, "knows", "TA knows TB", 1.0, None)
+    gs.insert_edge(a, b, "knows", "TA knows TB", 1.0, None, None)
         .await
         .unwrap();
 
@@ -1613,12 +1707,12 @@ async fn edges_at_timestamp_returns_active_edge() {
 async fn edges_at_timestamp_excludes_future_valid_from() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("FA", "FA", EntityType::Person, None)
+        .upsert_entity("FA", "FA", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("FB", "FB", EntityType::Person, None)
+        .upsert_entity("FB", "FB", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -1648,12 +1742,12 @@ async fn edges_at_timestamp_excludes_future_valid_from() {
 async fn edges_at_timestamp_historical_window_visible() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("HA", "HA", EntityType::Person, None)
+        .upsert_entity("HA", "HA", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("HB", "HB", EntityType::Person, None)
+        .upsert_entity("HB", "HB", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -1706,16 +1800,16 @@ async fn edges_at_timestamp_historical_window_visible() {
 async fn edges_at_timestamp_entity_as_target() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("SRC", "SRC", EntityType::Person, None)
+        .upsert_entity("SRC", "SRC", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("TGT", "TGT", EntityType::Person, None)
+        .upsert_entity("TGT", "TGT", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
-    gs.insert_edge(src, tgt, "links", "SRC links TGT", 0.9, None)
+    gs.insert_edge(src, tgt, "links", "SRC links TGT", 0.9, None, None)
         .await
         .unwrap();
 
@@ -1735,17 +1829,17 @@ async fn edges_at_timestamp_entity_as_target() {
 async fn bfs_at_timestamp_excludes_expired_edges() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("BA", "BA", EntityType::Person, None)
+        .upsert_entity("BA", "BA", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("BB", "BB", EntityType::Person, None)
+        .upsert_entity("BB", "BB", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("BC", "BC", EntityType::Concept, None)
+        .upsert_entity("BC", "BC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -1808,12 +1902,12 @@ async fn bfs_at_timestamp_excludes_expired_edges() {
 async fn edge_history_returns_all_versions_ordered() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("ESrc", "ESrc", EntityType::Person, None)
+        .upsert_entity("ESrc", "ESrc", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("ETgt", "ETgt", EntityType::Organization, None)
+        .upsert_entity("ETgt", "ETgt", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -1874,20 +1968,28 @@ async fn edge_history_returns_all_versions_ordered() {
 async fn edge_history_like_escaping() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("EscSrc", "EscSrc", EntityType::Person, None)
+        .upsert_entity("EscSrc", "EscSrc", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("EscTgt", "EscTgt", EntityType::Concept, None)
+        .upsert_entity("EscTgt", "EscTgt", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
 
     // Insert an edge with a fact that contains neither '%' nor '_'.
-    gs.insert_edge(src, tgt, "ref", "plain text fact no wildcards", 1.0, None)
-        .await
-        .unwrap();
+    gs.insert_edge(
+        src,
+        tgt,
+        "ref",
+        "plain text fact no wildcards",
+        1.0,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     // Searching with '%' as predicate must NOT match all edges (wildcard injection).
     // After LIKE escaping '%' becomes '\%', so only facts containing literal '%' match.
@@ -1910,17 +2012,17 @@ async fn edge_history_like_escaping() {
 async fn invalidate_edge_sets_valid_to_and_expired_at() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("InvA", "InvA", EntityType::Person, None)
+        .upsert_entity("InvA", "InvA", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("InvB", "InvB", EntityType::Person, None)
+        .upsert_entity("InvB", "InvB", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let edge_id = gs
-        .insert_edge(a, b, "rel", "InvA rel InvB", 1.0, None)
+        .insert_edge(a, b, "rel", "InvA rel InvB", 1.0, None, None)
         .await
         .unwrap();
 
@@ -1969,12 +2071,12 @@ async fn invalidate_edge_sets_valid_to_and_expired_at() {
 async fn edges_at_timestamp_valid_from_inclusive() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("VFI_A", "VFI_A", EntityType::Person, None)
+        .upsert_entity("VFI_A", "VFI_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("VFI_B", "VFI_B", EntityType::Person, None)
+        .upsert_entity("VFI_B", "VFI_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2005,12 +2107,12 @@ async fn edges_at_timestamp_valid_from_inclusive() {
 async fn edges_at_timestamp_valid_to_exclusive() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("VTO_A", "VTO_A", EntityType::Person, None)
+        .upsert_entity("VTO_A", "VTO_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("VTO_B", "VTO_B", EntityType::Person, None)
+        .upsert_entity("VTO_B", "VTO_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2053,22 +2155,22 @@ async fn edges_at_timestamp_valid_to_exclusive() {
 async fn edges_at_timestamp_multiple_edges_same_entity() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("ME_A", "ME_A", EntityType::Person, None)
+        .upsert_entity("ME_A", "ME_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("ME_B", "ME_B", EntityType::Person, None)
+        .upsert_entity("ME_B", "ME_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("ME_C", "ME_C", EntityType::Person, None)
+        .upsert_entity("ME_C", "ME_C", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let d = gs
-        .upsert_entity("ME_D", "ME_D", EntityType::Person, None)
+        .upsert_entity("ME_D", "ME_D", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2125,7 +2227,7 @@ async fn edges_at_timestamp_multiple_edges_same_entity() {
 async fn edges_at_timestamp_no_edges_returns_empty() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("NE_A", "NE_A", EntityType::Person, None)
+        .upsert_entity("NE_A", "NE_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2146,12 +2248,12 @@ async fn edges_at_timestamp_no_edges_returns_empty() {
 async fn edge_history_basic_history() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("EH_Src", "EH_Src", EntityType::Person, None)
+        .upsert_entity("EH_Src", "EH_Src", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("EH_Tgt", "EH_Tgt", EntityType::Organization, None)
+        .upsert_entity("EH_Tgt", "EH_Tgt", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -2191,24 +2293,24 @@ async fn edge_history_basic_history() {
 async fn edge_history_for_entity_includes_expired() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("HistA", "HistA", EntityType::Concept, None)
+        .upsert_entity("HistA", "HistA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("HistB", "HistB", EntityType::Concept, None)
+        .upsert_entity("HistB", "HistB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
 
     // Insert and immediately invalidate first edge
     let e1 = gs
-        .insert_edge(a, b, "uses", "old fact", 0.8, None)
+        .insert_edge(a, b, "uses", "old fact", 0.8, None, None)
         .await
         .unwrap();
     gs.invalidate_edge(e1).await.unwrap();
     // Insert new active edge
-    gs.insert_edge(a, b, "uses", "new fact", 0.9, None)
+    gs.insert_edge(a, b, "uses", "new fact", 0.9, None, None)
         .await
         .unwrap();
 
@@ -2230,23 +2332,27 @@ async fn edge_history_for_entity_includes_expired() {
 async fn edge_history_for_entity_both_directions() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("DirA", "DirA", EntityType::Concept, None)
+        .upsert_entity("DirA", "DirA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("DirB", "DirB", EntityType::Concept, None)
+        .upsert_entity("DirB", "DirB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("DirC", "DirC", EntityType::Concept, None)
+        .upsert_entity("DirC", "DirC", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
 
-    gs.insert_edge(a, b, "r1", "f1", 1.0, None).await.unwrap();
-    gs.insert_edge(c, a, "r2", "f2", 1.0, None).await.unwrap();
+    gs.insert_edge(a, b, "r1", "f1", 1.0, None, None)
+        .await
+        .unwrap();
+    gs.insert_edge(c, a, "r2", "f2", 1.0, None, None)
+        .await
+        .unwrap();
 
     let history = gs.edge_history_for_entity(a, 10).await.unwrap();
     assert_eq!(
@@ -2270,20 +2376,28 @@ async fn edge_history_for_entity_both_directions() {
 async fn edge_history_for_entity_respects_limit() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("LimA", "LimA", EntityType::Concept, None)
+        .upsert_entity("LimA", "LimA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("LimB", "LimB", EntityType::Concept, None)
+        .upsert_entity("LimB", "LimB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
 
     for i in 0..5u32 {
-        gs.insert_edge(a, b, &format!("r{i}"), &format!("fact {i}"), 1.0, None)
-            .await
-            .unwrap();
+        gs.insert_edge(
+            a,
+            b,
+            &format!("r{i}"),
+            &format!("fact {i}"),
+            1.0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     }
 
     let history = gs.edge_history_for_entity(a, 2).await.unwrap();
@@ -2294,12 +2408,12 @@ async fn edge_history_for_entity_respects_limit() {
 async fn edge_history_limit_parameter() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("EHL_Src", "EHL_Src", EntityType::Person, None)
+        .upsert_entity("EHL_Src", "EHL_Src", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("EHL_Tgt", "EHL_Tgt", EntityType::Organization, None)
+        .upsert_entity("EHL_Tgt", "EHL_Tgt", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -2346,12 +2460,12 @@ async fn edge_history_limit_parameter() {
 async fn edge_history_non_matching_relation_returns_empty() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("EHR_Src", "EHR_Src", EntityType::Person, None)
+        .upsert_entity("EHR_Src", "EHR_Src", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("EHR_Tgt", "EHR_Tgt", EntityType::Organization, None)
+        .upsert_entity("EHR_Tgt", "EHR_Tgt", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -2381,7 +2495,7 @@ async fn edge_history_non_matching_relation_returns_empty() {
 async fn edge_history_empty_entity() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("EHE_Src", "EHE_Src", EntityType::Person, None)
+        .upsert_entity("EHE_Src", "EHE_Src", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2397,12 +2511,12 @@ async fn edge_history_empty_entity() {
 async fn edge_history_fact_substring_filters_subset() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("EHP_Src", "EHP_Src", EntityType::Person, None)
+        .upsert_entity("EHP_Src", "EHP_Src", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("EHP_Tgt", "EHP_Tgt", EntityType::Concept, None)
+        .upsert_entity("EHP_Tgt", "EHP_Tgt", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -2451,12 +2565,12 @@ async fn edge_history_fact_substring_filters_subset() {
 async fn bfs_at_timestamp_zero_hops() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("ZH_A", "ZH_A", EntityType::Person, None)
+        .upsert_entity("ZH_A", "ZH_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("ZH_B", "ZH_B", EntityType::Person, None)
+        .upsert_entity("ZH_B", "ZH_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2488,17 +2602,17 @@ async fn bfs_at_timestamp_zero_hops() {
 async fn bfs_at_timestamp_expired_intermediate_blocks() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("EI_A", "EI_A", EntityType::Person, None)
+        .upsert_entity("EI_A", "EI_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("EI_B", "EI_B", EntityType::Person, None)
+        .upsert_entity("EI_B", "EI_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("EI_C", "EI_C", EntityType::Person, None)
+        .upsert_entity("EI_C", "EI_C", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2547,7 +2661,7 @@ async fn bfs_at_timestamp_expired_intermediate_blocks() {
 async fn bfs_at_timestamp_disconnected_entity() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("DC_A", "DC_A", EntityType::Person, None)
+        .upsert_entity("DC_A", "DC_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2565,12 +2679,12 @@ async fn bfs_at_timestamp_disconnected_entity() {
 async fn bfs_at_timestamp_reverse_direction() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("RD_A", "RD_A", EntityType::Person, None)
+        .upsert_entity("RD_A", "RD_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("RD_B", "RD_B", EntityType::Person, None)
+        .upsert_entity("RD_B", "RD_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2609,12 +2723,12 @@ async fn bfs_at_timestamp_reverse_direction() {
 async fn bfs_at_timestamp_valid_to_boundary() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("VTB_A", "VTB_A", EntityType::Person, None)
+        .upsert_entity("VTB_A", "VTB_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("VTB_B", "VTB_B", EntityType::Person, None)
+        .upsert_entity("VTB_B", "VTB_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2660,17 +2774,26 @@ async fn bfs_at_timestamp_valid_to_boundary() {
 async fn insert_edge_typed_stores_edge_type() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("A", "A", EntityType::Concept, None)
+        .upsert_entity("A", "A", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("B", "B", EntityType::Concept, None)
+        .upsert_entity("B", "B", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge_typed(a, b, "caused", "A caused B", 0.9, None, EdgeType::Causal)
+        .insert_edge_typed(
+            a,
+            b,
+            "caused",
+            "A caused B",
+            0.9,
+            None,
+            EdgeType::Causal,
+            None,
+        )
         .await
         .unwrap();
     assert!(eid > 0);
@@ -2688,17 +2811,17 @@ async fn insert_edge_typed_stores_edge_type() {
 async fn insert_edge_defaults_to_semantic() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("A2", "A2", EntityType::Concept, None)
+        .upsert_entity("A2", "A2", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("B2", "B2", EntityType::Concept, None)
+        .upsert_entity("B2", "B2", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(a, b, "uses", "A2 uses B2", 0.8, None)
+        .insert_edge(a, b, "uses", "A2 uses B2", 0.8, None, None)
         .await
         .unwrap();
 
@@ -2717,12 +2840,12 @@ async fn insert_edge_typed_dedup_key_includes_edge_type() {
     // distinct edges (critic mitigation: dedup key includes edge_type).
     let gs = setup().await;
     let a = gs
-        .upsert_entity("X", "X", EntityType::Concept, None)
+        .upsert_entity("X", "X", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("Y", "Y", EntityType::Concept, None)
+        .upsert_entity("Y", "Y", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -2736,6 +2859,7 @@ async fn insert_edge_typed_dedup_key_includes_edge_type() {
             0.8,
             None,
             EdgeType::Semantic,
+            None,
         )
         .await
         .unwrap();
@@ -2748,6 +2872,7 @@ async fn insert_edge_typed_dedup_key_includes_edge_type() {
             0.9,
             None,
             EdgeType::Causal,
+            None,
         )
         .await
         .unwrap();
@@ -2772,12 +2897,12 @@ async fn insert_edge_typed_deduplicates_same_type() {
     // Same (source, target, relation, edge_type) must return the same id on repeat call.
     let gs = setup().await;
     let a = gs
-        .upsert_entity("P", "P", EntityType::Concept, None)
+        .upsert_entity("P", "P", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("Q", "Q", EntityType::Concept, None)
+        .upsert_entity("Q", "Q", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -2791,6 +2916,7 @@ async fn insert_edge_typed_deduplicates_same_type() {
             0.7,
             None,
             EdgeType::Causal,
+            None,
         )
         .await
         .unwrap();
@@ -2803,6 +2929,7 @@ async fn insert_edge_typed_deduplicates_same_type() {
             0.95,
             None,
             EdgeType::Causal,
+            None,
         )
         .await
         .unwrap();
@@ -2817,12 +2944,12 @@ async fn insert_edge_typed_deduplicates_same_type() {
 async fn edges_for_entity_includes_edge_type() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("EA", "EA", EntityType::Concept, None)
+        .upsert_entity("EA", "EA", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("EB", "EB", EntityType::Concept, None)
+        .upsert_entity("EB", "EB", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -2834,6 +2961,7 @@ async fn edges_for_entity_includes_edge_type() {
         0.8,
         None,
         EdgeType::Temporal,
+        None,
     )
     .await
     .unwrap();
@@ -2847,12 +2975,12 @@ async fn edges_for_entity_includes_edge_type() {
 async fn bfs_typed_empty_types_behaves_like_bfs_with_depth() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("T_A", "T_A", EntityType::Person, None)
+        .upsert_entity("T_A", "T_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("T_B", "T_B", EntityType::Person, None)
+        .upsert_entity("T_B", "T_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -2864,6 +2992,7 @@ async fn bfs_typed_empty_types_behaves_like_bfs_with_depth() {
         0.9,
         None,
         EdgeType::Semantic,
+        None,
     )
     .await
     .unwrap();
@@ -2881,29 +3010,47 @@ async fn bfs_typed_empty_types_behaves_like_bfs_with_depth() {
 async fn bfs_typed_filters_by_edge_type() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("BT_A", "BT_A", EntityType::Person, None)
+        .upsert_entity("BT_A", "BT_A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("BT_B", "BT_B", EntityType::Person, None)
+        .upsert_entity("BT_B", "BT_B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let c = gs
-        .upsert_entity("BT_C", "BT_C", EntityType::Person, None)
+        .upsert_entity("BT_C", "BT_C", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
 
     // A->B: semantic edge
-    gs.insert_edge_typed(a, b, "knows", "A knows B", 0.9, None, EdgeType::Semantic)
-        .await
-        .unwrap();
+    gs.insert_edge_typed(
+        a,
+        b,
+        "knows",
+        "A knows B",
+        0.9,
+        None,
+        EdgeType::Semantic,
+        None,
+    )
+    .await
+    .unwrap();
     // A->C: causal edge
-    gs.insert_edge_typed(a, c, "caused", "A caused C", 0.9, None, EdgeType::Causal)
-        .await
-        .unwrap();
+    gs.insert_edge_typed(
+        a,
+        c,
+        "caused",
+        "A caused C",
+        0.9,
+        None,
+        EdgeType::Causal,
+        None,
+    )
+    .await
+    .unwrap();
 
     // BFS with only Semantic: C must not be reachable (only via causal)
     let (_, edges_semantic, depth_semantic) =
@@ -2941,19 +3088,28 @@ async fn bfs_typed_filters_by_edge_type() {
 async fn bfs_typed_entity_type_filter() {
     let gs = setup().await;
     let a = gs
-        .upsert_entity("E_A", "E_A", EntityType::Concept, None)
+        .upsert_entity("E_A", "E_A", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = gs
-        .upsert_entity("E_B", "E_B", EntityType::Concept, None)
+        .upsert_entity("E_B", "E_B", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
 
-    gs.insert_edge_typed(a, b, "is_a", "E_A is_a E_B", 1.0, None, EdgeType::Entity)
-        .await
-        .unwrap();
+    gs.insert_edge_typed(
+        a,
+        b,
+        "is_a",
+        "E_A is_a E_B",
+        1.0,
+        None,
+        EdgeType::Entity,
+        None,
+    )
+    .await
+    .unwrap();
 
     // BFS with Entity type filter should find B
     let (_, _, depth) = gs.bfs_typed(a, 1, &[EdgeType::Entity]).await.unwrap();
@@ -2985,7 +3141,7 @@ async fn fts5_cross_session_visibility_after_checkpoint() {
     {
         let store_a = SqliteStore::new(&path).await.unwrap();
         let gs_a = GraphStore::new(store_a.pool().clone());
-        gs_a.upsert_entity("Rust", "rust", EntityType::Concept, None)
+        gs_a.upsert_entity("Rust", "rust", EntityType::Concept, None, None)
             .await
             .unwrap();
         gs_a.checkpoint_wal().await.unwrap();
@@ -3007,12 +3163,12 @@ async fn fts5_cross_session_visibility_after_checkpoint() {
 async fn record_edge_retrieval_increments_count() {
     let store = setup().await;
     let a = store
-        .upsert_entity("A", "a", EntityType::Person, None)
+        .upsert_entity("A", "a", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = store
-        .upsert_entity("B", "b", EntityType::Person, None)
+        .upsert_entity("B", "b", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -3067,12 +3223,12 @@ async fn record_edge_retrieval_increments_count() {
 async fn record_edge_retrieval_sets_last_retrieved_at() {
     let store = setup().await;
     let a = store
-        .upsert_entity("A", "a", EntityType::Person, None)
+        .upsert_entity("A", "a", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = store
-        .upsert_entity("B", "b", EntityType::Person, None)
+        .upsert_entity("B", "b", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -3127,12 +3283,12 @@ async fn record_edge_retrieval_empty_ids_is_noop() {
 async fn decay_edge_retrieval_counts_reduces_count() {
     let store = setup().await;
     let a = store
-        .upsert_entity("A", "a", EntityType::Person, None)
+        .upsert_entity("A", "a", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = store
-        .upsert_entity("B", "b", EntityType::Person, None)
+        .upsert_entity("B", "b", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -3170,18 +3326,18 @@ async fn decay_edge_retrieval_counts_reduces_count() {
 async fn decay_edge_retrieval_counts_skips_zero_count_edges() {
     let store = setup().await;
     let a = store
-        .upsert_entity("A", "a", EntityType::Person, None)
+        .upsert_entity("A", "a", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = store
-        .upsert_entity("B", "b", EntityType::Person, None)
+        .upsert_entity("B", "b", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     // Edge with retrieval_count=0 (default) — must not be updated
     store
-        .insert_edge(a, b, "knows", "A knows B", 0.9, None)
+        .insert_edge(a, b, "knows", "A knows B", 0.9, None, None)
         .await
         .unwrap();
 
@@ -3193,12 +3349,12 @@ async fn decay_edge_retrieval_counts_skips_zero_count_edges() {
 async fn decay_edge_retrieval_counts_respects_interval() {
     let store = setup().await;
     let a = store
-        .upsert_entity("A", "a", EntityType::Person, None)
+        .upsert_entity("A", "a", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let b = store
-        .upsert_entity("B", "b", EntityType::Person, None)
+        .upsert_entity("B", "b", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
@@ -3231,18 +3387,18 @@ async fn decay_edge_retrieval_counts_respects_interval() {
 async fn entity_structural_scores_formula_hub_leaf() {
     let store = setup().await;
     let hub = store
-        .upsert_entity("Hub", "hub", EntityType::Concept, None)
+        .upsert_entity("Hub", "hub", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let leaf = store
-        .upsert_entity("Leaf", "leaf", EntityType::Concept, None)
+        .upsert_entity("Leaf", "leaf", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     // Hub has 1 edge; leaf has 1 edge (same edge, both as source/target)
     store
-        .insert_edge(hub, leaf, "has", "Hub has Leaf", 0.9, None)
+        .insert_edge(hub, leaf, "has", "Hub has Leaf", 0.9, None, None)
         .await
         .unwrap();
 
@@ -3266,7 +3422,7 @@ async fn entity_structural_scores_formula_hub_leaf() {
 async fn entity_structural_scores_isolated_entity_gets_zero() {
     let store = setup().await;
     let isolated = store
-        .upsert_entity("Isolated", "isolated", EntityType::Concept, None)
+        .upsert_entity("Isolated", "isolated", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -3284,7 +3440,7 @@ async fn entity_structural_scores_isolated_entity_gets_zero() {
 async fn entity_structural_scores_hub_higher_than_leaf() {
     let store = setup().await;
     let hub = store
-        .upsert_entity("Hub2", "hub2", EntityType::Concept, None)
+        .upsert_entity("Hub2", "hub2", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -3296,12 +3452,21 @@ async fn entity_structural_scores_hub_higher_than_leaf() {
                 &format!("smleaf{i}"),
                 EntityType::Concept,
                 None,
+                None,
             )
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(hub, leaf, "has", &format!("Hub2 has SmLeaf{i}"), 0.9, None)
+            .insert_edge(
+                hub,
+                leaf,
+                "has",
+                &format!("Hub2 has SmLeaf{i}"),
+                0.9,
+                None,
+                None,
+            )
             .await
             .unwrap();
         let leaf_scores = store.entity_structural_scores(&[leaf]).await.unwrap();
@@ -3330,11 +3495,11 @@ async fn entity_structural_scores_hub_higher_than_leaf() {
 async fn find_entities_ranked_returns_scores_in_0_1() {
     let store = setup().await;
     store
-        .upsert_entity("Rust", "rust", EntityType::Language, None)
+        .upsert_entity("Rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap();
     store
-        .upsert_entity("RustLang", "rustlang", EntityType::Language, None)
+        .upsert_entity("RustLang", "rustlang", EntityType::Language, None, None)
         .await
         .unwrap();
 
@@ -3357,7 +3522,7 @@ async fn find_entities_ranked_returns_scores_in_0_1() {
 async fn find_entities_ranked_empty_query_returns_empty() {
     let store = setup().await;
     store
-        .upsert_entity("Rust", "rust", EntityType::Language, None)
+        .upsert_entity("Rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap();
 
@@ -3369,11 +3534,11 @@ async fn find_entities_ranked_empty_query_returns_empty() {
 async fn find_entities_ranked_top_match_has_highest_score() {
     let store = setup().await;
     store
-        .upsert_entity("Rust", "rust", EntityType::Language, None)
+        .upsert_entity("Rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap();
     store
-        .upsert_entity("Python", "python", EntityType::Language, None)
+        .upsert_entity("Python", "python", EntityType::Language, None, None)
         .await
         .unwrap();
 
@@ -3400,17 +3565,17 @@ async fn find_entities_ranked_top_match_has_highest_score() {
 async fn entity_community_ids_returns_correct_mapping() {
     let store = setup().await;
     let a = store
-        .upsert_entity("A", "a", EntityType::Concept, None)
+        .upsert_entity("A", "a", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let b = store
-        .upsert_entity("B", "b", EntityType::Concept, None)
+        .upsert_entity("B", "b", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let c = store
-        .upsert_entity("C", "c", EntityType::Concept, None)
+        .upsert_entity("C", "c", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -3458,7 +3623,7 @@ async fn entity_community_ids_empty_input_returns_empty() {
 async fn insert_edge_typed_rejects_self_loop() {
     let gs = setup().await;
     let id = gs
-        .upsert_entity("Solo", "Solo", EntityType::Concept, None)
+        .upsert_entity("Solo", "Solo", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -3472,6 +3637,7 @@ async fn insert_edge_typed_rejects_self_loop() {
             0.9,
             None,
             EdgeType::Semantic,
+            None,
         )
         .await
         .unwrap_err();
@@ -3502,16 +3668,16 @@ async fn pool_isolation_independent_pools_do_not_starve() {
 
     // Write via pool A and checkpoint so pool B can see the data.
     let alice = gs_a
-        .upsert_entity("Alice", "alice", EntityType::Person, None)
+        .upsert_entity("Alice", "alice", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let bob = gs_a
-        .upsert_entity("Bob", "bob", EntityType::Person, None)
+        .upsert_entity("Bob", "bob", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
-    gs_a.insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None)
+    gs_a.insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None, None)
         .await
         .unwrap();
     gs_a.checkpoint_wal().await.unwrap();
@@ -3604,7 +3770,7 @@ async fn link_entity_to_episode_and_query() {
     let gs = setup().await;
     let conv_id = insert_conversation(&gs).await;
     let entity_id = gs
-        .upsert_entity("Rust", "rust", EntityType::Language, None)
+        .upsert_entity("Rust", "rust", EntityType::Language, None, None)
         .await
         .unwrap()
         .0;
@@ -3622,7 +3788,7 @@ async fn link_entity_to_episode_idempotent() {
     let gs = setup().await;
     let conv_id = insert_conversation(&gs).await;
     let entity_id = gs
-        .upsert_entity("Tokio", "tokio", EntityType::Tool, None)
+        .upsert_entity("Tokio", "tokio", EntityType::Tool, None, None)
         .await
         .unwrap()
         .0;
@@ -3645,7 +3811,7 @@ async fn entity_in_multiple_episodes() {
     let c1 = insert_conversation(&gs).await;
     let c2 = insert_conversation(&gs).await;
     let entity_id = gs
-        .upsert_entity("Cargo", "cargo", EntityType::Tool, None)
+        .upsert_entity("Cargo", "cargo", EntityType::Tool, None, None)
         .await
         .unwrap()
         .0;
@@ -3665,7 +3831,7 @@ async fn entity_in_multiple_episodes() {
 async fn episodes_for_entity_returns_empty_when_no_links() {
     let gs = setup().await;
     let entity_id = gs
-        .upsert_entity("Clippy", "clippy", EntityType::Tool, None)
+        .upsert_entity("Clippy", "clippy", EntityType::Tool, None, None)
         .await
         .unwrap()
         .0;
@@ -3740,17 +3906,17 @@ async fn ensure_episode_zero_conversation_id_is_rejected() {
 async fn insert_or_supersede_sets_supersedes_pointer_and_invalidates_prior() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Alice", "Alice", EntityType::Person, None)
+        .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt1 = gs
-        .upsert_entity("Acme", "Acme", EntityType::Organization, None)
+        .upsert_entity("Acme", "Acme", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
     let tgt2 = gs
-        .upsert_entity("Globex", "Globex", EntityType::Organization, None)
+        .upsert_entity("Globex", "Globex", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -3816,12 +3982,12 @@ async fn insert_or_supersede_sets_supersedes_pointer_and_invalidates_prior() {
 async fn insert_or_supersede_reassertion_goes_to_reassertions_table() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Bob", "Bob", EntityType::Person, None)
+        .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("TechCorp", "TechCorp", EntityType::Organization, None)
+        .upsert_entity("TechCorp", "TechCorp", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -3887,22 +4053,22 @@ async fn insert_or_supersede_reassertion_goes_to_reassertions_table() {
 async fn insert_or_supersede_only_one_active_head_after_supersession() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Carol", "Carol", EntityType::Person, None)
+        .upsert_entity("Carol", "Carol", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt_a = gs
-        .upsert_entity("OldCo", "OldCo", EntityType::Organization, None)
+        .upsert_entity("OldCo", "OldCo", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
     let tgt_b = gs
-        .upsert_entity("NewCo", "NewCo", EntityType::Organization, None)
+        .upsert_entity("NewCo", "NewCo", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
     let tgt_c = gs
-        .upsert_entity("FinalCo", "FinalCo", EntityType::Organization, None)
+        .upsert_entity("FinalCo", "FinalCo", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -3972,12 +4138,12 @@ async fn insert_or_supersede_only_one_active_head_after_supersession() {
 async fn check_supersede_depth_returns_zero_for_root_edge() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Dave", "Dave", EntityType::Person, None)
+        .upsert_entity("Dave", "Dave", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("Solo", "Solo", EntityType::Organization, None)
+        .upsert_entity("Solo", "Solo", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -4009,12 +4175,12 @@ async fn check_supersede_depth_returns_zero_for_root_edge() {
 async fn insert_or_supersede_same_tuple_no_unique_index_violation() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Eve", "Eve", EntityType::Person, None)
+        .upsert_entity("Eve", "Eve", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("SameCo", "SameCo", EntityType::Organization, None)
+        .upsert_entity("SameCo", "SameCo", EntityType::Organization, None, None)
         .await
         .unwrap()
         .0;
@@ -4104,17 +4270,17 @@ async fn insert_or_supersede_same_tuple_no_unique_index_violation() {
 async fn test_insert_edge_default_weight_is_one() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("A", "A", EntityType::Person, None)
+        .upsert_entity("A", "A", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("B", "B", EntityType::Person, None)
+        .upsert_entity("B", "B", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "knows", "A knows B", 0.9, None)
+        .insert_edge(src, tgt, "knows", "A knows B", 0.9, None, None)
         .await
         .unwrap();
 
@@ -4133,17 +4299,17 @@ async fn test_insert_edge_default_weight_is_one() {
 async fn test_edge_weight_persists_after_update() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("C", "C", EntityType::Person, None)
+        .upsert_entity("C", "C", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("D", "D", EntityType::Person, None)
+        .upsert_entity("D", "D", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "likes", "C likes D", 0.8, None)
+        .insert_edge(src, tgt, "likes", "C likes D", 0.8, None, None)
         .await
         .unwrap();
 
@@ -4174,17 +4340,17 @@ async fn test_apply_hebbian_increment_empty_ids_is_noop() {
 async fn test_apply_hebbian_increment_zero_delta_is_noop() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("E", "E", EntityType::Person, None)
+        .upsert_entity("E", "E", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("F", "F", EntityType::Person, None)
+        .upsert_entity("F", "F", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "rel", "fact", 0.5, None)
+        .insert_edge(src, tgt, "rel", "fact", 0.5, None, None)
         .await
         .unwrap();
 
@@ -4205,17 +4371,17 @@ async fn test_apply_hebbian_increment_zero_delta_is_noop() {
 async fn test_apply_hebbian_increment_updates_weight() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("G", "G", EntityType::Concept, None)
+        .upsert_entity("G", "G", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("H", "H", EntityType::Concept, None)
+        .upsert_entity("H", "H", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "rel", "fact", 0.7, None)
+        .insert_edge(src, tgt, "rel", "fact", 0.7, None, None)
         .await
         .unwrap();
 
@@ -4236,17 +4402,17 @@ async fn test_apply_hebbian_increment_updates_weight() {
 async fn test_apply_hebbian_increment_skips_invalidated_edges() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("I", "I", EntityType::Concept, None)
+        .upsert_entity("I", "I", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("J", "J", EntityType::Concept, None)
+        .upsert_entity("J", "J", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "rel", "fact", 0.6, None)
+        .insert_edge(src, tgt, "rel", "fact", 0.6, None, None)
         .await
         .unwrap();
 
@@ -4280,19 +4446,19 @@ async fn source_message_ids_for_edges_empty_input() {
 async fn source_message_ids_for_edges_returns_rows_with_episode_id() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("A", "A", EntityType::Concept, None)
+        .upsert_entity("A", "A", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("B", "B", EntityType::Concept, None)
+        .upsert_entity("B", "B", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     // Insert edge without episode_id, then backfill directly to avoid FK cascade through
     // conversations → messages tables in the in-memory test DB.
     let eid = gs
-        .insert_edge(src, tgt, "knows", "A knows B", 0.8, None)
+        .insert_edge(src, tgt, "knows", "A knows B", 0.8, None, None)
         .await
         .unwrap();
     let synthetic_msg_id: i64 = 42;
@@ -4322,18 +4488,18 @@ async fn source_message_ids_for_edges_returns_rows_with_episode_id() {
 async fn source_message_ids_for_edges_skips_null_episode_id() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("X", "X", EntityType::Concept, None)
+        .upsert_entity("X", "X", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("Y", "Y", EntityType::Concept, None)
+        .upsert_entity("Y", "Y", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     // Insert with no episode_id (None).
     let eid = gs
-        .insert_edge(src, tgt, "uses", "X uses Y", 0.7, None)
+        .insert_edge(src, tgt, "uses", "X uses Y", 0.7, None, None)
         .await
         .unwrap();
 
@@ -4348,17 +4514,17 @@ async fn source_message_ids_for_edges_skips_null_episode_id() {
 async fn source_entity_id_for_edge_returns_correct_id() {
     let gs = setup().await;
     let src = gs
-        .upsert_entity("Src", "Src", EntityType::Concept, None)
+        .upsert_entity("Src", "Src", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("Tgt", "Tgt", EntityType::Concept, None)
+        .upsert_entity("Tgt", "Tgt", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let eid = gs
-        .insert_edge(src, tgt, "rel", "Src rel Tgt", 0.9, None)
+        .insert_edge(src, tgt, "rel", "Src rel Tgt", 0.9, None, None)
         .await
         .unwrap();
 
@@ -4377,12 +4543,12 @@ async fn source_entity_id_for_edge_missing_returns_none() {
 async fn bfs_edges_at_depth_returns_neighbors() {
     let gs = setup().await;
     let center = gs
-        .upsert_entity("Center", "Center", EntityType::Concept, None)
+        .upsert_entity("Center", "Center", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
     let neighbor = gs
-        .upsert_entity("Neighbor", "Neighbor", EntityType::Concept, None)
+        .upsert_entity("Neighbor", "Neighbor", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -4392,6 +4558,7 @@ async fn bfs_edges_at_depth_returns_neighbors() {
         "links",
         "Center links Neighbor",
         0.85,
+        None,
         None,
     )
     .await
@@ -4415,7 +4582,7 @@ async fn bfs_edges_at_depth_returns_neighbors() {
 async fn bfs_edges_at_depth_empty_when_no_edges() {
     let gs = setup().await;
     let entity = gs
-        .upsert_entity("Isolated", "Isolated", EntityType::Concept, None)
+        .upsert_entity("Isolated", "Isolated", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -4439,12 +4606,12 @@ async fn benna_fusi_update_diverges_fast_and_slow() {
     let gs = GraphStore::new(store.pool().clone()).with_benna_rates(0.5, 0.05);
 
     let src = gs
-        .upsert_entity("BF_src", "BF_src", EntityType::Person, None)
+        .upsert_entity("BF_src", "BF_src", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("BF_tgt", "BF_tgt", EntityType::Concept, None)
+        .upsert_entity("BF_tgt", "BF_tgt", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -4458,6 +4625,7 @@ async fn benna_fusi_update_diverges_fast_and_slow() {
         0.5,
         None,
         EdgeType::Semantic,
+        None,
     )
     .await
     .unwrap();
@@ -4471,6 +4639,7 @@ async fn benna_fusi_update_diverges_fast_and_slow() {
         0.9,
         None,
         EdgeType::Semantic,
+        None,
     )
     .await
     .unwrap();
@@ -4502,12 +4671,12 @@ async fn benna_fusi_update_applied_on_apex_reassertion() {
     let gs = GraphStore::new(store.pool().clone()).with_benna_rates(0.5, 0.05);
 
     let src = gs
-        .upsert_entity("APX_src", "APX_src", EntityType::Person, None)
+        .upsert_entity("APX_src", "APX_src", EntityType::Person, None, None)
         .await
         .unwrap()
         .0;
     let tgt = gs
-        .upsert_entity("APX_tgt", "APX_tgt", EntityType::Concept, None)
+        .upsert_entity("APX_tgt", "APX_tgt", EntityType::Concept, None, None)
         .await
         .unwrap()
         .0;
@@ -4561,5 +4730,211 @@ async fn benna_fusi_update_applied_on_apex_reassertion() {
     assert!(
         (slow - 0.51_f64).abs() < 1e-4,
         "APEX reassertion must update slow ≈ 0.51, got {slow}"
+    );
+}
+
+#[tokio::test]
+async fn provenance_write_sets_origin_and_batch() {
+    let gs = setup().await;
+    let prov = GraphProvenance {
+        origin: GraphOrigin::Ingest,
+        import_batch_id: "batch-42".to_owned(),
+        source_uri: Some("https://example.com/doc".to_owned()),
+    };
+    let a = gs
+        .upsert_entity(
+            "DocEntity",
+            "docentity",
+            EntityType::Concept,
+            None,
+            Some(&prov),
+        )
+        .await
+        .unwrap()
+        .0;
+    let b = gs
+        .upsert_entity(
+            "DocTarget",
+            "doctarget",
+            EntityType::Concept,
+            None,
+            Some(&prov),
+        )
+        .await
+        .unwrap()
+        .0;
+    let eid = gs
+        .insert_edge(
+            a,
+            b,
+            "mentions",
+            "DocEntity mentions DocTarget",
+            0.9,
+            None,
+            Some(&prov),
+        )
+        .await
+        .unwrap();
+
+    let row: (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT origin, import_batch_id, source_uri FROM graph_edges WHERE id = ?1")
+            .bind(eid)
+            .fetch_one(&gs.pool)
+            .await
+            .unwrap();
+    assert_eq!(row.0, "ingest");
+    assert_eq!(row.1.as_deref(), Some("batch-42"));
+    assert_eq!(row.2.as_deref(), Some("https://example.com/doc"));
+}
+
+#[tokio::test]
+async fn provenance_none_defaults_to_conversation() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("ConvA", "conva", EntityType::Concept, None, None)
+        .await
+        .unwrap()
+        .0;
+    let b = gs
+        .upsert_entity("ConvB", "convb", EntityType::Concept, None, None)
+        .await
+        .unwrap()
+        .0;
+    let eid = gs
+        .insert_edge(a, b, "knows", "ConvA knows ConvB", 0.8, None, None)
+        .await
+        .unwrap();
+
+    let origin: (String,) = sqlx::query_as("SELECT origin FROM graph_edges WHERE id = ?1")
+        .bind(eid)
+        .fetch_one(&gs.pool)
+        .await
+        .unwrap();
+    assert_eq!(origin.0, "conversation");
+}
+
+#[tokio::test]
+async fn recall_include_imported_false_excludes_ingest_edges() {
+    let store_base = SqliteStore::new(":memory:").await.unwrap();
+    let gs = GraphStore::new(store_base.pool().clone()).with_recall_include_imported(false);
+
+    let prov = GraphProvenance {
+        origin: GraphOrigin::Ingest,
+        import_batch_id: "b1".to_owned(),
+        source_uri: None,
+    };
+    let a = gs
+        .upsert_entity("IngA", "inga", EntityType::Concept, None, Some(&prov))
+        .await
+        .unwrap()
+        .0;
+    let b = gs
+        .upsert_entity("IngB", "ingb", EntityType::Concept, None, Some(&prov))
+        .await
+        .unwrap()
+        .0;
+    gs.insert_edge(a, b, "linked", "IngA linked IngB", 0.9, None, Some(&prov))
+        .await
+        .unwrap();
+
+    let edges = gs.edges_for_entity(a).await.unwrap();
+    assert!(
+        edges.is_empty(),
+        "recall_include_imported=false must exclude ingest-origin edges, got {edges:?}"
+    );
+}
+
+#[tokio::test]
+async fn recall_include_imported_true_includes_ingest_edges() {
+    let store_base = SqliteStore::new(":memory:").await.unwrap();
+    let gs = GraphStore::new(store_base.pool().clone()).with_recall_include_imported(true);
+
+    let prov = GraphProvenance {
+        origin: GraphOrigin::Ingest,
+        import_batch_id: "b2".to_owned(),
+        source_uri: None,
+    };
+    let a = gs
+        .upsert_entity("IngX", "ingx", EntityType::Concept, None, Some(&prov))
+        .await
+        .unwrap()
+        .0;
+    let b = gs
+        .upsert_entity("IngY", "ingy", EntityType::Concept, None, Some(&prov))
+        .await
+        .unwrap()
+        .0;
+    gs.insert_edge(a, b, "linked", "IngX linked IngY", 0.9, None, Some(&prov))
+        .await
+        .unwrap();
+
+    let edges = gs.edges_for_entity(a).await.unwrap();
+    assert_eq!(
+        edges.len(),
+        1,
+        "recall_include_imported=true must include ingest-origin edges, got {edges:?}"
+    );
+}
+
+#[tokio::test]
+async fn entity_provenance_write_sets_origin_and_batch() {
+    let store_base = SqliteStore::new(":memory:").await.unwrap();
+    let gs = GraphStore::new(store_base.pool().clone());
+    let prov = GraphProvenance {
+        origin: GraphOrigin::Ingest,
+        import_batch_id: "batch-1".to_owned(),
+        source_uri: None,
+    };
+    let eid = gs
+        .upsert_entity(
+            "BatchEntity",
+            "batchentity",
+            EntityType::Concept,
+            None,
+            Some(&prov),
+        )
+        .await
+        .unwrap()
+        .0;
+
+    let row: (String, Option<String>) =
+        sqlx::query_as("SELECT origin, import_batch_id FROM graph_entities WHERE id = ?1")
+            .bind(eid)
+            .fetch_one(&gs.pool)
+            .await
+            .unwrap();
+    assert_eq!(row.0, "ingest");
+    assert_eq!(row.1.as_deref(), Some("batch-1"));
+}
+
+#[tokio::test]
+async fn query_batch_edges_excludes_ingest_when_flag_false() {
+    let store_base = SqliteStore::new(":memory:").await.unwrap();
+    let gs = GraphStore::new(store_base.pool().clone()).with_recall_include_imported(false);
+
+    let prov = GraphProvenance {
+        origin: GraphOrigin::Ingest,
+        import_batch_id: "batch-excl".to_owned(),
+        source_uri: None,
+    };
+    let a = gs
+        .upsert_entity("BatchA", "batcha", EntityType::Concept, None, Some(&prov))
+        .await
+        .unwrap()
+        .0;
+    let b = gs
+        .upsert_entity("BatchB", "batchb", EntityType::Concept, None, Some(&prov))
+        .await
+        .unwrap()
+        .0;
+    gs.insert_edge(a, b, "rel", "BatchA rel BatchB", 0.9, None, Some(&prov))
+        .await
+        .unwrap();
+
+    // edges_for_entities routes through query_batch_edges internally.
+    let edges = gs.edges_for_entities(&[a], &[]).await.unwrap();
+    assert!(
+        edges.is_empty(),
+        "query_batch_edges must exclude ingest-origin edges when recall_include_imported=false, got {edges:?}"
     );
 }

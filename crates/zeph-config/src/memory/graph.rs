@@ -461,6 +461,7 @@ impl Default for ExperienceConfig {
 /// a redaction pass is implemented on the write path.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct GraphConfig {
     pub enabled: bool,
     pub extract_model: String,
@@ -632,6 +633,16 @@ pub struct GraphConfig {
     /// Controls when the recency strategy is allowed to override `valid_from` comparison.
     #[serde(default)]
     pub conflict_recency: ConflictRecencyConfig,
+    /// Include knowledge-ingest edges in graph recall (spec-067 FR-003, INV-3).
+    ///
+    /// When `true` (default), all active edges are returned regardless of origin.
+    /// When `false`, edges with `origin = 'ingest'` are excluded from recall so only
+    /// conversation-derived knowledge appears in agent responses.
+    ///
+    /// Note: this flag lives here rather than `[knowledge]` for Phase 0 — it will be
+    /// re-homed when the `[knowledge]` section is introduced in a later ingest issue.
+    #[serde(default = "default_true")]
+    pub recall_include_imported: bool,
 }
 
 /// Similarity method for implicit conflict detection.
@@ -965,8 +976,13 @@ impl Default for GraphConfig {
             implicit_conflict: ImplicitConflictConfig::default(),
             write_gate: WriteGateConfig::default(),
             conflict_recency: ConflictRecencyConfig::default(),
+            recall_include_imported: true,
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_link_weight_decay_lambda() -> f64 {

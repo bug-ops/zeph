@@ -548,17 +548,25 @@ mod tests {
     async fn graph_recall_fuzzy_match_returns_facts() {
         let store = setup_store().await;
         let user_id = store
-            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let tool_id = store
-            .upsert_entity("neovim", "neovim", EntityType::Tool, None)
+            .upsert_entity("neovim", "neovim", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(user_id, tool_id, "uses", "Alice uses neovim", 0.9, None)
+            .insert_edge(
+                user_id,
+                tool_id,
+                "uses",
+                "Alice uses neovim",
+                0.9,
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -588,26 +596,26 @@ mod tests {
     async fn graph_recall_respects_max_hops() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alpha", "Alpha", EntityType::Person, None)
+            .upsert_entity("Alpha", "Alpha", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Beta", "Beta", EntityType::Person, None)
+            .upsert_entity("Beta", "Beta", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let c = store
-            .upsert_entity("Gamma", "Gamma", EntityType::Person, None)
+            .upsert_entity("Gamma", "Gamma", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "knows", "Alpha knows Beta", 0.8, None)
+            .insert_edge(a, b, "knows", "Alpha knows Beta", 0.8, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(b, c, "knows", "Beta knows Gamma", 0.8, None)
+            .insert_edge(b, c, "knows", "Beta knows Gamma", 0.8, None, None)
             .await
             .unwrap();
 
@@ -637,17 +645,17 @@ mod tests {
     async fn graph_recall_deduplicates_facts() {
         let store = setup_store().await;
         let alice = store
-            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let bob = store
-            .upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None)
+            .insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 
@@ -682,28 +690,36 @@ mod tests {
     async fn graph_recall_sorts_by_composite_score() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alpha", "Alpha", EntityType::Person, None)
+            .upsert_entity("Alpha", "Alpha", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Beta", "Beta", EntityType::Tool, None)
+            .upsert_entity("Beta", "Beta", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         let c = store
-            .upsert_entity("AlphaGadget", "AlphaGadget", EntityType::Tool, None)
+            .upsert_entity("AlphaGadget", "AlphaGadget", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         // high-confidence direct edge
         store
-            .insert_edge(a, b, "uses", "Alpha uses Beta", 1.0, None)
+            .insert_edge(a, b, "uses", "Alpha uses Beta", 1.0, None, None)
             .await
             .unwrap();
         // low-confidence direct edge
         store
-            .insert_edge(a, c, "mentions", "Alpha mentions AlphaGadget", 0.1, None)
+            .insert_edge(
+                a,
+                c,
+                "mentions",
+                "Alpha mentions AlphaGadget",
+                0.1,
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -736,7 +752,7 @@ mod tests {
     async fn graph_recall_limit_truncates() {
         let store = setup_store().await;
         let root = store
-            .upsert_entity("Root", "Root", EntityType::Person, None)
+            .upsert_entity("Root", "Root", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
@@ -746,6 +762,7 @@ mod tests {
                     &format!("Target{i}"),
                     &format!("Target{i}"),
                     EntityType::Tool,
+                    None,
                     None,
                 )
                 .await
@@ -758,6 +775,7 @@ mod tests {
                     "has",
                     &format!("Root has Target{i}"),
                     0.8,
+                    None,
                     None,
                 )
                 .await
@@ -788,12 +806,12 @@ mod tests {
     async fn graph_recall_at_timestamp_excludes_future_edges() {
         let store = setup_store().await;
         let alice = store
-            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let bob = store
-            .upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
@@ -833,12 +851,12 @@ mod tests {
     async fn graph_recall_at_timestamp_excludes_invalidated_edges() {
         let store = setup_store().await;
         let alice = store
-            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let carol = store
-            .upsert_entity("Carol", "Carol", EntityType::Person, None)
+            .upsert_entity("Carol", "Carol", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
@@ -919,6 +937,7 @@ mod tests {
                     &format!("entity{i}"),
                     crate::graph::types::EntityType::Concept,
                     None,
+                    None,
                 )
                 .await
                 .unwrap()
@@ -935,13 +954,19 @@ mod tests {
 
         // Create a hub entity with edges to all 5 — so BFS from the hub yields facts
         let hub = store
-            .upsert_entity("Hub", "hub", crate::graph::types::EntityType::Concept, None)
+            .upsert_entity(
+                "Hub",
+                "hub",
+                crate::graph::types::EntityType::Concept,
+                None,
+                None,
+            )
             .await
             .unwrap()
             .0;
         for &target in &entity_ids {
             store
-                .insert_edge(hub, target, "has", "Hub has entity", 0.9, None)
+                .insert_edge(hub, target, "has", "Hub has entity", 0.9, None, None)
                 .await
                 .unwrap();
         }
@@ -985,6 +1010,7 @@ mod tests {
                 "zephyr",
                 crate::graph::types::EntityType::Concept,
                 None,
+                None,
             )
             .await
             .unwrap()
@@ -995,12 +1021,13 @@ mod tests {
                 "concept",
                 crate::graph::types::EntityType::Concept,
                 None,
+                None,
             )
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "rel", "Zephyr rel Concept", 0.9, None)
+            .insert_edge(a, b, "rel", "Zephyr rel Concept", 0.9, None, None)
             .await
             .unwrap();
 
@@ -1032,26 +1059,34 @@ mod tests {
     async fn graph_recall_temporal_decay_preserves_order_with_zero_rate() {
         let store = setup_store().await;
         let a = store
-            .upsert_entity("Alpha", "Alpha", EntityType::Person, None)
+            .upsert_entity("Alpha", "Alpha", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let b = store
-            .upsert_entity("Beta", "Beta", EntityType::Tool, None)
+            .upsert_entity("Beta", "Beta", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         let c = store
-            .upsert_entity("AlphaGadget", "AlphaGadget", EntityType::Tool, None)
+            .upsert_entity("AlphaGadget", "AlphaGadget", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         store
-            .insert_edge(a, b, "uses", "Alpha uses Beta", 1.0, None)
+            .insert_edge(a, b, "uses", "Alpha uses Beta", 1.0, None, None)
             .await
             .unwrap();
         store
-            .insert_edge(a, c, "mentions", "Alpha mentions AlphaGadget", 0.1, None)
+            .insert_edge(
+                a,
+                c,
+                "mentions",
+                "Alpha mentions AlphaGadget",
+                0.1,
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -1087,17 +1122,17 @@ mod tests {
         let provider = mock_provider();
 
         let user = store
-            .upsert_entity("Alice", "Alice", EntityType::Person, None)
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let tool = store
-            .upsert_entity("Vim", "Vim", EntityType::Tool, None)
+            .upsert_entity("Vim", "Vim", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         let eid = store
-            .insert_edge(user, tool, "uses", "Alice uses Vim", 0.9, None)
+            .insert_edge(user, tool, "uses", "Alice uses Vim", 0.9, None, None)
             .await
             .unwrap();
 
@@ -1144,17 +1179,17 @@ mod tests {
         let provider = mock_provider();
 
         let user = store
-            .upsert_entity("Bob", "Bob", EntityType::Person, None)
+            .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
             .unwrap()
             .0;
         let tool = store
-            .upsert_entity("Emacs", "Emacs", EntityType::Tool, None)
+            .upsert_entity("Emacs", "Emacs", EntityType::Tool, None, None)
             .await
             .unwrap()
             .0;
         let eid = store
-            .insert_edge(user, tool, "uses", "Bob uses Emacs", 0.9, None)
+            .insert_edge(user, tool, "uses", "Bob uses Emacs", 0.9, None, None)
             .await
             .unwrap();
 
