@@ -10,6 +10,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context as _;
+
 use zeph_core::config::Config;
 use zeph_core::durable::XChaCha20Poly1305Cipher;
 use zeph_core::vault::AgeVaultProvider;
@@ -88,6 +90,7 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
 /// # Errors
 ///
 /// Returns an error if the config cannot be loaded, the journal cannot be opened, or a query fails.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_durable_command(
     cmd: DurableCommand,
     config_path: Option<&Path>,
@@ -100,6 +103,7 @@ pub(crate) async fn handle_durable_command(
             status,
             kind,
             limit,
+            json,
         } => {
             let Some(backend) = open_backend(&config, false).await? else {
                 return Ok(());
@@ -108,43 +112,56 @@ pub(crate) async fn handle_durable_command(
                 .list_executions(status.as_deref(), kind.as_deref(), limit)
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to list executions: {e}"))?;
-            if rows.is_empty() {
-                println!("No durable executions match.");
-                return Ok(());
-            }
-            println!(
-                "{:<36} {:<18} {:<10} {:>6}  CREATED",
-                "EXECUTION ID", "KIND", "STATUS", "STEPS"
-            );
-            println!("{}", "-".repeat(96));
-            for row in &rows {
+            if json {
                 println!(
-                    "{:<36} {:<18} {:<10} {:>6}  {}",
-                    row.execution_id.as_uuid(),
-                    row.kind,
-                    row.status.as_str(),
-                    row.step_count,
-                    fmt_ts(row.created_at_ms),
+                    "{}",
+                    serde_json::to_string_pretty(&rows)
+                        .context("failed to serialize execution list")?
                 );
+            } else {
+                if rows.is_empty() {
+                    println!("No durable executions match.");
+                    return Ok(());
+                }
+                println!(
+                    "{:<36} {:<18} {:<10} {:>6}  CREATED",
+                    "EXECUTION ID", "KIND", "STATUS", "STEPS"
+                );
+                println!("{}", "-".repeat(96));
+                for row in &rows {
+                    println!(
+                        "{:<36} {:<18} {:<10} {:>6}  {}",
+                        row.execution_id.as_uuid(),
+                        row.kind,
+                        row.status.as_str(),
+                        row.step_count,
+                        fmt_ts(row.created_at_ms),
+                    );
+                }
             }
         }
 
-        DurableCommand::Show { id, reveal } => {
+        DurableCommand::Show { id, reveal, json } => {
             let exec = ExecutionId::parse_str(&id)
                 .map_err(|e| anyhow::anyhow!("invalid execution id '{id}': {e}"))?;
             let Some(backend) = open_backend(&config, reveal).await? else {
                 return Ok(());
             };
-            show_entries(&backend, exec, reveal, None).await?;
+            show_entries(&backend, exec, reveal, None, json).await?;
         }
 
-        DurableCommand::Inspect { id, step, reveal } => {
+        DurableCommand::Inspect {
+            id,
+            step,
+            reveal,
+            json,
+        } => {
             let exec = ExecutionId::parse_str(&id)
                 .map_err(|e| anyhow::anyhow!("invalid execution id '{id}': {e}"))?;
             let Some(backend) = open_backend(&config, reveal).await? else {
                 return Ok(());
             };
-            show_entries(&backend, exec, reveal, Some(step)).await?;
+            show_entries(&backend, exec, reveal, Some(step), json).await?;
         }
 
         DurableCommand::Prune { dry_run } => {
@@ -198,7 +215,8 @@ pub(crate) async fn handle_durable_command(
 /// Show one execution's entries, optionally filtered to a single `step`, redacted unless `reveal`.
 ///
 /// `reveal` reads through the AEAD cipher (decrypted payloads) and prints a warning first; otherwise
-/// only redaction-safe metadata is shown (INV-5).
+/// only redaction-safe metadata is shown (INV-5). When `json` is set, output is serialized JSON
+/// instead of a human-readable table.
 ///
 /// # Errors
 ///
@@ -208,6 +226,7 @@ async fn show_entries(
     exec: ExecutionId,
     reveal: bool,
     step: Option<u32>,
+    json: bool,
 ) -> anyhow::Result<()> {
     if reveal {
         println!("{REVEAL_WARNING}\n");
@@ -231,7 +250,13 @@ async fn show_entries(
         if let Some(s) = step {
             entries.retain(|e| e.step_id.value() == s);
         }
-        if entries.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&entries)
+                    .context("failed to serialize journal entries")?
+            );
+        } else if entries.is_empty() {
             println!("No matching journal entry.");
         } else {
             print_redacted(&entries);

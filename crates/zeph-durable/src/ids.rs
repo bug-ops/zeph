@@ -470,6 +470,11 @@ mod tests {
         let json = serde_json::to_string(&id).unwrap();
         let back: ExecutionId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, back);
+        // Verify the JSON shape is a bare UUID string (not {"0":"..."} or a wrapped object).
+        assert!(
+            json.starts_with('"') && json.ends_with('"'),
+            "ExecutionId must serialize as a bare UUID string, got: {json}"
+        );
     }
 
     #[test]

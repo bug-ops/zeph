@@ -37,7 +37,8 @@ use crate::ids::{
 /// assert!(ExecutionStatus::Running.is_running());
 /// assert!(!ExecutionStatus::Failed.is_running());
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExecutionStatus {
     /// The execution is in flight.
     Running,

@@ -47,7 +47,7 @@ pub use local::LocalBackend;
 /// round-trip to a typed value, so the stored string is exposed verbatim for display).
 ///
 /// [`ExecutionKind::Custom`]: crate::ExecutionKind::Custom
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ExecutionSummary {
     /// The execution identity.
     pub execution_id: ExecutionId,
@@ -71,7 +71,7 @@ pub struct ExecutionSummary {
 /// and full idempotency key — only the metadata the spec's INV-5 redaction rule permits in default
 /// output. To see decrypted payloads a caller must opt in via `--reveal`, which reads through the
 /// AEAD cipher with [`Journal::read_execution`](crate::Journal::read_execution) instead.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RedactedEntry {
     /// Global append sequence.
     pub seq: i64,

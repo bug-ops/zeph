@@ -544,14 +544,20 @@ pub(crate) enum DurableCommand {
         /// Maximum number of executions to display
         #[arg(long, default_value = "50")]
         limit: i64,
+        /// Emit structured JSON instead of a table
+        #[arg(long)]
+        json: bool,
     },
     /// Show the journal entries of one execution (payload redacted by default)
     Show {
         /// Execution id (UUID)
         id: String,
         /// Decrypt and print payload bytes (prints a warning first; requires `ZEPH_DURABLE_KEY`)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         reveal: bool,
+        /// Emit structured JSON instead of a table
+        #[arg(long)]
+        json: bool,
     },
     /// Inspect a single journal step entry
     Inspect {
@@ -561,8 +567,11 @@ pub(crate) enum DurableCommand {
         #[arg(long)]
         step: u32,
         /// Decrypt and print payload bytes (prints a warning first; requires `ZEPH_DURABLE_KEY`)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         reveal: bool,
+        /// Emit structured JSON instead of a table
+        #[arg(long)]
+        json: bool,
     },
     /// Force a retention sweep over terminal executions past their TTL
     Prune {

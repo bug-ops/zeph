@@ -702,6 +702,7 @@ impl DurableContext {
                     step = name,
                     "journal writer unavailable; this step degrades to non-durable mode"
                 );
+                metrics::counter!("durable.journal.writer.degraded_appends_total").increment(1);
                 Ok(())
             }
             Err(error) => Err(error),

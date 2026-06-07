@@ -12,8 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `docs(acp)`: fix broken intra-doc links in `transport/` and `client/error` — feature-gated items referenced as plain backtick text; private `SubagentCommand::Close` link removed from public doc (closes #4941)
 - `refactor(tools)`: extract `build_audit_entry` private helper in `ShellExecutor`; `log_audit` and `log_audit_with_context` now delegate to it (closes #4960)
 - `refactor(memory)`: extract `lock_entries` and `lock_next_id` private helpers in `InMemoryFacade` to eliminate repeated lock-poisoning boilerplate (closes #4962)
+- `refactor(tui)`: remove three dead `pub const STATUS_*` constants (`STATUS_REPLAYING`, `STATUS_PRUNING`, `STATUS_AWAITING`) from `zeph-tui::widgets::durable` — only `STATUS_UNAVAILABLE` is referenced (closes #4977)
+
+### Fixed
+
+- `fix(durable)`: emit `durable.journal.writer.degraded_appends_total` metrics counter in `append_acked_degrading` when `JournalUnavailable` is returned — the degradation path was previously observable only via `WARN` log (closes #4973)
 
 ### Added
+
+- `feat(cli)`: add `--json` flag to `zeph durable list`, `zeph durable show`, and `zeph durable inspect`. When set, structured JSON is emitted to stdout instead of a human-readable table. `ExecutionSummary`, `RedactedEntry`, and `ExecutionStatus` now implement `serde::Serialize`; `ExecutionStatus` serializes in `snake_case` to match the DB column values. `--reveal` and `--json` are mutually exclusive (Clap `conflicts_with`) to prevent silent non-JSON output (closes #4978)
 
 - `feat(core)`: P1 durable adapter for the agent tool-loop (spec-064 §P1, closes #4951).
   `SessionState` gains `durable_ctx: Option<Arc<DurableContext>>` and `durable_turn_replayed: bool`.

@@ -17,12 +17,6 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
 use crate::theme::Theme;
 
-/// Status message: a crashed execution is replaying its journal (spec-011).
-pub const STATUS_REPLAYING: &str = "Replaying execution…";
-/// Status message: a background retention sweep is running (spec-011).
-pub const STATUS_PRUNING: &str = "Pruning journal…";
-/// Status message: a durable promise is parked awaiting an external completion (spec-011).
-pub const STATUS_AWAITING: &str = "Awaiting external completion…";
 /// Status message: the journal is unreachable, so the agent runs without durability (spec-011).
 pub const STATUS_UNAVAILABLE: &str = "Journal unavailable — non-durable mode";
 
