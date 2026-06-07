@@ -394,9 +394,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                             .orchestration
                             .orchestration_config
                             .predicate_timeout_secs;
-                        let sanitizer = zeph_sanitizer::ContentSanitizer::new(
-                            &zeph_sanitizer::ContentIsolationConfig::default(),
-                        );
+                        let sanitizer: std::sync::Arc<dyn zeph_common::OutputSanitizer> =
+                            std::sync::Arc::new(self.services.security.sanitizer.clone());
                         let evaluator = zeph_orchestration::PredicateEvaluator::new(
                             predicate_provider,
                             sanitizer,
@@ -438,7 +437,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                             .orchestration
                             .orchestration_config
                             .completeness_threshold;
-                        let sanitizer = self.services.security.sanitizer.clone();
+                        let sanitizer: std::sync::Arc<dyn zeph_common::OutputSanitizer> =
+                            std::sync::Arc::new(self.services.security.sanitizer.clone());
 
                         let orch_config = self.services.orchestration.orchestration_config.clone();
                         let verifier = plan_verifier.get_or_insert_with(|| {

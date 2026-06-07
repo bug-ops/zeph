@@ -3,75 +3,16 @@
 
 //! Raw graph persistence trait and [`TaskGraphStore`] implementation.
 //!
-//! The trait operates on opaque JSON strings to avoid a dependency cycle
-//! (`zeph-core` → `zeph-memory` → `zeph-core`). `zeph-core` wraps this
-//! trait in `GraphPersistence<S>` which handles typed serialization.
+//! The trait ([`zeph_db::RawGraphStore`]) operates on opaque JSON strings to avoid a
+//! dependency cycle (`zeph-core` → `zeph-memory` → `zeph-core`). `zeph-core` wraps
+//! this trait in `GraphPersistence<S>` which handles typed serialization.
 
-use zeph_db::DbPool;
 #[allow(unused_imports)]
 use zeph_db::sql;
+use zeph_db::{DbError, DbPool};
 
-use crate::error::MemoryError;
-
-/// Summary of a stored task graph (metadata only, no task details).
-#[derive(Debug, Clone)]
-pub struct GraphSummary {
-    pub id: String,
-    pub goal: String,
-    pub status: String,
-    pub created_at: String,
-    pub finished_at: Option<String>,
-}
-
-/// Raw persistence interface for task graphs.
-///
-/// All graph data is stored as a JSON blob. The orchestration layer in
-/// `zeph-core` is responsible for serializing/deserializing `TaskGraph`.
-pub trait RawGraphStore: Send + Sync {
-    /// Persist a graph (upsert by `id`).
-    ///
-    /// # Errors
-    ///
-    /// Returns a `MemoryError` on database failure.
-    #[allow(async_fn_in_trait)]
-    async fn save_graph(
-        &self,
-        id: &str,
-        goal: &str,
-        status: &str,
-        graph_json: &str,
-        created_at: &str,
-        finished_at: Option<&str>,
-    ) -> Result<(), MemoryError>;
-
-    /// Load a graph by its string UUID.
-    ///
-    /// Returns `None` if the graph does not exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `MemoryError` on database failure.
-    #[allow(async_fn_in_trait)]
-    async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError>;
-
-    /// List graphs ordered by `created_at` descending, limited to `limit` rows.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `MemoryError` on database failure.
-    #[allow(async_fn_in_trait)]
-    async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, MemoryError>;
-
-    /// Delete a graph by its string UUID.
-    ///
-    /// Returns `true` if a row was deleted.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `MemoryError` on database failure.
-    #[allow(async_fn_in_trait)]
-    async fn delete_graph(&self, id: &str) -> Result<bool, MemoryError>;
-}
+// Re-export for callers that previously imported from this module.
+pub use zeph_db::{GraphSummary, RawGraphStore};
 
 /// Database-backed implementation of [`RawGraphStore`].
 #[derive(Debug, Clone)]
@@ -97,7 +38,7 @@ impl RawGraphStore for TaskGraphStore {
         graph_json: &str,
         created_at: &str,
         finished_at: Option<&str>,
-    ) -> Result<(), MemoryError> {
+    ) -> Result<(), DbError> {
         zeph_db::query(sql!(
             "INSERT INTO task_graphs (id, goal, status, graph_json, created_at, finished_at) \
              VALUES (?, ?, ?, ?, ?, ?) \
@@ -116,24 +57,24 @@ impl RawGraphStore for TaskGraphStore {
         .bind(finished_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+        .map_err(DbError::Sqlx)?;
         Ok(())
     }
 
     #[cfg(not(feature = "postgres"))]
     #[tracing::instrument(skip_all, name = "memory.graph.load_graph")]
-    async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
+    async fn load_graph(&self, id: &str) -> Result<Option<String>, DbError> {
         let row: Option<(String,)> =
             zeph_db::query_as(sql!("SELECT graph_json FROM task_graphs WHERE id = ?"))
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await
-                .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+                .map_err(DbError::Sqlx)?;
         Ok(row.map(|(json,)| json))
     }
 
     #[cfg(not(feature = "postgres"))]
-    async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, MemoryError> {
+    async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, DbError> {
         let rows: Vec<(String, String, String, String, Option<String>)> = zeph_db::query_as(sql!(
             "SELECT id, goal, status, created_at, finished_at \
              FROM task_graphs \
@@ -143,7 +84,7 @@ impl RawGraphStore for TaskGraphStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+        .map_err(DbError::Sqlx)?;
 
         Ok(rows
             .into_iter()
@@ -159,19 +100,19 @@ impl RawGraphStore for TaskGraphStore {
 
     #[cfg(feature = "postgres")]
     #[tracing::instrument(skip_all, name = "memory.graph.load_graph")]
-    async fn load_graph(&self, id: &str) -> Result<Option<String>, MemoryError> {
+    async fn load_graph(&self, id: &str) -> Result<Option<String>, DbError> {
         let row: Option<String> = sqlx::query_scalar::<sqlx::Postgres, String>(sql!(
             "SELECT graph_json FROM task_graphs WHERE id = ?"
         ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+        .map_err(DbError::Sqlx)?;
         Ok(row)
     }
 
     #[cfg(feature = "postgres")]
-    async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, MemoryError> {
+    async fn list_graphs(&self, limit: u32) -> Result<Vec<GraphSummary>, DbError> {
         use sqlx::Row as _;
 
         let rows = sqlx::query::<sqlx::Postgres>(sql!(
@@ -183,7 +124,7 @@ impl RawGraphStore for TaskGraphStore {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+        .map_err(DbError::Sqlx)?;
 
         Ok(rows
             .into_iter()
@@ -197,12 +138,12 @@ impl RawGraphStore for TaskGraphStore {
             .collect())
     }
 
-    async fn delete_graph(&self, id: &str) -> Result<bool, MemoryError> {
+    async fn delete_graph(&self, id: &str) -> Result<bool, DbError> {
         let result = zeph_db::query(sql!("DELETE FROM task_graphs WHERE id = ?"))
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| MemoryError::GraphStore(e.to_string()))?;
+            .map_err(DbError::Sqlx)?;
         Ok(result.rows_affected() > 0)
     }
 }

@@ -1,99 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Per-subtask verification predicates (predicate gate).
+//! LLM-backed predicate evaluator for the per-subtask verification gate.
 //!
-//! Each task in a DAG may carry a `VerifyPredicate` that must be satisfied by
-//! the task's output before downstream tasks may consume it. Evaluation is
-//! LLM-based via `PredicateEvaluator`.
-//!
-//! # Design
-//!
-//! - [`VerifyPredicate`] is an enum stored in `TaskNode.verify_predicate`. Only the
-//!   `Natural(String)` variant is constructible in v1 — `Expression` returns an error
-//!   if the planner ever emits one.
-//! - [`PredicateOutcome`] is persisted on `TaskNode` via `GraphPersistence::save` (wired in
-//!   `zeph-core` scheduler loop and `handle_plan_confirm`). After a crash, rehydrating the
-//!   graph via `/plan resume <id>` restores `predicate_outcome` so the gate is not re-evaluated
-//!   for already-completed tasks.
-//! - [`PredicateEvaluator`] wraps any [`LlmProvider`] and produces [`PredicateOutcome`]
-//!   values. The evaluation prompt is intentionally minimal and model-agnostic.
+//! [`VerifyPredicate`] and [`PredicateOutcome`] (the data types stored on `TaskNode`) live
+//! in [`crate::graph`]. This module contains only [`PredicateEvaluator`], which requires
+//! an LLM provider and is therefore behind the `llm-planning` feature.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use zeph_common::OutputSanitizer;
 use zeph_llm::provider::{LlmProvider, Message, Role};
-use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
 use super::error::OrchestrationError;
-
-/// A verification criterion attached to a task node.
-///
-/// The planner populates this from the `verify_criteria` field in its JSON output.
-/// Only `Natural` is constructible in v1. If the planner emits `Expression`, the
-/// scheduler returns `OrchestrationError::PredicateNotSupported` rather than
-/// silently ignoring the criterion.
-///
-/// # Examples
-///
-/// ```rust
-/// use zeph_orchestration::VerifyPredicate;
-///
-/// let pred = VerifyPredicate::Natural("output must contain a valid JSON object".to_string());
-/// assert!(matches!(pred, VerifyPredicate::Natural(_)));
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum VerifyPredicate {
-    /// Free-form natural-language criterion evaluated by the LLM judge.
-    Natural(String),
-    /// Symbolic expression (reserved, not supported in v1).
-    Expression(String),
-}
-
-impl VerifyPredicate {
-    /// Returns `Ok(&criterion)` for `Natural` predicates; `Err(PredicateNotSupported)`
-    /// for unsupported variants.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OrchestrationError::PredicateNotSupported`] when the variant is not
-    /// evaluatable in the current version.
-    pub fn as_natural(&self) -> Result<&str, OrchestrationError> {
-        match self {
-            VerifyPredicate::Natural(s) => Ok(s.as_str()),
-            VerifyPredicate::Expression(s) => Err(OrchestrationError::PredicateNotSupported(
-                format!("Expression predicate '{s}' is not supported in v1; use Natural"),
-            )),
-        }
-    }
-}
-
-/// Result of evaluating a [`VerifyPredicate`] against a task's output.
-///
-/// Stored on `TaskNode::predicate_outcome` (in-memory only; restart re-evaluates
-/// any pending predicates). A `None` value signals "not yet evaluated"; consumers
-/// should re-emit `SchedulerAction::VerifyPredicate` on the next tick.
-///
-/// # Examples
-///
-/// ```rust
-/// use zeph_orchestration::PredicateOutcome;
-///
-/// let outcome = PredicateOutcome { passed: true, confidence: 0.9, reason: "output is valid JSON".to_string() };
-/// assert!(outcome.passed);
-/// assert!(outcome.confidence > 0.8);
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PredicateOutcome {
-    /// Whether the predicate was satisfied.
-    pub passed: bool,
-    /// Confidence score in [0.0, 1.0]. Values < 0.5 with `passed = true` log a warn.
-    pub confidence: f32,
-    /// Human-readable explanation from the LLM judge.
-    pub reason: String,
-}
+use super::graph::{PredicateOutcome, VerifyPredicate};
 
 /// LLM-backed predicate evaluator.
 ///
@@ -102,18 +25,18 @@ pub struct PredicateOutcome {
 /// permissive `passed = true` outcome with `confidence = 0.0` and log a warning
 /// rather than aborting the scheduler.
 ///
-/// Task output is sanitized via [`ContentSanitizer`] before being embedded in the
+/// Task output is sanitized via [`OutputSanitizer`] before being embedded in the
 /// judge prompt, mirroring the same defence used by `PlanVerifier`.
 ///
 /// # Examples
 ///
 /// ```rust,no_run
+/// use std::sync::Arc;
 /// use zeph_orchestration::{PredicateEvaluator, VerifyPredicate};
-/// use zeph_sanitizer::{ContentSanitizer, ContentIsolationConfig};
+/// use zeph_common::IdentitySanitizer;
 ///
 /// # async fn example<P: zeph_llm::provider::LlmProvider>(provider: P) {
-/// let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
-/// let evaluator = PredicateEvaluator::new(provider, sanitizer, 30);
+/// let evaluator = PredicateEvaluator::new(provider, Arc::new(IdentitySanitizer), 30);
 /// let outcome = evaluator
 ///     .evaluate(
 ///         &VerifyPredicate::Natural("output must include a summary".to_string()),
@@ -126,7 +49,7 @@ pub struct PredicateOutcome {
 /// ```
 pub struct PredicateEvaluator<P: LlmProvider> {
     provider: P,
-    sanitizer: ContentSanitizer,
+    sanitizer: Arc<dyn OutputSanitizer>,
     timeout: Duration,
 }
 
@@ -136,7 +59,7 @@ impl<P: LlmProvider> PredicateEvaluator<P> {
     /// `sanitizer` is applied to task output before it is embedded in the judge prompt.
     /// `timeout_secs` bounds the LLM call; on timeout the evaluator returns a fail-open
     /// outcome (`passed = true`, `confidence = 0.0`) and logs a warning.
-    pub fn new(provider: P, sanitizer: ContentSanitizer, timeout_secs: u64) -> Self {
+    pub fn new(provider: P, sanitizer: Arc<dyn OutputSanitizer>, timeout_secs: u64) -> Self {
         Self {
             provider,
             sanitizer,
@@ -152,6 +75,12 @@ impl<P: LlmProvider> PredicateEvaluator<P> {
     /// On LLM or parse error, returns a permissive outcome (`passed = true,
     /// confidence = 0.0`) and logs a warning — fail-open per the orchestration
     /// error policy.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible: all errors are absorbed and result in a fail-open
+    /// `PredicateOutcome`. The `OrchestrationError` variant is only returned by
+    /// `VerifyPredicate::as_natural` for unsupported predicate types.
     #[tracing::instrument(
         name = "orchestration.verify_predicate.evaluate",
         skip(self, predicate, output, prior_failure_reason)
@@ -176,7 +105,6 @@ impl<P: LlmProvider> PredicateEvaluator<P> {
 
         let prior_note = prior_failure_reason
             .map(|r| {
-                // Truncate and wrap in XML tags to prevent injection from compromised judge output.
                 let truncated: String = r.chars().take(256).collect();
                 format!(
                     "\n\n<prior_failure_reason>{truncated}</prior_failure_reason>\n\
@@ -193,10 +121,8 @@ impl<P: LlmProvider> PredicateEvaluator<P> {
         );
 
         // Sanitize task output before embedding it in the judge prompt (prompt-injection defence).
-        let source = ContentSource::new(ContentSourceKind::ToolResult)
-            .with_identifier("predicate-evaluator-input");
-        let sanitized = self.sanitizer.sanitize(output, source);
-        let user = format!("Task output:\n\n{}", sanitized.body);
+        let safe_output = self.sanitizer.sanitize_task_output(output);
+        let user = format!("Task output:\n\n{safe_output}");
 
         let messages = vec![
             Message::from_legacy(Role::System, system),
@@ -251,12 +177,16 @@ impl<P: LlmProvider> PredicateEvaluator<P> {
 }
 
 /// Internal response shape for predicate evaluation.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct EvalResponse {
     passed: bool,
     confidence: f32,
     reason: String,
 }
+
+// Suppress unused-import warning when feature is disabled.
+#[allow(unused_imports)]
+use OrchestrationError as _;
 
 #[cfg(test)]
 mod tests {
@@ -298,7 +228,6 @@ mod tests {
 
     #[test]
     fn task_node_missing_predicate_fields_deserialize_as_none() {
-        // Simulate old JSON blob without predicate fields — #[serde(default)] must handle it.
         let json = r#"{
             "id": 0,
             "title": "t",
@@ -312,11 +241,8 @@ mod tests {
             "failure_strategy": null,
             "max_retries": null
         }"#;
-        // Parse as serde_json::Value first (TaskNode is in graph.rs; test the concept here
-        // by checking that our types have correct default handling).
         let val: serde_json::Value = serde_json::from_str(json).expect("parse");
         assert!(val.get("verify_predicate").is_none());
         assert!(val.get("predicate_outcome").is_none());
-        // Actual TaskNode deserialization is tested in graph.rs tests.
     }
 }

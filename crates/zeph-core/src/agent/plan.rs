@@ -199,6 +199,9 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let admission_gate = self.build_admission_gate();
 
+        let sanitizer_arc: std::sync::Arc<dyn zeph_common::OutputSanitizer> =
+            std::sync::Arc::new(self.services.security.sanitizer.clone());
+
         let scheduler = if graph.status == GraphStatus::Created {
             DagScheduler::new(
                 graph,
@@ -225,6 +228,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                 admission_gate,
             )
         }
+        .map(|s| s.with_sanitizer(sanitizer_arc))
         .map_err(|e| {
             if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
                 mgr.release_reservation(reserved);
@@ -303,12 +307,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             let backend =
                 std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
             let (writer_actor, handle) = zeph_durable::JournalWriter::new(local, &cfg);
-            // The writer task is fire-and-forget: it runs until the process exits. Not tracked in
-            // the supervisor intentionally (the writer has no meaningful shutdown protocol beyond
-            // being dropped).
-            tokio::spawn(async move { writer_actor.run().await });
+            let task_handle = tokio::spawn(async move { writer_actor.run().await });
             self.services.orchestration.durable_backend = Some(backend);
             self.services.orchestration.durable_writer = Some(handle);
+            self.services.orchestration.durable_writer_task = Some(task_handle);
         }
         let backend = self.services.orchestration.durable_backend.clone()?;
         let writer = self.services.orchestration.durable_writer.clone()?;
@@ -538,9 +540,11 @@ impl<C: crate::channel::Channel> Agent<C> {
             .or(self.services.orchestration.orchestrator_provider.as_ref())
             .unwrap_or(&self.provider)
             .clone();
+        let verifier_sanitizer: std::sync::Arc<dyn zeph_common::OutputSanitizer> =
+            std::sync::Arc::new(self.services.security.sanitizer.clone());
         let mut verifier = PlanVerifier::new(
             verify_provider,
-            self.services.security.sanitizer.clone(),
+            verifier_sanitizer,
             &self.services.orchestration.orchestration_config,
         );
         let result = verifier
@@ -622,13 +626,18 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         };
 
+        let partial_sanitizer: std::sync::Arc<dyn zeph_common::OutputSanitizer> =
+            std::sync::Arc::new(self.services.security.sanitizer.clone());
+
         let mut partial_scheduler = match DagScheduler::new(
             partial_graph,
             &partial_config,
             Box::new(RuleBasedRouter),
             available_agents,
             partial_admission_gate,
-        ) {
+        )
+        .map(|s| s.with_sanitizer(partial_sanitizer))
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
@@ -750,10 +759,13 @@ impl<C: crate::channel::Channel> Agent<C> {
             .as_ref()
             .unwrap_or(&self.provider)
             .clone();
+        let aggregator_sanitizer: std::sync::Arc<dyn zeph_common::OutputSanitizer> =
+            std::sync::Arc::new(self.services.security.sanitizer.clone());
         let aggregator = LlmAggregator::new(
             aggregator_provider,
             &self.services.orchestration.orchestration_config,
-        );
+        )
+        .with_sanitizer(aggregator_sanitizer);
         match aggregator
             .aggregate(&completed_graph)
             .instrument(tracing::info_span!("core.plan.finalize_completed"))

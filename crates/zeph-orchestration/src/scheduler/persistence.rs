@@ -99,7 +99,7 @@ impl DagScheduler {
     pub fn record_predicate_outcome(
         &mut self,
         task_id: TaskId,
-        outcome: crate::verify_predicate::PredicateOutcome,
+        outcome: crate::graph::PredicateOutcome,
         max_tasks: usize,
     ) -> Result<(), OrchestrationError> {
         if task_id.index() >= self.graph.tasks.len() {
@@ -383,8 +383,8 @@ mod tests {
 
     #[test]
     fn predicate_gate_blocks_downstream_until_outcome_recorded() {
+        use crate::graph::VerifyPredicate;
         use crate::scheduler::SchedulerAction;
-        use crate::verify_predicate::VerifyPredicate;
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         graph.tasks[0].status = TaskStatus::Completed;
@@ -420,8 +420,8 @@ mod tests {
 
     #[test]
     fn predicate_pass_unblocks_downstream() {
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
         use crate::scheduler::SchedulerAction;
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         graph.tasks[0].status = TaskStatus::Completed;
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn predicate_fail_triggers_rerun_and_closes_gate() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         graph.tasks[0].status = TaskStatus::Completed;
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn predicate_budget_exhaustion_drops_rerun() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.tasks[0].status = TaskStatus::Completed;
@@ -546,8 +546,8 @@ mod tests {
 
     #[test]
     fn verify_predicate_emit_is_idempotent_each_tick() {
+        use crate::graph::VerifyPredicate;
         use crate::scheduler::SchedulerAction;
-        use crate::verify_predicate::VerifyPredicate;
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         graph.tasks[0].status = TaskStatus::Completed;
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn record_predicate_outcome_out_of_bounds_returns_task_not_found() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn predicate_remediation_returns_budget_exhausted_when_global_limit_reached() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.tasks[0].status = TaskStatus::Completed;
@@ -943,7 +943,7 @@ mod tests {
 
     #[test]
     fn record_predicate_outcome_pass_sets_graph_dirty() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.tasks[0].status = TaskStatus::Completed;
@@ -970,7 +970,7 @@ mod tests {
 
     #[test]
     fn record_predicate_outcome_fail_rerun_sets_graph_dirty() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
 
         let mut graph = graph_from_nodes(vec![make_node(0, &[])]);
         graph.tasks[0].status = TaskStatus::Completed;

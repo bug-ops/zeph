@@ -30,9 +30,7 @@ zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-db.workspace = true
 zeph-durable.workspace = true
-zeph-llm.workspace = true
-zeph-memory.workspace = true
-zeph-sanitizer.workspace = true
+zeph-llm = { workspace = true, optional = true }
 zeph-subagent.workspace = true
 
 [dev-dependencies]
@@ -40,11 +38,13 @@ futures.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 zeph-llm = { workspace = true, features = ["testing"] }
+zeph-memory.workspace = true
 
 [features]
-sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
-postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
-default = ["sqlite"]
+sqlite = ["zeph-db/sqlite"]
+postgres = ["zeph-db/postgres"]
+llm-planning = ["dep:zeph-llm"]
+default = ["sqlite", "llm-planning"]
 
 [lints]
 workspace = true

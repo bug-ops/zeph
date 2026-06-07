@@ -818,6 +818,13 @@ impl ContentSanitizer {
     }
 }
 
+impl zeph_common::OutputSanitizer for ContentSanitizer {
+    fn sanitize_task_output(&self, text: &str) -> String {
+        let source = crate::types::ContentSource::new(crate::types::ContentSourceKind::A2aMessage);
+        self.sanitize(text, source).body
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use zeph_config::ContentIsolationConfig;

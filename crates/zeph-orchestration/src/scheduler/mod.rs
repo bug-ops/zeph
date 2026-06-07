@@ -16,13 +16,15 @@ use tokio::sync::mpsc;
 
 use super::cascade::{CascadeConfig, CascadeDetector};
 use super::dag;
+pub(super) use super::dag::inject_tasks as verifier_inject_tasks;
 use super::error::OrchestrationError;
 use super::graph::{GraphStatus, TaskGraph, TaskId, TaskStatus};
 use super::router::AgentRouter;
 use super::topology::{TopologyAnalysis, TopologyClassifier};
-pub(super) use super::verifier::inject_tasks as verifier_inject_tasks;
+use std::sync::Arc;
+
+use zeph_common::OutputSanitizer;
 use zeph_config::OrchestrationConfig;
-use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
 /// Actions the scheduler requests the caller to perform.
 ///
@@ -97,7 +99,7 @@ pub enum SchedulerAction {
         /// Task whose output must be evaluated.
         task_id: TaskId,
         /// The verification predicate to evaluate.
-        predicate: super::verify_predicate::VerifyPredicate,
+        predicate: super::graph::VerifyPredicate,
         /// Raw output text produced by the task.
         output: String,
     },
@@ -218,7 +220,7 @@ pub struct DagScheduler {
     /// Events buffered by `wait_event` for processing in the next `tick`.
     pub(super) buffered_events: VecDeque<TaskEvent>,
     /// Sanitizer for dependency output injected into task prompts (SEC-ORCH-01).
-    pub(super) sanitizer: ContentSanitizer,
+    pub(super) sanitizer: Arc<dyn OutputSanitizer>,
     /// Backoff duration before retrying deferred tasks when all ready tasks hit the concurrency limit.
     pub(super) deferral_backoff: Duration,
     /// Consecutive spawn failures due to concurrency limits. Used to compute exponential backoff.
@@ -317,6 +319,13 @@ impl DagScheduler {
     ///
     /// The graph must be in `Created` status. The scheduler transitions
     /// it to `Running` and marks root tasks as `Ready`.
+    ///
+    /// # Security
+    ///
+    /// The default sanitizer is [`zeph_common::IdentitySanitizer`] — a no-op passthrough.
+    /// All callers outside `zeph-orchestration` **MUST** chain
+    /// [`.with_sanitizer()`](DagScheduler::with_sanitizer) to enforce SEC-ORCH-01
+    /// prompt-injection defense on dependency output.
     ///
     /// # Errors
     ///
@@ -435,6 +444,17 @@ impl DagScheduler {
         ))
     }
 
+    /// Override the default [`zeph_common::IdentitySanitizer`] with a real sanitizer.
+    ///
+    /// Callers in `zeph-core` must call this with `Arc::new(ContentSanitizer::new(cfg))`
+    /// to enforce SEC-ORCH-01 prompt-injection defense on dependency output. The default
+    /// identity sanitizer is retained only for unit tests inside `zeph-orchestration`.
+    #[must_use]
+    pub fn with_sanitizer(mut self, sanitizer: Arc<dyn OutputSanitizer>) -> Self {
+        self.sanitizer = sanitizer;
+        self
+    }
+
     /// Validate that `verify_provider` references a known provider name.
     ///
     /// Call this after construction when `verify_completeness = true` to catch
@@ -536,7 +556,7 @@ impl DagScheduler {
             available_agents,
             dependency_context_budget: config.dependency_context_budget,
             buffered_events: VecDeque::new(),
-            sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+            sanitizer: Arc::new(zeph_common::IdentitySanitizer),
             deferral_backoff: Duration::from_millis(config.deferral_backoff_ms),
             consecutive_spawn_failures: 0,
             topology,

@@ -14,14 +14,15 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::{error, warn};
 use zeph_config::OrchestrationConfig;
-use zeph_llm::provider::{LlmProvider, Message, Role};
-use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
-use super::dag;
+use zeph_common::OutputSanitizer;
+use zeph_llm::provider::{LlmProvider, Message, Role};
+
 use super::error::OrchestrationError;
-use super::graph::{TaskGraph, TaskId, TaskNode};
+use super::graph::{TaskGraph, TaskNode};
 
 /// Maximum length (in Unicode scalar values) of a gap description included in
 /// the replan prompt. Truncated before sanitization to bound injection blast radius.
@@ -123,7 +124,7 @@ pub struct PlanVerifier<P: LlmProvider> {
     /// Sanitizer for task output before inclusion in verify/replan prompts.
     /// Constructed with `spotlight_untrusted = false` so delimiters do not confuse
     /// the verification LLM (RISK-5): truncation and injection detection still apply.
-    sanitizer: ContentSanitizer,
+    sanitizer: Arc<dyn OutputSanitizer>,
     /// Maximum time to wait for each verifier LLM call before returning fail-open.
     timeout: Duration,
 }
@@ -133,7 +134,11 @@ impl<P: LlmProvider> PlanVerifier<P> {
     ///
     /// The timeout is taken from `config.verifier_timeout_secs`.
     #[must_use]
-    pub fn new(provider: P, sanitizer: ContentSanitizer, config: &OrchestrationConfig) -> Self {
+    pub fn new(
+        provider: P,
+        sanitizer: Arc<dyn OutputSanitizer>,
+        config: &OrchestrationConfig,
+    ) -> Self {
         Self {
             provider,
             consecutive_failures: 0,
@@ -467,7 +472,7 @@ struct ReplanTask {
 fn build_verify_prompt(
     task: &TaskNode,
     output: &str,
-    sanitizer: &ContentSanitizer,
+    sanitizer: &Arc<dyn OutputSanitizer>,
 ) -> Vec<Message> {
     let system = "You are a task completion verifier. Evaluate whether the task output \
                   satisfies the task description. Respond with a structured JSON object.\n\n\
@@ -485,13 +490,11 @@ fn build_verify_prompt(
                   - minor: nice to have, does not affect correctness"
         .to_string();
 
-    let source =
-        ContentSource::new(ContentSourceKind::ToolResult).with_identifier("plan-verifier-input");
-    let sanitized_output = sanitizer.sanitize(output, source);
+    let safe_output = sanitizer.sanitize_task_output(output);
 
     let user = format!(
         "Task: {}\n\nDescription: {}\n\nOutput:\n{}",
-        task.title, task.description, sanitized_output.body
+        task.title, task.description, safe_output
     );
 
     vec![
@@ -503,7 +506,7 @@ fn build_verify_prompt(
 fn build_verify_plan_prompt(
     goal: &str,
     aggregated_output: &str,
-    sanitizer: &ContentSanitizer,
+    sanitizer: &Arc<dyn OutputSanitizer>,
 ) -> Vec<Message> {
     let system = "You are a plan completion verifier. Evaluate whether the aggregated output \
                   of all tasks satisfies the original goal. Respond with a structured JSON object.\n\n\
@@ -521,14 +524,9 @@ fn build_verify_plan_prompt(
                   - minor: nice to have, does not affect core goal"
         .to_string();
 
-    let source =
-        ContentSource::new(ContentSourceKind::ToolResult).with_identifier("plan-verifier-output");
-    let sanitized_output = sanitizer.sanitize(aggregated_output, source);
+    let safe_output = sanitizer.sanitize_task_output(aggregated_output);
 
-    let user = format!(
-        "Original goal: {goal}\n\nAggregated plan output:\n{}",
-        sanitized_output.body
-    );
+    let user = format!("Original goal: {goal}\n\nAggregated plan output:\n{safe_output}");
 
     vec![
         Message::from_legacy(Role::System, system),
@@ -539,7 +537,7 @@ fn build_verify_plan_prompt(
 fn build_replan_from_plan_prompt(
     goal: &str,
     gaps: &[&Gap],
-    sanitizer: &ContentSanitizer,
+    sanitizer: &Arc<dyn OutputSanitizer>,
 ) -> Vec<Message> {
     let gaps_text = gaps
         .iter()
@@ -550,10 +548,8 @@ fn build_replan_from_plan_prompt(
                 .chars()
                 .take(MAX_GAP_DESCRIPTION_LEN)
                 .collect();
-            let source = ContentSource::new(ContentSourceKind::ToolResult)
-                .with_identifier("plan-verifier-plan-gap");
-            let clean = sanitizer.sanitize(&desc, source);
-            format!("{}. [{}] {}", i + 1, g.severity, clean.body)
+            let clean = sanitizer.sanitize_task_output(&desc);
+            format!("{}. [{}] {}", i + 1, g.severity, clean)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -585,7 +581,7 @@ fn build_replan_from_plan_prompt(
 fn build_replan_prompt(
     task: &TaskNode,
     gaps: &[&Gap],
-    sanitizer: &ContentSanitizer,
+    sanitizer: &Arc<dyn OutputSanitizer>,
 ) -> Vec<Message> {
     // Truncation happens before sanitization so delimiters are not counted against the cap.
     let gaps_text = gaps
@@ -597,10 +593,8 @@ fn build_replan_prompt(
                 .chars()
                 .take(MAX_GAP_DESCRIPTION_LEN)
                 .collect();
-            let source = ContentSource::new(ContentSourceKind::ToolResult)
-                .with_identifier("plan-verifier-gap");
-            let clean = sanitizer.sanitize(&desc, source);
-            format!("{}. [{}] {}", i + 1, g.severity, clean.body)
+            let clean = sanitizer.sanitize_task_output(&desc);
+            format!("{}. [{}] {}", i + 1, g.severity, clean)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -629,76 +623,10 @@ fn build_replan_prompt(
     ]
 }
 
-/// Inject new tasks into a task graph, validate DAG acyclicity, and mark new
-/// roots as `Ready`.
-///
-/// Does NOT re-analyze topology — topology re-analysis is deferred to the next
-/// `tick()` via the `dirty` flag in `DagScheduler` (critic C2).
-///
-/// # Errors
-///
-/// Returns `OrchestrationError::VerificationFailed` if the resulting graph
-/// contains a cycle or exceeds the task limit.
-pub fn inject_tasks(
-    graph: &mut TaskGraph,
-    new_tasks: Vec<TaskNode>,
-    max_tasks: usize,
-) -> Result<(), OrchestrationError> {
-    if new_tasks.is_empty() {
-        return Ok(());
-    }
-
-    let existing_len = graph.tasks.len();
-    let total = existing_len + new_tasks.len();
-
-    if total > max_tasks {
-        return Err(OrchestrationError::VerificationFailed(format!(
-            "inject_tasks would create {total} tasks, exceeding limit of {max_tasks}"
-        )));
-    }
-
-    // Verify ID invariant: new tasks must have sequential IDs starting at existing_len.
-    for (i, task) in new_tasks.iter().enumerate() {
-        let expected = TaskId(u32::try_from(existing_len + i).map_err(|_| {
-            OrchestrationError::VerificationFailed("task index overflows u32".to_string())
-        })?);
-        if task.id != expected {
-            return Err(OrchestrationError::VerificationFailed(format!(
-                "injected task at position {} has id {} (expected {})",
-                i, task.id, expected
-            )));
-        }
-    }
-
-    graph.tasks.extend(new_tasks);
-
-    // Validate acyclicity after injection.
-    dag::validate(&graph.tasks, max_tasks).map_err(|e| match e {
-        OrchestrationError::CycleDetected => {
-            OrchestrationError::VerificationFailed("inject_tasks introduced a cycle".to_string())
-        }
-        other => OrchestrationError::VerificationFailed(other.to_string()),
-    })?;
-
-    // Mark new tasks that are ready (deps all completed) as Ready.
-    // New tasks with pending deps stay Pending — ready_tasks() handles them.
-    let n = graph.tasks.len();
-    for i in existing_len..n {
-        let all_deps_done = graph.tasks[i]
-            .depends_on
-            .iter()
-            .all(|dep| graph.tasks[dep.index()].status == super::graph::TaskStatus::Completed);
-        if all_deps_done {
-            graph.tasks[i].status = super::graph::TaskStatus::Ready;
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag::inject_tasks;
     use crate::graph::{TaskGraph, TaskId, TaskNode, TaskStatus};
     use zeph_config::OrchestrationConfig;
 
@@ -779,16 +707,15 @@ mod tests {
 
     // --- PlanVerifier with mock provider tests ---
 
+    use std::sync::Arc;
+
     use futures::stream;
+    use zeph_common::IdentitySanitizer;
     use zeph_llm::LlmError;
     use zeph_llm::provider::{ChatStream, Message, StreamChunk};
-    use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
 
-    fn test_sanitizer() -> ContentSanitizer {
-        ContentSanitizer::new(&ContentIsolationConfig {
-            spotlight_untrusted: false,
-            ..ContentIsolationConfig::default()
-        })
+    fn test_sanitizer() -> Arc<dyn zeph_common::OutputSanitizer> {
+        Arc::new(IdentitySanitizer)
     }
 
     struct MockProvider {

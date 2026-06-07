@@ -41,6 +41,7 @@ pub const OVERFLOW_NOTICE_PREFIX: &str = "[full output stored \u{2014} ID: ";
 pub use fidelity::{ContextFidelity, PlannedToolHint};
 pub use math::{EmbeddingVector, Normalized, Unnormalized};
 pub use policy::{PolicyLlmClient, PolicyMessage, PolicyRole};
+pub use sanitize::{IdentitySanitizer, OutputSanitizer};
 pub use security_event::SecurityEventCategory;
 pub use spawner::BlockingSpawner;
 pub use task_supervisor::{

@@ -378,6 +378,7 @@ impl<C: Channel> Agent<C> {
         if let Some(h) = self.services.compression.pending_subgoal.take() {
             h.abort();
         }
+        self.flush_durable_writer().await;
 
         // Abort learning tasks (JoinSet detached at turn boundaries but not on shutdown).
         self.services.learning_engine.learning_tasks.abort_all();
@@ -424,5 +425,25 @@ impl<C: Channel> Agent<C> {
         self.maybe_store_session_digest().await;
 
         tracing::info!("agent shutdown complete");
+    }
+
+    /// Flush buffered durable journal entries then abort the writer task.
+    ///
+    /// `flush()` has a built-in ack timeout; the outer 2 s cap ensures shutdown never
+    /// hangs beyond that. Errors are logged as warnings — shutdown must not fail.
+    async fn flush_durable_writer(&mut self) {
+        if let Some(ref writer) = self.services.orchestration.durable_writer {
+            let flush_deadline = std::time::Duration::from_secs(2);
+            match tokio::time::timeout(flush_deadline, writer.flush()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "durable writer: flush on shutdown failed");
+                }
+                Err(_) => tracing::warn!("durable writer: flush timed out on shutdown"),
+            }
+        }
+        if let Some(h) = self.services.orchestration.durable_writer_task.take() {
+            h.abort();
+        }
     }
 }

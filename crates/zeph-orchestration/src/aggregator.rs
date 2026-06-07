@@ -8,15 +8,15 @@
 //! implementation falls back to raw concatenation so that a graph result is always returned.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Duration;
 
+use zeph_common::{OutputSanitizer, text::truncate_chars};
+use zeph_config::OrchestrationConfig;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use super::error::OrchestrationError;
 use super::graph::{TaskGraph, TaskStatus};
-use zeph_common::text::truncate_chars;
-use zeph_config::OrchestrationConfig;
-use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind};
 
 /// Collects results from completed tasks and produces a final synthesis.
 #[allow(async_fn_in_trait)]
@@ -52,7 +52,7 @@ pub struct LlmAggregator<P: LlmProvider> {
     /// Total character budget for all task outputs combined. Divided equally among
     /// completed tasks at aggregation time (S1).
     aggregation_char_budget: usize,
-    sanitizer: ContentSanitizer,
+    sanitizer: Arc<dyn OutputSanitizer>,
     /// Maximum time to wait for the aggregation LLM call before falling back.
     timeout: Duration,
 }
@@ -62,16 +62,33 @@ impl<P: LlmProvider> LlmAggregator<P> {
     ///
     /// The character budget is derived from `config.aggregator_max_tokens` using a
     /// 4 chars-per-token estimate. The timeout is taken from `config.aggregator_timeout_secs`.
+    ///
+    /// # Security
+    ///
+    /// The default sanitizer is [`zeph_common::IdentitySanitizer`] — a no-op passthrough.
+    /// All callers outside `zeph-orchestration` **MUST** chain
+    /// [`.with_sanitizer()`](LlmAggregator::with_sanitizer) to enforce SEC-ORCH-01
+    /// prompt-injection defense on task output.
     #[must_use]
     pub fn new(provider: P, config: &OrchestrationConfig) -> Self {
-        // Estimate 4 chars/token for the total budget.
         let aggregation_char_budget = config.aggregator_max_tokens as usize * 4;
         Self {
             provider,
             aggregation_char_budget,
-            sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+            sanitizer: Arc::new(zeph_common::IdentitySanitizer),
             timeout: Duration::from_secs(config.aggregator_timeout_secs),
         }
+    }
+
+    /// Override the default [`zeph_common::IdentitySanitizer`] with a real sanitizer.
+    ///
+    /// Callers in `zeph-core` must call this with `Arc::new(ContentSanitizer::new(cfg))`
+    /// to enforce SEC-ORCH-01 prompt-injection defense on task output. The default
+    /// identity sanitizer is retained only for unit tests inside `zeph-orchestration`.
+    #[must_use]
+    pub fn with_sanitizer(mut self, sanitizer: Arc<dyn OutputSanitizer>) -> Self {
+        self.sanitizer = sanitizer;
+        self
     }
 }
 
@@ -108,18 +125,10 @@ impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
         for task in &completed {
             let raw_output = task.result.as_ref().map_or("", |r| r.output.as_str());
 
-            // Truncate to per-task budget before spotlighting.
             let truncated = truncate_chars(raw_output, per_task);
+            let safe = self.sanitizer.sanitize_task_output(truncated);
 
-            let sanitized = self
-                .sanitizer
-                .sanitize(truncated, ContentSource::new(ContentSourceKind::ToolResult));
-
-            let _ = write!(
-                task_sections,
-                "### Task: {}\n{}\n\n",
-                task.title, sanitized.body
-            );
+            let _ = write!(task_sections, "### Task: {}\n{}\n\n", task.title, safe);
         }
 
         // S2: include skipped task reasons.
@@ -183,7 +192,7 @@ impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
 /// IS3: also applies per-task truncation using `per_task_chars` budget.
 fn build_fallback(
     graph: &TaskGraph,
-    sanitizer: &ContentSanitizer,
+    sanitizer: &Arc<dyn OutputSanitizer>,
     per_task_chars: usize,
 ) -> String {
     let mut out = String::new();
@@ -192,9 +201,8 @@ fn build_fallback(
         if task.status == TaskStatus::Completed {
             if let Some(ref result) = task.result {
                 let truncated = truncate_chars(&result.output, per_task_chars);
-                let cleaned = sanitizer
-                    .sanitize(truncated, ContentSource::new(ContentSourceKind::ToolResult));
-                let _ = write!(out, "## {}\n{}\n\n", task.title, cleaned.body);
+                let cleaned = sanitizer.sanitize_task_output(truncated);
+                let _ = write!(out, "## {}\n{}\n\n", task.title, cleaned);
             }
         } else if task.status == TaskStatus::Skipped {
             let _ = write!(
@@ -209,6 +217,8 @@ fn build_fallback(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::graph::{GraphStatus, TaskGraph, TaskNode, TaskResult, TaskStatus};
 
@@ -262,8 +272,8 @@ mod tests {
 
     // --- build_fallback tests ---
 
-    fn make_sanitizer() -> ContentSanitizer {
-        ContentSanitizer::new(&ContentIsolationConfig::default())
+    fn make_sanitizer() -> Arc<dyn OutputSanitizer> {
+        Arc::new(zeph_common::IdentitySanitizer)
     }
 
     #[test]
@@ -402,7 +412,7 @@ mod tests {
             let agg = LlmAggregator {
                 provider: SlowProvider,
                 aggregation_char_budget: 1024 * 4,
-                sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+                sanitizer: Arc::new(zeph_common::IdentitySanitizer),
                 timeout: Duration::from_millis(50),
             };
 

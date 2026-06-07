@@ -686,6 +686,11 @@ pub(crate) struct OrchestrationState {
     // Same as durable_backend: accessed through plan.rs ensure_durable_backend().
     #[allow(dead_code)]
     pub(crate) durable_writer: Option<zeph_durable::JournalWriterHandle>,
+    /// `JoinHandle` for the background `JournalWriter` actor task.
+    ///
+    /// Kept so the agent can abort the writer on shutdown rather than relying on process exit.
+    /// `None` until `ensure_durable_backend()` initialises the backend for the first time.
+    pub(crate) durable_writer_task: Option<tokio::task::JoinHandle<()>>,
     /// Cipher for encrypting P2 budget snapshots. `None` when `encrypt_payload = false`.
     pub(crate) durable_cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
 }

@@ -8,10 +8,9 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 pub use zeph_config::FailureStrategy;
-use zeph_memory::store::graph_store::{GraphSummary, RawGraphStore};
+use zeph_db::{GraphSummary, RawGraphStore};
 
 use super::error::OrchestrationError;
-use super::verify_predicate::{PredicateOutcome, VerifyPredicate};
 
 /// Index of a task within a [`TaskGraph::tasks`] `Vec`.
 ///
@@ -649,6 +648,69 @@ impl<S: RawGraphStore> GraphPersistence<S> {
             .await
             .map_err(|e| OrchestrationError::Persistence(e.to_string()))
     }
+}
+
+/// A verification criterion attached to a [`TaskNode`].
+///
+/// Only `Natural` is constructible in v1. If the planner emits `Expression`, the
+/// scheduler returns `OrchestrationError::PredicateNotSupported` rather than
+/// silently ignoring the criterion.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::VerifyPredicate;
+///
+/// let pred = VerifyPredicate::Natural("output must contain a valid JSON object".to_string());
+/// assert!(matches!(pred, VerifyPredicate::Natural(_)));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum VerifyPredicate {
+    /// Free-form natural-language criterion evaluated by the LLM judge.
+    Natural(String),
+    /// Symbolic expression (reserved, not supported in v1).
+    Expression(String),
+}
+
+impl VerifyPredicate {
+    /// Returns `Ok(&criterion)` for `Natural` predicates; `Err(PredicateNotSupported)` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OrchestrationError::PredicateNotSupported`] when the variant is not
+    /// evaluatable in the current version.
+    pub fn as_natural(&self) -> Result<&str, OrchestrationError> {
+        match self {
+            VerifyPredicate::Natural(s) => Ok(s.as_str()),
+            VerifyPredicate::Expression(s) => Err(OrchestrationError::PredicateNotSupported(
+                format!("Expression predicate '{s}' is not supported in v1; use Natural"),
+            )),
+        }
+    }
+}
+
+/// Result of evaluating a [`VerifyPredicate`] against a task's output.
+///
+/// Stored on [`TaskNode::predicate_outcome`]. A `None` value signals "not yet evaluated".
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::PredicateOutcome;
+///
+/// let outcome = PredicateOutcome { passed: true, confidence: 0.9, reason: "output is valid JSON".to_string() };
+/// assert!(outcome.passed);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredicateOutcome {
+    /// Whether the predicate was satisfied.
+    pub passed: bool,
+    /// Confidence score in [0.0, 1.0].
+    pub confidence: f32,
+    /// Human-readable explanation from the LLM judge.
+    pub reason: String,
 }
 
 #[cfg(test)]

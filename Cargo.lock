@@ -11106,7 +11106,6 @@ dependencies = [
  "zeph-durable",
  "zeph-llm",
  "zeph-memory",
- "zeph-sanitizer",
  "zeph-subagent",
 ]
 

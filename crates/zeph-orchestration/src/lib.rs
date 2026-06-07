@@ -41,8 +41,9 @@
 //!
 //! # Feature flags
 //!
-//! This crate has no optional Cargo features. All orchestration primitives are
-//! always available when the crate is in the dependency graph.
+//! - `llm-planning` *(default)*: enables LLM-dependent modules (`planner`, `aggregator`,
+//!   `verifier`, `verify_predicate`, `plan_cache`, `adaptorch`) and the `zeph-llm` dependency.
+//!   Disable with `default-features = false` to get the pure-DAG subset with no LLM dep.
 //!
 //! # Example: build a plan and run the scheduler
 //!
@@ -66,9 +67,7 @@
 //! # }
 //! ```
 
-pub mod adaptorch;
 pub mod admission;
-pub mod aggregator;
 pub mod cascade;
 pub mod command;
 pub mod dag;
@@ -76,34 +75,50 @@ pub mod durable;
 pub mod error;
 pub mod graph;
 pub mod lineage;
-pub mod plan_cache;
-pub mod planner;
 pub mod router;
 pub mod scheduler;
 pub mod topology;
+
+#[cfg(feature = "llm-planning")]
+pub mod adaptorch;
+#[cfg(feature = "llm-planning")]
+pub mod aggregator;
+#[cfg(feature = "llm-planning")]
+pub mod plan_cache;
+#[cfg(feature = "llm-planning")]
+pub mod planner;
+#[cfg(feature = "llm-planning")]
 pub mod verifier;
+#[cfg(feature = "llm-planning")]
 pub mod verify_predicate;
 
-pub use adaptorch::{AdaptOrchMetrics, AdvisorVerdict, TaskClass, TopologyAdvisor, TopologyHint};
 pub use admission::AdmissionGate;
-pub use aggregator::{Aggregator, LlmAggregator};
 pub use cascade::{AbortDecision, CascadeConfig, CascadeDetector, RegionHealth};
 pub use command::PlanCommand;
 pub use dag::lookahead_tools;
 pub use error::OrchestrationError;
 pub use graph::{
-    ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, PlanSlug, TaskGraph,
-    TaskId, TaskNode, TaskResult, TaskStatus,
+    ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, PlanSlug,
+    PredicateOutcome, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus, VerifyPredicate,
 };
 pub use lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error};
-pub use plan_cache::{
-    PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
-};
-pub use planner::{LlmPlanner, Planner};
 pub use router::{AgentRouter, RuleBasedRouter};
 pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};
 pub use topology::{
     DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier, build_rev_adj,
 };
+
+#[cfg(feature = "llm-planning")]
+pub use adaptorch::{AdaptOrchMetrics, AdvisorVerdict, TaskClass, TopologyAdvisor, TopologyHint};
+#[cfg(feature = "llm-planning")]
+pub use aggregator::{Aggregator, LlmAggregator};
+#[cfg(feature = "llm-planning")]
+pub use plan_cache::{
+    PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
+};
+#[cfg(feature = "llm-planning")]
+pub use planner::{LlmPlanner, Planner};
+#[cfg(feature = "llm-planning")]
 pub use verifier::{Gap, GapSeverity, PlanVerifier, VerificationResult};
-pub use verify_predicate::{PredicateEvaluator, PredicateOutcome, VerifyPredicate};
+#[cfg(feature = "llm-planning")]
+pub use verify_predicate::PredicateEvaluator;

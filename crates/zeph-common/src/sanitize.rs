@@ -7,6 +7,26 @@
 //! only provides the shared low-level primitives (control char stripping,
 //! null byte removal) that multiple crates need.
 
+/// Abstraction for sanitizing untrusted task output before LLM injection.
+///
+/// `zeph-orchestration` uses this trait to avoid a direct dependency on
+/// `zeph-sanitizer`. Callers in `zeph-core` supply a concrete implementation.
+pub trait OutputSanitizer: Send + Sync {
+    /// Sanitize a raw task output string and return the safe version.
+    fn sanitize_task_output(&self, text: &str) -> String;
+}
+
+/// Passthrough implementation that applies no sanitization.
+///
+/// Used in tests and contexts where a real sanitizer is not available.
+pub struct IdentitySanitizer;
+
+impl OutputSanitizer for IdentitySanitizer {
+    fn sanitize_task_output(&self, text: &str) -> String {
+        text.to_owned()
+    }
+}
+
 /// Strip ASCII control characters (U+0000–U+001F, U+007F) from `s`.
 ///
 /// Also strips Unicode `BiDi` override codepoints (U+202A–U+202E, U+2066–U+2069)

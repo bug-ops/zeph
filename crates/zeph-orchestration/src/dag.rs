@@ -15,8 +15,8 @@ use std::collections::VecDeque;
 use zeph_common::fidelity::PlannedToolHint;
 
 use super::error::OrchestrationError;
+use super::graph::PredicateOutcome;
 use super::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskId, TaskNode, TaskStatus};
-use super::verify_predicate::PredicateOutcome;
 
 /// Validate that the task slice forms a well-structured DAG.
 ///
@@ -514,6 +514,69 @@ fn extract_keywords(tool_name: &str, description: &str) -> Vec<String> {
     keywords
 }
 
+/// Inject new tasks into a task graph, validate DAG acyclicity, and mark new
+/// roots as `Ready`.
+///
+/// Does NOT re-analyze topology — topology re-analysis is deferred to the next
+/// `tick()` via the `dirty` flag in `DagScheduler` (critic C2).
+///
+/// # Errors
+///
+/// Returns `OrchestrationError::VerificationFailed` if the resulting graph
+/// contains a cycle or exceeds the task limit.
+pub fn inject_tasks(
+    graph: &mut TaskGraph,
+    new_tasks: Vec<TaskNode>,
+    max_tasks: usize,
+) -> Result<(), OrchestrationError> {
+    if new_tasks.is_empty() {
+        return Ok(());
+    }
+
+    let existing_len = graph.tasks.len();
+    let total = existing_len + new_tasks.len();
+
+    if total > max_tasks {
+        return Err(OrchestrationError::VerificationFailed(format!(
+            "inject_tasks would create {total} tasks, exceeding limit of {max_tasks}"
+        )));
+    }
+
+    for (i, task) in new_tasks.iter().enumerate() {
+        let expected = TaskId(u32::try_from(existing_len + i).map_err(|_| {
+            OrchestrationError::VerificationFailed("task index overflows u32".to_string())
+        })?);
+        if task.id != expected {
+            return Err(OrchestrationError::VerificationFailed(format!(
+                "injected task at position {} has id {} (expected {})",
+                i, task.id, expected
+            )));
+        }
+    }
+
+    graph.tasks.extend(new_tasks);
+
+    validate(&graph.tasks, max_tasks).map_err(|e| match e {
+        OrchestrationError::CycleDetected => {
+            OrchestrationError::VerificationFailed("inject_tasks introduced a cycle".to_string())
+        }
+        other => OrchestrationError::VerificationFailed(other.to_string()),
+    })?;
+
+    let n = graph.tasks.len();
+    for i in existing_len..n {
+        let all_deps_done = graph.tasks[i]
+            .depends_on
+            .iter()
+            .all(|dep| graph.tasks[dep.index()].status == TaskStatus::Completed);
+        if all_deps_done {
+            graph.tasks[i].status = TaskStatus::Ready;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,7 +790,7 @@ mod tests {
 
     #[test]
     fn test_ready_tasks_predicate_gate_blocks_downstream() {
-        use crate::verify_predicate::VerifyPredicate;
+        use crate::graph::VerifyPredicate;
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         // Task 0 completed but predicate not yet evaluated.
         graph.tasks[0].status = TaskStatus::Completed;
@@ -746,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_ready_tasks_predicate_gate_unblocks_on_pass() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         graph.tasks[0].status = TaskStatus::Completed;
         graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));
@@ -766,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_ready_tasks_predicate_gate_remains_closed_on_fail() {
-        use crate::verify_predicate::{PredicateOutcome, VerifyPredicate};
+        use crate::graph::{PredicateOutcome, VerifyPredicate};
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
         graph.tasks[0].status = TaskStatus::Completed;
         graph.tasks[0].verify_predicate = Some(VerifyPredicate::Natural("criterion".to_string()));

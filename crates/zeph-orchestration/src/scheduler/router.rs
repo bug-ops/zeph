@@ -8,7 +8,6 @@ use std::fmt::Write as _;
 use super::DagScheduler;
 use crate::graph::{TaskNode, TaskStatus};
 use zeph_common::text::xml_escape;
-use zeph_sanitizer::{ContentSource, ContentSourceKind};
 
 impl DagScheduler {
     /// Build the task prompt with dependency context injection (Section 14).
@@ -57,9 +56,7 @@ impl DagScheduler {
 
             if let Some(ref result) = dep.result {
                 // SEC-ORCH-01: sanitize dep output to prevent prompt injection from upstream tasks.
-                let source = ContentSource::new(ContentSourceKind::A2aMessage);
-                let sanitized = self.sanitizer.sanitize(&result.output, source);
-                let safe_output = sanitized.body;
+                let safe_output = self.sanitizer.sanitize_task_output(&result.output);
 
                 // Char-boundary-safe truncation (S1): use chars().take() instead of byte slicing.
                 let char_count = safe_output.chars().count();
