@@ -479,8 +479,11 @@ impl Default for OrchestrationConfig {
 pub struct ExperimentConfig {
     /// Enable autonomous self-experimentation. Default: `false`.
     pub enabled: bool,
-    /// Model identifier used for evaluating experiment outcomes.
-    pub eval_model: Option<String>,
+    /// Provider name (from `[[llm.providers]]`) used as the LLM-as-judge for experiment
+    /// evaluation. An empty value falls back to the primary provider. Prefer a capable,
+    /// low-self-judge-bias model (e.g. a different provider than the one being evaluated).
+    #[serde(default)]
+    pub eval_provider: ProviderName,
     /// Path to a benchmark JSONL file for evaluating experiments.
     pub benchmark_file: Option<std::path::PathBuf>,
     #[serde(default = "default_experiment_max_experiments")]
@@ -509,7 +512,7 @@ impl Default for ExperimentConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            eval_model: None,
+            eval_provider: ProviderName::default(),
             benchmark_file: None,
             max_experiments: default_experiment_max_experiments(),
             max_wall_time_secs: default_experiment_max_wall_time_secs(),

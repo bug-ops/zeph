@@ -138,7 +138,7 @@ pub(crate) struct WizardState {
     pub(crate) hard_compaction_threshold: f32,
     // Experiments
     pub(crate) experiments_enabled: bool,
-    pub(crate) experiments_eval_model: Option<String>,
+    pub(crate) experiments_eval_provider: String,
     pub(crate) experiments_schedule_enabled: bool,
     pub(crate) experiments_schedule_cron: String,
     // Security
@@ -361,7 +361,7 @@ impl Default for WizardState {
             soft_compaction_threshold: 0.60,
             hard_compaction_threshold: 0.90,
             experiments_enabled: false,
-            experiments_eval_model: None,
+            experiments_eval_provider: String::new(),
             experiments_schedule_enabled: false,
             experiments_schedule_cron: String::new(),
             pii_filter_enabled: false,
@@ -1122,10 +1122,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
 
     if state.experiments_enabled {
         config.experiments.enabled = true;
-        config
-            .experiments
-            .eval_model
-            .clone_from(&state.experiments_eval_model);
+        config.experiments.eval_provider =
+            ProviderName::new(state.experiments_eval_provider.as_str());
         if state.experiments_schedule_enabled {
             config.experiments.schedule.enabled = true;
             if !state.experiments_schedule_cron.is_empty() {
@@ -1462,7 +1460,7 @@ fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
             ))
             .default(default_provider.clone())
             .interact_text()?;
-        state.experiments_eval_model = if input.is_empty() { None } else { Some(input) };
+        state.experiments_eval_provider = input;
 
         state.experiments_schedule_enabled = Confirm::new()
             .with_prompt("Schedule automatic experiment runs?")
@@ -1654,6 +1652,22 @@ fn step_quality(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Compute the XDG default config path used by the init wizard.
+///
+/// Mirrors the fallback logic in `resolve_config_path_impl` so that the path the wizard
+/// proposes matches the path the runtime loads when no CLI override or `ZEPH_CONFIG` env var
+/// is set and `config/default.toml` does not exist.
+pub(crate) fn wizard_default_config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map_or_else(|_| PathBuf::from("~"), PathBuf::from)
+                .join(".config")
+        })
+        .join("zeph")
+        .join("config.toml")
+}
+
 fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow::Result<()> {
     println!("== Step 10/10: Review & Write ==\n");
 
@@ -1664,14 +1678,7 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
     println!("{toml_str}");
     println!("------------------------\n");
 
-    let default_path = dirs::config_dir()
-        .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map_or_else(|_| PathBuf::from("~"), PathBuf::from)
-                .join(".config")
-        })
-        .join("zeph")
-        .join("config.toml");
+    let default_path = wizard_default_config_path();
     let path = output.unwrap_or_else(|| {
         Input::new()
             .with_prompt("Write config to")
@@ -2067,7 +2074,7 @@ mod tests {
     fn build_config_experiments_enabled() {
         let state = WizardState {
             experiments_enabled: true,
-            experiments_eval_model: Some("claude".into()),
+            experiments_eval_provider: "claude".into(),
             experiments_schedule_enabled: true,
             experiments_schedule_cron: "0 4 * * *".into(),
             vault_backend: "env".into(),
@@ -2075,7 +2082,7 @@ mod tests {
         };
         let config = build_config(&state);
         assert!(config.experiments.enabled);
-        assert_eq!(config.experiments.eval_model.as_deref(), Some("claude"));
+        assert_eq!(config.experiments.eval_provider.as_str(), "claude");
         assert!(config.experiments.schedule.enabled);
         assert_eq!(config.experiments.schedule.cron, "0 4 * * *");
     }

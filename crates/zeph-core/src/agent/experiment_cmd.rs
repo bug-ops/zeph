@@ -28,7 +28,7 @@ impl<C: Channel> Agent<C> {
             .map_err(|e| format!("Failed to load benchmark: {e}"))?;
 
         let provider_arc = Arc::new(self.provider.clone());
-        // Use a dedicated eval provider when `eval_model` is configured, so the judge is
+        // Use a dedicated eval provider when `eval_provider` is configured, so the judge is
         // independent from the agent under test. Fall back to the primary provider otherwise.
         let judge_arc = self
             .services

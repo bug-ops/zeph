@@ -1173,3 +1173,67 @@ pub fn migrate_llm_stream_limits(toml_src: &str) -> Result<MigrationResult, Migr
         sections_changed: vec!["llm.stream_limits".to_owned()],
     })
 }
+
+/// Rename `[experiments] eval_model` → `eval_provider` (#4987).
+///
+/// `eval_model` held a raw model name (e.g. `"claude-opus-4"`), while `eval_provider` must
+/// reference a `[[llm.providers]]` `name` field. A migrated value would cause a silent `warn!`
+/// from `build_eval_provider()` when resolution fails, so the old value is commented out.
+///
+/// If `eval_model` is absent in `[experiments]`, the input is returned unchanged.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the input TOML is invalid.
+pub fn migrate_eval_model_to_provider(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+
+    let old_value = doc
+        .get("experiments")
+        .and_then(toml_edit::Item::as_table)
+        .and_then(|t| t.get("eval_model"))
+        .and_then(toml_edit::Item::as_value)
+        .and_then(toml_edit::Value::as_str)
+        .map(ToOwned::to_owned);
+
+    let Some(old_model) = old_value else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    };
+
+    let commented_out = format!(
+        "# eval_provider = \"{old_model}\"  \
+         # MIGRATED: was eval_model; update to a [[llm.providers]] name"
+    );
+
+    let exp_table = doc
+        .get_mut("experiments")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or(MigrateError::InvalidStructure(
+            "[experiments] is not a table",
+        ))?;
+    exp_table.remove("eval_model");
+    let decor = exp_table.decor_mut();
+    let existing_suffix = decor.suffix().and_then(|s| s.as_str()).unwrap_or("");
+    let new_suffix = if existing_suffix.trim().is_empty() {
+        format!("\n{commented_out}\n")
+    } else {
+        format!("{existing_suffix}\n{commented_out}\n")
+    };
+    decor.set_suffix(new_suffix);
+
+    eprintln!(
+        "Migration warning: [experiments].eval_model has been renamed to eval_provider \
+         and its value commented out. `eval_provider` must reference a [[llm.providers]] \
+         `name` field, not a raw model name. Update or remove the commented line."
+    );
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        changed_count: 1,
+        sections_changed: vec!["experiments.eval_provider".to_owned()],
+    })
+}

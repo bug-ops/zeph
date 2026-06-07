@@ -1065,6 +1065,9 @@ ner_model = "iiiorg/piiranha-v1-detect-personal-information"
 [experiments]
 # Enable the autonomous self-experimentation engine
 enabled = false
+# Provider name (from [[llm.providers]]) used as LLM-as-judge for experiment evaluation.
+# Empty = primary provider. Use a provider different from the one under test to avoid self-judge bias.
+eval_provider = ""
 # Maximum number of experiments to run in a single session
 max_experiments = 20
 # Maximum wall-clock time per experiment session in seconds

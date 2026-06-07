@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        57,
-        "MIGRATIONS registry must contain all 57 sequential steps"
+        58,
+        "MIGRATIONS registry must contain all 58 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -685,6 +685,52 @@ enabled = true
 max_tasks = 20
 ";
     let result = migrate_planner_model_to_provider(input).expect("migration must succeed");
+    assert_eq!(
+        result.changed_count, 0,
+        "changed_count must be 0 when field is absent"
+    );
+    assert_eq!(
+        result.output, input,
+        "output must equal input when nothing to migrate"
+    );
+}
+
+#[test]
+fn migrate_eval_model_to_provider_with_field() {
+    let input = r#"
+[experiments]
+enabled = true
+eval_model = "claude-opus-4"
+max_experiments = 20
+"#;
+    let result = migrate_eval_model_to_provider(input).expect("migration must succeed");
+    assert_eq!(result.changed_count, 1, "changed_count must be 1");
+    assert!(
+        !result.output.contains("eval_model = "),
+        "eval_model key must be removed from output"
+    );
+    assert!(
+        result.output.contains("# eval_provider"),
+        "commented-out eval_provider entry must be present"
+    );
+    assert!(
+        result.output.contains("claude-opus-4"),
+        "old value must appear in the comment"
+    );
+    assert!(
+        result.output.contains("MIGRATED"),
+        "comment must include MIGRATED marker"
+    );
+}
+
+#[test]
+fn migrate_eval_model_to_provider_no_op() {
+    let input = r"
+[experiments]
+enabled = true
+max_experiments = 20
+";
+    let result = migrate_eval_model_to_provider(input).expect("migration must succeed");
     assert_eq!(
         result.changed_count, 0,
         "changed_count must be 0 when field is absent"
@@ -1599,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 57);
+    assert_eq!(MIGRATIONS.len(), 58);
 }
 
 #[test]
@@ -1697,6 +1743,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_worktree_git_timeout",
         "migrate_llm_stream_limits",
         "migrate_durable_config",
+        "migrate_eval_model_to_provider",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

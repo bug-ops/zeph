@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(config)`: rename `ExperimentConfig.eval_model: Option<String>` → `eval_provider: ProviderName` to comply with the multi-model design principle. `eval_provider` references a `[[llm.providers]]` name; an empty value falls back to the primary provider. Migration step 58 (`migrate_eval_model_to_provider`) comments out the old key and emits a warning. Config wizard updated to write `eval_provider`. **BREAKING CHANGE**: `experiments.eval_model` is removed; update `[experiments]` sections to use `eval_provider = "<provider-name>"` (closes #4987, #4993)
 - Add `#[must_use]` to public validate/scan functions across workspace (zeph-config, zeph-skills, zeph-orchestration, zeph-experiments, zeph-common, zeph-core, zeph-mcp, zeph-plugins, zeph-tools) to prevent silent discard of validation errors (closes #4943, #4961, #4963)
 - `docs(acp)`: fix broken intra-doc links in `transport/` and `client/error` — feature-gated items referenced as plain backtick text; private `SubagentCommand::Close` link removed from public doc (closes #4941)
 - `refactor(tools)`: extract `build_audit_entry` private helper in `ShellExecutor`; `log_audit` and `log_audit_with_context` now delegate to it (closes #4960)

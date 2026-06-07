@@ -1798,15 +1798,18 @@ impl AppBuilder {
     }
 
     pub fn build_eval_provider(&self) -> Option<AnyProvider> {
-        let model_spec = self.config.experiments.eval_model.as_deref()?;
-        match create_summary_provider(model_spec, &self.config) {
+        let name = &self.config.experiments.eval_provider;
+        if name.is_empty() {
+            return None;
+        }
+        match create_named_provider(name, &self.config) {
             Ok(p) => {
-                tracing::info!(eval_model = %model_spec, "experiment eval provider configured");
+                tracing::info!(eval_provider = %name, "experiment eval provider configured");
                 Some(p)
             }
             Err(e) => {
                 tracing::warn!(
-                    eval_model = %model_spec,
+                    eval_provider = %name,
                     error = %e,
                     "failed to create eval provider — primary provider will be used as judge"
                 );

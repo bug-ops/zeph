@@ -167,4 +167,16 @@ mod tests {
             result.display()
         );
     }
+
+    #[test]
+    fn xdg_fallback_matches_wizard_default() {
+        // The runtime loader and the init wizard must propose the same path so that
+        // a config written by `zeph --init` is found automatically at startup.
+        let runtime_path = resolve_config_path_impl(None, no_env, false);
+        let wizard_path = crate::init::wizard_default_config_path();
+        assert_eq!(
+            runtime_path, wizard_path,
+            "init wizard default path and runtime XDG fallback diverged"
+        );
+    }
 }

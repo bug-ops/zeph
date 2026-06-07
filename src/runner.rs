@@ -3617,7 +3617,7 @@ async fn run_experiment_session(
         .map_err(|e| anyhow::anyhow!("failed to load benchmark: {e}"))?;
 
     let provider_arc = Arc::new(provider);
-    // Use a dedicated eval provider when `eval_model` is configured to avoid self-judge bias.
+    // Use a dedicated eval provider when `eval_provider` is configured to avoid self-judge bias.
     let judge_arc = app
         .build_eval_provider()
         .map_or_else(|| Arc::clone(&provider_arc), Arc::new);

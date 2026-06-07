@@ -543,7 +543,7 @@ impl<C: Channel> Agent<C> {
     /// Set a dedicated judge provider for experiment evaluation.
     ///
     /// When set, the evaluator uses this provider instead of the agent's primary provider,
-    /// eliminating self-judge bias. Corresponds to `experiments.eval_model` in config.
+    /// eliminating self-judge bias. Corresponds to `experiments.eval_provider` in config.
     #[must_use]
     pub fn with_eval_provider(mut self, provider: AnyProvider) -> Self {
         self.services.experiments.eval_provider = Some(provider);
