@@ -118,6 +118,8 @@ The default implementation SHALL invoke `tokio::process::Command` with the `awai
 
 **FR-CWD-03** [INV-2]: Before entering the worktree, the previous cwd SHALL be captured: `prev = std::env::current_dir()`. After the agent completes (success, error, or cancellation), `set_current_dir(prev)` SHALL run in a guaranteed-run path (RAII `Drop` implementation or equivalent). This restore SHALL occur BEFORE `git worktree remove`.
 
+**Constraint:** This requirement is valid only under `panic = "unwind"` (the default). Under `panic = "abort"` (enabled in the release profile), Rust skips Drop destructors — cwd is not restored on panic. However, the system remains in a defined state because the entire process terminates immediately, making cwd restoration moot.
+
 **FR-CWD-04** [INV-3]: For every worktree-opted agent, `set_working_directory` (`TOOL_NAME = "set_working_directory"`) SHALL be added to the effective denylist via `FilteredToolExecutor::with_disallowed`. This is enforced at `build_filtered_executor` time in `zeph-subagent`.
 
 **FR-CWD-05** [INV-4]: If worktree creation fails, the agent spawn SHALL fail with a `SubAgentError` wrapping the `WorktreeError`. The agent SHALL NOT proceed with the parent's shared cwd as fallback.

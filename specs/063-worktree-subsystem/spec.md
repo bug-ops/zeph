@@ -224,6 +224,17 @@ acquire CwdGuard
 The RAII guard (`CwdRestoreGuard`) captures `prev` at construction and calls `set_current_dir(prev)`
 in its `Drop` impl. This ensures restore happens on panic and cancellation, not just normal completion.
 
+**Panic=abort Limitation:** This Drop-based restoration guarantee only holds when compiled with
+`panic = "unwind"` (Rust's default panic strategy for binaries in debug builds and most development
+CI profiles). Under `panic = "abort"` (enabled in the release profile via `[profile.release] panic = "abort"`
+in root `Cargo.toml`), Rust skips all Drop destructors on panic — the cwd restore will NOT execute,
+and the process terminates immediately. **Mitigation:** This is acceptable because `panic = "abort"`
+already terminates the entire process: cwd restoration is irrelevant when the process ceases to exist.
+The system remains in a defined terminal state (process dead). For development and testing cycles that
+run with `panic = "unwind"`, the RAII guarantee provides full cleanup coverage.
+
+**Note:** Root `Cargo.toml` line 370 confirms `panic = "abort"` is active in release builds.
+
 ### Acceptance Test (M4 — concurrency serialisation)
 
 A test MUST verify: when a worktree agent is active (holds `CwdGuard`), a second agent's tool turn is

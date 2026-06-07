@@ -3,6 +3,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub(super) const SCROLL_STEP_PAGE: usize = 10;
+
 use crate::command::TuiCommand;
 use crate::file_picker::{FileIndex, FilePickerState};
 use crate::widgets::command_palette::CommandPaletteState;
@@ -750,6 +752,7 @@ impl App {
         false
     }
 
+    #[allow(clippy::too_many_lines)] // large match over all Normal-mode key bindings
     fn handle_normal_key(&mut self, key: KeyEvent) {
         if self.handle_subagent_panel_key(key) {
             return;
@@ -775,12 +778,18 @@ impl App {
                     self.sessions.current().scroll_offset.saturating_sub(1);
             }
             KeyCode::PageUp => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_add(10);
+                self.sessions.current_mut().scroll_offset = self
+                    .sessions
+                    .current()
+                    .scroll_offset
+                    .saturating_add(SCROLL_STEP_PAGE);
             }
             KeyCode::PageDown => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_sub(10);
+                self.sessions.current_mut().scroll_offset = self
+                    .sessions
+                    .current()
+                    .scroll_offset
+                    .saturating_sub(SCROLL_STEP_PAGE);
             }
             KeyCode::Home => {
                 self.sessions.current_mut().scroll_offset =
@@ -949,12 +958,18 @@ impl App {
     fn handle_insert_scroll_keys(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::PageUp => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_add(10);
+                self.sessions.current_mut().scroll_offset = self
+                    .sessions
+                    .current()
+                    .scroll_offset
+                    .saturating_add(SCROLL_STEP_PAGE);
             }
             KeyCode::PageDown => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_sub(10);
+                self.sessions.current_mut().scroll_offset = self
+                    .sessions
+                    .current()
+                    .scroll_offset
+                    .saturating_sub(SCROLL_STEP_PAGE);
             }
             _ => return false,
         }
