@@ -633,8 +633,17 @@ async fn skill_bodies_prepended_to_system_prompt() {
         )
         .unwrap();
 
-    // Wait for the loop to call the provider at least once.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Poll until the provider is called (or 5 s timeout — guards against CI load).
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if !recorded.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("provider should have been called within 5 s");
 
     let calls = recorded.lock().unwrap();
     assert!(!calls.is_empty(), "provider should have been called");
@@ -675,7 +684,17 @@ async fn no_skills_does_not_add_fence_to_system_prompt() {
         )
         .unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Poll until the provider is called (or 5 s timeout — guards against CI load).
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if !recorded.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("provider should have been called within 5 s");
 
     let calls = recorded.lock().unwrap();
     assert!(!calls.is_empty());
