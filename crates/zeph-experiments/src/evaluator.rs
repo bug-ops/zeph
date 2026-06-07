@@ -108,7 +108,12 @@ pub struct EvalReport {
     pub cases_scored: usize,
     /// Total number of cases in the benchmark set (including failed ones).
     pub cases_total: usize,
-    /// `true` if any case was excluded due to budget exhaustion or judge errors.
+    /// `true` if any case was excluded due to budget exhaustion, judge errors, or subject errors.
+    ///
+    /// When `is_partial = true` and `cases_scored < cases_total`, `mean_score` reflects only the
+    /// surviving subset of cases. Callers must not compare a partial-sample `mean_score` against a
+    /// full-sample baseline as if they are equivalent — the delta may be an artifact of which cases
+    /// failed rather than a real quality improvement.
     pub is_partial: bool,
     /// Number of cases that failed (LLM error, parse error, or budget exceeded).
     pub error_count: usize,
@@ -171,6 +176,8 @@ pub struct Evaluator {
     subject_timeout_secs: u64,
     /// Maximum seconds to wait for the judge model to respond per case.
     judge_timeout_secs: u64,
+    /// When `true`, subject call failures are excluded from scores instead of aborting the run.
+    tolerate_subject_errors: bool,
 }
 
 impl Evaluator {
@@ -192,6 +199,7 @@ impl Evaluator {
             parallel_evals: DEFAULT_PARALLEL_EVALS,
             subject_timeout_secs: DEFAULT_SUBJECT_TIMEOUT_SECS,
             judge_timeout_secs: DEFAULT_JUDGE_TIMEOUT_SECS,
+            tolerate_subject_errors: false,
         })
     }
 
@@ -288,6 +296,42 @@ impl Evaluator {
         self
     }
 
+    /// Control whether subject call failures abort the run or are excluded from scoring.
+    ///
+    /// When `true`, a failed subject case (LLM error or timeout) is logged at `WARN` level
+    /// and excluded from Phase 2 scoring — matching Phase 2's graceful-degradation semantics.
+    /// The report will have `is_partial = true` and the failed cases counted in
+    /// [`EvalReport::error_count`].
+    ///
+    /// When `false` (the default), any subject failure immediately aborts the evaluation and
+    /// returns an error, preserving the existing semantics.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use std::sync::Arc;
+    /// # use zeph_experiments::{BenchmarkSet, BenchmarkCase, Evaluator, EvalError};
+    /// # use zeph_llm::any::AnyProvider;
+    /// # use zeph_llm::mock::MockProvider;
+    /// # fn example() -> Result<Evaluator, EvalError> {
+    /// let judge = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![])));
+    /// let benchmark = BenchmarkSet {
+    ///     cases: vec![BenchmarkCase {
+    ///         prompt: "hi".into(), context: None, reference: None, tags: None,
+    ///     }],
+    /// };
+    /// let evaluator = Evaluator::new(judge, benchmark, 10_000)?.with_tolerate_subject_errors(true);
+    /// # Ok(evaluator)
+    /// # }
+    /// ```
+    ///
+    /// [`EvalReport::error_count`]: EvalReport::error_count
+    #[must_use]
+    pub fn with_tolerate_subject_errors(mut self, tolerate: bool) -> Self {
+        self.tolerate_subject_errors = tolerate;
+        self
+    }
+
     /// Run the full benchmark against `subject`, returning aggregate scores.
     ///
     /// Both subject and judge calls are parallelized up to `parallel_evals` concurrent
@@ -343,10 +387,22 @@ impl Evaluator {
             });
         }
 
-        // Collect subject responses; any error is fatal (propagate immediately).
+        // Collect subject responses. When `tolerate_subject_errors` is false (default) any
+        // error aborts the run immediately. When true, failed cases are excluded from Phase 2.
         let mut indexed_responses: Vec<(usize, String)> = Vec::with_capacity(cases_total);
+        let mut subject_error_count = 0usize;
         while let Some(result) = subject_futures.next().await {
-            indexed_responses.push(result?);
+            match result {
+                Ok(pair) => indexed_responses.push(pair),
+                Err(e) if self.tolerate_subject_errors => {
+                    tracing::warn!(
+                        error = %e,
+                        "subject call failed, excluding case from evaluation"
+                    );
+                    subject_error_count += 1;
+                }
+                Err(e) => return Err(e),
+            }
         }
         // Restore deterministic order for Phase 2 (FuturesUnordered yields in completion order).
         indexed_responses.sort_unstable_by_key(|(i, _)| *i);
@@ -439,6 +495,7 @@ impl Evaluator {
         }
 
         let cases_scored = scores.len();
+        error_count += subject_error_count;
         let is_partial = budget_hit || error_count > 0;
 
         // Each successful judge call left a +1 reservation in tokens_used that was never
@@ -1355,5 +1412,145 @@ mod tests {
                 cs.case_index,
             );
         }
+    }
+
+    /// Mixed outcome: one subject call succeeds, one fails. With tolerate=true the successful
+    /// case must be scored and the failed case must be counted in error_count.
+    #[tokio::test]
+    async fn tolerate_subject_errors_mixed_partial_result() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let benchmark = BenchmarkSet {
+            cases: vec![
+                BenchmarkCase {
+                    prompt: "Q1".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q2".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+            ],
+        };
+        // errors queue is consumed before responses: first call returns Err, second returns "A2".
+        let subject_mock = AnyProvider::Mock(
+            MockProvider::with_responses(vec!["A2".into()]).with_errors(vec![
+                zeph_llm::LlmError::Other("subject error on case 0".into()),
+            ]),
+        );
+        let judge_mock = AnyProvider::Mock(MockProvider::with_responses(vec![
+            r#"{"score": 7.0, "reason": "ok"}"#.into(),
+        ]));
+
+        let evaluator = Evaluator::new(Arc::new(judge_mock), benchmark, 1_000_000)
+            .unwrap()
+            .with_parallel_evals(1)
+            .with_tolerate_subject_errors(true);
+
+        let report = evaluator.evaluate(&subject_mock).await.unwrap();
+
+        assert_eq!(report.cases_total, 2);
+        assert_eq!(
+            report.cases_scored, 1,
+            "only the successful case must be scored"
+        );
+        assert_eq!(
+            report.error_count, 1,
+            "the failed subject case must be counted as error"
+        );
+        assert!(
+            report.is_partial,
+            "is_partial must be true for mixed outcome"
+        );
+        assert!(
+            report.mean_score.is_finite(),
+            "mean_score must be finite for the scored case"
+        );
+    }
+
+    /// When `tolerate_subject_errors = true`, subject LLM errors exclude cases from scoring
+    /// rather than aborting the run.
+    #[tokio::test]
+    async fn tolerate_subject_errors_excludes_failed_case() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        // All subject calls fail; with tolerate=true the run must complete as a partial result.
+        let benchmark = BenchmarkSet {
+            cases: vec![
+                BenchmarkCase {
+                    prompt: "Q1".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+                BenchmarkCase {
+                    prompt: "Q2".into(),
+                    context: None,
+                    reference: None,
+                    tags: None,
+                },
+            ],
+        };
+        let failing_subject = AnyProvider::Mock(MockProvider::failing());
+        let judge_mock = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+
+        let evaluator = Evaluator::new(Arc::new(judge_mock), benchmark, 1_000_000)
+            .unwrap()
+            .with_parallel_evals(1)
+            .with_tolerate_subject_errors(true);
+
+        let report = evaluator.evaluate(&failing_subject).await.unwrap();
+
+        assert_eq!(report.cases_total, 2);
+        assert!(
+            report.is_partial,
+            "partial result expected when subject cases fail"
+        );
+        assert_eq!(
+            report.error_count, 2,
+            "both failed subject cases must be counted as errors"
+        );
+        assert_eq!(
+            report.cases_scored, 0,
+            "no cases can be scored when all subject calls fail"
+        );
+    }
+
+    /// When `tolerate_subject_errors = false` (default), a subject LLM error aborts the run.
+    #[tokio::test]
+    async fn tolerate_subject_errors_false_propagates_error() {
+        use std::sync::Arc;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let benchmark = BenchmarkSet {
+            cases: vec![BenchmarkCase {
+                prompt: "Q1".into(),
+                context: None,
+                reference: None,
+                tags: None,
+            }],
+        };
+        // failing() makes every chat() call return an error.
+        let failing_subject = AnyProvider::Mock(MockProvider::failing());
+        let judge_mock = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+
+        let evaluator = Evaluator::new(Arc::new(judge_mock), benchmark, 1_000_000)
+            .unwrap()
+            .with_parallel_evals(1);
+
+        let result = evaluator.evaluate(&failing_subject).await;
+        assert!(
+            result.is_err(),
+            "subject error must abort the evaluation when tolerate_subject_errors = false"
+        );
     }
 }

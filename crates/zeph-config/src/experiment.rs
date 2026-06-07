@@ -494,6 +494,15 @@ pub struct ExperimentConfig {
     pub auto_apply: bool,
     #[serde(default)]
     pub schedule: ExperimentSchedule,
+    /// When `true`, a subject call failure (LLM error or timeout) excludes the case from
+    /// scoring instead of aborting the entire evaluation run.
+    ///
+    /// Default: `false` (preserves existing abort-on-error semantics). Set to `true` when
+    /// running parallel evaluations where a single subject timeout should not discard all
+    /// already-billed responses from other in-flight futures — at the cost of producing a
+    /// partial result rather than a guaranteed complete evaluation.
+    #[serde(default)]
+    pub tolerate_subject_errors: bool,
 }
 
 impl Default for ExperimentConfig {
@@ -508,6 +517,7 @@ impl Default for ExperimentConfig {
             eval_budget_tokens: default_experiment_eval_budget_tokens(),
             auto_apply: false,
             schedule: ExperimentSchedule::default(),
+            tolerate_subject_errors: false,
         }
     }
 }

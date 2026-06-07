@@ -49,11 +49,58 @@ impl ReverseSearchState {
         self.refilter(history);
     }
 
-    /// Advance `selected` to the next older match (clamps at the end).
+    /// Advance `selected` to the next older match (wraps at the end).
+    ///
+    /// Mirrors bash `Ctrl+R` behaviour: repeated presses cycle through older entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_tui::widgets::reverse_search::ReverseSearchState;
+    ///
+    /// let history = vec!["first".to_owned(), "second".to_owned(), "third".to_owned()];
+    /// let mut state = ReverseSearchState::new(&history);
+    /// // starts at newest (selected = 0)
+    /// state.select_next();
+    /// assert_eq!(state.selected, 1);
+    /// state.select_next();
+    /// assert_eq!(state.selected, 2);
+    /// // wraps back to 0
+    /// state.select_next();
+    /// assert_eq!(state.selected, 0);
+    /// ```
     pub fn select_next(&mut self) {
-        if self.selected + 1 < self.matches.len() {
-            self.selected += 1;
+        if self.matches.is_empty() {
+            return;
         }
+        self.selected = (self.selected + 1) % self.matches.len();
+    }
+
+    /// Move `selected` to the previous (newer) match (wraps at the beginning).
+    ///
+    /// Mirrors bash `Ctrl+S` behaviour: moves back toward more recent matches.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_tui::widgets::reverse_search::ReverseSearchState;
+    ///
+    /// let history = vec!["first".to_owned(), "second".to_owned(), "third".to_owned()];
+    /// let mut state = ReverseSearchState::new(&history);
+    /// // wraps from 0 to last
+    /// state.select_previous();
+    /// assert_eq!(state.selected, 2);
+    /// state.select_previous();
+    /// assert_eq!(state.selected, 1);
+    /// ```
+    pub fn select_previous(&mut self) {
+        if self.matches.is_empty() {
+            return;
+        }
+        self.selected = self
+            .selected
+            .checked_sub(1)
+            .unwrap_or(self.matches.len() - 1);
     }
 
     /// Return the history entry for the currently selected match, or `None` if history is empty.
@@ -209,12 +256,50 @@ mod tests {
     }
 
     #[test]
-    fn select_next_clamps_at_end() {
+    fn select_next_wraps_at_end() {
         let history = make_history(&["a", "b"]);
         let mut state = ReverseSearchState::new(&history);
         state.select_next();
-        state.select_next(); // should clamp, not panic
         assert_eq!(state.selected, 1);
+        state.select_next(); // wraps back to 0
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn select_next_noop_on_empty() {
+        let mut state = ReverseSearchState::new(&[]);
+        state.select_next();
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn select_previous_wraps_at_start() {
+        let history = make_history(&["a", "b", "c"]);
+        let mut state = ReverseSearchState::new(&history);
+        // selected = 0, wraps to last
+        state.select_previous();
+        assert_eq!(state.selected, 2);
+        state.select_previous();
+        assert_eq!(state.selected, 1);
+        state.select_previous();
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn select_previous_noop_on_empty() {
+        let mut state = ReverseSearchState::new(&[]);
+        state.select_previous();
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn select_next_then_previous_returns_to_start() {
+        let history = make_history(&["a", "b", "c"]);
+        let mut state = ReverseSearchState::new(&history);
+        state.select_next();
+        assert_eq!(state.selected, 1);
+        state.select_previous();
+        assert_eq!(state.selected, 0);
     }
 
     #[test]

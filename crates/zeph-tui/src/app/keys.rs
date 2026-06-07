@@ -1231,6 +1231,12 @@ impl App {
                     s.select_next();
                 }
             }
+            // Ctrl+S — move to a newer (previous) match, mirroring bash Ctrl+S.
+            KeyCode::Char('s') if is_ctrl => {
+                if let Some(s) = self.reverse_search.as_mut() {
+                    s.select_previous();
+                }
+            }
             KeyCode::Backspace => {
                 let history = self.sessions.current().input_history.clone();
                 if let Some(s) = self.reverse_search.as_mut() {

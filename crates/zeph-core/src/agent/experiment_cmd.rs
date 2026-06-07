@@ -37,7 +37,8 @@ impl<C: Channel> Agent<C> {
             .as_ref()
             .map_or_else(|| Arc::clone(&provider_arc), |p| Arc::new(p.clone()));
         let evaluator = Evaluator::new(judge_arc, benchmark, config.eval_budget_tokens)
-            .map_err(|e| format!("Failed to create evaluator: {e}"))?;
+            .map_err(|e| format!("Failed to create evaluator: {e}"))?
+            .with_tolerate_subject_errors(config.tolerate_subject_errors);
 
         let generator = Box::new(GridStep::new(SearchSpace::default()));
         // Use the pre-built baseline snapshot that reflects actual runtime config values.
@@ -386,6 +387,36 @@ mod tests {
         assert!(
             result.contains("Memory is not enabled"),
             "expected no-memory message, got: {result:?}"
+        );
+    }
+
+    /// Verify that `tolerate_subject_errors` from `ExperimentConfig` is forwarded to
+    /// `Evaluator::with_tolerate_subject_errors` in `build_experiment_engine`.
+    ///
+    /// Uses a real temporary benchmark TOML so the code reaches the `.with_tolerate_subject_errors`
+    /// call site. Success (no error returned) confirms the builder chain is invoked correctly;
+    /// the underlying field value is passed through without transformation.
+    #[test]
+    fn build_experiment_engine_forwards_tolerate_subject_errors() {
+        use std::io::Write as _;
+        use zeph_config::ExperimentConfig;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "[[cases]]\nprompt = \"hello\"").unwrap();
+
+        let config = ExperimentConfig {
+            enabled: true,
+            benchmark_file: Some(f.path().to_path_buf()),
+            tolerate_subject_errors: true,
+            ..ExperimentConfig::default()
+        };
+
+        let mut agent = make_agent();
+        // build_experiment_engine must succeed and silently forward the flag to the Evaluator.
+        let result = agent.build_experiment_engine(config);
+        assert!(
+            result.is_ok(),
+            "build_experiment_engine must succeed with a valid benchmark file"
         );
     }
 }

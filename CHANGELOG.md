@@ -21,6 +21,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of the assistant text to the channel (spec-064 §15 RuntimeLayer observe-only). When `durable_ctx`
   is `None` (durable disabled or `agent_turns = false`) the loop runs exactly as before with zero
   overhead. On `DurableError` the adapter degrades gracefully to non-durable mode with a `WARN` log.
+- `feat(tui)`: `ReverseSearchState` now supports backward navigation — `select_previous()` cycles
+  toward newer matches (with wrap-around) and is bound to `Ctrl+S` in the reverse-search overlay,
+  matching bash/zsh `Ctrl+R`/`Ctrl+S` conventions. (#4691)
+- `feat(experiments)`: added `tolerate_subject_errors: bool` config field to `ExperimentConfig`
+  (default `false`, preserving existing abort-on-failure semantics). When `true`, per-case Phase 1
+  failures are excluded from scoring instead of aborting the run, matching Phase 2 graceful
+  degradation behavior. Failed cases are logged at `WARN` and counted in `error_count`; the report
+  `is_partial` flag is set to `true` so callers can distinguish partial runs from clean ones.
+  `EvalReport::is_partial` documents the partial-anchor comparison caveat. (#4856)
 
 - `feat(durable)`: scaffolded the new Layer-0 `zeph-durable` crate (spec-064) — the foundation of
   the native durable execution layer. This first slice is type-level only, with no runtime
