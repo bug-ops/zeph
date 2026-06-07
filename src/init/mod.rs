@@ -280,6 +280,12 @@ pub(crate) struct WizardState {
     /// Provider name from `[[llm.providers]]` chosen for knowledge ingest (Phase 2 graph).
     /// Empty = use primary provider.
     pub(crate) knowledge_ingest_provider: String,
+    /// Whether to register the `zeph://` URI scheme during `--init` (deep-link feature).
+    #[cfg(feature = "deep-link")]
+    pub(crate) deep_link_register: bool,
+    /// Whether to require confirmation before injecting a deep-link prompt (INV-TRUST).
+    #[cfg(feature = "deep-link")]
+    pub(crate) deep_link_confirm_before_prompt: bool,
 }
 
 impl Default for WizardState {
@@ -465,6 +471,10 @@ impl Default for WizardState {
             durable_key_b64: None,
             caveman_default_on: false,
             knowledge_ingest_provider: String::new(),
+            #[cfg(feature = "deep-link")]
+            deep_link_register: false,
+            #[cfg(feature = "deep-link")]
+            deep_link_confirm_before_prompt: true,
         }
     }
 }
@@ -537,6 +547,8 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_session_recap(&mut state)?;
     step_caveman(&mut state)?;
     step_knowledge(&mut state)?;
+    #[cfg(feature = "deep-link")]
+    step_deep_link(&mut state)?;
     step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -1173,6 +1185,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         }
     }
 
+    // Apply deep-link security settings (spec-066, TASK-9).
+    #[cfg(feature = "deep-link")]
+    {
+        config.deep_link.confirm_before_prompt = state.deep_link_confirm_before_prompt;
+    }
+
     config
 }
 
@@ -1708,6 +1726,38 @@ fn step_knowledge(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Configure `zeph://` deep-link URI scheme (spec-066, TASK-9).
+///
+/// Offers to register the OS-level `zeph://` handler and configures the security gate
+/// (`confirm_before_prompt`). Gated behind the `deep-link` Cargo feature.
+///
+/// # Errors
+///
+/// Returns an error if the terminal prompt interaction fails.
+#[cfg(feature = "deep-link")]
+fn step_deep_link(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Deep Link (zeph:// URI scheme) ==\n");
+    println!("Allows other applications to open a Zeph session via a zeph:// URL.");
+    println!("Requires the binary to be compiled with --features deep-link.\n");
+
+    state.deep_link_register = Confirm::new()
+        .with_prompt("Register the zeph:// URI scheme on this OS?")
+        .default(false)
+        .interact()?;
+
+    if state.deep_link_register {
+        state.deep_link_confirm_before_prompt = Confirm::new()
+            .with_prompt(
+                "Require confirmation before injecting a URL-supplied prompt? (recommended) [Y/n]",
+            )
+            .default(true)
+            .interact()?;
+    }
+
+    println!();
+    Ok(())
+}
+
 /// Compute the XDG default config path used by the init wizard.
 ///
 /// Mirrors the fallback logic in `resolve_config_path_impl` so that the path the wizard
@@ -1768,6 +1818,16 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
     durable::store_durable_key(state)?;
     print_secrets_instructions(state);
     print_next_steps(state, &path);
+
+    // Perform OS-level scheme registration after writing the config (TASK-9).
+    #[cfg(feature = "deep-link")]
+    if state.deep_link_register {
+        println!("\nRegistering zeph:// URI scheme...");
+        match crate::url_scheme::register::handle_url_scheme_register() {
+            Ok(()) => println!("zeph:// URI scheme registered."),
+            Err(e) => eprintln!("Warning: scheme registration failed: {e}"),
+        }
+    }
 
     Ok(())
 }

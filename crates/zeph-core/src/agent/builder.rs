@@ -2453,6 +2453,35 @@ impl<C: Channel> Agent<C> {
     ) -> std::sync::Arc<dyn zeph_tools::executor::ErasedToolExecutor> {
         std::sync::Arc::clone(&self.tool_executor)
     }
+
+    /// Pre-queue a message into the agent's message queue before the first turn.
+    ///
+    /// Intended for non-interactive sources (e.g. `url-open` deep-link prompt) that need to
+    /// inject a first user turn without waiting for stdin. The message is appended as a
+    /// [`QueuedMessage`] so it is subject to the same merge-window and queue-size limits as
+    /// channel messages.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use zeph_core::agent::Agent;
+    /// # fn doc_example<C: zeph_core::channel::Channel>(agent: Agent<C>) {
+    /// let agent = agent.with_initial_message("Hello from deep link".to_owned());
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_initial_message(mut self, message: String) -> Self {
+        use std::time::Instant;
+        self.msg
+            .message_queue
+            .push_back(super::message_queue::QueuedMessage {
+                text: message,
+                received_at: Instant::now(),
+                image_parts: vec![],
+                raw_attachments: vec![],
+            });
+        self
+    }
 }
 
 #[cfg(test)]

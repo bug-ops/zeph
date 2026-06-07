@@ -9,5 +9,8 @@
 //! # Modules
 //!
 //! - [`validate`] — CWD path validation following INV-CWD from spec §3.
+//! - [`register`] — platform-specific scheme registration (Linux, macOS, Windows).
 
+pub mod prompt;
+pub mod register;
 pub mod validate;

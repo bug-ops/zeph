@@ -274,6 +274,20 @@ pub(crate) struct Cli {
 
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
+
+    /// Initial prompt pre-queued from a deep-link URI (set by `handle_url_open` before bootstrap).
+    ///
+    /// Not a CLI flag — populated programmatically by the `url-open` dispatch arm.
+    #[cfg(feature = "deep-link")]
+    #[arg(skip)]
+    pub(crate) deep_link_prompt: Option<String>,
+
+    /// URI that originated this session (emitted as a TUI status notification).
+    ///
+    /// Not a CLI flag — populated programmatically by the `url-open` dispatch arm.
+    #[cfg(feature = "deep-link")]
+    #[arg(skip)]
+    pub(crate) deep_link_uri: Option<String>,
 }
 
 #[cfg(test)]
@@ -460,6 +474,18 @@ pub(crate) enum Command {
     Knowledge {
         #[command(subcommand)]
         command: KnowledgeCommand,
+    },
+    /// Open a session from a zeph:// URI dispatched by the OS scheme handler.
+    #[cfg(feature = "deep-link")]
+    UrlOpen {
+        /// The `zeph://` URI to dispatch (e.g. `zeph://new-session?prompt=Hello`)
+        uri: String,
+    },
+    /// Manage OS-level `zeph://` scheme registration.
+    #[cfg(feature = "deep-link")]
+    UrlScheme {
+        #[command(subcommand)]
+        command: UrlSchemeCommand,
     },
 }
 
@@ -908,6 +934,18 @@ pub(crate) enum NotifyCommand {
     Test,
 }
 
+/// Subcommands for `zeph url-scheme`.
+#[cfg(feature = "deep-link")]
+#[derive(Subcommand)]
+pub(crate) enum UrlSchemeCommand {
+    /// Register the `zeph://` URI scheme with the OS.
+    Register,
+    /// Remove the OS `zeph://` URI scheme registration.
+    Unregister,
+    /// Show the current registration status.
+    Status,
+}
+
 #[derive(Subcommand)]
 pub(crate) enum VaultCommand {
     /// Generate age keypair and empty encrypted vault
@@ -1240,5 +1278,43 @@ mod tests {
         } else {
             panic!("unexpected command variant");
         }
+    }
+
+    #[cfg(feature = "deep-link")]
+    #[test]
+    fn cli_parses_url_open() {
+        use super::Command;
+        let cli =
+            Cli::try_parse_from(["zeph", "url-open", "zeph://new-session?prompt=Hello"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::UrlOpen { ref uri }) if uri == "zeph://new-session?prompt=Hello"
+        ));
+    }
+
+    #[cfg(feature = "deep-link")]
+    #[test]
+    fn cli_parses_url_scheme_register() {
+        use super::{Command, UrlSchemeCommand};
+        let cli = Cli::try_parse_from(["zeph", "url-scheme", "register"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::UrlScheme {
+                command: UrlSchemeCommand::Register
+            })
+        ));
+    }
+
+    #[cfg(feature = "deep-link")]
+    #[test]
+    fn cli_parses_url_scheme_status() {
+        use super::{Command, UrlSchemeCommand};
+        let cli = Cli::try_parse_from(["zeph", "url-scheme", "status"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::UrlScheme {
+                command: UrlSchemeCommand::Status
+            })
+        ));
     }
 }
