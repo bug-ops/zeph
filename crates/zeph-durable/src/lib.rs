@@ -72,6 +72,7 @@
 
 mod replay;
 mod sealed;
+mod waiters;
 
 pub mod backend;
 pub mod cipher;
@@ -81,7 +82,10 @@ pub mod error;
 pub mod handle;
 pub mod ids;
 pub mod journal;
+pub mod promise;
+pub mod retention;
 pub mod step;
+pub mod timer;
 pub mod writer;
 
 #[doc(hidden)]
@@ -97,5 +101,8 @@ pub use error::DurableError;
 pub use handle::{DurableContext, ParallelScope};
 pub use ids::{ExecutionId, ExecutionKind, IdempotencyKey, JournalSeq, PromiseId, StepId, TimerId};
 pub use journal::{EntryKind, ExecutionStatus, Journal, JournalEntry};
+pub use promise::{DurableHandle, DurablePromise};
+pub use retention::DurableRetentionService;
 pub use step::{DurableStep, StepDescriptor, StepError, StepHandle, StepOutcome};
+pub use timer::DurableTimerService;
 pub use writer::{JournalWriter, JournalWriterHandle};

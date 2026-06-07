@@ -26,10 +26,14 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
+
 use crate::config::RetentionPolicy;
 use crate::error::DurableError;
-use crate::ids::{ExecutionId, IdempotencyKey, JournalSeq};
+use crate::ids::{ExecutionId, IdempotencyKey, JournalSeq, PromiseId, TimerId};
 use crate::journal::{ExecutionStatus, Journal, JournalEntry};
+use crate::promise::PromiseRecord;
+use crate::waiters::NotifyRegistry;
 
 pub mod local;
 
@@ -190,6 +194,149 @@ impl ExecutionBackend for DurableBackendEnum {
     ) -> Result<Option<JournalEntry>, DurableError> {
         match self {
             Self::Local(backend) => backend.lookup_committed_result(id, idem_key).await,
+        }
+    }
+}
+
+/// Promise, timer, and retention dispatch.
+///
+/// These methods back the [`DurablePromise`](crate::DurablePromise) /
+/// [`DurableTimerService`](crate::DurableTimerService) / [`DurableRetentionService`] surfaces. They
+/// are inherent on the enum rather than on the sealed [`ExecutionBackend`] trait because they are
+/// implemented through the local backend's dedicated `durable_promises` / `durable_timers` tables; a
+/// future cross-process backend (Restate) would satisfy the same surface through its own SDK
+/// primitives, so the closed `match` here gains a new arm at that point — a compile-time prompt
+/// rather than a silent gap.
+impl DurableBackendEnum {
+    /// Insert a freshly-created promise row. See [`LocalBackend::insert_promise`].
+    pub(crate) async fn insert_promise(
+        &self,
+        id: PromiseId,
+        execution_id: ExecutionId,
+        resolver_token_hash: [u8; 32],
+        created_at_ms: i64,
+    ) -> Result<(), DurableError> {
+        match self {
+            Self::Local(backend) => {
+                backend
+                    .insert_promise(id, execution_id, resolver_token_hash, created_at_ms)
+                    .await
+            }
+        }
+    }
+
+    /// Read a promise's persisted state. See [`LocalBackend::promise_state`].
+    pub(crate) async fn promise_state(
+        &self,
+        id: PromiseId,
+    ) -> Result<Option<PromiseRecord>, DurableError> {
+        match self {
+            Self::Local(backend) => backend.promise_state(id).await,
+        }
+    }
+
+    /// Commit a resolved value to a pending promise. See [`LocalBackend::resolve_promise`].
+    pub(crate) async fn resolve_promise(
+        &self,
+        id: PromiseId,
+        execution_id: ExecutionId,
+        value_plaintext: &[u8],
+        resolved_at_ms: i64,
+    ) -> Result<bool, DurableError> {
+        match self {
+            Self::Local(backend) => {
+                backend
+                    .resolve_promise(id, execution_id, value_plaintext, resolved_at_ms)
+                    .await
+            }
+        }
+    }
+
+    /// Open a promise's sealed resolved payload. See [`LocalBackend::open_promise_payload`].
+    pub(crate) fn open_promise_payload(
+        &self,
+        id: PromiseId,
+        execution_id: ExecutionId,
+        sealed: &[u8],
+    ) -> Result<Bytes, DurableError> {
+        match self {
+            Self::Local(backend) => backend.open_promise_payload(id, execution_id, sealed),
+        }
+    }
+
+    /// The in-process promise wakeup registry. See [`LocalBackend::promise_waiters`].
+    pub(crate) fn promise_waiters(&self) -> &NotifyRegistry {
+        match self {
+            Self::Local(backend) => backend.promise_waiters(),
+        }
+    }
+
+    /// Arm a durable timer. See [`LocalBackend::arm_timer`].
+    pub(crate) async fn arm_timer(
+        &self,
+        id: TimerId,
+        execution_id: ExecutionId,
+        due_at_ms: i64,
+        created_at_ms: i64,
+    ) -> Result<(), DurableError> {
+        match self {
+            Self::Local(backend) => {
+                backend
+                    .arm_timer(id, execution_id, due_at_ms, created_at_ms)
+                    .await
+            }
+        }
+    }
+
+    /// Read a timer's `(due_at_ms, fired)` state. See [`LocalBackend::timer_state`].
+    pub(crate) async fn timer_state(
+        &self,
+        id: TimerId,
+    ) -> Result<Option<(i64, bool)>, DurableError> {
+        match self {
+            Self::Local(backend) => backend.timer_state(id).await,
+        }
+    }
+
+    /// List unfired timers due at or before `now_ms`. See [`LocalBackend::due_timers`].
+    pub(crate) async fn due_timers(&self, now_ms: i64) -> Result<Vec<TimerId>, DurableError> {
+        match self {
+            Self::Local(backend) => backend.due_timers(now_ms).await,
+        }
+    }
+
+    /// Mark a timer fired and wake its waiter. See [`LocalBackend::mark_timer_fired`].
+    pub(crate) async fn mark_timer_fired(&self, id: TimerId) -> Result<bool, DurableError> {
+        match self {
+            Self::Local(backend) => backend.mark_timer_fired(id).await,
+        }
+    }
+
+    /// The in-process timer wakeup registry. See [`LocalBackend::timer_waiters`].
+    pub(crate) fn timer_waiters(&self) -> &NotifyRegistry {
+        match self {
+            Self::Local(backend) => backend.timer_waiters(),
+        }
+    }
+
+    /// Fold an execution's idempotent prefix into a checkpoint. See [`LocalBackend::checkpoint_fold`].
+    pub(crate) async fn checkpoint_fold(
+        &self,
+        execution_id: ExecutionId,
+        up_to_step: u32,
+    ) -> Result<u64, DurableError> {
+        match self {
+            Self::Local(backend) => backend.checkpoint_fold(execution_id, up_to_step).await,
+        }
+    }
+
+    /// Reconstruct folded step results from every checkpoint. See [`LocalBackend::read_checkpoints`].
+    pub(crate) async fn read_checkpoints(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<Vec<JournalEntry>, DurableError> {
+        match self {
+            Self::Local(backend) => backend.read_checkpoints(execution_id).await,
         }
     }
 }

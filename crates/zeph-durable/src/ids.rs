@@ -19,6 +19,29 @@ use uuid::Uuid;
 /// produced for any other purpose, even under identical key material.
 const IDEMPOTENCY_CONTEXT: &str = "zeph-durable v1 idempotency-key 2026";
 
+/// Domain-separation context for the deterministic [`PromiseId::derive`] correlation id.
+const PROMISE_DERIVE_CONTEXT: &str = "zeph-durable v1 promise-id 2026";
+
+/// Domain-separation context for the deterministic [`TimerId::derive`] correlation id.
+const TIMER_DERIVE_CONTEXT: &str = "zeph-durable v1 timer-id 2026";
+
+/// Derive a deterministic [`Uuid`] from a domain context and an execution/step position.
+///
+/// Promises and timers are correlated across a crash-resume by *position*, not by a runtime-minted
+/// random id: on replay the program re-runs and re-derives the same id for the same `(execution_id,
+/// step_id)`, so the existing `durable_promises` / `durable_timers` row is found rather than a new,
+/// orphaned one created. The BLAKE3 `derive_key` output seeds a `UUIDv8` (custom layout) so the id is
+/// a well-formed, collision-resistant UUID with a deterministic value.
+fn derive_position_uuid(context: &str, execution_id: ExecutionId, step_id: StepId) -> Uuid {
+    let mut input = [0u8; 20];
+    input[..16].copy_from_slice(execution_id.as_bytes());
+    input[16..].copy_from_slice(&step_id.value().to_le_bytes());
+    let hash = blake3::derive_key(context, &input);
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    Uuid::new_v8(bytes)
+}
+
 /// Identifier of a single durable execution.
 ///
 /// Runtime-minted as a `UUIDv7` (time-ordered) at execution start. It is **never** consumer-supplied
@@ -54,6 +77,15 @@ impl ExecutionId {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; 16] {
         self.0.as_bytes()
+    }
+
+    /// Reconstruct an execution identity from a [`Uuid`] read back from storage.
+    ///
+    /// Used by a journal backend to rebuild the id of a persisted promise or timer row. A new
+    /// execution always uses [`ExecutionId::new`]; this constructor is for resume-time reconstruction
+    /// only.
+    pub(crate) fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
     }
 }
 
@@ -227,6 +259,33 @@ impl PromiseId {
         Self(Uuid::now_v7())
     }
 
+    /// Derive the deterministic promise id for a `(execution_id, step_id)` position.
+    ///
+    /// Used by `promise()` so a resumed execution re-derives the same id at the same program point
+    /// and re-attaches to the pending `durable_promises` row instead of minting an orphan. The id is
+    /// guessable from the execution journal, but that is harmless: a `PromiseId` is *not* a bearer
+    /// capability (INV-9) — resolution requires the separate high-entropy resolver token.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_durable::{ExecutionId, PromiseId, StepId};
+    ///
+    /// let exec = ExecutionId::new();
+    /// let a = PromiseId::derive(exec, StepId::new(3));
+    /// let b = PromiseId::derive(exec, StepId::new(3));
+    /// assert_eq!(a, b, "the same position derives the same promise id");
+    /// assert_ne!(a, PromiseId::derive(exec, StepId::new(4)));
+    /// ```
+    #[must_use]
+    pub fn derive(execution_id: ExecutionId, step_id: StepId) -> Self {
+        Self(derive_position_uuid(
+            PROMISE_DERIVE_CONTEXT,
+            execution_id,
+            step_id,
+        ))
+    }
+
     /// Return the underlying UUID.
     #[must_use]
     pub fn as_uuid(self) -> Uuid {
@@ -258,6 +317,37 @@ impl TimerId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
+    }
+
+    /// Derive the deterministic timer id for a `(execution_id, step_id)` position.
+    ///
+    /// As with [`PromiseId::derive`], a resumed `sleep_until` at the same program point re-derives
+    /// the same id and re-attaches to the journaled `durable_timers` row, so a timer that fired
+    /// during downtime is recognized on replay rather than re-armed afresh (FR-DE-06).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_durable::{ExecutionId, StepId, TimerId};
+    ///
+    /// let exec = ExecutionId::new();
+    /// assert_eq!(
+    ///     TimerId::derive(exec, StepId::new(1)),
+    ///     TimerId::derive(exec, StepId::new(1)),
+    /// );
+    /// ```
+    #[must_use]
+    pub fn derive(execution_id: ExecutionId, step_id: StepId) -> Self {
+        Self(derive_position_uuid(
+            TIMER_DERIVE_CONTEXT,
+            execution_id,
+            step_id,
+        ))
+    }
+
+    /// Reconstruct a timer identity from a [`Uuid`] read back from storage.
+    pub(crate) fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
     }
 
     /// Return the underlying UUID.
@@ -375,6 +465,37 @@ mod tests {
         let json = serde_json::to_string(&seq).unwrap();
         let back: JournalSeq = serde_json::from_str(&json).unwrap();
         assert_eq!(seq, back);
+    }
+
+    #[test]
+    fn derived_promise_and_timer_ids_are_position_stable_and_disjoint() {
+        let exec = ExecutionId::new();
+        let other = ExecutionId::new();
+        // Deterministic for a fixed position…
+        assert_eq!(
+            PromiseId::derive(exec, StepId::new(2)),
+            PromiseId::derive(exec, StepId::new(2))
+        );
+        assert_eq!(
+            TimerId::derive(exec, StepId::new(2)),
+            TimerId::derive(exec, StepId::new(2))
+        );
+        // …yet distinct across step, execution, and the promise/timer domain separation.
+        assert_ne!(
+            PromiseId::derive(exec, StepId::new(2)),
+            PromiseId::derive(exec, StepId::new(3))
+        );
+        assert_ne!(
+            PromiseId::derive(exec, StepId::new(2)),
+            PromiseId::derive(other, StepId::new(2))
+        );
+        let promise = PromiseId::derive(exec, StepId::new(2)).as_uuid();
+        let timer = TimerId::derive(exec, StepId::new(2)).as_uuid();
+        assert_ne!(
+            promise, timer,
+            "promise and timer ids never collide at the same position"
+        );
+        assert_eq!(promise.get_version_num(), 8, "derived ids are UUIDv8");
     }
 
     #[test]

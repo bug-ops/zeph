@@ -67,6 +67,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   structured audit record (FR-DE-10), and a writer timeout degrades the step to non-durable mode
   rather than blocking (INV-12). The `ReplayCursor` reads the journal in bounded step-range segments
   (NFR-DE-02). The promise, timer, and retention layers land in follow-up issues. (#4947)
+- `feat(durable)`: completed the `DurableContext` API surface with durable promises, durable timers,
+  and the retention/compaction machinery. `ctx.promise::<T>()` mints an externally-resolved handle
+  carrying a 32-byte CSPRNG resolver token (zeroized on drop); only its domain-separated BLAKE3 hash,
+  bound to `(promise_id, execution_id)`, is persisted, and `DurableHandle::resolve()` authenticates a
+  presented token in constant time before sealing and committing the value (FR-DE-05, INV-9). The
+  resolver token is the sole capability — a `PromiseId` is derivable from the journal and is not a
+  bearer secret — so the LLM, which never sees the token, cannot resolve its own promises.
+  `ctx.await_promise()` parks on a `tokio::sync::Notify` keyed by promise id with a `durable_promises`
+  poll fallback (`promise_poll_interval_secs`), degrading to pure polling above `max_parked_promises`.
+  `ctx.sleep_until()` arms a `durable_timers` row at a deterministic, position-derived `TimerId`;
+  the background `DurableTimerService` fires due timers and wakes parked waiters, and a timer whose
+  instant elapsed during downtime fires immediately on the first poll after restart (FR-DE-06).
+  Promises and timers correlate across a crash-resume by deriving their ids from
+  `(execution_id, step_id)`, so a resumed program re-attaches to the pending row rather than minting
+  an orphan. The `DurableRetentionService` prunes terminal executions past their TTL in batches,
+  yielding between them so the sweep never touches the dispatch hot path (spec NEVER); crossing the
+  soft step cap (90% of `max_steps_per_execution`) folds the committed-idempotent prefix into a
+  single AEAD-sealed `Checkpoint` entry on a background task and deletes the folded rows, while the
+  hard cap (100%) aborts with `DurableError::StepCapExceeded`. A resume replays folded steps from the
+  checkpoint snapshot — preserving each step's idempotency key for the divergence guard — without
+  re-running their operations. (#4948)
 
 ### Fixed
 

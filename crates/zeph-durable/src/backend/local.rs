@@ -43,8 +43,13 @@ use crate::backend::{BackendCapabilities, ExecutionBackend};
 use crate::cipher::{EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit};
 use crate::config::RetentionPolicy;
 use crate::error::DurableError;
-use crate::ids::{ExecutionId, ExecutionKind, IdempotencyKey, JournalSeq, StepId};
+use crate::ids::{
+    ExecutionId, ExecutionKind, IdempotencyKey, JournalSeq, PromiseId, StepId, TimerId,
+};
 use crate::journal::{EntryKind, ExecutionStatus, Journal, JournalEntry};
+use crate::promise::PromiseRecord;
+use crate::retention::{CheckpointSnapshot, FoldedStep, decode_checkpoint, encode_checkpoint};
+use crate::waiters::NotifyRegistry;
 use tracing::Instrument as _;
 
 /// Slack added to `max_payload_bytes` for the read-side size guard.
@@ -78,6 +83,10 @@ pub struct LocalBackend {
     cipher: Option<Arc<dyn PayloadCipher>>,
     hmac_key: Option<[u8; 32]>,
     max_payload_bytes: u64,
+    /// In-process wakeup map for parked promise awaits, shared with the resolver path.
+    promise_waiters: NotifyRegistry,
+    /// In-process wakeup map for parked timers, shared with the timer service.
+    timer_waiters: NotifyRegistry,
 }
 
 impl fmt::Debug for LocalBackend {
@@ -104,6 +113,8 @@ impl LocalBackend {
             cipher: None,
             hmac_key: None,
             max_payload_bytes,
+            promise_waiters: NotifyRegistry::default(),
+            timer_waiters: NotifyRegistry::default(),
         }
     }
 
@@ -328,6 +339,502 @@ impl LocalBackend {
         Ok(max.map(JournalSeq::new))
     }
 
+    /// The in-process wakeup registry for parked promise awaits, shared with the resolver path.
+    pub(crate) fn promise_waiters(&self) -> &NotifyRegistry {
+        &self.promise_waiters
+    }
+
+    /// The in-process wakeup registry for parked timers, shared with the timer service.
+    pub(crate) fn timer_waiters(&self) -> &NotifyRegistry {
+        &self.timer_waiters
+    }
+
+    /// Insert a freshly-created promise row (INV-9: only the resolver-token hash is stored).
+    ///
+    /// Called by `promise()` for a brand-new promise; a resumed execution detects the existing row
+    /// via [`promise_state`](Self::promise_state) and never re-inserts. Span: `durable.promise.create`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the insert fails.
+    pub(crate) async fn insert_promise(
+        &self,
+        id: PromiseId,
+        execution_id: ExecutionId,
+        resolver_token_hash: [u8; 32],
+        created_at_ms: i64,
+    ) -> Result<(), DurableError> {
+        let span = tracing::info_span!("durable.promise.create", promise_id = %id.as_uuid());
+        async move {
+            zeph_db::query(sql!(
+                "INSERT INTO durable_promises
+                    (promise_id, execution_id, resolver_token_hash, resolved, payload, created_at, resolved_at)
+                 VALUES (?, ?, ?, 0, NULL, ?, NULL)"
+            ))
+            .bind(id.as_uuid().to_string())
+            .bind(execution_id.as_uuid().to_string())
+            .bind(resolver_token_hash.to_vec())
+            .bind(created_at_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("insert_promise", e))?;
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Read a promise's persisted state, or `None` if it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::Decode`] if a stored
+    /// field cannot be reconstructed.
+    pub(crate) async fn promise_state(
+        &self,
+        id: PromiseId,
+    ) -> Result<Option<PromiseRecord>, DurableError> {
+        let row: Option<PromiseRowRead> = zeph_db::query_as(sql!(
+            "SELECT execution_id, resolver_token_hash, resolved, payload
+             FROM durable_promises WHERE promise_id = ?"
+        ))
+        .bind(id.as_uuid().to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("promise_state", e))?;
+        let Some((exec, hash, resolved, payload)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(PromiseRecord {
+            execution_id: parse_execution_id(&exec)?,
+            resolver_token_hash: slice_to_array32(&hash, "promise resolver_token_hash")?,
+            resolved: resolved != 0,
+            payload,
+        }))
+    }
+
+    /// Commit a resolved value to a pending promise, returning whether it transitioned.
+    ///
+    /// The conditional `WHERE resolved = 0` makes a double-resolve a no-op (returns `false`); the
+    /// caller has already authenticated the resolver token. On a real transition any in-process
+    /// waiter is woken. Span: `durable.promise.resolve`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::PayloadTooLarge`] if the value exceeds the limit, a cipher failure if
+    /// sealing fails, or [`DurableError::Storage`] on a database error.
+    pub(crate) async fn resolve_promise(
+        &self,
+        id: PromiseId,
+        execution_id: ExecutionId,
+        value_plaintext: &[u8],
+        resolved_at_ms: i64,
+    ) -> Result<bool, DurableError> {
+        let span = tracing::info_span!("durable.promise.resolve", promise_id = %id.as_uuid());
+        async move {
+            ensure_payload_within_limit(value_plaintext.len(), self.max_payload_bytes)?;
+            let aad = promise_payload_aad(execution_id, id);
+            let sealed = self.seal_payload(value_plaintext, &aad)?;
+            let affected = zeph_db::query(sql!(
+                "UPDATE durable_promises SET resolved = 1, payload = ?, resolved_at = ?
+                 WHERE promise_id = ? AND resolved = 0"
+            ))
+            .bind(sealed)
+            .bind(resolved_at_ms)
+            .bind(id.as_uuid().to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("resolve_promise", e))?
+            .rows_affected();
+            if affected > 0 {
+                self.promise_waiters.wake(id.as_uuid());
+            }
+            Ok(affected > 0)
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Open a promise's sealed resolved payload back to plaintext.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::ReplayIntegrity`] if the sealed blob does not authenticate, or
+    /// [`DurableError::PayloadTooLarge`] if it exceeds the read-side limit.
+    pub(crate) fn open_promise_payload(
+        &self,
+        id: PromiseId,
+        execution_id: ExecutionId,
+        sealed: &[u8],
+    ) -> Result<Bytes, DurableError> {
+        ensure_payload_within_limit(
+            sealed.len(),
+            self.max_payload_bytes.saturating_add(SEAL_OVERHEAD_SLACK),
+        )?;
+        let aad = promise_payload_aad(execution_id, id);
+        self.open_payload(sealed, &aad)
+    }
+
+    /// Arm a durable timer to fire at `due_at_ms` (a `durable_timers` row).
+    ///
+    /// Span: `durable.timer.arm`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the insert fails.
+    pub(crate) async fn arm_timer(
+        &self,
+        id: TimerId,
+        execution_id: ExecutionId,
+        due_at_ms: i64,
+        created_at_ms: i64,
+    ) -> Result<(), DurableError> {
+        let span = tracing::info_span!("durable.timer.arm", timer_id = %id.as_uuid(), due_at_ms);
+        async move {
+            zeph_db::query(sql!(
+                "INSERT INTO durable_timers (timer_id, execution_id, due_at, fired, created_at)
+                 VALUES (?, ?, ?, 0, ?)"
+            ))
+            .bind(id.as_uuid().to_string())
+            .bind(execution_id.as_uuid().to_string())
+            .bind(due_at_ms)
+            .bind(created_at_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("arm_timer", e))?;
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Read a timer's `(due_at_ms, fired)` state, or `None` if it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub(crate) async fn timer_state(
+        &self,
+        id: TimerId,
+    ) -> Result<Option<(i64, bool)>, DurableError> {
+        let row: Option<(i64, i64)> = zeph_db::query_as(sql!(
+            "SELECT due_at, fired FROM durable_timers WHERE timer_id = ?"
+        ))
+        .bind(id.as_uuid().to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("timer_state", e))?;
+        Ok(row.map(|(due_at, fired)| (due_at, fired != 0)))
+    }
+
+    /// List every unfired timer whose instant is at or before `now_ms`.
+    ///
+    /// The `idx_durable_timers_due(fired, due_at)` index makes this a range scan over due, unfired
+    /// timers rather than a full-table scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::Decode`] on a
+    /// malformed id.
+    pub(crate) async fn due_timers(&self, now_ms: i64) -> Result<Vec<TimerId>, DurableError> {
+        let rows: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT timer_id FROM durable_timers WHERE fired = 0 AND due_at <= ? ORDER BY due_at"
+        ))
+        .bind(now_ms)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("due_timers", e))?;
+        rows.into_iter().map(|(id,)| parse_timer_id(&id)).collect()
+    }
+
+    /// Mark a timer fired, returning whether it transitioned, and wake its parked waiter.
+    ///
+    /// Span: `durable.timer.fire`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the update fails.
+    pub(crate) async fn mark_timer_fired(&self, id: TimerId) -> Result<bool, DurableError> {
+        let span = tracing::info_span!("durable.timer.fire", timer_id = %id.as_uuid());
+        async move {
+            let affected = zeph_db::query(sql!(
+                "UPDATE durable_timers SET fired = 1 WHERE timer_id = ? AND fired = 0"
+            ))
+            .bind(id.as_uuid().to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("mark_timer_fired", e))?
+            .rows_affected();
+            if affected > 0 {
+                self.timer_waiters.wake(id.as_uuid());
+            }
+            Ok(affected > 0)
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Open each foldable step result's sealed payload into a [`FoldedStep`], in step order.
+    ///
+    /// The per-step AAD is reconstructed from the row so the opened plaintext authenticates exactly
+    /// as it did at rest; the idempotency key is preserved so the replayed-from-snapshot step still
+    /// satisfies the divergence guard.
+    fn open_foldable_steps(
+        &self,
+        execution_id: ExecutionId,
+        rows: Vec<FoldableRowRead>,
+    ) -> Result<Vec<FoldedStep>, DurableError> {
+        let mut folded = Vec::with_capacity(rows.len());
+        for (step_raw, idem, version, payload) in rows {
+            let step = u32::try_from(step_raw).map_err(|_| DurableError::Decode {
+                context: "checkpoint step_id out of u32 range",
+            })?;
+            let idem_bytes = idem.ok_or(DurableError::Decode {
+                context: "checkpoint step result missing idem_key",
+            })?;
+            let idem_key =
+                IdempotencyKey::from_bytes(slice_to_array32(&idem_bytes, "checkpoint idem_key")?);
+            let sealed = payload.ok_or(DurableError::Decode {
+                context: "checkpoint step result missing payload",
+            })?;
+            let aad = PayloadAad::new(
+                execution_id,
+                StepId::new(step),
+                EntryKindTag::StepResult,
+                Some(idem_key),
+            );
+            let plaintext = self.open_payload(&sealed, &aad)?;
+            let payload_version =
+                u8::try_from(version.unwrap_or(1)).map_err(|_| DurableError::Decode {
+                    context: "checkpoint payload_version out of u8 range",
+                })?;
+            folded.push(FoldedStep {
+                step_id: step,
+                idem_key: *idem_key.as_bytes(),
+                payload_version,
+                payload: plaintext,
+            });
+        }
+        Ok(folded)
+    }
+
+    /// Fold an execution's committed-idempotent prefix below `up_to_step` into one checkpoint entry.
+    ///
+    /// Reads the foldable idempotent step results, packs as many as fit the payload budget into a
+    /// sealed snapshot, writes a single [`EntryKind::Checkpoint`] entry, and deletes the folded rows
+    /// — all in one transaction. A resume replays the folded steps from the snapshot (the snapshot
+    /// preserves each step's idempotency key for the divergence guard) instead of re-running them.
+    /// Returns the number of steps folded. Runs only on a background task (spec NEVER: not the hot
+    /// path). Span: `durable.journal.checkpoint`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] on a database error, or a cipher failure if (re)sealing
+    /// fails.
+    pub(crate) async fn checkpoint_fold(
+        &self,
+        execution_id: ExecutionId,
+        up_to_step: u32,
+    ) -> Result<u64, DurableError> {
+        let span = tracing::info_span!(
+            "durable.journal.checkpoint",
+            execution_id = %execution_id.as_uuid(),
+            folded_count = tracing::field::Empty,
+        );
+        async move {
+            let exec = execution_id.as_uuid().to_string();
+            let rows: Vec<FoldableRowRead> = zeph_db::query_as(sql!(
+                "SELECT step_id, idem_key, payload_version, payload FROM durable_journal
+                 WHERE execution_id = ? AND entry_kind = 'step_result'
+                   AND effect_class = 'idempotent' AND step_id < ?
+                 ORDER BY step_id"
+            ))
+            .bind(&exec)
+            .bind(i64::from(up_to_step))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("checkpoint", e))?;
+            if rows.is_empty() {
+                return Ok(0);
+            }
+
+            // Open each sealed result, then keep the budget-bounded prefix that fits a checkpoint.
+            let mut folded = self.open_foldable_steps(execution_id, rows)?;
+            let lens: Vec<usize> = folded.iter().map(|s| s.payload.len()).collect();
+            let take = crate::retention::fold_prefix_len(
+                &lens,
+                crate::retention::checkpoint_budget(self.max_payload_bytes),
+            );
+            if take == 0 {
+                // Not even one result fits the budget; leave the prefix un-folded rather than write
+                // an over-limit checkpoint.
+                return Ok(0);
+            }
+            folded.truncate(take);
+            let fold_end = folded.last().map_or(up_to_step, |s| s.step_id.saturating_add(1));
+
+            let snapshot = encode_checkpoint(&folded);
+            let snap_aad =
+                PayloadAad::new(execution_id, StepId::new(fold_end), EntryKindTag::Checkpoint, None);
+            let sealed_snapshot = self.seal_payload(&snapshot, &snap_aad)?;
+
+            let mut tx = zeph_db::begin_write(&self.pool)
+                .await
+                .map_err(|e| DurableError::storage("checkpoint", e))?;
+            zeph_db::query(sql!(
+                "INSERT INTO durable_journal
+                    (execution_id, step_id, entry_kind, idem_key, effect_class, payload, payload_version, hmac, created_at)
+                 VALUES (?, ?, 'checkpoint', NULL, NULL, ?, ?, NULL, ?)"
+            ))
+            .bind(&exec)
+            .bind(i64::from(fold_end))
+            .bind(sealed_snapshot)
+            .bind(i32::from(crate::step::PAYLOAD_VERSION))
+            .bind(now_unix_millis())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DurableError::storage("checkpoint", e))?;
+            zeph_db::query(sql!(
+                "DELETE FROM durable_journal
+                 WHERE execution_id = ? AND entry_kind = 'step_result'
+                   AND effect_class = 'idempotent' AND step_id < ?"
+            ))
+            .bind(&exec)
+            .bind(i64::from(fold_end))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DurableError::storage("checkpoint", e))?;
+            tx.commit()
+                .await
+                .map_err(|e| DurableError::storage("checkpoint", e))?;
+
+            let count = folded.len() as u64;
+            tracing::Span::current().record("folded_count", count);
+            Ok(count)
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Read every checkpoint snapshot for an execution and reconstruct its folded step results.
+    ///
+    /// The replay cursor calls this once on resume to preload folded results before walking the
+    /// surviving journal rows: each returned [`JournalEntry`] is a `StepResult` whose individual row
+    /// was deleted by the fold but whose replay value (and idempotency key, for the divergence guard)
+    /// lives in the snapshot. Each snapshot is AEAD-opened with its checkpoint-bound AAD. Returns an
+    /// empty vector when the execution has never been folded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] on a database error, or a decode/cipher failure if a
+    /// snapshot is corrupt.
+    pub(crate) async fn read_checkpoints(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<Vec<JournalEntry>, DurableError> {
+        let rows: Vec<(i64, Option<Vec<u8>>)> = zeph_db::query_as(sql!(
+            "SELECT step_id, payload FROM durable_journal
+             WHERE execution_id = ? AND entry_kind = 'checkpoint' ORDER BY step_id"
+        ))
+        .bind(execution_id.as_uuid().to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("read_checkpoints", e))?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut folded: CheckpointSnapshot = Vec::new();
+        for (up_to, payload) in rows {
+            let up_to = u32::try_from(up_to).map_err(|_| DurableError::Decode {
+                context: "checkpoint up_to_step out of u32 range",
+            })?;
+            let sealed = payload.ok_or(DurableError::Decode {
+                context: "checkpoint entry missing snapshot payload",
+            })?;
+            ensure_payload_within_limit(
+                sealed.len(),
+                self.max_payload_bytes.saturating_add(SEAL_OVERHEAD_SLACK),
+            )?;
+            let aad = PayloadAad::new(
+                execution_id,
+                StepId::new(up_to),
+                EntryKindTag::Checkpoint,
+                None,
+            );
+            let plaintext = self.open_payload(&sealed, &aad)?;
+            folded.extend(decode_checkpoint(&plaintext)?);
+        }
+        // Reconstruct each folded step as a replayable `StepResult` entry under the real execution
+        // kind, so the cursor serves it exactly like a surviving row.
+        let kind = self.lookup_kind(execution_id).await?;
+        let entries = folded
+            .into_iter()
+            .map(|step| JournalEntry {
+                seq: None,
+                execution_id,
+                kind,
+                step_id: StepId::new(step.step_id),
+                entry: EntryKind::StepResult {
+                    idempotency_key: IdempotencyKey::from_bytes(step.idem_key),
+                    payload: step.payload,
+                    effect: crate::EffectClass::Idempotent,
+                    payload_version: step.payload_version,
+                },
+                created_at_ms: 0,
+            })
+            .collect();
+        Ok(entries)
+    }
+
+    /// Delete one bounded batch of prunable terminal executions and their child rows.
+    ///
+    /// Selects up to `batch` executions past their TTL, then deletes their journal, promise, timer,
+    /// and execution rows in a single transaction (children first, to respect the foreign keys).
+    /// Returns the number of executions removed; the retention loop stops once a batch returns fewer
+    /// than `batch`.
+    async fn delete_prune_batch(
+        &self,
+        cutoffs: crate::retention::PruneCutoffs,
+        batch: u64,
+    ) -> Result<u64, DurableError> {
+        let ids: Vec<(String,)> = zeph_db::query_as(sql!(
+            "SELECT execution_id FROM durable_executions
+             WHERE finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )
+             ORDER BY finalized_at LIMIT ?"
+        ))
+        .bind(cutoffs.completed_before_ms)
+        .bind(cutoffs.failed_before_ms)
+        .bind(i64::try_from(batch).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("prune", e))?;
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let journal = sql!("DELETE FROM durable_journal WHERE execution_id = ?");
+        let promises = sql!("DELETE FROM durable_promises WHERE execution_id = ?");
+        let timers = sql!("DELETE FROM durable_timers WHERE execution_id = ?");
+        let executions = sql!("DELETE FROM durable_executions WHERE execution_id = ?");
+        let mut tx = zeph_db::begin_write(&self.pool)
+            .await
+            .map_err(|e| DurableError::storage("prune", e))?;
+        for (id,) in &ids {
+            for stmt in [journal, promises, timers, executions] {
+                zeph_db::query(stmt)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| DurableError::storage("prune", e))?;
+            }
+        }
+        tx.commit()
+            .await
+            .map_err(|e| DurableError::storage("prune", e))?;
+        Ok(ids.len() as u64)
+    }
+
     /// Seal a plaintext payload, or pass it through verbatim when no cipher is configured.
     fn seal_payload(&self, plaintext: &[u8], aad: &PayloadAad) -> Result<Vec<u8>, DurableError> {
         match &self.cipher {
@@ -527,6 +1034,7 @@ impl LocalBackend {
                     hmac,
                 }
             }
+            "checkpoint" => self.checkpoint_entry(id, step_id, payload)?,
             other => {
                 return Err(DurableError::UnsupportedEntryKind {
                     kind: static_entry_tag(other),
@@ -540,6 +1048,31 @@ impl LocalBackend {
             step_id,
             entry,
             created_at_ms: created_at,
+        })
+    }
+
+    /// Reconstruct a [`EntryKind::Checkpoint`] from a stored row, opening its sealed snapshot.
+    ///
+    /// `step_id` carries the checkpoint's `up_to_step` (the fold boundary); the snapshot is bound to
+    /// it in the AAD so a checkpoint blob cannot be relocated to a different fold boundary.
+    fn checkpoint_entry(
+        &self,
+        id: ExecutionId,
+        step_id: StepId,
+        payload: Option<Vec<u8>>,
+    ) -> Result<EntryKind, DurableError> {
+        let sealed = payload.ok_or(DurableError::Decode {
+            context: "checkpoint entry missing snapshot payload",
+        })?;
+        ensure_payload_within_limit(
+            sealed.len(),
+            self.max_payload_bytes.saturating_add(SEAL_OVERHEAD_SLACK),
+        )?;
+        let aad = PayloadAad::new(id, step_id, EntryKindTag::Checkpoint, None);
+        let snapshot = self.open_payload(&sealed, &aad)?;
+        Ok(EntryKind::Checkpoint {
+            up_to_step: step_id.value(),
+            snapshot,
         })
     }
 
@@ -681,11 +1214,12 @@ impl Journal for LocalBackend {
         .await
     }
 
-    async fn prune(&self, _policy: &RetentionPolicy) -> Result<u64, DurableError> {
-        // The retention sweep lands with the compaction layer; this stub keeps the trait total and
-        // the span present for the trace-analysis loop.
-        let _span = tracing::info_span!("durable.journal.prune", deleted_count = 0u64).entered();
-        Ok(0)
+    async fn prune(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
+        let now = now_unix_millis();
+        crate::retention::prune_in_batches(policy, now, |cutoffs, batch| {
+            self.delete_prune_batch(cutoffs, batch)
+        })
+        .await
     }
 }
 
@@ -742,6 +1276,14 @@ type JournalRowRead = (
     i64,
 );
 
+/// A `durable_promises` row read back from storage, in `SELECT` column order:
+/// `(execution_id, resolver_token_hash, resolved, payload)`.
+type PromiseRowRead = (String, Vec<u8>, i64, Option<Vec<u8>>);
+
+/// A foldable `durable_journal` step-result row, in `SELECT` column order:
+/// `(step_id, idem_key, payload_version, payload)`.
+type FoldableRowRead = (i64, Option<Vec<u8>>, Option<i32>, Option<Vec<u8>>);
+
 /// Current Unix time in milliseconds, clamped into `i64` and never panicking.
 pub(crate) fn now_unix_millis() -> i64 {
     SystemTime::now()
@@ -752,6 +1294,42 @@ pub(crate) fn now_unix_millis() -> i64 {
 /// Decode a stored blob into a fixed 32-byte array, failing closed on the wrong length.
 fn slice_to_array32(bytes: &[u8], field: &'static str) -> Result<[u8; 32], DurableError> {
     <[u8; 32]>::try_from(bytes).map_err(|_| DurableError::Decode { context: field })
+}
+
+/// Parse a stored `execution_id` TEXT column back into an [`ExecutionId`], failing closed.
+fn parse_execution_id(text: &str) -> Result<ExecutionId, DurableError> {
+    uuid::Uuid::parse_str(text)
+        .map(ExecutionId::from_uuid)
+        .map_err(|_| DurableError::Decode {
+            context: "execution_id is not a valid UUID",
+        })
+}
+
+/// Parse a stored `timer_id` TEXT column back into a [`TimerId`], failing closed.
+fn parse_timer_id(text: &str) -> Result<TimerId, DurableError> {
+    uuid::Uuid::parse_str(text)
+        .map(TimerId::from_uuid)
+        .map_err(|_| DurableError::Decode {
+            context: "timer_id is not a valid UUID",
+        })
+}
+
+/// The AAD binding a promise's resolved payload to `(execution_id, promise_id)`.
+///
+/// A promise has no [`StepId`], so the promise id is folded into the AAD's idempotency-key slot:
+/// a payload sealed for one promise cannot be opened as another's (fail-closed on relocation).
+fn promise_payload_aad(execution_id: ExecutionId, promise_id: PromiseId) -> PayloadAad {
+    let binding = IdempotencyKey::derive(
+        execution_id,
+        StepId::new(0),
+        promise_id.as_uuid().as_bytes(),
+    );
+    PayloadAad::new(
+        execution_id,
+        StepId::new(0),
+        EntryKindTag::PromiseResolved,
+        Some(binding),
+    )
 }
 
 /// Map a database `entry_kind` string to a `'static` tag for [`DurableError::UnsupportedEntryKind`].
@@ -1133,5 +1711,188 @@ mod tests {
             "the SQLite local backend is in-process"
         );
         assert_eq!(caps.max_payload, 4096);
+    }
+
+    #[tokio::test]
+    async fn promise_insert_state_and_resolve_round_trip() {
+        let backend = mem_backend(1_048_576)
+            .await
+            .with_cipher(Arc::new(XorCipher));
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let promise = PromiseId::derive(exec, StepId::new(0));
+        backend
+            .insert_promise(promise, exec, [9u8; 32], 100)
+            .await
+            .unwrap();
+
+        let pending = backend.promise_state(promise).await.unwrap().unwrap();
+        assert!(!pending.resolved);
+        assert_eq!(pending.execution_id, exec);
+        assert_eq!(pending.resolver_token_hash, [9u8; 32]);
+
+        // Resolve seals the value at rest; a second resolve is a no-op.
+        assert!(
+            backend
+                .resolve_promise(promise, exec, b"answer", 200)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !backend
+                .resolve_promise(promise, exec, b"again", 300)
+                .await
+                .unwrap()
+        );
+
+        let resolved = backend.promise_state(promise).await.unwrap().unwrap();
+        assert!(resolved.resolved);
+        let sealed = resolved.payload.expect("resolved payload present");
+        assert_ne!(sealed.as_slice(), b"answer", "payload is sealed at rest");
+        let opened = backend
+            .open_promise_payload(promise, exec, &sealed)
+            .unwrap();
+        assert_eq!(opened.as_ref(), b"answer");
+    }
+
+    #[tokio::test]
+    async fn timer_arm_due_and_fire() {
+        let backend = mem_backend(1_048_576).await;
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let past = TimerId::derive(exec, StepId::new(0));
+        let future = TimerId::derive(exec, StepId::new(1));
+        backend.arm_timer(past, exec, 1_000, 0).await.unwrap();
+        backend
+            .arm_timer(future, exec, 9_000_000_000_000, 0)
+            .await
+            .unwrap();
+
+        // Only the past-due timer is returned at now = 5000.
+        let due = backend.due_timers(5_000).await.unwrap();
+        assert_eq!(due, vec![past]);
+
+        assert!(backend.mark_timer_fired(past).await.unwrap());
+        assert!(
+            !backend.mark_timer_fired(past).await.unwrap(),
+            "second fire is a no-op"
+        );
+        assert_eq!(
+            backend.timer_state(past).await.unwrap(),
+            Some((1_000, true))
+        );
+        // The fired timer no longer appears as due.
+        assert!(backend.due_timers(5_000).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_deletes_terminal_executions_past_ttl() {
+        let backend = mem_backend(1_048_576).await;
+        // An old completed execution (finalized long ago) and a fresh running one.
+        let old = ExecutionId::new();
+        backend
+            .open_execution(old, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(old, 0, b"x")).await.unwrap();
+        // Backdate its finalized_at far into the past.
+        zeph_db::query(sql!(
+            "UPDATE durable_executions SET status = 'completed', finalized_at = 1000 WHERE execution_id = ?"
+        ))
+        .bind(old.as_uuid().to_string())
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let live = ExecutionId::new();
+        backend
+            .open_execution(live, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend.append(step_result(live, 0, b"y")).await.unwrap();
+
+        let policy = RetentionPolicy {
+            ttl_completed_secs: 1,
+            prune_batch_size: 10,
+            ..RetentionPolicy::default()
+        };
+        let deleted = backend.prune(&policy).await.unwrap();
+        assert_eq!(deleted, 1, "only the aged terminal execution is pruned");
+
+        // The old execution and its journal are gone; the live one survives.
+        assert!(backend.read_execution(old).await.unwrap().is_empty());
+        assert!(
+            backend
+                .promise_state(PromiseId::derive(old, StepId::new(0)))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(backend.read_execution(live).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_fold_compacts_idempotent_prefix_and_replays() {
+        let backend = mem_backend(1_048_576)
+            .await
+            .with_cipher(Arc::new(XorCipher));
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        for step in 0..5 {
+            backend
+                .append(step_result(exec, step, format!("v{step}").as_bytes()))
+                .await
+                .unwrap();
+        }
+
+        // Fold steps 0..3 into a checkpoint.
+        let folded = backend.checkpoint_fold(exec, 3).await.unwrap();
+        assert_eq!(folded, 3);
+
+        // The individual rows for the folded steps are gone; steps 3 and 4 remain, plus a checkpoint.
+        let remaining = backend.read_execution(exec).await.unwrap();
+        let step_results: Vec<u32> = remaining
+            .iter()
+            .filter(|e| matches!(e.entry, EntryKind::StepResult { .. }))
+            .map(|e| e.step_id.value())
+            .collect();
+        assert_eq!(step_results, vec![3, 4], "folded step rows are deleted");
+        assert!(
+            remaining
+                .iter()
+                .any(|e| matches!(e.entry, EntryKind::Checkpoint { .. })),
+            "a checkpoint entry replaces the folded prefix"
+        );
+
+        // The reconstructed folded results carry the original values and idempotency keys.
+        let preloaded = backend.read_checkpoints(exec).await.unwrap();
+        assert_eq!(preloaded.len(), 3);
+        for (i, entry) in preloaded.iter().enumerate() {
+            let step = u32::try_from(i).unwrap();
+            assert_eq!(entry.step_id, StepId::new(step));
+            match &entry.entry {
+                EntryKind::StepResult {
+                    payload,
+                    idempotency_key,
+                    ..
+                } => {
+                    assert_eq!(payload.as_ref(), format!("v{step}").as_bytes());
+                    assert_eq!(
+                        *idempotency_key,
+                        IdempotencyKey::derive(exec, StepId::new(step), b"tool:read")
+                    );
+                }
+                other => panic!("unexpected folded entry: {other:?}"),
+            }
+        }
     }
 }

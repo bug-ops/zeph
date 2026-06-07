@@ -67,6 +67,8 @@ struct CursorState {
     next_step_to_load: u32,
     /// Whether the journal has been read to its end (a short final segment was seen).
     exhausted: bool,
+    /// Whether the folded-step checkpoint preload has run (once, before the first segment read).
+    checkpoints_preloaded: bool,
 }
 
 /// A forward-walking, segment-buffered view of a resumed execution's journal.
@@ -108,6 +110,7 @@ impl ReplayCursor {
                 loaded: BTreeMap::new(),
                 next_step_to_load: 0,
                 exhausted: false,
+                checkpoints_preloaded: false,
             }),
         }
     }
@@ -151,8 +154,33 @@ impl ReplayCursor {
         state: &mut CursorState,
         step: u32,
     ) -> Result<(), DurableError> {
+        if !state.checkpoints_preloaded {
+            self.preload_checkpoints(state).await?;
+        }
         while !state.exhausted && state.next_step_to_load <= step {
             self.load_segment(state).await?;
+        }
+        Ok(())
+    }
+
+    /// Inject folded step results from any compaction checkpoint, once, before the forward walk.
+    ///
+    /// A checkpoint fold deletes the individual `StepResult` rows of an execution's idempotent
+    /// prefix, so those steps would otherwise read as `Fresh` on resume and re-run. Preloading the
+    /// snapshot's reconstructed results into the resident window makes the cursor serve them exactly
+    /// like a surviving row — including the idempotency key the divergence guard compares (INV-3).
+    async fn preload_checkpoints(&self, state: &mut CursorState) -> Result<(), DurableError> {
+        state.checkpoints_preloaded = true;
+        let entries = self
+            .backend
+            .read_checkpoints(self.execution_id)
+            .instrument(tracing::info_span!(
+                "durable.replay.cursor.preload",
+                execution_id = %self.execution_id.as_uuid(),
+            ))
+            .await?;
+        for entry in entries {
+            insert_entry(state, entry);
         }
         Ok(())
     }

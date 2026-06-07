@@ -38,22 +38,27 @@
 //! journaled value is returned rather than re-firing the effect.
 
 use std::fmt::Write as _;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
+use rand::Rng as _;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use tokio::task::JoinSet;
 use tracing::Instrument as _;
+use zeroize::Zeroizing;
 
 use crate::backend::local::now_unix_millis;
 use crate::backend::{DurableBackendEnum, ExecutionBackend as _};
 use crate::config::DurableConfig;
 use crate::effect::{EffectClass, OnAmbiguous};
 use crate::error::DurableError;
-use crate::ids::{ExecutionId, ExecutionKind, IdempotencyKey, StepId};
+use crate::ids::{ExecutionId, ExecutionKind, IdempotencyKey, PromiseId, StepId, TimerId};
 use crate::journal::{EntryKind, ExecutionStatus, Journal as _, JournalEntry};
+use crate::promise::{DurablePromise, RESOLVER_TOKEN_LEN, resolver_token_hash};
 use crate::replay::{DEFAULT_SEGMENT_STEPS, ReplayCursor, StepReplay};
+use crate::retention::step_cap_thresholds;
 use crate::step::{
     DurableStep, PAYLOAD_VERSION, StepDescriptor, StepError, StepHandle, deserialize_result,
     serialize_result,
@@ -78,6 +83,16 @@ pub struct DurableContext {
     writer: JournalWriterHandle,
     max_steps_per_execution: u32,
     max_payload_bytes: u64,
+    /// Soft step-cap threshold (90% of the cap): the first step at or past it folds a checkpoint.
+    soft_step_cap: u32,
+    /// Database fallback poll interval for parked promises and timers.
+    poll_interval: Duration,
+    /// Above this many concurrently-parked promises, awaits fall back to pure polling.
+    max_parked_promises: u32,
+    /// Fires the soft-cap checkpoint fold exactly once per execution.
+    checkpoint_requested: AtomicBool,
+    /// Tracks the spawned background checkpoint-fold task(s) so they are abortable and drainable.
+    fold_tasks: Mutex<JoinSet<()>>,
 }
 
 impl DurableContext {
@@ -98,6 +113,7 @@ impl DurableContext {
         config: &DurableConfig,
     ) -> Self {
         let cursor = ReplayCursor::new(backend.clone(), execution_id, DEFAULT_SEGMENT_STEPS);
+        let (soft_step_cap, _hard) = step_cap_thresholds(config.max_steps_per_execution);
         Self {
             execution_id,
             kind,
@@ -109,6 +125,11 @@ impl DurableContext {
             writer,
             max_steps_per_execution: config.max_steps_per_execution,
             max_payload_bytes: config.max_payload_bytes,
+            soft_step_cap,
+            poll_interval: Duration::from_secs(config.promise_poll_interval_secs.max(1)),
+            max_parked_promises: config.max_parked_promises,
+            checkpoint_requested: AtomicBool::new(false),
+            fold_tasks: Mutex::new(JoinSet::new()),
         }
     }
 
@@ -198,35 +219,248 @@ impl DurableContext {
         ParallelScope { ctx: self }
     }
 
-    /// Durable timer entry point — **not yet wired**; durable timers land with the promise/timer
-    /// layer (C5).
+    /// Create a durable promise resolved out of band by an operator or A2A reply (FR-DE-05).
+    ///
+    /// The promise occupies a deterministic program position, so a resumed execution re-derives the
+    /// same [`PromiseId`] and re-attaches to the pending row rather than minting an orphan. A *fresh*
+    /// promise carries its 32-byte resolver token — hand it to the resolving channel via
+    /// [`DurablePromise::resolver_token`]; a *resumed* promise carries none (the original token was
+    /// delivered before the crash). Await the result with [`await_promise`](Self::await_promise).
     ///
     /// # Errors
     ///
-    /// Currently always returns [`DurableError::UnsupportedEntryKind`]: the backend does not yet
-    /// persist `timer_armed` entries. The signature is stable so consumers can target it ahead of
-    /// the timer layer.
-    #[allow(
-        clippy::unused_async,
-        reason = "stub: the C5 timer layer adds the awaiting body; the async signature is the stable surface"
-    )]
+    /// - [`DurableError::StepCapExceeded`] if the promise would exceed the per-execution step cap.
+    /// - A storage error if the promise row cannot be read or inserted.
+    pub async fn promise<T>(&self) -> Result<DurablePromise<T>, DurableError> {
+        let step_id = self.checked_step_id()?;
+        let promise_id = PromiseId::derive(self.execution_id, step_id);
+
+        // Replay/resume: a row at this position means the promise was already created in a prior run.
+        if self.backend.promise_state(promise_id).await?.is_some() {
+            return Ok(DurablePromise::resumed(promise_id));
+        }
+
+        let mut token = Zeroizing::new([0u8; RESOLVER_TOKEN_LEN]);
+        rand::rng().fill_bytes(&mut *token);
+        let hash = resolver_token_hash(promise_id, self.execution_id, &token);
+        self.backend
+            .insert_promise(
+                promise_id,
+                self.execution_id,
+                *hash.as_bytes(),
+                now_unix_millis(),
+            )
+            .await?;
+        Ok(DurablePromise::fresh(promise_id, token))
+    }
+
+    /// Await a durable promise's resolved value, parking until it is resolved.
+    ///
+    /// Returns immediately if the promise is already resolved (the common replay case). Otherwise it
+    /// parks on an in-process notify keyed by the promise id and falls back to a database poll every
+    /// `promise_poll_interval_secs`; above `max_parked_promises` concurrent waiters it polls without
+    /// parking. A resolution committed by [`DurableHandle::resolve`](crate::DurableHandle::resolve)
+    /// wakes the waiter at once.
+    ///
+    /// # Errors
+    ///
+    /// - [`DurableError::UnknownPromise`] if the promise row is missing (e.g. pruned).
+    /// - A decode/integrity error if the resolved payload cannot be opened into `T`.
+    pub async fn await_promise<T: DeserializeOwned>(
+        &self,
+        promise: DurablePromise<T>,
+    ) -> Result<T, DurableError> {
+        let id = promise.id();
+        let key = id.as_uuid();
+        let cap = usize::try_from(self.max_parked_promises).unwrap_or(usize::MAX);
+        let span = tracing::info_span!("durable.promise.await", promise_id = %key);
+        async move {
+            loop {
+                if let Some(value) = self.take_resolved_promise::<T>(id).await? {
+                    return Ok(value);
+                }
+                match self.backend.promise_waiters().register(key, Some(cap)) {
+                    Some(notify) => {
+                        let notified = notify.notified();
+                        tokio::pin!(notified);
+                        // Register interest, then re-check: this closes the window where a resolution
+                        // lands between the read above and the wait below.
+                        notified.as_mut().enable();
+                        if let Some(value) = self.take_resolved_promise::<T>(id).await? {
+                            self.backend.promise_waiters().cancel(key);
+                            return Ok(value);
+                        }
+                        tokio::select! {
+                            () = notified => {}
+                            () = tokio::time::sleep(self.poll_interval) => {}
+                        }
+                    }
+                    // Over the parked cap: pure poll, no registration.
+                    None => tokio::time::sleep(self.poll_interval).await,
+                }
+            }
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Read a promise's state and, if resolved, open and decode its value.
+    async fn take_resolved_promise<T: DeserializeOwned>(
+        &self,
+        id: PromiseId,
+    ) -> Result<Option<T>, DurableError> {
+        let record = self
+            .backend
+            .promise_state(id)
+            .await?
+            .ok_or(DurableError::UnknownPromise)?;
+        if !record.resolved {
+            return Ok(None);
+        }
+        let sealed = record.payload.ok_or(DurableError::Decode {
+            context: "resolved promise is missing its payload",
+        })?;
+        let plaintext = self
+            .backend
+            .open_promise_payload(id, record.execution_id, &sealed)?;
+        deserialize_result(&plaintext).map(Some)
+    }
+
+    /// Durably sleep until `due`, surviving a process restart (FR-DE-06).
+    ///
+    /// Arms a `durable_timers` row at a deterministic position (so a resume re-attaches to it),
+    /// then parks until the instant arrives — firing the timer itself when due, or returning at once
+    /// if a restart finds it already fired or past due. The
+    /// [`DurableTimerService`](crate::DurableTimerService), when running, fires due timers and wakes
+    /// the waiter; without it, this loop still makes progress on its own.
+    ///
+    /// # Errors
+    ///
+    /// - [`DurableError::StepCapExceeded`] if the timer would exceed the per-execution step cap.
+    /// - A storage error if the timer cannot be armed or its state read.
     pub async fn sleep_until(&self, due: SystemTime) -> Result<(), DurableError> {
-        let due_ms = due
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-        tracing::debug!(
-            execution_id = %self.execution_id.as_uuid(),
-            due_ms,
-            "durable timers are not yet wired; sleep_until lands with the promise/timer layer"
-        );
-        Err(DurableError::UnsupportedEntryKind {
-            kind: "timer_armed",
-        })
+        let step_id = self.checked_step_id()?;
+        let timer_id = TimerId::derive(self.execution_id, step_id);
+        let due_ms = system_time_to_millis(due);
+
+        match self.backend.timer_state(timer_id).await? {
+            // Fired during downtime (or earlier in this run) → return immediately (FR-DE-06).
+            Some((_, true)) => return Ok(()),
+            // Already armed in a prior run: re-attach without re-arming.
+            Some((_, false)) => {}
+            // First execution at this position: arm it.
+            None => {
+                self.backend
+                    .arm_timer(timer_id, self.execution_id, due_ms, now_unix_millis())
+                    .await?;
+            }
+        }
+
+        let key = timer_id.as_uuid();
+        loop {
+            let now = now_unix_millis();
+            if now >= due_ms {
+                // Due: fire it (idempotent — the service may race us; `WHERE fired = 0` dedups).
+                self.backend.mark_timer_fired(timer_id).await?;
+                return Ok(());
+            }
+            let notify = self.backend.timer_waiters().register(key, None);
+            let remaining = u64::try_from(due_ms.saturating_sub(now)).unwrap_or(u64::MAX);
+            let wait = self.poll_interval.min(Duration::from_millis(remaining));
+            match notify {
+                Some(notify) => {
+                    let notified = notify.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if matches!(self.backend.timer_state(timer_id).await?, Some((_, true))) {
+                        self.backend.timer_waiters().cancel(key);
+                        return Ok(());
+                    }
+                    tokio::select! {
+                        () = notified => {}
+                        () = tokio::time::sleep(wait) => {}
+                    }
+                }
+                None => tokio::time::sleep(wait).await,
+            }
+        }
+    }
+
+    /// Build an out-of-band [`DurableHandle`](crate::DurableHandle) over this context's backend.
+    ///
+    /// The handle is the operator/A2A resolution surface; it MUST NOT be exposed to an LLM tool
+    /// (INV-9). It shares the same backend, so a resolution it commits wakes an
+    /// [`await_promise`](Self::await_promise) parked on the same process at once.
+    #[must_use]
+    pub fn resolver_handle(&self) -> crate::promise::DurableHandle {
+        crate::promise::DurableHandle::new(self.backend.clone())
+    }
+
+    /// Await any in-flight background checkpoint folds — a turn-boundary / test barrier.
+    ///
+    /// The soft step-cap fold runs on a spawned task so it never blocks step dispatch; call this at
+    /// a turn boundary to ensure the journal is compacted before the next phase observes it.
+    pub async fn drain_background(&self) {
+        let mut set = {
+            let mut guard = self
+                .fold_tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *guard)
+        };
+        while set.join_next().await.is_some() {}
     }
 
     /// Assign the next deterministic step id (INV-2).
     fn assign_step_id(&self) -> StepId {
         StepId::new(self.next_step.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Assign the next step id, rejecting it if it exceeds the per-execution step cap.
+    fn checked_step_id(&self) -> Result<StepId, DurableError> {
+        let step_id = self.assign_step_id();
+        if self.max_steps_per_execution != 0 && step_id.value() >= self.max_steps_per_execution {
+            return Err(DurableError::StepCapExceeded {
+                cap: self.max_steps_per_execution,
+            });
+        }
+        Ok(step_id)
+    }
+
+    /// Fold a checkpoint on a background task the first time a step crosses the soft cap.
+    ///
+    /// Compaction NEVER runs on the dispatch hot path (spec NEVER), so the fold is spawned and
+    /// tracked in `fold_tasks` (drainable via [`drain_background`](Self::drain_background), aborted
+    /// on drop). It fires exactly once per execution; the hard cap aborts any execution that keeps
+    /// growing past it.
+    fn maybe_checkpoint(&self, step_id: StepId) {
+        if step_id.value() < self.soft_step_cap {
+            return;
+        }
+        if self.checkpoint_requested.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let backend = self.backend.clone();
+        let execution_id = self.execution_id;
+        let up_to = self.soft_step_cap;
+        let mut guard = self
+            .fold_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.spawn(async move {
+            match backend.checkpoint_fold(execution_id, up_to).await {
+                Ok(folded) => {
+                    tracing::info!(
+                        execution_id = %execution_id.as_uuid(),
+                        folded,
+                        "durable checkpoint fold compacted the idempotent prefix"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "durable checkpoint fold failed");
+                }
+            }
+        });
     }
 
     /// Whether replay is currently consulted (a resume that has not diverged).
@@ -246,11 +480,13 @@ impl DurableContext {
         F: FnOnce(StepHandle) -> Fut + Send,
         Fut: Future<Output = Result<T, StepError>> + Send,
     {
-        if step_id.value() >= self.max_steps_per_execution {
+        if self.max_steps_per_execution != 0 && step_id.value() >= self.max_steps_per_execution {
             return Err(DurableError::StepCapExceeded {
                 cap: self.max_steps_per_execution,
             });
         }
+        // Soft cap (90%): fold a checkpoint on a background task, once per execution.
+        self.maybe_checkpoint(step_id);
         let effect = desc.effect();
         let idem_key =
             IdempotencyKey::derive(self.execution_id, step_id, &desc.fingerprint_input());
@@ -547,6 +783,14 @@ fn replay_value<T: DeserializeOwned>(
     }
 }
 
+/// Convert a [`SystemTime`] to Unix epoch milliseconds, clamped into `i64` and never panicking.
+///
+/// A pre-epoch instant clamps to `0`; an overflowing one clamps to [`i64::MAX`].
+fn system_time_to_millis(time: SystemTime) -> i64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 /// Hex-encode the first 8 bytes of an idempotency key for an audit record.
 ///
 /// The key is a BLAKE3 hash, not secret material; the spec redaction rule shows only its first 8
@@ -565,6 +809,7 @@ mod tests {
     use crate::backend::local::LocalBackend;
     use crate::config::DurableConfig;
     use crate::effect::EffectIntentSubClass;
+    use crate::timer::DurableTimerService;
     use crate::writer::JournalWriter;
     use std::pin::Pin;
     use std::sync::atomic::AtomicU32;
@@ -965,6 +1210,241 @@ mod tests {
             "a failed step journals no result"
         );
         h.shutdown().await;
+    }
+
+    /// Build a fresh context over a shared in-memory backend with a custom config (e.g. a small cap).
+    fn context_with(
+        local: &Arc<LocalBackend>,
+        handle: &JournalWriterHandle,
+        exec: ExecutionId,
+        is_resume: bool,
+        config: &DurableConfig,
+    ) -> DurableContext {
+        let dispatch = Arc::new(DurableBackendEnum::Local(local.clone()));
+        DurableContext::new(
+            exec,
+            ExecutionKind::AgentTurn,
+            is_resume,
+            dispatch,
+            handle.clone(),
+            config,
+        )
+    }
+
+    #[tokio::test]
+    async fn promise_resolves_with_token_and_await_returns_value() {
+        // FR-DE-05: a promise resolves only via its token; resolution wakes the parked await.
+        let exec = ExecutionId::new();
+        let h = Harness::open(exec, false).await;
+        let promise = h.ctx.promise::<u32>().await.unwrap();
+        assert!(!promise.is_resumed());
+        let token = *promise
+            .resolver_token()
+            .expect("fresh promise carries a token");
+        let id = promise.id();
+        let resolver = h.ctx.resolver_handle();
+
+        let (awaited, ack) = tokio::join!(h.ctx.await_promise::<u32>(promise), async {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            resolver.resolve(id, &token, 1234u32).await
+        });
+        ack.unwrap();
+        assert_eq!(
+            awaited.unwrap(),
+            1234,
+            "the awaiter receives the resolved value"
+        );
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn wrong_resolver_token_is_rejected_but_correct_one_resolves() {
+        // INV-9: resolution requires the matching token; a wrong token is rejected (constant-time).
+        let exec = ExecutionId::new();
+        let h = Harness::open(exec, false).await;
+        let promise = h.ctx.promise::<String>().await.unwrap();
+        let id = promise.id();
+        let token = *promise.resolver_token().unwrap();
+        let resolver = h.ctx.resolver_handle();
+
+        // The LLM, lacking the token, cannot resolve: a guessed token is rejected and leaves the
+        // promise pending.
+        let mut wrong = token;
+        wrong[0] ^= 0xFF;
+        assert!(matches!(
+            resolver.resolve(id, &wrong, "forged".to_string()).await,
+            Err(DurableError::PromiseRejected)
+        ));
+        assert!(
+            !h.backend.promise_state(id).await.unwrap().unwrap().resolved,
+            "a rejected resolution must not resolve the promise"
+        );
+
+        // The genuine token resolves it.
+        resolver
+            .resolve(id, &token, "ok".to_string())
+            .await
+            .unwrap();
+        assert!(h.backend.promise_state(id).await.unwrap().unwrap().resolved);
+
+        // Resolving an unknown promise fails closed.
+        assert!(matches!(
+            resolver
+                .resolve(PromiseId::new(), &token, "x".to_string())
+                .await,
+            Err(DurableError::UnknownPromise)
+        ));
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn resumed_promise_awaits_the_resolved_value() {
+        // A promise created and resolved before a crash is re-attached on resume and awaited.
+        let exec = ExecutionId::new();
+        let h = Harness::open(exec, false).await;
+        let promise = h.ctx.promise::<u32>().await.unwrap();
+        let id = promise.id();
+        let token = *promise.resolver_token().unwrap();
+        h.ctx
+            .resolver_handle()
+            .resolve(id, &token, 77u32)
+            .await
+            .unwrap();
+
+        // Resume: promise() at the same position returns a token-less, resumed handle.
+        let resumed = h.resume();
+        let promise2 = resumed.promise::<u32>().await.unwrap();
+        assert!(promise2.is_resumed());
+        assert_eq!(
+            promise2.id(),
+            id,
+            "the resumed promise re-derives the same id"
+        );
+        assert_eq!(resumed.await_promise::<u32>(promise2).await.unwrap(), 77);
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sleep_until_returns_when_the_instant_passes() {
+        let exec = ExecutionId::new();
+        let h = Harness::open(exec, false).await;
+        // A near-future instant: the context fires its own timer when due (no service needed).
+        let due = SystemTime::now() + Duration::from_millis(40);
+        tokio::time::timeout(Duration::from_secs(2), h.ctx.sleep_until(due))
+            .await
+            .expect("sleep_until completes before the test timeout")
+            .expect("sleep_until succeeds");
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sleep_until_past_due_returns_immediately_on_resume() {
+        // FR-DE-06: a timer whose instant elapsed during downtime fires at once on resume.
+        let exec = ExecutionId::new();
+        let h = Harness::open(exec, false).await;
+        // Arm a long-past timer at the position sleep_until will re-derive on resume (step 0).
+        let timer = TimerId::derive(exec, StepId::new(0));
+        h.backend.arm_timer(timer, exec, 1_000, 0).await.unwrap();
+
+        // The timer service fires the past-due timer on its first poll.
+        let service = DurableTimerService::new(
+            Arc::new(DurableBackendEnum::Local(h.backend.clone())),
+            Duration::from_millis(5),
+        );
+        service.fire_due().await;
+        assert_eq!(
+            h.backend.timer_state(timer).await.unwrap(),
+            Some((1_000, true))
+        );
+
+        // A resumed sleep_until at the same position returns immediately (already fired).
+        let resumed = h.resume();
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            resumed.sleep_until(SystemTime::now() + Duration::from_hours(1)),
+        )
+        .await
+        .expect("resumed sleep_until returns immediately")
+        .unwrap();
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn soft_cap_triggers_checkpoint_fold_and_replay_skips_folded_steps() {
+        // Soft cap (90% of 10 = 9): the step at id 9 folds the idempotent prefix [0..9).
+        let exec = ExecutionId::new();
+        let local = Arc::new(LocalBackend::open(":memory:", 1_048_576).await.unwrap());
+        local.init().await.unwrap();
+        local
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let (writer, handle) = JournalWriter::new(local.clone(), &fast_config());
+        let task = tokio::spawn(writer.run());
+        let config = DurableConfig {
+            max_steps_per_execution: 10,
+            ..fast_config()
+        };
+        let ctx = context_with(&local, &handle, exec, false, &config);
+
+        let desc = |i: u32| StepDescriptor::idempotent("s", format!("op:{i}").into_bytes());
+        // Steps 0..=8 run and are committed before the soft-cap step triggers the fold.
+        for i in 0..9 {
+            let v: u32 = ctx
+                .step(desc(i), move |_| async move { Ok(i) })
+                .await
+                .unwrap();
+            assert_eq!(v, i);
+        }
+        handle.flush().await.unwrap();
+        // Step id 9 crosses the soft cap and spawns the background fold of [0..9).
+        ctx.step::<u32, _, _>(desc(9), |_| async { Ok(9) })
+            .await
+            .unwrap();
+        ctx.drain_background().await;
+        handle.flush().await.unwrap();
+
+        // The folded prefix is compacted into a single checkpoint; steps 9 survives as a row.
+        let entries = local.read_execution(exec).await.unwrap();
+        let checkpoints = entries
+            .iter()
+            .filter(|e| matches!(e.entry, EntryKind::Checkpoint { .. }))
+            .count();
+        assert_eq!(checkpoints, 1, "the soft cap folded one checkpoint");
+        let surviving: Vec<u32> = entries
+            .iter()
+            .filter(|e| matches!(e.entry, EntryKind::StepResult { .. }))
+            .map(|e| e.step_id.value())
+            .collect();
+        assert_eq!(surviving, vec![9], "only the post-fold step row survives");
+
+        // Resume: the folded steps replay from the checkpoint without re-running their ops.
+        let resumed = context_with(&local, &handle, exec, true, &config);
+        let reran = Arc::new(AtomicU32::new(0));
+        for i in 0..9 {
+            let counter = reran.clone();
+            let v: u32 = resumed
+                .step(desc(i), move |_| {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Ok(999)
+                    }
+                })
+                .await
+                .unwrap();
+            assert_eq!(v, i, "folded step {i} replays its journaled value");
+        }
+        assert_eq!(
+            reran.load(Ordering::SeqCst),
+            0,
+            "no folded operation closure re-ran on replay"
+        );
+
+        drop(ctx);
+        drop(resumed);
+        drop(handle);
+        task.await.unwrap();
     }
 
     #[tokio::test]

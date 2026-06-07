@@ -138,6 +138,18 @@ pub enum DurableError {
         /// The name of the step whose result failed to serialize.
         step: &'static str,
     },
+
+    /// A promise resolution referenced a promise that has no `durable_promises` row — either never
+    /// created, or pruned. Fails closed rather than silently succeeding. Per INV-5 the raw
+    /// `PromiseId` is semi-sensitive and is therefore not embedded in the message.
+    #[error("promise resolution failed: no such promise")]
+    UnknownPromise,
+
+    /// A promise resolution presented a resolver token that did not match the stored hash (INV-9).
+    /// The comparison is constant-time, and neither the presented token nor the raw `PromiseId`
+    /// appears in the message (INV-5). The pending promise is left untouched.
+    #[error("promise resolution rejected: resolver token did not authenticate")]
+    PromiseRejected,
 }
 
 impl DurableError {
