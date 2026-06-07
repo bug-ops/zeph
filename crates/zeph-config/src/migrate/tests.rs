@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        60,
-        "MIGRATIONS registry must contain all 60 sequential steps"
+        61,
+        "MIGRATIONS registry must contain all 61 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 60);
+    assert_eq!(MIGRATIONS.len(), 61);
 }
 
 #[test]
