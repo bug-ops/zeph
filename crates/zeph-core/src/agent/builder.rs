@@ -2770,6 +2770,93 @@ mod tests {
         );
     }
 
+    /// Verify that `apply_session_config` wires `fidelity_semantic_provider` and
+    /// `fidelity_compress_provider` when the corresponding `FidelityConfig` provider names are
+    /// non-empty, and leaves them `None` when the names are empty or the config is absent.
+    #[test]
+    fn apply_session_config_wires_fidelity_providers() {
+        use crate::config::Config;
+
+        // Non-empty provider names → both fields must be Some after apply_session_config.
+        let mut session_cfg = AgentSessionConfig::from_config(&Config::default(), 100_000);
+        session_cfg.fidelity_config = Some(zeph_config::FidelityConfig {
+            enabled: true,
+            semantic_scoring_provider: Some(zeph_config::ProviderName::new("embed-fast")),
+            compress_provider: Some(zeph_config::ProviderName::new("compress-quality")),
+            ..zeph_config::FidelityConfig::default()
+        });
+        let agent = make_agent().apply_session_config(session_cfg);
+        assert!(
+            agent
+                .services
+                .memory
+                .compaction
+                .fidelity_semantic_provider
+                .is_some(),
+            "fidelity_semantic_provider must be Some when semantic_scoring_provider name is non-empty"
+        );
+        assert!(
+            agent
+                .services
+                .memory
+                .compaction
+                .fidelity_compress_provider
+                .is_some(),
+            "fidelity_compress_provider must be Some when compress_provider name is non-empty"
+        );
+
+        // Empty provider names → both fields must be None.
+        let mut session_cfg_empty = AgentSessionConfig::from_config(&Config::default(), 100_000);
+        session_cfg_empty.fidelity_config = Some(zeph_config::FidelityConfig {
+            enabled: true,
+            semantic_scoring_provider: Some(zeph_config::ProviderName::new("")),
+            compress_provider: Some(zeph_config::ProviderName::new("")),
+            ..zeph_config::FidelityConfig::default()
+        });
+        let agent_empty = make_agent().apply_session_config(session_cfg_empty);
+        assert!(
+            agent_empty
+                .services
+                .memory
+                .compaction
+                .fidelity_semantic_provider
+                .is_none(),
+            "fidelity_semantic_provider must be None when semantic_scoring_provider name is empty"
+        );
+        assert!(
+            agent_empty
+                .services
+                .memory
+                .compaction
+                .fidelity_compress_provider
+                .is_none(),
+            "fidelity_compress_provider must be None when compress_provider name is empty"
+        );
+
+        // fidelity_config absent → both fields must be None.
+        let mut session_cfg_none = AgentSessionConfig::from_config(&Config::default(), 100_000);
+        session_cfg_none.fidelity_config = None;
+        let agent_none = make_agent().apply_session_config(session_cfg_none);
+        assert!(
+            agent_none
+                .services
+                .memory
+                .compaction
+                .fidelity_semantic_provider
+                .is_none(),
+            "fidelity_semantic_provider must be None when fidelity_config is absent"
+        );
+        assert!(
+            agent_none
+                .services
+                .memory
+                .compaction
+                .fidelity_compress_provider
+                .is_none(),
+            "fidelity_compress_provider must be None when fidelity_config is absent"
+        );
+    }
+
     #[test]
     fn with_skill_matching_config_sets_fields() {
         let agent = make_agent().with_skill_matching_config(0.7, true, 0.85);

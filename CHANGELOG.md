@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `test(context)`: add `apply_session_config_wires_fidelity_providers` unit test in `zeph-core` — asserts that non-empty `FidelityConfig::semantic_scoring_provider` / `compress_provider` names produce `Some` in `compaction.fidelity_semantic_provider` / `fidelity_compress_provider` after `apply_session_config`, and that empty names or absent config produce `None` (closes #5035)
 - `test(config)`: add 3 unit tests for `migrate_caveman_config` migration step 59 (closes #5027). Covers: fresh config (commented-out block appended), idempotency when `[caveman]` section present, idempotency when `# [caveman]` commented block present. Follows the pattern of `migrate_worktree_git_timeout` and sibling step tests.
 - `refactor(tui)`: centralise scroll-step magic numbers in `zeph-tui` — `SCROLL_STEP_PAGE = 10` constant defined once in `keys.rs` and referenced from all four `scroll_offset` mutation sites in `handle_normal_key` and `handle_insert_scroll_keys`. `SCROLL_STEP_MOUSE` omitted: mouse scroll handler was removed in #4996 (closes #4997)
 - `docs(spec-063)`: document `panic = "abort"` limitation for `CwdRestoreGuard` — the RAII Drop guarantee only holds under `panic = "unwind"`; under `panic = "abort"` (active in `[profile.release]`) Drop is skipped but the process terminates immediately so the system remains in a defined state. Updated `spec.md` and `srs.md` FR-CWD-03 accordingly (closes #4754)
