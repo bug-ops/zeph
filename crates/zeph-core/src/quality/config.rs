@@ -149,6 +149,7 @@ impl QualityConfig {
     ///
     /// Returns an error if `2 * per_call_timeout_ms > latency_budget_ms` or
     /// `min_evidence` is outside `[0.0, 1.0]`.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), QualityConfigError> {
         if 2 * self.per_call_timeout_ms > self.latency_budget_ms {
             return Err(QualityConfigError::TimeoutExceedsBudget {

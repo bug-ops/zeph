@@ -61,6 +61,7 @@ const BLOCKED_ENV_VARS: &[&str] = &[
 /// # Errors
 ///
 /// Returns `McpError::CommandNotAllowed` if the command is not on the allowlist.
+#[must_use = "validation result must be checked"]
 pub fn validate_command(command: &str, extra_allowed: &[String]) -> Result<(), McpError> {
     // Expand `~` in the command itself so patterns and exact entries can use `~` uniformly.
     let command = expand_tilde(command);
@@ -134,6 +135,7 @@ pub fn build_isolated_env<S: std::hash::BuildHasher>(
 /// # Errors
 ///
 /// Returns `McpError::EnvVarBlocked` if a dangerous env var is found.
+#[must_use = "validation result must be checked"]
 pub fn validate_env<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
 ) -> Result<(), McpError> {

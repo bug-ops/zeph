@@ -61,6 +61,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if any value is out of range.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.validate_scalar_bounds()?;
         self.validate_memory_compression()?;

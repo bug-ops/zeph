@@ -448,6 +448,7 @@ impl DagScheduler {
     ///
     /// Returns `OrchestrationError::InvalidConfig` when `verify_completeness = true`,
     /// `verify_provider` is non-empty, and the name is not present in `provider_names`.
+    #[must_use = "validation result must be checked"]
     pub fn validate_verify_config(
         &self,
         provider_names: &[&str],

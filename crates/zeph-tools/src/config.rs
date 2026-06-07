@@ -25,6 +25,7 @@ use crate::permissions::{AutonomyLevel, PermissionPolicy};
 /// # Errors
 ///
 /// Returns an error string when any pattern contains invalid characters.
+#[must_use = "validation result must be checked"]
 pub fn validate_sandbox_denied_domains(config: &SandboxConfig) -> Result<(), String> {
     domain_match::validate_domain_patterns(&config.denied_domains)
 }

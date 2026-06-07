@@ -55,6 +55,7 @@ pub fn domain_matches(pattern: &str, host: &str) -> bool {
 ///
 /// Returns a descriptive error string when any pattern contains invalid characters
 /// (spaces, slashes, colons, or other characters outside the allowed set).
+#[must_use = "validation result must be checked"]
 pub fn validate_domain_patterns(patterns: &[String]) -> Result<(), String> {
     for pattern in patterns {
         if !pattern

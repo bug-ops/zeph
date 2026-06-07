@@ -204,6 +204,7 @@ impl AnchoredSummary {
     /// # Errors
     ///
     /// Returns `Err` with a descriptive message if any field exceeds its limit.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         const MAX_INTENT: usize = 2_000;
         const MAX_ENTRY: usize = 500;

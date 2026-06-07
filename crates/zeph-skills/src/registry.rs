@@ -342,6 +342,7 @@ impl SkillRegistry {
     ///
     /// A list of `(skill_name, ScanResult)` pairs for every skill that had at least
     /// one pattern match. Clean skills are omitted from the result.
+    #[must_use]
     pub fn scan_loaded(&self) -> Vec<(String, ScanResult)> {
         let mut results = Vec::new();
 

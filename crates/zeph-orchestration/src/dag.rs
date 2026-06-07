@@ -33,6 +33,7 @@ use super::verify_predicate::PredicateOutcome;
 ///
 /// Returns `OrchestrationError::InvalidGraph` for structural violations,
 /// or `OrchestrationError::CycleDetected` if a cycle is found.
+#[must_use = "validation result must be checked"]
 pub fn validate(tasks: &[TaskNode], max_tasks: usize) -> Result<(), OrchestrationError> {
     if tasks.len() > max_tasks {
         return Err(OrchestrationError::InvalidGraph(format!(

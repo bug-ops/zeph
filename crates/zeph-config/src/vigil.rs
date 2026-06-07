@@ -112,6 +112,7 @@ impl VigilConfig {
     ///
     /// Returns [`ConfigError::Validation`] when any pattern is invalid, too long, or the
     /// collection exceeds the 64-entry cap.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         const MAX_PATTERN_LEN: usize = 1024;
         const MAX_PATTERN_COUNT: usize = 64;

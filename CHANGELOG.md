@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Add `#[must_use]` to public validate/scan functions across workspace (zeph-config, zeph-skills, zeph-orchestration, zeph-experiments, zeph-common, zeph-core, zeph-mcp, zeph-plugins, zeph-tools) to prevent silent discard of validation errors (closes #4943, #4961, #4963)
+
 ### Added
 
 - `feat(durable)`: scaffolded the new Layer-0 `zeph-durable` crate (spec-064) — the foundation of

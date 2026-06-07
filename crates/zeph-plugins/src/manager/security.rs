@@ -200,6 +200,7 @@ impl PluginManager {
 ///
 /// Returns [`PluginError::InsecureUrl`] when the URL is `http://` or any other non-HTTPS scheme.
 /// Returns [`PluginError::InvalidSource`] when the URL is unparseable.
+#[must_use = "validation result must be checked"]
 pub fn validate_url_scheme_ephemeral(url: &str) -> Result<(), PluginError> {
     let parsed = reqwest::Url::parse(url).map_err(|_| PluginError::InvalidSource {
         path: url.to_owned(),

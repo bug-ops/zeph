@@ -262,6 +262,7 @@ impl ProviderEntry {
     ///
     /// Returns `ConfigError` when a fatal invariant is violated (e.g. compatible provider
     /// without a name).
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), crate::error::ConfigError> {
         use crate::error::ConfigError;
 
@@ -547,6 +548,7 @@ impl ProviderOverrides {
 /// - Duplicate names
 /// - Multiple entries marked `default = true`
 /// - Individual entry validation errors
+#[must_use = "validation result must be checked"]
 pub fn validate_pool(entries: &[ProviderEntry]) -> Result<(), crate::error::ConfigError> {
     use crate::error::ConfigError;
     use std::collections::HashSet;

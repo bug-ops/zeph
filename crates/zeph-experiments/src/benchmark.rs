@@ -129,6 +129,7 @@ impl BenchmarkSet {
     /// # Errors
     ///
     /// Returns [`EvalError::EmptyBenchmarkSet`] if `cases` is empty.
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), EvalError> {
         if self.cases.is_empty() {
             return Err(EvalError::EmptyBenchmarkSet);
