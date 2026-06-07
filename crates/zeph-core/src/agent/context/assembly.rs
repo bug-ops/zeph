@@ -585,7 +585,9 @@ impl<C: Channel> Agent<C> {
         };
         let effective_query = rewritten_query.as_deref().unwrap_or(query);
 
-        let matched_indices: Vec<usize> = if let Some(matcher) = &self.services.skill.matcher {
+        let (matched_indices, skill_fallback_mode): (Vec<usize>, bool) = if let Some(matcher) =
+            &self.services.skill.matcher
+        {
             let provider = self.embedding_provider.clone();
             let embed_timeout_secs = self.runtime.config.timeouts.embedding_seconds;
             let _ = self.channel.send_status("matching skills...").await;
@@ -753,11 +755,14 @@ impl<C: Channel> Agent<C> {
                 }
             }
 
-            let indices: Vec<usize> = if infra_error {
+            let (indices, fallback): (Vec<usize>, bool) = if infra_error {
                 // Embed or Qdrant infrastructure failure: fall back to all skills so the agent
                 // remains functional rather than running with an empty skill set.
-                tracing::warn!("skill matcher infrastructure error, falling back to all skills");
-                (0..all_meta.len()).collect()
+                tracing::warn!(
+                    "skill matcher infrastructure error, falling back to all skills \
+                     (description-only injection to limit token use)"
+                );
+                ((0..all_meta.len()).collect(), true)
             } else {
                 // Drop skills whose score falls below the minimum injection floor.
                 let min_score = self.services.skill.min_injection_score;
@@ -788,17 +793,21 @@ impl<C: Channel> Agent<C> {
                         < self.services.skill.disambiguation_threshold
                 {
                     match self.disambiguate_skills(query, &all_meta, &scored).await {
-                        Some(reordered) => reordered,
-                        None => scored.iter().map(|s| s.index).collect(),
+                        Some(reordered) => (reordered, false),
+                        None => (scored.iter().map(|s| s.index).collect(), false),
                     }
                 } else {
-                    scored.iter().map(|s| s.index).collect()
+                    (scored.iter().map(|s| s.index).collect(), false)
                 }
             };
             let _ = self.channel.send_status("").await;
-            indices
+            (indices, fallback)
         } else {
-            (0..all_meta.len()).collect()
+            tracing::warn!(
+                "embedding matcher unavailable, injecting skill catalog (description-only); \
+                 configure an embedding provider (e.g. a local Ollama embed model) to enable semantic skill matching"
+            );
+            ((0..all_meta.len()).collect(), true)
         };
 
         let matched_indices: Vec<usize> = matched_indices
@@ -993,7 +1002,9 @@ impl<C: Channel> Agent<C> {
             other => other,
         };
 
-        let mut skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact {
+        let mut skills_prompt = if effective_mode == crate::config::SkillPromptMode::Compact
+            || skill_fallback_mode
+        {
             format_skills_prompt_compact(&active_skills)
         } else {
             let trust_levels: std::collections::HashMap<String, zeph_common::SkillTrustLevel> =
