@@ -430,18 +430,32 @@ async fn llm_failure_transitions_to_failed_state() {
         )
         .unwrap();
 
-    // Wait for the background task to complete.
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    let statuses = mgr.statuses();
-    let status = statuses
-        .iter()
-        .find(|(id, _)| id == &task_id)
-        .map(|(_, s)| s);
+    // Poll until the background task transitions to Failed (or 5s timeout).
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    let final_status = loop {
+        let statuses = mgr.statuses();
+        let status = statuses
+            .iter()
+            .find(|(id, _)| id == &task_id)
+            .map(|(_, s)| s.clone());
+        if status
+            .as_ref()
+            .is_some_and(|s| s.state == SubAgentState::Failed)
+        {
+            break status;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break status;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    };
     // The background loop should have caught the LLM error and reported Failed.
+    let is_failed = final_status
+        .as_ref()
+        .is_some_and(|s| s.state == SubAgentState::Failed);
     assert!(
-        status.is_some_and(|s| s.state == SubAgentState::Failed),
-        "expected Failed, got: {status:?}"
+        is_failed,
+        "expected Failed within 5s, got: {final_status:?}"
     );
 }
 
