@@ -15,6 +15,7 @@
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use zeph_llm::provider::Message;
@@ -72,7 +73,9 @@ pub struct TranscriptMeta {
 /// Appends [`TranscriptEntry`] lines to a JSONL transcript file.
 ///
 /// The file handle is kept open for the writer's lifetime to avoid
-/// race conditions from repeated open/close cycles.
+/// race conditions from repeated open/close cycles. The handle is wrapped in
+/// `Arc<Mutex<File>>` so the writer can be cheaply cloned and passed to
+/// `tokio::task::spawn_blocking` for non-blocking appends.
 ///
 /// # Examples
 ///
@@ -80,11 +83,12 @@ pub struct TranscriptMeta {
 /// use std::path::Path;
 /// use zeph_subagent::transcript::TranscriptWriter;
 ///
-/// let mut writer = TranscriptWriter::new(Path::new("/tmp/session.jsonl")).unwrap();
+/// let writer = TranscriptWriter::new(Path::new("/tmp/session.jsonl")).unwrap();
 /// // writer.append(seq, &message) to persist each message.
 /// ```
+#[derive(Clone)]
 pub struct TranscriptWriter {
-    file: File,
+    file: Arc<Mutex<File>>,
 }
 
 impl TranscriptWriter {
@@ -100,15 +104,20 @@ impl TranscriptWriter {
             fs::create_dir_all(parent)?;
         }
         let file = zeph_common::fs_secure::append_private(path)?;
-        Ok(Self { file })
+        Ok(Self {
+            file: Arc::new(Mutex::new(file)),
+        })
     }
 
     /// Append a single message as a JSON line and flush immediately.
     ///
+    /// Serialization is done on the caller's thread; the blocking write and flush
+    /// are offloaded to `tokio::task::spawn_blocking` so the Tokio executor is not stalled.
+    ///
     /// # Errors
     ///
-    /// Returns `io::Error` on serialization or write failure.
-    pub fn append(&mut self, seq: u32, message: &Message) -> io::Result<()> {
+    /// Returns `io::Error` on serialization, write failure, lock poison, or thread-pool panic.
+    pub async fn append(&self, seq: u32, message: &Message) -> io::Result<()> {
         let entry = TranscriptEntry {
             seq,
             timestamp: utc_now(),
@@ -116,9 +125,17 @@ impl TranscriptWriter {
         };
         let line = serde_json::to_string(&entry)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        self.file.write_all(line.as_bytes())?;
-        self.file.write_all(b"\n")?;
-        self.file.flush()
+        let file = Arc::clone(&self.file);
+        tokio::task::spawn_blocking(move || {
+            let mut guard = file
+                .lock()
+                .map_err(|_| io::Error::other("transcript writer lock poisoned"))?;
+            guard.write_all(line.as_bytes())?;
+            guard.write_all(b"\n")?;
+            guard.flush()
+        })
+        .await
+        .map_err(|e| io::Error::other(format!("spawn_blocking panicked: {e}")))?
     }
 
     /// Write the meta sidecar file for an agent.
@@ -131,6 +148,26 @@ impl TranscriptWriter {
         let content = serde_json::to_string_pretty(meta)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         zeph_common::fs_secure::write_private(&path, content.as_bytes())
+    }
+
+    /// Async variant of [`write_meta`][Self::write_meta] that offloads the blocking FS write
+    /// to a `spawn_blocking` thread so the Tokio executor is not stalled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `io::Error` on serialization, write failure, or thread-pool panic.
+    pub async fn write_meta_async(
+        dir: &Path,
+        agent_id: &str,
+        meta: &TranscriptMeta,
+    ) -> io::Result<()> {
+        let path = dir.join(format!("{agent_id}.meta.json"));
+        let content = serde_json::to_string_pretty(meta)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let bytes = content.into_bytes();
+        tokio::task::spawn_blocking(move || zeph_common::fs_secure::write_private(&path, &bytes))
+            .await
+            .map_err(|e| io::Error::other(format!("spawn_blocking panicked: {e}")))?
     }
 }
 
@@ -408,17 +445,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn writer_reader_roundtrip() {
+    #[tokio::test]
+    async fn writer_reader_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.jsonl");
 
         let msg1 = test_message(Role::User, "hello");
         let msg2 = test_message(Role::Assistant, "world");
 
-        let mut writer = TranscriptWriter::new(&path).unwrap();
-        writer.append(0, &msg1).unwrap();
-        writer.append(1, &msg2).unwrap();
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer.append(0, &msg1).await.unwrap();
+        writer.append(1, &msg2).await.unwrap();
         drop(writer);
 
         let messages = TranscriptReader::load(&path).unwrap();

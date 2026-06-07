@@ -1037,15 +1037,14 @@ fn make_cfg_with_dir(dir: &std::path::Path) -> SubAgentConfig {
 #[test]
 fn resume_not_found_returns_not_found_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let err = mgr
-        .resume(
+    let err = rt
+        .block_on(mgr.resume(
             "deadbeef",
             "continue",
             mock_provider(vec!["done"]),
@@ -1053,7 +1052,7 @@ fn resume_not_found_returns_not_found_error() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap_err();
     assert!(matches!(err, SubAgentError::NotFound(_)));
 }
@@ -1061,7 +1060,6 @@ fn resume_not_found_returns_not_found_error() {
 #[test]
 fn resume_ambiguous_id_returns_ambiguous_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     write_completed_meta(tmp.path(), "aabb0001-0000-0000-0000-000000000000", "bot");
@@ -1071,8 +1069,8 @@ fn resume_ambiguous_id_returns_ambiguous_error() {
     mgr.definitions.push(sample_def());
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let err = mgr
-        .resume(
+    let err = rt
+        .block_on(mgr.resume(
             "aabb",
             "continue",
             mock_provider(vec!["done"]),
@@ -1080,7 +1078,7 @@ fn resume_ambiguous_id_returns_ambiguous_error() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap_err();
     assert!(matches!(err, SubAgentError::AmbiguousId(_, 2)));
 }
@@ -1088,7 +1086,6 @@ fn resume_ambiguous_id_returns_ambiguous_error() {
 #[test]
 fn resume_still_running_via_active_agents_returns_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "cafebabe-0000-0000-0000-000000000000";
@@ -1129,8 +1126,8 @@ fn resume_still_running_via_active_agents_returns_error() {
     drop(status_tx);
 
     let cfg = make_cfg_with_dir(tmp.path());
-    let err = mgr
-        .resume(
+    let err = rt
+        .block_on(mgr.resume(
             agent_id,
             "continue",
             mock_provider(vec!["done"]),
@@ -1138,7 +1135,7 @@ fn resume_still_running_via_active_agents_returns_error() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap_err();
     assert!(matches!(err, SubAgentError::StillRunning(_)));
 }
@@ -1146,7 +1143,6 @@ fn resume_still_running_via_active_agents_returns_error() {
 #[test]
 fn resume_def_not_found_returns_not_found_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "feedface-0000-0000-0000-000000000000";
@@ -1157,8 +1153,8 @@ fn resume_def_not_found_returns_not_found_error() {
     // Do NOT push any definition — so def_name "unknown-agent" won't be found.
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let err = mgr
-        .resume(
+    let err = rt
+        .block_on(mgr.resume(
             "feedface",
             "continue",
             mock_provider(vec!["done"]),
@@ -1166,7 +1162,7 @@ fn resume_def_not_found_returns_not_found_error() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap_err();
     assert!(matches!(err, SubAgentError::NotFound(_)));
 }
@@ -1174,7 +1170,6 @@ fn resume_def_not_found_returns_not_found_error() {
 #[test]
 fn resume_concurrency_limit_reached_returns_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "babe0000-0000-0000-0000-000000000000";
@@ -1184,11 +1179,14 @@ fn resume_concurrency_limit_reached_returns_error() {
     mgr.definitions.push(sample_def());
 
     // Occupy the single slot.
-    let _running_id = do_spawn(&mut mgr, "bot", "occupying slot").unwrap();
+    {
+        let _guard = rt.enter();
+        let _running_id = do_spawn(&mut mgr, "bot", "occupying slot").unwrap();
+    }
 
     let cfg = make_cfg_with_dir(tmp.path());
-    let err = mgr
-        .resume(
+    let err = rt
+        .block_on(mgr.resume(
             "babe0000",
             "continue",
             mock_provider(vec!["done"]),
@@ -1196,7 +1194,7 @@ fn resume_concurrency_limit_reached_returns_error() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap_err();
     assert!(
         matches!(err, SubAgentError::ConcurrencyLimit { .. }),
@@ -1207,7 +1205,6 @@ fn resume_concurrency_limit_reached_returns_error() {
 #[test]
 fn resume_happy_path_returns_new_task_id() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "deadcode-0000-0000-0000-000000000000";
@@ -1217,8 +1214,8 @@ fn resume_happy_path_returns_new_task_id() {
     mgr.definitions.push(sample_def());
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let (new_id, def_name) = mgr
-        .resume(
+    let (new_id, def_name) = rt
+        .block_on(mgr.resume(
             "deadcode",
             "continue the work",
             mock_provider(vec!["done"]),
@@ -1226,7 +1223,7 @@ fn resume_happy_path_returns_new_task_id() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap();
 
     assert!(!new_id.is_empty(), "new task id must not be empty");
@@ -1238,13 +1235,13 @@ fn resume_happy_path_returns_new_task_id() {
     // New agent must be tracked.
     assert!(mgr.agents.contains_key(&new_id));
 
+    let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
 }
 
 #[test]
 fn resume_populates_resumed_from_in_meta() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let original_id = "0000abcd-0000-0000-0000-000000000000";
@@ -1254,8 +1251,8 @@ fn resume_populates_resumed_from_in_meta() {
     mgr.definitions.push(sample_def());
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let (new_id, _) = mgr
-        .resume(
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
             "0000abcd",
             "continue",
             mock_provider(vec!["done"]),
@@ -1263,7 +1260,7 @@ fn resume_populates_resumed_from_in_meta() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap();
 
     // The new meta sidecar must have resumed_from = original_id.
@@ -1274,6 +1271,7 @@ fn resume_populates_resumed_from_in_meta() {
         "resumed_from must point to original agent id"
     );
 
+    let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
 }
 
@@ -1282,7 +1280,6 @@ fn resume_with_spawn_context_applies_constraint_propagation() {
     // Verify that passing Some(SpawnContext) to resume() narrows the agent's tool allowlist
     // via apply_constraint_propagation, matching spawn() behavior.
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "c0de0000-0000-0000-0000-000000000000";
@@ -1297,8 +1294,8 @@ fn resume_with_spawn_context_applies_constraint_propagation() {
 
     // Parent context only permits shell and read — web must be removed.
     let ctx = ctx_with_allowlist(&["shell", "read"]);
-    let (new_id, _) = mgr
-        .resume(
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
             "c0de0000",
             "continue",
             mock_provider(vec!["done"]),
@@ -1306,7 +1303,7 @@ fn resume_with_spawn_context_applies_constraint_propagation() {
             None,
             &cfg,
             Some(&ctx),
-        )
+        ))
         .unwrap();
 
     // The resumed handle is live; inspect the def stored in the active handle.
@@ -1324,6 +1321,7 @@ fn resume_with_spawn_context_applies_constraint_propagation() {
         other => panic!("expected AllowList after constraint propagation, got {other:?}"),
     }
 
+    let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
 }
 
@@ -1377,7 +1375,6 @@ impl ErasedToolExecutor for TrustTrackingExecutor {
 #[test]
 fn resume_with_spawn_context_applies_trust_cap_to_executor() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "d0d00000-0000-0000-0000-000000000000";
@@ -1396,8 +1393,8 @@ fn resume_with_spawn_context_applies_trust_cap_to_executor() {
         max_trust_level: Some(SkillTrustLevel::Quarantined),
         ..SpawnContext::default()
     };
-    let (new_id, _) = mgr
-        .resume(
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
             "d0d00000",
             "continue",
             mock_provider(vec!["done"]),
@@ -1405,7 +1402,7 @@ fn resume_with_spawn_context_applies_trust_cap_to_executor() {
             None,
             &cfg,
             Some(&ctx),
-        )
+        ))
         .unwrap();
 
     assert_eq!(
@@ -1414,13 +1411,13 @@ fn resume_with_spawn_context_applies_trust_cap_to_executor() {
         "executor must receive the trust cap from spawn_context"
     );
 
+    let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
 }
 
 #[test]
 fn def_name_for_resume_returns_def_name() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "aaaabbbb-0000-0000-0000-000000000000";
@@ -1429,20 +1426,23 @@ fn def_name_for_resume_returns_def_name() {
     let mgr = make_manager();
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let name = mgr.def_name_for_resume("aaaabbbb", &cfg).unwrap();
+    let name = rt
+        .block_on(mgr.def_name_for_resume("aaaabbbb", &cfg))
+        .unwrap();
     assert_eq!(name, "bot");
 }
 
 #[test]
 fn def_name_for_resume_not_found_returns_error() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let mgr = make_manager();
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let err = mgr.def_name_for_resume("notexist", &cfg).unwrap_err();
+    let err = rt
+        .block_on(mgr.def_name_for_resume("notexist", &cfg))
+        .unwrap_err();
     assert!(matches!(err, SubAgentError::NotFound(_)));
 }
 
@@ -2872,7 +2872,6 @@ fn spawn_context_session_mcp_servers_dedup() {
 #[test]
 fn resume_sanitization_drops_invalid_mcp_tool_names() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "11110000-0000-0000-0000-000000000001";
@@ -2888,8 +2887,8 @@ fn resume_sanitization_drops_invalid_mcp_tool_names() {
     mgr.definitions.push(sample_def());
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let (new_id, _) = mgr
-        .resume(
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
             "11110000",
             "continue",
             mock_provider(vec!["done"]),
@@ -2897,7 +2896,7 @@ fn resume_sanitization_drops_invalid_mcp_tool_names() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap();
 
     let names = &mgr.agents[&new_id].mcp_tool_names;
@@ -2913,13 +2912,13 @@ fn resume_sanitization_drops_invalid_mcp_tool_names() {
     );
     assert_eq!(names.len(), 2, "only two valid entries must survive");
 
+    let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
 }
 
 #[test]
 fn resume_sanitization_preserves_valid_mcp_tool_names() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
 
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "22220000-0000-0000-0000-000000000002";
@@ -2934,8 +2933,8 @@ fn resume_sanitization_preserves_valid_mcp_tool_names() {
     mgr.definitions.push(sample_def());
     let cfg = make_cfg_with_dir(tmp.path());
 
-    let (new_id, _) = mgr
-        .resume(
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
             "22220000",
             "continue",
             mock_provider(vec!["done"]),
@@ -2943,7 +2942,7 @@ fn resume_sanitization_preserves_valid_mcp_tool_names() {
             None,
             &cfg,
             None,
-        )
+        ))
         .unwrap();
 
     let names = &mgr.agents[&new_id].mcp_tool_names;
@@ -2959,6 +2958,7 @@ fn resume_sanitization_preserves_valid_mcp_tool_names() {
         );
     }
 
+    let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
 }
 

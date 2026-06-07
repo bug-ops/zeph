@@ -897,6 +897,9 @@ impl SubAgentManager {
     /// orchestration policy originally allowed.  Pass `None` to skip constraint propagation
     /// (equivalent to the previous behavior before this fix).
     ///
+    /// The three initial FS reads (prefix lookup, meta load, jsonl load) are offloaded to a
+    /// `spawn_blocking` thread so the Tokio executor is not stalled.
+    ///
     /// # Errors
     ///
     /// Returns [`SubAgentError::StillRunning`] if the agent is still active,
@@ -906,7 +909,7 @@ impl SubAgentManager {
     /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     #[tracing::instrument(name = "subagent.manager.resume", skip_all, fields(id_prefix = id_prefix))]
-    pub fn resume(
+    pub async fn resume(
         &mut self,
         id_prefix: &str,
         task_prompt: &str,
@@ -917,12 +920,22 @@ impl SubAgentManager {
         spawn_context: Option<&SpawnContext>,
     ) -> Result<(String, String), SubAgentError> {
         let dir = self.effective_transcript_dir(config);
-        let original_id = crate::transcript::TranscriptReader::find_by_prefix(&dir, id_prefix)?;
+        let id_prefix_owned = id_prefix.to_owned();
+        let dir_clone = dir.clone();
+        let (original_id, meta, initial_messages) = tokio::task::spawn_blocking(move || {
+            let original_id =
+                crate::transcript::TranscriptReader::find_by_prefix(&dir_clone, &id_prefix_owned)?;
+            let meta = crate::transcript::TranscriptReader::load_meta(&dir_clone, &original_id)?;
+            let jsonl_path = dir_clone.join(format!("{original_id}.jsonl"));
+            let initial_messages = crate::transcript::TranscriptReader::load(&jsonl_path)?;
+            Ok::<_, SubAgentError>((original_id, meta, initial_messages))
+        })
+        .await
+        .map_err(|e| SubAgentError::Spawn(format!("spawn_blocking panicked: {e}")))??;
 
         if self.agents.contains_key(&original_id) {
             return Err(SubAgentError::StillRunning(original_id));
         }
-        let meta = crate::transcript::TranscriptReader::load_meta(&dir, &original_id)?;
 
         match meta.status {
             SubAgentState::Completed | SubAgentState::Failed | SubAgentState::Canceled => {}
@@ -932,9 +945,6 @@ impl SubAgentManager {
                 )));
             }
         }
-
-        let jsonl_path = dir.join(format!("{original_id}.jsonl"));
-        let initial_messages = crate::transcript::TranscriptReader::load(&jsonl_path)?;
 
         let mut def = self
             .definitions

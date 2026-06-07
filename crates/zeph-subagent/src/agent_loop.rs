@@ -79,13 +79,13 @@ pub(super) fn make_message(role: Role, content: String) -> Message {
     }
 }
 
-pub(super) fn append_transcript(
-    writer: &mut Option<TranscriptWriter>,
+pub(super) async fn append_transcript(
+    writer: Option<&TranscriptWriter>,
     seq: &mut u32,
     msg: &Message,
 ) {
     if let Some(w) = writer {
-        if let Err(e) = w.append(*seq, msg) {
+        if let Err(e) = w.append(*seq, msg).await {
             tracing::warn!(error = %e, seq, "failed to write transcript entry");
         }
         *seq += 1;
@@ -185,7 +185,7 @@ fn emit_working_status(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_secret_request(
-    transcript_writer: &mut Option<TranscriptWriter>,
+    transcript_writer: Option<&TranscriptWriter>,
     seq: &mut u32,
     messages: &mut Vec<Message>,
     secret_request_tx: &mpsc::Sender<SecretRequest>,
@@ -226,8 +226,8 @@ async fn handle_secret_request(
         let reply = format!("[secret:{key_name}] request denied");
         let assistant_msg = make_message(Role::Assistant, response_text.to_owned());
         let user_msg = make_message(Role::User, reply);
-        append_transcript(transcript_writer, seq, &assistant_msg);
-        append_transcript(transcript_writer, seq, &user_msg);
+        append_transcript(transcript_writer, seq, &assistant_msg).await;
+        append_transcript(transcript_writer, seq, &user_msg).await;
         messages.push(assistant_msg);
         messages.push(user_msg);
         return SecretRequestOutcome::Handled;
@@ -255,8 +255,8 @@ async fn handle_secret_request(
         };
         let assistant_msg = make_message(Role::Assistant, response_text.to_owned());
         let user_msg = make_message(Role::User, reply);
-        append_transcript(transcript_writer, seq, &assistant_msg);
-        append_transcript(transcript_writer, seq, &user_msg);
+        append_transcript(transcript_writer, seq, &assistant_msg).await;
+        append_transcript(transcript_writer, seq, &user_msg).await;
         messages.push(assistant_msg);
         messages.push(user_msg);
         return SecretRequestOutcome::Handled;
@@ -277,8 +277,8 @@ enum NoToolAction {
 ///
 /// Appends new messages to the transcript, and optionally sends a one-time
 /// nudge on the first turn when no tools have been called yet.
-fn handle_no_tool_response(
-    transcript_writer: &mut Option<TranscriptWriter>,
+async fn handle_no_tool_response(
+    transcript_writer: Option<&TranscriptWriter>,
     seq: &mut u32,
     messages: &[Message],
     prev_len: usize,
@@ -287,7 +287,7 @@ fn handle_no_tool_response(
     nudge_messages: &mut Vec<Message>,
 ) -> NoToolAction {
     for msg in &messages[prev_len..] {
-        append_transcript(transcript_writer, seq, msg);
+        append_transcript(transcript_writer, seq, msg).await;
     }
     if turns == 1 && !any_tool_called {
         tracing::debug!("sub-agent text-only first turn — sending nudge to use tools");
@@ -297,7 +297,7 @@ fn handle_no_tool_response(
              Do not announce intentions — execute them."
                 .into(),
         );
-        append_transcript(transcript_writer, seq, &nudge);
+        append_transcript(transcript_writer, seq, &nudge).await;
         nudge_messages.push(nudge);
         NoToolAction::Nudge
     } else {
@@ -308,14 +308,14 @@ fn handle_no_tool_response(
 /// Initialise per-loop state: send the initial Working status, build the
 /// message list from history + task prompt, write the task message to the
 /// transcript, and collect tool definitions.
-fn init_loop_state(
+async fn init_loop_state(
     status_tx: &watch::Sender<SubAgentStatus>,
     started_at: Instant,
     effective_system_prompt: String,
     initial_messages: Vec<Message>,
     task_prompt: String,
     executor: &FilteredToolExecutor,
-    transcript_writer: &mut Option<TranscriptWriter>,
+    transcript_writer: Option<&TranscriptWriter>,
 ) -> (Vec<Message>, u32, Vec<ToolDefinition>) {
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
@@ -335,7 +335,7 @@ fn init_loop_state(
     if let Some(writer) = transcript_writer
         && let Some(task_msg) = messages.last()
     {
-        if let Err(e) = writer.append(seq, task_msg) {
+        if let Err(e) = writer.append(seq, task_msg).await {
             tracing::warn!(error = %e, "failed to write transcript entry");
         }
         seq += 1;
@@ -380,7 +380,7 @@ async fn run_turn(
     task_id: &str,
     agent_name: &str,
     status_tx: &watch::Sender<SubAgentStatus>,
-    transcript_writer: &mut Option<TranscriptWriter>,
+    transcript_writer: Option<&TranscriptWriter>,
     seq: &mut u32,
     turns: &mut u32,
     last_result: &mut String,
@@ -449,7 +449,9 @@ async fn run_turn(
             *turns,
             any_tool_called,
             &mut nudge_messages,
-        ) {
+        )
+        .await
+        {
             NoToolAction::Nudge => {
                 messages.extend(nudge_messages);
                 return Ok(TurnOutcome::NudgeSent);
@@ -459,7 +461,7 @@ async fn run_turn(
     }
 
     for msg in &messages[prev_len..] {
-        append_transcript(transcript_writer, seq, msg);
+        append_transcript(transcript_writer, seq, msg).await;
     }
     Ok(TurnOutcome::ToolCalled)
 }
@@ -669,7 +671,7 @@ pub(super) async fn run_agent_loop(
         task_id: loop_task_id,
         agent_name,
         initial_messages,
-        mut transcript_writer,
+        transcript_writer,
         spawn_depth: _spawn_depth,
         mcp_tool_names,
         content_isolation,
@@ -688,8 +690,9 @@ pub(super) async fn run_agent_loop(
         initial_messages,
         task_prompt,
         &executor,
-        &mut transcript_writer,
-    );
+        transcript_writer.as_ref(),
+    )
+    .await;
 
     let mut turns: u32 = 0;
     let mut last_result = String::new();
@@ -714,7 +717,7 @@ pub(super) async fn run_agent_loop(
             &loop_task_id,
             &agent_name,
             &status_tx,
-            &mut transcript_writer,
+            transcript_writer.as_ref(),
             &mut seq,
             &mut turns,
             &mut last_result,

@@ -88,7 +88,7 @@ impl SubAgentManager {
                 turns_used,
                 mcp_tool_names: handle.mcp_tool_names.clone(),
             };
-            if let Err(e) = TranscriptWriter::write_meta(dir, task_id, &meta) {
+            if let Err(e) = TranscriptWriter::write_meta_async(dir, task_id, &meta).await {
                 tracing::warn!(error = %e, task_id, "failed to write final transcript meta");
             }
         }
@@ -110,20 +110,27 @@ impl SubAgentManager {
     /// Look up the definition name for a resumable transcript without spawning.
     ///
     /// Used by callers that need to resolve skills before calling `resume()`.
+    /// Offloads the blocking FS reads to a `spawn_blocking` thread.
     ///
     /// # Errors
     ///
     /// Returns the same errors as [`crate::transcript::TranscriptReader::find_by_prefix`] and
     /// [`crate::transcript::TranscriptReader::load_meta`].
-    pub fn def_name_for_resume(
+    pub async fn def_name_for_resume(
         &self,
         id_prefix: &str,
         config: &SubAgentConfig,
     ) -> Result<String, SubAgentError> {
         let dir = self.effective_transcript_dir(config);
-        let original_id = crate::transcript::TranscriptReader::find_by_prefix(&dir, id_prefix)?;
-        let meta = crate::transcript::TranscriptReader::load_meta(&dir, &original_id)?;
-        Ok(meta.def_name)
+        let id_prefix = id_prefix.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let original_id =
+                crate::transcript::TranscriptReader::find_by_prefix(&dir, &id_prefix)?;
+            let meta = crate::transcript::TranscriptReader::load_meta(&dir, &original_id)?;
+            Ok(meta.def_name)
+        })
+        .await
+        .map_err(|e| SubAgentError::Spawn(format!("spawn_blocking panicked: {e}")))?
     }
 
     /// Return a snapshot of all active sub-agent statuses.
@@ -156,6 +163,11 @@ impl SubAgentManager {
     }
 
     /// Create a transcript writer if transcripts are enabled.
+    ///
+    /// All three blocking FS operations (sweep, file open, meta write) are offloaded via
+    /// [`tokio::task::block_in_place`] on multi-thread runtimes so the Tokio executor
+    /// thread is not stalled. Falls back to a direct call on `current_thread` runtimes
+    /// (e.g. single-threaded unit tests) where `block_in_place` would panic.
     pub(crate) fn create_transcript_writer(
         &mut self,
         config: &SubAgentConfig,
@@ -167,34 +179,54 @@ impl SubAgentManager {
             return None;
         }
         let dir = self.effective_transcript_dir(config);
-        if self.transcript_max_files > 0
-            && let Err(e) = sweep_old_transcripts(&dir, self.transcript_max_files)
-        {
-            tracing::warn!(error = %e, "transcript sweep failed");
-        }
+        let max_files = self.transcript_max_files;
         let path = dir.join(format!("{task_id}.jsonl"));
-        match TranscriptWriter::new(&path) {
-            Ok(w) => {
-                let meta = TranscriptMeta {
-                    agent_id: task_id.to_owned(),
-                    agent_name: agent_name.to_owned(),
-                    def_name: agent_name.to_owned(),
-                    status: SubAgentState::Submitted,
-                    started_at: crate::transcript::utc_now(),
-                    finished_at: None,
-                    resumed_from: resumed_from.map(str::to_owned),
-                    turns_used: 0,
-                    mcp_tool_names: Vec::new(),
-                };
-                if let Err(e) = TranscriptWriter::write_meta(&dir, task_id, &meta) {
-                    tracing::warn!(error = %e, "failed to write initial transcript meta");
+        let meta = TranscriptMeta {
+            agent_id: task_id.to_owned(),
+            agent_name: agent_name.to_owned(),
+            def_name: agent_name.to_owned(),
+            status: SubAgentState::Submitted,
+            started_at: crate::transcript::utc_now(),
+            finished_at: None,
+            resumed_from: resumed_from.map(str::to_owned),
+            turns_used: 0,
+            mcp_tool_names: Vec::new(),
+        };
+        let task_id = task_id.to_owned();
+        run_blocking(move || {
+            if max_files > 0
+                && let Err(e) = sweep_old_transcripts(&dir, max_files)
+            {
+                tracing::warn!(error = %e, "transcript sweep failed");
+            }
+            match TranscriptWriter::new(&path) {
+                Ok(w) => {
+                    if let Err(e) = TranscriptWriter::write_meta(&dir, &task_id, &meta) {
+                        tracing::warn!(error = %e, "failed to write initial transcript meta");
+                    }
+                    Some(w)
                 }
-                Some(w)
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to create transcript writer");
+                    None
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to create transcript writer");
-                None
-            }
-        }
+        })
+    }
+}
+
+/// Run a blocking closure without stalling the Tokio executor.
+///
+/// On a multi-thread runtime, delegates to [`tokio::task::block_in_place`] so other
+/// tasks can continue running while the blocking work executes. On a `current_thread`
+/// runtime (unit tests, single-threaded entry points) calls the closure directly,
+/// since there is no thread pool to offload to and `block_in_place` would panic.
+fn run_blocking<T>(f: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
     }
 }

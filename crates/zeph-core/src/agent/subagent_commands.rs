@@ -493,7 +493,7 @@ impl<C: Channel> Agent<C> {
         // look up skills by definition name rather than the UUID prefix (S1 fix).
         let def_name = {
             let mgr = self.services.orchestration.subagent_manager.as_ref()?;
-            match mgr.def_name_for_resume(id, &cfg) {
+            match mgr.def_name_for_resume(id, &cfg).await {
                 Ok(name) => name,
                 Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
             }
@@ -502,7 +502,9 @@ impl<C: Channel> Agent<C> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
-        let (task_id, _) = match mgr.resume(id, prompt, provider, tool_executor, skills, &cfg, None)
+        let (task_id, _) = match mgr
+            .resume(id, prompt, provider, tool_executor, skills, &cfg, None)
+            .await
         {
             Ok(pair) => pair,
             Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
