@@ -206,7 +206,7 @@ impl CompatibleProvider {
 
 impl LlmProvider for CompatibleProvider {
     fn context_window(&self) -> Option<usize> {
-        None
+        self.inner.context_window()
     }
 
     #[cfg_attr(
@@ -320,6 +320,14 @@ impl LlmProvider for CompatibleProvider {
         self.inner.last_usage()
     }
 
+    fn last_reasoning_tokens(&self) -> Option<u64> {
+        self.inner.last_reasoning_tokens()
+    }
+
+    fn supports_vision(&self) -> bool {
+        self.inner.supports_vision()
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],
@@ -353,8 +361,34 @@ mod tests {
     }
 
     #[test]
-    fn context_window_returns_none() {
-        assert!(test_provider().context_window().is_none());
+    fn context_window_delegates_to_inner() {
+        // "gpt-4o" is in the prefix table → Some(128_000)
+        let p = CompatibleProvider::new(CompatibleConfig {
+            provider_name: "openai".into(),
+            api_key: "key".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o".into(),
+            max_tokens: 4096,
+            embedding_model: None,
+            completion_tokens_param: None,
+        });
+        assert_eq!(p.context_window(), Some(128_000));
+    }
+
+    #[test]
+    fn context_window_unknown_model_returns_some_fallback() {
+        // Unknown model falls back to 128_000 default in OpenAiProvider.
+        let p = CompatibleProvider::new(CompatibleConfig {
+            provider_name: "local".into(),
+            api_key: "key".into(),
+            base_url: "http://localhost/v1".into(),
+            model: "unknown-custom-model".into(),
+            max_tokens: 4096,
+            embedding_model: None,
+            completion_tokens_param: None,
+        });
+        // OpenAiProvider returns Some(128_000) as fallback for unrecognised models.
+        assert!(p.context_window().is_some());
     }
 
     #[test]
@@ -451,5 +485,16 @@ mod tests {
             Some("high"),
             "Compatible inner OpenAiProvider must have reasoning_effort applied"
         );
+    }
+
+    #[test]
+    fn supports_vision_delegates_to_inner() {
+        // OpenAiProvider always returns true for supports_vision.
+        assert!(test_provider().supports_vision());
+    }
+
+    #[test]
+    fn last_reasoning_tokens_initially_none() {
+        assert!(test_provider().last_reasoning_tokens().is_none());
     }
 }
