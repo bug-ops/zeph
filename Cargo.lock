@@ -10455,6 +10455,7 @@ dependencies = [
  "sqlx",
  "sysinfo",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml 1.1.2+spec-1.1.0",
@@ -10713,6 +10714,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "parking_lot",
+ "proptest",
  "regex",
  "schemars 1.2.1",
  "serde",
@@ -10729,6 +10731,7 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "url",
  "uuid",
  "zeroize",
 ]

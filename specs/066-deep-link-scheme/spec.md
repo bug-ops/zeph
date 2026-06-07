@@ -73,12 +73,12 @@ pub enum DeepLinkError {
     Malformed(String),
     #[error("unknown scheme action '{0}'; try upgrading zeph")]
     UnknownHost(String),
-    #[error("unsupported action '{0}' (reserved for a future version)")]
-    DeferredHost(String),
     #[error("prompt too long: {0} bytes (limit: 8192)")]
     PromptTooLong(usize),
     #[error("cwd must be an absolute path")]
     CwdNotAbsolute,
+    #[error("prompt contains disallowed control characters")]
+    PromptContainsControlChars,
 }
 ```
 
@@ -132,7 +132,7 @@ NewSessionParams { cwd, prompt, profile, model }
     ├── profile → equivalent of --config <profile_path> (look up in [profiles] map)
     ├── model   → set active_provider by name before agent start
     ├── cwd     → set process working directory (after validate_deep_link_cwd)
-    └── prompt  → enqueue as first QueuedMessage with trust_level = Untrusted
+    └── prompt  → enqueue as first QueuedMessage with ContentTrustLevel::ExternalUntrusted
                   (after confirmation gate)
 ```
 
@@ -141,9 +141,15 @@ a thin pre-processor, not a separate agent loop.
 
 ## 6. Prompt Trust Invariant (INV-TRUST)
 
-ANY prompt injected via a deep link MUST carry `trust_level = Untrusted`.
+ANY prompt injected via a deep link MUST carry `ContentTrustLevel::ExternalUntrusted`.
 It MUST NOT enter the message queue as a system or instruction message.
-The `TrustLevel` enum in `zeph-common/src/trust_level.rs` is the authoritative reference.
+`ContentTrustLevel` is defined in `zeph-sanitizer` (`zeph-sanitizer/src/types.rs`) and is
+the authoritative trust-level type for content entering the agent pipeline.
+
+> **Phase 1 note:** `QueuedMessage` in `crates/zeph-core/src/agent/message_queue.rs`
+> currently has no `trust_level` field — INV-TRUST enforcement is deferred to Phase 2
+> (CLI dispatch arm in `runner.rs`), where the sanitizer will be invoked before the prompt
+> is enqueued. Phase 1 only establishes the type reference.
 
 ## 7. Configuration Schema
 
@@ -247,7 +253,7 @@ Full registration support tracked in follow-up issue (OQ-1).
 |---|---|---|
 | INV-CWD | cwd validation order: decode → absolute → canonicalize → case-fold → denylist → allowlist → is_dir | `validate.rs` |
 | INV-LOOP | url-open checks ZEPH_URL_OPEN_DEPTH before dispatching; sets it before launching child | `runner.rs` |
-| INV-TRUST | prompt from deep link is always Untrusted | `runner.rs` enqueue path |
+| INV-TRUST | prompt from deep link always carries `ContentTrustLevel::ExternalUntrusted` (from `zeph-sanitizer/src/types.rs`) | `runner.rs` enqueue path (Phase 2) |
 | INV-NOAUTO | auto-escalation params (`auto`, `-y`) are silently dropped + WARN logged | `parse_deep_link` |
 | INV-SYNC | `parse_deep_link` is sync, panic-free, no I/O, no zeph-* deps | `deep_link.rs` |
 | INV-NOTTY | if no TTY + confirm_before_prompt=true, prompt discarded, blank session starts | `runner.rs` |

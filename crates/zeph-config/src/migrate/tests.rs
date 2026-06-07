@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        61,
-        "MIGRATIONS registry must contain all 61 sequential steps"
+        62,
+        "MIGRATIONS registry must contain all 62 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1684,7 +1684,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–60).
+    // Names must follow the documented step order (steps 1–61).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1747,6 +1747,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_caveman_config",
         "migrate_shell_checkpoints_config",
         "migrate_knowledge_config",
+        "migrate_deep_link_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2546,5 +2547,36 @@ fn step_61_idempotent_on_own_output() {
     assert_eq!(
         second.changed_count, 0,
         "step_61 must be idempotent on its own output"
+    );
+}
+
+// ── Step 62 — migrate_deep_link_config (#5011) ────────────────────────────────
+
+#[test]
+fn migrate_deep_link_adds_advisory_comment_when_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_deep_link_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.sections_changed.contains(&"deep_link".to_owned()),
+        "sections_changed should include 'deep_link'"
+    );
+    assert!(
+        result.output.contains("# [deep_link]"),
+        "output should contain commented [deep_link] advisory block"
+    );
+}
+
+#[test]
+fn migrate_deep_link_is_idempotent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let first = migrate_deep_link_config(src).expect("first migration");
+    assert_eq!(first.changed_count, 1);
+
+    let second = migrate_deep_link_config(&first.output).expect("second migration");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output must be unchanged on second run"
     );
 }

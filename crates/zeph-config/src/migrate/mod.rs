@@ -21,8 +21,9 @@ mod tools;
 
 pub use features::{
     migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
-    migrate_five_signal_config, migrate_goals_config, migrate_knowledge_config,
-    migrate_magic_docs_config, migrate_microcompact_config, migrate_orchestration_persistence,
+    migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
+    migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
+    migrate_orchestration_persistence,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -90,6 +91,7 @@ static CANONICAL_ORDER: &[&str] = &[
     "lsp",
     "telemetry",
     "session",
+    "deep_link",
 ];
 
 /// Error type for migration failures.
@@ -594,7 +596,7 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCavemanConfig, MigrateCocoonProviderNotice,
     MigrateCocoonShowBalance, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
-    MigrateDurableConfig, MigrateEgressConfig, MigrateEmbedProviderRename,
+    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateEgressConfig, MigrateEmbedProviderRename,
     MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
     MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
     MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
@@ -718,6 +720,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateShellCheckpointsConfig),
             // Step 61 — add [knowledge] section advisory notice (spec-067, #5017)
             Box::new(MigrateKnowledgeConfig),
+            // Step 62 — add [deep_link] section advisory notice (spec-066, #5011)
+            Box::new(MigrateDeepLinkConfig),
         ]
     });
 

@@ -76,6 +76,7 @@ pub mod classifiers;
 pub mod cli;
 pub mod cocoon;
 mod de_helpers;
+pub mod deep_link;
 pub mod defaults;
 pub mod dump_format;
 pub mod durable;
@@ -199,5 +200,6 @@ pub use worktree::{BgIsolation, WorktreeBaseRef, WorktreeConfig};
 
 // Top-level config struct, error type, and resolved secrets — moved from zeph-core.
 pub use classifiers::{ClassifiersConfig, InjectionEnforcementMode};
+pub use deep_link::{AcpPreference, DeepLinkConfig};
 pub use error::ConfigError;
 pub use root::{Config, ResolvedSecrets};

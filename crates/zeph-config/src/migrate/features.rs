@@ -286,6 +286,39 @@ pub fn migrate_caveman_config(toml_src: &str) -> Result<MigrationResult, Migrate
     })
 }
 
+/// Add a commented-out `[deep_link]` section if absent (spec-066, #5011).
+///
+/// All `DeepLinkConfig` fields have `#[serde(default)]` so existing configs parse without
+/// changes; this migration only surfaces the section so users can discover and configure it.
+///
+/// # Errors
+///
+/// This function is infallible in practice; the `Result` return type matches the migration
+/// function convention.
+pub fn migrate_deep_link_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[deep_link]") || toml_src.contains("# [deep_link]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# [deep_link] — zeph:// URI scheme configuration (spec-066, #5011).\n\
+         # Requires the `deep-link` Cargo feature to be active.\n\
+         # [deep_link]\n\
+         # confirm_before_prompt = true   # require y/N before injecting prompt (secure default)\n\
+         # allowed_cwd_roots = []          # restrict cwd to these prefixes; empty = any non-denylisted path\n\
+         # prefer_acp = \"never\"           # v1 only: \"never\"; \"auto\"/\"always\" reserved for v2\n";
+    let output = format!("{toml_src}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["deep_link".to_owned()],
+    })
+}
+
 /// Add a commented-out `[memory.five_signal]` section if absent (#4374).
 ///
 /// All five-signal fields have `#[serde(default)]` so existing configs parse without changes.

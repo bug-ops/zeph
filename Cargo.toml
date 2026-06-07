@@ -207,7 +207,7 @@ readme = "README.md"
 default = ["scheduler", "sqlite"]
 
 # === Use-case bundles ===
-desktop = ["tui"]
+desktop = ["tui", "deep-link"]
 ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus"]
 chat    = ["discord", "slack"]
@@ -218,6 +218,7 @@ sandbox    = ["zeph-tools/sandbox"]
 bench      = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
+deep-link = []
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct"]
 acp = ["dep:zeph-acp", "zeph-acp/unstable-session-delete", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-logout", "zeph-acp/unstable-auth-methods", "zeph-acp/unstable-message-id", "zeph-acp/unstable-session-add-dirs"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
@@ -304,6 +305,7 @@ serde_json.workspace = true
 similar.workspace = true
 sysinfo = { workspace = true, optional = true }
 tempfile.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util.workspace = true
 toml.workspace = true

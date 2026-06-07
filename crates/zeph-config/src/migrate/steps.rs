@@ -16,7 +16,12 @@
 //! step 54 adds `[worktree]` section with defaults (#4679);
 //! step 55 adds `git_timeout_secs` to `[worktree]` (#4704);
 //! step 56 adds `[llm.stream_limits]` advisory notice (#4750);
-//! step 60 adds `[knowledge]` section advisory notice (spec-067, #5017).
+//! step 57 adds `[durable]` execution-layer section (spec-064, #4949);
+//! step 58 renames `eval_model` → `eval_provider` (#4987);
+//! step 59 adds `[caveman]` ultra-compressed output section (#4985);
+//! step 60 adds `[tools.shell]` checkpoints (#4990);
+//! step 61 adds `[knowledge]` section advisory notice (spec-067, #5017);
+//! step 62 adds `[deep_link]` advisory notice (spec-066, #5011).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -26,9 +31,9 @@ use super::{
     MigrateError, Migration, MigrationResult, migrate_acp_subagents_config,
     migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_autodream_config,
     migrate_caveman_config, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
-    migrate_compression_predictor_config, migrate_database_url, migrate_durable_config,
-    migrate_egress_config, migrate_embed_provider_rename, migrate_eval_model_to_provider,
-    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
+    migrate_durable_config, migrate_egress_config, migrate_embed_provider_rename,
+    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_knowledge_config, migrate_llm_stream_limits, migrate_magic_docs_config,
@@ -49,7 +54,7 @@ use super::{
     migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
-// ── Wrapper structs for all 59 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 61 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -719,5 +724,16 @@ impl Migration for MigrateKnowledgeConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_knowledge_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateDeepLinkConfig;
+impl Migration for MigrateDeepLinkConfig {
+    fn name(&self) -> &'static str {
+        "migrate_deep_link_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_deep_link_config(toml_src)
     }
 }

@@ -44,11 +44,13 @@ tree-sitter-javascript = { workspace = true, optional = true }
 tree-sitter-python = { workspace = true, optional = true }
 tree-sitter-rust = { workspace = true, optional = true }
 tree-sitter-typescript = { workspace = true, optional = true }
+url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }
+proptest.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

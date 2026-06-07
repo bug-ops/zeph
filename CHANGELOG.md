@@ -9,9 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `feat(knowledge)`: add `zeph knowledge` CLI with `ingest`, `rollback` (stub), and `status` subcommands. `KnowledgeSource` ValueEnum covers `specs`, `changelog`, `handoff`, `coverage`, `git-log` sources. INV-6 path allowlist enforced via canonical `starts_with(project_root)` check on both sides (closes #5017)
-- `feat(knowledge)`: add `[knowledge]` config section (`ingest_provider`, `concurrency`, `max_documents`, `recall_include_imported`, `transcript_scope`). Migration step 60 (`migrate_knowledge_config`) adds the section idempotently to existing configs. `--init` wizard emits `[knowledge]` only when non-default values are chosen (closes #5017)
+- `feat(knowledge)`: add `[knowledge]` config section (`ingest_provider`, `concurrency`, `max_documents`, `recall_include_imported`, `transcript_scope`). Migration step 61 (`migrate_knowledge_config`) adds the section idempotently to existing configs. `--init` wizard emits `[knowledge]` only when non-default values are chosen (closes #5017)
 - `feat(knowledge)`: add `IngestLedger` repository in `zeph-memory` — idempotency re-read guard for both ingest sinks. Dual migrations: `sqlite/102_knowledge_ingest_ledger.sql` and `postgres/103_knowledge_ingest_ledger.sql`. `ingested_at` stored as ISO-8601 TEXT in both dialects. INV-5: re-read/cost guard only, not a drift guard; rustdoc states the limitation explicitly (closes #5016)
 - `feat(knowledge)`: wire notes sink into `zeph knowledge ingest` — static project artifacts (`specs/`, `CHANGELOG.md`, `.local/handoff/`, coverage-status, `git log`) ingested into Qdrant via existing `IngestionPipeline`. Ledger skip prevents re-embedding unchanged files. `--dry-run` reports file count, projected chunks, and estimated embed tokens without writing anything. `source_uri` threaded into Qdrant payload. Tracing spans on all I/O paths (closes #5018)
+- `feat(deep-link)`: Phase 1 foundation for the `zeph://` deep link scheme (spec-066, closes #5011)
+  - `deep-link` Cargo feature (included in `desktop` bundle, not in `default`)
+  - `crates/zeph-common`: `parse_deep_link(uri)` — sync, panic-free URI parser; percent-decodes query params; enforces 8192-byte prompt cap and control-char rejection; drops `auto`/`-y` params with WARN (INV-NOAUTO); backed by proptest fuzz
+  - `crates/zeph-config`: `DeepLinkConfig` + `AcpPreference` types; `confirm_before_prompt` defaults to `true` (secure default); migration step 62 injects `[deep_link]` advisory block into existing configs
+  - `src/url_scheme`: `validate_deep_link_cwd` following INV-CWD (absolute → canonicalize → case-fold → denylist → allowlist → is_dir); expanded denylist (Linux: `/etc` `/root` `/boot` `/run`; macOS: `/System` `/Library/Keychains`; Windows: `SystemRoot`/`WINDIR`)
+- `docs(spec-066)`: correct INV-TRUST reference — `TrustLevel::Untrusted` (non-existent) replaced with `ContentTrustLevel::ExternalUntrusted` from `zeph-sanitizer`; Phase 1 deferral note added; `DeferredHost` error variant removed in favour of `UnknownHost` for all unknown actions (closes #5030)
 
 ### Changed
 

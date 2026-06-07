@@ -49,8 +49,8 @@ Traceability: each task references the FR/NFR/INV it satisfies.
 2. Implement `DeepLink`, `NewSessionParams`, `DeepLinkError` (exact signatures from spec §2).
 3. Implement `parse_deep_link(uri: &str) -> Result<DeepLink, DeepLinkError>`:
    - Reject non-`zeph://` schemes.
-   - Dispatch on host: `new-session` → parse query params; deferred hosts → `DeferredHost`;
-     others → `UnknownHost`.
+   - Dispatch on host: `new-session` → parse query params; others → `UnknownHost`
+     (unknown hosts include future deferred-action hosts — no separate variant).
    - Percent-decode ALL query param values before validation.
    - `prompt`: measure byte length post-decode; return `PromptTooLong` if > 8192.
    - `cwd`: store as raw `PathBuf` (no I/O here — validation is in TASK-3).
@@ -60,7 +60,7 @@ Traceability: each task references the FR/NFR/INV it satisfies.
 
 **Acceptance** (FR-1, FR-2, FR-3, FR-4, FR-7, FR-10, INV-SYNC, NFR-2.1, NFR-4.1):
 - `parse_deep_link("zeph://new-session")` returns `Ok(DeepLink::NewSession(..))`.
-- `parse_deep_link("zeph://resume")` returns `Err(DeepLinkError::DeferredHost("resume"))`.
+- `parse_deep_link("zeph://resume")` returns `Err(DeepLinkError::UnknownHost("resume"))`.
 - `parse_deep_link("zeph://foo")` returns `Err(DeepLinkError::UnknownHost("foo"))`.
 - `parse_deep_link("zeph://new-session?prompt=" + "a".repeat(8193))` returns
   `Err(DeepLinkError::PromptTooLong(8193))`.

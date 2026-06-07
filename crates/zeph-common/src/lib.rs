@@ -11,6 +11,7 @@
 
 pub mod audit;
 pub mod config;
+pub mod deep_link;
 pub mod error_taxonomy;
 pub mod fidelity;
 pub mod fs_secure;
