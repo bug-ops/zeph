@@ -5,6 +5,7 @@
 
 use std::hint::black_box;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
@@ -422,13 +423,14 @@ fn bench_journal_append_buffered(c: &mut Criterion) {
         (exec, handle, local, writer_task)
     });
 
+    let step_counter = AtomicU32::new(0);
     group.bench_function("append_buffered", |b| {
         b.iter(|| {
             // Fire-and-forget: measure only the channel send, not the flush.
             use bytes::Bytes;
             use zeph_durable::effect::EffectClass;
             use zeph_durable::journal::{EntryKind, JournalEntry};
-            let step_id = StepId::new(0);
+            let step_id = StepId::new(step_counter.fetch_add(1, Ordering::Relaxed));
             let ikey = IdempotencyKey::derive(exec, step_id, b"bench:buffered");
             let entry = JournalEntry {
                 seq: None,
@@ -474,13 +476,14 @@ fn bench_journal_append_acked(c: &mut Criterion) {
         (exec, handle, local, writer_task)
     });
 
+    let step_counter = AtomicU32::new(0);
     group.bench_function("append_acked", |b| {
         b.iter(|| {
             rt.block_on(async {
                 use bytes::Bytes;
                 use zeph_durable::effect::EffectClass;
                 use zeph_durable::journal::{EntryKind, JournalEntry};
-                let step_id = StepId::new(0);
+                let step_id = StepId::new(step_counter.fetch_add(1, Ordering::Relaxed));
                 let ikey = IdempotencyKey::derive(exec, step_id, b"bench:acked");
                 let entry = JournalEntry {
                     seq: None,
