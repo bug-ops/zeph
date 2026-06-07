@@ -177,6 +177,38 @@ impl IngestLedger {
         Ok(())
     }
 
+    /// Returns `true` if any row in the ledger has the given `import_batch_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn batch_exists(&self, batch_id: &str) -> Result<bool, MemoryError> {
+        let exists: Option<i64> = query_scalar(sql!(
+            "SELECT 1 FROM knowledge_ingest_ledger WHERE import_batch_id = ?"
+        ))
+        .bind(batch_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
+    }
+
+    /// Deletes all ledger rows for the given `import_batch_id`.
+    ///
+    /// Returns the number of rows removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn delete_batch(&self, batch_id: &str) -> Result<u64, MemoryError> {
+        let result = query(sql!(
+            "DELETE FROM knowledge_ingest_ledger WHERE import_batch_id = ?"
+        ))
+        .bind(batch_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Returns all ledger rows ordered by `ingested_at` descending, newest first.
     ///
     /// This is the data source for `zeph knowledge status`.
@@ -308,5 +340,52 @@ mod tests {
     async fn summary_empty_when_no_rows() {
         let ledger = test_ledger().await;
         assert!(ledger.summary().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_exists_false_when_no_rows() {
+        let ledger = test_ledger().await;
+        assert!(!ledger.batch_exists("nonexistent-batch").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn batch_exists_true_after_mark_ingested() {
+        let ledger = test_ledger().await;
+        ledger
+            .mark_ingested("uri", "hash", "batch-42", 0, 0)
+            .await
+            .unwrap();
+        assert!(ledger.batch_exists("batch-42").await.unwrap());
+        assert!(!ledger.batch_exists("batch-99").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_batch_removes_matching_rows_only() {
+        let ledger = test_ledger().await;
+        ledger
+            .mark_ingested("a", "h1", "batch-A", 0, 0)
+            .await
+            .unwrap();
+        ledger
+            .mark_ingested("b", "h2", "batch-A", 0, 0)
+            .await
+            .unwrap();
+        ledger
+            .mark_ingested("c", "h3", "batch-B", 0, 0)
+            .await
+            .unwrap();
+
+        let removed = ledger.delete_batch("batch-A").await.unwrap();
+        assert_eq!(removed, 2);
+
+        assert!(!ledger.batch_exists("batch-A").await.unwrap());
+        assert!(ledger.batch_exists("batch-B").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_batch_returns_zero_for_missing_batch() {
+        let ledger = test_ledger().await;
+        let removed = ledger.delete_batch("ghost-batch").await.unwrap();
+        assert_eq!(removed, 0);
     }
 }

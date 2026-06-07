@@ -4938,3 +4938,101 @@ async fn query_batch_edges_excludes_ingest_when_flag_false() {
         "query_batch_edges must exclude ingest-origin edges when recall_include_imported=false, got {edges:?}"
     );
 }
+
+#[tokio::test]
+async fn delete_batch_removes_imported_edges_and_orphaned_entities() {
+    let gs = setup().await;
+
+    let prov_import = GraphProvenance {
+        origin: GraphOrigin::Ingest,
+        import_batch_id: "batch-A".to_owned(),
+        source_uri: None,
+    };
+
+    // Import-origin entity+edge.
+    let import_src = gs
+        .upsert_entity(
+            "ImportSrc",
+            "importsrc",
+            EntityType::Concept,
+            None,
+            Some(&prov_import),
+        )
+        .await
+        .unwrap()
+        .0;
+    let import_tgt = gs
+        .upsert_entity(
+            "ImportTgt",
+            "importtgt",
+            EntityType::Concept,
+            None,
+            Some(&prov_import),
+        )
+        .await
+        .unwrap()
+        .0;
+    gs.insert_edge(
+        import_src,
+        import_tgt,
+        "imported_rel",
+        "import relates",
+        0.9,
+        None,
+        Some(&prov_import),
+    )
+    .await
+    .unwrap();
+
+    // Conversation-origin entity+edge (NULL import_batch_id).
+    let conv_src = gs
+        .upsert_entity("ConvSrc", "convsrc", EntityType::Person, None, None)
+        .await
+        .unwrap()
+        .0;
+    let conv_tgt = gs
+        .upsert_entity("ConvTgt", "convtgt", EntityType::Person, None, None)
+        .await
+        .unwrap()
+        .0;
+    gs.insert_edge(
+        conv_src,
+        conv_tgt,
+        "knows",
+        "ConvSrc knows ConvTgt",
+        0.8,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let (edges_del, entities_del) = gs.delete_batch("batch-A").await.unwrap();
+    assert_eq!(edges_del, 1, "one imported edge must be removed");
+    assert_eq!(
+        entities_del, 2,
+        "two orphaned imported entities must be removed"
+    );
+
+    // Conversation rows must be untouched.
+    // find_entity matches on canonical_name (lowercase "convsrc").
+    let conv_entity = gs.find_entity("convsrc", EntityType::Person).await.unwrap();
+    assert!(
+        conv_entity.is_some(),
+        "conversation entity must survive delete_batch"
+    );
+
+    let remaining_edges = gs.active_edge_count().await.unwrap();
+    assert_eq!(
+        remaining_edges, 1,
+        "conversation edge must survive delete_batch"
+    );
+}
+
+#[tokio::test]
+async fn delete_batch_returns_zero_when_batch_does_not_exist() {
+    let gs = setup().await;
+    let (edges, entities) = gs.delete_batch("ghost-batch").await.unwrap();
+    assert_eq!(edges, 0);
+    assert_eq!(entities, 0);
+}

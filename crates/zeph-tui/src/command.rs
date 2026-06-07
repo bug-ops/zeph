@@ -130,6 +130,10 @@ pub enum TuiCommand {
     // Undo/redo checkpoint commands (#4990)
     Undo,
     Redo,
+    // Knowledge ingest management (#5019, #5020)
+    KnowledgeStatus,
+    KnowledgeRollbackPrompt,
+    KnowledgeIngestPrompt,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -764,6 +768,32 @@ fn build_clipboard_commands() -> Vec<CommandEntry> {
     }]
 }
 
+fn build_knowledge_commands() -> Vec<CommandEntry> {
+    vec![
+        CommandEntry {
+            id: "knowledge:status",
+            label: "Knowledge: show ingest ledger status (/knowledge status)",
+            category: "knowledge",
+            shortcut: None,
+            command: TuiCommand::KnowledgeStatus,
+        },
+        CommandEntry {
+            id: "knowledge:rollback",
+            label: "Knowledge: roll back an import batch (/knowledge rollback <batch>)",
+            category: "knowledge",
+            shortcut: None,
+            command: TuiCommand::KnowledgeRollbackPrompt,
+        },
+        CommandEntry {
+            id: "knowledge:ingest",
+            label: "Knowledge: ingest project artifacts (CLI command)",
+            category: "knowledge",
+            shortcut: None,
+            command: TuiCommand::KnowledgeIngestPrompt,
+        },
+    ]
+}
+
 fn build_extra_commands() -> Vec<CommandEntry> {
     let mut cmds = build_infra_commands();
     cmds.extend(build_agent_plan_commands());
@@ -808,6 +838,7 @@ fn build_extra_commands() -> Vec<CommandEntry> {
     #[cfg(feature = "cocoon")]
     cmds.extend(build_cocoon_commands());
     cmds.extend(build_clipboard_commands());
+    cmds.extend(build_knowledge_commands());
     cmds
 }
 
@@ -916,7 +947,8 @@ mod tests {
         // + 2 cocoon (#3673) when feature = "cocoon"
         // + 1 clipboard:copy (#3685)
         // + 2 worktree (#4679)
-        let expected = 46 + if cfg!(feature = "cocoon") { 2 } else { 0 };
+        // + 3 knowledge (#5019, #5020)
+        let expected = 49 + if cfg!(feature = "cocoon") { 2 } else { 0 };
         assert_eq!(extra_command_registry().len(), expected);
     }
 

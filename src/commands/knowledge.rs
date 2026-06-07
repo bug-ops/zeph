@@ -35,8 +35,8 @@ use std::sync::Arc;
 use zeph_core::vault::Secret;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::{
-    Document, DocumentMetadata, IngestLedger, IngestionPipeline, QdrantOps, SplitterConfig,
-    TextSplitter, store::DbStore,
+    Document, DocumentMetadata, GraphStore, IngestLedger, IngestionPipeline, QdrantOps,
+    SplitterConfig, TextSplitter, store::DbStore,
 };
 
 use crate::bootstrap::{AppBuilder, find_repo_root};
@@ -108,7 +108,9 @@ pub(crate) async fn handle_knowledge(
             ))
             .await
         }
-        KnowledgeCommand::Rollback { batch_id } => handle_rollback(&batch_id),
+        KnowledgeCommand::Rollback { batch_id, yes } => {
+            Box::pin(handle_rollback(&batch_id, yes, config_path)).await
+        }
         KnowledgeCommand::Status => Box::pin(handle_status(config_path)).await,
     }
 }
@@ -650,18 +652,69 @@ fn git_file_rev(root: &Path, rel_path: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Handle `zeph knowledge rollback` — Phase 2 skeleton.
+/// Handle `zeph knowledge rollback`.
+///
+/// Opens the `SQLite` pool and deletes all graph edges, orphaned entities, and
+/// ledger rows for `batch_id`. When `yes` is `false`, prompts the user for
+/// confirmation before proceeding.
 ///
 /// # Errors
 ///
-/// Always returns an error: rollback targets the graph sink which is not implemented
-/// in Phase 1.
-fn handle_rollback(batch_id: &str) -> anyhow::Result<()> {
-    // TODO(#5019): implement graph-backed rollback when the graph sink lands.
-    anyhow::bail!(
-        "rollback of batch '{batch_id}' requires the graph sink (Phase 2) which is not yet \
-         available in this build"
-    )
+/// Returns an error when config loading, database access, or user I/O fails.
+#[tracing::instrument(skip(config_path), fields(batch_id))]
+async fn handle_rollback(
+    batch_id: &str,
+    yes: bool,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let app = AppBuilder::new(config_path, None, None, None).await?;
+    let config = app.config();
+
+    let store = DbStore::new(&config.memory.sqlite_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
+    let pool = store.pool().clone();
+    let ledger = IngestLedger::new(pool.clone());
+
+    if !ledger.batch_exists(batch_id).await? {
+        anyhow::bail!("batch '{batch_id}' not found in the ingest ledger — nothing to roll back");
+    }
+
+    if !yes {
+        print!(
+            "This will permanently delete all graph edges, entities, and ledger rows for \
+             batch '{batch_id}'.\nProceed? [y/N]: "
+        );
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let graph_store = GraphStore::new(pool);
+    let (edges, entities) = graph_store
+        .delete_batch(batch_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("graph delete failed: {e}"))?;
+
+    let _ = ledger
+        .delete_batch(batch_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("ledger delete failed: {e}"))?;
+
+    if edges == 0 && entities == 0 {
+        println!(
+            "Note: no graph rows were removed. Phase-1 ingest writes to Qdrant notes, not the \
+             graph — Qdrant embeddings for this batch are NOT removed by rollback."
+        );
+    }
+    println!("Rolled back batch '{batch_id}': removed {edges} edge(s) and {entities} entity(ies).");
+    Ok(())
 }
 
 /// Handle `zeph knowledge status`.
@@ -929,6 +982,36 @@ mod tests {
         assert!(
             matches!(second, IngestProgress::FileDone { skipped: true, .. }),
             "FileDone(skipped) must follow Ingesting"
+        );
+    }
+
+    // ── CLI parse test for Rollback --yes ────────────────────────────────────
+
+    #[test]
+    fn cli_parses_rollback_with_yes() {
+        use crate::cli::{Cli, Command, KnowledgeCommand};
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "knowledge",
+            "rollback",
+            "--batch-id",
+            "abc123",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(
+            matches!(
+                cli.command,
+                Some(Command::Knowledge {
+                    command: KnowledgeCommand::Rollback {
+                        ref batch_id,
+                        yes: true
+                    }
+                })
+                if batch_id == "abc123"
+            ),
+            "CLI must parse rollback --batch-id abc123 --yes"
         );
     }
 }

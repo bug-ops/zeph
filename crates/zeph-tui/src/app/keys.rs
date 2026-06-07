@@ -284,6 +284,9 @@ impl App {
         if self.handle_plugin_command(&cmd) {
             return;
         }
+        if self.handle_knowledge_command(&cmd) {
+            return;
+        }
         self.handle_acp_command(cmd);
     }
 
@@ -388,6 +391,28 @@ impl App {
             TuiCommand::SessionSwitchNext
             | TuiCommand::SessionSwitchPrev
             | TuiCommand::SessionClose => self.try_switch(cmd),
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_knowledge_command(&mut self, cmd: &TuiCommand) -> bool {
+        match cmd {
+            TuiCommand::KnowledgeStatus => {
+                self.push_system_message("Loading knowledge ingest status...".to_owned());
+                let _ = self.user_input_tx.try_send("/knowledge status".to_owned());
+            }
+            TuiCommand::KnowledgeRollbackPrompt => {
+                self.prefill_input("/knowledge rollback ");
+            }
+            TuiCommand::KnowledgeIngestPrompt => {
+                self.push_system_message(
+                    "To ingest project artifacts: run \
+                     `zeph knowledge ingest --source <specs|changelog|handoff|coverage|git-log>` \
+                     from the CLI."
+                        .to_owned(),
+                );
+            }
             _ => return false,
         }
         true

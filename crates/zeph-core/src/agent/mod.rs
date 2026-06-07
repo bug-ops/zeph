@@ -596,7 +596,9 @@ impl<C: Channel> Agent<C> {
                     loop_cmd::LoopCommand,
                     lsp::LspCommand,
                     mcp::McpCommand,
-                    memory::{GraphCommand, GuidelinesCommand, MemoryCommand},
+                    memory::{
+                        GraphCommand, GuidelinesCommand, KnowledgeSlashCommand, MemoryCommand,
+                    },
                     misc::{CacheStatsCommand, ImageCommand, NotifyTestCommand},
                     model::{ModelCommand, ProviderCommand},
                     plan::PlanCommand,
@@ -612,6 +614,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(CavemanCommand);
                 agent_reg.register(MemoryCommand);
                 agent_reg.register(GraphCommand);
+                agent_reg.register(KnowledgeSlashCommand);
                 agent_reg.register(GuidelinesCommand);
                 agent_reg.register(ModelCommand);
                 agent_reg.register(ProviderCommand);

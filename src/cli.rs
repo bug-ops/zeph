@@ -492,11 +492,14 @@ pub(crate) enum KnowledgeCommand {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Roll back a previous import batch (graph sink — Phase 2; skeleton only in this build)
+    /// Roll back a previous import batch: removes all graph edges, entities, and ledger rows
     Rollback {
-        /// `import_batch_id` to delete from the graph
+        /// `import_batch_id` to delete from the graph and ledger
         #[arg(long)]
         batch_id: String,
+        /// Skip the confirmation prompt (non-interactive / scripted use)
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// List import batches and ledger summary
     Status,

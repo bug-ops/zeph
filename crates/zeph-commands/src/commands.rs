@@ -162,6 +162,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         feature_gate: None,
     },
     CommandInfo {
+        name: "/knowledge",
+        args: "[status | rollback <batch_id>]",
+        description: "Query the knowledge ingest ledger or roll back a batch",
+        category: SlashCategory::Memory,
+        feature_gate: None,
+    },
+    CommandInfo {
         name: "/memory",
         args: "[tiers|promote <id>...]",
         description: "Show memory tier stats or manually promote messages to semantic tier",

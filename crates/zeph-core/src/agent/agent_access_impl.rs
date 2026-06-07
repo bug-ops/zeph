@@ -675,6 +675,108 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         )
     }
 
+    // ----- /knowledge -----
+
+    fn knowledge_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(
+            async move {
+                use zeph_memory::graph::ingest::IngestLedger;
+
+                let Some(memory) = self.services.memory.persistence.memory.clone() else {
+                    return Ok("Memory subsystem not available.".to_owned());
+                };
+                let pool = memory.sqlite().pool().clone();
+                let ledger = IngestLedger::new(pool);
+
+                let rows = match ledger.summary().await {
+                    Ok(r) => r,
+                    Err(e) => return Err(CommandError(e.to_string())),
+                };
+
+                if rows.is_empty() {
+                    return Ok("No knowledge has been ingested yet. \
+                         Run `zeph knowledge ingest --source <src>`."
+                        .to_owned());
+                }
+
+                let mut out = format!("Knowledge ingest ledger ({} entries):\n\n", rows.len());
+                let mut current_batch = String::new();
+                for row in &rows {
+                    let batch_short = &row.import_batch_id[..row.import_batch_id.len().min(8)];
+                    if current_batch != row.import_batch_id {
+                        if !current_batch.is_empty() {
+                            out.push('\n');
+                        }
+                        current_batch.clone_from(&row.import_batch_id);
+                    }
+                    let uri_display = &row.source_uri[..row.source_uri.floor_char_boundary(40)];
+                    let at_display = &row.ingested_at[..row.ingested_at.len().min(19)];
+                    let _ = writeln!(
+                        out,
+                        "  {uri_display:<40} batch={batch_short} at={at_display} \
+                         e={} edges={}",
+                        row.entities, row.edges,
+                    );
+                }
+                Ok(out.trim_end().to_owned())
+            }
+            .instrument(tracing::info_span!("core.agent_access.knowledge_status")),
+        )
+    }
+
+    fn knowledge_rollback<'a>(
+        &'a mut self,
+        batch_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(
+            async move {
+                use zeph_memory::graph::ingest::IngestLedger;
+
+                let Some(memory) = self.services.memory.persistence.memory.clone() else {
+                    return Ok("Memory subsystem not available.".to_owned());
+                };
+                let pool = memory.sqlite().pool().clone();
+                let ledger = IngestLedger::new(pool.clone());
+
+                match ledger.batch_exists(batch_id).await {
+                    Ok(false) => {
+                        return Ok(format!("Batch '{batch_id}' not found in ledger."));
+                    }
+                    Err(e) => return Err(CommandError(e.to_string())),
+                    Ok(true) => {}
+                }
+
+                let Some(graph_store) = memory.graph_store.clone() else {
+                    return Ok(
+                        "Graph store unavailable (Qdrant unreachable or graph not enabled)."
+                            .to_owned(),
+                    );
+                };
+
+                let (edges, entities) = graph_store
+                    .delete_batch(batch_id)
+                    .await
+                    .map_err(|e| CommandError(e.to_string()))?;
+                let _ = ledger.delete_batch(batch_id).await;
+
+                let mut msg = format!(
+                    "Rolled back batch '{batch_id}': removed {edges} edge(s) and \
+                     {entities} entity(ies)."
+                );
+                if edges == 0 && entities == 0 {
+                    msg.push_str(
+                        "\nNote: no graph rows found. Phase-1 ingest writes to Qdrant notes — \
+                         Qdrant embeddings are NOT removed by this rollback.",
+                    );
+                }
+                Ok(msg)
+            }
+            .instrument(tracing::info_span!("core.agent_access.knowledge_rollback")),
+        )
+    }
+
     // ----- /guidelines -----
 
     fn guidelines<'a>(

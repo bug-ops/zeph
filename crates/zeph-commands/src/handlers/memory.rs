@@ -158,6 +158,54 @@ impl CommandHandler<CommandContext<'_>> for GuidelinesCommand {
     }
 }
 
+/// Query the knowledge ingest ledger or roll back a batch.
+///
+/// Subcommands:
+/// - (none) or `status` — list batches and ledger summary
+/// - `rollback <batch_id>` — delete a batch (no confirmation in slash-command context)
+pub struct KnowledgeSlashCommand;
+
+impl CommandHandler<CommandContext<'_>> for KnowledgeSlashCommand {
+    fn name(&self) -> &'static str {
+        "/knowledge"
+    }
+
+    fn description(&self) -> &'static str {
+        "Query the knowledge ingest ledger or roll back a batch"
+    }
+
+    fn args_hint(&self) -> &'static str {
+        "[status | rollback <batch_id>]"
+    }
+
+    fn category(&self) -> SlashCategory {
+        SlashCategory::Memory
+    }
+
+    fn handle<'a>(
+        &'a self,
+        ctx: &'a mut CommandContext<'_>,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, CommandError>> + Send + 'a>> {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!("commands.knowledge.handle");
+        Box::pin(
+            async move {
+                let result = if args.is_empty() || args == "status" {
+                    ctx.agent.knowledge_status().await?
+                } else if let Some(batch_id) = args.strip_prefix("rollback ") {
+                    ctx.agent.knowledge_rollback(batch_id.trim()).await?
+                } else {
+                    "Unknown /knowledge subcommand. Usage: /knowledge [status | rollback <batch_id>]"
+                        .to_owned()
+                };
+                Ok(CommandOutput::Message(result))
+            }
+            .instrument(span),
+        )
+    }
+}
+
 fn parse_backfill_limit(args: &str) -> Option<usize> {
     let pos = args.find("--limit")?;
     args[pos + "--limit".len()..]

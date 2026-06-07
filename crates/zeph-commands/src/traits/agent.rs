@@ -124,6 +124,30 @@ pub trait AgentAccess: Send {
         progress_cb: &'a mut (dyn FnMut(String) + Send),
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
 
+    // ----- /knowledge -----
+
+    /// Return a formatted summary of the ingest ledger (batches, counts).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the database query fails.
+    fn knowledge_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
+    /// Roll back a graph import batch by `batch_id`.
+    ///
+    /// Deletes edges, orphaned entities, and ledger rows for the batch.
+    /// Returns a summary line on success, or an error message if the batch is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the database query fails or the batch does not exist.
+    fn knowledge_rollback<'a>(
+        &'a mut self,
+        batch_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>>;
+
     // ----- /guidelines -----
 
     /// Return the current compression guidelines.
@@ -600,6 +624,19 @@ impl AgentAccess for NullAgent {
         &'a mut self,
         _limit: Option<usize>,
         _progress_cb: &'a mut (dyn FnMut(String) + Send),
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn knowledge_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn knowledge_rollback<'a>(
+        &'a mut self,
+        _batch_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
         Box::pin(async { Ok(String::new()) })
     }
