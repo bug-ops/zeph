@@ -146,9 +146,25 @@ impl<C: crate::channel::Channel> Agent<C> {
         Ok(graph)
     }
 
+    fn build_admission_gate(&self) -> Option<zeph_orchestration::AdmissionGate> {
+        let pairs: Vec<(String, usize)> = self
+            .runtime
+            .providers
+            .provider_pool
+            .iter()
+            .filter_map(|e| e.max_concurrent.map(|c| (e.effective_name(), c as usize)))
+            .collect();
+        if pairs.is_empty() {
+            None
+        } else {
+            Some(zeph_orchestration::AdmissionGate::new(&pairs))
+        }
+    }
+
     pub(super) fn build_dag_scheduler(
         &mut self,
         graph: zeph_orchestration::TaskGraph,
+        durable_budget: Option<zeph_orchestration::durable::ReplanBudgetSnapshot>,
     ) -> Result<(zeph_orchestration::DagScheduler, usize), error::AgentError> {
         use zeph_orchestration::{DagScheduler, GraphStatus, RuleBasedRouter};
 
@@ -181,21 +197,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             mgr.reserve_slots(reserved);
         }
 
-        // Build admission gate from providers that have `max_concurrent` set (C1 fix).
-        let admission_gate = {
-            let pairs: Vec<(String, usize)> = self
-                .runtime
-                .providers
-                .provider_pool
-                .iter()
-                .filter_map(|e| e.max_concurrent.map(|c| (e.effective_name(), c as usize)))
-                .collect();
-            if pairs.is_empty() {
-                None
-            } else {
-                Some(zeph_orchestration::AdmissionGate::new(&pairs))
-            }
-        };
+        let admission_gate = self.build_admission_gate();
 
         let scheduler = if graph.status == GraphStatus::Created {
             DagScheduler::new(
@@ -204,6 +206,15 @@ impl<C: crate::channel::Channel> Agent<C> {
                 Box::new(RuleBasedRouter),
                 available_agents,
                 admission_gate,
+            )
+        } else if let Some(snap) = durable_budget {
+            DagScheduler::resume_from_durable(
+                graph,
+                &self.services.orchestration.orchestration_config,
+                Box::new(RuleBasedRouter),
+                available_agents,
+                admission_gate,
+                snap,
             )
         } else {
             DagScheduler::resume_from(
@@ -255,6 +266,131 @@ impl<C: crate::channel::Channel> Agent<C> {
         Ok((scheduler, reserved))
     }
 
+    /// Ensure the durable backend for P2 budget snapshots is open, initialising it lazily on
+    /// the first call.  Returns `(Arc<DurableBackendEnum>, JournalWriterHandle)` or `None` when
+    /// durable is disabled / not configured.
+    async fn ensure_durable_backend(
+        &mut self,
+    ) -> Option<(
+        std::sync::Arc<zeph_durable::DurableBackendEnum>,
+        zeph_durable::JournalWriterHandle,
+    )> {
+        if self.services.orchestration.durable_backend.is_none() {
+            let cfg = self.services.orchestration.durable_config.clone()?;
+            if !cfg.enabled || !cfg.orchestration {
+                return None;
+            }
+            let db_url = self.services.orchestration.durable_db_url.clone()?;
+            let local = match zeph_durable::LocalBackend::open(&db_url, cfg.max_payload_bytes).await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(error = %e, "P2 durable: failed to open backend; skipping");
+                    return None;
+                }
+            };
+            if let Err(e) = local.init().await {
+                tracing::warn!(error = %e, "P2 durable: failed to init schema; skipping");
+                return None;
+            }
+            // Attach cipher to the backend before wrapping — callers never need to re-inject it.
+            let local = if let Some(c) = self.services.orchestration.durable_cipher.clone() {
+                local.with_cipher(c)
+            } else {
+                local
+            };
+            let local = std::sync::Arc::new(local);
+            let backend =
+                std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
+            let (writer_actor, handle) = zeph_durable::JournalWriter::new(local, &cfg);
+            // The writer task is fire-and-forget: it runs until the process exits. Not tracked in
+            // the supervisor intentionally (the writer has no meaningful shutdown protocol beyond
+            // being dropped).
+            tokio::spawn(async move { writer_actor.run().await });
+            self.services.orchestration.durable_backend = Some(backend);
+            self.services.orchestration.durable_writer = Some(handle);
+        }
+        let backend = self.services.orchestration.durable_backend.clone()?;
+        let writer = self.services.orchestration.durable_writer.clone()?;
+        Some((backend, writer))
+    }
+
+    /// Attempt to restore the durable replan budget for a graph that is being resumed.
+    ///
+    /// Returns `Some(snapshot)` when durable is enabled, the graph is being resumed (not
+    /// Created), and a snapshot was found in the journal. Returns `None` in all other cases
+    /// so the caller falls back to zeroing counters — identical to pre-durable behaviour.
+    async fn try_restore_durable_budget(
+        &mut self,
+        graph: &zeph_orchestration::TaskGraph,
+    ) -> Option<zeph_orchestration::durable::ReplanBudgetSnapshot> {
+        use zeph_orchestration::GraphStatus;
+
+        if graph.status == GraphStatus::Created {
+            return None;
+        }
+        if !durable_orchestration_enabled(self.services.orchestration.durable_config.as_ref()) {
+            return None;
+        }
+        let (backend, _writer) = self.ensure_durable_backend().await?;
+        let generation = graph.durable_save_generation;
+        match zeph_orchestration::durable::restore_budget(&graph.id, generation, backend).await {
+            Ok(snap) => snap,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    graph_id = %graph.id,
+                    "P2 durable: restore_budget failed; falling back to zero counters"
+                );
+                None
+            }
+        }
+    }
+
+    /// Capture the current replan budget snapshot if durable is enabled; returns `None`
+    /// when off or not configured.
+    fn take_durable_budget_snapshot(
+        &self,
+        scheduler: &zeph_orchestration::DagScheduler,
+    ) -> Option<zeph_orchestration::durable::ReplanBudgetSnapshot> {
+        if !durable_orchestration_enabled(self.services.orchestration.durable_config.as_ref()) {
+            return None;
+        }
+        Some(scheduler.budget_snapshot())
+    }
+
+    /// Journal the replan budget snapshot for a DAG that is pausing.
+    /// Returns the next generation value when the journal write succeeds, so the caller can
+    /// persist it onto the final `TaskGraph` snapshot before writing to disk.  Returns `None`
+    /// when durable is disabled or the write fails (caller falls back to zeroing counters on
+    /// the next resume — safe degraded behaviour).
+    async fn journal_durable_budget(
+        &mut self,
+        graph: &zeph_orchestration::TaskGraph,
+        snapshot: zeph_orchestration::durable::ReplanBudgetSnapshot,
+    ) -> Option<u32> {
+        if !durable_orchestration_enabled(self.services.orchestration.durable_config.as_ref()) {
+            return None;
+        }
+        let cfg = self.services.orchestration.durable_config.clone()?;
+        let (backend, writer) = self.ensure_durable_backend().await?;
+        let generation = graph.durable_save_generation;
+        if let Err(e) = zeph_orchestration::durable::journal_budget(
+            &graph.id, generation, backend, writer, &cfg, snapshot,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                graph_id = %graph.id,
+                generation,
+                "P2 durable: journal_budget failed; budget will be zeroed on next resume"
+            );
+            return None;
+        }
+        Some(generation.saturating_add(1))
+    }
+
     pub(super) async fn handle_plan_confirm(&mut self) -> Result<(), error::AgentError> {
         let Some(graph) = self.services.orchestration.pending_graph.take() else {
             self.channel
@@ -267,7 +403,9 @@ impl<C: crate::channel::Channel> Agent<C> {
             return Ok(());
         };
 
-        let (mut scheduler, reserved) = self.build_dag_scheduler(graph)?;
+        // P2 durable: restore replan budget if durable is enabled and this is a resume.
+        let durable_budget = self.try_restore_durable_budget(&graph).await;
+        let (mut scheduler, reserved) = self.build_dag_scheduler(graph, durable_budget)?;
 
         let task_count = scheduler.graph().tasks.len();
         self.channel
@@ -288,11 +426,19 @@ impl<C: crate::channel::Channel> Agent<C> {
             mgr.release_reservation(reserved);
         }
 
+        // P2 durable: snapshot budget before defensive save (scheduler still alive here).
+        let budget_snap = self.take_durable_budget_snapshot(&scheduler);
         // Defensive save before `?` so a scheduler error still commits the last in-flight state.
         if let Some(ref persistence) = self.services.orchestration.graph_persistence {
             super::scheduler_loop::save_graph_snapshot(persistence, scheduler.graph().clone())
                 .await;
         }
+        // Journal and capture next generation before consuming the scheduler.
+        let next_generation = if let Some(snap) = budget_snap {
+            self.journal_durable_budget(scheduler.graph(), snap).await
+        } else {
+            None
+        };
 
         let final_status = scheduler_result?;
 
@@ -301,6 +447,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             .await;
 
         let mut completed_graph = scheduler.into_graph();
+        // Persist the incremented generation so the next pause uses a fresh ExecutionId.
+        if let Some(gn) = next_generation {
+            completed_graph.durable_save_generation = gn;
+        }
 
         if let Some(extra_tasks) = extra_task_outputs {
             completed_graph.tasks.extend(extra_tasks);
@@ -1172,5 +1322,65 @@ impl<C: crate::channel::Channel> Agent<C> {
             Ok(cmd) => self.handle_plan_command_as_string(cmd).await,
             Err(e) => Ok(e.to_string()),
         }
+    }
+}
+
+/// Returns `true` when the P2 durable orchestration adapter is active.
+///
+/// Used by the no-op guard in `try_restore_durable_budget`, `take_durable_budget_snapshot`, and
+/// `journal_durable_budget` so the early-return condition can be tested without constructing a
+/// full `Agent<C>`.
+pub(crate) fn durable_orchestration_enabled(cfg: Option<&zeph_config::DurableConfig>) -> bool {
+    cfg.is_some_and(|c| c.enabled && c.orchestration)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn disabled_cfg() -> zeph_config::DurableConfig {
+        zeph_config::DurableConfig {
+            enabled: false,
+            ..zeph_config::DurableConfig::default()
+        }
+    }
+
+    fn enabled_cfg() -> zeph_config::DurableConfig {
+        zeph_config::DurableConfig {
+            enabled: true,
+            orchestration: true,
+            ..zeph_config::DurableConfig::default()
+        }
+    }
+
+    fn orchestration_off_cfg() -> zeph_config::DurableConfig {
+        zeph_config::DurableConfig {
+            enabled: true,
+            orchestration: false,
+            ..zeph_config::DurableConfig::default()
+        }
+    }
+
+    // FR-DE-13 AC: when durable is absent, disabled, or orchestration=false → no-op.
+    #[test]
+    fn durable_disabled_when_config_absent() {
+        assert!(!durable_orchestration_enabled(None));
+    }
+
+    #[test]
+    fn durable_disabled_when_enabled_false() {
+        assert!(!durable_orchestration_enabled(Some(&disabled_cfg())));
+    }
+
+    #[test]
+    fn durable_disabled_when_orchestration_false() {
+        assert!(!durable_orchestration_enabled(Some(
+            &orchestration_off_cfg()
+        )));
+    }
+
+    #[test]
+    fn durable_enabled_when_both_flags_true() {
+        assert!(durable_orchestration_enabled(Some(&enabled_cfg())));
     }
 }

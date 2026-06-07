@@ -77,6 +77,7 @@
 //! `zeph-db` migrations. Use [`JobStore::open`] to connect or [`JobStore::new`] when
 //! you already hold a [`zeph_db::DbPool`].
 
+pub mod durable;
 mod error;
 mod handlers;
 mod sanitize;
@@ -90,6 +91,7 @@ pub mod daemon;
 #[cfg(all(unix, feature = "daemon"))]
 pub mod pidfile;
 
+pub use durable::SchedulerDurableAdapter;
 pub use error::SchedulerError;
 pub use handlers::CustomTaskHandler;
 pub use sanitize::{sanitize_task_prompt, sanitize_task_prompt_checked};

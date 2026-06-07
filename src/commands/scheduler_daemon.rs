@@ -127,6 +127,29 @@ async fn run_foreground(
         config.scheduler.security.attenuate_after_external_read,
     );
 
+    if config.durable.enabled && config.durable.scheduler {
+        let durable_url = crate::commands::durable::resolve_durable_db_url(config);
+        let local =
+            zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
+                .await
+                .context("failed to open scheduler durable backend")?;
+        local
+            .init()
+            .await
+            .context("failed to init scheduler durable schema")?;
+        let local = std::sync::Arc::new(local);
+        let backend = std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
+        let durable_cfg = std::sync::Arc::new(config.durable.clone());
+        let (writer_actor, writer_handle) = zeph_durable::JournalWriter::new(local, &durable_cfg);
+        tokio::spawn(writer_actor.run());
+        let adapter = zeph_scheduler::durable::SchedulerDurableAdapter::new(
+            backend,
+            writer_handle,
+            durable_cfg,
+        );
+        scheduler = scheduler.with_durable(adapter);
+    }
+
     // Register built-in handlers available without a live agent session.
     // `UpdateCheckHandler` is self-contained (HTTP only); other handlers that
     // require the agent loop (CustomTaskHandler, ExperimentTaskHandler) are not

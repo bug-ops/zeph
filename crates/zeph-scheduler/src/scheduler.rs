@@ -8,6 +8,7 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::sync::{Mutex, mpsc, watch};
 
+use crate::durable::{SchedulerDurableAdapter, fire_with_durable};
 use crate::error::SchedulerError;
 use crate::sanitize::sanitize_task_prompt_checked;
 use crate::store::JobStore;
@@ -86,11 +87,13 @@ pub enum SchedulerMessage {
 pub struct Scheduler {
     tasks: Vec<ScheduledTask>,
     store: JobStore,
-    handlers: HashMap<String, Box<dyn TaskHandler>>,
+    handlers: HashMap<String, Arc<dyn TaskHandler>>,
     shutdown_rx: watch::Receiver<bool>,
     task_rx: mpsc::Receiver<SchedulerMessage>,
     /// Optional sender for injecting custom task prompts into the agent loop.
     custom_task_tx: Option<mpsc::Sender<String>>,
+    /// Optional durable exactly-once adapter for scheduler fires (FR-DE-14).
+    durable: Option<SchedulerDurableAdapter>,
     max_tasks: usize,
     /// Per-task execution mutex: task names of tasks currently being executed.
     ///
@@ -161,6 +164,7 @@ impl Scheduler {
             shutdown_rx,
             task_rx: rx,
             custom_task_tx: None,
+            durable: None,
             max_tasks,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             handler_timeout: Duration::from_mins(5),
@@ -178,6 +182,17 @@ impl Scheduler {
     #[must_use]
     pub fn with_custom_task_sender(mut self, tx: mpsc::Sender<String>) -> Self {
         self.custom_task_tx = Some(tx);
+        self
+    }
+
+    /// Attach a durable exactly-once adapter so each scheduler fire is journaled (FR-DE-14).
+    ///
+    /// When set, every handler execution and custom-task injection is wrapped in a durable step
+    /// keyed on `(job_name, scheduled_slot_ms)`. A committed result from a prior run short-circuits
+    /// the fire without re-invoking the handler. Without this, fires are not journaled.
+    #[must_use]
+    pub fn with_durable(mut self, adapter: SchedulerDurableAdapter) -> Self {
+        self.durable = Some(adapter);
         self
     }
 
@@ -224,7 +239,8 @@ impl Scheduler {
     /// calls the matching handler. Tasks whose kind has no registered handler are
     /// skipped with a debug-level log.
     pub fn register_handler(&mut self, kind: &TaskKind, handler: Box<dyn TaskHandler>) {
-        self.handlers.insert(kind.as_str().to_owned(), handler);
+        self.handlers
+            .insert(kind.as_str().to_owned(), Arc::from(handler));
     }
 
     /// Initialize the store, sync task definitions, compute initial `next_run` for each task,
@@ -456,31 +472,17 @@ impl Scheduler {
         };
 
         tracing::info!(task = %name, "catch_up_missed: executing overdue task");
-        let task_span = tracing::info_span!(
-            "scheduler.task.execute",
-            task.name = %name,
-            task.kind = task.kind.as_str()
-        );
-        let execute_fut = handler.execute(&task.config);
-        if self.handler_timeout.is_zero() {
-            use tracing::Instrument as _;
-            execute_fut.instrument(task_span).await?;
-        } else {
-            use tracing::Instrument as _;
-            tokio::time::timeout(self.handler_timeout, execute_fut.instrument(task_span))
-                .await
-                .map_err(|_| {
-                    tracing::warn!(
-                        task.name = %name,
-                        timeout_secs = self.handler_timeout.as_secs(),
-                        "task handler timed out"
-                    );
-                    SchedulerError::TaskFailed(format!(
-                        "handler timed out after {}s: {name}",
-                        self.handler_timeout.as_secs()
-                    ))
-                })??;
-        }
+
+        // Derive the slot_ms from the stored next_run timestamp so the durable execution-id
+        // matches the one that would have been used during the original (crashed) fire.
+        let slot_ms = match self.store.get_next_run(name).await {
+            Ok(Some(ref s)) => s
+                .parse::<chrono::DateTime<Utc>>()
+                .map_or_else(|_| now.timestamp_millis(), |dt| dt.timestamp_millis()),
+            _ => now.timestamp_millis(),
+        };
+
+        self.execute_handler(handler.clone(), task, slot_ms).await?;
 
         let next = schedule
             .after(now)
@@ -690,12 +692,16 @@ impl Scheduler {
         let mut completed_oneshots: Vec<String> = Vec::new();
 
         for task in &self.tasks {
-            let should_run = match &task.mode {
+            // Returns Some(slot_ms) when the task is due — slot_ms is the scheduled fire instant
+            // used as the durable execution identity. None means skip this tick.
+            let slot_ms: Option<i64> = match &task.mode {
                 TaskMode::Periodic { .. } => {
                     match self.store.get_next_run(&task.name).await {
-                        Ok(Some(ref s)) => {
-                            s.parse::<chrono::DateTime<Utc>>().is_ok_and(|dt| dt <= now)
-                        }
+                        Ok(Some(ref s)) => s
+                            .parse::<chrono::DateTime<Utc>>()
+                            .ok()
+                            .filter(|dt| *dt <= now)
+                            .map(|dt| dt.timestamp_millis()),
                         // PERF-SC-04 fix: missing next_run must not mean "fire now".
                         // Compute and persist next occurrence, then skip this tick.
                         Ok(None) => {
@@ -707,18 +713,24 @@ impl Scheduler {
                                     .set_next_run(&task.name, &next.to_rfc3339())
                                     .await;
                             }
-                            false
+                            None
                         }
                         Err(e) => {
                             tracing::warn!(task = %task.name, "failed to check next_run: {e}");
-                            false
+                            None
                         }
                     }
                 }
-                TaskMode::OneShot { run_at } => *run_at <= now,
+                TaskMode::OneShot { run_at } => {
+                    if *run_at <= now {
+                        Some(run_at.timestamp_millis())
+                    } else {
+                        None
+                    }
+                }
             };
 
-            if should_run {
+            if let Some(slot_ms) = slot_ms {
                 // Mechanism 1 (write-fence): skip tasks written in this same tick.
                 // Static tasks are exempt — their config is set at startup and trusted.
                 if self.reentry_defense_enabled
@@ -760,34 +772,9 @@ impl Scheduler {
 
                 if let Some(handler) = self.handlers.get(task.kind.as_str()) {
                     tracing::info!(task = %task.name, kind = task.kind.as_str(), "executing task");
-                    let task_span = tracing::info_span!(
-                        "scheduler.task.execute",
-                        task.name = %task.name,
-                        task.kind = task.kind.as_str()
-                    );
-                    let execute_result = {
-                        use tracing::Instrument as _;
-                        let execute_fut = handler.execute(&task.config).instrument(task_span);
-                        if self.handler_timeout.is_zero() {
-                            execute_fut.await
-                        } else {
-                            tokio::time::timeout(self.handler_timeout, execute_fut)
-                                .await
-                                .map_err(|_| {
-                                    tracing::warn!(
-                                        task.name = %task.name,
-                                        timeout_secs = self.handler_timeout.as_secs(),
-                                        "task handler timed out"
-                                    );
-                                    SchedulerError::TaskFailed(format!(
-                                        "handler timed out after {}s: {}",
-                                        self.handler_timeout.as_secs(),
-                                        task.name
-                                    ))
-                                })
-                                .and_then(|r| r)
-                        }
-                    };
+
+                    let execute_result = self.execute_handler(handler.clone(), task, slot_ms).await;
+
                     match execute_result {
                         Ok(()) => match &task.mode {
                             TaskMode::Periodic { schedule } => {
@@ -832,30 +819,10 @@ impl Scheduler {
                                 "RTW-A Mech4: custom prompt suppressed (external-read tick)"
                             );
                         } else {
-                            let raw = task.config.get("task").and_then(|v| v.as_str()).unwrap_or(
-                                "Execute the following scheduled task now: check status",
-                            );
-                            // Mechanism 3: injection pattern detection for External/UserAdded tasks.
-                            if self.reentry_defense_enabled
-                                && self.injection_pattern_check
-                                && task.provenance != TaskProvenance::Static
-                            {
-                                match sanitize_task_prompt_checked(raw, &task.name) {
-                                    Ok(prompt) => {
-                                        let _ = tx.try_send(prompt);
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            task = %task.name,
-                                            "RTW-A Mech3: {e}"
-                                        );
-                                    }
-                                }
-                            } else {
-                                // Static provenance or detection disabled — use basic sanitize.
-                                use crate::sanitize::sanitize_task_prompt;
-                                let prompt = sanitize_task_prompt(raw);
-                                let _ = tx.try_send(prompt);
+                            let inject_result =
+                                self.inject_custom_task(task, tx.clone(), slot_ms).await;
+                            if let Err(e) = inject_result {
+                                tracing::warn!(task = %task.name, "custom task injection failed: {e}");
                             }
                         }
                         if let Err(e) = self.store.mark_done(&task.name).await {
@@ -886,6 +853,109 @@ impl Scheduler {
         // RTW-A end-of-tick cleanup: clear per-tick state so it does not bleed into the next tick.
         self.written_this_tick.clear();
         self.tick_read_external = false;
+    }
+
+    /// Execute a registered handler, wrapping in durable exactly-once journaling when available.
+    async fn execute_handler(
+        &self,
+        handler: Arc<dyn TaskHandler>,
+        task: &ScheduledTask,
+        slot_ms: i64,
+    ) -> Result<(), SchedulerError> {
+        let task_name = task.name.clone();
+        let task_kind_str = task.kind.as_str().to_owned();
+        let handler_timeout = self.handler_timeout;
+        let config = task.config.clone();
+
+        let run = move || {
+            let handler = handler.clone();
+            let task_name = task_name.clone();
+            let task_kind_str = task_kind_str.clone();
+            let config = config.clone();
+            async move {
+                use tracing::Instrument as _;
+                let span = tracing::info_span!(
+                    "scheduler.task.execute",
+                    task.name = %task_name,
+                    task.kind = %task_kind_str,
+                );
+                let fut = handler.execute(&config).instrument(span);
+                if handler_timeout.is_zero() {
+                    fut.await
+                } else {
+                    tokio::time::timeout(handler_timeout, fut)
+                        .await
+                        .map_err(|_| {
+                            tracing::warn!(
+                                task.name = %task_name,
+                                timeout_secs = handler_timeout.as_secs(),
+                                "task handler timed out"
+                            );
+                            SchedulerError::TaskFailed(format!(
+                                "handler timed out after {}s: {}",
+                                handler_timeout.as_secs(),
+                                task_name
+                            ))
+                        })
+                        .and_then(|r| r)
+                }
+            }
+        };
+
+        if let Some(ref adapter) = self.durable {
+            let adapter = adapter.clone();
+            let task_name = task.name.clone();
+            fire_with_durable(&adapter, &task_name, slot_ms, run).await
+        } else {
+            run().await
+        }
+    }
+
+    /// Inject a custom oneshot task prompt, wrapping in durable exactly-once journaling when available.
+    async fn inject_custom_task(
+        &self,
+        task: &ScheduledTask,
+        tx: mpsc::Sender<String>,
+        slot_ms: i64,
+    ) -> Result<(), SchedulerError> {
+        // Build the sanitized prompt before entering the durable closure.
+        let raw = task
+            .config
+            .get("task")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Execute the following scheduled task now: check status");
+
+        let prompt_result = if self.reentry_defense_enabled
+            && self.injection_pattern_check
+            && task.provenance != TaskProvenance::Static
+        {
+            sanitize_task_prompt_checked(raw, &task.name)
+                .map_err(|e| SchedulerError::TaskFailed(e.to_string()))
+        } else {
+            Ok(crate::sanitize::sanitize_task_prompt(raw))
+        };
+
+        let prompt = match prompt_result {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(task = %task.name, "RTW-A Mech3: {e}");
+                return Err(e);
+            }
+        };
+
+        if let Some(ref adapter) = self.durable {
+            let task_name = task.name.clone();
+            let adapter = adapter.clone();
+
+            fire_with_durable(&adapter, &task_name, slot_ms, move || async move {
+                tx.try_send(prompt)
+                    .map_err(|e| SchedulerError::TaskFailed(format!("channel send failed: {e}")))
+            })
+            .await
+        } else {
+            tx.try_send(prompt)
+                .map_err(|e| SchedulerError::TaskFailed(format!("channel send failed: {e}")))
+        }
     }
 }
 

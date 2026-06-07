@@ -11103,6 +11103,7 @@ dependencies = [
  "zeph-common",
  "zeph-config",
  "zeph-db",
+ "zeph-durable",
  "zeph-llm",
  "zeph-memory",
  "zeph-sanitizer",
@@ -11161,6 +11162,7 @@ dependencies = [
 name = "zeph-scheduler"
 version = "0.21.4"
 dependencies = [
+ "blake3",
  "chrono",
  "cron",
  "reqwest 0.13.4",
@@ -11173,8 +11175,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
  "wiremock",
+ "zeph-config",
  "zeph-db",
+ "zeph-durable",
 ]
 
 [[package]]

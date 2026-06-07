@@ -1918,6 +1918,25 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach the durable execution config and cipher for the P2 orchestration adapter.
+    ///
+    /// When `config.enabled && config.orchestration` are both `true`, `/plan resume` will
+    /// restore the replan budget from the durable journal instead of zeroing it (FR-DE-13).
+    /// `db_url` is the `sqlite://…/durable.db` connection string (a sibling of the main DB).
+    /// The `cipher` is `None` when `config.encrypt_payload = false` (development mode only).
+    #[must_use]
+    pub fn with_durable_orchestration(
+        mut self,
+        config: zeph_config::DurableConfig,
+        db_url: String,
+        cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
+    ) -> Self {
+        self.services.orchestration.durable_config = Some(config);
+        self.services.orchestration.durable_db_url = Some(db_url);
+        self.services.orchestration.durable_cipher = cipher;
+        self
+    }
+
     /// Wire `graph_persistence` from the attached `SemanticMemory` `SQLite` pool.
     ///
     /// Idempotent: returns immediately if `graph_persistence` is already `Some`.

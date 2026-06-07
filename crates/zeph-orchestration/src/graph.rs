@@ -449,6 +449,16 @@ pub struct TaskGraph {
     pub created_at: String,
     /// ISO-8601 UTC timestamp set when the graph reaches a terminal status.
     pub finished_at: Option<String>,
+    /// Monotonically incrementing counter used by the durable P2 adapter to key each
+    /// budget snapshot to a unique [`ExecutionId`].  Zero on creation; incremented on each
+    /// `journal_budget` call so a resumed-then-re-paused plan writes to a fresh execution
+    /// rather than overwriting the previous one (see `zeph-orchestration/src/durable.rs`).
+    ///
+    /// Persisted inside the graph blob so it survives across process restarts.
+    ///
+    /// [`ExecutionId`]: zeph_durable::ExecutionId
+    #[serde(default)]
+    pub durable_save_generation: u32,
 }
 
 impl TaskGraph {
@@ -464,6 +474,7 @@ impl TaskGraph {
             default_max_retries: 3,
             created_at: chrono_now(),
             finished_at: None,
+            durable_save_generation: 0,
         }
     }
 }

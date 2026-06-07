@@ -2809,7 +2809,13 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             tracing::info!("worktree subsystem initialised");
         }
 
-        agent.with_orchestration(config.orchestration.clone(), agents_config, mgr)
+        let agent = agent.with_orchestration(config.orchestration.clone(), agents_config, mgr);
+        if config.durable.enabled && config.durable.orchestration {
+            let durable_url = crate::commands::durable::resolve_durable_db_url(config);
+            agent.with_durable_orchestration(config.durable.clone(), durable_url, None)
+        } else {
+            agent
+        }
     };
     let agent = {
         let baseline = zeph_experiments::ConfigSnapshot::from_config(config);

@@ -27,6 +27,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `feat(zeph-durable)`: criterion benchmarks for `zeph-durable` — all 10 groups from spec-064 §Benchmarks (`bench_step_run_idempotent`, `bench_step_run_atleastonce`, `bench_step_run_exactly_once_n`, `bench_parallel_n`, `bench_replay_cursor_n`, `bench_journal_append_buffered`, `bench_journal_append_acked`, `bench_payload_seal`, `bench_payload_open`, `bench_prune_batch`). NFR gate tests added in `tests/nfr_gates.rs`: NFR-DE-07 runs in CI; NFR-DE-01/02 are `#[ignore]` (5 ms bound requires release builds). Closes #4950.
 - `feat(zeph-subagent)`: durable promise adapter for subagent spawn/await (spec-064 §P4, closes #4954). `zeph-subagent` gains `durable.rs` with `make_durable_promise`, `await_durable_subagent`, `resolve_durable_promise`, `DurableResolverSeat`, and `SubagentResult`. The resolver seat carries a `Zeroizing<[u8; 32]>` token from parent to child background task (INV-9 channel rule). On parent resume after crash, `await_durable_subagent` returns the journaled `SubagentResult` immediately (spec §1038 finished-child replay). `zeph-core` wires the gate via `maybe_make_durable_seat` in `handle_agent_background` and `handle_agent_spawn_foreground`.
 
+- `feat(orchestration)`: P2 durable adapter for `/plan resume` (spec-064 §P2, closes #4952).
+  `ReplanBudgetSnapshot` captures five replan/predicate/lineage counters and is journaled on every
+  DAG pause as an `EffectClass::Idempotent` step keyed to `(graph_id, save_generation)`.  A
+  generation counter on `TaskGraph` ensures successive pause→resume→pause cycles open distinct
+  executions so replays always return the latest snapshot.  `DagScheduler::resume_from_durable`
+  restores the counters instead of zeroing them.  Call sites in `zeph-core/src/agent/plan.rs` are
+  gated on `[durable].orchestration`; when the flag is off behaviour is identical to pre-durable.
+
+- `feat(scheduler)`: P3 durable exactly-once adapter for scheduler job fires (spec-064 §P3,
+  closes #4953).  `SchedulerDurableAdapter` holds a shared `DurableBackendEnum` and
+  `JournalWriterHandle` for the scheduler's lifetime.  `fire_with_durable` opens a per-fire
+  `ExactlyOnceGuarded` execution keyed on a BLAKE3-derived `ExecutionId` from
+  `(job_name, scheduled_slot_ms)`.  On crash between `EffectIntent` and `StepResult` the
+  `OnAmbiguous::Skip` policy applies rather than an unconditional re-fire.  The `catch_up_missed`
+  startup path and `inject_custom_task` both route through `execute_handler`, which dispatches via
+  `fire_with_durable` when an adapter is present.  Gated on `[durable].scheduler`.
+
 - `feat(core)`: P1 durable adapter for the agent tool-loop (spec-064 §P1, closes #4951).
   `SessionState` gains `durable_ctx: Option<Arc<DurableContext>>` and `durable_turn_replayed: bool`.
   The new `call_llm_durable` helper in `tier_loop.rs` wraps each LLM turn as an

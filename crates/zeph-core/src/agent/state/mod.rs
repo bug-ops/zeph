@@ -661,6 +661,33 @@ pub(crate) struct OrchestrationState {
     /// `prepare_tool_dispatch` injects an [`ExecutionContext`] named `name` into
     /// every `ToolCall` so that `ShellExecutor::resolve_context` uses the right env.
     pub(crate) task_execution_env: Option<String>,
+
+    // ── P2 durable adapter (spec-064) ─────────────────────────────────────────
+    /// Durable config snapshot used by the P2 adapter in `plan.rs`.
+    ///
+    /// `None` when durable execution is disabled or the agent was built without a durable config
+    /// (e.g. unit tests). When `Some` and `durable.orchestration = true`, `/plan resume` restores
+    /// the replan budget from the journal instead of zeroing it.
+    pub(crate) durable_config: Option<zeph_config::DurableConfig>,
+    /// Resolved path to `durable.db` (the dedicated journal file for `LocalBackend`).
+    ///
+    /// Derived at build time from `memory.sqlite_path` sibling directory. `None` when the durable
+    /// adapter is not configured.
+    pub(crate) durable_db_url: Option<String>,
+    /// Shared durable backend for P2 budget snapshots.
+    ///
+    /// Lazily initialised by `plan.rs` on first journal call; shared across pause/resume cycles
+    /// for the same process lifetime.
+    // Accessed exclusively through ensure_durable_backend() in plan.rs; rustc's cross-module
+    // dead_code analysis does not follow the indirect Option method chains.
+    #[allow(dead_code)]
+    pub(crate) durable_backend: Option<std::sync::Arc<zeph_durable::DurableBackendEnum>>,
+    /// Writer handle for the shared P2 durable backend.
+    // Same as durable_backend: accessed through plan.rs ensure_durable_backend().
+    #[allow(dead_code)]
+    pub(crate) durable_writer: Option<zeph_durable::JournalWriterHandle>,
+    /// Cipher for encrypting P2 budget snapshots. `None` when `encrypt_payload = false`.
+    pub(crate) durable_cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
 }
 
 /// Groups instruction hot-reload state.

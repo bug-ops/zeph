@@ -111,6 +111,46 @@ impl ExecutionId {
     pub fn parse_str(s: &str) -> Result<Self, uuid::Error> {
         Ok(Self::from_uuid(Uuid::parse_str(s)?))
     }
+
+    /// Derive a deterministic execution identity from a domain tag and opaque payload bytes.
+    ///
+    /// Produces a stable [`ExecutionId`] for a `(domain, payload)` pair using BLAKE3 in
+    /// `derive_key` mode. Two calls with identical inputs produce the same id; differing inputs
+    /// produce cryptographically distinct ids. Use this for exactly-once adapters that need to
+    /// reattach to an existing journal execution on restart (e.g. the scheduler fire adapter, which
+    /// derives the id from `(job_name, slot_ms)` so a crashed and restarted scheduler finds the
+    /// same row).
+    ///
+    /// The `domain` string separates id spaces — choose a stable, globally-unique literal per
+    /// adapter (e.g. `"zeph.scheduler.fire.v1"`). The `payload` carries the distinguishing bytes
+    /// (e.g. little-endian slot timestamp).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_durable::ExecutionId;
+    ///
+    /// let a = ExecutionId::derive(b"zeph.test.v1", b"job_name\x00\x01\x00\x00\x00\x00\x00\x00\x00");
+    /// let b = ExecutionId::derive(b"zeph.test.v1", b"job_name\x00\x01\x00\x00\x00\x00\x00\x00\x00");
+    /// let c = ExecutionId::derive(b"zeph.test.v1", b"other_job\x00\x02\x00\x00\x00\x00\x00\x00\x00");
+    /// assert_eq!(a, b, "same domain+payload derives the same id");
+    /// assert_ne!(a, c, "different payload derives a different id");
+    /// ```
+    #[must_use]
+    pub fn derive(domain: &[u8], payload: &[u8]) -> Self {
+        // BLAKE3 derive_key requires a context string, not arbitrary bytes. Build a stable
+        // context from the ASCII prefix and embed the domain bytes in the payload to keep the
+        // domain separation in the keyed-hash layer, not just the input.
+        const DERIVE_CONTEXT: &str = "zeph-durable v1 execution-id derive 2026";
+        let mut input = Vec::with_capacity(8 + domain.len() + payload.len());
+        input.extend_from_slice(&(domain.len() as u64).to_le_bytes());
+        input.extend_from_slice(domain);
+        input.extend_from_slice(payload);
+        let hash = blake3::derive_key(DERIVE_CONTEXT, &input);
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&hash[..16]);
+        Self(Uuid::new_v8(bytes))
+    }
 }
 
 impl Default for ExecutionId {

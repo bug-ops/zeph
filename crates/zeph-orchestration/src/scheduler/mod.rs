@@ -667,6 +667,57 @@ impl DagScheduler {
         self.graph_dirty = false;
         dirty
     }
+
+    /// Capture the live replan/lineage/predicate budget for durable journaling.
+    ///
+    /// Called by the P2 adapter (`zeph-orchestration/src/durable.rs`) immediately before
+    /// `into_graph()` so the snapshot is taken while the scheduler is still alive.
+    #[must_use]
+    pub fn budget_snapshot(&self) -> crate::durable::ReplanBudgetSnapshot {
+        use crate::durable::{ErrorLineageDto, ReplanBudgetSnapshot};
+        ReplanBudgetSnapshot {
+            task_replan_counts: self.task_replan_counts.clone(),
+            global_replan_count: self.global_replan_count,
+            predicate_replans_used: self.predicate_replans_used,
+            predicate_reasons: self.predicate_reasons.clone(),
+            lineage_chains: self
+                .lineage_chains
+                .iter()
+                .map(|(k, v)| (*k, ErrorLineageDto::from(v)))
+                .collect(),
+        }
+    }
+
+    /// Resume from a graph with durable budget counters already restored.
+    ///
+    /// Identical to [`DagScheduler::resume_from`] but overlays the persisted counters from
+    /// `restored` instead of zeroing them.  This preserves the existing `resume_from` call
+    /// sites (~15) without modification; only the `/plan resume` durable path uses this ctor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OrchestrationError::InvalidGraph`] for the same terminal-state conditions as
+    /// [`DagScheduler::resume_from`].
+    pub fn resume_from_durable(
+        graph: super::graph::TaskGraph,
+        config: &zeph_config::OrchestrationConfig,
+        router: Box<dyn AgentRouter>,
+        available_agents: Vec<zeph_subagent::SubAgentDef>,
+        admission_gate: Option<super::admission::AdmissionGate>,
+        restored: crate::durable::ReplanBudgetSnapshot,
+    ) -> Result<Self, OrchestrationError> {
+        let mut sched = Self::resume_from(graph, config, router, available_agents, admission_gate)?;
+        sched.task_replan_counts = restored.task_replan_counts;
+        sched.global_replan_count = restored.global_replan_count;
+        sched.predicate_replans_used = restored.predicate_replans_used;
+        sched.predicate_reasons = restored.predicate_reasons;
+        sched.lineage_chains = restored
+            .lineage_chains
+            .into_iter()
+            .map(|(k, v)| (k, super::lineage::ErrorLineage::from_dto(v)))
+            .collect();
+        Ok(sched)
+    }
 }
 
 impl Drop for DagScheduler {

@@ -72,6 +72,7 @@ pub mod aggregator;
 pub mod cascade;
 pub mod command;
 pub mod dag;
+pub mod durable;
 pub mod error;
 pub mod graph;
 pub mod lineage;
