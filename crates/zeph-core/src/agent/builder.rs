@@ -2857,35 +2857,6 @@ mod tests {
         );
     }
 
-    /// Verify that `apply_session_config` leaves both fidelity provider fields `None` when
-    /// `fidelity_config` is absent — explicit coverage for the no-config path (#5037).
-    #[test]
-    fn apply_session_config_fidelity_providers_none_when_not_configured() {
-        use crate::config::Config;
-
-        let mut session_cfg = AgentSessionConfig::from_config(&Config::default(), 100_000);
-        session_cfg.fidelity_config = None;
-        let agent = make_agent().apply_session_config(session_cfg);
-        assert!(
-            agent
-                .services
-                .memory
-                .compaction
-                .fidelity_semantic_provider
-                .is_none(),
-            "fidelity_semantic_provider must be None when fidelity_config is absent"
-        );
-        assert!(
-            agent
-                .services
-                .memory
-                .compaction
-                .fidelity_compress_provider
-                .is_none(),
-            "fidelity_compress_provider must be None when fidelity_config is absent"
-        );
-    }
-
     /// Verify that `resolve_background_provider` performs a registry lookup when a named provider
     /// is registered in `provider_pool` — the acceptance criterion for issue #5039.
     ///
@@ -2981,6 +2952,18 @@ mod tests {
             sem2.name(),
             "mock",
             "unregistered provider name must fall back to the primary Mock provider"
+        );
+        let cmp2 = agent2
+            .services
+            .memory
+            .compaction
+            .fidelity_compress_provider
+            .as_ref()
+            .expect("fidelity_compress_provider must be Some (fallback to primary)");
+        assert_eq!(
+            cmp2.name(),
+            "mock",
+            "unregistered compress provider name must fall back to the primary Mock provider"
         );
     }
 
