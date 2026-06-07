@@ -288,7 +288,7 @@ pub(crate) struct PruneCutoffs {
 }
 
 impl PruneCutoffs {
-    fn from_policy(policy: &RetentionPolicy, now_ms: i64) -> Self {
+    pub(crate) fn from_policy(policy: &RetentionPolicy, now_ms: i64) -> Self {
         let completed =
             i64::try_from(policy.ttl_completed_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
         let failed = i64::try_from(policy.ttl_failed_secs.saturating_mul(1000)).unwrap_or(i64::MAX);

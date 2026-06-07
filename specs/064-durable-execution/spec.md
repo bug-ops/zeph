@@ -246,7 +246,7 @@ helper; deferred post-v1. Both options comply with 031.
 
 ```
 zeph-durable  (Layer 0 — infrastructure, analogous to zeph-db)
-Cargo.toml    # dep: zeph-db, zeph-common, serde, thiserror, tokio, tracing, blake3, chacha20poly1305
+Cargo.toml    # dep: zeph-config, zeph-db, serde, thiserror, tokio, tracing, blake3 (chacha20poly1305 lives in zeph-core)
 src/
   lib.rs              # pub re-exports; crate-level //! docs; sealed module
   sealed.rs           # Sealed marker (private supertrait for ExecutionBackend)
@@ -264,8 +264,9 @@ src/
   replay.rs           # ReplayCursor, ReplayDivergence check, range-read cursor
   writer.rs           # JournalWriter actor, JournalMsg enum, group-commit, ACK protocol
   cipher.rs           # PayloadCipher trait, PayloadAad, CipherError
-  retention.rs        # RetentionPolicy, compaction/prune, in-execution step cap
-  config.rs           # DurableConfig (pure-data, mirrors [durable] TOML section)
+  retention.rs        # compaction/prune, in-execution step cap
+  config.rs           # re-exports DurableConfig/RetentionPolicy/DurableBackend from zeph-config;
+                      #   owns the EncryptionGate + encryption_gate AEAD policy (free fn)
   error.rs            # DurableError (thiserror)
 # NO migrations/ directory — durable schema files live in zeph-db/migrations/{sqlite,postgres}/
 # and are applied via zeph_db::run_migrations against the dedicated durable.db pool.
@@ -287,6 +288,18 @@ the workspace lives in `zeph-db/src/migrate.rs`). `zeph-durable` itself contains
 and NO `sqlx::migrate!`. The `JobStore` precedent cited in rev-C.3 covers the *pool* only:
 `JobStore::init` calls `zeph_db::run_migrations` — it does not own schema files
 (`zeph-scheduler/src/store.rs:137`; its schema is `051_scheduler_jobs.sql` inside `zeph-db`).
+
+**Config placement (C6 #4949 reconciliation).** The pure-data `DurableConfig`, `RetentionPolicy`,
+and `DurableBackend` live in `zeph-config` — the single source of truth for every subsystem's
+config, exactly like `OrchestrationConfig`. This keeps the aggregate `Config` free of the
+`zeph-db`/`sqlx` dependency tree (12 leaf crates depend on `zeph-config` without `zeph-db`; pulling
+it in would be a workspace-wide compile regression). `zeph-durable` depends on `zeph-config` and
+re-exports those types, so `zeph_durable::DurableConfig` still resolves and the engine APIs
+(`DurableContext`, `JournalWriter`) consume the same type the root `Config` holds — no duplication,
+no conversion. The AEAD enforcement policy (`EncryptionGate` + `encryption_gate`, a free function
+returning `DurableError`) stays in `zeph-durable` next to the cipher contract and error type
+(data/policy separation). `zeph-config` is pure-data and below `zeph-durable` in the layer DAG, so
+this introduces no cycle and does not violate INV-1 (`zeph-config` is not a business-layer crate).
 
 ---
 

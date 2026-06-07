@@ -35,15 +35,20 @@ rather than decrypted into a bogus result.
 
 The cipher key is resolved from the age vault under the key name
 `ZEPH_DURABLE_KEY`, never from inline TOML or environment variables (the standard
-Zeph vault contract). It must be exactly **32 bytes** of high-entropy key
-material.
+Zeph vault contract). It is exactly **32 bytes** of high-entropy key material,
+**base64-encoded** for storage as a vault string value.
 
-Generate and store it once:
+The easiest path is the configuration wizard: `zeph --init` generates a fresh
+key and stores it in the age vault automatically when you enable durable
+execution. To generate and store it manually instead:
 
 ```bash
-# Generate 32 random bytes and store them in the age vault.
-head -c 32 /dev/urandom | zeph vault set ZEPH_DURABLE_KEY --stdin
+# Generate 32 random bytes, base64-encode them, and store in the age vault.
+head -c 32 /dev/urandom | base64 | zeph vault set ZEPH_DURABLE_KEY --stdin
 ```
+
+Inspect a journal with decrypted payloads using `zeph durable show <id>
+--reveal`, which resolves and decodes this key.
 
 ## Encryption requirement (`encrypt_payload`)
 

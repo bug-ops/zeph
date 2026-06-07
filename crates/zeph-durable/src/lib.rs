@@ -28,8 +28,8 @@
 //! - [`cipher`] — the [`PayloadCipher`] AEAD contract, [`PayloadAad`] binding, and the read-side
 //!   `max_payload` guard. The concrete cipher lives in a consuming crate (INV-1).
 //! - [`effect`] — the [`EffectClass`] side-effect contract referenced by journal entries.
-//! - [`config`] — the pure-data [`DurableConfig`] and [`RetentionPolicy`] mirroring the
-//!   `[durable]` TOML section.
+//! - [`config`] — re-exports the pure-data [`DurableConfig`] and [`RetentionPolicy`] (which live in
+//!   `zeph-config`) and owns the [`encryption_gate`](crate::encryption_gate) AEAD enforcement policy.
 //! - [`error`] — the crate-wide [`DurableError`].
 //!
 //! Persistence engine:
@@ -91,11 +91,14 @@ pub mod writer;
 #[doc(hidden)]
 pub use sealed::Sealed;
 
-pub use backend::{BackendCapabilities, DurableBackendEnum, ExecutionBackend, LocalBackend};
+pub use backend::{
+    BackendCapabilities, DurableBackendEnum, ExecutionBackend, ExecutionSummary, LocalBackend,
+    RedactedEntry,
+};
 pub use cipher::{
     CipherError, EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit,
 };
-pub use config::{DurableBackend, DurableConfig, EncryptionGate, RetentionPolicy};
+pub use config::{DurableBackend, DurableConfig, EncryptionGate, RetentionPolicy, encryption_gate};
 pub use effect::{EffectClass, EffectIntentSubClass, OnAmbiguous};
 pub use error::DurableError;
 pub use handle::{DurableContext, ParallelScope};

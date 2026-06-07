@@ -24,6 +24,7 @@ zeph [OPTIONS] [COMMAND]
 | `sessions` | Manage ACP session history — list, show, delete (requires `acp` feature) |
 | `schedule` | Manage cron-based scheduled jobs — list, add, remove, show (requires `scheduler` feature; see [Scheduler](../concepts/scheduler.md)) |
 | `db` | Database management — run migrations, check status (see [Database Abstraction](../concepts/database.md)) |
+| `durable` | Inspect the durable execution journal — list, show, inspect, prune, resume (see [Durable Journal Encryption](security/durable-encryption.md)) |
 | `migrate-config` | Add missing config parameters as commented-out blocks and reformat the file (see [Migrate Config](../guides/migrate-config.md)) |
 | `worktree` | Manage background sub-agent git worktrees — list active, remove stale (requires `[worktree] enabled = true`; see [Worktree Isolation](../guides/worktree.md)) |
 
@@ -41,6 +42,28 @@ Manage database schema migrations.
 ```bash
 zeph db migrate                    # apply pending migrations
 zeph db migrate --status           # check what would be applied
+```
+
+### `zeph durable`
+
+Inspect the durable execution journal directly — no running agent process is
+required. Output is **redacted by default** (INV-5): payload bytes and resolver
+tokens are shown only with `--reveal`, which decrypts through the vault-resolved
+`ZEPH_DURABLE_KEY`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `durable list [--status <s>] [--kind <k>] [--limit <n>]` | List executions, newest first |
+| `durable show <id> [--reveal]` | Show an execution's journal entries (metadata only by default) |
+| `durable inspect <id> --step <n> [--reveal]` | Inspect a single step entry |
+| `durable prune [--dry-run]` | Sweep terminal executions past their TTL |
+| `durable resume <id>` | Report resume state for an execution |
+
+```bash
+zeph durable list --status running          # in-flight executions
+zeph durable show <uuid>                     # redacted journal entries
+zeph durable show <uuid> --reveal            # decrypted payloads (prints a warning)
+zeph durable prune --dry-run                 # how many would be pruned
 ```
 
 ### `zeph init`

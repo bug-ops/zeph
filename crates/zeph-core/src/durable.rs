@@ -47,6 +47,14 @@ const NONCE_END: usize = KEY_ID_LEN + NONCE_LEN;
 /// Smallest valid sealed blob: `key_id || nonce || tag` (empty ciphertext).
 const MIN_SEALED_LEN: usize = NONCE_END + TAG_LEN;
 
+/// The key-id byte stamped on every payload sealed with the current `ZEPH_DURABLE_KEY`.
+///
+/// `seal` writes this as the leading byte and `open` selects the current key by it. Both the
+/// agent-loop engine and the `zeph durable --reveal` CLI build the cipher with this id so a sealed
+/// blob round-trips. Rotating to a fresh key bumps the id and registers the old one as the previous
+/// slot ([`XChaCha20Poly1305Cipher::with_previous`]).
+pub const DURABLE_KEY_ID: u8 = 0;
+
 /// Failure constructing an [`XChaCha20Poly1305Cipher`] from raw vault bytes.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -59,6 +67,9 @@ pub enum CipherKeyError {
         /// The length of the supplied key material.
         actual: usize,
     },
+    /// The vault-resolved key string was not valid base64.
+    #[error("durable cipher key is not valid base64")]
+    MalformedEncoding,
 }
 
 /// One key registered with the cipher, addressed by its on-disk key-id byte.
@@ -126,6 +137,34 @@ impl XChaCha20Poly1305Cipher {
         Ok(Self::new(key_id, array))
     }
 
+    /// Construct the current cipher from the base64-encoded `ZEPH_DURABLE_KEY` vault value.
+    ///
+    /// This is the single decode path shared by the agent-loop engine and the `zeph durable
+    /// --reveal` CLI; both use [`DURABLE_KEY_ID`] so a sealed blob round-trips. The key is generated
+    /// in this same encoding by [`generate_durable_key_b64`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CipherKeyError::MalformedEncoding`] when `b64_key` is not valid base64, or
+    /// [`CipherKeyError::InvalidKeyLength`] when the decoded key is not exactly 32 bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_core::durable::{XChaCha20Poly1305Cipher, generate_durable_key_b64};
+    ///
+    /// let key = generate_durable_key_b64();
+    /// assert!(XChaCha20Poly1305Cipher::from_vault_b64(&key).is_ok());
+    /// assert!(XChaCha20Poly1305Cipher::from_vault_b64("not base64!").is_err());
+    /// ```
+    pub fn from_vault_b64(b64_key: &str) -> Result<Self, CipherKeyError> {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64_key.trim())
+            .map_err(|_| CipherKeyError::MalformedEncoding)?;
+        Self::from_vault_bytes(DURABLE_KEY_ID, &bytes)
+    }
+
     /// Register a previous key for the rotation window.
     ///
     /// `open` will select this key for blobs whose leading key-id byte matches `key_id`; `seal`
@@ -148,6 +187,26 @@ impl XChaCha20Poly1305Cipher {
                 .map(|slot| &slot.cipher)
         }
     }
+}
+
+/// Generate a fresh random 32-byte durable payload key, base64-encoded for vault storage.
+///
+/// Stored under `ZEPH_DURABLE_KEY` (never inline in TOML); decode it back with
+/// [`XChaCha20Poly1305Cipher::from_vault_b64`]. Drawn from the OS CSPRNG.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::durable::{generate_durable_key_b64, XChaCha20Poly1305Cipher};
+///
+/// let key = generate_durable_key_b64();
+/// assert!(XChaCha20Poly1305Cipher::from_vault_b64(&key).is_ok());
+/// ```
+#[must_use]
+pub fn generate_durable_key_b64() -> String {
+    use base64::Engine as _;
+    let key = XChaCha20Poly1305::generate_key(&mut OsRng);
+    base64::engine::general_purpose::STANDARD.encode(key.as_slice())
 }
 
 impl PayloadCipher for XChaCha20Poly1305Cipher {

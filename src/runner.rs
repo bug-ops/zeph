@@ -558,6 +558,15 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             };
         }
+        Some(Command::Durable {
+            command: durable_cmd,
+        }) => {
+            return crate::commands::durable::handle_durable_command(
+                durable_cmd,
+                cli.config.as_deref(),
+            )
+            .await;
+        }
         #[cfg(feature = "bench")]
         Some(Command::Bench { command: bench_cmd }) => {
             return crate::commands::bench::handle_bench_command(&bench_cmd, cli.config.as_deref())

@@ -262,6 +262,7 @@ sqlite = [
     "zeph-tools/sqlite",
     "zeph-scheduler?/sqlite",
     "zeph-core/sqlite",
+    "zeph-durable/sqlite",
 ]
 postgres = [
     "zeph-db/postgres",
@@ -272,6 +273,7 @@ postgres = [
     "zeph-tools/postgres",
     "zeph-scheduler?/postgres",
     "zeph-core/postgres",
+    "zeph-durable/postgres",
 ]
 
 [dependencies]
@@ -322,6 +324,7 @@ zeph-config.workspace = true
 zeph-context.workspace = true
 zeph-core.workspace = true
 zeph-db.workspace = true
+zeph-durable.workspace = true
 zeph-experiments.workspace = true
 zeph-gateway = { workspace = true, optional = true }
 zeph-index.workspace = true

@@ -122,6 +122,8 @@ pub enum TuiCommand {
     CopyLastAssistant,
     // Fleet session overview (#3884)
     FleetPanel,
+    // Durable execution journal (spec-064, #4949)
+    DurablePanel,
     // Worktree subsystem (#4679)
     WorktreeList,
     WorktreeClean,
@@ -241,6 +243,13 @@ fn build_view_commands() -> Vec<CommandEntry> {
             category: "view",
             shortcut: Some("f"),
             command: TuiCommand::FleetPanel,
+        },
+        CommandEntry {
+            id: "durable",
+            label: "Durable: show durable executions",
+            category: "view",
+            shortcut: Some("D"),
+            command: TuiCommand::DurablePanel,
         },
     ]
 }
@@ -879,7 +888,7 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 21);
+        assert_eq!(command_registry().len(), 22);
     }
 
     #[test]

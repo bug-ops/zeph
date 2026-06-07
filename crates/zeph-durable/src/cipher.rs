@@ -57,7 +57,7 @@ const AAD_FORMAT_V1: u8 = 1;
 /// A `PayloadCipher` is the only component permitted to see plaintext payload bytes. It is injected
 /// into a backend as `Option<Arc<dyn PayloadCipher>>`: `None` disables encryption (a development
 /// override permitted only for a single-user local backend, see
-/// [`DurableConfig::encryption_gate`](crate::DurableConfig::encryption_gate)).
+/// [`encryption_gate`](crate::encryption_gate)).
 ///
 /// # Contract for implementors
 ///

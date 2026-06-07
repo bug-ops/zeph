@@ -61,6 +61,22 @@ impl ExecutionStatus {
         }
     }
 
+    /// Reconstruct a status from its canonical `status`-column string.
+    ///
+    /// Returns `None` for an unrecognized tag. The `durable_executions.status` column carries a
+    /// `CHECK` constraint over exactly these four values, so a `None` indicates schema corruption
+    /// or drift rather than a routine miss; callers should fail closed.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "running" => Some(Self::Running),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "aborted" => Some(Self::Aborted),
+            _ => None,
+        }
+    }
+
     /// Whether the execution is still in flight (not yet in a terminal state).
     #[must_use]
     pub fn is_running(self) -> bool {

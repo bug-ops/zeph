@@ -17,7 +17,7 @@
 //! entries (currently [`EntryKind::EffectIntent`]) carry no payload; when an HMAC key is configured
 //! the backend stamps a keyed BLAKE3 row HMAC over their identity for shared-database deployments.
 //! When no cipher is injected the payload is stored verbatim — a development-only posture gated by
-//! [`DurableConfig::encryption_gate`](crate::DurableConfig::encryption_gate) at startup.
+//! [`encryption_gate`](crate::encryption_gate) at startup.
 //!
 //! # Scope
 //!
@@ -33,13 +33,14 @@
 //! ([`prune`](Journal::prune)) is a no-op stub here.
 
 use std::fmt;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use zeph_db::{DbPool, sql};
 
-use crate::backend::{BackendCapabilities, ExecutionBackend};
+use crate::backend::{BackendCapabilities, ExecutionBackend, ExecutionSummary, RedactedEntry};
 use crate::cipher::{EntryKindTag, PayloadAad, PayloadCipher, ensure_payload_within_limit};
 use crate::config::RetentionPolicy;
 use crate::error::DurableError;
@@ -60,6 +61,28 @@ use tracing::Instrument as _;
 /// above any real AEAD overhead keeps legitimate near-limit entries readable without weakening the
 /// denial-of-service protection.
 const SEAL_OVERHEAD_SLACK: u64 = 128;
+
+/// Row shape returned by the `list_executions` query.
+type ExecutionRow = (String, String, String, i64, i64, Option<i64>, i64);
+
+/// Row shape returned by the `read_execution_redacted` query.
+type RedactedRow = (
+    i64,
+    i64,
+    String,
+    Option<Vec<u8>>,
+    Option<String>,
+    Option<i64>,
+    i64,
+);
+
+/// Render the first 8 bytes of an idempotency key as a lowercase hex prefix (INV-5).
+fn idem_key_prefix(bytes: &[u8]) -> String {
+    bytes.iter().take(8).fold(String::new(), |mut acc, b| {
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
+}
 
 /// The always-compiled durable backend that journals to a dedicated `durable.db`.
 ///
@@ -171,6 +194,144 @@ impl LocalBackend {
             .await
             .map_err(|e| DurableError::storage("init", e))?;
         Ok(())
+    }
+
+    /// List execution summaries for operability surfaces (the `zeph durable` CLI and TUI).
+    ///
+    /// Returns at most `limit` executions, newest first, optionally filtered by `status` and `kind`
+    /// (each is matched against the raw column tag; `None` disables that filter). Only execution-level
+    /// metadata is read — never payload bytes or resolver tokens (INV-5). The per-execution step
+    /// count is the number of journal entries recorded for it.
+    ///
+    /// Span: `durable.backend.list`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails, or [`DurableError::Decode`] if a stored
+    /// id or status cannot be reconstructed (schema corruption — the `status` column is
+    /// `CHECK`-constrained, so this is a fail-closed guard rather than a routine path).
+    pub async fn list_executions(
+        &self,
+        status: Option<&str>,
+        kind: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ExecutionSummary>, DurableError> {
+        let span = tracing::info_span!(
+            "durable.backend.list",
+            status = status.unwrap_or("*"),
+            kind = kind.unwrap_or("*"),
+            count = tracing::field::Empty,
+        );
+        async move {
+            // `COALESCE(?, col)` keeps a single positional bind per filter and lets the column type
+            // drive the bind type, so the same literal works on both SQLite and Postgres without a
+            // cast on the `?` placeholder.
+            let rows: Vec<ExecutionRow> =
+                zeph_db::query_as(sql!(
+                    "SELECT
+                        e.execution_id,
+                        e.kind,
+                        e.status,
+                        e.created_at,
+                        e.updated_at,
+                        e.finalized_at,
+                        (SELECT COUNT(*) FROM durable_journal j WHERE j.execution_id = e.execution_id)
+                     FROM durable_executions e
+                     WHERE e.status = COALESCE(?, e.status)
+                       AND e.kind = COALESCE(?, e.kind)
+                     ORDER BY e.created_at DESC
+                     LIMIT ?"
+                ))
+                .bind(status)
+                .bind(kind)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| DurableError::storage("list", e))?;
+            tracing::Span::current().record("count", rows.len());
+            rows.into_iter()
+                .map(|(id, kind, status, created, updated, finalized, steps)| {
+                    Ok(ExecutionSummary {
+                        execution_id: parse_execution_id(&id)?,
+                        kind,
+                        status: ExecutionStatus::from_tag(&status).ok_or(DurableError::Decode {
+                            context: "execution status is not a recognized CHECK-constrained value",
+                        })?,
+                        created_at_ms: created,
+                        updated_at_ms: updated,
+                        finalized_at_ms: finalized,
+                        step_count: steps.max(0).cast_unsigned(),
+                    })
+                })
+                .collect()
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Read one execution's journal entries as redaction-safe metadata, without decrypting payloads.
+    ///
+    /// Unlike [`read_execution`](Journal::read_execution), this never touches the cipher, so it works
+    /// against a journal whose AEAD key is unavailable and never exposes plaintext (INV-5). It backs
+    /// the default (redacted) `zeph durable show`/`inspect` output. Entries are returned in append
+    /// order.
+    ///
+    /// Span: `durable.backend.read_redacted`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn read_execution_redacted(
+        &self,
+        id: ExecutionId,
+    ) -> Result<Vec<RedactedEntry>, DurableError> {
+        let exec = id.as_uuid().to_string();
+        let rows: Vec<RedactedRow> = zeph_db::query_as(sql!(
+            "SELECT seq, step_id, entry_kind, idem_key, effect_class, LENGTH(payload), created_at
+                 FROM durable_journal WHERE execution_id = ? ORDER BY seq"
+        ))
+        .bind(&exec)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("read_redacted", e))?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(seq, step, entry_kind, idem, effect_class, payload_len, created)| RedactedEntry {
+                    seq,
+                    step_id: StepId::new(u32::try_from(step).unwrap_or(0)),
+                    entry_kind,
+                    effect_class,
+                    idem_key_prefix: idem.as_deref().map(idem_key_prefix),
+                    payload_len: payload_len.unwrap_or(0).max(0).cast_unsigned(),
+                    created_at_ms: created,
+                },
+            )
+            .collect())
+    }
+
+    /// Count terminal executions a [`prune`](Journal::prune) sweep would delete under `policy`.
+    ///
+    /// Read-only: backs `zeph durable prune --dry-run`. It applies the same TTL cutoffs as the
+    /// delete path, so the count is exactly what a real sweep would remove now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurableError::Storage`] if the query fails.
+    pub async fn count_prunable(&self, policy: &RetentionPolicy) -> Result<u64, DurableError> {
+        let cutoffs = crate::retention::PruneCutoffs::from_policy(policy, now_unix_millis());
+        let (count,): (i64,) = zeph_db::query_as(sql!(
+            "SELECT COUNT(*) FROM durable_executions
+             WHERE finalized_at IS NOT NULL
+               AND ( (status = 'completed' AND finalized_at <= ?)
+                  OR (status IN ('failed', 'aborted') AND finalized_at <= ?) )"
+        ))
+        .bind(cutoffs.completed_before_ms)
+        .bind(cutoffs.failed_before_ms)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DurableError::storage("count_prunable", e))?;
+        Ok(count.max(0).cast_unsigned())
     }
 
     /// Ensure a `durable_executions` row exists for `id`, returning whether this is a resume.
@@ -1438,6 +1599,69 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn list_executions_summarizes_and_filters() {
+        let backend = mem_backend(1_048_576).await;
+        let turn = ExecutionId::new();
+        let dag = ExecutionId::new();
+        backend
+            .open_execution(turn, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        backend
+            .open_execution(dag, ExecutionKind::DagRun)
+            .await
+            .unwrap();
+        backend.append(step_result(turn, 0, b"a")).await.unwrap();
+        backend.append(step_result(turn, 1, b"b")).await.unwrap();
+        backend.append(step_result(dag, 0, b"c")).await.unwrap();
+        backend
+            .finalize(turn, ExecutionStatus::Completed)
+            .await
+            .unwrap();
+
+        // Unfiltered: both executions with their per-execution step counts.
+        let all = backend.list_executions(None, None, 10).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        let turn_row = all
+            .iter()
+            .find(|e| e.execution_id == turn)
+            .expect("turn present");
+        assert_eq!(turn_row.kind, "agent_turn");
+        assert_eq!(turn_row.status, ExecutionStatus::Completed);
+        assert_eq!(turn_row.step_count, 2);
+        assert!(turn_row.finalized_at_ms.is_some());
+
+        let dag_row = all
+            .iter()
+            .find(|e| e.execution_id == dag)
+            .expect("dag present");
+        assert_eq!(dag_row.status, ExecutionStatus::Running);
+        assert_eq!(dag_row.step_count, 1);
+        assert!(dag_row.finalized_at_ms.is_none());
+
+        // Status filter narrows to the still-running execution.
+        let running = backend
+            .list_executions(Some("running"), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].execution_id, dag);
+
+        // Kind filter narrows to the DAG execution.
+        let dags = backend
+            .list_executions(None, Some("dag_run"), 10)
+            .await
+            .unwrap();
+        assert_eq!(dags.len(), 1);
+        assert_eq!(dags[0].execution_id, dag);
+
+        // Limit caps the result set.
+        let one = backend.list_executions(None, None, 1).await.unwrap();
+        assert_eq!(one.len(), 1);
     }
 
     #[tokio::test]

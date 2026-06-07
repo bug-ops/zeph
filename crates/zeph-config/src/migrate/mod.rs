@@ -589,19 +589,19 @@ mod steps;
 use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAutodreamConfig, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
-    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateEgressConfig,
-    MigrateEmbedProviderRename, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
-    MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
-    MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
-    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
-    MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
-    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
-    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
-    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
-    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
-    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateProviderMaxConcurrent,
-    MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
-    MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
+    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateDurableConfig,
+    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateFidelityTimeoutDefaults,
+    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
+    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
+    MigrateHooksTurnComplete, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
+    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellTransactional,
     MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
@@ -703,6 +703,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateWorktreeGitTimeout),
             // Step 56 — add [llm.stream_limits] commented advisory notice (#4750)
             Box::new(MigrateLlmStreamLimits),
+            // Step 57 — add [durable] execution-layer section, default-off (spec-064, #4949)
+            Box::new(MigrateDurableConfig),
         ]
     });
 

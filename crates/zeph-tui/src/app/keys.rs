@@ -237,6 +237,9 @@ impl App {
             TuiCommand::FleetPanel => {
                 self.active_panel = Panel::Fleet;
             }
+            TuiCommand::DurablePanel => {
+                self.active_panel = Panel::Durable;
+            }
             TuiCommand::CocoonStatus => {
                 self.push_system_message("Querying Cocoon sidecar...".to_owned());
                 let _ = self.user_input_tx.try_send("/cocoon status".to_owned());
@@ -808,7 +811,8 @@ impl App {
                     Panel::Memory => Panel::Resources,
                     Panel::Resources => Panel::SubAgents,
                     Panel::SubAgents | Panel::Tasks => Panel::Fleet,
-                    Panel::Fleet => Panel::Chat,
+                    Panel::Fleet => Panel::Durable,
+                    Panel::Durable => Panel::Chat,
                 };
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -827,6 +831,9 @@ impl App {
             }
             KeyCode::Char('f') => {
                 self.active_panel = Panel::Fleet;
+            }
+            KeyCode::Char('D') => {
+                self.active_panel = Panel::Durable;
             }
             KeyCode::Char('a') => {
                 self.active_panel = Panel::SubAgents;

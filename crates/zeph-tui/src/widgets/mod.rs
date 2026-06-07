@@ -7,6 +7,7 @@ pub mod compaction_badge;
 pub mod confirm;
 pub mod context_gauge;
 pub mod diff;
+pub mod durable;
 pub mod elicitation;
 pub mod file_picker;
 pub mod fleet;

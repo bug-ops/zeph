@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        56,
-        "MIGRATIONS registry must contain all 56 sequential steps"
+        57,
+        "MIGRATIONS registry must contain all 57 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1599,7 +1599,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 56);
+    assert_eq!(MIGRATIONS.len(), 57);
 }
 
 #[test]
@@ -1638,7 +1638,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–56).
+    // Names must follow the documented step order (steps 1–57).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1696,6 +1696,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_worktree_config",
         "migrate_worktree_git_timeout",
         "migrate_llm_stream_limits",
+        "migrate_durable_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2214,6 +2215,65 @@ fn step_54_does_not_skip_when_worktree_in_value() {
     assert!(
         result.output.contains("# [worktree]"),
         "output should contain the inserted worktree comment block"
+    );
+}
+
+// ── migrate_durable_config tests (spec-064, #4949) ───────────────────────
+
+#[test]
+fn step_57_inserts_durable_section_on_fresh_config() {
+    let input = "[agent]\nmax_turns = 10\n";
+    let result = migrate_durable_config(input).unwrap();
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.output.contains("# [durable]"),
+        "should insert commented [durable] section"
+    );
+    assert!(
+        result.output.contains("# [durable.retention]"),
+        "should include the retention sub-table"
+    );
+    assert!(
+        result.output.contains("# enabled = false"),
+        "durable migration is default-off"
+    );
+}
+
+#[test]
+fn step_57_is_idempotent_when_durable_present() {
+    let input = "[durable]\nenabled = true\n";
+    let result = migrate_durable_config(input).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(
+        result.output.matches("[durable]").count(),
+        1,
+        "should not duplicate [durable]"
+    );
+}
+
+#[test]
+fn step_57_is_idempotent_across_repeated_runs() {
+    let input = "[agent]\nmax_turns = 10\n";
+    let once = migrate_durable_config(input).unwrap();
+    let twice = migrate_durable_config(&once.output).unwrap();
+    assert_eq!(
+        twice.changed_count, 0,
+        "second run must not re-insert the commented block"
+    );
+    assert_eq!(
+        twice.output.matches("# [durable]").count(),
+        1,
+        "running twice must not duplicate the durable block"
+    );
+}
+
+#[test]
+fn step_57_does_not_skip_when_durable_in_value() {
+    let input = "[agent]\ndescription = \"the [durable] layer\"\n";
+    let result = migrate_durable_config(input).unwrap();
+    assert_eq!(
+        result.changed_count, 1,
+        "[durable] in a value must not suppress migration"
     );
 }
 

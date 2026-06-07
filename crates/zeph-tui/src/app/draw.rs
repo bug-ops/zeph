@@ -163,6 +163,16 @@ impl App {
             );
         }
 
+        // Overlay durable panel over the subagents slot when `D` key is active (spec-064, #4949).
+        if self.active_panel == Panel::Durable {
+            widgets::durable::render(
+                &self.durable_snapshot,
+                frame,
+                layout.subagents,
+                &mut self.durable_list_state,
+            );
+        }
+
         // Overlay task registry over the subagents slot when `/tasks` is toggled.
         if self.show_task_panel {
             if self.task_supervisor.is_some() {

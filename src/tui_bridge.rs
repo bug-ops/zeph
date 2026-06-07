@@ -315,6 +315,16 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
         forwarders.spawn(fleet_poll_task(db_path, fleet_cfg, agent_tx.clone()));
     }
 
+    if params.config.durable.enabled {
+        let durable_cfg = params.config.durable.clone();
+        let durable_url = crate::commands::durable::resolve_durable_db_url(params.config);
+        forwarders.spawn(durable_poll_task(
+            durable_url,
+            durable_cfg,
+            agent_tx.clone(),
+        ));
+    }
+
     if let Some(tool_rx) = params.tool_rx {
         forwarders.spawn(forward_tool_events_to_tui(tool_rx, agent_tx.clone()));
     }
@@ -703,6 +713,98 @@ pub(crate) async fn fleet_poll_task(
         let snapshot = zeph_tui::widgets::fleet::FleetSnapshot { sessions };
         if tx
             .send(zeph_tui::AgentEvent::FleetSnapshot(snapshot))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
+/// Refresh interval for the TUI durable executions panel, in seconds.
+#[cfg(feature = "tui")]
+const DURABLE_REFRESH_SECS: u64 = 5;
+
+/// Periodically poll the durable journal and forward snapshots to the TUI (spec-064, #4949).
+///
+/// Read-only: it never mutates the journal. Runs until the `tx` channel closes (agent exited). Spawned
+/// only when `[durable] enabled = true`; otherwise the panel keeps its default state and renders the
+/// "non-durable mode" message.
+#[cfg(feature = "tui")]
+pub(crate) async fn durable_poll_task(
+    db_url: String,
+    cfg: zeph_config::DurableConfig,
+    tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
+) {
+    use zeph_tui::widgets::durable::{DurableRow, DurableSnapshot};
+
+    let backend = match zeph_durable::LocalBackend::open(&db_url, cfg.max_payload_bytes).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "durable poll: failed to open journal; panel shows non-durable mode");
+            let _ = tx
+                .send(zeph_tui::AgentEvent::DurableSnapshot(
+                    DurableSnapshot::default(),
+                ))
+                .await;
+            return;
+        }
+    };
+    if let Err(e) = backend.init().await {
+        tracing::warn!(error = %e, "durable poll: schema init failed");
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_secs(DURABLE_REFRESH_SECS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        ticker.tick().await;
+
+        if tx
+            .send(zeph_tui::AgentEvent::Status(
+                "Refreshing durable journal...".to_owned(),
+            ))
+            .await
+            .is_err()
+        {
+            break;
+        }
+
+        let rows = match backend.list_executions(None, None, 200).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(error = %e, "durable poll: list_executions failed");
+                let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+                continue;
+            }
+        };
+
+        let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let executions: Vec<DurableRow> = rows
+            .into_iter()
+            .map(|r| DurableRow {
+                id_short: r
+                    .execution_id
+                    .as_uuid()
+                    .to_string()
+                    .chars()
+                    .take(8)
+                    .collect(),
+                kind: r.kind,
+                status: r.status.as_str().to_owned(),
+                step_count: r.step_count,
+                age_secs: ((now_ms - r.created_at_ms).max(0) / 1000).cast_unsigned(),
+            })
+            .collect();
+
+        let snapshot = DurableSnapshot {
+            available: true,
+            executions,
+        };
+        if tx
+            .send(zeph_tui::AgentEvent::DurableSnapshot(snapshot))
             .await
             .is_err()
         {

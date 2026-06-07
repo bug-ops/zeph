@@ -32,6 +32,7 @@ pub use zeph_config::{
     MicrocompactConfig, PersonaConfig, TrajectoryConfig, TreeConfig,
 };
 pub use zeph_config::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
+pub use zeph_config::{DurableBackend, DurableConfig, RetentionPolicy};
 pub use zeph_config::{QualityConfig, TriggerPolicy};
 pub use zeph_config::{TelemetryBackend, TelemetryConfig};
 

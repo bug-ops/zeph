@@ -59,6 +59,8 @@ pub enum Panel {
     Tasks,
     /// The fleet session overview panel (side column).
     Fleet,
+    /// The durable execution journal panel (side column).
+    Durable,
 }
 
 /// Discriminates what the main chat area is currently displaying.
@@ -417,6 +419,10 @@ pub struct App {
     pub(crate) fleet_snapshot: crate::widgets::fleet::FleetSnapshot,
     /// List scroll state for the fleet panel.
     pub(crate) fleet_list_state: ratatui::widgets::ListState,
+    /// Cached durable execution data for the durable panel (spec-064, #4949).
+    pub(crate) durable_snapshot: crate::widgets::durable::DurableSnapshot,
+    /// List scroll state for the durable panel.
+    pub(crate) durable_list_state: ratatui::widgets::ListState,
 }
 
 mod draw;

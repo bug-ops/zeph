@@ -568,3 +568,56 @@ pub fn migrate_worktree_git_timeout(toml_src: &str) -> Result<MigrationResult, M
         },
     })
 }
+
+/// Add the `[durable]` execution-layer section with all defaults, commented out and default-off.
+///
+/// Purely additive and idempotent: skips if either an active or a previously-injected commented
+/// `[durable]` header is present, so running `--migrate-config` twice does not duplicate it. Existing
+/// configs gain the section as comments (no behavior change — `enabled = false`). Part of spec-064
+/// (durable execution layer, #4949).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_durable_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let commented_present = toml_src.lines().any(|l| l.trim() == "# [durable]");
+    if section_header_present(toml_src, "durable") || commented_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let _doc = toml_src.parse::<DocumentMut>()?;
+
+    let block = "\n# Native durable execution layer (spec-064, #4949). Opt-in, default-off.\n\
+         # [durable]\n\
+         # enabled = false\n\
+         # backend = \"local\"\n\
+         # encrypt_payload = true\n\
+         # agent_turns = true\n\
+         # orchestration = true\n\
+         # scheduler = true\n\
+         # subagent = true\n\
+         # journal_flush_interval_ms = 10\n\
+         # journal_ack_timeout_ms = 5000\n\
+         # max_steps_per_execution = 10000\n\
+         # max_payload_bytes = 1048576\n\
+         # promise_poll_interval_secs = 2\n\
+         # max_parked_promises = 1000\n\
+         #\n\
+         # [durable.retention]\n\
+         # ttl_completed_secs = 604800\n\
+         # ttl_failed_secs = 2592000\n\
+         # max_executions = 10000\n\
+         # max_journal_bytes = 1073741824\n\
+         # prune_batch_size = 500\n\
+         # prune_interval_secs = 3600\n";
+    let output = format!("{}{}", toml_src.trim_end(), block);
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["durable".to_owned()],
+    })
+}

@@ -39,6 +39,56 @@ pub mod local;
 
 pub use local::LocalBackend;
 
+/// A read-only summary of a single durable execution, for operability surfaces.
+///
+/// Returned by [`LocalBackend::list_executions`]. It carries only the execution-level metadata that
+/// the `zeph durable list` CLI and the TUI `DurableView` display — never payload bytes or resolver
+/// tokens (INV-5 redaction). The `kind` is the raw column tag (an [`ExecutionKind::Custom`] cannot
+/// round-trip to a typed value, so the stored string is exposed verbatim for display).
+///
+/// [`ExecutionKind::Custom`]: crate::ExecutionKind::Custom
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionSummary {
+    /// The execution identity.
+    pub execution_id: ExecutionId,
+    /// The canonical kind tag as stored (`agent_turn`, `dag_run`, …, or a custom literal).
+    pub kind: String,
+    /// The current execution status.
+    pub status: ExecutionStatus,
+    /// Creation time, Unix epoch milliseconds.
+    pub created_at_ms: i64,
+    /// Last-update time, Unix epoch milliseconds.
+    pub updated_at_ms: i64,
+    /// Finalization time, Unix epoch milliseconds; `None` while the execution is non-terminal.
+    pub finalized_at_ms: Option<i64>,
+    /// Number of journal entries recorded for this execution.
+    pub step_count: u64,
+}
+
+/// A redaction-safe view of one journal entry, for the `zeph durable show`/`inspect` CLI.
+///
+/// Returned by [`LocalBackend::read_execution_redacted`]. It deliberately excludes the payload bytes
+/// and full idempotency key — only the metadata the spec's INV-5 redaction rule permits in default
+/// output. To see decrypted payloads a caller must opt in via `--reveal`, which reads through the
+/// AEAD cipher with [`Journal::read_execution`](crate::Journal::read_execution) instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactedEntry {
+    /// Global append sequence.
+    pub seq: i64,
+    /// The step this entry belongs to.
+    pub step_id: crate::ids::StepId,
+    /// The raw `entry_kind` column tag (`step_result`, `effect_intent`, …).
+    pub entry_kind: String,
+    /// The effect-class tag, when the entry carries one.
+    pub effect_class: Option<String>,
+    /// Hex of the first 8 bytes of the idempotency key, when present (INV-5 prefix only).
+    pub idem_key_prefix: Option<String>,
+    /// Size in bytes of the stored (AEAD-sealed) payload; `0` for control entries.
+    pub payload_len: u64,
+    /// Creation time, Unix epoch milliseconds.
+    pub created_at_ms: i64,
+}
+
 /// The capabilities a backend advertises so callers can adapt their journaling strategy.
 ///
 /// The replay cursor and the durable-step primitive read these flags to decide, for example,

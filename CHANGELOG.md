@@ -88,6 +88,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hard cap (100%) aborts with `DurableError::StepCapExceeded`. A resume replays folded steps from the
   checkpoint snapshot — preserving each step's idempotency key for the divergence guard — without
   re-running their operations. (#4948)
+- `feat(durable)`: wired the durable execution layer into all mandatory integration points (spec-064
+  C6). A new `zeph durable` CLI group (`list`/`show`/`inspect`/`prune`/`resume`) connects directly to
+  `durable.db` with no running agent; output is redacted by default (INV-5) and `--reveal` decrypts
+  through the vault-resolved `ZEPH_DURABLE_KEY` (FR-DE-07/FR-DE-08). The `[durable]` config section is
+  now part of the root `Config`, the `--init` wizard generates and stores `ZEPH_DURABLE_KEY` in the
+  age vault (never inline), and an additive, idempotent `--migrate-config` step adds `[durable]`
+  (default-off) to existing configs. A ratatui `DurableView` (command-palette `durable`, `D` key)
+  shows in-flight executions with mandatory status spinners (spec-011), fed by a read-only poll task.
+  The pure-data `DurableConfig`/`RetentionPolicy`/`DurableBackend` moved to `zeph-config` (single
+  source of truth, re-exported by `zeph-durable`); the AEAD enforcement gate `encryption_gate` is now
+  a free function in `zeph-durable`. (#4949)
 
 ### Fixed
 

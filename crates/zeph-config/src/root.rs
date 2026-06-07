@@ -136,6 +136,9 @@ pub struct Config {
     /// Git worktree isolation configuration.
     #[serde(default)]
     pub worktree: crate::worktree::WorktreeConfig,
+    /// Durable execution layer configuration (`[durable]`).
+    #[serde(default)]
+    pub durable: crate::durable::DurableConfig,
 }
 
 /// Secrets resolved from the vault at runtime.
@@ -338,6 +341,7 @@ impl Default for Config {
             cocoon: CocoonConfig::default(),
             secrets: ResolvedSecrets::default(),
             worktree: crate::worktree::WorktreeConfig::default(),
+            durable: crate::durable::DurableConfig::default(),
         }
     }
 }

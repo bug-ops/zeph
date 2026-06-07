@@ -1545,3 +1545,50 @@ provider_persistence = true
 # command = "osascript -e 'display notification \"Task complete\" with title \"Zeph\"'"
 # timeout_secs = 3
 # fail_closed = false
+
+# ----------------------------------------------------------------------------
+# Durable execution layer (spec-064). Opt-in, default-off. When enabled, the
+# agent journals control flow to a dedicated durable.db so a crashed or
+# interrupted execution can resume at the point of failure instead of
+# restarting. Inspect with `zeph durable`. The AEAD key is vault-only
+# (ZEPH_DURABLE_KEY) and never written inline here.
+# ----------------------------------------------------------------------------
+[durable]
+# Master opt-in. false = current behavior, no journal opened.
+enabled = false
+# Journal backend: "local" (dedicated durable.db) | "restate" (server feature).
+backend = "local"
+# Encrypt payloads with AEAD. Disabling is a dev-only override (forbidden for
+# non-local backends and shared databases).
+encrypt_payload = true
+# Per-adapter opt-in (only take effect when enabled = true).
+agent_turns = true
+orchestration = true
+scheduler = true
+subagent = true
+# Group-commit interval for buffered appends (ms).
+journal_flush_interval_ms = 10
+# Acknowledged-append timeout before degrading to non-durable mode (ms).
+journal_ack_timeout_ms = 5000
+# In-execution step cap (soft fold at 90%, hard abort at 100%).
+max_steps_per_execution = 10000
+# Maximum payload size in bytes, enforced on append and read (1 MiB).
+max_payload_bytes = 1048576
+# Database fallback poll interval for parked promises (seconds).
+promise_poll_interval_secs = 2
+# Above this many parked promises, resolution falls back to pure polling.
+max_parked_promises = 1000
+
+[durable.retention]
+# Prune completed executions older than this (seconds, 7 days).
+ttl_completed_secs = 604800
+# Prune failed/aborted executions older than this (seconds, 30 days).
+ttl_failed_secs = 2592000
+# LRU cap on stored executions.
+max_executions = 10000
+# Size cap on the journal in bytes (1 GiB).
+max_journal_bytes = 1073741824
+# Rows deleted per transaction during a prune sweep.
+prune_batch_size = 500
+# Background prune poll interval (seconds).
+prune_interval_secs = 3600

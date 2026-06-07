@@ -240,6 +240,8 @@ pub enum AgentEvent {
     ContextEstimate(usize),
     /// Updated fleet snapshot from the background DB poll task (#3884).
     FleetSnapshot(crate::widgets::fleet::FleetSnapshot),
+    /// Updated durable execution snapshot from the background poll task (spec-064, #4949).
+    DurableSnapshot(crate::widgets::durable::DurableSnapshot),
 }
 
 /// Blocking event pump that forwards terminal events to the async [`AppEvent`] channel.

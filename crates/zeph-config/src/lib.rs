@@ -78,6 +78,7 @@ pub mod cocoon;
 mod de_helpers;
 pub mod defaults;
 pub mod dump_format;
+pub mod durable;
 mod env;
 pub mod error;
 pub mod execution;
@@ -126,6 +127,7 @@ pub use defaults::{
     is_legacy_default_skills_path, is_legacy_default_sqlite_path,
 };
 pub use dump_format::DumpFormat;
+pub use durable::{DurableBackend, DurableConfig, RetentionPolicy};
 pub use execution::{EnvironmentConfig, ExecutionConfig};
 pub use experiment::{
     AdaptOrchConfig, ExperimentConfig, ExperimentSchedule, FailureStrategy, OrchestrationConfig,

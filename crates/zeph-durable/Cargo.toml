@@ -30,6 +30,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["serde", "v7", "v8"] }
+zeph-config.workspace = true
 zeph-db.workspace = true
 zeroize.workspace = true
 

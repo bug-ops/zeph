@@ -244,6 +244,9 @@ impl App {
             AgentEvent::FleetSnapshot(snapshot) => {
                 self.fleet_snapshot = snapshot;
             }
+            AgentEvent::DurableSnapshot(snapshot) => {
+                self.durable_snapshot = snapshot;
+            }
         }
     }
 

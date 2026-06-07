@@ -87,6 +87,8 @@ impl App {
             clipboard: crate::clipboard::ClipboardHandle::new(),
             fleet_snapshot: crate::widgets::fleet::FleetSnapshot::default(),
             fleet_list_state: ratatui::widgets::ListState::default(),
+            durable_snapshot: crate::widgets::durable::DurableSnapshot::default(),
+            durable_list_state: ratatui::widgets::ListState::default(),
         }
     }
 

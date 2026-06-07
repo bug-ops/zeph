@@ -11,6 +11,7 @@ pub(crate) mod classifiers;
 pub(crate) mod cocoon;
 pub(crate) mod db;
 pub(crate) mod doctor;
+pub(crate) mod durable;
 #[cfg(feature = "gonka")]
 pub(crate) mod gonka;
 pub(crate) mod ingest;

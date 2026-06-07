@@ -794,6 +794,32 @@ self_check = false                         # Enable MARCH Proposer+Checker self-
 [cli.loop]
 min_interval_secs = 5                      # Minimum loop interval in seconds (default: 5)
 max_iterations = 1000                      # Max repetitions before loop auto-stops (default: 1000)
+
+# Durable execution layer (spec-064). Opt-in, default-off. When enabled, the
+# agent journals control flow to a dedicated durable.db for crash-resume.
+# The AEAD key is vault-only (ZEPH_DURABLE_KEY); see Durable Journal Encryption.
+[durable]
+enabled = false                            # Master opt-in (default: false — current behavior)
+backend = "local"                          # "local" (durable.db) or "restate" (server feature)
+encrypt_payload = true                     # AEAD-encrypt payloads (dev-only override; see security docs)
+agent_turns = true                         # Wrap agent-loop steps when enabled
+orchestration = true                       # Journal /plan resume replan budget when enabled
+scheduler = true                           # Exactly-once scheduler job fire when enabled
+subagent = true                            # Durable promise for subagent spawn/await when enabled
+journal_flush_interval_ms = 10             # Group-commit interval for buffered appends (ms)
+journal_ack_timeout_ms = 5000              # Acknowledged-append timeout before non-durable degrade (ms)
+max_steps_per_execution = 10000            # In-execution step cap (soft fold 90%, hard abort 100%)
+max_payload_bytes = 1048576               # Max payload size, enforced on append + read (1 MiB)
+promise_poll_interval_secs = 2             # DB fallback poll interval for parked promises (s)
+max_parked_promises = 1000                 # Above this, promise resolution falls back to polling
+
+[durable.retention]
+ttl_completed_secs = 604800                # Prune completed executions older than this (7 days)
+ttl_failed_secs = 2592000                  # Prune failed/aborted executions older than this (30 days)
+max_executions = 10000                     # LRU cap on stored executions
+max_journal_bytes = 1073741824            # Journal size cap in bytes (1 GiB)
+prune_batch_size = 500                     # Rows deleted per transaction during a sweep
+prune_interval_secs = 3600                 # Background prune poll interval (s)
 ```
 
 ### Provider Entry Fields

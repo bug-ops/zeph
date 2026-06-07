@@ -17,6 +17,7 @@ use zeph_subagent::def::{MemoryScope, PermissionMode};
 use zeroize::Zeroizing;
 
 pub(super) mod agents;
+pub(super) mod durable;
 pub(super) mod llm;
 pub(super) mod mcp;
 pub(super) mod memory;
@@ -24,6 +25,7 @@ pub(super) mod security;
 pub(super) mod worktree;
 
 use agents::{step_agents, step_learning, step_orchestration, step_router};
+use durable::step_durable;
 use llm::step_llm;
 use mcp::{step_mcp_discovery, step_mcp_remote, step_mcpls, write_mcpls_config};
 use memory::{step_context_compression, step_memory};
@@ -263,6 +265,13 @@ pub(crate) struct WizardState {
     pub(crate) worktree_enabled: bool,
     pub(crate) worktree_bg_isolation: BgIsolation,
     pub(crate) worktree_base_ref: WorktreeBaseRef,
+    // Durable execution layer (spec-064, #4949)
+    /// The durable section as configured by the wizard (the AEAD key is stored separately in the
+    /// vault, never inline).
+    pub(crate) durable: zeph_core::config::DurableConfig,
+    /// A freshly generated base64 `ZEPH_DURABLE_KEY`, set when durable execution is enabled. Written
+    /// to the age vault during review, never serialized into the config TOML.
+    pub(crate) durable_key_b64: Option<String>,
 }
 
 impl Default for WizardState {
@@ -442,6 +451,8 @@ impl Default for WizardState {
             worktree_enabled: false,
             worktree_bg_isolation: BgIsolation::Worktree,
             worktree_base_ref: WorktreeBaseRef::Head,
+            durable: zeph_core::config::DurableConfig::default(),
+            durable_key_b64: None,
         }
     }
 }
@@ -490,6 +501,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_update_check(&mut state)?;
     step_scheduler(&mut state)?;
     step_orchestration(&mut state)?;
+    step_durable(&mut state)?;
     step_daemon(&mut state)?;
     step_acp(&mut state)?;
     step_mcpls(&mut state)?;
@@ -908,6 +920,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.worktree.bg_isolation = state.worktree_bg_isolation;
         config.worktree.base_ref = state.worktree_base_ref.clone();
     }
+
+    // Durable execution layer (spec-064, #4949). The AEAD key lives only in the vault.
+    config.durable = state.durable.clone();
 
     match state.detector_mode.as_deref() {
         Some("judge") => {
@@ -1659,6 +1674,7 @@ fn step_review_and_write(state: &WizardState, output: Option<PathBuf>) -> anyhow
         write_mcpls_config(state, &path)?;
     }
 
+    durable::store_durable_key(state)?;
     print_secrets_instructions(state);
     print_next_steps(state, &path);
 

@@ -87,6 +87,30 @@ impl ExecutionId {
     pub(crate) fn from_uuid(uuid: Uuid) -> Self {
         Self(uuid)
     }
+
+    /// Parse a canonical UUID string into an execution identity.
+    ///
+    /// Used by operability surfaces (the `zeph durable` CLI, the TUI) that accept a user-supplied
+    /// execution id. A fresh execution always uses [`ExecutionId::new`]; this is for addressing an
+    /// existing one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`uuid::Error`] when `s` is not a valid UUID.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_durable::ExecutionId;
+    ///
+    /// let id = ExecutionId::new();
+    /// let parsed = ExecutionId::parse_str(&id.as_uuid().to_string()).unwrap();
+    /// assert_eq!(parsed, id);
+    /// assert!(ExecutionId::parse_str("not-a-uuid").is_err());
+    /// ```
+    pub fn parse_str(s: &str) -> Result<Self, uuid::Error> {
+        Ok(Self::from_uuid(Uuid::parse_str(s)?))
+    }
 }
 
 impl Default for ExecutionId {

@@ -400,6 +400,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DbCommand,
     },
+    /// Inspect the durable execution journal (connects directly to `durable.db`)
+    Durable {
+        #[command(subcommand)]
+        command: DurableCommand,
+    },
     /// ACP sub-agent client commands
     #[cfg(feature = "acp")]
     Acp {
@@ -520,6 +525,56 @@ pub(crate) enum AcpSubagentCommand {
 pub(crate) enum DbCommand {
     /// Run pending database migrations
     Migrate,
+}
+
+/// Durable execution journal subcommands.
+///
+/// All subcommands connect directly to `durable.db`; no running agent process is required. Default
+/// output is redacted (INV-5) — payload bytes and resolver tokens are shown only with `--reveal`.
+#[derive(Subcommand)]
+pub(crate) enum DurableCommand {
+    /// List durable executions, newest first
+    List {
+        /// Filter by status: running | completed | failed | aborted
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by execution kind (e.g. `agent_turn`, `dag_run`, `scheduled_job`, `subagent_session`)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Maximum number of executions to display
+        #[arg(long, default_value = "50")]
+        limit: i64,
+    },
+    /// Show the journal entries of one execution (payload redacted by default)
+    Show {
+        /// Execution id (UUID)
+        id: String,
+        /// Decrypt and print payload bytes (prints a warning first; requires `ZEPH_DURABLE_KEY`)
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// Inspect a single journal step entry
+    Inspect {
+        /// Execution id (UUID)
+        id: String,
+        /// Step index to inspect
+        #[arg(long)]
+        step: u32,
+        /// Decrypt and print payload bytes (prints a warning first; requires `ZEPH_DURABLE_KEY`)
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// Force a retention sweep over terminal executions past their TTL
+    Prune {
+        /// Report how many executions would be pruned without deleting anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Trigger a manual replay of a supported execution
+    Resume {
+        /// Execution id (UUID)
+        id: String,
+    },
 }
 
 /// Typed session status filter for the `agents fleet` sub-command.

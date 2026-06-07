@@ -10475,6 +10475,7 @@ dependencies = [
  "zeph-context",
  "zeph-core",
  "zeph-db",
+ "zeph-durable",
  "zeph-experiments",
  "zeph-gateway",
  "zeph-index",
@@ -10874,6 +10875,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "uuid",
+ "zeph-config",
  "zeph-db",
  "zeroize",
 ]
