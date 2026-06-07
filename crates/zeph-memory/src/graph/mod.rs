@@ -4,6 +4,8 @@
 pub mod store;
 pub mod types;
 
+pub mod ingest;
+
 pub mod activation;
 pub mod belief;
 pub mod belief_revision;

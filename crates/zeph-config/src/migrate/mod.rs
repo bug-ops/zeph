@@ -21,8 +21,8 @@ mod tools;
 
 pub use features::{
     migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
-    migrate_five_signal_config, migrate_goals_config, migrate_magic_docs_config,
-    migrate_microcompact_config, migrate_orchestration_persistence,
+    migrate_five_signal_config, migrate_goals_config, migrate_knowledge_config,
+    migrate_magic_docs_config, migrate_microcompact_config, migrate_orchestration_persistence,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -598,22 +598,22 @@ use steps::{
     MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig,
     MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig, MigrateGoalsConfig,
     MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete,
-    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
-    MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels,
-    MigrateMemoryGraph, MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation,
-    MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig, MigrateMemoryReasoning,
-    MigrateMemoryReasoningJudge, MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias,
-    MigrateMicrocompactConfig, MigrateOrchestrationPersistence, MigrateOrchestratorProvider,
-    MigrateOtelFilter, MigratePlannerModelToProvider, MigrateProviderMaxConcurrent,
-    MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter,
-    MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
+    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig, MigrateOrchestrationPersistence,
+    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
     MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
     MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
     MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–60).
+/// Ordered registry of all sequential migration steps (steps 1–61).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -716,6 +716,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateCavemanConfig),
             // Step 60 — add [tools.shell] checkpoints_enabled and max_checkpoints (#4990)
             Box::new(MigrateShellCheckpointsConfig),
+            // Step 61 — add [knowledge] section advisory notice (spec-067, #5017)
+            Box::new(MigrateKnowledgeConfig),
         ]
     });
 

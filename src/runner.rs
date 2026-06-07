@@ -667,6 +667,10 @@ pub(crate) async fn run(cli: Cli) -> anyhow::Result<()> {
             )
             .await;
         }
+        Some(Command::Knowledge { command: kn_cmd }) => {
+            return crate::commands::knowledge::handle_knowledge(kn_cmd, cli.config.as_deref())
+                .await;
+        }
         None => {}
     }
 

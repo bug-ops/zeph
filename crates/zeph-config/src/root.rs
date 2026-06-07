@@ -144,6 +144,12 @@ pub struct Config {
     /// Toggle at runtime with `/caveman [on|off]` or via the bundled `caveman` skill.
     #[serde(default)]
     pub caveman: crate::features::CavemanConfig,
+    /// Knowledge-ingest subsystem configuration (`[knowledge]`).
+    ///
+    /// Controls `zeph knowledge ingest` behaviour: provider selection, concurrency cap,
+    /// document limit, and recall inclusion of imported rows (spec-067).
+    #[serde(default)]
+    pub knowledge: crate::knowledge::KnowledgeConfig,
 }
 
 /// Secrets resolved from the vault at runtime.
@@ -348,6 +354,7 @@ impl Default for Config {
             worktree: crate::worktree::WorktreeConfig::default(),
             durable: crate::durable::DurableConfig::default(),
             caveman: crate::features::CavemanConfig::default(),
+            knowledge: crate::knowledge::KnowledgeConfig::default(),
         }
     }
 }

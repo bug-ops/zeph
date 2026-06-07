@@ -456,6 +456,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
+    /// Ingest project knowledge artifacts into semantic memory (spec-067)
+    Knowledge {
+        #[command(subcommand)]
+        command: KnowledgeCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -464,6 +469,57 @@ pub(crate) enum WorktreeCommand {
     List,
     /// Remove all stale worktrees that exist on disk but are not tracked in-session
     Clean,
+}
+
+/// Project-knowledge ingest subcommands (spec-067).
+#[derive(Subcommand)]
+pub(crate) enum KnowledgeCommand {
+    /// Load project artifacts into semantic memory via the notes sink
+    Ingest {
+        /// Artifact sources to process (may be specified multiple times or comma-separated)
+        #[arg(long = "source", value_name = "SRC", required = true, num_args = 1..)]
+        sources: Vec<KnowledgeSource>,
+        /// Preview only: report files / chunks / estimated tokens without writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Maximum number of documents to process; `0` uses the config default (unlimited)
+        #[arg(long, default_value = "0")]
+        max_documents: usize,
+        /// Provider name override from `[[llm.providers]]`
+        #[arg(long)]
+        provider: Option<String>,
+        /// Skip any confirmation prompts (reserved for Phase 2 graph writes)
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Roll back a previous import batch (graph sink — Phase 2; skeleton only in this build)
+    Rollback {
+        /// `import_batch_id` to delete from the graph
+        #[arg(long)]
+        batch_id: String,
+    },
+    /// List import batches and ledger summary
+    Status,
+}
+
+/// Artifact sources eligible for `zeph knowledge ingest` (Phase 1).
+///
+/// Corresponds to the `--source` flag. Only Phase-1 variants are exposed here;
+/// Phase-2 sources (`subagents`, `claude-code`, etc.) will be added as new variants
+/// without breaking callers — clap enums are purely additive.
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum KnowledgeSource {
+    /// Specification documents under `specs/**/*.md`
+    Specs,
+    /// Top-level `CHANGELOG.md`
+    Changelog,
+    /// Agent handoff files under `.local/handoff/**/*.md`
+    Handoff,
+    /// Coverage-status file at `.local/testing/coverage-status.md`
+    Coverage,
+    /// Recent git log (captured in-memory; bounded by `--max-documents`)
+    #[value(name = "git-log")]
+    GitLog,
 }
 
 /// Project management subcommands.

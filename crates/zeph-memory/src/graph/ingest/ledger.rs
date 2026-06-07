@@ -1,0 +1,312 @@
+// SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Content-hash idempotency ledger for `zeph knowledge ingest`.
+//!
+//! The ledger records every `(source_uri, content_hash)` pair that has been successfully
+//! ingested, so unchanged inputs are skipped on subsequent runs (spec-067 FR-012, INV-5).
+//!
+//! # Scope and limitations
+//!
+//! This is a **re-read / cost guard only** — it prevents redundant embedding and LLM extraction
+//! for inputs whose content has not changed since the last run. It does **not**:
+//!
+//! - Reconcile LLM extraction drift across model versions. If the model changes, re-ingest must
+//!   be forced by clearing ledger rows for the affected sources.
+//! - Delete stale Qdrant points when a file's content changes. When `content_hash` changes for
+//!   the same path, the old vectors remain in Qdrant (orphaned). Stale-point cleanup is a Phase-2
+//!   concern and is documented as a known MVP limitation in the testing playbook.
+//!
+//! # Database
+//!
+//! The ledger shares the agent's existing `SQLite` pool (`SemanticMemory::sqlite().pool()`). It is
+//! operator-triggered, one row per ingested file, and is not on the hot path — no dedicated file
+//! is needed (mirrors the `skill_trace_sessions` pattern).
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! # async fn example() -> Result<(), zeph_memory::MemoryError> {
+//! use zeph_memory::graph::ingest::IngestLedger;
+//!
+//! // In practice, pool comes from SemanticMemory::sqlite().pool().clone().
+//! # let pool: zeph_db::DbPool = unimplemented!();
+//! let ledger = IngestLedger::new(pool);
+//! let hash = IngestLedger::content_hash(b"hello world");
+//! let uri = "specs/README.md@abc123";
+//! let batch = "01J0000000000000000000000";
+//!
+//! ledger.mark_ingested(uri, &hash, batch, 0, 0).await?;
+//! assert!(ledger.is_ingested(uri, &hash).await?);
+//! # Ok(())
+//! # }
+//! ```
+
+use zeph_db::{DbPool, query, query_as, query_scalar, sql};
+
+use crate::MemoryError;
+
+/// A single row from the `knowledge_ingest_ledger` table.
+///
+/// Returned by [`IngestLedger::summary`] to back `zeph knowledge status`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct LedgerEntry {
+    /// Repository-relative path qualified by revision, e.g. `specs/README.md@abc123`.
+    pub source_uri: String,
+    /// BLAKE3 hex digest of the raw file bytes at ingest time.
+    pub content_hash: String,
+    /// Opaque per-run identifier (`UUIDv4` string) grouping all files ingested in one invocation.
+    pub import_batch_id: String,
+    /// ISO-8601 timestamp stored as TEXT in both `SQLite` and `PostgreSQL` dialects.
+    pub ingested_at: String,
+    /// Number of graph entities extracted (0 for the notes sink; non-zero after Phase 2).
+    pub entities: i64,
+    /// Number of graph edges extracted (0 for the notes sink; non-zero after Phase 2).
+    pub edges: i64,
+}
+
+/// Content-hash idempotency ledger for `zeph knowledge ingest`.
+///
+/// Records `(source_uri, content_hash)` pairs of inputs that have been successfully embedded so
+/// that unchanged files are skipped on the next run (spec-067 INV-5).
+///
+/// This is a **re-read / cost guard only** — it does NOT reconcile LLM extraction drift across
+/// model versions (INV-5). An unchanged `(source_uri, content_hash)` pair skips re-embedding; a
+/// changed hash for the same URI is treated as a new input and produces a new ledger row while
+/// leaving any previous Qdrant chunks in place (stale-point cleanup is Phase 2).
+pub struct IngestLedger {
+    pool: DbPool,
+}
+
+impl IngestLedger {
+    /// Creates a new `IngestLedger` wrapping the given database pool.
+    ///
+    /// The pool should come from `SemanticMemory::sqlite().pool().clone()` so the ledger shares
+    /// the agent's existing connection pool rather than opening a new file.
+    #[must_use]
+    pub fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+
+    /// Computes the BLAKE3 hex digest of `bytes`.
+    ///
+    /// This is the canonical content-hash format used as the `content_hash` column value.
+    /// Callers must use this function (rather than a different hash algorithm or encoding) to
+    /// ensure ledger keys are consistent across invocations.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_memory::graph::ingest::IngestLedger;
+    ///
+    /// let hash = IngestLedger::content_hash(b"hello world");
+    /// assert_eq!(hash.len(), 64, "BLAKE3 hex digest is always 64 characters");
+    /// ```
+    #[must_use]
+    pub fn content_hash(bytes: &[u8]) -> String {
+        blake3::Hasher::new()
+            .update(bytes)
+            .finalize()
+            .to_hex()
+            .to_string()
+    }
+
+    /// Returns `true` if the `(source_uri, content_hash)` pair is already recorded in the ledger.
+    ///
+    /// When this returns `true`, the caller should skip re-embedding the input — its content has
+    /// not changed since it was last ingested (spec-067 FR-012).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn is_ingested(
+        &self,
+        source_uri: &str,
+        content_hash: &str,
+    ) -> Result<bool, MemoryError> {
+        let exists: Option<i64> = query_scalar(sql!(
+            "SELECT 1 FROM knowledge_ingest_ledger \
+             WHERE source_uri = ? AND content_hash = ?"
+        ))
+        .bind(source_uri)
+        .bind(content_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
+    }
+
+    /// Records a successful ingest of `(source_uri, content_hash)`.
+    ///
+    /// Idempotent: if the pair already exists the row is updated in place with the new
+    /// `batch_id`, `ingested_at`, `entities`, and `edges` values
+    /// (`ON CONFLICT … DO UPDATE`).
+    ///
+    /// `entities` and `edges` should be `0` for the notes sink (Phase 1). Non-zero values are
+    /// reserved for Phase 2 graph extraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn mark_ingested(
+        &self,
+        source_uri: &str,
+        content_hash: &str,
+        batch_id: &str,
+        entities: i64,
+        edges: i64,
+    ) -> Result<(), MemoryError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        query(sql!(
+            "INSERT INTO knowledge_ingest_ledger \
+             (source_uri, content_hash, import_batch_id, ingested_at, entities, edges) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(source_uri, content_hash) DO UPDATE SET \
+             import_batch_id = excluded.import_batch_id, \
+             ingested_at = excluded.ingested_at, \
+             entities = excluded.entities, \
+             edges = excluded.edges"
+        ))
+        .bind(source_uri)
+        .bind(content_hash)
+        .bind(batch_id)
+        .bind(&now)
+        .bind(entities)
+        .bind(edges)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Returns all ledger rows ordered by `ingested_at` descending, newest first.
+    ///
+    /// This is the data source for `zeph knowledge status`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn summary(&self) -> Result<Vec<LedgerEntry>, MemoryError> {
+        let rows: Vec<LedgerEntry> = query_as(sql!(
+            "SELECT source_uri, content_hash, import_batch_id, ingested_at, entities, edges \
+             FROM knowledge_ingest_ledger \
+             ORDER BY ingested_at DESC"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_ledger() -> IngestLedger {
+        let pool = sqlx::SqlitePool::connect(":memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(
+            "CREATE TABLE knowledge_ingest_ledger (\
+             source_uri TEXT NOT NULL, \
+             content_hash TEXT NOT NULL, \
+             import_batch_id TEXT NOT NULL, \
+             ingested_at TEXT NOT NULL DEFAULT (datetime('now')), \
+             entities INTEGER NOT NULL DEFAULT 0, \
+             edges INTEGER NOT NULL DEFAULT 0, \
+             PRIMARY KEY (source_uri, content_hash)\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create table");
+        IngestLedger::new(pool)
+    }
+
+    #[test]
+    fn content_hash_is_hex64() {
+        let h = IngestLedger::content_hash(b"hello");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn content_hash_deterministic() {
+        assert_eq!(
+            IngestLedger::content_hash(b"zeph"),
+            IngestLedger::content_hash(b"zeph"),
+        );
+    }
+
+    #[test]
+    fn content_hash_differs_for_different_inputs() {
+        assert_ne!(
+            IngestLedger::content_hash(b"foo"),
+            IngestLedger::content_hash(b"bar"),
+        );
+    }
+
+    #[tokio::test]
+    async fn is_ingested_false_when_absent() {
+        let ledger = test_ledger().await;
+        assert!(!ledger.is_ingested("uri", "hash").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mark_then_is_ingested_round_trip() {
+        let ledger = test_ledger().await;
+        let uri = "specs/README.md@abc123";
+        let hash = IngestLedger::content_hash(b"content");
+        ledger
+            .mark_ingested(uri, &hash, "batch-1", 0, 0)
+            .await
+            .unwrap();
+        assert!(ledger.is_ingested(uri, &hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn different_hash_not_ingested() {
+        let ledger = test_ledger().await;
+        let uri = "specs/README.md@abc123";
+        let hash1 = IngestLedger::content_hash(b"v1");
+        let hash2 = IngestLedger::content_hash(b"v2");
+        ledger
+            .mark_ingested(uri, &hash1, "batch-1", 0, 0)
+            .await
+            .unwrap();
+        assert!(!ledger.is_ingested(uri, &hash2).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mark_ingested_idempotent() {
+        let ledger = test_ledger().await;
+        let uri = "specs/README.md@abc123";
+        let hash = IngestLedger::content_hash(b"content");
+        ledger
+            .mark_ingested(uri, &hash, "batch-1", 0, 0)
+            .await
+            .unwrap();
+        ledger
+            .mark_ingested(uri, &hash, "batch-2", 5, 3)
+            .await
+            .unwrap();
+        let rows = ledger.summary().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].import_batch_id, "batch-2");
+        assert_eq!(rows[0].entities, 5);
+        assert_eq!(rows[0].edges, 3);
+    }
+
+    #[tokio::test]
+    async fn summary_returns_all_rows() {
+        let ledger = test_ledger().await;
+        ledger.mark_ingested("a", "h1", "b1", 0, 0).await.unwrap();
+        ledger.mark_ingested("b", "h2", "b1", 0, 0).await.unwrap();
+        let rows = ledger.summary().await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn summary_empty_when_no_rows() {
+        let ledger = test_ledger().await;
+        assert!(ledger.summary().await.unwrap().is_empty());
+    }
+}

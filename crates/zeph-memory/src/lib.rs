@@ -157,6 +157,7 @@ pub use facade::{
 pub use forgetting::{ForgettingConfig, ForgettingResult, start_forgetting_loop};
 pub use graph::EntityLockManager;
 pub use graph::experience::{EvolutionSweepStats, ExperienceStore};
+pub use graph::ingest::{IngestLedger, LedgerEntry};
 pub use graph::{
     BeliefMemConfig, BeliefRevisionConfig, BeliefStore, Community, Edge, EdgeType, Entity,
     EntityType, GraphFact, GraphStore, PendingBelief, RpeRouter, RpeSignal,

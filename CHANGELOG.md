@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `feat(knowledge)`: add `zeph knowledge` CLI with `ingest`, `rollback` (stub), and `status` subcommands. `KnowledgeSource` ValueEnum covers `specs`, `changelog`, `handoff`, `coverage`, `git-log` sources. INV-6 path allowlist enforced via canonical `starts_with(project_root)` check on both sides (closes #5017)
+- `feat(knowledge)`: add `[knowledge]` config section (`ingest_provider`, `concurrency`, `max_documents`, `recall_include_imported`, `transcript_scope`). Migration step 60 (`migrate_knowledge_config`) adds the section idempotently to existing configs. `--init` wizard emits `[knowledge]` only when non-default values are chosen (closes #5017)
+- `feat(knowledge)`: add `IngestLedger` repository in `zeph-memory` — idempotency re-read guard for both ingest sinks. Dual migrations: `sqlite/102_knowledge_ingest_ledger.sql` and `postgres/103_knowledge_ingest_ledger.sql`. `ingested_at` stored as ISO-8601 TEXT in both dialects. INV-5: re-read/cost guard only, not a drift guard; rustdoc states the limitation explicitly (closes #5016)
+- `feat(knowledge)`: wire notes sink into `zeph knowledge ingest` — static project artifacts (`specs/`, `CHANGELOG.md`, `.local/handoff/`, coverage-status, `git log`) ingested into Qdrant via existing `IngestionPipeline`. Ledger skip prevents re-embedding unchanged files. `--dry-run` reports file count, projected chunks, and estimated embed tokens without writing anything. `source_uri` threaded into Qdrant payload. Tracing spans on all I/O paths (closes #5018)
+
 ### Changed
 
 - `test(context)`: add `apply_session_config_wires_fidelity_providers` unit test in `zeph-core` — asserts that non-empty `FidelityConfig::semantic_scoring_provider` / `compress_provider` names produce `Some` in `compaction.fidelity_semantic_provider` / `fidelity_compress_provider` after `apply_session_config`, and that empty names or absent config produce `None` (closes #5035)

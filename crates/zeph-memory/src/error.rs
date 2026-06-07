@@ -83,6 +83,13 @@ pub enum MemoryError {
     /// Wraps errors from clustering, skill generation, evaluator calls, or disk writes.
     #[error("promotion scan failed: {0}")]
     Promotion(String),
+
+    /// An error during `zeph knowledge ingest` (spec-067).
+    ///
+    /// Covers path-validation failures, unsupported source kinds, and per-file ingest errors
+    /// reported by the notes-sink pipeline.
+    #[error("ingest error: {0}")]
+    Ingest(String),
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ pub(crate) mod durable;
 #[cfg(feature = "gonka")]
 pub(crate) mod gonka;
 pub(crate) mod ingest;
+pub(crate) mod knowledge;
 pub(crate) mod memory;
 pub(crate) mod migrate;
 pub(crate) mod plugin;

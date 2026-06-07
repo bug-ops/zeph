@@ -340,3 +340,37 @@ pub fn migrate_five_signal_config(toml_src: &str) -> Result<MigrationResult, Mig
         sections_changed: vec!["memory.five_signal".to_owned()],
     })
 }
+
+/// Add a commented-out `[knowledge]` block if absent (spec-067, #5017).
+///
+/// Idempotent: no-ops when `[knowledge]` is already present in any form.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_knowledge_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("[knowledge]") || toml_src.contains("# [knowledge]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Knowledge-ingest subsystem (spec-067, #5017). All defaults shown.\n\
+         # [knowledge]\n\
+         # ingest_provider = \"\"          # provider from [[llm.providers]]; empty = primary (Phase 2 graph)\n\
+         # concurrency = 3              # max parallel extract tasks (Phase 2)\n\
+         # max_documents = 0            # 0 = unlimited; CLI --max-documents overrides\n\
+         # recall_include_imported = true  # include imported rows in semantic recall\n\
+         # transcript_scope = \"current-project\"  # INV-6: only current-project supported in Phase 1\n";
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["knowledge".to_owned()],
+    })
+}

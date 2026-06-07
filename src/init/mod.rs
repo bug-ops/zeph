@@ -277,6 +277,9 @@ pub(crate) struct WizardState {
     pub(crate) durable_key_b64: Option<String>,
     /// Start every session in ultra-compressed (caveman) output mode (#4985).
     pub(crate) caveman_default_on: bool,
+    /// Provider name from `[[llm.providers]]` chosen for knowledge ingest (Phase 2 graph).
+    /// Empty = use primary provider.
+    pub(crate) knowledge_ingest_provider: String,
 }
 
 impl Default for WizardState {
@@ -461,6 +464,7 @@ impl Default for WizardState {
             durable: zeph_core::config::DurableConfig::default(),
             durable_key_b64: None,
             caveman_default_on: false,
+            knowledge_ingest_provider: String::new(),
         }
     }
 }
@@ -532,6 +536,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_prometheus(&mut state)?;
     step_session_recap(&mut state)?;
     step_caveman(&mut state)?;
+    step_knowledge(&mut state)?;
     step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -819,6 +824,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.persist_provider_overrides = state.persist_provider_overrides;
     config.caveman.default_on = state.caveman_default_on;
+    config
+        .knowledge
+        .ingest_provider
+        .clone_from(&state.knowledge_ingest_provider);
     config.cocoon.show_balance = state.cocoon_show_balance;
     config.mcp.elicitation_enabled = state.mcp_elicitation_enabled;
     config.mcp.elicitation_warn_sensitive_fields = state.mcp_elicitation_warn_sensitive;
@@ -1672,6 +1681,27 @@ fn step_quality(state: &mut WizardState) -> anyhow::Result<()> {
                 }
             })
             .interact_text()?;
+    }
+
+    println!();
+    Ok(())
+}
+
+fn step_knowledge(state: &mut WizardState) -> anyhow::Result<()> {
+    println!("== Knowledge Ingest ==\n");
+    println!(
+        "Optionally configure a dedicated provider for knowledge ingest (Phase 2 graph extraction)."
+    );
+    println!("Leave blank to use the primary provider.\n");
+
+    let provider: String = Input::new()
+        .with_prompt("Provider name for knowledge ingest (blank = primary)")
+        .default(String::new())
+        .allow_empty(true)
+        .interact_text()?;
+
+    if !provider.is_empty() {
+        state.knowledge_ingest_provider = provider;
     }
 
     println!();
