@@ -129,7 +129,12 @@ impl SecretResolver for Config {
             if entry.provider_type == crate::config::ProviderKind::Compatible
                 && let Some(ref name) = entry.name
             {
-                let env_key = format!("ZEPH_COMPATIBLE_{}_API_KEY", name.to_uppercase());
+                let normalized: String = name
+                    .to_uppercase()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                    .collect();
+                let env_key = format!("ZEPH_COMPATIBLE_{normalized}_API_KEY");
                 if let Some(val) = vault.get_secret(&env_key).await? {
                     self.secrets
                         .compatible_api_keys

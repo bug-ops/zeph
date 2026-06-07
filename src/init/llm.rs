@@ -8,6 +8,10 @@ use zeroize::Zeroizing;
 
 use super::WizardState;
 
+pub(super) fn supports_embeddings(provider_type: &str) -> bool {
+    !matches!(provider_type, "claude" | "candle")
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 2/10: LLM Provider ==\n");
@@ -16,12 +20,15 @@ pub(super) fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
 
     step_llm_provider(state, use_age)?;
 
-    state.embedding_model = Some(
-        Input::new()
-            .with_prompt("Embedding model")
-            .default("qwen3-embedding".into())
-            .interact_text()?,
-    );
+    let provider_type = state.provider.map_or("ollama", ProviderKind::as_str);
+    if supports_embeddings(provider_type) {
+        state.embedding_model = Some(
+            Input::new()
+                .with_prompt("Embedding model")
+                .default("qwen3-embedding".into())
+                .interact_text()?,
+        );
+    }
 
     if state.provider == Some(ProviderKind::Ollama) {
         let use_vision = Confirm::new()

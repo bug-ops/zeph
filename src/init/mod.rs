@@ -678,7 +678,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 ProviderKind::Gemini => Some(8192),
                 _ => None,
             },
-            embedding_model: state.embedding_model.clone(),
+            embedding_model: if llm::supports_embeddings(provider.as_str()) {
+                state.embedding_model.clone()
+            } else {
+                None
+            },
             thinking: state.thinking.clone(),
             server_compaction: state.server_compaction_enabled,
             enable_extended_context: state.enable_extended_context,
@@ -707,10 +711,14 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.llm = LlmConfig {
         providers,
         routing,
-        embedding_model: state
-            .embedding_model
-            .clone()
-            .unwrap_or_else(|| "qwen3-embedding".into()),
+        embedding_model: if llm::supports_embeddings(provider.as_str()) {
+            state
+                .embedding_model
+                .clone()
+                .unwrap_or_else(|| "qwen3-embedding".into())
+        } else {
+            String::new()
+        },
         candle: None,
         router: None,
         stt: None,
@@ -1426,6 +1434,16 @@ fn step_logging(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn provider_effective_name(state: &WizardState) -> String {
+    match state.provider.unwrap_or(ProviderKind::Ollama) {
+        ProviderKind::Compatible => state
+            .compatible_name
+            .clone()
+            .unwrap_or_else(|| "compatible".into()),
+        kind => kind.as_str().to_owned(),
+    }
+}
+
 fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Experiments ==\n");
     println!("Autonomous self-experimentation: the agent varies its own parameters,");
@@ -1437,11 +1455,14 @@ fn step_experiments(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
 
     if state.experiments_enabled {
-        let model: String = Input::new()
-            .with_prompt("Judge model for evaluation")
-            .default("claude-sonnet-4-6-20251101".into())
+        let default_provider = provider_effective_name(state);
+        let input: String = Input::new()
+            .with_prompt(format!(
+                "Provider name for evaluation judge (configured: {default_provider})"
+            ))
+            .default(default_provider.clone())
             .interact_text()?;
-        state.experiments_eval_model = if model.is_empty() { None } else { Some(model) };
+        state.experiments_eval_model = if input.is_empty() { None } else { Some(input) };
 
         state.experiments_schedule_enabled = Confirm::new()
             .with_prompt("Schedule automatic experiment runs?")
@@ -1687,7 +1708,12 @@ fn api_key_env_var(kind: ProviderKind, name: Option<&str>) -> Option<String> {
         ProviderKind::OpenAi => Some("ZEPH_OPENAI_API_KEY".to_owned()),
         ProviderKind::Gemini => Some("ZEPH_GEMINI_API_KEY".to_owned()),
         ProviderKind::Compatible => {
-            let n = name.unwrap_or("custom").to_uppercase();
+            let n: String = name
+                .unwrap_or("custom")
+                .to_uppercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
             Some(format!("ZEPH_COMPATIBLE_{n}_API_KEY"))
         }
         _ => None,
@@ -1845,6 +1871,43 @@ mod tests {
     }
 
     #[test]
+    fn build_config_claude_skips_embedding_model() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Claude),
+            model: Some("claude-sonnet-4-5-20250929".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(
+            config.llm.providers[0].embedding_model.is_none(),
+            "Claude provider must not have embedding_model set"
+        );
+        assert!(
+            config.llm.embedding_model.is_empty(),
+            "llm.embedding_model must be empty for non-embedding providers"
+        );
+    }
+
+    #[test]
+    fn build_config_ollama_keeps_embedding_model() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Ollama),
+            model: Some("qwen3:8b".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.llm.providers[0].embedding_model.as_deref(),
+            Some("qwen3-embedding")
+        );
+        assert_eq!(config.llm.embedding_model, "qwen3-embedding");
+    }
+
+    #[test]
     fn api_key_env_var_returns_correct_vars() {
         assert_eq!(
             api_key_env_var(ProviderKind::Claude, None),
@@ -1997,7 +2060,7 @@ mod tests {
     fn build_config_experiments_enabled() {
         let state = WizardState {
             experiments_enabled: true,
-            experiments_eval_model: Some("claude-sonnet-4-20250514".into()),
+            experiments_eval_model: Some("claude".into()),
             experiments_schedule_enabled: true,
             experiments_schedule_cron: "0 4 * * *".into(),
             vault_backend: "env".into(),
@@ -2005,10 +2068,7 @@ mod tests {
         };
         let config = build_config(&state);
         assert!(config.experiments.enabled);
-        assert_eq!(
-            config.experiments.eval_model.as_deref(),
-            Some("claude-sonnet-4-20250514")
-        );
+        assert_eq!(config.experiments.eval_model.as_deref(), Some("claude"));
         assert!(config.experiments.schedule.enabled);
         assert_eq!(config.experiments.schedule.cron, "0 4 * * *");
     }
@@ -2021,6 +2081,38 @@ mod tests {
         };
         let config = build_config(&state);
         assert!(!config.experiments.enabled);
+    }
+
+    #[test]
+    fn provider_effective_name_claude() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Claude),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        assert_eq!(provider_effective_name(&state), "claude");
+    }
+
+    #[test]
+    fn provider_effective_name_compatible_with_name() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Compatible),
+            compatible_name: Some("my-provider".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        assert_eq!(provider_effective_name(&state), "my-provider");
+    }
+
+    #[test]
+    fn provider_effective_name_compatible_without_name() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Compatible),
+            compatible_name: None,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        assert_eq!(provider_effective_name(&state), "compatible");
     }
 
     // --- build_config logging mapping ---
@@ -2590,6 +2682,14 @@ mod tests {
     }
 
     #[test]
+    fn api_key_env_var_hyphen_sanitized() {
+        assert_eq!(
+            api_key_env_var(ProviderKind::Compatible, Some("my-provider")),
+            Some("ZEPH_COMPATIBLE_MY_PROVIDER_API_KEY".to_owned())
+        );
+    }
+
+    #[test]
     fn collect_provider_secret_gonkagate_non_age_sets_key() {
         let mut secrets = Vec::new();
         collect_provider_secret(
@@ -2711,5 +2811,148 @@ mod tests {
         assert!(config.worktree.enabled);
         assert_eq!(config.worktree.bg_isolation, BgIsolation::None);
         assert!(matches!(config.worktree.base_ref, WorktreeBaseRef::Fresh));
+    }
+
+    // ── #4981: api_key_env_var sanitization edge cases ──────────────────────
+
+    #[test]
+    fn api_key_env_var_dot_sanitized() {
+        assert_eq!(
+            api_key_env_var(ProviderKind::Compatible, Some("my.provider")),
+            Some("ZEPH_COMPATIBLE_MY_PROVIDER_API_KEY".to_owned())
+        );
+    }
+
+    #[test]
+    fn api_key_env_var_space_sanitized() {
+        assert_eq!(
+            api_key_env_var(ProviderKind::Compatible, Some("my provider")),
+            Some("ZEPH_COMPATIBLE_MY_PROVIDER_API_KEY".to_owned())
+        );
+    }
+
+    #[test]
+    fn api_key_env_var_at_sign_sanitized() {
+        assert_eq!(
+            api_key_env_var(ProviderKind::Compatible, Some("my@provider")),
+            Some("ZEPH_COMPATIBLE_MY_PROVIDER_API_KEY".to_owned())
+        );
+    }
+
+    #[test]
+    fn api_key_env_var_none_name_uses_custom_fallback() {
+        assert_eq!(
+            api_key_env_var(ProviderKind::Compatible, None),
+            Some("ZEPH_COMPATIBLE_CUSTOM_API_KEY".to_owned())
+        );
+    }
+
+    // ── #4982: non-embedding providers skip embedding_model ─────────────────
+
+    #[test]
+    fn build_config_candle_skips_embedding_model() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Candle),
+            model: Some("llama3:8b".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(
+            config.llm.providers[0].embedding_model.is_none(),
+            "Candle provider must not have embedding_model set"
+        );
+        assert!(
+            config.llm.embedding_model.is_empty(),
+            "llm.embedding_model must be empty for Candle"
+        );
+    }
+
+    #[test]
+    fn build_config_gonka_keeps_embedding_model() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Gonka),
+            model: Some("gpt-4o".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            vault_backend: "age".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.llm.providers[0].embedding_model.as_deref(),
+            Some("qwen3-embedding"),
+            "Gonka supports embeddings and must write embedding_model"
+        );
+        assert_eq!(config.llm.embedding_model, "qwen3-embedding");
+    }
+
+    #[test]
+    fn build_config_cocoon_keeps_embedding_model() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Cocoon),
+            model: Some("Qwen/Qwen3-0.6B".into()),
+            embedding_model: Some("qwen3-embedding".into()),
+            cocoon_client_url: Some("http://localhost:10000".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.llm.providers[0].embedding_model.as_deref(),
+            Some("qwen3-embedding"),
+            "Cocoon supports embeddings and must write embedding_model"
+        );
+        assert_eq!(config.llm.embedding_model, "qwen3-embedding");
+    }
+
+    #[test]
+    fn build_config_openai_keeps_embedding_model() {
+        let state = WizardState {
+            provider: Some(ProviderKind::OpenAi),
+            model: Some("gpt-4o".into()),
+            embedding_model: Some("text-embedding-3-small".into()),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.llm.providers[0].embedding_model.as_deref(),
+            Some("text-embedding-3-small")
+        );
+        assert_eq!(config.llm.embedding_model, "text-embedding-3-small");
+    }
+
+    // ── #4983: provider_effective_name edge cases ────────────────────────────
+
+    #[test]
+    fn provider_effective_name_ollama() {
+        let state = WizardState {
+            provider: Some(ProviderKind::Ollama),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        assert_eq!(provider_effective_name(&state), "ollama");
+    }
+
+    #[test]
+    fn provider_effective_name_openai() {
+        let state = WizardState {
+            provider: Some(ProviderKind::OpenAi),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        assert_eq!(provider_effective_name(&state), "openai");
+    }
+
+    #[test]
+    fn provider_effective_name_none_defaults_to_ollama() {
+        // provider = None → defaults to Ollama in provider_effective_name
+        let state = WizardState {
+            provider: None,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        assert_eq!(provider_effective_name(&state), "ollama");
     }
 }
