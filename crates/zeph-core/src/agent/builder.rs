@@ -2857,6 +2857,133 @@ mod tests {
         );
     }
 
+    /// Verify that `apply_session_config` leaves both fidelity provider fields `None` when
+    /// `fidelity_config` is absent — explicit coverage for the no-config path (#5037).
+    #[test]
+    fn apply_session_config_fidelity_providers_none_when_not_configured() {
+        use crate::config::Config;
+
+        let mut session_cfg = AgentSessionConfig::from_config(&Config::default(), 100_000);
+        session_cfg.fidelity_config = None;
+        let agent = make_agent().apply_session_config(session_cfg);
+        assert!(
+            agent
+                .services
+                .memory
+                .compaction
+                .fidelity_semantic_provider
+                .is_none(),
+            "fidelity_semantic_provider must be None when fidelity_config is absent"
+        );
+        assert!(
+            agent
+                .services
+                .memory
+                .compaction
+                .fidelity_compress_provider
+                .is_none(),
+            "fidelity_compress_provider must be None when fidelity_config is absent"
+        );
+    }
+
+    /// Verify that `resolve_background_provider` performs a registry lookup when a named provider
+    /// is registered in `provider_pool` — the acceptance criterion for issue #5039.
+    ///
+    /// An Ollama entry named "named-test" is registered in the pool. After `apply_session_config`
+    /// wires `fidelity_semantic_provider` from that name, the stored provider must resolve to an
+    /// Ollama backend (not the primary `MockProvider` fallback).
+    /// An unregistered name must fall back to the primary (Mock) provider.
+    #[test]
+    fn apply_session_config_wires_fidelity_providers_registry_lookup() {
+        use crate::config::Config;
+        use zeph_llm::provider::LlmProvider;
+
+        let snapshot = crate::agent::state::ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: std::collections::HashMap::new(),
+            llm_request_timeout_secs: 30,
+            embedding_model: String::new(),
+            gonka_private_key: None,
+            gonka_address: None,
+            cocoon_access_hash: None,
+        };
+        let named_entry = ProviderEntry {
+            name: Some("named-test".into()),
+            model: Some("llama3.2".into()),
+            ..Default::default()
+        };
+
+        // Pool with a named Ollama provider; snapshot is required for build_provider_for_switch.
+        let agent_with_pool = make_agent().with_provider_pool(vec![named_entry], snapshot);
+
+        // "named-test" is registered → must resolve to Ollama, not the Mock primary.
+        let mut session_cfg = AgentSessionConfig::from_config(&Config::default(), 100_000);
+        session_cfg.fidelity_config = Some(zeph_config::FidelityConfig {
+            enabled: true,
+            semantic_scoring_provider: Some(zeph_config::ProviderName::new("named-test")),
+            compress_provider: Some(zeph_config::ProviderName::new("named-test")),
+            ..zeph_config::FidelityConfig::default()
+        });
+        let agent = agent_with_pool.apply_session_config(session_cfg);
+
+        let sem = agent
+            .services
+            .memory
+            .compaction
+            .fidelity_semantic_provider
+            .as_ref()
+            .expect("fidelity_semantic_provider must be Some for registered provider name");
+        assert_eq!(
+            sem.name(),
+            "ollama",
+            "registered named provider must resolve to Ollama, not the Mock primary fallback"
+        );
+        assert_eq!(
+            sem.model_identifier(),
+            "llama3.2",
+            "resolved Ollama provider must carry the model from the registered entry"
+        );
+
+        let cmp = agent
+            .services
+            .memory
+            .compaction
+            .fidelity_compress_provider
+            .as_ref()
+            .expect("fidelity_compress_provider must be Some for registered provider name");
+        assert_eq!(
+            cmp.name(),
+            "ollama",
+            "registered named compress provider must resolve to Ollama, not the Mock primary fallback"
+        );
+
+        // Unregistered name → both fields fall back to the primary (Mock) provider.
+        let agent2 = make_agent();
+        let mut session_cfg2 = AgentSessionConfig::from_config(&Config::default(), 100_000);
+        session_cfg2.fidelity_config = Some(zeph_config::FidelityConfig {
+            enabled: true,
+            semantic_scoring_provider: Some(zeph_config::ProviderName::new("unregistered")),
+            compress_provider: Some(zeph_config::ProviderName::new("unregistered")),
+            ..zeph_config::FidelityConfig::default()
+        });
+        let agent2 = agent2.apply_session_config(session_cfg2);
+
+        let sem2 = agent2
+            .services
+            .memory
+            .compaction
+            .fidelity_semantic_provider
+            .as_ref()
+            .expect("fidelity_semantic_provider must be Some (fallback to primary)");
+        assert_eq!(
+            sem2.name(),
+            "mock",
+            "unregistered provider name must fall back to the primary Mock provider"
+        );
+    }
+
     #[test]
     fn with_skill_matching_config_sets_fields() {
         let agent = make_agent().with_skill_matching_config(0.7, true, 0.85);
