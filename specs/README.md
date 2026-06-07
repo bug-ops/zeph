@@ -25,7 +25,7 @@ See `[[constitution]]` for project-wide non-negotiable rules.
 
 ## Numbering Scheme
 
-Spec IDs (001–065) follow a logical grouping:
+Spec IDs (001–067) follow a logical grouping:
 
 - **001–010**: Foundational contracts and core systems (invariants, loop, providers, memory, skills, tools, channels, mcp, orchestration, security)
 - **011–020**: User-facing features and operational integration (TUI, graph memory, protocols, self-learning, filtering, indexing, scheduler, gateway, config loading)
@@ -48,6 +48,7 @@ Spec IDs (001–065) follow a logical grouping:
 - **063**: Worktree subsystem — `zeph-worktree` crate, `worktree.base_ref: fresh|head`, CwdGuard serialisation, startup probe, CLI commands, `git_timeout_secs` (default 30, migration step 55), `--init` wizard `step_worktree()`; GitHub #4655, #4704, #4784, #4847
 - **064**: Durable execution — `zeph-durable` Layer-0 crate, journal/replay, `DurableStep`, `EffectClass`, `JournalWriter` actor, AEAD payload cipher, `DurablePromise`/timers, dedicated `durable.db`, P1-P4 integration adapters (agent-loop, orchestration, scheduler, subagent); `restate` feature flag
 - **065**: Ephemeral plugin loading and provider override persistence — `--plugin-url` HTTPS-only session-scoped plugin loading (`TempDir` lifetime, blocking scan), provider parameter override persistence (`reasoning_effort`/`temperature` via `channel_preferences` key-value row, no ALTER TABLE); GitHub #3918
+- **067**: Knowledge Ingest — `zeph knowledge ingest` operator command with two sinks: static project artifacts → semantic notes (existing `IngestionPipeline`, no graph) and subagent transcripts → knowledge graph (gated by a measurement spike); Phase 0 provenance columns (`origin`/`import_batch_id`/`source_uri`) + `rollback`; honors write-gate (004-9) + admission (004-3), only RPE bypassed; sanitizer on write path; external Claude/Codex import deferred to Phase 3; code stays in `zeph-index`; epic #5012, milestone M29 [draft]
 
 ---
 
@@ -151,3 +152,4 @@ Spec IDs (001–065) follow a logical grouping:
 | `064-durable-execution/spec.md` | Durable execution: `zeph-durable` Layer-0 crate, append-only journal, `DurableStep`/`DurableContext` (`&self` + `AtomicU32`), `EffectClass`+`OnAmbiguous`, `JournalWriter` actor (mpsc, ACK, group-commit), AEAD `PayloadCipher` (XChaCha20-Poly1305, vault-keyed), `DurablePromise`/resolver-token auth, `DurableTimer`, dedicated `durable.db` pool+migrations, `ReplayDivergence` guard, `read_execution_range` cursor, `restate` feature flag; P1 agent-loop, P2 orchestration `/plan resume`, P3 scheduler exactly-once, P4 subagent promise | `zeph-durable` (new), `zeph-agent-tools`, `zeph-orchestration`, `zeph-scheduler`, `zeph-subagent` |
 | `065-ephemeral-plugins-provider-overrides/spec.md` | Ephemeral plugin loading and provider override persistence: `--plugin-url` (HTTPS-only, blocking scan, TempDir lifetime) + provider parameter override persistence (reasoning_effort, temperature via `channel_preferences` key-value row, no ALTER TABLE); defers worktree.baseRef, bgIsolation, Ctrl+R; GitHub #3918 | `zeph-plugins`, `zeph-core`, `zeph-config`, `zeph-commands` |
 | `066-deep-link-scheme/spec.md` | zeph:// URI scheme — `zeph url-open`, `zeph url-scheme {register,unregister,status}`, OS registration (Linux/Windows full, macOS dispatch-only), INV-CWD security validation order, `[deep_link]` config, `deep-link` feature flag; ACP attach deferred to v2; GitHub #4687 | `zeph-common`, `zeph-config`, binary |
+| `067-knowledge-ingest/spec.md` | Knowledge Ingest (`zeph knowledge ingest`): two sinks — static artifacts → semantic notes via existing `IngestionPipeline` (no graph), subagent transcripts → knowledge graph (gated by §7 measurement spike/kill-criterion); Phase 0 provenance migration (`origin`/`import_batch_id`/`source_uri` on `graph_edges`/`graph_entities`) + `knowledge rollback`; reuses `extract_and_store`, honors write-gate (004-9) + admission (004-3), bypasses only RPE; sanitizer as `PostExtractValidator`; technical-document extraction prompt; `knowledge_ingest_ledger` (re-read guard only, INV-5); external Claude/Codex import deferred to Phase 3; code excluded (owned by `zeph-index`); epic #5012, milestone M29 [draft] | `zeph-memory`, `zeph-db`, `zeph-config`, `zeph` (binary), `zeph-sanitizer` |

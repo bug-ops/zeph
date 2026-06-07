@@ -52,6 +52,7 @@ status: moc
 - [[004-memory/spec|Memory Pipeline]] — SQLite + Qdrant dual backend, semantic response cache, anchored summarization, compaction probe, importance scoring, A-MAC admission control, MemScene consolidation, cost-sensitive store routing, temporal decay, multi-vector chunking, GAAMA episode nodes, BATS budget hints, Focus compression, SleepGate forgetting pass, persona/trajectory/category-aware memory, TiMem tree, microcompact, autoDream, MagicDocs, embed backfill batching
 - [[012-graph-memory/spec|Entity Graph Memory]] — entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation; works with [[004-memory/spec|Memory Pipeline]]
   - [[004-memory/004-6-graph-memory|Graph Memory (memory sub-spec)]] — concise reference within the memory subsystem: data model overview, MAGMA edge types, SYNAPSE config, key invariants
+- [[067-knowledge-ingest/spec|Knowledge Ingest]] — `zeph knowledge ingest` operator command; static artifacts → semantic notes (existing `IngestionPipeline`, no graph), subagent transcripts → graph (gated by measurement spike); Phase 0 provenance (`origin`/`import_batch_id`/`source_uri`) + `rollback`; honors write-gate (004-9) + admission (004-3), bypasses only RPE; sanitizer on write path; external Claude/Codex import deferred; code stays in [[018-index/spec|zeph-index]]
 
 ### Configuration & Loading
 - [[020-config-loading/spec|Config Loading]] — config resolution order, mode-agnostic defaults, environment overrides
@@ -229,6 +230,7 @@ status: moc
 | 063 | [[063-worktree-subsystem/spec\|Worktree Subsystem]] | specify | approved |
 | 064 | [[064-durable-execution/spec\|Durable Execution]] | specify | approved |
 | 065 | [[065-ephemeral-plugins-provider-overrides/spec\|Ephemeral Plugins & Provider Overrides]] | specify | implemented |
+| 067 | [[067-knowledge-ingest/spec\|Knowledge Ingest]] | specify | draft |
 
 ---
 
