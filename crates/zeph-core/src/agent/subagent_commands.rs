@@ -308,7 +308,7 @@ impl<C: Channel> Agent<C> {
         match cmd {
             AgentCommand::List => self.handle_agent_list(),
             AgentCommand::Background { name, prompt } => {
-                self.handle_agent_background(&name, &prompt)
+                self.handle_agent_background(&name, &prompt).await
             }
             AgentCommand::Spawn { name, prompt }
             | AgentCommand::Mention {
@@ -397,12 +397,22 @@ impl<C: Channel> Agent<C> {
             _ => "Unknown agents command.".to_owned(),
         }
     }
-    fn handle_agent_background(&mut self, name: &str, prompt: &str) -> Option<String> {
+    async fn handle_agent_background(&mut self, name: &str, prompt: &str) -> Option<String> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(name);
         let cfg = self.services.orchestration.subagent_config.clone();
-        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mut spawn_ctx = self.build_spawn_context(&cfg);
+        // Background durable: seat wired so child can resolve; promise dropped (background
+        // results are collected via poll_subagents, not await_durable_subagent).
+        if let Some(seat) = maybe_make_durable_seat(
+            self.services.session.durable_subagent,
+            self.services.session.durable_ctx.as_deref(),
+        )
+        .await
+        {
+            spawn_ctx.durable_resolver = Some(seat);
+        }
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         match mgr.spawn(
             name,
@@ -425,7 +435,18 @@ impl<C: Channel> Agent<C> {
         let tool_executor = Arc::clone(&self.tool_executor);
         let skills = self.filtered_skills_for(name);
         let cfg = self.services.orchestration.subagent_config.clone();
-        let spawn_ctx = self.build_spawn_context(&cfg);
+        let mut spawn_ctx = self.build_spawn_context(&cfg);
+        // Wire the durable resolver seat so the child can resolve its promise on exit.
+        // The promise (await side) is dropped here; foreground result is collected via
+        // poll_subagent_until_done which reads the join-handle output directly.
+        if let Some(seat) = maybe_make_durable_seat(
+            self.services.session.durable_subagent,
+            self.services.session.durable_ctx.as_deref(),
+        )
+        .await
+        {
+            spawn_ctx.durable_resolver = Some(seat);
+        }
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let task_id = match mgr.spawn(
             name,
@@ -676,6 +697,29 @@ impl<C: Channel> Agent<C> {
             }
         } else {
             zeph_memory::store::SourceKind::Local
+        }
+    }
+}
+
+/// Create a durable resolver seat for the next sub-agent spawn when the gate is open.
+///
+/// Returns `Some(seat)` when `enabled` is `true` and `ctx` is `Some` and the promise row
+/// was freshly created (first run). The seat goes into `SpawnContext::durable_resolver` for
+/// the child's background task (INV-9 channel rule).
+///
+/// Returns `None` when the gate is closed, on a resumed parent (token unrecoverable, INV-9),
+/// or on error (logged at `warn`) — the caller degrades to the plain spawn path.
+async fn maybe_make_durable_seat(
+    enabled: bool,
+    ctx: Option<&zeph_durable::DurableContext>,
+) -> Option<zeph_subagent::DurableResolverSeat> {
+    let ctx = ctx.filter(|_| enabled)?;
+    match zeph_subagent::make_durable_promise(ctx).await {
+        Ok((_promise, Some(seat))) => Some(seat),
+        Ok((_promise, None)) => None, // Resumed: token unrecoverable (INV-9).
+        Err(e) => {
+            tracing::warn!(error = %e, "durable: make_durable_promise failed — degrading to non-durable spawn");
+            None
         }
     }
 }

@@ -88,4 +88,13 @@ pub enum SubAgentError {
     /// directory.  The agent loop never starts in this case (INV-4).
     #[error("worktree setup failed: {0}")]
     WorktreeSetup(String),
+
+    /// The durable promise layer returned an error during subagent spawn or await.
+    ///
+    /// Wraps a [`zeph_durable::DurableError`] string so the crate does not take a hard
+    /// compile-time dependency on `zeph-durable` in code paths where the feature is disabled
+    /// at runtime (the `durable` module is always compiled in but the adapter functions are
+    /// only called when `durable.enabled && durable.subagent`).
+    #[error("durable error: {0}")]
+    Durable(String),
 }

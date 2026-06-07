@@ -27,11 +27,13 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 zeph-common.workspace = true
 zeph-config.workspace = true
+zeph-durable.workspace = true
 zeph-llm.workspace = true
 zeph-sanitizer.workspace = true
 zeph-skills.workspace = true
 zeph-tools.workspace = true
 zeph-worktree.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 indoc.workspace = true
@@ -40,6 +42,7 @@ schemars.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zeph-durable = { workspace = true, features = ["sqlite"] }
 zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]

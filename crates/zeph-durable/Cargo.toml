@@ -35,11 +35,19 @@ zeph-db.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+bytes.workspace = true
+chacha20poly1305.workspace = true
+criterion = { workspace = true, features = ["html_reports"] }
 futures.workspace = true
+rand.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 toml.workspace = true
+
+[[bench]]
+name = "durable_benches"
+harness = false
 
 [lints]
 workspace = true

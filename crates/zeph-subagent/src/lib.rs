@@ -42,6 +42,7 @@ mod agent_loop;
 pub mod command;
 pub mod cwd_guard;
 pub mod def;
+pub mod durable;
 pub mod error;
 pub mod filter;
 pub mod fleet;
@@ -59,6 +60,10 @@ pub use def::{
     MemoryScope, ModelSpec, PermissionMode, SkillFilter, SubAgentDef, SubAgentPermissions,
     ToolPolicy, is_valid_agent_name,
 };
+pub use durable::{
+    DurableResolverSeat, SubagentResult, await_durable_subagent, make_durable_promise,
+    resolve_durable_promise,
+};
 pub use error::SubAgentError;
 pub use filter::{FilteredToolExecutor, PlanModeExecutor, filter_skills};
 pub use fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleetRegistry};
@@ -73,7 +78,6 @@ pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;
 pub use transcript::{TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts};
-
 /// Async callback type for spawning an external ACP sub-agent by shell command.
 ///
 /// Returns the sub-agent's text output on success or an error string on failure.

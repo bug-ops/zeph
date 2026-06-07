@@ -71,6 +71,7 @@ fn make_session_state() -> SessionState {
         last_assistant_at: None,
         is_guest_context: false,
         durable_ctx: None,
+        durable_subagent: false,
         durable_turn_replayed: false,
     }
 }

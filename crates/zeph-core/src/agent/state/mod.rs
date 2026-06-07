@@ -786,6 +786,11 @@ pub(crate) struct SessionState {
     /// once per session (or resumed from a prior crash) and shared across all turns via `Arc`.
     /// `None` when durable execution is disabled — in which case the loop runs unmodified.
     pub(crate) durable_ctx: Option<std::sync::Arc<zeph_durable::DurableContext>>,
+    /// Mirror of `[durable] subagent` config flag (spec-064 §P4).
+    ///
+    /// When `true` and `durable_ctx` is `Some`, sub-agent spawns are wrapped in a durable
+    /// promise so a resumed parent can replay the child result without re-running the child.
+    pub(crate) durable_subagent: bool,
     /// Set to `true` for the duration of a turn whose LLM step was replayed from the journal.
     ///
     /// Used by `process_single_native_turn` to suppress re-printing already-emitted assistant
@@ -1157,6 +1162,7 @@ impl SessionState {
             hooks_config: HooksConfigSnapshot::default(),
             is_guest_context: false,
             durable_ctx: None,
+            durable_subagent: false,
             durable_turn_replayed: false,
         }
     }

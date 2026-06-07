@@ -33,6 +33,7 @@ use crate::memory::{ensure_memory_dir, escape_memory_content, load_memory_conten
 use crate::state::SubAgentState;
 
 use super::SpawnContext;
+use crate::durable::{DurableResolverSeat, resolve_durable_promise};
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
@@ -616,6 +617,9 @@ impl SubAgentManager {
         );
         let handle_mcp_tool_names = mcp_tool_names.clone();
         let parent_messages = ctx.parent_messages;
+        // INV-9: extract the resolver seat here so it enters only the background task closure.
+        // It MUST NOT be accessible from the agent loop, tool executor, or LLM surface.
+        let durable_resolver: Option<DurableResolverSeat> = ctx.durable_resolver;
 
         let cwd_lock = Arc::clone(&self.cwd_lock);
         let worktree_manager_for_task: Option<Arc<zeph_worktree::DefaultWorktreeManager>> =
@@ -704,6 +708,11 @@ impl SubAgentManager {
 
                         let result = run_agent_loop(agent_loop_args).await;
                         drop(guard);
+                        // INV-9: resolve the durable promise after the agent loop exits,
+                        // before returning so the parent's await_promise wakes promptly.
+                        if let Some(seat) = durable_resolver {
+                            resolve_durable_promise(seat, &task_id_for_worktree, &result).await;
+                        }
                         return result;
                     }
 
@@ -714,7 +723,12 @@ impl SubAgentManager {
                     None
                 };
 
-            run_agent_loop(agent_loop_args).await
+            let result = run_agent_loop(agent_loop_args).await;
+            // INV-9: resolve the durable promise after the agent loop exits.
+            if let Some(seat) = durable_resolver {
+                resolve_durable_promise(seat, &task_id_for_worktree, &result).await;
+            }
+            result
         });
 
         let handle_transcript_dir = if config.transcript_enabled {

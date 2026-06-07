@@ -21,6 +21,7 @@ use zeph_config::{ContentIsolationConfig, McpServerConfig};
 use zeph_llm::provider::Message;
 
 use crate::def::{PermissionMode, SubAgentDef};
+use crate::durable::DurableResolverSeat;
 use crate::error::SubAgentError;
 use crate::fleet::SharedFleetRegistry;
 use crate::grants::{PermissionGrants, SecretRequest};
@@ -127,6 +128,15 @@ pub struct SpawnContext {
     /// `None` means no additional allowlist restriction is imposed by the parent
     /// (the agent's definition policy applies without narrowing).
     pub inherited_tool_allowlist: Option<HashSet<String>>,
+
+    /// Durable resolver seat for promise-based subagent spawn/await (spec-064 §P4, INV-9).
+    ///
+    /// When `Some`, the spawned background task resolves the parent's durable promise after the
+    /// agent loop terminates. The seat carries the resolver token and MUST NOT be forwarded to
+    /// the child's tool executor or LLM surface — only the background task wrapper consumes it.
+    ///
+    /// `None` when `durable.enabled && durable.subagent` is false (plain spawn/collect path).
+    pub durable_resolver: Option<DurableResolverSeat>,
 }
 
 /// Live status snapshot of a running sub-agent.
