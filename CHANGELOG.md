@@ -26,6 +26,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `src/url_scheme`: `validate_deep_link_cwd` following INV-CWD (absolute → canonicalize → case-fold → denylist → allowlist → is_dir); expanded denylist (Linux: `/etc` `/root` `/boot` `/run`; macOS: `/System` `/Library/Keychains`; Windows: `SystemRoot`/`WINDIR`)
 - `docs(spec-066)`: correct INV-TRUST reference — `TrustLevel::Untrusted` (non-existent) replaced with `ContentTrustLevel::ExternalUntrusted` from `zeph-sanitizer`; Phase 1 deferral note added; `DeferredHost` error variant removed in favour of `UnknownHost` for all unknown actions (closes #5030)
 
+### Fixed
+
+- fix(deep-link): add `#[non_exhaustive]` to `DeepLinkError` to prevent future variant additions from breaking downstream match expressions (closes #5045)
+- fix(deep-link): gate `DeepLinkConfig` and `deep_link` modules behind `#[cfg(feature = "deep-link")]` to match stated intent in module doc (closes #5046)
+
 ### Changed
 
 - `test(context)`: add `apply_session_config_wires_fidelity_providers` unit test in `zeph-core` — asserts that non-empty `FidelityConfig::semantic_scoring_provider` / `compress_provider` names produce `Some` in `compaction.fidelity_semantic_provider` / `fidelity_compress_provider` after `apply_session_config`, and that empty names or absent config produce `None` (closes #5035)

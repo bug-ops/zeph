@@ -82,6 +82,7 @@ pub struct NewSessionParams {
 }
 
 /// Errors returned by [`parse_deep_link`].
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum DeepLinkError {
     /// The URI is structurally invalid (not a valid URL, wrong scheme, etc.).

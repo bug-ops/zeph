@@ -151,6 +151,7 @@ pub struct Config {
     #[serde(default)]
     pub knowledge: crate::knowledge::KnowledgeConfig,
     /// Deep-link scheme configuration (`[deep_link]`). Gated by the `deep-link` feature.
+    #[cfg(feature = "deep-link")]
     #[serde(default)]
     pub deep_link: crate::deep_link::DeepLinkConfig,
 }
@@ -358,6 +359,7 @@ impl Default for Config {
             durable: crate::durable::DurableConfig::default(),
             caveman: crate::features::CavemanConfig::default(),
             knowledge: crate::knowledge::KnowledgeConfig::default(),
+            #[cfg(feature = "deep-link")]
             deep_link: crate::deep_link::DeepLinkConfig::default(),
         }
     }
