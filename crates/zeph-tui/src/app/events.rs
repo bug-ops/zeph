@@ -5,8 +5,6 @@ use tokio::sync::mpsc;
 
 use crate::event::{AgentEvent, AppEvent};
 
-use crossterm::event::{MouseEvent, MouseEventKind};
-
 use super::{App, ChatMessage, ConfirmState, ElicitationState, MessageRole, debug};
 
 impl App {
@@ -24,21 +22,6 @@ impl App {
             }
             AppEvent::Agent(agent_event) => self.handle_agent_event(agent_event),
             AppEvent::Paste(text) => self.handle_paste(&text),
-            AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
-        }
-    }
-
-    pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
-        match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_add(3);
-            }
-            MouseEventKind::ScrollDown => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_sub(3);
-            }
-            _ => {}
         }
     }
 

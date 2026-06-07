@@ -19,8 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `fix(tui)`: TUI transcript cannot be scrolled in Insert mode (#4988).
   - `PageUp`/`PageDown` now scroll the transcript in Insert mode (previously silently ignored).
-  - Mouse scroll wheel (`ScrollUp`/`ScrollDown`) now scrolls the transcript in both Insert and Normal modes via native `MouseEvent` handling — `EnableMouseCapture` is enabled at startup.
-  - `EnableAlternateScroll` (DECSET 1007h, added in #3685) is removed; it was mutually exclusive with `EnableMouseCapture` and its behaviour was terminal-dependent when both were active. Native click-drag text selection now requires holding Shift or Option (standard behaviour when mouse capture is active).
+  - `EnableAlternateScroll` (DECSET 1007h) is retained; native terminal scroll and click-drag text selection work without holding Shift or Option.
   - `auto_scroll` suppresses auto-scrolling to the bottom when the user has manually scrolled up (offset > 1), preserving the user's position during streaming.
 
 - `fix(init)`: align the default config output path in the init wizard with the runtime config search order. The wizard now defaults to `$XDG_CONFIG_HOME/zeph/config.toml` (same as `resolve_config_path`), so a config written during `zeph init` is found automatically on the next `zeph` invocation (closes #4984)
