@@ -22,6 +22,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `feat(knowledge)`: `zeph knowledge rollback --batch-id <id>` CLI command and `/knowledge rollback <id>` TUI slash command — removes ledger rows and graph entities/edges for the given batch; prompts for confirmation unless `--yes` is passed; warns when `edges == 0 && entities == 0` (Phase-1 limitation: Qdrant embeddings are not removed) (closes #5019)
 - `feat(knowledge)`: `zeph knowledge status` CLI command and `/knowledge status` TUI slash command — lists all ledger entries in newest-first order with `source_uri`, `content_hash`, `import_batch_id`, `ingested_at`, `entities`, and `edges` columns; TUI reply is plain text formatted the same way (closes #5020)
 - `feat(tui)`: add three knowledge command palette entries — `KnowledgeStatus`, `KnowledgeRollbackPrompt`, and `KnowledgeIngestPrompt` — accessible via `/` command input; `KnowledgeStatus` shows a `Querying knowledge index…` spinner while fetching; dispatched through `handle_knowledge_command` in `keys.rs` (closes #5020)
+- `feat(deep-link)`: Phase 3b — macOS `.app` bundle registration + stale scheme detection (spec-066 TASK-14, TASK-16; closes #5057, #5060)
+  - `src/url_scheme/register.rs`: `register_macos` now creates `~/Applications/Zeph.app` with `Contents/Info.plist` (CFBundleURLTypes entry for `zeph://`) and a symlink `Contents/MacOS/zeph → <current_exe>`; calls `lsregister -f <bundle>` to register with LaunchServices.
+  - `unregister_macos` calls `lsregister -u <bundle>` then removes the entire bundle directory.
+  - `status_macos` reads `_ZephExePath` from `Info.plist` and reports stale/ok/missing; `handle_url_scheme_status` now returns `bool` (stale=true) on all platforms.
+  - New public API: `SchemeStatus` enum (`Ok`, `NotRegistered`, `Stale(String)`) and `scheme_registration_status(current_exe)` for machine-readable checks.
+  - `UrlSchemeCommand::Status` gains `--check` flag: exits non-zero when stale or not registered.
+  - `zeph doctor` (check 16, `url_scheme.registration`): `Ok` when current, `Warn` when not registered, `Fail` when stale; gated under `#[cfg(feature = "deep-link")]`.
+  - 8 new unit tests for macOS: `register_macos_writes_bundle`, `unregister_macos_removes_bundle`, `unregister_macos_when_not_registered_is_ok`, `extract_zeph_exe_from_plist_parses_correctly`, `extract_zeph_exe_from_plist_returns_none_when_key_absent`, `scheme_status_macos_not_registered_when_no_bundle`, `scheme_status_macos_ok_when_registered_and_current`, `scheme_status_macos_stale_when_binary_missing`.
+  - 3 new Linux `scheme_status_linux_*` unit tests for machine-readable status.
 - `feat(deep-link)`: Phase 3 — Linux `.desktop` registration, Windows HKCU registry, macOS stub, unit tests for Linux registration (spec-066 TASK-10–13; closes #5014)
 - `feat(deep-link)`: Phase 2 — CLI dispatch, bootstrap integration, TUI notification, and `--init` wizard step (spec-066, closes #5013)
   - `src/url_scheme/prompt.rs`: `confirm_prompt` / `ConfirmResult` gate for INV-NOTTY (no-TTY → discard) and interactive y/N confirmation (TASK-7)

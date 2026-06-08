@@ -943,7 +943,14 @@ pub(crate) enum UrlSchemeCommand {
     /// Remove the OS `zeph://` URI scheme registration.
     Unregister,
     /// Show the current registration status.
-    Status,
+    ///
+    /// With `--check`, exits non-zero when the scheme is not registered or the registered
+    /// binary path does not match the current executable (stale registration).
+    Status {
+        /// Exit non-zero if the scheme is not registered or registration is stale.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1313,7 +1320,20 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::UrlScheme {
-                command: UrlSchemeCommand::Status
+                command: UrlSchemeCommand::Status { check: false }
+            })
+        ));
+    }
+
+    #[cfg(feature = "deep-link")]
+    #[test]
+    fn cli_parses_url_scheme_status_check_flag() {
+        use super::{Command, UrlSchemeCommand};
+        let cli = Cli::try_parse_from(["zeph", "url-scheme", "status", "--check"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::UrlScheme {
+                command: UrlSchemeCommand::Status { check: true }
             })
         ));
     }

@@ -733,6 +733,41 @@ fn build_doctor_transport(server: &zeph_config::McpServerConfig) -> zeph_mcp::Mc
 }
 
 // ---------------------------------------------------------------------------
+// URL scheme check
+// ---------------------------------------------------------------------------
+
+/// Check whether the `zeph://` URL scheme is registered and not stale.
+///
+/// Returns a [`CheckResult`] with status `Ok` when registration is current, `Warn` when the
+/// scheme is not registered (non-fatal — user may not have run `url-scheme register`), and
+/// `Fail` when the registration exists but points to a binary that is missing or does not match
+/// the currently running executable.
+#[cfg(feature = "deep-link")]
+fn check_url_scheme() -> CheckResult {
+    use crate::url_scheme::register;
+    let start = Instant::now();
+    let current_exe = std::env::current_exe().ok();
+
+    let stale = register::scheme_registration_status(current_exe.as_deref());
+
+    match stale {
+        register::SchemeStatus::Ok => CheckResult::ok(
+            "url_scheme.registration",
+            "registered and current",
+            elapsed_ms(start),
+        ),
+        register::SchemeStatus::NotRegistered => CheckResult::warn(
+            "url_scheme.registration",
+            "not registered — run `zeph url-scheme register` to enable zeph:// URIs",
+            elapsed_ms(start),
+        ),
+        register::SchemeStatus::Stale(reason) => {
+            CheckResult::fail("url_scheme.registration", reason, elapsed_ms(start))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -900,6 +935,10 @@ pub(crate) async fn run_doctor(
     for server in &config.mcp.servers {
         results.push(check_mcp_server(server, &config.mcp, mcp_timeout_secs).await);
     }
+
+    // 16. url_scheme.registration (deep-link feature only)
+    #[cfg(feature = "deep-link")]
+    results.push(check_url_scheme());
 
     let report = DoctorReport {
         elapsed_ms: elapsed_ms(total_start),

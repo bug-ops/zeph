@@ -687,8 +687,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             return match url_scheme_cmd {
                 UrlSchemeCommand::Register => register::handle_url_scheme_register(),
                 UrlSchemeCommand::Unregister => register::handle_url_scheme_unregister(),
-                UrlSchemeCommand::Status => {
-                    register::handle_url_scheme_status();
+                UrlSchemeCommand::Status { check } => {
+                    let stale = register::handle_url_scheme_status();
+                    if check && stale {
+                        std::process::exit(1);
+                    }
                     Ok(())
                 }
             };
