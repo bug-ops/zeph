@@ -60,6 +60,7 @@ pub fn build_graph_extraction_config(
         benna_fast_rate: cfg.spreading_activation.benna_fast_rate,
         benna_slow_rate: cfg.spreading_activation.benna_slow_rate,
         provenance: None,
+        system_prompt: None,
         recall_include_imported: cfg.recall_include_imported,
     }
 }

@@ -68,8 +68,9 @@ pub struct BackfillProgress {
 pub use algorithms::{apply_mmr, apply_temporal_decay};
 pub use cross_session::SessionSummaryResult;
 pub use graph::{
-    ExtractionResult, ExtractionStats, GraphExtractionConfig, LinkingStats, NoteLinkingConfig,
-    PostExtractValidator, extract_and_store, link_memory_notes,
+    ExtractionResult, ExtractionStats, GraphExtractionConfig, IngestBatchConfig, LinkingStats,
+    NoteLinkingConfig, PostExtractValidator, SharedPostExtractValidator, extract_and_store,
+    link_memory_notes,
 };
 pub use persona::{
     PersonaExtractionConfig, contains_self_referential_language, extract_persona_facts,

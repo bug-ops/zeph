@@ -157,7 +157,11 @@ pub use facade::{
 pub use forgetting::{ForgettingConfig, ForgettingResult, start_forgetting_loop};
 pub use graph::EntityLockManager;
 pub use graph::experience::{EvolutionSweepStats, ExperienceStore};
-pub use graph::ingest::{IngestLedger, LedgerEntry};
+pub use graph::ingest::{
+    HubDegree, ImportBatchId, IngestDocument, IngestFailure, IngestLedger, IngestProgress,
+    IngestReport, IngestSourceAdapter, IngestSourceKind, LedgerEntry, SubagentJsonl,
+    TranscriptEntry,
+};
 pub use graph::{
     BeliefMemConfig, BeliefRevisionConfig, BeliefStore, Community, Edge, EdgeType, Entity,
     EntityType, GraphFact, GraphOrigin, GraphProvenance, GraphStore, PendingBelief, RpeRouter,
@@ -190,13 +194,13 @@ pub use scenes::{
 };
 pub use semantic::{
     BufferedWrite, EmbedContext, ExtractionResult, ExtractionStats, GraphExtractionConfig,
-    HebbianReinforcement, HelaSpreadRuntime, ImportanceScoring, LinkingStats, MmrReranking,
-    NoteLinkingConfig, PersonaExtractionConfig, QueryBiasCorrection, RecalledMessage,
-    StructuredSummary, TemporalDecay, TrajectoryEntry, TrajectoryExtractionConfig,
-    TreeConsolidationConfig, TreeConsolidationResult, WriteBuffer, build_summarization_prompt,
-    contains_self_referential_language, extract_and_store, extract_persona_facts,
-    extract_trajectory_entries, link_memory_notes, run_tree_consolidation_sweep,
-    start_tree_consolidation_loop,
+    HebbianReinforcement, HelaSpreadRuntime, ImportanceScoring, IngestBatchConfig, LinkingStats,
+    MmrReranking, NoteLinkingConfig, PersonaExtractionConfig, QueryBiasCorrection, RecalledMessage,
+    SharedPostExtractValidator, StructuredSummary, TemporalDecay, TrajectoryEntry,
+    TrajectoryExtractionConfig, TreeConsolidationConfig, TreeConsolidationResult, WriteBuffer,
+    build_summarization_prompt, contains_self_referential_language, extract_and_store,
+    extract_persona_facts, extract_trajectory_entries, link_memory_notes,
+    run_tree_consolidation_sweep, start_tree_consolidation_loop,
 };
 pub use snapshot::{ImportStats, MemorySnapshot, export_snapshot, import_snapshot};
 pub use store::agent_sessions::{AgentSessionRow, SessionChannel, SessionKind, SessionStatus};

@@ -74,6 +74,7 @@ pub struct LedgerEntry {
 /// model versions (INV-5). An unchanged `(source_uri, content_hash)` pair skips re-embedding; a
 /// changed hash for the same URI is treated as a new input and produces a new ledger row while
 /// leaving any previous Qdrant chunks in place (stale-point cleanup is Phase 2).
+#[derive(Clone)]
 pub struct IngestLedger {
     pool: DbPool,
 }

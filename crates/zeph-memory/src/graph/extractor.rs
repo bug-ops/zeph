@@ -102,6 +102,8 @@ pub struct GraphExtractor {
     max_entities: usize,
     max_edges: usize,
     llm_timeout_secs: u64,
+    /// Override system prompt. `None` uses the built-in [`SYSTEM_PROMPT`].
+    system_prompt: Option<&'static str>,
 }
 
 impl GraphExtractor {
@@ -117,7 +119,23 @@ impl GraphExtractor {
             max_entities,
             max_edges,
             llm_timeout_secs,
+            system_prompt: None,
         }
+    }
+
+    /// Override the system prompt used during extraction.
+    ///
+    /// The default (when `None`) is the built-in conversational `SYSTEM_PROMPT`.
+    /// Pass `Some(prompt)` to select an alternative prompt such as
+    /// [`crate::graph::ingest::prompt::TECH_DOC_SYSTEM_PROMPT`].
+    ///
+    /// The type is `&'static str` — prompts must be compile-time constants.
+    /// This is a known MVP limitation (spec-067 critic C7); runtime-configurable
+    /// prompts will require a breaking change to this signature.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: &'static str) -> Self {
+        self.system_prompt = Some(prompt);
+        self
     }
 
     /// Extract entities and relations from a message with surrounding context.
@@ -140,8 +158,9 @@ impl GraphExtractor {
         }
 
         let user_prompt = build_user_prompt(message, context_messages);
+        let prompt = self.system_prompt.unwrap_or(SYSTEM_PROMPT);
         let messages = [
-            Message::from_legacy(Role::System, SYSTEM_PROMPT),
+            Message::from_legacy(Role::System, prompt),
             Message::from_legacy(Role::User, user_prompt),
         ];
 

@@ -631,6 +631,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                             benna_fast_rate: graph_cfg.spreading_activation.benna_fast_rate,
                             benna_slow_rate: graph_cfg.spreading_activation.benna_slow_rate,
                             provenance: None,
+                            system_prompt: None,
                             recall_include_imported: graph_cfg.recall_include_imported,
                         };
                         let pool = store.pool().clone();
