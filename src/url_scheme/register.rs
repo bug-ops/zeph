@@ -310,13 +310,13 @@ fn scheme_status_linux(current_exe: Option<&std::path::Path>) -> SchemeStatus {
             "registered binary not found on disk: {registered_exe}"
         ));
     }
-    if let Some(current) = current_exe {
-        if current != registered_path {
-            return SchemeStatus::Stale(format!(
-                "registered: {registered_exe}, current: {}",
-                current.display()
-            ));
-        }
+    if let Some(current) = current_exe
+        && current != registered_path
+    {
+        return SchemeStatus::Stale(format!(
+            "registered: {registered_exe}, current: {}",
+            current.display()
+        ));
     }
     SchemeStatus::Ok
 }
