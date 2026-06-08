@@ -1095,7 +1095,7 @@ impl SemanticMemory {
     /// use std::sync::Arc;
     /// use tokio::sync::mpsc;
     /// use zeph_memory::graph::ingest::{ImportBatchId, IngestDocument, IngestProgress};
-    /// use zeph_memory::semantic::{GraphExtractionConfig, SemanticMemory};
+    /// use zeph_memory::semantic::{GraphExtractionConfig, IngestBatchConfig, SemanticMemory};
     ///
     /// # async fn example(memory: SemanticMemory, docs: Vec<IngestDocument>) {
     /// let (tx, mut rx) = mpsc::channel(64);
