@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(knowledge)`: make `knowledge rollback` atomic — wraps graph-edge, graph-entity, and ledger DELETEs in a single `BEGIN IMMEDIATE` SQLite transaction; propagates ledger errors instead of silently discarding them (closes #5054)
 - fix(deep-link): add `#[non_exhaustive]` to `DeepLinkError` to prevent future variant additions from breaking downstream match expressions (closes #5045)
 - fix(deep-link): gate `DeepLinkConfig` and `deep_link` modules behind `#[cfg(feature = "deep-link")]` to match stated intent in module doc (closes #5046)
 - `fix(llm)`: `CompatibleProvider` now delegates `context_window()`, `supports_vision()`, and `last_reasoning_tokens()` to its inner `OpenAiProvider` instead of returning trait defaults (`None`, `false`, `None`). Callers that depend on context-budget decisions, vision capability detection, or reasoning-token accounting now receive correct values for compatible endpoints (closes #5048)

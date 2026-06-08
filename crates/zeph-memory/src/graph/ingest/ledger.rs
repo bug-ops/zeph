@@ -209,6 +209,29 @@ impl IngestLedger {
         Ok(result.rows_affected())
     }
 
+    /// Deletes all ledger rows for `batch_id` within a caller-provided transaction.
+    ///
+    /// Executes the same DELETE as [`Self::delete_batch`] but uses `tx` so the caller can
+    /// combine it with other writes in a single atomic unit.
+    /// Returns the number of rows removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn delete_batch_in_tx(
+        &self,
+        batch_id: &str,
+        tx: &mut zeph_db::DbTransaction<'_>,
+    ) -> Result<u64, MemoryError> {
+        let result = query(sql!(
+            "DELETE FROM knowledge_ingest_ledger WHERE import_batch_id = ?"
+        ))
+        .bind(batch_id)
+        .execute(&mut **tx)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Returns all ledger rows ordered by `ingested_at` descending, newest first.
     ///
     /// This is the data source for `zeph knowledge status`.

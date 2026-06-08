@@ -18,6 +18,7 @@ use std::time::Duration;
 use tracing::Instrument as _;
 use zeph_commands::CommandError;
 use zeph_commands::traits::agent::AgentAccess;
+use zeph_db;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::{GraphExtractionConfig, GraphStore, MessageId, extract_and_store};
 
@@ -755,11 +756,20 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                     );
                 };
 
-                let (edges, entities) = graph_store
-                    .delete_batch(batch_id)
+                let mut tx = zeph_db::begin_write(&pool)
                     .await
                     .map_err(|e| CommandError(e.to_string()))?;
-                let _ = ledger.delete_batch(batch_id).await;
+
+                let (edges, entities) = graph_store
+                    .delete_batch_in_tx(batch_id, &mut tx)
+                    .await
+                    .map_err(|e| CommandError(e.to_string()))?;
+                ledger
+                    .delete_batch_in_tx(batch_id, &mut tx)
+                    .await
+                    .map_err(|e| CommandError(e.to_string()))?;
+
+                tx.commit().await.map_err(|e| CommandError(e.to_string()))?;
 
                 let mut msg = format!(
                     "Rolled back batch '{batch_id}': removed {edges} edge(s) and \

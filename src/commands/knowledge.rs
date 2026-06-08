@@ -696,16 +696,24 @@ async fn handle_rollback(
         }
     }
 
-    let graph_store = GraphStore::new(pool);
+    let graph_store = GraphStore::new(pool.clone());
+    let mut tx = zeph_db::begin_write(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to begin transaction: {e}"))?;
+
     let (edges, entities) = graph_store
-        .delete_batch(batch_id)
+        .delete_batch_in_tx(batch_id, &mut tx)
         .await
         .map_err(|e| anyhow::anyhow!("graph delete failed: {e}"))?;
 
-    let _ = ledger
-        .delete_batch(batch_id)
+    ledger
+        .delete_batch_in_tx(batch_id, &mut tx)
         .await
         .map_err(|e| anyhow::anyhow!("ledger delete failed: {e}"))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| anyhow::anyhow!("transaction commit failed: {e}"))?;
 
     if edges == 0 && entities == 0 {
         println!(

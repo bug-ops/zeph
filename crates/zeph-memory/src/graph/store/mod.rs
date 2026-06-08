@@ -1577,6 +1577,45 @@ impl GraphStore {
         Ok((edges_deleted, entities_deleted))
     }
 
+    /// Delete all graph edges and orphaned entities for `batch_id` within a caller-provided
+    /// transaction.
+    ///
+    /// Executes the same two-step DELETE as [`Self::delete_batch`] but uses `tx` so the
+    /// caller can combine it with other writes in a single atomic unit.
+    /// Returns `(edges_deleted, entities_deleted)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn delete_batch_in_tx(
+        &self,
+        batch_id: &str,
+        tx: &mut zeph_db::DbTransaction<'_>,
+    ) -> Result<(u64, u64), MemoryError> {
+        let edges_deleted =
+            zeph_db::query(sql!("DELETE FROM graph_edges WHERE import_batch_id = ?"))
+                .bind(batch_id)
+                .execute(&mut **tx)
+                .await?
+                .rows_affected();
+
+        let entities_deleted = zeph_db::query(sql!(
+            "DELETE FROM graph_entities
+             WHERE import_batch_id = ?
+               AND id NOT IN (
+                   SELECT DISTINCT source_entity_id FROM graph_edges
+                   UNION
+                   SELECT DISTINCT target_entity_id FROM graph_edges
+               )"
+        ))
+        .bind(batch_id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+
+        Ok((edges_deleted, entities_deleted))
+    }
+
     /// Delete the oldest excess entities when count exceeds `max_entities`.
     ///
     /// Entities are ranked by ascending edge count, then ascending `last_seen_at` (LRU).
