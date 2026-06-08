@@ -617,7 +617,10 @@ Write commands are detected via `WRITE_INDICATORS` heuristic (keywords like `rm`
 [tools.utility]
 enabled = false
 threshold = 0.0   # calls below this score are skipped
+utility_window = 0  # consecutive low-utility calls before early-stopping the turn; 0 = disabled
 ```
+
+`utility_window` — number of consecutive non-`ToolCall` recommendations (i.e., calls scored below threshold) before the entire tool loop terminates early for the current turn. Default `0` preserves the existing per-call skip behavior exactly — no loop break occurs.
 
 ### Key Invariants
 
@@ -625,6 +628,43 @@ threshold = 0.0   # calls below this score are skipped
 - Scoring errors are fail-closed — uncertain scores do not allow execution
 - NEVER skip `memory_save` or other side-effect tools on pure score alone
 - `invoke_skill` and `load_skill` are ALWAYS exempt from the utility gate — they are skill-orchestration primitives, not reducible to a utility score. Both must appear in the `exempt_tools` list of `UtilityScoringConfig` by default (enforced by a unit test in `config.rs`). This is a hard invariant: a utility gate that skips `invoke_skill` or `load_skill` can silently stall skill-driven turns.
+- The `utility_window` consecutive-low-utility counter MUST NOT increment on exempt tool calls (`invoke_skill`, `load_skill`) or on blocked/user-requested calls that early-return before scoring. Only calls that pass through `recommend_action` scoring count toward the window. A turn that still contains `invoke_skill`/`load_skill` MUST NEVER be early-stopped by this counter — incrementing on exempts would silently stall skill-driven turns (spec violation).
+- `utility_window = 0` must reproduce today's exact code path: `note_action` always returns `false` and the window counter is never consulted.
+
+---
+
+## Structural Policy Gate
+
+
+Rule-based (non-LLM) pre-execution enforcement. `PolicyEnforcer` compiles `PolicyConfig` into `CompiledRule`s; `PolicyGateExecutor` wraps an inner executor and enforces policy in `execute_tool_call` / `execute_tool_call_confirmed`. Deny-wins semantics, glob tool/path matching, trust-level thresholds, `args_match` regex, env predicates, external `policy_file` loading with symlink-escape guard, `MAX_RULES = 256`.
+
+### Config
+
+```toml
+[tools.policy]
+enabled = false
+default_effect = "allow"   # "allow" | "deny"
+policy_file = ""           # path to external policy TOML; symlink escape guarded
+policy_provider = ""       # provider name from [[llm.providers]] for future LLM-assisted
+                           # policy translation; empty = fall back to default provider.
+                           # Currently reserved — no LLM path is wired. Added to satisfy
+                           # the multi-model config contract and avoid a later breaking change.
+
+[[tools.policy.rules]]
+effect = "allow" | "deny"
+tool = "glob_pattern"
+```
+
+`policy_provider` follows the same multi-model contract as `tools.adversarial_policy.policy_provider`: it references a `[[llm.providers]]` name; empty string means disabled/default; validated against declared providers at startup (mirroring `loader.rs:522`). When a non-empty value is set, it must name a provider declared in `[[llm.providers]]` — a missing name is a startup error.
+
+### Key Invariants
+
+- Deny-wins: a single `deny` rule overrides all `allow` rules for the same call
+- `MAX_RULES = 256` — configurations exceeding this limit are rejected at compile time
+- `policy_file` loading is symlink-escape guarded — paths outside the config root are rejected
+- `[tools.policy]` rules take precedence over `[tools.authorization]` rules (first-match-wins across the merged rule set)
+- `policy_provider` MUST NOT be validated when empty — empty string means "use default", not "missing provider"; mirrors adversarial_policy handling in `loader.rs:539`
+- NEVER use `policy_provider` to gate structural rule evaluation — structural rules are non-LLM; the field is reserved for future use only
 
 ---
 

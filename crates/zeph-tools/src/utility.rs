@@ -145,6 +145,8 @@ pub struct UtilityScorer {
     config: UtilityScoringConfig,
     /// Hashes of `(tool_name, params)` seen in the current LLM turn for redundancy detection.
     recent_calls: HashMap<u64, u32>,
+    /// Count of consecutive non-`ToolCall` recommendations since the last `ToolCall` or turn reset.
+    consecutive_low: usize,
 }
 
 impl UtilityScorer {
@@ -154,6 +156,7 @@ impl UtilityScorer {
         Self {
             config,
             recent_calls: HashMap::new(),
+            consecutive_low: 0,
         }
     }
 
@@ -282,6 +285,26 @@ impl UtilityScorer {
     /// Reset per-turn state. Call at the start of each LLM tool round.
     pub fn clear(&mut self) {
         self.recent_calls.clear();
+        self.consecutive_low = 0;
+    }
+
+    /// Record the recommended action and check whether the consecutive-low-utility window is
+    /// exhausted.
+    ///
+    /// Returns `true` when `config.utility_window > 0` and `consecutive_low >= utility_window`,
+    /// indicating that the current batch should be downgraded and the caller should signal
+    /// a hard break of the outer iteration loop. Always returns `false` when
+    /// `utility_window == 0` (disabled) so existing behaviour is fully preserved.
+    ///
+    /// Must be called only for calls that actually went through `recommend_action` — exempt and
+    /// pre-exec-blocked calls bypass scoring and must NOT call this method.
+    pub fn note_action(&mut self, action: &UtilityAction) -> bool {
+        if *action == UtilityAction::ToolCall {
+            self.consecutive_low = 0;
+        } else {
+            self.consecutive_low = self.consecutive_low.saturating_add(1);
+        }
+        self.config.utility_window > 0 && self.consecutive_low >= self.config.utility_window
     }
 
     /// Returns `true` when `tool_name` is in the exempt list (case-insensitive).
@@ -300,6 +323,12 @@ impl UtilityScorer {
     #[must_use]
     pub fn threshold(&self) -> f32 {
         self.config.threshold
+    }
+
+    /// The configured consecutive-low-utility window size. 0 means disabled.
+    #[must_use]
+    pub fn utility_window(&self) -> usize {
+        self.config.utility_window
     }
 }
 
@@ -865,5 +894,58 @@ mod tests {
     fn is_exempt_empty_list_returns_false() {
         let scorer = UtilityScorer::new(UtilityScoringConfig::default());
         assert!(!scorer.is_exempt("read"));
+    }
+
+    #[test]
+    fn note_action_window_zero_never_fires() {
+        let mut scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            utility_window: 0,
+            ..UtilityScoringConfig::default()
+        });
+        // Any number of non-ToolCall actions must not trigger early-stop when window=0.
+        for _ in 0..100 {
+            assert!(!scorer.note_action(&UtilityAction::Stop));
+        }
+    }
+
+    #[test]
+    fn note_action_window_three_fires_on_third() {
+        let mut scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            utility_window: 3,
+            ..UtilityScoringConfig::default()
+        });
+        assert!(!scorer.note_action(&UtilityAction::Stop));
+        assert!(!scorer.note_action(&UtilityAction::Respond));
+        assert!(scorer.note_action(&UtilityAction::Stop));
+    }
+
+    #[test]
+    fn note_action_tool_call_resets_counter() {
+        let mut scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            utility_window: 2,
+            ..UtilityScoringConfig::default()
+        });
+        assert!(!scorer.note_action(&UtilityAction::Stop));
+        // ToolCall resets the counter.
+        assert!(!scorer.note_action(&UtilityAction::ToolCall));
+        // One more non-ToolCall does not fire — counter was reset.
+        assert!(!scorer.note_action(&UtilityAction::Stop));
+    }
+
+    #[test]
+    fn note_action_clear_resets_counter() {
+        let mut scorer = UtilityScorer::new(UtilityScoringConfig {
+            enabled: true,
+            utility_window: 1,
+            ..UtilityScoringConfig::default()
+        });
+        // First Stop would fire (window=1)...
+        assert!(scorer.note_action(&UtilityAction::Stop));
+        // ...but after clear() the counter is reset so it fires again from scratch.
+        scorer.clear();
+        assert!(scorer.note_action(&UtilityAction::Stop));
     }
 }

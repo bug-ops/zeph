@@ -254,6 +254,9 @@ pub struct PolicyConfig {
     pub rules: Vec<PolicyRuleConfig>,
     /// Optional external policy file (TOML). When set, overrides inline rules.
     pub policy_file: Option<String>,
+    /// Provider name for LLM-assisted policy checks. Empty = disabled.
+    #[serde(default)]
+    pub policy_provider: ProviderName,
 }
 
 /// A single policy rule as read from TOML.
@@ -603,6 +606,12 @@ pub struct UtilityScoringConfig {
     /// Tool names that bypass the utility gate unconditionally.
     #[serde(default = "default_utility_exempt_tools")]
     pub exempt_tools: Vec<String>,
+    /// Consecutive low-utility calls before early-stopping the loop. 0 = disabled.
+    ///
+    /// Exempt tools (`invoke_skill`, `load_skill`) do not count toward this window.
+    /// The counter resets between outer loop iterations.
+    #[serde(default)]
+    pub utility_window: usize,
 }
 
 impl Default for UtilityScoringConfig {
@@ -615,6 +624,7 @@ impl Default for UtilityScoringConfig {
             redundancy_weight: default_utility_redundancy_weight(),
             uncertainty_bonus: default_utility_uncertainty_bonus(),
             exempt_tools: default_utility_exempt_tools(),
+            utility_window: 0,
         }
     }
 }
@@ -1483,5 +1493,52 @@ destination = "/var/log/zeph-audit.log""#,
             let config: ToolsConfig = toml::from_str(toml_str).unwrap();
             assert_eq!(config.audit.destination, expected);
         }
+    }
+
+    #[test]
+    fn policy_provider_serde_roundtrip() {
+        let toml_str = r#"
+            [policy]
+            enabled = true
+            policy_provider = "my-llm"
+        "#;
+        let config: ToolsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.policy.policy_provider.as_str(), "my-llm");
+
+        let json = serde_json::to_string(&config.policy).unwrap();
+        let back: PolicyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.policy_provider.as_str(), "my-llm");
+    }
+
+    #[test]
+    fn policy_provider_default_is_empty() {
+        let config = PolicyConfig::default();
+        assert!(config.policy_provider.is_empty());
+    }
+
+    #[test]
+    fn utility_window_default_is_zero() {
+        let config = UtilityScoringConfig::default();
+        assert_eq!(config.utility_window, 0);
+    }
+
+    #[test]
+    fn utility_window_serde_roundtrip() {
+        let toml_str = r#"
+            [utility_scoring]
+            enabled = true
+            utility_window = 3
+        "#;
+        // Parse as a wrapper struct to exercise the nested key.
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            utility_scoring: UtilityScoringConfig,
+        }
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(w.utility_scoring.utility_window, 3);
+
+        let json = serde_json::to_string(&w.utility_scoring).unwrap();
+        let back: UtilityScoringConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.utility_window, 3);
     }
 }

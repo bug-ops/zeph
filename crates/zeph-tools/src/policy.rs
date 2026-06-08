@@ -428,6 +428,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/tmp/../etc/passwd");
@@ -456,6 +457,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/./shadow");
@@ -484,6 +486,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
@@ -527,6 +530,7 @@ mod tests {
                 },
             ],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/tmp/secret.sh");
@@ -568,6 +572,7 @@ mod tests {
                 },
             ],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
@@ -608,6 +613,7 @@ mod tests {
                 },
             ],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
@@ -630,6 +636,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
@@ -646,6 +653,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
@@ -674,6 +682,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
 
@@ -716,6 +725,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules,
             policy_file: None,
+            policy_provider: Default::default(),
         };
         assert!(matches!(
             PolicyEnforcer::compile(&config),
@@ -739,6 +749,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/a/b/c/d/../../../../../../etc/passwd");
@@ -769,6 +780,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
@@ -846,6 +858,7 @@ tool = "shell"
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: Some(policy_path.to_string_lossy().into_owned()),
+            policy_provider: Default::default(),
         };
         let result = PolicyEnforcer::compile(&config);
         std::env::set_current_dir(&original_cwd).unwrap();
@@ -878,6 +891,7 @@ tool = "shell"
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: Some(link.to_string_lossy().into_owned()),
+            policy_provider: Default::default(),
         };
         let result = PolicyEnforcer::compile(&config);
         std::env::set_current_dir(&original_cwd).unwrap();
@@ -906,6 +920,7 @@ tool = "shell"
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
@@ -934,6 +949,7 @@ tool = "shell"
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
@@ -962,6 +978,7 @@ tool = "shell"
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
@@ -995,6 +1012,7 @@ tool = "shell"
             default_effect: DefaultEffect::Deny,
             rules,
             policy_file: None,
+            policy_provider: Default::default(),
         };
         assert!(
             PolicyEnforcer::compile(&config).is_ok(),
@@ -1024,6 +1042,7 @@ tool = "shell"
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: Some(policy_path.to_string_lossy().into_owned()),
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
@@ -1049,6 +1068,7 @@ tool = "shell"
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: Some(policy_path.to_string_lossy().into_owned()),
+            policy_provider: Default::default(),
         };
         assert!(
             matches!(
@@ -1068,6 +1088,7 @@ tool = "shell"
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: Some("/tmp/__zeph_no_such_policy_file__.toml".to_owned()),
+            policy_provider: Default::default(),
         };
         assert!(
             matches!(
@@ -1090,6 +1111,7 @@ tool = "shell"
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: Some(policy_path.to_string_lossy().into_owned()),
+            policy_provider: Default::default(),
         };
         assert!(
             matches!(
@@ -1116,6 +1138,7 @@ tool = "shell"
                 capabilities: vec![],
             }],
             policy_file: None,
+            policy_provider: Default::default(),
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);

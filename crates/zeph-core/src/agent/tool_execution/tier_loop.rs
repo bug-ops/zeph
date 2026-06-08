@@ -402,7 +402,8 @@ impl<C: Channel> Agent<C> {
         &mut self,
         calls: &[ToolCall],
         pre_exec_blocked: &[bool],
-    ) -> Vec<zeph_tools::UtilityAction> {
+        pending_system_hints: &mut Vec<String>,
+    ) -> (Vec<zeph_tools::UtilityAction>, bool) {
         #[allow(clippy::cast_possible_truncation)]
         let tokens_consumed =
             usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
@@ -434,50 +435,69 @@ impl<C: Channel> Agent<C> {
                 };
                 zeph_tools::has_explicit_tool_request(&text)
             });
-        calls
-            .iter()
-            .enumerate()
-            .map(|(idx, call)| {
-                if pre_exec_blocked[idx] {
-                    return zeph_tools::UtilityAction::ToolCall;
-                }
-                if self
-                    .tool_orchestrator
-                    .utility_scorer
-                    .is_exempt(call.tool_id.as_str())
-                {
-                    return zeph_tools::UtilityAction::ToolCall;
-                }
-                let ctx = zeph_tools::UtilityContext {
-                    tool_calls_this_turn: tool_calls_this_turn + idx,
-                    tokens_consumed,
-                    token_budget,
-                    user_requested: explicit_request,
-                };
-                let score = self.tool_orchestrator.utility_scorer.score(call, &ctx);
-                let action = self
-                    .tool_orchestrator
-                    .utility_scorer
-                    .recommend_action(score.as_ref(), &ctx);
-                tracing::debug!(
+        let mut actions = Vec::with_capacity(calls.len());
+        // Once window exhaustion fires, all remaining calls in the batch are downgraded to Stop.
+        let mut window_exhausted = false;
+        for (idx, call) in calls.iter().enumerate() {
+            if window_exhausted {
+                actions.push(zeph_tools::UtilityAction::Stop);
+                continue;
+            }
+            if pre_exec_blocked[idx] {
+                actions.push(zeph_tools::UtilityAction::ToolCall);
+                continue;
+            }
+            if self
+                .tool_orchestrator
+                .utility_scorer
+                .is_exempt(call.tool_id.as_str())
+            {
+                actions.push(zeph_tools::UtilityAction::ToolCall);
+                continue;
+            }
+            let ctx = zeph_tools::UtilityContext {
+                tool_calls_this_turn: tool_calls_this_turn + idx,
+                tokens_consumed,
+                token_budget,
+                user_requested: explicit_request,
+            };
+            let score = self.tool_orchestrator.utility_scorer.score(call, &ctx);
+            let action = self
+                .tool_orchestrator
+                .utility_scorer
+                .recommend_action(score.as_ref(), &ctx);
+            tracing::debug!(
+                tool = %call.tool_id,
+                score = ?score.as_ref().map(|s| s.total),
+                threshold = self.tool_orchestrator.utility_scorer.threshold(),
+                action = ?action,
+                "utility gate: action recommended"
+            );
+            if action != zeph_tools::UtilityAction::ToolCall {
+                tracing::info!(
                     tool = %call.tool_id,
-                    score = ?score.as_ref().map(|s| s.total),
-                    threshold = self.tool_orchestrator.utility_scorer.threshold(),
                     action = ?action,
-                    "utility gate: action recommended"
+                    "utility gate: non-execute action"
                 );
-                if action != zeph_tools::UtilityAction::ToolCall {
-                    tracing::info!(
-                        tool = %call.tool_id,
-                        action = ?action,
-                        "utility gate: non-execute action"
-                    );
-                }
-                // Record call regardless so subsequent calls in this batch see it as prior.
-                self.tool_orchestrator.utility_scorer.record_call(call);
-                action
-            })
-            .collect()
+            }
+            // Record call regardless so subsequent calls in this batch see it as prior.
+            self.tool_orchestrator.utility_scorer.record_call(call);
+            // note_action increments the consecutive-low counter for scored calls only.
+            // Exempt and pre-exec-blocked calls above bypass scoring and are not tracked.
+            if self.tool_orchestrator.utility_scorer.note_action(&action) {
+                let n = self.tool_orchestrator.utility_scorer.utility_window();
+                tracing::info!(
+                    window = n,
+                    "utility gate: consecutive-low window exhausted, early-stopping loop"
+                );
+                pending_system_hints.push(format!(
+                    "Tool loop stopped early: utility below threshold for {n} consecutive calls."
+                ));
+                window_exhausted = true;
+            }
+            actions.push(action);
+        }
+        (actions, window_exhausted)
     }
 
     #[tracing::instrument(
@@ -487,11 +507,13 @@ impl<C: Channel> Agent<C> {
         fields(tool_count = tool_calls.len()),
         err
     )]
+    /// Returns `true` when the utility-window was exhausted and the outer iteration loop
+    /// should break immediately after this batch.
     pub(super) async fn handle_native_tool_calls(
         &mut self,
         text: Option<&str>,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
-    ) -> Result<(), crate::agent::error::AgentError> {
+    ) -> Result<bool, crate::agent::error::AgentError> {
         let t_tool_exec = std::time::Instant::now();
         tracing::debug!("turn timing: tool_exec start");
         // Scan for image-exfiltration in accompanying text, send to channel, persist
@@ -513,6 +535,8 @@ impl<C: Channel> Agent<C> {
             repeat_blocked,
             cache_hits,
             mage_blocked,
+            mut early_stop_hints,
+            window_exhausted,
         } = self.prepare_tool_dispatch(tool_calls);
 
         let max_retries = self.tool_orchestrator.max_tool_retries;
@@ -564,11 +588,16 @@ impl<C: Channel> Agent<C> {
         let Some(TierLoopData {
             mut tool_results,
             pending_focus_checkpoint,
-            pending_system_hints,
+            mut pending_system_hints,
         }) = tier_data
         else {
-            return Ok(());
+            return Ok(false);
         };
+        // Prepend window-exhaustion hints so the LLM sees them before per-call skipped results.
+        if !early_stop_hints.is_empty() {
+            early_stop_hints.extend(pending_system_hints);
+            pending_system_hints = early_stop_hints;
+        }
 
         // Phases 2a / 2 / 3: confirmation, transient retry, parameter reformat.
         // Each phase may return early on cancellation (Ok(())) or propagate channel errors.
@@ -598,7 +627,7 @@ impl<C: Channel> Agent<C> {
             .tool_exec_ms
             .saturating_add(tool_exec_ms);
 
-        Ok(())
+        Ok(window_exhausted)
     }
 
     async fn push_assistant_tool_use_message(
@@ -672,8 +701,6 @@ impl<C: Channel> Agent<C> {
             .task_execution_env
             .as_deref()
             .map(|name| ExecutionContext::default().with_name(name));
-        // Assign stable IDs before execution so ToolStart, ToolOutputChunk, and ToolOutput
-        // all share the same ID, enabling correct per-tool routing in parallel execution.
         let tool_call_ids: Vec<String> = tool_calls
             .iter()
             .map(|_| uuid::Uuid::new_v4().to_string())
@@ -708,36 +735,19 @@ impl<C: Channel> Agent<C> {
 
         self.check_exfiltration_urls(tool_calls);
 
-        // Pre-execution verification (TrustBench pattern, issue #1630).
-        // Runs after exfiltration guard (flag-only) and before repeat-detection.
-        // Block: return synthetic error result for this call without executing.
-        // Warn: log + emit security event + continue execution.
+        // Pre-execution verification (TrustBench, #1630): runs before repeat-detection.
         let mut pre_exec_blocked = self.run_pre_execution_verifiers(&calls);
 
         self.apply_channel_tool_allowlist(&calls, &mut pre_exec_blocked);
 
         // Utility gate: score each call and recommend an action (#2477).
-        // user_requested is detected from the last user message only — never from LLM content or
-        // tool outputs to prevent prompt-injection bypass (C2 fix).
-        let utility_actions = self.compute_utility_actions(&calls, &pre_exec_blocked);
+        // user_requested is from the last user message only (prompt-injection guard).
+        let mut early_stop_hints: Vec<String> = Vec::new();
+        let (utility_actions, window_exhausted) =
+            self.compute_utility_actions(&calls, &pre_exec_blocked, &mut early_stop_hints);
 
-        // Per-session quota check. Counted once per logical dispatch batch (M3: retries do not
-        // consume additional quota slots). When exceeded, all calls in this batch are quota-blocked.
-        let quota_blocked = if let Some(max) = self.tool_orchestrator.check_quota() {
-            tracing::warn!(
-                max,
-                count = self.tool_orchestrator.session_tool_call_count,
-                "tool call quota exceeded for session"
-            );
-            true
-        } else {
-            // Increment before the retry loop — each call in this batch counts as one logical call.
-            self.tool_orchestrator.session_tool_call_count = self
-                .tool_orchestrator
-                .session_tool_call_count
-                .saturating_add(u32::try_from(calls.len()).unwrap_or(u32::MAX));
-            false
-        };
+        // M3: quota counted once per batch; retries do not consume additional slots.
+        let quota_blocked = self.check_and_update_quota(calls.len());
 
         // Build args hashes and check for repeats. Blocked calls get a pre-built error result.
         let args_hashes: Vec<u64> = calls.iter().map(|c| tool_args_hash(&c.params)).collect();
@@ -757,16 +767,13 @@ impl<C: Channel> Agent<C> {
                 blocked
             })
             .collect();
-        // Repeat-detection (CRIT-3): push LLM-initiated calls BEFORE execution.
-        // Cache hits are also pushed here (P1 invariant): a cached tool called N times must
-        // still trigger repeat-detection to prevent infinite loops if the LLM keeps requesting it.
+        // CRIT-3: push calls before execution; cache hits included (P1 invariant).
         for (call, &hash) in calls.iter().zip(args_hashes.iter()) {
             self.tool_orchestrator
                 .push_tool_call(call.tool_id.as_str(), hash);
         }
 
-        // Cache lookup: for each non-repeat, cacheable call, check result cache before dispatch.
-        // Hits are stored as pre-built results; cache store happens after join_all completes.
+        // Cache lookup: hits pre-built before dispatch; cache store happens after join_all.
         let cache_hits: Vec<Option<zeph_tools::ToolOutput>> = calls
             .iter()
             .zip(args_hashes.iter())
@@ -798,6 +805,8 @@ impl<C: Channel> Agent<C> {
             repeat_blocked,
             cache_hits,
             mage_blocked,
+            early_stop_hints,
+            window_exhausted,
         }
     }
 
@@ -831,6 +840,22 @@ impl<C: Channel> Agent<C> {
         );
         self.services.security.mage_accumulator.record_block();
         Some((score, top))
+    }
+
+    fn check_and_update_quota(&mut self, batch_len: usize) -> bool {
+        if let Some(max) = self.tool_orchestrator.check_quota() {
+            tracing::warn!(
+                max,
+                count = self.tool_orchestrator.session_tool_call_count,
+                "tool call quota exceeded for session"
+            );
+            return true;
+        }
+        self.tool_orchestrator.session_tool_call_count = self
+            .tool_orchestrator
+            .session_tool_call_count
+            .saturating_add(u32::try_from(batch_len).unwrap_or(u32::MAX));
+        false
     }
 
     fn check_exfiltration_urls(&mut self, tool_calls: &[zeph_llm::provider::ToolUseRequest]) {
@@ -2639,7 +2664,8 @@ impl<C: Channel> Agent<C> {
             return Ok(Some(()));
         };
         self.preserve_thinking_blocks(thinking_blocks);
-        self.handle_native_tool_calls(text.as_deref(), &tool_calls)
+        let window_exhausted = self
+            .handle_native_tool_calls(text.as_deref(), &tool_calls)
             .await?;
 
         // Summarize before pruning; apply deferred summaries after pruning.
@@ -2653,6 +2679,10 @@ impl<C: Channel> Agent<C> {
         // cooldown, or trigger Hard tier (no LLM call during tool loop).
         self.maybe_soft_compact_mid_iteration();
         self.flush_deferred_summaries().await;
+
+        if window_exhausted {
+            return Ok(Some(()));
+        }
 
         Ok(None)
     }

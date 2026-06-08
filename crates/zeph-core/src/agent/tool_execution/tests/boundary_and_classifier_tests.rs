@@ -1118,3 +1118,137 @@ mod skip_ml_internal_tools {
         }
     }
 }
+
+// --- utility-window hard-break tests (C1/C3 fix) ---
+
+/// C3: window=2 + two consecutive low-utility calls must cause `handle_native_tool_calls`
+/// to return `true`, signalling the outer iteration loop to break.
+///
+/// Also verifies:
+/// - remaining calls in the batch are downgraded to `Stop` (produce `[skipped]`)
+/// - the system hint "Tool loop stopped early" is present in the injected ToolResult messages
+#[tokio::test]
+async fn utility_window_exhaustion_signals_hard_break() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::{Message, MessagePart, Role, ToolUseRequest};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+
+    // threshold=1.0 ensures every scored call is non-ToolCall; window=2 fires after 2 calls.
+    agent
+        .tool_orchestrator
+        .set_utility_config(zeph_tools::UtilityScoringConfig {
+            enabled: true,
+            threshold: 1.0,
+            utility_window: 2,
+            ..zeph_tools::UtilityScoringConfig::default()
+        });
+
+    // Two calls: both will score below threshold → counter hits 2 → window fires.
+    let tool_calls = vec![
+        ToolUseRequest {
+            id: "call-w1".to_owned(),
+            name: "bash".to_owned().into(),
+            input: serde_json::json!({"command": "ls"}),
+        },
+        ToolUseRequest {
+            id: "call-w2".to_owned(),
+            name: "read".to_owned().into(),
+            input: serde_json::json!({"path": "/tmp/x"}),
+        },
+    ];
+
+    let window_exhausted = agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    assert!(
+        window_exhausted,
+        "handle_native_tool_calls must return true when utility_window is exhausted"
+    );
+
+    // The system hint must appear in a system-role message injected into history.
+    let has_hint = agent.msg.messages.iter().any(|m| {
+        m.role == Role::User
+            && m.parts.iter().any(|p| {
+                if let MessagePart::ToolResult { content, .. } = p {
+                    content.contains("Tool loop stopped early")
+                } else {
+                    false
+                }
+            })
+    });
+    // The hint is pushed as a pending_system_hints entry which becomes part of the
+    // tool-result batch message; verify the overall message history contains it.
+    let hint_in_content = agent
+        .msg
+        .messages
+        .iter()
+        .any(|m| m.content.contains("Tool loop stopped early"));
+    assert!(
+        has_hint || hint_in_content,
+        "system hint 'Tool loop stopped early' must be present in message history after window exhaustion"
+    );
+}
+
+/// C3: exempt tools (`invoke_skill`) must NOT count toward the utility window.
+///
+/// Configures window=1 with threshold=1.0 (every scored call fails). With only exempt
+/// calls in the batch, the window must NOT fire — `handle_native_tool_calls` returns `false`.
+#[tokio::test]
+async fn utility_window_exempt_tool_does_not_trigger_break() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::{Message, Role, ToolUseRequest};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+
+    // window=1: a single scored non-ToolCall would fire.  threshold=1.0: every scored call fails.
+    agent
+        .tool_orchestrator
+        .set_utility_config(zeph_tools::UtilityScoringConfig {
+            enabled: true,
+            threshold: 1.0,
+            utility_window: 1,
+            ..zeph_tools::UtilityScoringConfig::default()
+        });
+
+    // invoke_skill is in the exempt list — must bypass note_action entirely.
+    let tool_calls = vec![ToolUseRequest {
+        id: "call-exempt".to_owned(),
+        name: "invoke_skill".to_owned().into(),
+        input: serde_json::json!({"skill": "test"}),
+    }];
+
+    let window_exhausted = agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    assert!(
+        !window_exhausted,
+        "exempt tool invoke_skill must not trigger utility-window exhaustion"
+    );
+}

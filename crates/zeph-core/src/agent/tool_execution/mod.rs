@@ -55,6 +55,14 @@ struct ToolDispatchContext {
     /// When `Some((score, top_signals))`, all tool calls in this batch are blocked with
     /// `ToolError::TrajectoryRiskExceeded`. Set when `mage_accumulator.is_blocked()` at dispatch time.
     mage_blocked: Option<(f64, Vec<String>)>,
+    /// System hints injected by the utility-window early-stop logic during `compute_utility_actions`.
+    early_stop_hints: Vec<String>,
+    /// Set when `compute_utility_actions` exhausted the consecutive-low window.
+    ///
+    /// When `true`, the outer `for iteration` loop must `break` after the current batch
+    /// is processed — the advisory hint alone is not sufficient because the LLM can
+    /// re-issue tool calls in the next iteration.
+    window_exhausted: bool,
 }
 
 /// Output of `Agent::classify_tool_result`: all fields derived from the raw `ToolResult`.

@@ -519,6 +519,10 @@ impl Config {
                 &self.tools.retry.parameter_reformat_provider,
             ),
             (
+                "tools.policy.policy_provider",
+                &self.tools.policy.policy_provider,
+            ),
+            (
                 "tools.adversarial_policy.policy_provider",
                 &self.tools.adversarial_policy.policy_provider,
             ),

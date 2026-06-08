@@ -720,6 +720,8 @@ enabled = false
 default_effect = "deny"
 # Optional external policy rules file (TOML). Overrides inline rules when set.
 # policy_file = "policy.toml"
+# Provider name from [[llm.providers]] for LLM-assisted policy checks. Empty = disabled.
+# policy_provider = ""
 
 # Example policy rules:
 # [[tools.policy.rules]]
@@ -731,6 +733,14 @@ default_effect = "deny"
 # effect = "allow"
 # tool = "shell"
 # paths = ["/tmp/*"]
+
+[tools.utility]
+# Enable utility-guided tool dispatch gating (scores gain/cost/redundancy per call)
+enabled = false
+# Minimum utility score to execute a tool call (0.0–1.0)
+threshold = 0.1
+# Consecutive low-utility calls before early-stopping the whole tool loop for the turn. 0 = disabled.
+# utility_window = 0
 
 [tools.retry]
 # Maximum retry attempts for transient errors per tool call (0 = disabled)
