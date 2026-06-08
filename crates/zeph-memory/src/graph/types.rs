@@ -241,6 +241,7 @@ pub struct Community {
 ///
 /// assert_eq!(GraphOrigin::Conversation.as_str(), "conversation");
 /// assert_eq!(GraphOrigin::Ingest.as_str(), "ingest");
+/// assert_eq!(GraphOrigin::Subagent.as_str(), "subagent");
 /// assert_eq!(GraphOrigin::default(), GraphOrigin::Conversation);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -249,8 +250,13 @@ pub enum GraphOrigin {
     /// Knowledge extracted from live conversation (the default; existing behaviour).
     #[default]
     Conversation,
-    /// Knowledge imported via `knowledge ingest` (spec-067 Phase 1+).
+    /// Knowledge imported via `knowledge ingest` from static artifacts (spec-067 Phase 1+).
     Ingest,
+    /// Knowledge imported from Zeph subagent transcripts (spec-067 Phase 2, FR-020).
+    ///
+    /// Recall isolation keys off `origin != 'conversation'`, so `'subagent'` rows are
+    /// correctly treated as imported and excluded from conversation-only recall.
+    Subagent,
 }
 
 impl GraphOrigin {
@@ -260,6 +266,7 @@ impl GraphOrigin {
         match self {
             Self::Conversation => "conversation",
             Self::Ingest => "ingest",
+            Self::Subagent => "subagent",
         }
     }
 }
@@ -268,8 +275,8 @@ impl GraphOrigin {
 ///
 /// Pass `None` provenance (the default at every existing call site) to write
 /// `origin = 'conversation'`, `import_batch_id = NULL`, `source_uri = NULL`,
-/// preserving current behaviour exactly. Only the future ingest path will pass
-/// `Some(GraphProvenance { origin: GraphOrigin::Ingest, … })`.
+/// preserving current behaviour exactly. Ingest paths pass `Some(GraphProvenance { … })`
+/// with the appropriate origin (`Ingest` for static artifacts, `Subagent` for transcripts).
 ///
 /// # Examples
 ///
@@ -277,11 +284,11 @@ impl GraphOrigin {
 /// use zeph_memory::graph::types::{GraphOrigin, GraphProvenance};
 ///
 /// let prov = GraphProvenance {
-///     origin: GraphOrigin::Ingest,
+///     origin: GraphOrigin::Subagent,
 ///     import_batch_id: "batch-2026-001".to_owned(),
 ///     source_uri: Some("subagent:task-42".to_owned()),
 /// };
-/// assert_eq!(prov.origin.as_str(), "ingest");
+/// assert_eq!(prov.origin.as_str(), "subagent");
 /// ```
 #[derive(Debug, Clone)]
 pub struct GraphProvenance {
@@ -881,5 +888,11 @@ mod tests {
         let entity = fact(EdgeType::Entity).composite_score();
         assert!(causal > temporal, "causal score must exceed temporal");
         assert!(temporal > entity, "temporal score must exceed entity");
+    }
+
+    #[test]
+    fn graph_origin_subagent_as_str() {
+        assert_eq!(GraphOrigin::Subagent.as_str(), "subagent");
+        assert_ne!(GraphOrigin::Subagent.as_str(), "ingest");
     }
 }

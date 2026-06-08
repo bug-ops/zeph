@@ -61,6 +61,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Dry-run mode: writes nothing to DB or Qdrant; computes and returns hub-degree projection from extractor output for G0 measurement spike.
   - Content size cap (`max_content_bytes`, default 512 KiB) to prevent token-spend DoS.
   - `post_extract_validator: Option<Arc<dyn PostExtractValidator>>` seam for future validation.
+- `feat(knowledge)`: graph go-live for `--source subagents` — Phase 2 graph sink wired end-to-end (spec-067 FR-020..024, INV-4, INV-6, closes #5023)
+  - `GraphOrigin::Subagent` variant added; `ingest_documents` now accepts a per-call origin so subagent transcript imports are tagged `origin='subagent'` in `graph_edges` and `graph_entities`, correctly excluded from conversation recall.
+  - `DocOutcome::Rejected` + `IngestReport.rejected` counter: sanitizer-rejected facts now produce a distinct outcome arm, write zero rows, skip the ledger, and are reported separately in the summary.
+  - `MemoryWriteValidator` (as `PostExtractValidator`) runs on both live and dry-run branches; dry-run projected counts are post-sanitization.
+  - `validate_graph_extraction` extended to enforce operator-configured `forbidden_content_patterns` over entity names and edge facts (was silently skipped on the graph ingest path).
+  - `--source subagents` dispatch in `src/commands/knowledge.rs`: discovers JSONL transcripts from `config.agents.transcript_dir`, applies INV-6 current-project allowlist with `fs::canonicalize` per file (symlink-safe), calls `ingest_documents` with fresh `ImportBatchId` and `GraphOrigin::Subagent`.
+  - Confirmation gate (`--yes`/`-y`) wired for real graph writes; dry-run never prompts.
+  - `--dry-run` hub-degree report polished with `⚠ HUB` flag at > 15% and per-entity degree display.
+  - `Batch ID` printed in non-dry-run summary so operators can immediately use `zeph knowledge rollback --batch-id <X>`.
+  - 10 new unit tests: `DocOutcome::Rejected` arithmetic invariant, `GraphOrigin::Subagent.as_str()`, `IngestSourceKind::graph_origin()`, `forbidden_content_patterns` enforcement (3 tests), hub-degree flag, INV-6 allowlist, and confirmation gate.
 - `research(knowledge)`: Phase 2 measurement spike + kill-criterion evaluation (spec-067 §7, closes #5022)
   - Dry-run executed over 140 spec files and 472 handoff files; hub-degree static analysis: top entity ~11–16% (borderline at 15% kill-criterion, likely PASS with crate-level resolution across 15+ `zeph-*` nodes).
   - Signal-to-noise static estimate: ~85% non-trivial edges (PASS; kill-criterion ≥ 50%).

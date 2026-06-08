@@ -531,11 +531,10 @@ pub(crate) enum KnowledgeCommand {
     Status,
 }
 
-/// Artifact sources eligible for `zeph knowledge ingest` (Phase 1).
+/// Artifact sources eligible for `zeph knowledge ingest`.
 ///
-/// Corresponds to the `--source` flag. Only Phase-1 variants are exposed here;
-/// Phase-2 sources (`subagents`, `claude-code`, etc.) will be added as new variants
-/// without breaking callers — clap enums are purely additive.
+/// Corresponds to the `--source` flag. Clap enums are purely additive — new variants
+/// do not break existing callers.
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KnowledgeSource {
     /// Specification documents under `specs/**/*.md`
@@ -549,6 +548,8 @@ pub(crate) enum KnowledgeSource {
     /// Recent git log (captured in-memory; bounded by `--max-documents`)
     #[value(name = "git-log")]
     GitLog,
+    /// Zeph subagent transcripts of the current project (graph sink, spec-067 Phase 2)
+    Subagents,
 }
 
 /// Project management subcommands.

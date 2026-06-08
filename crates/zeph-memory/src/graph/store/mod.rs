@@ -35,8 +35,8 @@ pub struct GraphStore {
     benna_fast_rate: f32,
     /// Benna-Fusi slow-variable learning rate. Range: `(0.0, 1.0]`. Default: `0.05`.
     benna_slow_rate: f32,
-    /// When `false`, edges with `origin = 'ingest'` are excluded from `query_batch_edges`
-    /// and `edges_for_entity` results (spec-067 FR-003, INV-3). Default: `true`.
+    /// When `false`, edges with imported (non-conversation) origins are excluded from
+    /// `query_batch_edges` and `edges_for_entity` results (spec-067 FR-003, INV-3). Default: `true`.
     recall_include_imported: bool,
 }
 
@@ -64,10 +64,10 @@ impl GraphStore {
         self
     }
 
-    /// Control whether ingest-origin edges appear in recall (spec-067 FR-003).
+    /// Control whether imported (non-conversation) edges appear in recall (spec-067 FR-003).
     ///
-    /// When `false`, edges with `origin = 'ingest'` are excluded from
-    /// [`Self::query_batch_edges`] and [`Self::edges_for_entity`].
+    /// When `false`, edges with any non-conversation origin (e.g. `'ingest'`, `'subagent'`)
+    /// are excluded from [`Self::query_batch_edges`] and [`Self::edges_for_entity`].
     /// Default: `true` (all edges included).
     #[must_use]
     pub fn with_recall_include_imported(mut self, include: bool) -> Self {
@@ -712,7 +712,7 @@ impl GraphStore {
 
     /// Get all active edges where entity is source or target.
     ///
-    /// When `recall_include_imported` is `false`, ingest-origin edges are excluded.
+    /// When `recall_include_imported` is `false`, imported (non-conversation) edges are excluded.
     ///
     /// # Errors
     ///

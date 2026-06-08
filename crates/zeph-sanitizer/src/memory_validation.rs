@@ -208,6 +208,24 @@ impl MemoryWriteValidator {
             }
         }
 
+        for pattern in &self.config.forbidden_content_patterns {
+            let p = pattern.as_str();
+            for entity in &result.entities {
+                if entity.name.contains(p) {
+                    return Err(MemoryValidationError::ForbiddenPattern {
+                        pattern: pattern.clone(),
+                    });
+                }
+            }
+            for edge in &result.edges {
+                if edge.fact.contains(p) {
+                    return Err(MemoryValidationError::ForbiddenPattern {
+                        pattern: pattern.clone(),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -516,5 +534,46 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("5000"), "error must include actual size");
         assert!(msg.contains("4096"), "error must include max size");
+    }
+
+    // --- forbidden_content_patterns in validate_graph_extraction ---
+
+    #[test]
+    fn forbidden_pattern_in_entity_name_rejected_by_graph_extraction() {
+        let v = MemoryWriteValidator::new(MemoryWriteValidationConfig {
+            forbidden_content_patterns: vec!["internal-host".to_owned()],
+            ..MemoryWriteValidationConfig::default()
+        });
+        let r = result_with(vec![entity("internal-hostname.corp")], vec![]);
+        assert!(matches!(
+            v.validate_graph_extraction(&r),
+            Err(MemoryValidationError::ForbiddenPattern { .. })
+        ));
+    }
+
+    #[test]
+    fn forbidden_pattern_in_edge_fact_rejected_by_graph_extraction() {
+        let v = MemoryWriteValidator::new(MemoryWriteValidationConfig {
+            forbidden_content_patterns: vec!["BEGIN PRIVATE KEY".to_owned()],
+            ..MemoryWriteValidationConfig::default()
+        });
+        let r = result_with(
+            vec![entity("Alice")],
+            vec![edge("Alice has BEGIN PRIVATE KEY material")],
+        );
+        assert!(matches!(
+            v.validate_graph_extraction(&r),
+            Err(MemoryValidationError::ForbiddenPattern { .. })
+        ));
+    }
+
+    #[test]
+    fn no_forbidden_patterns_graph_extraction_passes() {
+        let v = MemoryWriteValidator::new(MemoryWriteValidationConfig {
+            forbidden_content_patterns: vec!["<script".to_owned()],
+            ..MemoryWriteValidationConfig::default()
+        });
+        let r = result_with(vec![entity("CleanEntity")], vec![]);
+        assert!(v.validate_graph_extraction(&r).is_ok());
     }
 }

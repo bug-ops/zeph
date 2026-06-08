@@ -90,6 +90,14 @@ pub enum MemoryError {
     /// reported by the notes-sink pipeline.
     #[error("ingest error: {0}")]
     Ingest(String),
+
+    /// The post-extract validator rejected this extraction result.
+    ///
+    /// Returned by `extract_and_store` when the `post_extract_validator` callback returns
+    /// `Err`. The caller (`ingest_documents`) converts this into `DocOutcome::Rejected`
+    /// so the document is counted separately from hard failures.
+    #[error("validation rejected: {0}")]
+    ValidationRejected(String),
 }
 
 #[cfg(test)]

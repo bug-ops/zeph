@@ -29,17 +29,23 @@
 //! | `Coverage` | `<root>/.local/testing/coverage-status.md` |
 //! | `GitLog` | `git log` stdout (in-memory, bounded by `max_documents`) |
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use zeph_core::vault::Secret;
 use zeph_llm::provider::LlmProvider;
+use zeph_memory::graph::ingest::IngestProgress as GraphIngestProgress;
 use zeph_memory::{
     Document, DocumentMetadata, GraphStore, IngestLedger, IngestionPipeline, QdrantOps,
     SplitterConfig, TextSplitter, store::DbStore,
 };
+use zeph_memory::{
+    ImportBatchId, IngestBatchConfig, IngestSourceAdapter, SharedPostExtractValidator,
+    SubagentJsonl,
+};
 
-use crate::bootstrap::{AppBuilder, find_repo_root};
+use crate::bootstrap::{AppBuilder, create_named_provider, find_repo_root};
 use crate::cli::{KnowledgeCommand, KnowledgeSource};
 
 /// Resolved `(source_uri, raw_bytes)` pair ready for hashing and ingestion.
@@ -54,7 +60,7 @@ type IngestError = (String, String);
 pub(crate) enum IngestProgress {
     /// Files enumerated for a given source before the ingest loop begins.
     Discovered { source: String, files: usize },
-    /// A file is about to be embedded (pre-write signal for TUI spinner: "Ingesting knowledge: <uri>…").
+    /// A file is about to be embedded (pre-write signal for TUI spinner: `Ingesting knowledge: <uri>…`).
     Ingesting { uri: String },
     /// All chunks for a file have been processed (or the file failed).
     FileDone {
@@ -140,8 +146,8 @@ async fn handle_ingest(
     sources: Vec<KnowledgeSource>,
     dry_run: bool,
     max_documents: usize,
-    _provider_override: Option<String>,
-    _yes: bool,
+    provider_override: Option<String>,
+    yes: bool,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     // Locate and canonicalize project root (INV-6 anchor).
@@ -156,32 +162,56 @@ async fn handle_ingest(
         )
     })?;
 
+    // Partition requested sources: graph sources (Subagents) vs notes sources (everything else).
+    let (graph_sources, notes_sources): (Vec<_>, Vec<_>) = sources
+        .into_iter()
+        .partition(|s| matches!(s, KnowledgeSource::Subagents));
+    let has_graph = !graph_sources.is_empty();
+    let has_notes = !notes_sources.is_empty();
+
     // Resolve effective max-documents: CLI flag overrides config default.
     let effective_max = resolve_effective_max(max_documents, config_path).await;
 
-    if dry_run {
-        println!("Dry-run mode: no data will be written.");
-        println!();
+    // ── Notes sink (Phase 1) ────────────────────────────────────────────────
+    if has_notes {
+        if dry_run {
+            println!("Dry-run mode: no data will be written.");
+            println!();
+        }
+
+        let head_sha = git_head_sha(&root);
+        let (source_items, discovery_errors, per_source_counts) =
+            enumerate_all_sources(&notes_sources, &root, &head_sha, effective_max);
+        let total_files = source_items.len();
+
+        if dry_run {
+            run_dry_run(&source_items, total_files, &discovery_errors);
+        } else {
+            Box::pin(run_ingest(
+                source_items,
+                total_files,
+                discovery_errors,
+                per_source_counts,
+                config_path,
+            ))
+            .await?;
+        }
     }
 
-    let head_sha = git_head_sha(&root);
-    let (source_items, discovery_errors, per_source_counts) =
-        enumerate_all_sources(&sources, &root, &head_sha, effective_max);
-    let total_files = source_items.len();
-
-    if dry_run {
-        run_dry_run(&source_items, total_files, &discovery_errors);
-        return Ok(());
+    // ── Graph sink (Phase 2, --source subagents) ────────────────────────────
+    if has_graph {
+        Box::pin(run_graph_ingest(
+            dry_run,
+            effective_max,
+            provider_override,
+            yes,
+            &root,
+            config_path,
+        ))
+        .await?;
     }
 
-    Box::pin(run_ingest(
-        source_items,
-        total_files,
-        discovery_errors,
-        per_source_counts,
-        config_path,
-    ))
-    .await
+    Ok(())
 }
 
 /// Resolve the effective max-documents limit.
@@ -529,6 +559,347 @@ fn print_ingest_report(report: &IngestReport) {
     }
 }
 
+/// Execute the graph-sink ingest path for `--source subagents` (spec-067 Phase 2, FR-020..024).
+///
+/// Discovers subagent JSONL transcripts under the project-anchored transcript dir,
+/// canonicalizes each file path (INV-6), parses via `SubagentJsonl`, and calls
+/// `SemanticMemory::ingest_documents` with a `MemoryWriteValidator` sanitizer gate (INV-4).
+///
+/// # Errors
+///
+/// Returns an error when config loading, DB access, provider resolution, or transcript-dir
+/// resolution fails. Per-document failures are collected in the `IngestReport` and printed.
+#[allow(clippy::too_many_lines)]
+#[tracing::instrument(skip_all, fields(dry_run))]
+async fn run_graph_ingest(
+    dry_run: bool,
+    effective_max: usize,
+    provider_override: Option<String>,
+    yes: bool,
+    root: &Path,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let app = AppBuilder::new(config_path, None, None, None).await?;
+    let config = app.config();
+
+    // Enforce transcript_scope (INV-6: only "current-project" is supported).
+    if config.knowledge.transcript_scope != "current-project" {
+        anyhow::bail!(
+            "knowledge.transcript_scope = '{}' is not supported; only 'current-project' is \
+             honoured (INV-6). Update your config to use 'current-project'.",
+            config.knowledge.transcript_scope
+        );
+    }
+
+    // Resolve transcript dir; default to <root>/.zeph/subagents.
+    let transcript_dir_raw = config
+        .agents
+        .transcript_dir
+        .clone()
+        .unwrap_or_else(|| root.join(".zeph/subagents"));
+    let transcript_dir = transcript_dir_raw.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "failed to canonicalize transcript dir {}: {e}",
+            transcript_dir_raw.display()
+        )
+    })?;
+    if !transcript_dir.starts_with(root) {
+        anyhow::bail!(
+            "transcript dir {} resolves outside project root (INV-6)",
+            transcript_dir.display()
+        );
+    }
+
+    // Discover *.jsonl transcript files, canonicalizing each (INV-6: per-file symlink check).
+    let pattern = format!("{}/**/*.jsonl", transcript_dir.display());
+    let mut transcript_files: Vec<(String, PathBuf)> = Vec::new();
+    let mut discovery_errors: Vec<String> = Vec::new();
+
+    for entry in glob::glob(&pattern)
+        .map_err(|e| anyhow::anyhow!("glob pattern error: {e}"))?
+        .flatten()
+    {
+        match entry.canonicalize() {
+            Ok(canonical) => {
+                if !canonical.starts_with(root) {
+                    discovery_errors.push(format!(
+                        "{}: resolves outside project root (INV-6), skipped",
+                        canonical.display()
+                    ));
+                    continue;
+                }
+                let task_id = canonical.file_stem().map_or_else(
+                    || "unknown".to_owned(),
+                    |s| s.to_string_lossy().into_owned(),
+                );
+                transcript_files.push((task_id, canonical));
+            }
+            Err(e) => {
+                discovery_errors.push(format!("{}: canonicalize failed: {e}", entry.display()));
+            }
+        }
+    }
+
+    // Apply effective_max cap across total documents (approximate: per-file, not per-document).
+    if effective_max > 0 && transcript_files.len() > effective_max {
+        transcript_files.truncate(effective_max);
+    }
+
+    if !discovery_errors.is_empty() {
+        println!(
+            "  Transcript discovery errors ({}):",
+            discovery_errors.len()
+        );
+        for err in &discovery_errors {
+            println!("    [WARN] {err}");
+        }
+        println!();
+    }
+
+    if transcript_files.is_empty() {
+        println!(
+            "No subagent transcripts found under {}.",
+            transcript_dir.display()
+        );
+        return Ok(());
+    }
+
+    // Parse all transcripts into IngestDocuments.
+    let batch_id = ImportBatchId::new();
+    let mut documents = Vec::new();
+    let mut parse_errors: Vec<String> = Vec::new();
+
+    for (task_id, path) in &transcript_files {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => {
+                let adapter = SubagentJsonl::new(task_id.as_str());
+                match adapter.parse(&raw, &batch_id) {
+                    Ok(docs) => documents.extend(docs),
+                    Err(e) => {
+                        parse_errors.push(format!("{}: parse error: {e}", path.display()));
+                    }
+                }
+            }
+            Err(e) => {
+                parse_errors.push(format!("{}: read error: {e}", path.display()));
+            }
+        }
+    }
+
+    if !parse_errors.is_empty() {
+        println!("  Parse errors ({}):", parse_errors.len());
+        for err in &parse_errors {
+            println!("    [WARN] {err}");
+        }
+        println!();
+    }
+
+    if documents.is_empty() {
+        println!("No documents extracted from transcripts.");
+        return Ok(());
+    }
+
+    // Confirmation gate (FR-040, INV-7): prompt before graph writes.
+    if should_prompt_for_graph_write(dry_run, yes) {
+        print!(
+            "Write {} document(s) from {} transcript(s) to graph? [y/N]: ",
+            documents.len(),
+            transcript_files.len()
+        );
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    if dry_run {
+        println!(
+            "Dry-run mode: {} document(s) from {} transcript(s) — no data will be written.",
+            documents.len(),
+            transcript_files.len()
+        );
+        println!();
+    }
+
+    // Resolve LLM provider (FR-041): CLI override → knowledge.ingest_provider →
+    // memory.graph.extract_provider → primary.
+    let provider_name = provider_override
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let p = config.knowledge.ingest_provider.as_str();
+            if p.is_empty() { None } else { Some(p) }
+        })
+        .or_else(|| {
+            let p = config.memory.graph.extract_provider.as_str();
+            if p.is_empty() { None } else { Some(p) }
+        });
+
+    let provider = if let Some(name) = provider_name {
+        match create_named_provider(name, config) {
+            Ok(p) => {
+                tracing::debug!(provider = name, "using named provider for graph ingest");
+                Arc::new(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = name,
+                    "named provider resolution failed ({e:#}); falling back to primary"
+                );
+                let (p, _, _) = app.build_provider().await?;
+                Arc::new(p)
+            }
+        }
+    } else {
+        let (p, _, _) = app.build_provider().await?;
+        Arc::new(p)
+    };
+
+    let memory = app.build_memory(&provider).await?;
+
+    // Build SharedPostExtractValidator wrapping MemoryWriteValidator (INV-4).
+    // Always Some — required on both dry-run and live paths (spec-067 §G-5 S3).
+    // TODO(critic): P4 — ingest sanitizer covers entity-name PII + counts; edge-fact bodies
+    // length-capped only, no body PII / exfiltration URL scan (#5023 INV-4 MVP boundary).
+    let validator_inner = zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
+        config.security.memory_validation.clone(),
+    );
+    let shared_validator: SharedPostExtractValidator = Some(Arc::new(move |r| {
+        validator_inner
+            .validate_graph_extraction(r)
+            .map_err(|e| e.to_string())
+    }));
+
+    let batch_cfg = IngestBatchConfig {
+        dry_run,
+        dry_run_hub_top_n: Some(10),
+        ..IngestBatchConfig::default()
+    };
+
+    let concurrency = config.knowledge.concurrency.max(1);
+
+    // Progress channel: map graph ingest events to stdout lines (TUI rule: visible status).
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<GraphIngestProgress>(64);
+
+    let printer_handle = tokio::spawn(async move {
+        while let Some(event) = progress_rx.recv().await {
+            match event {
+                GraphIngestProgress::Started { total } => {
+                    println!("  Ingesting {total} document(s) from subagent transcripts…");
+                }
+                GraphIngestProgress::DocumentSkipped { uri } => {
+                    println!("  Skipped (already ingested): {uri}");
+                }
+                GraphIngestProgress::DocumentDone {
+                    uri,
+                    entities,
+                    edges,
+                } => {
+                    println!("  Done: {uri} (+{entities} entities, +{edges} edges)");
+                }
+                GraphIngestProgress::DocumentFailed { uri, reason } => {
+                    println!("  Failed: {uri}: {reason}");
+                }
+                GraphIngestProgress::DocumentRejected { uri, reason } => {
+                    println!("  Rejected (sanitizer): {uri}: {reason}");
+                }
+                GraphIngestProgress::Finished => break,
+                // Non-exhaustive: ignore any future variants.
+                _ => {}
+            }
+        }
+    });
+
+    let report = memory
+        .ingest_documents(
+            documents,
+            batch_cfg,
+            batch_id,
+            concurrency,
+            shared_validator,
+            Some(progress_tx),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("graph ingest failed: {e:#}"))?;
+
+    let _ = printer_handle.await;
+
+    print_graph_ingest_report(&report);
+
+    Ok(())
+}
+
+/// Print the summary of a graph-sink ingest run.
+fn print_graph_ingest_report(report: &zeph_memory::graph::ingest::IngestReport) {
+    println!();
+    if report.dry_run {
+        println!("Graph ingest dry-run complete (no data written).");
+    } else {
+        println!("Graph ingest complete.");
+        println!("  Batch ID          : {}", report.batch_id);
+    }
+    println!("  Documents total   : {}", report.documents_total);
+    println!("  Skipped           : {}", report.skipped);
+    println!("  Succeeded         : {}", report.succeeded);
+    println!("  Rejected (sanitizer): {}", report.rejected);
+    if !report.failed.is_empty() {
+        println!("  Failed            : {}", report.failed.len());
+        for f in &report.failed {
+            println!("    [ERR] {}: {}", f.uri, f.reason);
+        }
+    }
+    println!("  Entities total    : {}", report.entities_total);
+    println!("  Edges total       : {}", report.edges_total);
+
+    if report.dry_run && !report.hub_degree.is_empty() {
+        let total_edges: usize = report.hub_degree.iter().map(|h| h.degree).sum();
+        println!();
+        println!(
+            "  Hub-degree (top-{}) — spec-067 §7 threshold ≤ 15% of total edges:",
+            report.hub_degree.len()
+        );
+        println!("  {:<50} {:>7}  {:>7}", "Entity", "Degree", "% edges");
+        println!("  {}", "-".repeat(68));
+        for h in &report.hub_degree {
+            #[allow(clippy::cast_precision_loss)]
+            let pct = if total_edges > 0 {
+                (h.degree as f64 / total_edges as f64) * 100.0
+            } else {
+                0.0
+            };
+            let flag = if pct > 15.0 { " ⚠ HUB" } else { "" };
+            println!(
+                "  {:<50} {:>7}  {:>6.1}%{}",
+                truncate_uri(&h.entity, 50),
+                h.degree,
+                pct,
+                flag
+            );
+        }
+        if total_edges > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            let top_pct = (report.hub_degree[0].degree as f64 / total_edges as f64) * 100.0;
+            let health = if top_pct <= 15.0 {
+                "PASS"
+            } else {
+                "WARN — top entity exceeds 15% hub-degree threshold"
+            };
+            println!("  {}", "-".repeat(68));
+            println!("  Top entity: {top_pct:.1}% of edges — {health}");
+        }
+    }
+}
+
+/// Returns `true` when the graph-write confirmation prompt must be shown.
+///
+/// Prompt is suppressed by `--dry-run` (no writes) or `--yes` (scripted/CI use).
+fn should_prompt_for_graph_write(dry_run: bool, yes: bool) -> bool {
+    !dry_run && !yes
+}
+
 /// Build a [`Document`] with `source_uri` threaded into the metadata (M1).
 fn make_document(source_uri: String, content: String) -> Document {
     Document {
@@ -562,6 +933,7 @@ fn source_label(src: &KnowledgeSource) -> &'static str {
         KnowledgeSource::Handoff => "handoff",
         KnowledgeSource::Coverage => "coverage",
         KnowledgeSource::GitLog => "git-log",
+        KnowledgeSource::Subagents => "subagents",
     }
 }
 
@@ -581,7 +953,7 @@ fn enumerate_source_paths(root: &Path, src: &KnowledgeSource) -> anyhow::Result<
         KnowledgeSource::Coverage => {
             format!("{}/.local/testing/coverage-status.md", root.display())
         }
-        KnowledgeSource::GitLog => return Ok(Vec::new()),
+        KnowledgeSource::GitLog | KnowledgeSource::Subagents => return Ok(Vec::new()),
     };
 
     let paths: Vec<PathBuf> = glob::glob(&pattern)
@@ -667,8 +1039,6 @@ async fn handle_rollback(
     yes: bool,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    use std::io::Write as _;
-
     let app = AppBuilder::new(config_path, None, None, None).await?;
     let config = app.config();
 
@@ -1021,5 +1391,145 @@ mod tests {
             ),
             "CLI must parse rollback --batch-id abc123 --yes"
         );
+    }
+
+    // ── Subagents source variant ──────────────────────────────────────────────
+
+    #[test]
+    fn source_label_subagents() {
+        assert_eq!(source_label(&KnowledgeSource::Subagents), "subagents");
+    }
+
+    #[test]
+    fn cli_parses_source_subagents() {
+        use crate::cli::{Cli, Command, KnowledgeCommand};
+        use clap::Parser as _;
+        let cli =
+            Cli::try_parse_from(["zeph", "knowledge", "ingest", "--source", "subagents"]).unwrap();
+        assert!(
+            matches!(
+                cli.command,
+                Some(Command::Knowledge {
+                    command: KnowledgeCommand::Ingest {
+                        ref sources,
+                        dry_run: false,
+                        ..
+                    }
+                })
+                if sources == &[KnowledgeSource::Subagents]
+            ),
+            "CLI must parse --source subagents"
+        );
+    }
+
+    #[test]
+    fn cli_parses_source_subagents_with_dry_run() {
+        use crate::cli::{Cli, Command, KnowledgeCommand};
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "knowledge",
+            "ingest",
+            "--source",
+            "subagents",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(
+            matches!(
+                cli.command,
+                Some(Command::Knowledge {
+                    command: KnowledgeCommand::Ingest { dry_run: true, .. }
+                })
+            ),
+            "CLI must parse --source subagents --dry-run"
+        );
+    }
+
+    #[test]
+    fn cli_parses_mixed_sources_subagents_and_notes() {
+        use crate::cli::{Cli, Command, KnowledgeCommand};
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from([
+            "zeph",
+            "knowledge",
+            "ingest",
+            "--source",
+            "specs",
+            "--source",
+            "subagents",
+        ])
+        .unwrap();
+        let sources = match cli.command {
+            Some(Command::Knowledge {
+                command: KnowledgeCommand::Ingest { sources, .. },
+            }) => sources,
+            _ => panic!("expected Ingest command"),
+        };
+        assert!(sources.contains(&KnowledgeSource::Specs));
+        assert!(sources.contains(&KnowledgeSource::Subagents));
+    }
+
+    // ── Source partitioning (notes vs graph) ─────────────────────────────────
+
+    #[test]
+    fn partition_sources_notes_and_graph() {
+        let sources = vec![
+            KnowledgeSource::Specs,
+            KnowledgeSource::Subagents,
+            KnowledgeSource::Changelog,
+        ];
+        let (graph, notes): (Vec<_>, Vec<_>) = sources
+            .into_iter()
+            .partition(|s| matches!(s, KnowledgeSource::Subagents));
+        assert_eq!(graph, vec![KnowledgeSource::Subagents]);
+        assert_eq!(
+            notes,
+            vec![KnowledgeSource::Specs, KnowledgeSource::Changelog]
+        );
+    }
+
+    #[test]
+    fn partition_sources_only_subagents() {
+        let sources = vec![KnowledgeSource::Subagents];
+        let (graph, notes): (Vec<_>, Vec<_>) = sources
+            .into_iter()
+            .partition(|s| matches!(s, KnowledgeSource::Subagents));
+        assert_eq!(graph.len(), 1);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn partition_sources_no_subagents() {
+        let sources = vec![KnowledgeSource::Specs, KnowledgeSource::Changelog];
+        let (graph, notes): (Vec<_>, Vec<_>) = sources
+            .into_iter()
+            .partition(|s| matches!(s, KnowledgeSource::Subagents));
+        assert!(graph.is_empty());
+        assert_eq!(notes.len(), 2);
+    }
+
+    // ── Confirmation gate helper ──────────────────────────────────────────────
+
+    /// Dry-run never requires a confirmation prompt.
+    #[test]
+    fn should_prompt_dry_run_is_false() {
+        let dry_run = true;
+        let yes = false;
+        assert!(!should_prompt_for_graph_write(dry_run, yes));
+    }
+
+    /// `--yes` suppresses the prompt.
+    #[test]
+    fn should_prompt_yes_flag_is_false() {
+        let dry_run = false;
+        let yes = true;
+        assert!(!should_prompt_for_graph_write(dry_run, yes));
+    }
+
+    /// Neither dry-run nor --yes: prompt is required.
+    #[test]
+    fn should_prompt_interactive_is_true() {
+        assert!(should_prompt_for_graph_write(false, false));
     }
 }

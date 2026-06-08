@@ -59,7 +59,10 @@ impl IngestSourceKind {
     /// Returns the [`GraphOrigin`] value stamped on entities extracted from this kind.
     #[must_use]
     pub fn graph_origin(self) -> GraphOrigin {
-        GraphOrigin::Ingest
+        match self {
+            Self::SubagentTranscript => GraphOrigin::Subagent,
+            Self::StaticArtifact | Self::ExternalAgent => GraphOrigin::Ingest,
+        }
     }
 }
 
@@ -144,5 +147,26 @@ impl IngestDocument {
     #[must_use]
     pub fn source_uri(&self) -> &str {
         self.provenance.source_uri.as_deref().unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subagent_transcript_maps_to_subagent_origin() {
+        assert_eq!(
+            IngestSourceKind::SubagentTranscript.graph_origin(),
+            GraphOrigin::Subagent
+        );
+    }
+
+    #[test]
+    fn static_artifact_maps_to_ingest_origin() {
+        assert_eq!(
+            IngestSourceKind::StaticArtifact.graph_origin(),
+            GraphOrigin::Ingest
+        );
     }
 }

@@ -62,7 +62,7 @@ impl fmt::Display for ImportBatchId {
 /// # Wire contract
 ///
 /// Events arrive in this order per batch:
-/// `Started` → (`DocumentSkipped` | `DocumentDone` | `DocumentFailed`)* → `Finished`
+/// `Started` → (`DocumentSkipped` | `DocumentDone` | `DocumentFailed` | `DocumentRejected`)* → `Finished`
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum IngestProgress {
@@ -93,6 +93,17 @@ pub enum IngestProgress {
         /// Human-readable failure reason.
         reason: String,
     },
+    /// A document was rejected by the post-extract validator (sanitizer).
+    ///
+    /// Rejected documents write nothing to the graph or ledger. They are counted
+    /// separately from failures in [`IngestReport`] so operators can distinguish
+    /// sanitizer drops from extraction errors.
+    DocumentRejected {
+        /// Source locator of the rejected document.
+        uri: String,
+        /// Rejection reason from the validator.
+        reason: String,
+    },
     /// Emitted once after all documents have been processed.
     Finished,
 }
@@ -118,15 +129,18 @@ pub struct HubDegree {
 /// Aggregate result returned by [`crate::semantic::SemanticMemory::ingest_documents`].
 ///
 /// In dry-run mode (`dry_run = true`), `entities_total` and `edges_total` are projected
-/// counts and `hub_degree` contains the top-N entities by degree. No writes occur.
+/// post-sanitization counts and `hub_degree` contains the top-N entities by degree.
+/// No writes occur.
 ///
 /// In live mode, `entities_total` and `edges_total` reflect actual upserts/inserts.
 ///
 /// # Dry-run accuracy
 ///
-/// Dry-run counts are pre-quality-gate upper bounds. The live write path applies
-/// self-loop rejection and admission control in `insert_edges` / `upsert_entities`
-/// that may reduce the final entity and edge counts relative to the dry-run projection.
+/// Dry-run counts are post-sanitization but pre-quality-gate upper bounds. The live write
+/// path applies self-loop rejection and admission control in `insert_edges` /
+/// `upsert_entities` that may reduce the final entity and edge counts relative to the
+/// dry-run projection. Rejected documents do NOT contribute to `entities_total` or
+/// `edges_total` in either mode.
 #[derive(Debug, Clone, Default)]
 pub struct IngestReport {
     /// Batch identifier shared by all documents processed in this call.
@@ -137,30 +151,38 @@ pub struct IngestReport {
     pub skipped: usize,
     /// Number of documents successfully processed.
     pub succeeded: usize,
+    /// Number of documents rejected by the post-extract validator (sanitizer).
+    ///
+    /// Rejected documents write nothing to the graph or ledger and contribute zero
+    /// to `entities_total` / `edges_total`. They are distinct from `failed` documents,
+    /// which represent extraction or storage errors.
+    pub rejected: usize,
     /// Per-document failure records.
     pub failed: Vec<IngestFailure>,
     /// Total entities upserted (live) or projected (dry-run).
     ///
-    /// In dry-run mode this is a pre-quality-gate upper bound; the live run may
-    /// produce fewer entities after admission control.
+    /// Excludes rejected documents. In dry-run mode this is a post-sanitization
+    /// upper bound; the live run may produce fewer entities after admission control.
     pub entities_total: usize,
     /// Total edges inserted (live) or projected (dry-run).
     ///
-    /// In dry-run mode this is a pre-quality-gate upper bound; the live run may
-    /// produce fewer edges after self-loop rejection and admission control.
+    /// Excludes rejected documents. In dry-run mode this is a post-sanitization
+    /// upper bound; the live run may produce fewer edges after self-loop rejection
+    /// and admission control.
     pub edges_total: usize,
     /// `true` when `ingest_documents` was called with `dry_run = true`.
     pub dry_run: bool,
     /// Top-N entities by projected edge degree. Populated only in dry-run mode (FR-026).
     ///
-    /// Degrees are computed from the raw extractor output before any write gates, so
-    /// they represent pre-quality-gate upper bounds — not the final graph topology.
+    /// Degrees are computed from post-sanitization extractor output (rejected documents
+    /// do not contribute). They represent pre-quality-gate upper bounds — not the final
+    /// graph topology.
     pub hub_degree: Vec<HubDegree>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ImportBatchId;
+    use super::{ImportBatchId, IngestFailure, IngestReport};
 
     #[test]
     fn import_batch_id_is_unique() {
@@ -170,5 +192,24 @@ mod tests {
         // UUIDv4: 36 chars with 4 hyphens
         assert_eq!(a.as_str().len(), 36);
         assert_eq!(a.as_str().chars().filter(|&c| c == '-').count(), 4);
+    }
+
+    #[test]
+    fn ingest_report_rejected_arithmetic_invariant() {
+        let mut report = IngestReport {
+            documents_total: 4,
+            ..IngestReport::default()
+        };
+        report.skipped += 1;
+        report.succeeded += 1;
+        report.rejected += 1;
+        report.failed.push(IngestFailure {
+            uri: "u".into(),
+            reason: "r".into(),
+        });
+        assert_eq!(
+            report.skipped + report.succeeded + report.rejected + report.failed.len(),
+            report.documents_total
+        );
     }
 }

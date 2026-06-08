@@ -11,7 +11,8 @@ use serde::Deserialize;
 use zeph_llm::provider::Message;
 
 use crate::MemoryError;
-use crate::graph::types::{GraphOrigin, GraphProvenance};
+use crate::graph::ingest::document::IngestSourceKind;
+use crate::graph::types::GraphProvenance;
 
 use super::document::IngestDocument;
 use super::report::ImportBatchId;
@@ -159,7 +160,7 @@ impl IngestSourceAdapter for SubagentJsonl {
 
             let source_uri = format!("subagent:{}#{}", self.task_id, entry.seq);
             let provenance = GraphProvenance {
-                origin: GraphOrigin::Ingest,
+                origin: IngestSourceKind::SubagentTranscript.graph_origin(),
                 import_batch_id: batch_id.as_str().to_owned(),
                 source_uri: Some(source_uri),
             };

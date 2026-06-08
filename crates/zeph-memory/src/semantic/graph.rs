@@ -88,10 +88,11 @@ pub struct GraphExtractionConfig {
     pub benna_slow_rate: f32,
     /// Provenance stamped on every entity and edge written in this pass (spec-067 INV-2).
     ///
-    /// `None` means conversation origin — all existing callers pass `None` and remain
-    /// unchanged. Only the future ingest path will pass `Some(prov)`.
+    /// `None` means conversation origin (default for conversation callers).
+    /// The ingest path passes `Some(prov)` with the appropriate origin.
     pub provenance: Option<GraphProvenance>,
-    /// When `false`, recall queries exclude edges with `origin = 'ingest'` (spec-067 §3 Phase 0).
+    /// When `false`, recall queries exclude edges with any imported (non-conversation) origin
+    /// (spec-067 §3 Phase 0).
     ///
     /// Default: `true` (include imported edges in recall).
     pub recall_include_imported: bool,
@@ -447,6 +448,8 @@ pub async fn extract_and_store(
 
     // Post-extraction validation callback. zeph-memory does not know the callback is a
     // security validator — it is a generic predicate opaque to this crate (design decision D1).
+    // Returns Err(ValidationRejected) so callers can distinguish sanitizer drops from
+    // hard failures (INV-4, spec-067 §G-5).
     if let Some(ref validator) = post_extract_validator
         && let Err(reason) = validator(&result)
     {
@@ -454,7 +457,7 @@ pub async fn extract_and_store(
             reason,
             "graph extraction validation failed, skipping upsert"
         );
-        return Ok(ExtractionResult::default());
+        return Err(MemoryError::ValidationRejected(reason));
     }
 
     let resolver = if let Some(ref emb) = embedding_store {
@@ -1045,6 +1048,15 @@ enum DocOutcome {
         uri: String,
         reason: String,
     },
+    /// The post-extract validator rejected this document (sanitizer drop).
+    ///
+    /// A rejected document writes zero rows and is NOT marked in the ledger, so a
+    /// later policy change can re-admit it. Counted separately from `Failed` in the
+    /// report so operators can distinguish sanitizer drops from extraction errors.
+    Rejected {
+        uri: String,
+        reason: String,
+    },
     /// Dry-run projection: uri, counts, and per-entity degree contributions.
     DryRun {
         uri: String,
@@ -1128,7 +1140,6 @@ impl SemanticMemory {
             HubDegree, IngestDocument, IngestFailure, IngestProgress, IngestReport,
             IngestSourceKind,
         };
-        use crate::graph::types::{GraphOrigin, GraphProvenance};
 
         let _span = tracing::info_span!(
             "memory.ingest.batch",
@@ -1224,15 +1235,19 @@ impl SemanticMemory {
                 }
 
                 // Build per-document config clone with provenance + tech-doc prompt.
+                // Origin is derived from the document's own provenance (set by the adapter),
+                // so subagent transcripts get GraphOrigin::Subagent and static artifacts get
+                // GraphOrigin::Ingest without any extra threading (spec-067 §G-1).
                 let mut doc_config = base_config.clone();
-                doc_config.provenance = Some(GraphProvenance {
-                    origin: GraphOrigin::Ingest,
-                    import_batch_id: batch_id_str.clone(),
-                    source_uri: Some(uri.clone()),
-                });
+                doc_config.provenance = Some(doc.provenance().clone());
+                // Keep the ingest batch ID aligned with the caller's batch_id (the provenance
+                // from the adapter was stamped at parse time with the same batch_id).
+                if let Some(ref mut prov) = doc_config.provenance {
+                    prov.import_batch_id.clone_from(&batch_id_str);
+                }
                 // Select tech-doc prompt via IngestSourceKind.
-                // All ingest documents use StaticArtifact semantics for prompt selection.
-                doc_config.system_prompt = Some(IngestSourceKind::StaticArtifact.system_prompt());
+                // All ingest source kinds use the same tech-doc prompt for extraction.
+                doc_config.system_prompt = Some(IngestSourceKind::SubagentTranscript.system_prompt());
 
                 // Build PostExtractValidator by cloning the Arc (C3: cheap, Send+Sync).
                 let validator: PostExtractValidator = shared_validator
@@ -1246,6 +1261,7 @@ impl SemanticMemory {
                     // FR-026: dry-run calls GraphExtractor::extract() directly — NOT
                     // extract_and_store — to guarantee zero writes (including bump_extraction_count).
                     // This invariant is enforced by the test `dry_run_writes_nothing` (C2).
+                    // S3: validator is also run in dry-run so projected counts are post-sanitization.
                     let extractor = {
                         let mut e = GraphExtractor::new(
                             provider.clone(),
@@ -1262,6 +1278,12 @@ impl SemanticMemory {
                         doc.context().iter().map(String::as_str).collect();
                     match extractor.extract(doc.content(), &ctx_refs).await {
                         Ok(Some(result)) => {
+                            // S3: run validator in dry-run to get post-sanitization projections.
+                            if let Some(ref arc_f) = shared_validator
+                                && let Err(reason) = arc_f(&result)
+                            {
+                                return DocOutcome::Rejected { uri, reason };
+                            }
                             let entities = result.entities.len();
                             let edges = result.edges.len();
                             // Build per-entity degree map.
@@ -1324,6 +1346,10 @@ impl SemanticMemory {
                             }
                             DocOutcome::Done { uri, entities, edges }
                         }
+                        // ValidationRejected is a sanitizer drop — not a hard failure.
+                        Err(MemoryError::ValidationRejected(reason)) => {
+                            DocOutcome::Rejected { uri, reason }
+                        }
                         Err(e) => DocOutcome::Failed {
                             uri,
                             reason: format!("extract_and_store failed: {e:#}"),
@@ -1377,6 +1403,10 @@ impl SemanticMemory {
                         reason: reason.clone(),
                     });
                     send_progress(IngestProgress::DocumentFailed { uri, reason });
+                }
+                DocOutcome::Rejected { uri, reason } => {
+                    report.rejected += 1;
+                    send_progress(IngestProgress::DocumentRejected { uri, reason });
                 }
                 DocOutcome::DryRun {
                     uri,
