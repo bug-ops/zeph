@@ -1236,8 +1236,9 @@ impl SemanticMemory {
 
                 // Build per-document config clone with provenance + tech-doc prompt.
                 // Origin is derived from the document's own provenance (set by the adapter),
-                // so subagent transcripts get GraphOrigin::Subagent and static artifacts get
-                // GraphOrigin::Ingest without any extra threading (spec-067 §G-1).
+                // so subagent transcripts get GraphOrigin::Subagent, external-agent imports get
+                // GraphOrigin::ExternalAgent, and static artifacts get GraphOrigin::Ingest
+                // without any extra threading (spec-067 §G-1).
                 let mut doc_config = base_config.clone();
                 doc_config.provenance = Some(doc.provenance().clone());
                 // Keep the ingest batch ID aligned with the caller's batch_id (the provenance

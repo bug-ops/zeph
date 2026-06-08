@@ -534,7 +534,8 @@ pub(crate) enum KnowledgeCommand {
 /// Artifact sources eligible for `zeph knowledge ingest`.
 ///
 /// Corresponds to the `--source` flag. Clap enums are purely additive — new variants
-/// do not break existing callers.
+/// do not break existing callers. Phase-3 external-agent sources (`claude-code`,
+/// `codex`) require an explicit `--yes` flag and trigger a confirmation gate.
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KnowledgeSource {
     /// Specification documents under `specs/**/*.md`
@@ -550,6 +551,19 @@ pub(crate) enum KnowledgeSource {
     GitLog,
     /// Zeph subagent transcripts of the current project (graph sink, spec-067 Phase 2)
     Subagents,
+    /// Claude Code session transcripts for the current project
+    ///
+    /// Reads `~/.claude/projects/<project-slug>/*.jsonl` (current project only).
+    /// Requires `--yes` confirmation. Writes to the knowledge graph with
+    /// `origin='external-agent'`.
+    #[value(name = "claude-code")]
+    ClaudeCode,
+    /// `OpenAI` Codex CLI session transcripts for the current project
+    ///
+    /// Reads `~/.codex/archived_sessions/*.jsonl`, filtered to sessions whose
+    /// `cwd` matches the current project root. Requires `--yes` confirmation.
+    /// Writes to the knowledge graph with `origin='external-agent'`.
+    Codex,
 }
 
 /// Project management subcommands.

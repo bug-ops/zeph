@@ -29,20 +29,18 @@
 //! | `Coverage` | `<root>/.local/testing/coverage-status.md` |
 //! | `GitLog` | `git log` stdout (in-memory, bounded by `max_documents`) |
 
-use std::io::Write as _;
+use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde_json::Value as JsonValue;
 use zeph_core::vault::Secret;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::graph::ingest::IngestProgress as GraphIngestProgress;
 use zeph_memory::{
-    Document, DocumentMetadata, GraphStore, IngestLedger, IngestionPipeline, QdrantOps,
-    SplitterConfig, TextSplitter, store::DbStore,
-};
-use zeph_memory::{
-    ImportBatchId, IngestBatchConfig, IngestSourceAdapter, SharedPostExtractValidator,
-    SubagentJsonl,
+    ClaudeCodeJsonl, CodexJsonl, Document, DocumentMetadata, GraphStore, ImportBatchId,
+    IngestBatchConfig, IngestLedger, IngestSourceAdapter, IngestionPipeline, QdrantOps,
+    SharedPostExtractValidator, SplitterConfig, SubagentJsonl, TextSplitter, store::DbStore,
 };
 
 use crate::bootstrap::{AppBuilder, create_named_provider, find_repo_root};
@@ -162,11 +160,20 @@ async fn handle_ingest(
         )
     })?;
 
-    // Partition requested sources: graph sources (Subagents) vs notes sources (everything else).
-    let (graph_sources, notes_sources): (Vec<_>, Vec<_>) = sources
-        .into_iter()
-        .partition(|s| matches!(s, KnowledgeSource::Subagents));
-    let has_graph = !graph_sources.is_empty();
+    // Three-way partition: Subagents → subagent graph sink; ClaudeCode/Codex → external-agent
+    // graph sink (spec-067 Phase 3); everything else → notes sink.
+    let mut subagent_sources: Vec<KnowledgeSource> = Vec::new();
+    let mut agent_sources: Vec<KnowledgeSource> = Vec::new();
+    let mut notes_sources: Vec<KnowledgeSource> = Vec::new();
+    for src in sources {
+        match src {
+            KnowledgeSource::Subagents => subagent_sources.push(src),
+            KnowledgeSource::ClaudeCode | KnowledgeSource::Codex => agent_sources.push(src),
+            _ => notes_sources.push(src),
+        }
+    }
+    let has_subagents = !subagent_sources.is_empty();
+    let has_agents = !agent_sources.is_empty();
     let has_notes = !notes_sources.is_empty();
 
     // Resolve effective max-documents: CLI flag overrides config default.
@@ -199,7 +206,7 @@ async fn handle_ingest(
     }
 
     // ── Graph sink (Phase 2, --source subagents) ────────────────────────────
-    if has_graph {
+    if has_subagents {
         Box::pin(run_graph_ingest(
             dry_run,
             effective_max,
@@ -207,6 +214,25 @@ async fn handle_ingest(
             yes,
             &root,
             config_path,
+        ))
+        .await?;
+    }
+
+    // ── Graph sink (Phase 3, --source claude-code / --source codex) ─────────
+    if has_agents {
+        // --yes is required for external-agent graph writes; dry-run is exempt (no writes).
+        if !yes && !dry_run {
+            anyhow::bail!(
+                "external-agent sources (--source claude-code, --source codex) require --yes \
+                 to confirm graph writes"
+            );
+        }
+        Box::pin(handle_external_agent_ingest(
+            &agent_sources,
+            dry_run,
+            effective_max,
+            config_path,
+            &root,
         ))
         .await?;
     }
@@ -925,6 +951,292 @@ fn truncate_uri(uri: &str, max_len: usize) -> String {
     }
 }
 
+// ── External-agent helpers ─────────────────────────────────────────────────────
+
+/// Convert a project root path to the Claude Code slug used for the project directory.
+///
+/// Claude Code stores sessions under `~/.claude/projects/<slug>/` where `<slug>` is the
+/// absolute path with `/` replaced by `-` (so `/Users/foo/proj` → `-Users-foo-proj`).
+pub(crate) fn path_to_claude_code_slug(root: &Path) -> String {
+    root.to_string_lossy().replace('/', "-")
+}
+
+/// Resolve the canonical main-repo root for Claude Code slug computation.
+///
+/// When running from a git worktree, `find_repo_root()` returns the worktree path, but
+/// Claude Code sessions were recorded against the directory the user actually launched
+/// Claude Code in — which is the main checkout. We get that by reading
+/// `git rev-parse --git-common-dir` (which points to `.git` in the common dir) and
+/// stripping the trailing `/.git` component.
+///
+/// Falls back to `root` itself if the command fails or produces an unexpected path.
+fn resolve_main_repo_root(root: &Path) -> PathBuf {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(root)
+        .output();
+
+    let Ok(out) = output else {
+        return root.to_path_buf();
+    };
+    if !out.status.success() {
+        return root.to_path_buf();
+    }
+
+    let common_git = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let git_path = PathBuf::from(&common_git);
+
+    // `--git-common-dir` returns the `.git` directory itself.
+    // Strip the `.git` component to get the repo root.
+    let candidate = if git_path.ends_with(".git") {
+        git_path.parent().map(Path::to_path_buf)
+    } else {
+        // Bare repo or unexpected path — fall back.
+        None
+    };
+
+    candidate
+        .and_then(|p| p.canonicalize().ok())
+        .unwrap_or_else(|| root.to_path_buf())
+}
+
+/// Enumerate all Claude Code JSONL session files for `root`.
+///
+/// Uses the main-repo root (not the worktree path) for slug computation so that sessions
+/// recorded before the current worktree was created are still discovered.
+///
+/// Looks in `~/.claude/projects/<slug>/*.jsonl`. Because Claude Code scopes the directory
+/// to the project, all `.jsonl` files there belong to this project — no per-file filtering.
+///
+/// # Errors
+///
+/// Returns an error when `$HOME` is not set or the glob pattern is malformed.
+fn enumerate_claude_code_paths(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("$HOME is not set"))?;
+    let main_root = resolve_main_repo_root(root);
+    let slug = path_to_claude_code_slug(&main_root);
+    let pattern = format!("{home}/.claude/projects/{slug}/*.jsonl");
+    tracing::debug!(slug, pattern, "claude-code JSONL discovery");
+
+    let paths: Vec<PathBuf> = glob::glob(&pattern)
+        .map_err(|e| anyhow::anyhow!("claude-code glob pattern error: {e}"))?
+        .filter_map(|entry| match entry {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::warn!("claude-code glob entry error: {e}");
+                None
+            }
+        })
+        .collect();
+
+    Ok(paths)
+}
+
+/// Read the first few lines of a Codex JSONL file looking for a `session_meta` record,
+/// and return the `payload.cwd` value if found.
+fn scan_codex_session_cwd(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines().take(5).flatten() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<JsonValue>(&line)
+            && val.get("type").and_then(|t| t.as_str()) == Some("session_meta")
+        {
+            return val
+                .pointer("/payload/cwd")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+        }
+        // session_meta is always the first record — stop after the first parseable line.
+        break;
+    }
+    None
+}
+
+/// Enumerate all Codex JSONL session files that belong to `root`.
+///
+/// Scans two locations:
+/// - `~/.codex/archived_sessions/*.jsonl` — completed/archived sessions (flat layout)
+/// - `~/.codex/sessions/**/*.jsonl` — live/recent sessions (nested `YYYY/MM/DD/rollout-*`)
+///
+/// Files are filtered by `session_meta.payload.cwd` using `starts_with(root)` after
+/// canonicalization of both sides. This tolerates subdirectory launches and symlink
+/// differences between the launch path and the canonicalized project root.
+///
+/// # Errors
+///
+/// Returns an error when `$HOME` is not set or a glob pattern is malformed.
+fn enumerate_codex_paths(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("$HOME is not set"))?;
+    let patterns = [
+        format!("{home}/.codex/archived_sessions/*.jsonl"),
+        format!("{home}/.codex/sessions/**/*.jsonl"),
+    ];
+    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for pattern in &patterns {
+        let entries =
+            glob::glob(pattern).map_err(|e| anyhow::anyhow!("codex glob pattern error: {e}"))?;
+        for entry in entries {
+            match entry {
+                Ok(p) => {
+                    if cwd_matches_root(&p, &root_canonical) {
+                        paths.push(p);
+                    }
+                }
+                Err(e) => tracing::warn!("codex glob entry error: {e}"),
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+/// Return `true` when the `session_meta.payload.cwd` from `path` is the `root` or a
+/// subdirectory of it. Canonicalizes the cwd string read from JSON before comparing.
+fn cwd_matches_root(path: &Path, root: &Path) -> bool {
+    let Some(raw_cwd) = scan_codex_session_cwd(path) else {
+        return false;
+    };
+    let cwd_path = PathBuf::from(&raw_cwd);
+    let canonical = cwd_path.canonicalize().unwrap_or(cwd_path);
+    canonical.starts_with(root)
+}
+
+/// Handle `zeph knowledge ingest` for external-agent sources (`claude-code`, `codex`).
+///
+/// Discovers JSONL session files for the current project, parses them via the
+/// appropriate [`zeph_memory::IngestSourceAdapter`], and writes entities and edges to the
+/// knowledge graph via [`SemanticMemory::ingest_documents`].
+///
+/// In dry-run mode only discovery is performed — no parsing or writes occur.
+///
+/// # Errors
+///
+/// Returns an error when config loading, memory construction, or the batch graph write fails.
+#[tracing::instrument(skip_all, fields(dry_run))]
+async fn handle_external_agent_ingest(
+    agent_sources: &[KnowledgeSource],
+    dry_run: bool,
+    effective_max: usize,
+    config_path: Option<&Path>,
+    root: &Path,
+) -> anyhow::Result<()> {
+    use zeph_memory::IngestSourceAdapter as _;
+
+    let batch_id = ImportBatchId::new();
+
+    // Phase 1: enumerate JSONL paths per source.
+    let mut all_paths: Vec<(KnowledgeSource, PathBuf)> = Vec::new();
+    for src in agent_sources {
+        let paths = match src {
+            KnowledgeSource::ClaudeCode => enumerate_claude_code_paths(root)?,
+            KnowledgeSource::Codex => enumerate_codex_paths(root)?,
+            _ => unreachable!("only external-agent sources reach this function"),
+        };
+        tracing::debug!(
+            source = source_label(src),
+            count = paths.len(),
+            "discovered JSONL paths"
+        );
+        println!(
+            "  Discovered: {} → {} session file(s)",
+            source_label(src),
+            paths.len()
+        );
+        for p in paths {
+            all_paths.push((src.clone(), p));
+        }
+    }
+
+    if all_paths.is_empty() {
+        println!("  No external-agent session files found for this project.");
+        return Ok(());
+    }
+
+    if dry_run {
+        println!(
+            "  (dry-run) Would parse {} session file(s).",
+            all_paths.len()
+        );
+        return Ok(());
+    }
+
+    // Phase 2: parse JSONL files into IngestDocuments.
+    let mut docs = Vec::new();
+    for (src, path) in &all_paths {
+        let session_id = path.file_stem().map_or_else(
+            || "unknown".to_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        );
+        let raw = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(?path, "failed to read session file: {e}");
+                println!("  [ERR] {}: read error: {e}", path.display());
+                continue;
+            }
+        };
+        let result = match src {
+            KnowledgeSource::ClaudeCode => ClaudeCodeJsonl::new(&session_id).parse(&raw, &batch_id),
+            KnowledgeSource::Codex => CodexJsonl::new(&session_id).parse(&raw, &batch_id),
+            _ => unreachable!(),
+        };
+        match result {
+            Ok(parsed) => {
+                let n = parsed.len();
+                tracing::debug!(?path, documents = n, "parsed session file");
+                docs.extend(parsed);
+                println!("  [parsed] {} → {n} document(s)", path.display());
+            }
+            Err(e) => {
+                tracing::warn!(?path, "failed to parse session file: {e}");
+                println!("  [ERR] {}: parse error: {e}", path.display());
+            }
+        }
+    }
+
+    if docs.is_empty() {
+        println!("  No documents extracted from session files.");
+        return Ok(());
+    }
+
+    let total = if effective_max > 0 && docs.len() > effective_max {
+        docs.truncate(effective_max);
+        docs.len()
+    } else {
+        docs.len()
+    };
+
+    println!("  Ingesting {total} document(s) into knowledge graph…");
+
+    // Phase 3: write to graph via SemanticMemory.
+    let app = AppBuilder::new(config_path, None, None, None).await?;
+    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
+    let mem = app.build_memory(&provider).await?;
+
+    let config = IngestBatchConfig::default();
+    let report = mem
+        .ingest_documents(docs, config, batch_id, 4, None, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("graph ingest failed: {e}"))?;
+
+    println!();
+    println!("External-agent graph ingest complete.");
+    println!("  Documents succeeded: {}", report.succeeded);
+    println!("  Documents failed   : {}", report.failed.len());
+    if !report.failed.is_empty() {
+        for failure in &report.failed {
+            println!("    [ERR] {}: {}", failure.uri, failure.reason);
+        }
+    }
+
+    Ok(())
+}
+
 /// Return a human-readable label for a source variant.
 fn source_label(src: &KnowledgeSource) -> &'static str {
     match src {
@@ -934,6 +1246,8 @@ fn source_label(src: &KnowledgeSource) -> &'static str {
         KnowledgeSource::Coverage => "coverage",
         KnowledgeSource::GitLog => "git-log",
         KnowledgeSource::Subagents => "subagents",
+        KnowledgeSource::ClaudeCode => "claude-code",
+        KnowledgeSource::Codex => "codex",
     }
 }
 
@@ -947,13 +1261,20 @@ fn source_label(src: &KnowledgeSource) -> &'static str {
 /// Returns an error when the glob pattern is malformed.
 fn enumerate_source_paths(root: &Path, src: &KnowledgeSource) -> anyhow::Result<Vec<PathBuf>> {
     let pattern = match src {
+        // External-agent sources are enumerated separately via enumerate_claude_code_paths /
+        // enumerate_codex_paths and must never reach the notes-sink glob logic.
+        KnowledgeSource::ClaudeCode
+        | KnowledgeSource::Codex
+        | KnowledgeSource::GitLog
+        | KnowledgeSource::Subagents => {
+            return Ok(Vec::new());
+        }
         KnowledgeSource::Specs => format!("{}/specs/**/*.md", root.display()),
         KnowledgeSource::Changelog => format!("{}/CHANGELOG.md", root.display()),
         KnowledgeSource::Handoff => format!("{}/.local/handoff/**/*.md", root.display()),
         KnowledgeSource::Coverage => {
             format!("{}/.local/testing/coverage-status.md", root.display())
         }
-        KnowledgeSource::GitLog | KnowledgeSource::Subagents => return Ok(Vec::new()),
     };
 
     let paths: Vec<PathBuf> = glob::glob(&pattern)
@@ -1222,6 +1543,8 @@ mod tests {
         assert_eq!(source_label(&KnowledgeSource::Handoff), "handoff");
         assert_eq!(source_label(&KnowledgeSource::Coverage), "coverage");
         assert_eq!(source_label(&KnowledgeSource::GitLog), "git-log");
+        assert_eq!(source_label(&KnowledgeSource::ClaudeCode), "claude-code");
+        assert_eq!(source_label(&KnowledgeSource::Codex), "codex");
     }
 
     // ── ingest_one skip gate (FR-012) ─────────────────────────────────────────
@@ -1531,5 +1854,68 @@ mod tests {
     #[test]
     fn should_prompt_interactive_is_true() {
         assert!(should_prompt_for_graph_write(false, false));
+    }
+
+    // ── path_to_claude_code_slug ──────────────────────────────────────────────
+
+    #[test]
+    fn slug_replaces_slashes_with_dashes() {
+        let root = Path::new("/Users/alice/Dev/myproject");
+        assert_eq!(path_to_claude_code_slug(root), "-Users-alice-Dev-myproject");
+    }
+
+    #[test]
+    fn slug_root_path() {
+        let root = Path::new("/");
+        assert_eq!(path_to_claude_code_slug(root), "-");
+    }
+
+    #[test]
+    fn slug_no_trailing_slash() {
+        // Path::new strips trailing slashes, so /Users/foo/ == /Users/foo
+        let root = Path::new("/Users/foo");
+        assert_eq!(path_to_claude_code_slug(root), "-Users-foo");
+    }
+
+    // ── scan_codex_session_cwd ────────────────────────────────────────────────
+
+    #[test]
+    fn scan_codex_session_cwd_returns_cwd_from_session_meta() {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            r#"{{"type":"session_meta","payload":{{"id":"s1","cwd":"/Users/alice/proj","originator":"codex_cli_rs","cli_version":"1.0.0"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            tmp,
+            r#"{{"type":"response_item","payload":{{"type":"message","role":"user"}}}}"#
+        )
+        .unwrap();
+
+        let cwd = scan_codex_session_cwd(tmp.path());
+        assert_eq!(cwd.as_deref(), Some("/Users/alice/proj"));
+    }
+
+    #[test]
+    fn scan_codex_session_cwd_returns_none_when_no_session_meta() {
+        use std::io::Write as _;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            r#"{{"type":"response_item","payload":{{"type":"message","role":"user","id":"i1","content":[]}}}}"#
+        )
+        .unwrap();
+
+        let cwd = scan_codex_session_cwd(tmp.path());
+        assert!(cwd.is_none());
+    }
+
+    #[test]
+    fn scan_codex_session_cwd_returns_none_for_empty_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let cwd = scan_codex_session_cwd(tmp.path());
+        assert!(cwd.is_none());
     }
 }

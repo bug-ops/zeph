@@ -242,6 +242,7 @@ pub struct Community {
 /// assert_eq!(GraphOrigin::Conversation.as_str(), "conversation");
 /// assert_eq!(GraphOrigin::Ingest.as_str(), "ingest");
 /// assert_eq!(GraphOrigin::Subagent.as_str(), "subagent");
+/// assert_eq!(GraphOrigin::ExternalAgent.as_str(), "external-agent");
 /// assert_eq!(GraphOrigin::default(), GraphOrigin::Conversation);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -257,6 +258,12 @@ pub enum GraphOrigin {
     /// Recall isolation keys off `origin != 'conversation'`, so `'subagent'` rows are
     /// correctly treated as imported and excluded from conversation-only recall.
     Subagent,
+    /// Knowledge imported from an external agent system (Claude Code, Codex).
+    ///
+    /// Distinct from [`Self::Ingest`] so rollback queries and recall filters can
+    /// differentiate first-party ingest from external-agent transcript import
+    /// (spec-067 Phase 3 acceptance criterion).
+    ExternalAgent,
 }
 
 impl GraphOrigin {
@@ -267,6 +274,7 @@ impl GraphOrigin {
             Self::Conversation => "conversation",
             Self::Ingest => "ingest",
             Self::Subagent => "subagent",
+            Self::ExternalAgent => "external-agent",
         }
     }
 }
