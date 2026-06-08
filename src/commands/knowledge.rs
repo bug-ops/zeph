@@ -1460,11 +1460,11 @@ mod tests {
             "subagents",
         ])
         .unwrap();
-        let sources = match cli.command {
-            Some(Command::Knowledge {
-                command: KnowledgeCommand::Ingest { sources, .. },
-            }) => sources,
-            _ => panic!("expected Ingest command"),
+        let Some(Command::Knowledge {
+            command: KnowledgeCommand::Ingest { sources, .. },
+        }) = cli.command
+        else {
+            panic!("expected Ingest command")
         };
         assert!(sources.contains(&KnowledgeSource::Specs));
         assert!(sources.contains(&KnowledgeSource::Subagents));
