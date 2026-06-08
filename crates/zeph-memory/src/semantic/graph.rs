@@ -1065,7 +1065,7 @@ impl SemanticMemory {
     ///   (C1: prevents concurrent fan-out from submitting the same document twice).
     /// - Ledger filtering: documents already recorded in the idempotency ledger are skipped.
     /// - Per-document content size cap: documents exceeding `config.max_content_bytes` are
-    ///   rejected before any LLM call and recorded in [`IngestReport::failed`].
+    ///   rejected before any LLM call and recorded in `IngestReport::failed`.
     /// - Bounded concurrent extraction via `futures::stream::buffer_unordered(concurrency)`.
     /// - Collect-errors-and-continue: a failed document does NOT abort the batch (FR-028).
     /// - Progress events sent on `progress` (advisory — a dropped or full receiver is ignored).
@@ -1087,7 +1087,7 @@ impl SemanticMemory {
     /// # Errors
     ///
     /// Returns [`MemoryError::Ingest`] only for batch-level failures (e.g. ledger DB error at
-    /// startup). Per-document failures are collected in [`IngestReport::failed`].
+    /// startup). Per-document failures are collected in `IngestReport::failed`.
     ///
     /// # Examples
     ///
