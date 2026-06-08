@@ -1126,7 +1126,7 @@ mod skip_ml_internal_tools {
 ///
 /// Also verifies:
 /// - remaining calls in the batch are downgraded to `Stop` (produce `[skipped]`)
-/// - the system hint "Tool loop stopped early" is present in the injected ToolResult messages
+/// - the system hint "Tool loop stopped early" is present in the injected `ToolResult` messages
 #[tokio::test]
 async fn utility_window_exhaustion_signals_hard_break() {
     use crate::agent::agent_tests::{

@@ -1524,16 +1524,12 @@ destination = "/var/log/zeph-audit.log""#,
 
     #[test]
     fn utility_window_serde_roundtrip() {
-        let toml_str = r#"
-            [utility_scoring]
-            enabled = true
-            utility_window = 3
-        "#;
-        // Parse as a wrapper struct to exercise the nested key.
         #[derive(serde::Deserialize)]
         struct Wrapper {
             utility_scoring: UtilityScoringConfig,
         }
+
+        let toml_str = "[utility_scoring]\nenabled = true\nutility_window = 3\n";
         let w: Wrapper = toml::from_str(toml_str).unwrap();
         assert_eq!(w.utility_scoring.utility_window, 3);
 

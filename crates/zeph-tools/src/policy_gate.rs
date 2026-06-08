@@ -397,6 +397,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use zeph_config::ProviderName;
+
     use super::*;
     use crate::SkillTrustLevel;
     use crate::policy::{
@@ -471,7 +473,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let result = gate.execute_tool_call(&make_call("bash")).await;
@@ -485,7 +487,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let result = gate.execute_tool_call(&make_call("bash")).await;
@@ -507,7 +509,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let result = gate
@@ -531,7 +533,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let result = gate
@@ -548,7 +550,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let err = gate
@@ -571,7 +573,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let result = gate.execute_tool_call_confirmed(&make_call("bash")).await;
@@ -586,7 +588,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let call = make_call("shell");
@@ -613,7 +615,7 @@ mod tests {
             default_effect: DefaultEffect::Deny,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         let result = gate.execute("```bash\necho hi\n```").await;
@@ -642,7 +644,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
@@ -671,7 +673,7 @@ mod tests {
                 capabilities: vec![],
             }],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         gate.set_effective_trust(SkillTrustLevel::Trusted);
@@ -690,7 +692,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let slot: TrajectoryRiskSlot = Arc::new(RwLock::new(3u8)); // Critical
         let gate = make_gate(&config).with_trajectory_risk(slot);
@@ -716,7 +718,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let slot: TrajectoryRiskSlot = Arc::new(RwLock::new(2u8)); // High
         let gate = make_gate(&config).with_trajectory_risk(slot);
@@ -738,7 +740,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         // Gate starts at Trusted.
@@ -759,7 +761,7 @@ mod tests {
             default_effect: DefaultEffect::Allow,
             rules: vec![],
             policy_file: None,
-            policy_provider: Default::default(),
+            policy_provider: ProviderName::default(),
         };
         let gate = make_gate(&config);
         // Force-set context to Quarantined first.
