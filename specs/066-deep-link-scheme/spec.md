@@ -269,9 +269,31 @@ Full registration support tracked in follow-up issue (OQ-1).
   process. Documented as v2 follow-up.
 - **`?profile=` accepting a raw filesystem path** — rejected: config injection vector.
 
-## 13. ACP Attach Follow-up Scope (v2 design sketch)
+## 13. ACP Attach — OQ-2 Implementation (shipped in #5059)
 
-For the v2 spec: ACP HTTP attach requires:
+OQ-2 ships a **stateless validate-only** `POST /deep-link` endpoint in `zeph-acp`
+(feature `acp-http`). It parses a `zeph://` URI, validates the `cwd` against
+both the deep-link INV-CWD denylist and the ACP `additional_directories` allowlist,
+validates the model name, and returns the cleaned fields as JSON.
+
+**Advisory contract (MANDATORY for callers):** This endpoint does not create a session
+or write any state. It is advisory — the authoritative cwd-enforcement point for the
+ACP runtime is the per-connection `session/new` / `session/load` boundary (`args.cwd`),
+which is unchanged by this feature. A client that ignores the returned `working_dir` and
+passes a different `args.cwd` to `session/new` is subject only to that path's existing
+`file://` / `additional_directories` checks.
+
+**INV-TRUST gap (tracked, not closed here):** The ACP `session/prompt` path does not
+currently tag inbound prompts as `ExternalUntrusted` (pre-existing gap, see #5063).
+The deep-link feature's own INV-TRUST obligation is limited to: (a) never elevating
+the prompt to system/instruction (trivially met — the endpoint never injects), and
+(b) labeling it `"external_untrusted"` in the response. Both are met.
+
+**Status codes:** 400 (malformed URI / oversized / NUL in cwd), 403 (cwd rejected),
+422 (unknown model), 401 (bearer auth, enforced by `BearerAuthLayer`).
+
+Full stateful attach (persisted cwd + re-validation on load + trust-tagging) remains
+a future epic. For the v2 spec, ACP HTTP attach requires:
 1. A discovery mechanism (local pidfile / Unix socket) advertising the running ACP server's
    HTTP port and a one-time bearer token.
 2. `url-open` reads the pidfile, validates it points to a live process (kill -0), reads the
@@ -281,4 +303,4 @@ For the v2 spec: ACP HTTP attach requires:
    allowlist applies.
 4. Token rotation: the one-time token must be regenerated after each attach to prevent replay.
 
-This is a separate spec and a separate PR.
+Full stateful attach is a separate spec and a separate PR.

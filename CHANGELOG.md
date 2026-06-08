@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(deep-link)`: `POST /deep-link` stateless validate-only ACP endpoint (spec-066 OQ-2, closes #5059)
+  - New `crates/zeph-acp/src/transport/deep_link.rs` handler behind `feature = "acp-http"`.
+  - Accepts `{ "uri": "zeph://..." }`, parses with the shared `parse_deep_link`, validates `cwd` against both the deep-link INV-CWD denylist and the ACP `additional_directories` allowlist (default-deny: empty allowlist rejects all cwd), validates model name against `available_models`.
+  - Returns `{ working_dir, prompt, prompt_trust_level: "external_untrusted", model }`. No session created, no store write.
+  - Total URI cap of 65 536 bytes before parsing (M2); NUL/C0 check on decoded cwd (M3).
+  - Status codes: 400 (malformed/oversized URI, NUL in cwd), 403 (cwd rejected), 422 (unknown model), 401 (bearer auth layer).
+  - `validate_deep_link_cwd` and `CwdValidationError` extracted from `src/url_scheme/validate.rs` (binary-only) to `crates/zeph-common/src/deep_link.rs` (shared); binary re-exports via `pub use`.
+  - 9 unit tests covering all failure/happy-path branches.
+  - `acp-http` feature now implies `zeph-common/deep-link`.
+  - Advisory contract documented in handler rustdoc and spec-066 §13.
+  - Follow-up issue filed: ACP `session/prompt` does not tag inbound prompts as `ExternalUntrusted` (INV-TRUST gap, #5063).
 - `feat(knowledge-ingest)`: Phase 0 provenance migration + recall isolation flag (spec-067 §3, closes #5015)
   - DB migrations: `102_graph_provenance.sql` (SQLite) and `103_graph_provenance.sql` (Postgres) add `origin TEXT NOT NULL DEFAULT 'conversation'`, `import_batch_id TEXT`, `source_uri TEXT` to `graph_edges` and `origin`, `import_batch_id` to `graph_entities`.
   - New types `GraphOrigin` (enum: `Conversation`, `Ingest`) and `GraphProvenance { origin, import_batch_id, source_uri }` in `zeph-memory::graph::types`.

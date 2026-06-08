@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `zeph://` URI parser (spec-066).
+//! `zeph://` URI parser and CWD validator (spec-066).
 //!
-//! This module provides [`parse_deep_link`], a sync, panic-free, I/O-free parser for
-//! `zeph://` URIs. It lives in `zeph-common` (Layer-0a) so it can be used by both the
-//! CLI entry point and any future channel that needs to handle deep-link URIs without
-//! pulling in higher-level crates.
+//! This module provides [`parse_deep_link`] and [`validate_deep_link_cwd`], both sync and
+//! panic-free. It lives in `zeph-common` (Layer-0a) so it can be shared by the CLI entry
+//! point and the ACP HTTP transport without pulling in higher-level crates.
 //!
 //! # Supported URIs
 //!
@@ -25,10 +24,10 @@
 //!   DEL `0x7f` are rejected with [`DeepLinkError::PromptContainsControlChars`] to prevent
 //!   terminal injection attacks.
 //! - `cwd` must be an absolute path; relative paths are rejected with
-//!   [`DeepLinkError::CwdNotAbsolute`]. Further validation (canonicalization, denylist,
-//!   allowlist) is performed by `validate_deep_link_cwd` in `src/url_scheme/validate.rs`.
+//!   [`DeepLinkError::CwdNotAbsolute`]. Full validation (canonicalization, denylist,
+//!   allowlist, `is_dir`) is performed by [`validate_deep_link_cwd`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const PROMPT_MAX_BYTES: usize = 8192;
 
@@ -207,6 +206,145 @@ fn parse_new_session_params(url: &url::Url) -> Result<NewSessionParams, DeepLink
     }
 
     Ok(params)
+}
+
+// ── CWD validation (shared between CLI and ACP) ───────────────────────────────
+
+/// Errors returned by [`validate_deep_link_cwd`].
+#[derive(Debug, thiserror::Error)]
+pub enum CwdValidationError {
+    /// The supplied path is not absolute.
+    #[error("path must be absolute")]
+    NotAbsolute,
+    /// `std::fs::canonicalize` failed (I/O error or path does not exist).
+    #[error("canonicalization failed: {0}")]
+    CanonicalizeFailed(std::io::Error),
+    /// The canonical path matches a hardcoded denylist entry.
+    #[error("path is in a denied location: {0}")]
+    Denied(String),
+    /// `allowed_roots` is non-empty and the canonical path does not start with any root.
+    #[error("path is outside allowed roots")]
+    OutsideAllowedRoots,
+    /// The canonical path exists but is not a directory.
+    #[error("path is not a directory")]
+    NotADirectory,
+}
+
+impl From<std::io::Error> for CwdValidationError {
+    fn from(e: std::io::Error) -> Self {
+        Self::CanonicalizeFailed(e)
+    }
+}
+
+/// Validates a cwd path received from a deep-link URI for safe use as a working directory.
+///
+/// Follows INV-CWD from spec §3: absolute → canonicalize → case-fold →
+/// denylist → allowlist → `is_dir`. Steps must not be reordered.
+///
+/// # Errors
+///
+/// Returns [`CwdValidationError`] on the first validation failure.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::PathBuf;
+/// use zeph_common::deep_link::validate_deep_link_cwd;
+///
+/// let result = validate_deep_link_cwd(&PathBuf::from("/home/user/project"), &[]);
+/// assert!(result.is_ok());
+/// ```
+pub fn validate_deep_link_cwd(
+    raw: &Path,
+    allowed_roots: &[PathBuf],
+) -> Result<PathBuf, CwdValidationError> {
+    if !raw.is_absolute() {
+        return Err(CwdValidationError::NotAbsolute);
+    }
+
+    // SAFETY: TOCTOU window between canonicalize and use is accepted per spec §3.
+    let canonical = std::fs::canonicalize(raw)?;
+
+    let canonical_str = canonical.to_string_lossy().into_owned();
+    #[cfg(not(target_os = "linux"))]
+    let folded = canonical_str.to_lowercase();
+    #[cfg(target_os = "linux")]
+    let folded = canonical_str.clone();
+
+    let denied = build_cwd_denylist();
+    for entry in &denied {
+        // A denylist entry "/proc" must block "/proc" and "/proc/anything" but not "/processing".
+        let is_exact = folded == *entry;
+        let is_prefix = folded.starts_with(&format!("{entry}/"));
+        if is_exact || is_prefix {
+            return Err(CwdValidationError::Denied(canonical_str));
+        }
+    }
+
+    if !allowed_roots.is_empty() {
+        let allowed = allowed_roots.iter().any(|root| canonical.starts_with(root));
+        if !allowed {
+            return Err(CwdValidationError::OutsideAllowedRoots);
+        }
+    }
+
+    let meta = canonical.metadata()?;
+    if !meta.is_dir() {
+        return Err(CwdValidationError::NotADirectory);
+    }
+
+    Ok(canonical)
+}
+
+/// Builds the case-folded hardcoded denylist of root prefixes for CWD validation.
+///
+/// On non-Linux platforms entries are lowercased; on Linux they are returned as-is
+/// since filesystem paths are case-sensitive.
+///
+/// When `HOME` is unset or empty, home-directory entries are omitted from the denylist.
+pub fn build_cwd_denylist() -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    let static_entries: &[&str] = &["/proc", "/sys", "/dev", "/etc", "/root", "/boot", "/run"];
+    #[cfg(target_os = "macos")]
+    let static_entries: &[&str] = &["/proc", "/sys", "/dev", "/System", "/Library/Keychains"];
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let static_entries: &[&str] = &["/proc", "/sys", "/dev"];
+
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    let home_entries: Vec<String> = if home.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            format!("{home}/.ssh"),
+            format!("{home}/.gnupg"),
+            format!("{home}/.aws"),
+        ]
+    };
+
+    let mut result: Vec<String> = static_entries
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    result.extend(home_entries);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::env;
+        if let Ok(sysroot) = env::var("SystemRoot") {
+            result.push(sysroot);
+        }
+        if let Ok(windir) = env::var("WINDIR") {
+            result.push(windir);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        result = result.into_iter().map(|s| s.to_lowercase()).collect();
+    }
+
+    result
 }
 
 #[cfg(test)]

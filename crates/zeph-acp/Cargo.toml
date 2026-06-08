@@ -26,7 +26,7 @@ default = [
 # builds in isolation, and expose `postgres` for PostgreSQL deployments (#4956).
 sqlite = ["zeph-memory/sqlite"]
 postgres = ["zeph-memory/postgres"]
-acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower"]
+acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower", "zeph-common/deep-link"]
 # session/close and session/delete stabilized in acp 0.14.0; no upstream feature gate needed
 unstable-session-delete = []
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]

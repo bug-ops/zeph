@@ -23,6 +23,8 @@ use crate::transport::crud::{
     create_session_handler, delete_session_handler, get_session_handler, update_session_handler,
 };
 #[cfg(feature = "acp-http")]
+use crate::transport::deep_link::deep_link_handler;
+#[cfg(feature = "acp-http")]
 use crate::transport::discovery::{agent_json_handler, discovery_handler};
 #[cfg(feature = "acp-http")]
 use crate::transport::http::{
@@ -55,6 +57,7 @@ const MAX_BODY_BYTES: usize = 1_048_576;
 /// | `PATCH` | `/sessions/{id}` | Update mutable session metadata |
 /// | `DELETE` | `/sessions/{id}` | Delete a session and its history |
 /// | `GET` | `/sessions/{id}/messages` | Get all events for a session |
+/// | `POST` | `/deep-link` | Parse and validate a `zeph://` URI (stateless, advisory) |
 /// | `GET` | `/health` | Public readiness probe |
 /// | `GET` | `/.well-known/acp.json` | Discovery manifest (always public, no auth) |
 /// | `GET` | `/agent.json` | Agent identity manifest for ACP Registry (always public) |
@@ -99,6 +102,7 @@ pub fn acp_router(state: AcpHttpState) -> Router {
                 .delete(delete_session_handler),
         )
         .route("/sessions/{id}/messages", get(session_messages_handler))
+        .route("/deep-link", post(deep_link_handler))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(CorsLayer::new());
 

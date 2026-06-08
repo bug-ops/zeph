@@ -22,6 +22,8 @@ pub mod auth;
 #[cfg(feature = "acp-http")]
 pub mod crud;
 #[cfg(feature = "acp-http")]
+pub mod deep_link;
+#[cfg(feature = "acp-http")]
 pub mod discovery;
 pub mod http;
 pub mod router;
