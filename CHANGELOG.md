@@ -33,6 +33,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `crates/zeph-config`: `DeepLinkConfig` + `AcpPreference` types; `confirm_before_prompt` defaults to `true` (secure default); migration step 62 injects `[deep_link]` advisory block into existing configs
   - `src/url_scheme`: `validate_deep_link_cwd` following INV-CWD (absolute → canonicalize → case-fold → denylist → allowlist → is_dir); expanded denylist (Linux: `/etc` `/root` `/boot` `/run`; macOS: `/System` `/Library/Keychains`; Windows: `SystemRoot`/`WINDIR`)
 - `docs(spec-066)`: correct INV-TRUST reference — `TrustLevel::Untrusted` (non-existent) replaced with `ContentTrustLevel::ExternalUntrusted` from `zeph-sanitizer`; Phase 1 deferral note added; `DeferredHost` error variant removed in favour of `UnknownHost` for all unknown actions (closes #5030)
+- `feat(memory)`: add `SemanticMemory::ingest_documents` graph batch extraction API (spec-067 §2.3–§2.5, closes #5021)
+  - New module `crates/zeph-memory/src/graph/ingest/`: `IngestDocument` (valid-by-construction newtype), `IngestSourceKind` enum, sealed `IngestSourceAdapter` trait + `SubagentJsonl` adapter, `ImportBatchId` (UUIDv4), `IngestProgress` channel events, `IngestReport` with hub-degree projection.
+  - `TECH_DOC_SYSTEM_PROMPT` const selectable via `IngestSourceKind::system_prompt()`; `GraphExtractor::with_system_prompt` builder for prompt selection.
+  - `SemanticMemory::ingest_documents`: bounded concurrency via `buffer_unordered` (configurable cap), collect-errors-and-continue, ledger idempotency guard (F2), provenance threading (F1), write-quality gate + admission control ON, RPE bypassed for batch mode.
+  - Dry-run mode: writes nothing to DB or Qdrant; computes and returns hub-degree projection from extractor output for G0 measurement spike.
+  - Content size cap (`max_content_bytes`, default 512 KiB) to prevent token-spend DoS.
+  - `post_extract_validator: Option<Arc<dyn PostExtractValidator>>` seam for future validation.
+- `research(knowledge)`: Phase 2 measurement spike + kill-criterion evaluation (spec-067 §7, closes #5022)
+  - Dry-run executed over 140 spec files and 472 handoff files; hub-degree static analysis: top entity ~11–16% (borderline at 15% kill-criterion, likely PASS with crate-level resolution across 15+ `zeph-*` nodes).
+  - Signal-to-noise static estimate: ~85% non-trivial edges (PASS; kill-criterion ≥ 50%).
+  - Three multi-hop recall queries authored (Q1–Q3); each requires ≥2-hop traversal and demonstrably fails with semantic-note recall alone (causal chain reasoning).
+  - recall@5 measurement BLOCKED (Qdrant DOWN); expected graph path advantage documented with 10-query held-out eval set.
+  - **Decision: Conditional GO** for G2 (graph go-live) pending: Qdrant restoration, `--source subagents` CLI wiring, live hub-degree < 15% confirmation, and recall@5 > notes baseline.
 
 ### Fixed
 
