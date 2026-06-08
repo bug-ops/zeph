@@ -17,7 +17,7 @@ use zeph_llm::provider::Message;
 
 use crate::MemoryError;
 use crate::graph::ingest::document::IngestSourceKind;
-use crate::graph::types::GraphProvenance;
+use crate::graph::types::{GraphOrigin, GraphProvenance};
 
 use super::document::IngestDocument;
 use super::report::ImportBatchId;
@@ -545,6 +545,7 @@ impl IngestSourceAdapter for CodexJsonl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::types::GraphOrigin;
 
     fn make_jsonl(entries: &[(u64, &str)]) -> String {
         entries
