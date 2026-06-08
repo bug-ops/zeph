@@ -331,4 +331,95 @@ mod tests {
             "unregister should not fail when not registered: {result:?}"
         );
     }
+
+    #[cfg(target_os = "linux")]
+    mod linux {
+        #![allow(unsafe_code)]
+
+        use serial_test::serial;
+
+        fn with_temp_home<F: FnOnce(&std::path::Path)>(f: F) {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let prev = std::env::var("HOME").ok();
+            // SAFETY: single-threaded under #[serial]; restored unconditionally via catch_unwind.
+            unsafe { std::env::set_var("HOME", tmp.path()) };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(tmp.path())));
+            match &prev {
+                Some(v) => unsafe { std::env::set_var("HOME", v) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+            if let Err(e) = result {
+                std::panic::resume_unwind(e);
+            }
+        }
+
+        #[test]
+        #[serial]
+        fn register_linux_writes_desktop_file() {
+            with_temp_home(|home| {
+                super::super::register_linux("fake-exe-path")
+                    .expect("register_linux should succeed");
+                let path = home.join(".local/share/applications/zeph-url.desktop");
+                assert!(path.exists(), "desktop file must exist after register");
+                let content = std::fs::read_to_string(&path).expect("read desktop file");
+                assert!(
+                    content.contains("Exec=fake-exe-path url-open \"%u\""),
+                    "desktop file must contain correct Exec line; got:\n{content}"
+                );
+                assert!(
+                    content.contains("MimeType=x-scheme-handler/zeph"),
+                    "desktop file must declare MimeType; got:\n{content}"
+                );
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn unregister_linux_removes_desktop_file() {
+            with_temp_home(|home| {
+                super::super::register_linux("fake-exe-path")
+                    .expect("register_linux should succeed");
+                let path = home.join(".local/share/applications/zeph-url.desktop");
+                assert!(path.exists(), "desktop file must exist before unregister");
+                super::super::unregister_linux().expect("unregister_linux should succeed");
+                assert!(
+                    !path.exists(),
+                    "desktop file must be removed after unregister"
+                );
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn unregister_linux_when_not_registered_is_ok() {
+            with_temp_home(|_home| {
+                let result = super::super::unregister_linux();
+                assert!(
+                    result.is_ok(),
+                    "unregister_linux must succeed when no file exists: {result:?}"
+                );
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn status_linux_parses_registered_exe() {
+            with_temp_home(|_home| {
+                super::super::register_linux("my-test-binary")
+                    .expect("register_linux should succeed");
+                // status_linux prints to stdout; verify it does not panic in either comparison branch.
+                super::super::status_linux(Some(std::path::Path::new("my-test-binary")));
+                super::super::status_linux(Some(std::path::Path::new("other-binary")));
+                super::super::status_linux(None);
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn status_linux_when_not_registered() {
+            with_temp_home(|_home| {
+                super::super::status_linux(None);
+            });
+        }
+    }
 }
