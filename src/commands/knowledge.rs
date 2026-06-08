@@ -1110,7 +1110,7 @@ fn cwd_matches_root(path: &Path, root: &Path) -> bool {
 ///
 /// Discovers JSONL session files for the current project, parses them via the
 /// appropriate [`zeph_memory::IngestSourceAdapter`], and writes entities and edges to the
-/// knowledge graph via [`SemanticMemory::ingest_documents`].
+/// knowledge graph via `SemanticMemory::ingest_documents`.
 ///
 /// In dry-run mode only discovery is performed — no parsing or writes occur.
 ///
