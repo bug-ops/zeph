@@ -1537,4 +1537,46 @@ destination = "/var/log/zeph-audit.log""#,
         let back: UtilityScoringConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.utility_window, 3);
     }
+
+    #[test]
+    fn adversarial_policy_provider_default_is_empty() {
+        let config = AdversarialPolicyConfig::default();
+        assert!(config.policy_provider.is_empty());
+    }
+
+    #[test]
+    fn adversarial_policy_provider_serde_roundtrip() {
+        let toml_str = r#"
+            [adversarial_policy]
+            enabled = true
+            policy_provider = "fast-llm"
+        "#;
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            adversarial_policy: AdversarialPolicyConfig,
+        }
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(w.adversarial_policy.policy_provider.as_str(), "fast-llm");
+
+        let json = serde_json::to_string(&w.adversarial_policy).unwrap();
+        let back: AdversarialPolicyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.policy_provider.as_str(), "fast-llm");
+    }
+
+    #[test]
+    fn adversarial_policy_provider_empty_when_omitted() {
+        let toml_str = r"
+            [adversarial_policy]
+            enabled = true
+        ";
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            adversarial_policy: AdversarialPolicyConfig,
+        }
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+        assert!(
+            w.adversarial_policy.policy_provider.is_empty(),
+            "omitted policy_provider must default to empty (→ primary provider used)"
+        );
+    }
 }

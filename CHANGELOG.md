@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fix(knowledge)`: external-agent ingest (`--source claude-code`, `--source codex`) now passes `MemoryWriteValidator` sanitizer gate to `ingest_documents` — INV-4 violation where `handle_external_agent_ingest` called with `None` validator, bypassing entity-name PII checks and entity/edge count limits (closes #5081)
 - `fix(memory)`: `IngestSourceKind::graph_origin()` now correctly returns `GraphOrigin::ExternalAgent` for the `ExternalAgent` variant (was `GraphOrigin::Ingest`); adapters updated to call `kind.graph_origin()` instead of hardcoding origin, removing dead code path (closes #5082)
 - `fix(knowledge)`: replaced blocking `std::fs::read_to_string` / `std::fs::canonicalize` calls with `tokio::fs` async equivalents in async ingest functions; wrapped `enumerate_all_sources`, `enumerate_claude_code_paths`, `enumerate_codex_paths`, and subagent glob discovery in `tokio::task::spawn_blocking` to avoid stalling the async runtime on large session histories (closes #5080)
+- `fix(tools)`: adversarial policy gate now resolves `policy_provider` by name instead of always using the primary provider (closes #5079)
+  - `AdversarialPolicyLlmAdapter` is constructed with the provider resolved via `create_named_provider(adv_cfg.policy_provider, config)`, falling back to the primary provider with a `warn!` log when the named provider is empty or cannot be resolved.
+  - `AdversarialPolicyInfo.provider` is now set after resolution and reflects the actually-used provider name in all three branches (named, fallback, empty → primary), not the raw config string.
+  - Pattern mirrors `shadow_sentinel.probe_provider` at `runner.rs:2135`.
+  - 3 regression tests added in `zeph-config` for `AdversarialPolicyConfig.policy_provider` serialization and default behaviour.
 
 ### Added
 

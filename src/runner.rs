@@ -1988,12 +1988,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 );
             }
 
-            adv_policy_info = Some(zeph_core::AdversarialPolicyInfo {
-                provider: adv_cfg.policy_provider.to_string(),
-                policy_count: policies.len(),
-                fail_open: adv_cfg.fail_open,
-            });
-
+            let policy_count = policies.len();
             let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
                 policies,
                 std::time::Duration::from_millis(adv_cfg.timeout_ms),
@@ -2001,9 +1996,39 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 adv_cfg.exempt_tools.clone(),
             ));
 
+            let (policy_provider, resolved_provider_name) = if adv_cfg.policy_provider.is_empty() {
+                let name = provider.name().to_string();
+                (provider.clone(), name)
+            } else {
+                match crate::bootstrap::create_named_provider(
+                    adv_cfg.policy_provider.as_str(),
+                    config,
+                ) {
+                    Ok(p) => {
+                        let name = p.name().to_string();
+                        (p, name)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %adv_cfg.policy_provider,
+                            error = %e,
+                            "adversarial policy provider resolution failed, using primary"
+                        );
+                        let name = provider.name().to_string();
+                        (provider.clone(), name)
+                    }
+                }
+            };
+
+            adv_policy_info = Some(zeph_core::AdversarialPolicyInfo {
+                provider: resolved_provider_name,
+                policy_count,
+                fail_open: adv_cfg.fail_open,
+            });
+
             let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
                 std::sync::Arc::new(AdversarialPolicyLlmAdapter {
-                    provider: provider.clone(),
+                    provider: policy_provider,
                 });
 
             let mut gate =
