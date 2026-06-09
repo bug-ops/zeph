@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(knowledge)`: external-agent ingest (`--source claude-code`, `--source codex`) now passes `MemoryWriteValidator` sanitizer gate to `ingest_documents` — INV-4 violation where `handle_external_agent_ingest` called with `None` validator, bypassing entity-name PII checks and entity/edge count limits (closes #5081)
+- `fix(memory)`: `IngestSourceKind::graph_origin()` now correctly returns `GraphOrigin::ExternalAgent` for the `ExternalAgent` variant (was `GraphOrigin::Ingest`); adapters updated to call `kind.graph_origin()` instead of hardcoding origin, removing dead code path (closes #5082)
+- `fix(knowledge)`: replaced blocking `std::fs::read_to_string` / `std::fs::canonicalize` calls with `tokio::fs` async equivalents in async ingest functions; wrapped `enumerate_all_sources`, `enumerate_claude_code_paths`, `enumerate_codex_paths`, and subagent glob discovery in `tokio::task::spawn_blocking` to avoid stalling the async runtime on large session histories (closes #5080)
+
 ### Added
 
 - `feat(deep-link)`: `POST /deep-link` stateless validate-only ACP endpoint (spec-066 OQ-2, closes #5059)

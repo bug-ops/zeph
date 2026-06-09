@@ -17,7 +17,7 @@ use zeph_llm::provider::Message;
 
 use crate::MemoryError;
 use crate::graph::ingest::document::IngestSourceKind;
-use crate::graph::types::{GraphOrigin, GraphProvenance};
+use crate::graph::types::GraphProvenance;
 
 use super::document::IngestDocument;
 use super::report::ImportBatchId;
@@ -355,7 +355,7 @@ impl IngestSourceAdapter for ClaudeCodeJsonl {
             let ctx: Vec<String> = texts[start..i].to_vec();
             let source_uri = format!("claude-code:{}#{}", self.session_id, uuid);
             let provenance = GraphProvenance {
-                origin: GraphOrigin::ExternalAgent,
+                origin: IngestSourceKind::ExternalAgent.graph_origin(),
                 import_batch_id: batch_id.as_str().to_owned(),
                 source_uri: Some(source_uri),
             };
@@ -531,7 +531,7 @@ impl IngestSourceAdapter for CodexJsonl {
             let ctx: Vec<String> = texts[start..i].to_vec();
             let source_uri = format!("codex:{}#{}", self.session_id, item_id);
             let provenance = GraphProvenance {
-                origin: GraphOrigin::ExternalAgent,
+                origin: IngestSourceKind::ExternalAgent.graph_origin(),
                 import_batch_id: batch_id.as_str().to_owned(),
                 source_uri: Some(source_uri),
             };

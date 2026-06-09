@@ -187,8 +187,19 @@ async fn handle_ingest(
         }
 
         let head_sha = git_head_sha(&root);
+        let (notes_sources_owned, root_owned, head_sha_owned) =
+            (notes_sources.clone(), root.clone(), head_sha.clone());
         let (source_items, discovery_errors, per_source_counts) =
-            enumerate_all_sources(&notes_sources, &root, &head_sha, effective_max);
+            tokio::task::spawn_blocking(move || {
+                enumerate_all_sources(
+                    &notes_sources_owned,
+                    &root_owned,
+                    &head_sha_owned,
+                    effective_max,
+                )
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("enumerate_all_sources panicked: {e}"))?;
         let total_files = source_items.len();
 
         if dry_run {
@@ -637,34 +648,42 @@ async fn run_graph_ingest(
     }
 
     // Discover *.jsonl transcript files, canonicalizing each (INV-6: per-file symlink check).
+    // spawn_blocking: glob pattern walk + per-entry canonicalize are blocking fs syscalls.
     let pattern = format!("{}/**/*.jsonl", transcript_dir.display());
-    let mut transcript_files: Vec<(String, PathBuf)> = Vec::new();
-    let mut discovery_errors: Vec<String> = Vec::new();
-
-    for entry in glob::glob(&pattern)
-        .map_err(|e| anyhow::anyhow!("glob pattern error: {e}"))?
-        .flatten()
-    {
-        match entry.canonicalize() {
-            Ok(canonical) => {
-                if !canonical.starts_with(root) {
-                    discovery_errors.push(format!(
-                        "{}: resolves outside project root (INV-6), skipped",
-                        canonical.display()
-                    ));
-                    continue;
+    let root_owned = root.to_path_buf();
+    let (mut transcript_files, discovery_errors): (Vec<(String, PathBuf)>, Vec<String>) =
+        tokio::task::spawn_blocking(move || {
+            let mut files: Vec<(String, PathBuf)> = Vec::new();
+            let mut errors: Vec<String> = Vec::new();
+            let entries = match glob::glob(&pattern) {
+                Ok(e) => e,
+                Err(e) => return Err(anyhow::anyhow!("glob pattern error: {e}")),
+            };
+            for entry in entries.flatten() {
+                match entry.canonicalize() {
+                    Ok(canonical) => {
+                        if !canonical.starts_with(&root_owned) {
+                            errors.push(format!(
+                                "{}: resolves outside project root (INV-6), skipped",
+                                canonical.display()
+                            ));
+                            continue;
+                        }
+                        let task_id = canonical.file_stem().map_or_else(
+                            || "unknown".to_owned(),
+                            |s| s.to_string_lossy().into_owned(),
+                        );
+                        files.push((task_id, canonical));
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: canonicalize failed: {e}", entry.display()));
+                    }
                 }
-                let task_id = canonical.file_stem().map_or_else(
-                    || "unknown".to_owned(),
-                    |s| s.to_string_lossy().into_owned(),
-                );
-                transcript_files.push((task_id, canonical));
             }
-            Err(e) => {
-                discovery_errors.push(format!("{}: canonicalize failed: {e}", entry.display()));
-            }
-        }
-    }
+            Ok((files, errors))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("transcript discovery panicked: {e}"))??;
 
     // Apply effective_max cap across total documents (approximate: per-file, not per-document).
     if effective_max > 0 && transcript_files.len() > effective_max {
@@ -696,7 +715,7 @@ async fn run_graph_ingest(
     let mut parse_errors: Vec<String> = Vec::new();
 
     for (task_id, path) in &transcript_files {
-        match std::fs::read_to_string(path) {
+        match tokio::fs::read_to_string(path).await {
             Ok(raw) => {
                 let adapter = SubagentJsonl::new(task_id.as_str());
                 match adapter.parse(&raw, &batch_id) {
@@ -1117,6 +1136,7 @@ fn cwd_matches_root(path: &Path, root: &Path) -> bool {
 /// # Errors
 ///
 /// Returns an error when config loading, memory construction, or the batch graph write fails.
+#[allow(clippy::too_many_lines)]
 #[tracing::instrument(skip_all, fields(dry_run))]
 async fn handle_external_agent_ingest(
     agent_sources: &[KnowledgeSource],
@@ -1129,14 +1149,18 @@ async fn handle_external_agent_ingest(
 
     let batch_id = ImportBatchId::new();
 
-    // Phase 1: enumerate JSONL paths per source.
+    // Phase 1: enumerate JSONL paths per source (spawn_blocking: glob + canonicalize + fs reads).
     let mut all_paths: Vec<(KnowledgeSource, PathBuf)> = Vec::new();
     for src in agent_sources {
-        let paths = match src {
-            KnowledgeSource::ClaudeCode => enumerate_claude_code_paths(root)?,
-            KnowledgeSource::Codex => enumerate_codex_paths(root)?,
+        let src_owned = src.clone();
+        let root_owned = root.to_path_buf();
+        let paths = tokio::task::spawn_blocking(move || match src_owned {
+            KnowledgeSource::ClaudeCode => enumerate_claude_code_paths(&root_owned),
+            KnowledgeSource::Codex => enumerate_codex_paths(&root_owned),
             _ => unreachable!("only external-agent sources reach this function"),
-        };
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("path enumeration panicked: {e}"))??;
         tracing::debug!(
             source = source_label(src),
             count = paths.len(),
@@ -1172,7 +1196,7 @@ async fn handle_external_agent_ingest(
             || "unknown".to_owned(),
             |s| s.to_string_lossy().into_owned(),
         );
-        let raw = match std::fs::read_to_string(path) {
+        let raw = match tokio::fs::read_to_string(path).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(?path, "failed to read session file: {e}");
@@ -1215,12 +1239,23 @@ async fn handle_external_agent_ingest(
 
     // Phase 3: write to graph via SemanticMemory.
     let app = AppBuilder::new(config_path, None, None, None).await?;
+    let app_config = app.config();
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
     let mem = app.build_memory(&provider).await?;
 
+    // Build SharedPostExtractValidator wrapping MemoryWriteValidator (INV-4, spec-067 §G-5 S3).
+    let validator_inner = zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
+        app_config.security.memory_validation.clone(),
+    );
+    let shared_validator: SharedPostExtractValidator = Some(Arc::new(move |r| {
+        validator_inner
+            .validate_graph_extraction(r)
+            .map_err(|e| e.to_string())
+    }));
+
     let config = IngestBatchConfig::default();
     let report = mem
-        .ingest_documents(docs, config, batch_id, 4, None, None)
+        .ingest_documents(docs, config, batch_id, 4, shared_validator, None)
         .await
         .map_err(|e| anyhow::anyhow!("graph ingest failed: {e}"))?;
 

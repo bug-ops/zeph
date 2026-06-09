@@ -61,7 +61,8 @@ impl IngestSourceKind {
     pub fn graph_origin(self) -> GraphOrigin {
         match self {
             Self::SubagentTranscript => GraphOrigin::Subagent,
-            Self::StaticArtifact | Self::ExternalAgent => GraphOrigin::Ingest,
+            Self::StaticArtifact => GraphOrigin::Ingest,
+            Self::ExternalAgent => GraphOrigin::ExternalAgent,
         }
     }
 }
@@ -73,7 +74,7 @@ impl IngestSourceKind {
 /// - `content` is non-empty.
 /// - `source_uri` is non-empty.
 /// - `content_hash` is the canonical BLAKE3 hex digest of `content`.
-/// - `provenance` is fully populated with `GraphOrigin::Ingest`.
+/// - `provenance` is fully populated with the origin matching the source kind (see [`IngestSourceKind::graph_origin`]).
 ///
 /// # Examples
 ///
