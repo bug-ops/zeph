@@ -2653,3 +2653,128 @@ fn migrate_policy_provider_and_utility_window_round_trips_through_config() {
         .join("\n");
     toml::from_str::<Value>(&toml_only).expect("stripped output must be valid TOML");
 }
+
+// ── Step 60 — migrate_shell_checkpoints_config (#4990) ───────────────────
+
+#[test]
+fn step_60_adds_checkpoints_block_when_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_shell_checkpoints_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.sections_changed.contains(&"tools.shell".to_owned()),
+        "sections_changed must include 'tools.shell'"
+    );
+    assert!(
+        result.output.contains("checkpoints_enabled"),
+        "output must contain checkpoints_enabled"
+    );
+    assert!(
+        result.output.contains("max_checkpoints"),
+        "output must contain max_checkpoints"
+    );
+}
+
+#[test]
+fn step_60_noop_when_checkpoints_enabled_present() {
+    let src = "[tools.shell]\ncheckpoints_enabled = true\n";
+    let result = migrate_shell_checkpoints_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_60_noop_when_max_checkpoints_present() {
+    let src = "[tools.shell]\nmax_checkpoints = 50\n";
+    let result = migrate_shell_checkpoints_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_60_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let first = migrate_shell_checkpoints_config(src).expect("migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_shell_checkpoints_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output must be unchanged on second run"
+    );
+}
+
+// ── Step 63 — migrate_memory_graph_recall_include_imported (#5015) ────────
+
+#[test]
+fn step_63_adds_recall_include_imported_when_absent() {
+    let src = "[memory.graph]\nenabled = true\n";
+    let result = migrate_memory_graph_recall_include_imported(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .sections_changed
+            .contains(&"memory.graph.recall_include_imported".to_owned()),
+        "sections_changed must include memory.graph.recall_include_imported"
+    );
+    assert!(
+        result.output.contains("recall_include_imported"),
+        "output must contain recall_include_imported"
+    );
+}
+
+#[test]
+fn step_63_noop_when_no_memory_graph_section() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_memory_graph_recall_include_imported(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_63_noop_when_key_already_in_memory_graph() {
+    let src = "[memory.graph]\nenabled = true\nrecall_include_imported = false\n";
+    let result = migrate_memory_graph_recall_include_imported(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_63_noop_when_key_commented_in_memory_graph() {
+    let src = "[memory.graph]\nenabled = true\n# recall_include_imported = true\n";
+    let result = migrate_memory_graph_recall_include_imported(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+/// Regression for #5109: step 61 adds a `recall_include_imported` comment inside [knowledge].
+/// Step 63 must NOT treat that as an idempotency hit — it must still inject into [memory.graph].
+#[test]
+fn step_63_not_fooled_by_recall_include_imported_in_knowledge_block() {
+    // Simulates a config that has been processed by step 61, which adds a [knowledge]
+    // advisory containing "recall_include_imported" as a comment line.
+    let src = "[memory.graph]\nenabled = true\n\n# [knowledge]\n# recall_include_imported = true\n";
+    let result = migrate_memory_graph_recall_include_imported(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 1,
+        "must inject into [memory.graph] even when recall_include_imported appears in [knowledge]"
+    );
+    assert!(
+        result.output.contains("recall_include_imported"),
+        "output must contain the injected key"
+    );
+}
+
+#[test]
+fn step_63_idempotent_on_own_output() {
+    let src = "[memory.graph]\nenabled = true\n";
+    let first = migrate_memory_graph_recall_include_imported(src).expect("migrate");
+    assert_eq!(first.changed_count, 1);
+    let second =
+        migrate_memory_graph_recall_include_imported(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output must be unchanged on second run"
+    );
+}

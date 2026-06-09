@@ -589,8 +589,41 @@ pub fn migrate_memory_graph_recall_include_imported(
         });
     }
 
-    // Idempotent: key already present (active or as comment).
-    if toml_src.contains("recall_include_imported") {
+    // Idempotent: key already present (active or as comment) within [memory.graph].
+    // We check only inside the [memory.graph] section to avoid a false positive from
+    // step 61's [knowledge] advisory block, which also contains the string
+    // "recall_include_imported" as a comment.
+    //
+    // A commented-out section header (e.g. `# [knowledge]`) is treated as ending the
+    // current section, because advisory comment blocks from other migration steps are
+    // appended at the end of the file and their keys must not be attributed to
+    // [memory.graph].
+    let in_graph_section = {
+        let mut in_section = false;
+        toml_src.lines().any(|l| {
+            let t = l.trim();
+            // Active section header: transitions in/out of [memory.graph].
+            if !t.starts_with('#') && t.starts_with('[') && !t.starts_with("[[") {
+                in_section = t == "[memory.graph]";
+                return false;
+            }
+            if t.starts_with('#') {
+                let inner = t.trim_start_matches('#').trim();
+                // Commented-out section header (e.g. `# [knowledge]`): end current section.
+                // Advisory blocks from other steps appear as `# [section]` and their keys
+                // must not be misattributed to [memory.graph].
+                if inner.starts_with('[') {
+                    in_section = false;
+                    return false;
+                }
+                // Commented-out key — counts as present only if still inside the section.
+                return in_section && inner.starts_with("recall_include_imported");
+            }
+            // Active key inside the section.
+            in_section && t.starts_with("recall_include_imported")
+        })
+    };
+    if in_graph_section {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
