@@ -620,7 +620,7 @@ mod tests {
     fn state_with(provider: ProviderKind, base_url: Option<&str>) -> WizardState {
         WizardState {
             provider: Some(provider),
-            base_url: base_url.map(|s| s.to_owned()),
+            base_url: base_url.map(ToOwned::to_owned),
             ..WizardState::default()
         }
     }
