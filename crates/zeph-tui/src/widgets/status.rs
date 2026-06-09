@@ -8,9 +8,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 use zeph_common::format_tokens;
 
 use crate::app::{App, InputMode};
+use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
@@ -45,9 +47,8 @@ impl SegmentList {
     }
 
     fn push(&mut self, priority: Priority, spans: Vec<Span<'static>>) {
-        // TODO: use unicode_width for correct CJK/emoji column count
         let width: u16 = spans.iter().fold(0u16, |acc, s| {
-            acc.saturating_add(u16::try_from(s.content.chars().count()).unwrap_or(u16::MAX))
+            acc.saturating_add(u16::try_from(s.content.width()).unwrap_or(u16::MAX))
         });
         self.segments.push(Segment {
             spans,
@@ -366,12 +367,7 @@ fn build_goal_spans(snap: &crate::metrics::GoalSnapshot, theme: &Theme) -> Vec<S
     let label = if snap.text.is_empty() {
         format!(" {icon} goal")
     } else {
-        let short: String = snap.text.chars().take(30).collect();
-        let truncated = if snap.text.chars().count() > 30 {
-            format!("{short}…")
-        } else {
-            short
-        };
+        let truncated = truncate_to_width(&snap.text, 30);
         format!(" {icon} {truncated}")
     };
     vec![
@@ -810,5 +806,51 @@ mod tests {
             super::render(&app, &metrics, frame, area);
         });
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn segment_list_cjk_width_counts_columns() {
+        let theme = Theme::default();
+        let mut list = SegmentList::new();
+        // "日本語" = 3 chars but 6 display columns
+        list.push(
+            Priority::Critical,
+            vec![Span::styled("日本語", theme.status_bar)],
+        );
+        // Low filler: 10 ASCII chars — should be dropped when max_width = 6
+        list.push(
+            Priority::Low,
+            vec![Span::styled("AAAAAAAAAA", theme.status_bar)],
+        );
+        let spans = list.layout(6);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        // CJK segment (width=6) must survive; Low (width=10) must be dropped
+        assert!(text.contains("日本語"), "CJK must survive: {text:?}");
+        assert!(
+            !text.contains("AAAAAAAAAA"),
+            "Low must be dropped: {text:?}"
+        );
+    }
+
+    #[test]
+    fn segment_list_emoji_width_counts_columns() {
+        let theme = Theme::default();
+        let mut list = SegmentList::new();
+        // "🎉🎊" = 2 emoji, each 2 cols = 4 display columns total
+        list.push(
+            Priority::Critical,
+            vec![Span::styled("🎉🎊", theme.status_bar)],
+        );
+        list.push(
+            Priority::Low,
+            vec![Span::styled("BBBBBBBBBB", theme.status_bar)],
+        );
+        let spans = list.layout(4);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("🎉🎊"), "emoji must survive: {text:?}");
+        assert!(
+            !text.contains("BBBBBBBBBB"),
+            "Low must be dropped: {text:?}"
+        );
     }
 }

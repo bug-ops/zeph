@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
@@ -159,12 +160,7 @@ fn append_shell_background_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsS
         let elapsed_secs = run.elapsed_secs;
         let mm = elapsed_secs / 60;
         let ss = elapsed_secs % 60;
-        let cmd = if run.command.chars().count() > 60 {
-            let end = run.command.floor_char_boundary(59);
-            format!("{}…", &run.command[..end])
-        } else {
-            run.command.clone()
-        };
+        let cmd = truncate_to_width(&run.command, 60);
         lines.push(Line::from(format!(
             "  [{}] {:02}:{:02}  {}",
             run.run_id, mm, ss, cmd

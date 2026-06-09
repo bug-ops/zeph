@@ -7,6 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
+use crate::layout::truncate_to_width;
 use crate::theme::Theme;
 
 const MAX_VISIBLE: usize = 8;
@@ -196,11 +197,7 @@ pub fn render(state: &ReverseSearchState, history: &[String], frame: &mut Frame,
                 Style::default()
             };
             let max_chars = (actual_width as usize).saturating_sub(5);
-            let display = if entry.chars().count() > max_chars {
-                format!("{}…", entry.chars().take(max_chars).collect::<String>())
-            } else {
-                entry.to_owned()
-            };
+            let display = truncate_to_width(entry, max_chars);
             ListItem::new(Line::from(Span::styled(display, style)))
         })
         .collect();

@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use zeph_subagent::{ModelSpec, SubAgentDef, ToolPolicy, is_valid_agent_name};
 
+use crate::layout::truncate_to_width;
 use crate::metrics::{MetricsSnapshot, SubAgentMetrics};
 use crate::theme::Theme;
 
@@ -981,12 +982,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{truncated}…")
-    }
+    truncate_to_width(s, max)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1398,11 +1394,10 @@ mod tests {
 
     #[test]
     fn truncate_str_unicode_safe() {
-        // String with 3 multi-byte chars.
+        use unicode_width::UnicodeWidthStr;
         let s = "αβγδε";
         let truncated = truncate_str(s, 3);
-        // Should be "αβ…" — 2 chars + ellipsis, all valid Unicode.
-        assert_eq!(truncated.chars().count(), 3);
+        assert!(truncated.width() <= 3, "width={}", truncated.width());
         assert!(truncated.ends_with('…'));
     }
 
@@ -1410,5 +1405,23 @@ mod tests {
     fn truncate_str_ascii_unchanged() {
         assert_eq!(truncate_str("hello", 10), "hello");
         assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_str_cjk_wide_chars() {
+        use unicode_width::UnicodeWidthStr;
+        // 6 CJK chars = width 12; max=5 → truncated result must fit in 5 cols
+        let r = truncate_str("日本語テスト", 5);
+        assert!(r.width() <= 5, "width={} result={r:?}", r.width());
+        assert!(r.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_str_emoji_wide_chars() {
+        use unicode_width::UnicodeWidthStr;
+        // 3 emoji = width 6; max=4 → must fit in 4 cols
+        let r = truncate_str("🎉🎊🎈", 4);
+        assert!(r.width() <= 4, "width={} result={r:?}", r.width());
+        assert!(r.ends_with('…'));
     }
 }

@@ -7,6 +7,7 @@ pub(super) const SCROLL_STEP_PAGE: usize = 10;
 
 use crate::command::TuiCommand;
 use crate::file_picker::{FileIndex, FilePickerState};
+use crate::layout::truncate_to_width;
 use crate::widgets::command_palette::CommandPaletteState;
 use crate::widgets::slash_autocomplete::{SlashAutocompleteState, command_id_to_slash_form};
 
@@ -604,11 +605,7 @@ impl App {
                 "Provider", "Model", "Input", "Cache-R", "Cache-W", "Output", "Cost"
             );
             for (name, usage) in &self.metrics.provider_cost_breakdown {
-                let model_display = if usage.model.chars().count() > 26 {
-                    format!("{}…", usage.model.chars().take(25).collect::<String>())
-                } else {
-                    usage.model.clone()
-                };
+                let model_display = truncate_to_width(&usage.model, 26);
                 let _ = write!(
                     out,
                     "\n  {:<16} {:<28} {:>8} {:>9} {:>9} {:>8} {:>8}",

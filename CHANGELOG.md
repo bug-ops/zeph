@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `AdversarialPolicyInfo.provider` is now set after resolution and reflects the actually-used provider name in all three branches (named, fallback, empty → primary), not the raw config string.
   - Pattern mirrors `shadow_sentinel.probe_provider` at `runner.rs:2135`.
   - 3 regression tests added in `zeph-config` for `AdversarialPolicyConfig.policy_provider` serialization and default behaviour.
+- `fix(tui)`: status bar and widget columns now use display width instead of codepoint count, fixing misalignment with CJK characters and emoji (closes #5075)
+  - New `pub(crate) fn truncate_to_width(s: &str, max_width: usize) -> String` helper in `layout.rs` accumulates display width char-by-char and appends `…` within the column budget.
+  - All 6 truncation sites in `status.rs`, `subagents.rs`, `keys.rs`, `fleet.rs`, `reverse_search.rs`, and `resources.rs` route through the helper.
+  - Width measurement in `chat.rs` table columns and `wrap_spans` line-breaking corrected with `UnicodeWidthChar`.
+  - `unicode-width` added as a direct dependency of `zeph-tui` (previously only transitive via ratatui).
+  - 14 CJK/emoji regression tests added across `layout.rs`, `subagents.rs`, `status.rs`, and `chat.ms`.
 
 ### Added
 

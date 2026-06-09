@@ -8,6 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use throbber_widgets_tui::BRAILLE_SIX;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, MessageRole, RenderCache, RenderCacheKey, content_hash};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
@@ -1012,7 +1013,7 @@ impl<'t> MdRenderer<'t> {
         let mut col_widths = vec![3usize; col_count];
         for row in &self.table_rows {
             for (ci, cell) in row.iter().enumerate() {
-                col_widths[ci] = col_widths[ci].max(cell.chars().count());
+                col_widths[ci] = col_widths[ci].max(cell.width());
             }
         }
 
@@ -1159,7 +1160,7 @@ fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>>
         return vec![Line::from(spans)];
     }
 
-    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let total: usize = spans.iter().map(|s| s.content.width()).sum();
     if total <= max_width {
         return vec![Line::from(spans)];
     }
@@ -1179,11 +1180,26 @@ fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>>
                 width = 0;
                 continue;
             }
-            let take = space.min(chars.len() - pos);
-            let chunk: String = chars[pos..pos + take].iter().collect();
-            current.push(Span::styled(chunk, span.style));
-            width += take;
-            pos += take;
+            // Greedily take chars whose total display width fits within `space`.
+            let mut chunk = String::new();
+            let mut chunk_width = 0;
+            while pos < chars.len() {
+                let cw = chars[pos].width().unwrap_or(0);
+                if chunk_width + cw > space {
+                    break;
+                }
+                chunk.push(chars[pos]);
+                chunk_width += cw;
+                pos += 1;
+            }
+            if !chunk.is_empty() {
+                width += chunk_width;
+                current.push(Span::styled(chunk, span.style));
+            } else if pos < chars.len() {
+                // Single char wider than remaining space — force a line break.
+                result.push(Line::from(std::mem::take(&mut current)));
+                width = 0;
+            }
 
             if width >= max_width && pos < chars.len() {
                 result.push(Line::from(std::mem::take(&mut current)));
@@ -2076,5 +2092,44 @@ mod tests {
             "5 read_file calls must render as grouped 'Explored N files'; got: {text:?}"
         );
         assert!(text.contains('5'), "group must mention count 5");
+    }
+
+    #[test]
+    fn wrap_spans_cjk_wraps_at_column_boundary() {
+        // "AB日CD": A=1, B=1, 日=2, C=1, D=1 → total width=6
+        // max_width=4: "AB日" fills exactly 4 cols → "CD" wraps to next line
+        let spans = vec![Span::raw("AB日CD")];
+        let lines = wrap_spans(spans, 4);
+        assert_eq!(lines.len(), 2, "expected 2 lines; got {lines:?}");
+        let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(first, "AB日", "first line should be 'AB日'; got {first:?}");
+        let second: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(second, "CD", "second line should be 'CD'; got {second:?}");
+    }
+
+    #[test]
+    fn wrap_spans_emoji_wraps_at_column_boundary() {
+        // "ab🎉cd": a=1, b=1, 🎉=2, c=1, d=1 → total width=6
+        // max_width=4: "ab🎉" fills exactly 4 cols → "cd" wraps
+        let spans = vec![Span::raw("ab🎉cd")];
+        let lines = wrap_spans(spans, 4);
+        assert_eq!(lines.len(), 2, "expected 2 lines; got {lines:?}");
+        let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(first, "ab🎉", "first line should be 'ab🎉'; got {first:?}");
+    }
+
+    #[test]
+    fn wrap_spans_all_cjk_wraps_correctly() {
+        // "日本語テ": each 2 cols → total 8; max_width=4 → 2 lines of 2 chars each
+        let spans = vec![Span::raw("日本語テ")];
+        let lines = wrap_spans(spans, 4);
+        assert_eq!(lines.len(), 2, "expected 2 lines; got {lines:?}");
+        let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(first, "日本", "first line should be '日本'; got {first:?}");
+        let second: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            second, "語テ",
+            "second line should be '語テ'; got {second:?}"
+        );
     }
 }

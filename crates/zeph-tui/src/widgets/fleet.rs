@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use zeph_common::format_tokens;
 use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 
+use crate::layout::truncate_to_width;
 use crate::theme::Theme;
 
 /// Cached fleet data loaded from the database by the background refresh task.
@@ -41,11 +42,7 @@ fn build_session_item(row: &AgentSessionRow, selected: bool) -> ListItem<'static
 
     let id_short: String = row.id.chars().take(8).collect();
 
-    let model_short = if row.model.chars().count() > 20 {
-        format!("{}…", row.model.chars().take(19).collect::<String>())
-    } else {
-        row.model.clone()
-    };
+    let model_short = truncate_to_width(&row.model, 20);
 
     let tokens = format!(
         "{}/{}",

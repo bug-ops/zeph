@@ -2,6 +2,30 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Truncates `s` to fit within `max_width` display columns, appending `…` if truncated.
+///
+/// Accumulates display width character-by-character using [`UnicodeWidthChar`], reserving
+/// one column for the ellipsis. Returns an owned copy of `s` unchanged when it already fits.
+pub(crate) fn truncate_to_width(s: &str, max_width: usize) -> String {
+    if s.width() <= max_width {
+        return s.to_owned();
+    }
+    let budget = max_width.saturating_sub(1); // reserve 1 col for "…"
+    let mut out = String::new();
+    let mut cols = 0;
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if cols + cw > budget {
+            break;
+        }
+        out.push(ch);
+        cols += cw;
+    }
+    out.push('…');
+    out
+}
 
 /// Returns a centered `Rect` with the given percentage width and fixed height.
 #[must_use]
@@ -144,7 +168,56 @@ impl AppLayout {
 
 #[cfg(test)]
 mod tests {
+    use unicode_width::UnicodeWidthStr;
+
     use super::*;
+
+    #[test]
+    fn truncate_to_width_ascii_fits() {
+        assert_eq!(truncate_to_width("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_to_width_ascii_truncated() {
+        let r = truncate_to_width("hello world", 7);
+        assert!(r.width() <= 7, "width={}", r.width());
+        assert!(r.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_to_width_cjk_fits() {
+        // "日本語" = 3 chars, width = 6
+        assert_eq!(truncate_to_width("日本語", 6), "日本語");
+    }
+
+    #[test]
+    fn truncate_to_width_cjk_truncated() {
+        // "日本語テスト" = 6 chars, width = 12; max=5 → must fit in 5 cols
+        let r = truncate_to_width("日本語テスト", 5);
+        assert!(r.width() <= 5, "width={} result={r:?}", r.width());
+        assert!(r.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_to_width_emoji_truncated() {
+        // "🎉🎊🎈" = 3 emoji, width = 6; max=5 → must fit in 5 cols
+        let r = truncate_to_width("🎉🎊🎈", 5);
+        assert!(r.width() <= 5, "width={} result={r:?}", r.width());
+        assert!(r.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_to_width_exact_boundary() {
+        // width == max → no truncation
+        let r = truncate_to_width("日本", 4);
+        assert_eq!(r, "日本");
+    }
+
+    #[test]
+    fn truncate_to_width_max_zero() {
+        let r = truncate_to_width("hello", 0);
+        assert!(r.width() == 1, "only ellipsis: {r:?}"); // "…" = 1 col
+    }
 
     #[test]
     fn layout_for_standard_terminal() {
