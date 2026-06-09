@@ -1546,15 +1546,15 @@ destination = "/var/log/zeph-audit.log""#,
 
     #[test]
     fn adversarial_policy_provider_serde_roundtrip() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            adversarial_policy: AdversarialPolicyConfig,
+        }
         let toml_str = r#"
             [adversarial_policy]
             enabled = true
             policy_provider = "fast-llm"
         "#;
-        #[derive(serde::Deserialize)]
-        struct Wrapper {
-            adversarial_policy: AdversarialPolicyConfig,
-        }
         let w: Wrapper = toml::from_str(toml_str).unwrap();
         assert_eq!(w.adversarial_policy.policy_provider.as_str(), "fast-llm");
 
@@ -1565,14 +1565,14 @@ destination = "/var/log/zeph-audit.log""#,
 
     #[test]
     fn adversarial_policy_provider_empty_when_omitted() {
-        let toml_str = r"
-            [adversarial_policy]
-            enabled = true
-        ";
         #[derive(serde::Deserialize)]
         struct Wrapper {
             adversarial_policy: AdversarialPolicyConfig,
         }
+        let toml_str = r"
+            [adversarial_policy]
+            enabled = true
+        ";
         let w: Wrapper = toml::from_str(toml_str).unwrap();
         assert!(
             w.adversarial_policy.policy_provider.is_empty(),
