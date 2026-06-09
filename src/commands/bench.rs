@@ -15,7 +15,7 @@ use zeph_bench::{
         tau2_bench::loader::db_json_path,
     },
 };
-use zeph_core::config::{Config, SecretResolver as _};
+use zeph_core::config::SecretResolver as _;
 
 pub(crate) async fn handle_bench_command(
     cmd: &BenchCommand,
