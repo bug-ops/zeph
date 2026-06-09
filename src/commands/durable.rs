@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 
+use crate::bootstrap::load_config_or_default;
 use zeph_core::config::Config;
 use zeph_core::durable::XChaCha20Poly1305Cipher;
 use zeph_core::vault::AgeVaultProvider;
@@ -96,7 +97,7 @@ pub(crate) async fn handle_durable_command(
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let config_file = crate::bootstrap::resolve_config_path(config_path);
-    let config = Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
 
     match cmd {
         DurableCommand::List {

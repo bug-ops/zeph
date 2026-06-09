@@ -10,7 +10,7 @@
 
 use anyhow::Context as _;
 
-use crate::bootstrap::resolve_config_path;
+use crate::bootstrap::{load_config_or_default, resolve_config_path};
 
 /// Handle `zeph serve [--foreground] [--no-catch-up]`.
 ///
@@ -22,7 +22,7 @@ pub(crate) async fn handle_serve(
     catch_up: bool,
 ) -> anyhow::Result<()> {
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
     let daemon_cfg = build_daemon_config(&config);
 
     if foreground {
@@ -46,7 +46,7 @@ pub(crate) fn handle_stop(
     timeout_secs: u64,
 ) -> anyhow::Result<()> {
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
     let daemon_cfg = build_daemon_config(&config);
 
     zeph_scheduler::stop_daemon(&daemon_cfg, timeout_secs)
@@ -60,7 +60,7 @@ pub(crate) async fn handle_status(
     n: usize,
 ) -> anyhow::Result<()> {
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
     let daemon_cfg = build_daemon_config(&config);
     let db_url = crate::db_url::resolve_db_url(&config);
 

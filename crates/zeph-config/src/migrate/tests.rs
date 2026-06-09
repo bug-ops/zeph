@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        63,
-        "MIGRATIONS registry must contain all 63 sequential steps"
+        64,
+        "MIGRATIONS registry must contain all 64 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 63);
+    assert_eq!(MIGRATIONS.len(), 64);
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–63).
+    // Names must follow the documented step order (steps 1–64).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1749,6 +1749,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_knowledge_config",
         "migrate_deep_link_config",
         "migrate_memory_graph_recall_include_imported",
+        "migrate_policy_provider_and_utility_window",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2580,4 +2581,75 @@ fn migrate_deep_link_is_idempotent() {
         second.output, first.output,
         "output must be unchanged on second run"
     );
+}
+
+// ── Step 64 — migrate_policy_provider_and_utility_window (#5067) ─────────────
+
+#[test]
+fn migrate_policy_provider_and_utility_window_adds_both_when_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_policy_provider_and_utility_window(src).expect("migrate");
+    assert_eq!(result.changed_count, 2);
+    assert!(
+        result.output.contains("# policy_provider"),
+        "must add policy_provider comment"
+    );
+    assert!(
+        result.output.contains("# utility_window"),
+        "must add utility_window comment"
+    );
+    assert!(
+        result.output.contains("# [tools.policy]"),
+        "must reference [tools.policy] section"
+    );
+    assert!(
+        result.output.contains("# [tools.utility]"),
+        "must reference [tools.utility] section (not tools.utility_scoring)"
+    );
+    assert!(
+        !result.output.contains("utility_scoring"),
+        "must not emit [tools.utility_scoring] — wrong section name"
+    );
+}
+
+#[test]
+fn migrate_policy_provider_and_utility_window_idempotent_when_both_present() {
+    let src = "[tools.policy]\npolicy_provider = \"\"\n[tools.utility]\nutility_window = 0\n";
+    let result = migrate_policy_provider_and_utility_window(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(
+        result.output, src,
+        "output must be unchanged when both already present"
+    );
+}
+
+#[test]
+fn migrate_policy_provider_and_utility_window_adds_only_missing_field() {
+    let src = "[tools.policy]\npolicy_provider = \"\"\n";
+    let result = migrate_policy_provider_and_utility_window(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.output.contains("# utility_window"),
+        "must add utility_window comment"
+    );
+    assert_eq!(
+        result.output.matches("policy_provider").count(),
+        1,
+        "must not duplicate policy_provider"
+    );
+}
+
+#[test]
+fn migrate_policy_provider_and_utility_window_round_trips_through_config() {
+    use toml::Value;
+    let src = "[agent]\nname = \"z\"\n";
+    let result = migrate_policy_provider_and_utility_window(src).expect("migrate");
+    // Strip comment lines, keep only non-comment TOML lines, and verify it parses.
+    let toml_only: String = result
+        .output
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    toml::from_str::<Value>(&toml_only).expect("stripped output must be valid TOML");
 }

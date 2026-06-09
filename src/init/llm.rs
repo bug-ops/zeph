@@ -18,34 +18,131 @@ pub(super) fn step_llm(state: &mut WizardState) -> anyhow::Result<()> {
 
     let use_age = state.vault_backend == "age";
 
-    step_llm_provider(state, use_age)?;
+    loop {
+        step_llm_provider(state, use_age)?;
 
-    let provider_type = state.provider.map_or("ollama", ProviderKind::as_str);
-    if supports_embeddings(provider_type) {
-        state.embedding_model = Some(
-            Input::new()
-                .with_prompt("Embedding model")
-                .default("qwen3-embedding".into())
-                .interact_text()?,
-        );
-    }
-
-    if state.provider == Some(ProviderKind::Ollama) {
-        let use_vision = Confirm::new()
-            .with_prompt("Use a separate model for vision (image input)?")
-            .default(false)
-            .interact()?;
-        if use_vision {
-            state.vision_model = Some(
+        let provider_type = state.provider.map_or("ollama", ProviderKind::as_str);
+        if supports_embeddings(provider_type) {
+            state.embedding_model = Some(
                 Input::new()
-                    .with_prompt("Vision model name (e.g. llava:13b)")
+                    .with_prompt("Embedding model")
+                    .default("qwen3-embedding".into())
                     .interact_text()?,
             );
         }
+
+        if state.provider == Some(ProviderKind::Ollama) {
+            let use_vision = Confirm::new()
+                .with_prompt("Use a separate model for vision (image input)?")
+                .default(false)
+                .interact()?;
+            if use_vision {
+                state.vision_model = Some(
+                    Input::new()
+                        .with_prompt("Vision model name (e.g. llava:13b)")
+                        .interact_text()?,
+                );
+            }
+        }
+
+        let run_test = Confirm::new()
+            .with_prompt("Test connectivity to the configured provider now?")
+            .default(true)
+            .interact()?;
+        if run_test {
+            let base_url = resolve_probe_url(state);
+            if let Some(url) = base_url {
+                print!("  Probing {url} … ");
+                if probe_url_reachable(&url) {
+                    println!("PASS");
+                    break;
+                }
+                println!("FAIL");
+                let retry = Confirm::new()
+                    .with_prompt("Re-enter provider settings?")
+                    .default(true)
+                    .interact()?;
+                if retry {
+                    continue;
+                }
+                println!("  Continuing with current settings. Run 'zeph doctor' to verify later.");
+            } else {
+                println!("  Skipping connectivity test (no HTTP endpoint for this provider).");
+            }
+        } else {
+            println!("  Skipping connectivity test. Run 'zeph doctor' to verify later.");
+        }
+        break;
     }
 
     println!();
     Ok(())
+}
+
+/// Append `/models` to a base URL that may or may not already end with `/v1`.
+///
+/// `https://api.openai.com/v1` → `https://api.openai.com/v1/models`
+/// `https://api.openai.com`    → `https://api.openai.com/v1/models`
+fn openai_models_url(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
+
+pub(crate) fn resolve_probe_url(state: &WizardState) -> Option<String> {
+    match state.provider? {
+        ProviderKind::Ollama => {
+            let base = state
+                .base_url
+                .as_deref()
+                .unwrap_or("http://localhost:11434");
+            Some(format!("{}/api/tags", base.trim_end_matches('/')))
+        }
+        ProviderKind::Claude => Some(format!(
+            "{}/v1/models",
+            state
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.anthropic.com")
+                .trim_end_matches('/')
+        )),
+        ProviderKind::OpenAi | ProviderKind::Compatible => {
+            let base = state
+                .base_url
+                .as_deref()
+                .unwrap_or("https://api.openai.com/v1");
+            Some(openai_models_url(base))
+        }
+        ProviderKind::Gemini => {
+            Some("https://generativelanguage.googleapis.com/v1/models".to_owned())
+        }
+        ProviderKind::Cocoon => state
+            .cocoon_client_url
+            .as_deref()
+            .map(|u| u.trim_end_matches('/').to_owned()),
+        _ => None,
+    }
+}
+
+fn probe_url_reachable(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let host = parsed.host_str().unwrap_or("localhost");
+    let port = parsed
+        .port()
+        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+    let addr_str = format!("{host}:{port}");
+    let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(addr_str.as_str()) else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)).is_ok()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -513,4 +610,90 @@ fn export_inferenced_key_hex(name: &str) -> anyhow::Result<String> {
         .trim()
         .to_lowercase();
     Ok(hex)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeph_core::config::ProviderKind;
+
+    fn state_with(provider: ProviderKind, base_url: Option<&str>) -> WizardState {
+        WizardState {
+            provider: Some(provider),
+            base_url: base_url.map(|s| s.to_owned()),
+            ..WizardState::default()
+        }
+    }
+
+    #[test]
+    fn resolve_probe_url_ollama_default() {
+        let s = state_with(ProviderKind::Ollama, None);
+        assert_eq!(
+            resolve_probe_url(&s).unwrap(),
+            "http://localhost:11434/api/tags"
+        );
+    }
+
+    #[test]
+    fn resolve_probe_url_ollama_custom_base_url() {
+        let s = state_with(ProviderKind::Ollama, Some("http://192.168.1.10:11434"));
+        assert_eq!(
+            resolve_probe_url(&s).unwrap(),
+            "http://192.168.1.10:11434/api/tags"
+        );
+    }
+
+    #[test]
+    fn resolve_probe_url_openai_default_no_double_v1() {
+        let s = state_with(ProviderKind::OpenAi, None);
+        let url = resolve_probe_url(&s).unwrap();
+        assert_eq!(url, "https://api.openai.com/v1/models");
+        assert!(!url.contains("v1/v1"), "double /v1 detected: {url}");
+    }
+
+    #[test]
+    fn resolve_probe_url_openai_base_with_v1_no_double() {
+        let s = state_with(ProviderKind::OpenAi, Some("https://api.openai.com/v1"));
+        let url = resolve_probe_url(&s).unwrap();
+        assert_eq!(url, "https://api.openai.com/v1/models");
+        assert!(!url.contains("v1/v1"), "double /v1 detected: {url}");
+    }
+
+    #[test]
+    fn resolve_probe_url_openai_base_without_v1() {
+        let s = state_with(ProviderKind::OpenAi, Some("https://api.openai.com"));
+        let url = resolve_probe_url(&s).unwrap();
+        assert_eq!(url, "https://api.openai.com/v1/models");
+    }
+
+    #[test]
+    fn resolve_probe_url_claude_default() {
+        let s = state_with(ProviderKind::Claude, None);
+        assert_eq!(
+            resolve_probe_url(&s).unwrap(),
+            "https://api.anthropic.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn resolve_probe_url_none_for_candle() {
+        let s = state_with(ProviderKind::Candle, None);
+        assert!(resolve_probe_url(&s).is_none());
+    }
+
+    #[test]
+    fn resolve_probe_url_none_when_provider_is_none() {
+        let s = WizardState::default();
+        assert!(resolve_probe_url(&s).is_none());
+    }
+
+    #[test]
+    fn probe_url_reachable_returns_false_for_invalid_url() {
+        assert!(!probe_url_reachable("not-a-url"));
+    }
+
+    #[test]
+    fn probe_url_reachable_returns_false_for_closed_port() {
+        assert!(!probe_url_reachable("http://127.0.0.1:19999"));
+    }
 }

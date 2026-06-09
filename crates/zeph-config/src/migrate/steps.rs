@@ -46,7 +46,8 @@ use super::{
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_microcompact_config,
     migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_otel_filter, migrate_planner_model_to_provider, migrate_provider_max_concurrent,
+    migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
     migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
     migrate_session_persist_provider_overrides, migrate_session_provider_persistence,
@@ -56,7 +57,7 @@ use super::{
     migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
-// ── Wrapper structs for all 63 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 64 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -748,5 +749,16 @@ impl Migration for MigrateMemoryGraphRecallIncludeImported {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_memory_graph_recall_include_imported(toml_src)
+    }
+}
+
+pub(super) struct MigratePolicyProviderAndUtilityWindow;
+impl Migration for MigratePolicyProviderAndUtilityWindow {
+    fn name(&self) -> &'static str {
+        "migrate_policy_provider_and_utility_window"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_policy_provider_and_utility_window(toml_src)
     }
 }

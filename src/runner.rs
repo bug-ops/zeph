@@ -18,6 +18,7 @@ use crate::tui_bridge::{
 };
 
 use crate::bootstrap::find_repo_root;
+use crate::bootstrap::load_config_or_default;
 use crate::bootstrap::resolve_config_path;
 #[cfg(not(feature = "tui"))]
 use crate::bootstrap::warmup_provider;
@@ -446,7 +447,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     // Load logging config early (sync, cheap) so every code path gets file logging.
     let config_path = resolve_config_path(cli.config.as_deref());
-    let base_config = zeph_core::config::Config::load(&config_path).unwrap_or_default();
+    let base_config = load_config_or_default(&config_path);
     let logging_config = resolve_logging_config(base_config.logging, cli.log_file.as_deref());
     let telemetry_config = base_config.telemetry;
     let redact_secrets = base_config.security.redact_secrets;
@@ -555,7 +556,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
         Some(Command::Classifiers { command: clf_cmd }) => {
             let config_path = resolve_config_path(cli.config.as_deref());
-            let config = Config::load(&config_path).unwrap_or_default();
+            let config = load_config_or_default(&config_path);
             return handle_classifiers_command(&clf_cmd, &config);
         }
         Some(Command::Db { command: db_cmd }) => {
@@ -3864,7 +3865,7 @@ fn handle_url_open(
 
     // Load config once; all subsequent validations reference the same instance.
     let config_path = resolve_config_path(config_override);
-    let config = zeph_core::config::Config::load(&config_path).unwrap_or_default();
+    let config = load_config_or_default(&config_path);
 
     // Validate CWD and change working directory.
     if let Some(ref cwd) = params.cwd {

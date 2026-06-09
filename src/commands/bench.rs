@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::bootstrap::{
-    create_named_provider, create_provider, parse_vault_args, resolve_config_path,
+    create_named_provider, create_provider, load_config_or_default, parse_vault_args,
+    resolve_config_path,
 };
 use zeph_bench::{
     BenchCommand, BenchMemoryParams, BenchRun, BenchRunner, DatasetRegistry, MemoryMode,
@@ -97,7 +98,7 @@ async fn handle_run_baseline(
 
     let data_path = resolve_data_path(dataset, data_file);
     let path = resolve_config_path(config_path);
-    let mut config = Config::load(&path).unwrap_or_default();
+    let mut config = load_config_or_default(&path);
 
     let vault_args = parse_vault_args(&config, None, None, None);
     if let Some(vault) = crate::bootstrap::build_vault_provider(&vault_args)
@@ -376,7 +377,7 @@ async fn handle_run(
     let data_path = resolve_data_path(dataset, data_file);
 
     let path = resolve_config_path(config_path);
-    let mut config = Config::load(&path).unwrap_or_default();
+    let mut config = load_config_or_default(&path);
 
     // Resolve vault secrets before building the provider.
     // The bench command is dispatched before AppBuilder runs, so we must

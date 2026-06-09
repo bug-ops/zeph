@@ -5,7 +5,7 @@ use std::io::{self, Write as _};
 use std::path::Path;
 use std::process::Command;
 
-use crate::bootstrap::resolve_config_path;
+use crate::bootstrap::{load_config_or_default, resolve_config_path};
 use anyhow::{Context as _, bail};
 use zeph_common::format_tokens;
 use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
@@ -35,7 +35,7 @@ pub(crate) async fn handle_agents_command(
 
 fn load_all_defs(config_path: Option<&Path>) -> anyhow::Result<Vec<SubAgentDef>> {
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
     let paths = resolve_agent_paths(
         &[],
         config.agents.user_agents_dir.as_ref(),
@@ -234,7 +234,7 @@ async fn handle_fleet(
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
     let db_path = &config.memory.sqlite_path;
     let store = zeph_memory::store::DbStore::new(db_path)
         .await

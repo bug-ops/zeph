@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `fix(config)`: config load failures are no longer silent (#5071, #5067, #5072)
+  - Missing config file now prints a one-line notice to stderr and falls back to defaults instead of silently using defaults. Existing configs with parse errors now exit with a non-zero status and print the TOML error with file path and line number.
+  - `--init` wizard `step_policy` now prompts for `tools.policy.policy_provider` (LLM-assisted policy checks, leave blank to skip) and `tools.utility.utility_window` (consecutive low-utility call threshold, 0 = disabled).
+  - `--migrate-config` gains step 64 (`migrate_policy_provider_and_utility_window`): adds commented advisory entries for both new fields to existing configs.
+  - LLM provider connectivity test added to `--init` wizard: after configuring a provider, the wizard offers a TCP probe (default yes). On FAIL it offers to re-enter settings or continue. Completion screen now suggests `zeph doctor` for post-setup verification.
+  - `load_config_or_default` helper in `src/runner.rs` replaces all three `unwrap_or_default()` call sites with uniform error handling.
+
+
+
 - `feat(deep-link)`: `POST /deep-link` stateless validate-only ACP endpoint (spec-066 OQ-2, closes #5059)
   - New `crates/zeph-acp/src/transport/deep_link.rs` handler behind `feature = "acp-http"`.
   - Accepts `{ "uri": "zeph://..." }`, parses with the shared `parse_deep_link`, validates `cwd` against both the deep-link INV-CWD denylist and the ACP `additional_directories` allowlist (default-deny: empty allowlist rejects all cwd), validates model name against `available_models`.

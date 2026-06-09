@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::bootstrap::resolve_config_path;
-use zeph_core::config::Config;
+use crate::bootstrap::{load_config_or_default, resolve_config_path};
 use zeph_db::{DbConfig, redact_url};
 
 /// Handle the `zeph db migrate` subcommand.
@@ -16,7 +15,7 @@ use zeph_db::{DbConfig, redact_url};
 /// the database connection / migration fails.
 pub(crate) async fn handle_db_migrate(config_path: Option<&std::path::Path>) -> anyhow::Result<()> {
     let config_path = resolve_config_path(config_path);
-    let config = Config::load(&config_path).unwrap_or_default();
+    let config = load_config_or_default(&config_path);
 
     let db_url = crate::db_url::resolve_db_url(&config);
 

@@ -7,6 +7,28 @@ use crate::bootstrap::VaultArgs;
 use zeph_config::VaultBackend;
 use zeph_core::config::Config;
 
+/// Load config from `path`, falling back to defaults with a notice when the file is absent.
+///
+/// When the file does **not exist**, prints a notice to stderr and returns [`Config::default()`].
+/// When the file exists but fails to parse, prints the error to stderr and exits non-zero.
+pub fn load_config_or_default(path: &Path) -> Config {
+    if !path.exists() {
+        eprintln!(
+            "Config file not found at {} — running with defaults. \
+             Run 'zeph init' to create one.",
+            path.display()
+        );
+        return Config::default();
+    }
+    match zeph_config::Config::load(path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Failed to parse config at {}: {e}", path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn resolve_config_path(cli_override: Option<&Path>) -> PathBuf {
     let cwd_default = Path::new("config/default.toml");
     resolve_config_path_impl(
@@ -178,5 +200,18 @@ mod tests {
             runtime_path, wizard_path,
             "init wizard default path and runtime XDG fallback diverged"
         );
+    }
+
+    #[test]
+    fn load_config_or_default_missing_file_returns_defaults() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        // Drop the file so the path no longer exists.
+        drop(tmp);
+        assert!(!path.exists(), "temp file must be gone before the test");
+        let cfg = load_config_or_default(&path);
+        // A default config has the expected default agent name.
+        let default_cfg = zeph_core::config::Config::default();
+        assert_eq!(cfg.agent.name, default_cfg.agent.name);
     }
 }

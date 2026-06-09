@@ -7,11 +7,11 @@ pub(crate) async fn handle_memory_command(
     cmd: MemoryCommand,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    use crate::bootstrap::resolve_config_path;
+    use crate::bootstrap::{load_config_or_default, resolve_config_path};
     use zeph_memory::store::SqliteStore;
 
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
     let sqlite = SqliteStore::new(crate::db_url::resolve_db_url(&config))
         .await
         .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;

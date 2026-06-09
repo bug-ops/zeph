@@ -16,11 +16,11 @@ pub(crate) async fn handle_schedule_command(
 ) -> anyhow::Result<()> {
     use std::str::FromStr as _;
 
-    use crate::bootstrap::resolve_config_path;
+    use crate::bootstrap::{load_config_or_default, resolve_config_path};
     use zeph_scheduler::{JobStore, SchedulerError, normalize_cron_expr, sanitize_task_prompt};
 
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
     let db_url = crate::db_url::resolve_db_url(&config);
     let store = JobStore::open(db_url)
         .await

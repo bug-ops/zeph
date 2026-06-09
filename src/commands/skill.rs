@@ -8,12 +8,12 @@ pub(crate) async fn handle_skill_command(
     cmd: SkillCommand,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    use crate::bootstrap::{managed_skills_dir, resolve_config_path};
+    use crate::bootstrap::{load_config_or_default, managed_skills_dir, resolve_config_path};
     use std::collections::HashMap;
     use zeph_skills::manager::SkillManager;
 
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
 
     let managed_dir = managed_skills_dir();
     std::fs::create_dir_all(&managed_dir)

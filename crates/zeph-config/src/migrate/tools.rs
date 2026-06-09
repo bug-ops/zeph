@@ -218,6 +218,59 @@ pub fn migrate_tools_compression_config(toml_src: &str) -> Result<MigrationResul
     })
 }
 
+/// Add `policy_provider` and `utility_window` to `[tools.policy]` / `[tools.utility]`
+/// as commented-out defaults when they are absent.
+///
+/// Introduced by spec-068 (#5067): `policy_provider` selects the LLM for policy checks;
+/// `utility_window` is the consecutive low-utility call threshold for hard-stopping.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_policy_provider_and_utility_window(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    let already_policy = toml_src.contains("policy_provider");
+    let already_window = toml_src.contains("utility_window");
+    if already_policy && already_window {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut output = toml_src.to_owned();
+    let mut changed_count = 0usize;
+    let mut sections_changed: Vec<String> = Vec::new();
+
+    if !already_policy {
+        output.push_str(
+            "\n# LLM provider name for policy checks. Empty = disabled (rules-only). (#5068)\n\
+             # [tools.policy]\n\
+             # policy_provider = \"\"\n",
+        );
+        changed_count += 1;
+        sections_changed.push("tools.policy".to_owned());
+    }
+
+    if !already_window {
+        output.push_str(
+            "\n# Consecutive low-utility tool calls before the loop hard-stops. 0 = disabled. (#5068)\n\
+             # [tools.utility]\n\
+             # utility_window = 0\n",
+        );
+        changed_count += 1;
+        sections_changed.push("tools.utility".to_owned());
+    }
+
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed,
+    })
+}
+
 /// Add `checkpoints_enabled` and `max_checkpoints` to `[tools.shell]` as commented-out defaults.
 ///
 /// # Errors

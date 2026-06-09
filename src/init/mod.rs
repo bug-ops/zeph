@@ -176,6 +176,10 @@ pub(crate) struct WizardState {
     pub(crate) shutdown_summary: bool,
     // Policy enforcer
     pub(crate) policy_enforcer_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for LLM-assisted policy checks. Empty = disabled.
+    pub(crate) policy_provider: String,
+    /// Consecutive low-utility tool calls before the loop hard-stops. 0 = disabled.
+    pub(crate) utility_window: usize,
     /// Deployment bundle selected in the mode step (e.g. "desktop", "ide", "server").
     pub(crate) deployment_bundle: Option<String>,
     pub(crate) semantic_cache_enabled: bool,
@@ -409,6 +413,8 @@ impl Default for WizardState {
             log_max_files: 0,
             shutdown_summary: true,
             policy_enforcer_enabled: false,
+            policy_provider: String::new(),
+            utility_window: 0,
             deployment_bundle: None,
             semantic_cache_enabled: false,
             semantic_cache_threshold: 0.95,
@@ -1089,6 +1095,13 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     }
     {
         config.tools.policy.enabled = state.policy_enforcer_enabled;
+        if !state.policy_provider.is_empty() {
+            config.tools.policy.policy_provider =
+                zeph_config::ProviderName::new(state.policy_provider.as_str());
+        }
+    }
+    if state.utility_window > 0 {
+        config.tools.utility.utility_window = state.utility_window;
     }
     config.security.trajectory.critical_at = state.trajectory_critical_at;
     config.security.trajectory.auto_recover_after_turns = state.trajectory_auto_recover;
@@ -1954,6 +1967,7 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
         println!();
     }
     println!("Tip: run `zeph migrate-config --diff` later to check for new config options.");
+    println!("Tip: run `zeph doctor` to verify provider connectivity and configuration health.");
 }
 
 #[cfg(test)]

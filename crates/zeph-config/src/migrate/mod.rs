@@ -607,16 +607,16 @@ use steps::{
     MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
     MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig,
     MigrateOrchestrationPersistence, MigrateOrchestratorProvider, MigrateOtelFilter,
-    MigratePlannerModelToProvider, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
-    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSessionPersistProviderOverrides, MigrateSessionProviderPersistence,
-    MigrateSessionRecapConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateVigilConfig, MigrateWorktreeConfig,
-    MigrateWorktreeGitTimeout,
+    MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSessionPersistProviderOverrides,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
+    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
+    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–62).
+/// Ordered registry of all sequential migration steps (steps 1–64).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -725,6 +725,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateDeepLinkConfig),
             // Step 63 — add recall_include_imported to [memory.graph] (#5015)
             Box::new(MigrateMemoryGraphRecallIncludeImported),
+            // Step 64 — add policy_provider and utility_window advisory comments (#5067)
+            Box::new(MigratePolicyProviderAndUtilityWindow),
         ]
     });
 

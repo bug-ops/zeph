@@ -420,6 +420,27 @@ pub(super) fn step_policy(state: &mut WizardState) -> anyhow::Result<()> {
         .default(false)
         .interact()?;
 
+    if state.policy_enforcer_enabled {
+        let provider: String = Input::new()
+            .with_prompt(
+                "Provider name for LLM-assisted policy checks \
+                 (leave blank to use rules-only mode)",
+            )
+            .default(String::new())
+            .allow_empty(true)
+            .interact_text()?;
+        state.policy_provider = provider;
+    }
+
+    let window: String = Input::new()
+        .with_prompt(
+            "Consecutive low-utility tool calls before hard-stopping the loop \
+             (0 = disabled, tools.utility_window)",
+        )
+        .default("0".to_owned())
+        .interact_text()?;
+    state.utility_window = window.parse::<usize>().unwrap_or(0);
+
     println!();
     Ok(())
 }

@@ -29,11 +29,11 @@ pub(crate) async fn handle_project_command(
             dry_run,
             yes,
         } => {
-            use crate::bootstrap::resolve_config_path;
+            use crate::bootstrap::{load_config_or_default, resolve_config_path};
 
             let effective_path = purge_config.as_deref().or(global_config_path);
             let config_file = resolve_config_path(effective_path);
-            let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+            let config = load_config_or_default(&config_file);
 
             run_purge(&config, dry_run, yes).await
         }

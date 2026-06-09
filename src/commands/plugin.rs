@@ -53,10 +53,10 @@ pub(crate) fn handle_plugin_command(
     cmd: PluginCommand,
     config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    use crate::bootstrap::resolve_config_path;
+    use crate::bootstrap::{load_config_or_default, resolve_config_path};
 
     let config_file = resolve_config_path(config_path);
-    let config = zeph_core::config::Config::load(&config_file).unwrap_or_default();
+    let config = load_config_or_default(&config_file);
 
     let plugins_dir = crate::bootstrap::plugins_dir();
     std::fs::create_dir_all(&plugins_dir)
