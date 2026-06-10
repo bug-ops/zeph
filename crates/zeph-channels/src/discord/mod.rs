@@ -78,7 +78,7 @@ impl DiscordChannel {
             allowed_channel_ids,
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_id: None,
-            supervisor: None,
+            supervisor: supervisor.cloned(),
         }
     }
 

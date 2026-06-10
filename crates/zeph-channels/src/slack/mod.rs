@@ -52,14 +52,14 @@ impl std::fmt::Debug for SlackChannel {
 impl SlackChannel {
     /// Create a new Slack channel and spawn the events webhook server.
     ///
-    /// Use [`with_supervisor`] to attach a [`TaskSupervisor`] so the events server task
+    /// Use [`new_with_supervisor`] to attach a [`TaskSupervisor`] so the events server task
     /// is tracked, observable in the TUI, and restarted on panic.
     ///
     /// # Errors
     ///
     /// Returns an error if the auth.test API call fails.
     ///
-    /// [`with_supervisor`]: SlackChannel::with_supervisor
+    /// [`new_with_supervisor`]: SlackChannel::new_with_supervisor
     pub async fn new(
         bot_token: String,
         signing_secret: String,
@@ -83,15 +83,14 @@ impl SlackChannel {
     /// Create a new Slack channel with a supervisor attached.
     ///
     /// Prefer this constructor in production to ensure the events server task is tracked
-    /// and restarted on panic. Equivalent to calling [`new`] followed by [`with_supervisor`],
-    /// but threads the supervisor into [`events::spawn_event_server`] at construction time.
+    /// and restarted on panic. The supervisor is threaded into [`events::spawn_event_server`]
+    /// at construction time.
     ///
     /// # Errors
     ///
     /// Returns an error if the auth.test API call fails.
     ///
     /// [`new`]: SlackChannel::new
-    /// [`with_supervisor`]: SlackChannel::with_supervisor
     pub async fn new_with_supervisor(
         bot_token: String,
         signing_secret: String,
@@ -131,22 +130,6 @@ impl SlackChannel {
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_ts: None,
         })
-    }
-
-    /// Attach a [`TaskSupervisor`] to an already-constructed channel.
-    ///
-    /// Note: the events server task is spawned at construction time via [`new`] or
-    /// [`new_with_supervisor`]. Calling this method after construction only stores the
-    /// supervisor for potential future use; prefer [`new_with_supervisor`] in production.
-    ///
-    /// [`new`]: SlackChannel::new
-    /// [`new_with_supervisor`]: SlackChannel::new_with_supervisor
-    #[must_use]
-    pub fn with_supervisor(self, _supervisor: TaskSupervisor) -> Self {
-        // Supervisor was already consumed at spawn_event_server call time if
-        // new_with_supervisor was used. This method is a no-op for consistency
-        // with the Telegram/Discord builder pattern — use new_with_supervisor instead.
-        self
     }
 
     fn is_authorized(&self, msg: &IncomingMessage) -> bool {

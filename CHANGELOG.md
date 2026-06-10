@@ -28,6 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `refactor(channels)`: `DiscordChannel` was always storing `supervisor: None` in the struct
+  literal even when a real supervisor was passed; now stores `supervisor.cloned()` so `Debug`
+  output correctly reflects whether the channel is supervised (#5251).
+- `refactor(channels)`: `SlackChannel::with_supervisor` silently discarded its argument — a no-op
+  method that could mislead callers. Removed it and updated doc references to point to
+  `new_with_supervisor` (#5252).
+
 - `fix(worktree)`: `WorktreeManager::create` called `canonicalize_root` (sync `std::fs`) directly
   on the async thread; now wrapped in `tokio::task::spawn_blocking` (#5200).
 - `fix(subagent)`: `check_gitignore_for_local` used `std::fs::read_to_string` inside `async fn
