@@ -109,6 +109,7 @@ impl SchedulerDurableAdapter {
 /// # Examples
 ///
 /// ```no_run
+/// # #![recursion_limit = "256"]
 /// # use std::sync::Arc;
 /// # use std::future::Future;
 /// # use zeph_scheduler::durable::{SchedulerDurableAdapter, fire_with_durable};
