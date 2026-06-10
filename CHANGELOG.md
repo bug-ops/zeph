@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `feat(tracing)`: add `#[tracing::instrument]` to 21 async fns in `zeph-memory`
+  (`qdrant_ops.rs`, `embedding_registry.rs`, `graph/retrieval.rs`) using
+  `memory.qdrant.*`, `memory.embed_registry.*`, `memory.graph.retrieval.*` span
+  prefixes; `BoxFuture` trait methods instrumented via `.instrument(debug_span!(...))`;
+  private helpers use `level = "debug"` (closes #5226, #5228, #5229).
 - `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across
   `zeph-core` learning pipeline (`write_skill_file`, `arise_trace_task`,
   `arise_check_domain_gate`, `arise_store_version`, `stem_detection_task`,
