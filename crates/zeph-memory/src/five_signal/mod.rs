@@ -44,7 +44,7 @@ pub struct FiveSignalRuntime {
     /// Access frequency aggregator.
     pub access_cache: AccessFrequencyCache,
     /// Causal distance computer (contains BFS cache per goal entity).
-    pub causal_computer: tokio::sync::Mutex<CausalDistanceComputer>,
+    pub causal_computer: CausalDistanceComputer,
     /// Novelty computer (pure arithmetic, no I/O).
     pub novelty_computer: NoveltyComputer,
     /// Prometheus-compatible counters.
@@ -110,11 +110,11 @@ impl FiveSignalRuntime {
         Self {
             weights,
             access_cache: AccessFrequencyCache::new(pool.clone()),
-            causal_computer: tokio::sync::Mutex::new(CausalDistanceComputer::new(
+            causal_computer: CausalDistanceComputer::new(
                 graph_store,
                 config.causal_bfs_max_depth,
                 config.neutral_causal_distance,
-            )),
+            ),
             novelty_computer: NoveltyComputer::new(session_start, config.novelty_decay_rate),
             metrics: Arc::new(FiveSignalMetrics::default()),
             pool,

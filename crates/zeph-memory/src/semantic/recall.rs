@@ -1147,8 +1147,11 @@ impl SemanticMemory {
         // candidates receive the neutral causal score via distance_to_score(neutral_distance).
         let causal_distance_map: std::collections::HashMap<i64, u32> = {
             let entity_ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
-            let mut computer = fs.causal_computer.lock().await;
-            match computer.compute(goal_entity_id, &entity_ids).await {
+            match fs
+                .causal_computer
+                .compute(goal_entity_id, &entity_ids)
+                .await
+            {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::warn!(error = %e, "five_signal: causal BFS failed (using neutral)");

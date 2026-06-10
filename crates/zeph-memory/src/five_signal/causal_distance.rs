@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use zeph_common::memory::EdgeType;
 
@@ -13,12 +13,16 @@ use crate::graph::GraphStore;
 /// Computes the shortest causal-edge hop count between the current goal entity and each
 /// candidate entity. BFS is bounded by `max_depth` to satisfy NFR-003. Results are cached
 /// per goal entity id to avoid re-traversal within the same turn.
+///
+/// The cache is guarded by a `std::sync::Mutex` (held only for synchronous reads/writes),
+/// so `compute` takes `&self` and the BFS query runs without any lock held, preventing
+/// serialization of concurrent recall operations (#5107).
 pub struct CausalDistanceComputer {
     graph_store: Arc<GraphStore>,
     max_depth: u32,
     neutral_distance: u32,
     /// Last BFS result: `(goal_entity_id, depth_map)`.
-    cache: Option<(i64, HashMap<i64, u32>)>,
+    cache: Mutex<Option<(i64, HashMap<i64, u32>)>>,
 }
 
 impl CausalDistanceComputer {
@@ -34,7 +38,7 @@ impl CausalDistanceComputer {
             graph_store,
             max_depth,
             neutral_distance,
-            cache: None,
+            cache: Mutex::new(None),
         }
     }
 
@@ -45,7 +49,13 @@ impl CausalDistanceComputer {
     /// (callers treat absent entries as neutral, contributing zero to the signal per FR-006).
     ///
     /// BFS result is cached per `goal_entity_id`; the cache is invalidated only when
-    /// the goal entity changes.
+    /// the goal entity changes. The cache lock is held only during synchronous operations;
+    /// the BFS I/O runs lock-free to avoid serializing concurrent recall calls (#5107).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal cache mutex is poisoned (another thread panicked while
+    /// holding the lock — unrecoverable state).
     ///
     /// # Errors
     ///
@@ -56,7 +66,7 @@ impl CausalDistanceComputer {
         fields(goal_entity_id, candidate_count = entity_ids.len())
     )]
     pub async fn compute(
-        &mut self,
+        &self,
         goal_entity_id: Option<i64>,
         entity_ids: &[i64],
     ) -> Result<HashMap<i64, u32>, crate::error::MemoryError> {
@@ -67,15 +77,44 @@ impl CausalDistanceComputer {
         };
 
         let neutral = self.neutral_distance;
-        let depth_map = self.ensure_cache(goal_id).await?;
 
-        let result = entity_ids
-            .iter()
-            .map(|&eid| {
-                let dist = depth_map.get(&eid).copied().unwrap_or(neutral);
-                (eid, dist)
+        // Phase 1: check cache (sync, lock acquired and released immediately).
+        let cached = {
+            let guard = self.cache.lock().expect("causal cache lock poisoned");
+            guard.as_ref().and_then(|(id, map)| {
+                if *id == goal_id {
+                    Some(
+                        entity_ids
+                            .iter()
+                            .map(|&eid| (eid, map.get(&eid).copied().unwrap_or(neutral)))
+                            .collect::<HashMap<i64, u32>>(),
+                    )
+                } else {
+                    None
+                }
             })
-            .collect();
+        };
+
+        if let Some(result) = cached {
+            return Ok(result);
+        }
+
+        // Phase 2: BFS runs without holding any lock.
+        let (_, _, depth_map) = self
+            .graph_store
+            .bfs_typed(goal_id, self.max_depth, &[EdgeType::Causal])
+            .await?;
+
+        // Phase 3: store result and build output (sync, lock acquired and released immediately).
+        let result = {
+            let mut guard = self.cache.lock().expect("causal cache lock poisoned");
+            let result = entity_ids
+                .iter()
+                .map(|&eid| (eid, depth_map.get(&eid).copied().unwrap_or(neutral)))
+                .collect();
+            *guard = Some((goal_id, depth_map));
+            result
+        };
 
         Ok(result)
     }
@@ -95,22 +134,13 @@ impl CausalDistanceComputer {
     }
 
     /// Invalidate the BFS cache. Call at turn boundaries when the goal entity may change.
-    pub fn invalidate_cache(&mut self) {
-        self.cache = None;
-    }
-
-    async fn ensure_cache(
-        &mut self,
-        goal_id: i64,
-    ) -> Result<&HashMap<i64, u32>, crate::error::MemoryError> {
-        if self.cache.as_ref().map(|(id, _)| *id) != Some(goal_id) {
-            let (_, _, depth_map) = self
-                .graph_store
-                .bfs_typed(goal_id, self.max_depth, &[EdgeType::Causal])
-                .await?;
-            self.cache = Some((goal_id, depth_map));
-        }
-        Ok(&self.cache.as_ref().expect("just set above").1)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal cache mutex is poisoned.
+    pub fn invalidate_cache(&self) {
+        let mut guard = self.cache.lock().expect("causal cache lock poisoned");
+        *guard = None;
     }
 }
 
@@ -153,7 +183,7 @@ mod tests {
         // Build a minimal in-memory graph store so the constructor is satisfied.
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         let graph_store = Arc::new(crate::graph::GraphStore::new(pool));
-        let mut computer = CausalDistanceComputer::new(graph_store, 10, 5);
+        let computer = CausalDistanceComputer::new(graph_store, 10, 5);
 
         let result = computer
             .compute(None, &[1, 2, 3])

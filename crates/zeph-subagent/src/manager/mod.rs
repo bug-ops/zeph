@@ -487,22 +487,32 @@ impl SubAgentManager {
 
     /// Load definitions with full scope context for source tracking and security checks.
     ///
+    /// The blocking filesystem scan runs on a dedicated thread via
+    /// `tokio::task::spawn_blocking` so the tokio worker thread is not stalled (#5108).
+    ///
     /// # Errors
     ///
     /// Returns [`SubAgentError`] if a CLI-sourced definition file fails to parse.
-    pub fn load_definitions_with_sources(
+    pub async fn load_definitions_with_sources(
         &mut self,
         ordered_paths: &[PathBuf],
         cli_agents: &[PathBuf],
         config_user_dir: Option<&PathBuf>,
         extra_dirs: &[PathBuf],
     ) -> Result<(), SubAgentError> {
-        self.definitions = SubAgentDef::load_all_with_sources(
-            ordered_paths,
-            cli_agents,
-            config_user_dir,
-            extra_dirs,
-        )?;
+        // Clone inputs so they can be moved into spawn_blocking ('static bound).
+        let ordered = ordered_paths.to_vec();
+        let cli = cli_agents.to_vec();
+        let user_dir = config_user_dir.cloned();
+        let extra = extra_dirs.to_vec();
+
+        let defs = tokio::task::spawn_blocking(move || {
+            SubAgentDef::load_all_with_sources(&ordered, &cli, user_dir.as_ref(), &extra)
+        })
+        .await
+        .map_err(|e| SubAgentError::TaskPanic(format!("load_definitions_with_sources: {e}")))?;
+
+        self.definitions = defs?;
         tracing::info!(
             count = self.definitions.len(),
             "sub-agent definitions loaded"

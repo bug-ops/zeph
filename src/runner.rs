@@ -2823,12 +2823,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!("{e}"));
             }
         };
-        if let Err(e) = mgr.load_definitions_with_sources(
-            &agent_paths,
-            &cli.agents,
-            config.agents.user_agents_dir.as_ref(),
-            &config.agents.extra_dirs,
-        ) {
+        if let Err(e) = mgr
+            .load_definitions_with_sources(
+                &agent_paths,
+                &cli.agents,
+                config.agents.user_agents_dir.as_ref(),
+                &config.agents.extra_dirs,
+            )
+            .await
+        {
             tracing::warn!("sub-agent definition loading failed: {e:#}");
         }
         // Register sub-agents in the fleet dashboard (#4370).
