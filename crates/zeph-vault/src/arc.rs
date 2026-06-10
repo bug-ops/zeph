@@ -98,7 +98,7 @@ mod tests {
         ArcAgeVaultProvider(Arc::new(RwLock::new(age)))
     }
 
-    /// list_keys() must not panic when called directly from a `current_thread` runtime.
+    /// `list_keys()` must not panic when called directly from a `current_thread` runtime.
     #[tokio::test(flavor = "current_thread")]
     async fn list_keys_works_on_current_thread_runtime() {
         let provider = make_provider_with_keys(&[("ALPHA", "a"), ("BETA", "b")]);
@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(keys, vec!["ALPHA".to_owned(), "BETA".to_owned()]);
     }
 
-    /// list_keys() works correctly on the multi-thread runtime.
+    /// `list_keys()` works correctly on the multi-thread runtime.
     #[tokio::test]
     async fn list_keys_works_on_multi_thread_runtime() {
         let provider = make_provider_with_keys(&[("Z_KEY", "z"), ("A_KEY", "a")]);
@@ -114,7 +114,7 @@ mod tests {
         assert_eq!(keys, vec!["A_KEY".to_owned(), "Z_KEY".to_owned()]);
     }
 
-    /// list_keys() on empty vault returns empty vec.
+    /// `list_keys()` on empty vault returns empty vec.
     #[tokio::test(flavor = "current_thread")]
     async fn list_keys_empty_vault() {
         let provider = make_provider_with_keys(&[]);
@@ -122,7 +122,7 @@ mod tests {
         assert!(keys.is_empty());
     }
 
-    /// list_keys() works correctly from spawn_blocking on the multi-thread runtime.
+    /// `list_keys()` works correctly from `spawn_blocking` on the multi-thread runtime.
     #[tokio::test]
     async fn list_keys_works_via_spawn_blocking_on_multi_thread_runtime() {
         let provider = Arc::new(make_provider_with_keys(&[("Z_KEY", "z"), ("A_KEY", "a")]));
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(keys, vec!["A_KEY".to_owned(), "Z_KEY".to_owned()]);
     }
 
-    /// list_keys() works correctly from spawn_blocking on current_thread runtime.
+    /// `list_keys()` works correctly from `spawn_blocking` on `current_thread` runtime.
     #[tokio::test(flavor = "current_thread")]
     async fn list_keys_works_via_spawn_blocking_on_current_thread_runtime() {
         let provider = Arc::new(make_provider_with_keys(&[("ALPHA", "a"), ("BETA", "b")]));
@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(keys, vec!["ALPHA".to_owned(), "BETA".to_owned()]);
     }
 
-    /// list_keys() on empty vault returns empty vec (spawn_blocking variant).
+    /// `list_keys()` on empty vault returns empty vec (`spawn_blocking` variant).
     #[tokio::test(flavor = "current_thread")]
     async fn list_keys_empty_vault_via_spawn_blocking() {
         let provider = Arc::new(make_provider_with_keys(&[]));
@@ -152,7 +152,7 @@ mod tests {
         assert!(keys.is_empty());
     }
 
-    /// get_secret() delegates to the inner AgeVaultProvider.
+    /// `get_secret()` delegates to the inner `AgeVaultProvider`.
     #[tokio::test]
     async fn get_secret_delegates_to_inner() {
         let provider = make_provider_with_keys(&[("MY_SECRET", "secret_value")]);
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(result.as_deref(), Some("secret_value"));
     }
 
-    /// get_secret() returns None for missing key.
+    /// `get_secret()` returns `None` for missing key.
     #[tokio::test]
     async fn get_secret_returns_none_for_missing() {
         let provider = make_provider_with_keys(&[]);

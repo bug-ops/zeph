@@ -628,7 +628,7 @@ mod age_tests {
 
     // --- async load/save tests (#5134) ---
 
-    /// load_async offloads I/O and returns the same vault as the sync load.
+    /// `load_async` offloads I/O and returns the same vault as the sync load.
     #[tokio::test]
     async fn age_vault_load_async_roundtrip() {
         let identity = age::x25519::Identity::generate();
@@ -642,7 +642,7 @@ mod age_tests {
         assert_eq!(vault.get("ASYNC_KEY"), Some("async_val"));
     }
 
-    /// save_async persists changes that can be read back via load_async.
+    /// `save_async` persists changes that can be read back via `load_async`.
     #[tokio::test]
     async fn age_vault_save_async_roundtrip() {
         let identity = age::x25519::Identity::generate();
@@ -663,7 +663,7 @@ mod age_tests {
         assert_eq!(reloaded.get("ADDED"), Some("added_val"));
     }
 
-    /// load_async propagates the error when the key file is missing.
+    /// `load_async` propagates the error when the key file is missing.
     #[tokio::test]
     async fn age_vault_load_async_missing_key_errors() {
         use std::path::Path;
@@ -676,7 +676,7 @@ mod age_tests {
         assert!(matches!(err, AgeVaultError::KeyRead(_)));
     }
 
-    /// save_async leaves no .tmp file after a successful write.
+    /// `save_async` leaves no `.tmp` file after a successful write.
     #[tokio::test]
     async fn age_vault_save_async_leaves_no_tmp() {
         let identity = age::x25519::Identity::generate();
