@@ -131,14 +131,26 @@ pub(crate) async fn run_tui_remote(
         use zeph_tui::theme::{EffectiveColorMode, Theme, resolve_color_mode, resolve_palette};
         let theme_cfg = &config.tui.theme;
         let mode = resolve_color_mode(theme_cfg.color_mode);
-        match resolve_palette(&theme_cfg.name) {
-            Ok(p) => (
+        // resolve_palette may do std::fs I/O for user-defined themes — run off the async thread.
+        let theme_name = theme_cfg.name.clone();
+        let palette_result =
+            tokio::task::spawn_blocking(move || resolve_palette(&theme_name)).await;
+        match palette_result {
+            Ok(Ok(p)) => (
                 Theme::from_palette_with_mode(&p, mode),
                 theme_cfg.name.clone(),
                 mode,
             ),
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!("TUI theme '{}' could not be loaded: {e}", theme_cfg.name);
+                (
+                    Theme::default(),
+                    "zephyr".to_owned(),
+                    EffectiveColorMode::Truecolor,
+                )
+            }
+            Err(e) => {
+                tracing::warn!("TUI theme '{}' resolution panicked: {e}", theme_cfg.name);
                 (
                     Theme::default(),
                     "zephyr".to_owned(),

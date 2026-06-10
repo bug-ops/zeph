@@ -130,7 +130,11 @@ impl<R: GitRunner> WorktreeManager<R> {
         validate_branch_component(subagent_id)?;
 
         let branch_name = format!("{}{}", self.config.branch_prefix, subagent_id);
-        let worktree_root = canonicalize_root(Path::new(&self.config.root), &self.repo_root)?;
+        let root = PathBuf::from(&self.config.root);
+        let repo = self.repo_root.clone();
+        let worktree_root = tokio::task::spawn_blocking(move || canonicalize_root(&root, &repo))
+            .await
+            .map_err(|e| WorktreeError::Io(std::io::Error::other(e)))??;
         let path = worktree_root.join(subagent_id);
 
         if path.exists() {

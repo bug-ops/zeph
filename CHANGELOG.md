@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(worktree)`: `WorktreeManager::create` called `canonicalize_root` (sync `std::fs`) directly
+  on the async thread; now wrapped in `tokio::task::spawn_blocking` (#5200).
+- `fix(subagent)`: `check_gitignore_for_local` used `std::fs::read_to_string` inside `async fn
+  ensure_memory_dir`; converted to an async fn using `tokio::fs::try_exists` and
+  `tokio::fs::read_to_string` (#5191).
+- `fix(tui)`: `run_tui_remote` called `resolve_palette` (which may invoke `std::fs` for user
+  themes) directly on the async thread; now runs via `tokio::task::spawn_blocking` (#5173).
+
 ### Added
 
 - `feat(tui)`: theme config, `/theme` slash command, `ToggleTheme` real implementation, hot-reload,

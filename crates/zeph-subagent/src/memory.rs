@@ -135,7 +135,7 @@ pub async fn ensure_memory_dir(
 
     // Warn for Local scope if .gitignore likely does not cover the directory.
     if scope == MemoryScope::Local {
-        check_gitignore_for_local(&dir);
+        check_gitignore_for_local(&dir).await;
     }
 
     Ok(dir)
@@ -245,25 +245,34 @@ pub fn escape_memory_content(content: &str) -> String {
 /// Check if `.zeph/agent-memory-local/` appears in `.gitignore` and warn if not.
 ///
 /// This is best-effort — only checks the project-root `.gitignore`.
-fn check_gitignore_for_local(memory_dir: &Path) {
-    // Walk up to find .gitignore (at most 5 levels up from memory dir).
+async fn check_gitignore_for_local(memory_dir: &Path) {
+    // Collect candidate .gitignore paths (up to 5 levels up) before any I/O so
+    // we avoid holding path references across await points.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::with_capacity(5);
     let mut current = memory_dir;
     for _ in 0..5 {
         let Some(parent) = current.parent() else {
             break;
         };
         current = parent;
-        let gitignore = current.join(".gitignore");
-        if gitignore.exists() {
-            if std::fs::read_to_string(&gitignore).is_ok_and(|c| c.contains("agent-memory-local")) {
-                return;
-            }
-            tracing::warn!(
-                "local agent memory directory is not in .gitignore — \
-                 sensitive data may be committed. Add '.zeph/agent-memory-local/' to .gitignore"
-            );
+        candidates.push(current.join(".gitignore"));
+    }
+
+    for gitignore in candidates {
+        if !tokio::fs::try_exists(&gitignore).await.unwrap_or(false) {
+            continue;
+        }
+        if tokio::fs::read_to_string(&gitignore)
+            .await
+            .is_ok_and(|c| c.contains("agent-memory-local"))
+        {
             return;
         }
+        tracing::warn!(
+            "local agent memory directory is not in .gitignore — \
+             sensitive data may be committed. Add '.zeph/agent-memory-local/' to .gitignore"
+        );
+        return;
     }
 }
 
