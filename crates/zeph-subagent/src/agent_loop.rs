@@ -79,6 +79,7 @@ pub(super) fn make_message(role: Role, content: String) -> Message {
     }
 }
 
+#[tracing::instrument(name = "subagent.agent_loop.append_transcript", skip_all)]
 pub(super) async fn append_transcript(
     writer: Option<&TranscriptWriter>,
     seq: &mut u32,
@@ -135,6 +136,7 @@ fn build_effective_system_prompt(
     effective
 }
 
+#[tracing::instrument(name = "subagent.agent_loop.call_provider", skip_all, err)]
 async fn call_provider_with_status(
     provider: &AnyProvider,
     messages: &[Message],
@@ -183,6 +185,7 @@ fn emit_working_status(
     });
 }
 
+#[tracing::instrument(name = "subagent.agent_loop.handle_secret_request", skip_all)]
 #[allow(clippy::too_many_arguments)]
 async fn handle_secret_request(
     transcript_writer: Option<&TranscriptWriter>,
@@ -308,6 +311,7 @@ async fn handle_no_tool_response(
 /// Initialise per-loop state: send the initial Working status, build the
 /// message list from history + task prompt, write the task message to the
 /// transcript, and collect tool definitions.
+#[tracing::instrument(name = "subagent.agent_loop.init_loop_state", skip_all)]
 async fn init_loop_state(
     status_tx: &watch::Sender<SubAgentStatus>,
     started_at: Instant,
@@ -467,6 +471,7 @@ async fn run_turn(
 }
 
 // Returns `true` if no tool was called (loop should break).
+#[tracing::instrument(name = "subagent.agent_loop.handle_tool_step", skip_all)]
 #[allow(clippy::too_many_lines)]
 async fn handle_tool_step(
     executor: &FilteredToolExecutor,

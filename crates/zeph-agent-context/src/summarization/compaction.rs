@@ -41,6 +41,7 @@ use crate::state::{CompactionOutcome, ContextSummarizationView, ProbeOutcome};
 /// # Errors
 ///
 /// Returns [`ContextError`] if LLM summarization fails.
+#[tracing::instrument(name = "agent_context.compaction.compact_context", skip_all, err)]
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn compact_context(
     summ: &mut ContextSummarizationView<'_>,
@@ -357,6 +358,7 @@ fn finalize_compacted_messages(
 /// Takes `deps` and `guidelines` by value (already extracted from `summ` by the caller)
 /// so no reference to `ContextSummarizationView` (which contains `!Sync` fields) is held
 /// across the `.await` boundary.
+#[tracing::instrument(name = "agent_context.compaction.summarize_messages", skip_all, err)]
 async fn summarize_messages(
     deps: zeph_context::summarization::SummarizationDeps,
     messages: &[Message],

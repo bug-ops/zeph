@@ -299,6 +299,7 @@ impl ContextService {
     ///
     /// Both `inject_semantic_recall` and `inject_semantic_recall_bare` share identical
     /// retrieval logic; this method holds the single implementation.
+    #[tracing::instrument(name = "agent_context.service.run_tiered_recall", skip_all, err)]
     async fn run_tiered_recall(
         &self,
         params: &SemanticRecallParams<'_>,
@@ -932,6 +933,7 @@ impl ContextService {
     ///
     /// Truncation, control-char stripping, delimiter escaping, and spotlighting are active
     /// for all hints (defense-in-depth invariant).
+    #[tracing::instrument(name = "agent_context.service.sanitize_memory_message", skip_all)]
     async fn sanitize_memory_message(
         &self,
         mut msg: zeph_llm::provider::Message,
@@ -1184,6 +1186,7 @@ impl ContextService {
     ///
     /// Does not trigger an LLM call. Does not set `compacted_this_turn` so Hard tier
     /// may still fire in the same turn if context remains above the hard threshold.
+    #[tracing::instrument(name = "agent_context.service.do_soft_compaction", skip_all)]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -1242,6 +1245,7 @@ impl ContextService {
     }
 
     /// Execute the Hard compaction tier: soft pass first, then LLM summarization if needed.
+    #[tracing::instrument(name = "agent_context.service.do_hard_compaction", skip_all, err)]
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -1567,6 +1571,7 @@ pub(crate) fn recompute_prompt_tokens(window: &mut MessageWindowView<'_>) {
 ///
 /// A warn-level log is emitted on failure; the next turn will recompute from scratch,
 /// which is safe (the floor invariant simply won't apply until persistence succeeds).
+#[tracing::instrument(name = "agent_context.service.persist_fidelity_tags", skip_all)]
 async fn persist_fidelity_tags(
     messages: &[zeph_llm::provider::Message],
     memory: Option<&zeph_memory::semantic::SemanticMemory>,
