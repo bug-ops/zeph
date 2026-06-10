@@ -314,7 +314,7 @@ impl ToolDensity {
 ///
 /// `Auto` runs OS-level detection at startup; any other value forces the specified mode
 /// and skips detection entirely. Resolution is performed once at TUI startup and stored in
-/// the [`App`](crate::App) theme.
+/// the TUI `App` theme.
 ///
 /// # Example (TOML)
 ///

@@ -395,7 +395,7 @@ mod tests {
     }
 
     fn srgb_linearize(u: u8) -> f64 {
-        let c = u as f64 / 255.0;
+        let c = f64::from(u) / 255.0;
         if c <= 0.04045 {
             c / 12.92
         } else {

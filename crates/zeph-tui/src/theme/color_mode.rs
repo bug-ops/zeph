@@ -3,14 +3,14 @@
 
 //! Terminal colour capability detection and colour-space downgrade pipeline.
 //!
-//! [`EffectiveColorMode`] is the resolved, non-`Auto` result of [`ColorMode::resolve`].
+//! [`EffectiveColorMode`] is the resolved, non-`Auto` result of [`resolve_color_mode`].
 //! [`map_color`] and [`apply_mode`] are the single seams through which all palette colours
 //! pass during [`super::Theme`] derivation — never at render time.
 
 use ratatui::style::{Color, Style};
 use zeph_config::ColorMode;
 
-/// Resolved terminal colour capability — the result of [`ColorMode::resolve`].
+/// Resolved terminal colour capability — the result of [`resolve_color_mode`].
 ///
 /// Unlike [`ColorMode`], this enum has no `Auto` variant. It is only produced
 /// after detection has run, so `from_palette_with_mode` cannot accidentally receive
