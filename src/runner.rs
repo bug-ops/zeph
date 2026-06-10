@@ -1060,12 +1060,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         std::process::exit(130);
     });
 
-    // Create TaskSupervisor early so background tasks spawned during build_memory
-    // (e.g. retrieval-failure-logger) are registered before the shutdown bridge is wired.
-    // The shutdown bridge (shutdown_rx → mem_cancel) is attached below after build_shutdown().
-    let mem_cancel = tokio_util::sync::CancellationToken::new();
-    let supervisor = std::sync::Arc::new(TaskSupervisor::new(mem_cancel.clone()));
-
     #[cfg(feature = "tui")]
     tui_status!("Loading memory...");
     let memory = if exec_mode.bare {
