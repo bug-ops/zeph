@@ -18,6 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `test(tui)`: unit tests for `/theme` slash command parsing variants (`ListThemes`, `SetTheme`,
+  trailing-space edge case) in `parse_session_slash` (#5245). Insta snapshot tests for
+  `elicitation` and `command_palette` modals confirming `BorderType::Rounded` corners (#5243).
 - `feat(tui)`: theme config, `/theme` slash command, `ToggleTheme` real implementation, hot-reload,
   and `--theme` CLI flag (#5090). `SemanticPalette` presets (`zephyr`, `zephyr-light`,
   `high-contrast`, etc.) are selectable at runtime; `apply_theme` validates names against path
