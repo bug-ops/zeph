@@ -362,6 +362,7 @@ impl ExperimentEngine {
     /// # Errors
     ///
     /// Returns [`EvalError::Storage`] if the `SQLite` insert fails.
+    #[tracing::instrument(name = "experiments.engine.persist_result", skip_all)]
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn persist_result(
         &self,

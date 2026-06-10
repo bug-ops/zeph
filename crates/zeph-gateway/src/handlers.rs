@@ -181,6 +181,7 @@ pub(crate) async fn health_handler(State(state): State<AppState>) -> impl IntoRe
 /// | 200 | Registry encoded successfully; `Content-Type: application/openmetrics-text; version=1.0.0; charset=utf-8` |
 /// | 500 | Registry encoding failed (logged as error) |
 #[cfg(feature = "prometheus")]
+#[tracing::instrument(name = "gateway.metrics", skip_all)]
 pub(crate) async fn metrics_handler(
     axum::extract::State(registry): axum::extract::State<
         std::sync::Arc<prometheus_client::registry::Registry>,

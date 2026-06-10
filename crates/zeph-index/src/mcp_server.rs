@@ -398,6 +398,7 @@ fn run_module_summary(index: &SymbolIndex, params: &ModuleSummaryParams) -> serd
 // ── ToolExecutor impl ──────────────────────────────────────────────────────────
 
 impl ToolExecutor for IndexMcpServer {
+    #[tracing::instrument(name = "index.mcp_server.execute", skip_all)]
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         Ok(None)
     }
@@ -411,6 +412,7 @@ impl ToolExecutor for IndexMcpServer {
         ]
     }
 
+    #[tracing::instrument(name = "index.mcp_server.execute_tool_call", skip_all)]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let result = if call.tool_id == "find_text_references" {
             // `run_find_text_references` calls `std::fs::read_to_string` in a loop.

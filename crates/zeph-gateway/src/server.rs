@@ -300,6 +300,7 @@ impl GatewayServer {
     ///   permission denied, etc.).
     /// - [`GatewayError::Server`] — the server encountered a fatal I/O error
     ///   after binding.
+    #[tracing::instrument(name = "gateway.serve", skip_all)]
     pub async fn serve(self) -> Result<(), GatewayError> {
         let state = AppState {
             webhook_tx: self.webhook_tx,
