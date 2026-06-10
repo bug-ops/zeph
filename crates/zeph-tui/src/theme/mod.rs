@@ -80,7 +80,7 @@ pub struct SyntaxTheme {
 /// The [`Default`] implementation provides a dark blue colour scheme.
 ///
 /// Build a configured theme with [`Theme::from_palette_with_mode`] at startup and store it
-/// in [`crate::App`]; widget render functions receive `&Theme` as a parameter.
+/// in the TUI `App`; widget render functions receive `&Theme` as a parameter.
 ///
 /// # Examples
 ///
@@ -89,7 +89,8 @@ pub struct SyntaxTheme {
 /// use zeph_config::ColorMode;
 ///
 /// let palette = SemanticPalette::zephyr();
-/// let mode = resolve_color_mode(ColorMode::Auto);
+/// // Use Truecolor so the test is deterministic regardless of the CI environment.
+/// let mode = resolve_color_mode(ColorMode::Truecolor);
 /// let theme = Theme::from_palette_with_mode(&palette, mode);
 /// assert_ne!(theme.user_message, theme.assistant_message);
 /// ```
