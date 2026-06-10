@@ -153,7 +153,8 @@ pub(crate) fn spawn_gateway_server(
         std::sync::Arc<prometheus_client::registry::Registry>,
         String,
     )>,
-) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    supervisor: Option<&zeph_common::TaskSupervisor>,
+) {
     use zeph_gateway::GatewayServer;
 
     if let Err(e) = config.gateway.validate() {
@@ -188,13 +189,13 @@ pub(crate) fn spawn_gateway_server(
         config.gateway.port
     );
 
-    let server_handle = tokio::spawn(async move {
+    let server_fut = async move {
         if let Err(e) = gw.serve().await {
             tracing::error!("gateway error: {e:#}");
         }
-    });
+    };
 
-    let forwarder_handle = tokio::spawn(async move {
+    let forwarder_fut = async move {
         while let Some(payload) = webhook_rx.recv().await {
             let msg = zeph_core::ChannelMessage {
                 text: payload,
@@ -207,9 +208,47 @@ pub(crate) fn spawn_gateway_server(
                 break;
             }
         }
-    });
+    };
 
-    (server_handle, forwarder_handle)
+    if let Some(sup) = supervisor {
+        let server_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(server_fut)));
+        let server_handle_inner = sup.spawn(zeph_common::TaskDescriptor {
+            name: "gateway_server",
+            restart: zeph_common::RestartPolicy::Restart {
+                max: 0,
+                base_delay: std::time::Duration::from_secs(1),
+            },
+            factory: move || {
+                let f = server_cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+        let fwd_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(forwarder_fut)));
+        let fwd_handle_inner = sup.spawn(zeph_common::TaskDescriptor {
+            name: "gateway_forwarder",
+            restart: zeph_common::RestartPolicy::Restart {
+                max: 0,
+                base_delay: std::time::Duration::from_secs(1),
+            },
+            factory: move || {
+                let f = fwd_cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+        drop(server_handle_inner);
+        drop(fwd_handle_inner);
+    } else {
+        drop(tokio::spawn(server_fut)); // EXEMPT(#5143): no-supervisor fallback; process-lifetime task
+        drop(tokio::spawn(forwarder_fut)); // EXEMPT(#5143): no-supervisor fallback; process-lifetime task
+    }
 }
 
 #[cfg(all(test, feature = "gateway"))]

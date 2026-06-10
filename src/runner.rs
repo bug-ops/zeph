@@ -964,10 +964,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let warmup_provider_clone = provider.clone();
     #[cfg(feature = "tui")]
     let warmup_handle = None::<tokio::task::JoinHandle<()>>;
+
     #[cfg(not(feature = "tui"))]
     let warmup_handle = {
         let p = warmup_provider_clone.clone();
-        Some(tokio::spawn(async move { warmup_provider(&p).await }))
+        Some(tokio::spawn(async move { warmup_provider(&p).await })) // EXEMPT(#5143): awaited before agent.run(), needs JoinHandle
     };
 
     // Create the TaskSupervisor early so it can be wired into channel adapters (e.g.
@@ -1018,8 +1019,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             // dropped at the end of bootstrap. The TUI thread observes the channel close and
             // shuts down independently, so explicit abort is not needed. Dropping the handle
             // is intentional — we have no cleanup to do on the bootstrap error path here.
-            // EXEMPT: self-terminating on channel close — handle dropped intentionally at block end
             let _early_status_forwarder = tokio::spawn(crate::tui_bridge::forward_status_to_tui(
+                // EXEMPT(#5143): self-terminating on channel close — handle dropped intentionally
                 status_rx,
                 early.agent_tx.clone(),
             ));
@@ -1054,8 +1055,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }};
     }
 
-    // Early Ctrl+C: terminate during init before the full handler is wired.
+    // Bootstrap signal handler that calls process::exit(130) — conceptually pre-supervisor.
     let early_ctrlc = tokio::spawn(async {
+        // EXEMPT(#5143): aborted at runner.rs:3473; spawned before supervisor exists
         let _ = tokio::signal::ctrl_c().await;
         std::process::exit(130);
     });
@@ -1094,6 +1096,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             Some(agent_status_tx.clone()),
             Some(memory.sqlite().pool()),
             &provider,
+            Some(&*supervisor),
         )
         .await
     });
@@ -1108,6 +1111,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(agent_status_tx.clone()),
         Some(memory.sqlite().pool()),
         &provider,
+        Some(&*supervisor),
     )
     .await;
 
@@ -1537,9 +1541,22 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     {
         let mut rx = shutdown_rx.clone();
         let cancel = mem_cancel.clone();
-        tokio::spawn(async move {
+        let fut = async move {
             let _ = rx.changed().await;
             cancel.cancel();
+        };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        supervisor.spawn(TaskDescriptor {
+            name: "shutdown_bridge",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
         });
     }
 
@@ -1547,10 +1564,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // authorization URL. Non-OAuth tools are already available from connect_all(); OAuth tools
     // arrive via tools_watch_tx when authorized. The handle is stored so it can be aborted
     // when the shutdown signal fires (prevents the task from outliving the runtime).
+    // Shutdown ordering is load-bearing; using supervisor.abort("oauth_deferred") would require
+    // the same ordering guarantee, so the local JoinHandle is kept.
     oauth_deferred_handle = if !exec_mode.bare && tool_setup.mcp_manager.has_oauth_servers() {
         let mgr = std::sync::Arc::clone(&tool_setup.mcp_manager);
         let mut shutdown = shutdown_rx.clone();
         Some(tokio::spawn(async move {
+            // EXEMPT(#5143): aborted at runner.rs:3554 before MCP teardown; shutdown ordering is load-bearing
             tokio::select! {
                 () = mgr.connect_oauth_deferred() => {}
                 _ = shutdown.changed() => {
@@ -1571,12 +1591,25 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     {
         let sqlite = memory.sqlite().clone();
         let retention_secs = config.tools.overflow.retention_days.saturating_mul(86_400);
-        tokio::spawn(async move {
+        let fut = async move {
             match sqlite.cleanup_overflow(retention_secs).await {
                 Ok(n) if n > 0 => tracing::info!("cleaned up {n} stale overflow entries"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!("overflow cleanup failed: {e}"),
             }
+        };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        supervisor.spawn(TaskDescriptor {
+            name: "overflow_cleanup",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
         });
     }
 
@@ -2684,7 +2717,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Wire index progress to TUI immediately after the indexer is created.
     #[cfg(feature = "tui")]
     if let (Some(early), Some(rx)) = (&early_tui_guard.0, index_progress_rx.clone()) {
-        tokio::spawn(forward_index_progress_to_tui(rx, early.agent_tx.clone()));
+        let fut = forward_index_progress_to_tui(rx, early.agent_tx.clone());
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        supervisor.spawn(TaskDescriptor {
+            name: "index_progress_fwd",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
     }
     #[cfg(not(feature = "tui"))]
     let _ = index_progress_rx;
@@ -2941,6 +2987,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             shutdown_rx.clone(),
             exp_deps,
             five_signal,
+            Some(&*supervisor),
         ))
         .await;
         if let Some(sched_exec) = sched_executor {
@@ -3167,10 +3214,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     };
     // Spawn egress telemetry drain now that metrics_tx is available.
     if let Some(rx) = egress_rx {
-        tokio::spawn(agent_setup::drain_egress_events(
-            rx,
-            Some(metrics_tx.clone()),
-        ));
+        let fut = agent_setup::drain_egress_events(rx, Some(metrics_tx.clone()));
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        supervisor.spawn(TaskDescriptor {
+            name: "egress_drain",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
     }
     // Clone metrics_rx for Prometheus sync task before it is consumed by TUI or dropped.
     #[cfg(feature = "prometheus")]
@@ -3326,7 +3383,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             let tx_clone = metrics_tx_for_sched;
             let mut shutdown = shutdown_rx.clone();
             let mut refresh_rx = sched_refresh_rx.take();
-            tokio::spawn(async move {
+            let fut = async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
                 loop {
                     tokio::select! {
@@ -3359,6 +3416,22 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                         _ = shutdown.changed() => break,
                     }
                 }
+            };
+            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+            supervisor.spawn(TaskDescriptor {
+                name: "tui_sched_poll",
+                restart: RestartPolicy::Restart {
+                    max: 0,
+                    base_delay: std::time::Duration::from_secs(1),
+                },
+                factory: move || {
+                    let f = cell.lock().take();
+                    async move {
+                        if let Some(f) = f {
+                            f.await;
+                        }
+                    }
+                },
             });
         }
         #[cfg(feature = "cocoon")]
@@ -3384,7 +3457,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             );
             let metrics_tx_cocoon = metrics_tx_for_cocoon;
             let mut shutdown = shutdown_rx.clone();
-            tokio::spawn(async move {
+            let cocoon_fut = async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
@@ -3412,6 +3485,22 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     }
                 }
                 tracing::debug!("cocoon health poll task shutting down");
+            };
+            let cocoon_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(cocoon_fut)));
+            supervisor.spawn(TaskDescriptor {
+                name: "tui_cocoon_poll",
+                restart: RestartPolicy::Restart {
+                    max: 0,
+                    base_delay: std::time::Duration::from_secs(1),
+                },
+                factory: move || {
+                    let f = cocoon_cell.lock().take();
+                    async move {
+                        if let Some(f) = f {
+                            f.await;
+                        }
+                    }
+                },
             });
         }
     } else {
@@ -3449,11 +3538,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 p.clone()
             }
         };
-        let _gateway_handles = crate::gateway_spawn::spawn_gateway_server(
+        crate::gateway_spawn::spawn_gateway_server(
             config,
             shutdown_rx.clone(),
             gateway_input_tx.clone(),
             Some((std::sync::Arc::clone(&prom.registry), effective_path)),
+            Some(&*supervisor),
         );
         Some(handle)
     } else {
@@ -3463,11 +3553,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             );
         }
         if config.gateway.enabled {
-            let _gateway_handles = crate::gateway_spawn::spawn_gateway_server(
+            crate::gateway_spawn::spawn_gateway_server(
                 config,
                 shutdown_rx.clone(),
                 gateway_input_tx.clone(),
                 None,
+                Some(&*supervisor),
             );
         }
         None
@@ -3476,10 +3567,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // When `prometheus` feature is disabled, spawn gateway unconditionally if enabled.
     #[cfg(all(feature = "gateway", not(feature = "prometheus")))]
     if !exec_mode.bare && config.gateway.enabled {
-        let _gateway_handles = crate::gateway_spawn::spawn_gateway_server(
+        crate::gateway_spawn::spawn_gateway_server(
             config,
             shutdown_rx.clone(),
             gateway_input_tx,
+            Some(&*supervisor),
         );
     }
 
@@ -3492,7 +3584,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     agent.sync_graph_counts().await;
     agent.init_semantic_index().await;
 
-    agent_setup::spawn_ctrl_c_handler(agent.cancel_signal(), shutdown_tx);
+    agent_setup::spawn_ctrl_c_handler(agent.cancel_signal(), shutdown_tx, Some(&*supervisor));
     early_ctrlc.abort();
     #[cfg(feature = "tui")]
     tui_status!("Loading conversation history...");
@@ -3563,7 +3655,22 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     let status_rx = tui_status_rx_for_params
         .expect("status_rx must be Some in CLI mode: early forwarder only runs on TUI path");
-    tokio::spawn(forward_status_to_stderr(status_rx));
+    {
+        let fut = forward_status_to_stderr(status_rx);
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        supervisor.spawn(TaskDescriptor {
+            name: "status_stderr_fwd",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+    }
     let result = Box::pin(agent.run()).await;
     {
         let fleet_result: anyhow::Result<()> = match &result {
@@ -3770,10 +3877,25 @@ async fn run_experiment_session(
 
     // Wire Ctrl+C to cancel the engine gracefully.
     let token = engine.cancel_token();
-    tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        token.cancel();
-    });
+    {
+        let exp_ctrlc_fut = async move {
+            let _ = tokio::signal::ctrl_c().await;
+            token.cancel();
+        };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(exp_ctrlc_fut)));
+        exp_supervisor.spawn(TaskDescriptor {
+            name: "exp_ctrlc",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+    }
 
     println!("Starting experiment session...");
     let report = engine.run().await?;

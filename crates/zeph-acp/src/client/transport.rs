@@ -151,6 +151,8 @@ pub(crate) fn spawn_stderr_drain(
 ) -> tokio::task::JoinHandle<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
+    // EXEMPT(#5144): returns JoinHandle by public contract for caller-managed abort on shutdown;
+    // supervisor would lose the joinable handle.
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {

@@ -106,6 +106,7 @@ pub(crate) fn start_pyroscope_push(endpoint: &str, service_name: &str) -> Option
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
     let handle = tokio::spawn(async move {
+        // EXEMPT(#5143): pyroscope guard holds its own JoinHandle + watch shutdown by design
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(PUSH_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 

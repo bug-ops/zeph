@@ -82,6 +82,7 @@ impl TaskHandler for ExperimentTaskHandler {
             let mut shutdown_watcher = self.shutdown_rx.clone();
 
             tokio::spawn(async move {
+                // EXEMPT(#5143): per-experiment one-shot task; managed by `running` AtomicBool flag
                 let benchmark_file = run_config.benchmark_file.clone();
 
                 // Load benchmark via spawn_blocking: from_file uses blocking std::fs I/O.
@@ -277,6 +278,7 @@ pub(crate) async fn init_scheduler(
     shutdown_rx: watch::Receiver<bool>,
     experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
     five_signal: Option<Arc<FiveSignalRuntime>>,
+    supervisor: Option<&zeph_common::TaskSupervisor>,
 ) -> Option<SchedulerInitResult> {
     if !config.scheduler.enabled {
         return None;
@@ -424,7 +426,27 @@ pub(crate) async fn init_scheduler(
     }
 
     let tick_secs = config.scheduler.tick_interval_secs;
-    tokio::spawn(async move { scheduler.run_with_interval(tick_secs).await });
+    if let Some(sup) = supervisor {
+        let fut = async move { scheduler.run_with_interval(tick_secs).await };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        sup.spawn(zeph_common::TaskDescriptor {
+            name: "scheduler_loop",
+            restart: zeph_common::RestartPolicy::Restart {
+                max: 0,
+                base_delay: std::time::Duration::from_secs(1),
+            },
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+    } else {
+        tokio::spawn(async move { scheduler.run_with_interval(tick_secs).await }); // EXEMPT(#5143): no-supervisor fallback for scheduler_loop
+    }
     tracing::info!("scheduler started");
 
     let executor = SchedulerExecutor::new(task_tx, store_arc);
@@ -443,6 +465,7 @@ pub(crate) async fn bootstrap_scheduler<C>(
     shutdown_rx: watch::Receiver<bool>,
     experiment_deps: Option<(Arc<AnyProvider>, Option<Arc<SemanticMemory>>)>,
     five_signal: Option<Arc<FiveSignalRuntime>>,
+    supervisor: Option<&zeph_common::TaskSupervisor>,
 ) -> (zeph_core::agent::Agent<C>, Option<SchedulerExecutor>)
 where
     C: zeph_core::channel::Channel,
@@ -451,15 +474,42 @@ where
         if config.agent.auto_update_check {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             let handler = UpdateCheckHandler::new(env!("CARGO_PKG_VERSION"), tx);
-            tokio::spawn(async move {
-                let _ = handler.execute(&serde_json::Value::Null).await;
-            });
+            if let Some(sup) = supervisor {
+                let fut = async move {
+                    let _ = handler.execute(&serde_json::Value::Null).await;
+                };
+                let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+                sup.spawn(zeph_common::TaskDescriptor {
+                    name: "update_check",
+                    restart: zeph_common::RestartPolicy::RunOnce,
+                    factory: move || {
+                        let f = cell.lock().take();
+                        async move {
+                            if let Some(f) = f {
+                                f.await;
+                            }
+                        }
+                    },
+                });
+            } else {
+                tokio::spawn(async move {
+                    // EXEMPT(#5143): no-supervisor fallback for update_check
+                    let _ = handler.execute(&serde_json::Value::Null).await;
+                });
+            }
             return (agent.with_update_notifications(rx), None);
         }
         return (agent, None);
     }
 
-    let Some(result) = init_scheduler(config, shutdown_rx, experiment_deps, five_signal).await
+    let Some(result) = init_scheduler(
+        config,
+        shutdown_rx,
+        experiment_deps,
+        five_signal,
+        supervisor,
+    )
+    .await
     else {
         return (agent, None);
     };
@@ -522,7 +572,15 @@ mod tests {
         config.memory.sqlite_path = ":memory:".into();
 
         let (_agent, executor_opt): (_, Option<crate::scheduler_executor::SchedulerExecutor>) =
-            Box::pin(bootstrap_scheduler(agent, &config, shutdown_rx, None, None)).await;
+            Box::pin(bootstrap_scheduler(
+                agent,
+                &config,
+                shutdown_rx,
+                None,
+                None,
+                None,
+            ))
+            .await;
         assert!(
             executor_opt.is_some(),
             "expected Some(SchedulerExecutor) when scheduler is enabled"

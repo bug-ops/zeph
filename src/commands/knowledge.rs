@@ -458,6 +458,7 @@ async fn run_ingest(
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
 
     let printer_handle = tokio::spawn(async move {
+        // EXEMPT(#5143): explicitly awaited after ingest completes
         while let Some(event) = progress_rx.recv().await {
             match event {
                 IngestProgress::Discovered { source, files } => {
@@ -838,6 +839,7 @@ async fn run_graph_ingest(
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<GraphIngestProgress>(64);
 
     let printer_handle = tokio::spawn(async move {
+        // EXEMPT(#5143): explicitly awaited after ingest completes
         while let Some(event) = progress_rx.recv().await {
             match event {
                 GraphIngestProgress::Started { total } => {

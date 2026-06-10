@@ -369,6 +369,8 @@ async fn spawn_subagent_inner(cfg: SubagentConfig) -> Result<SubagentHandle, Acp
     let child = spawned.child;
     let stderr_task = transport::spawn_stderr_drain(spawned.stderr, "pending".to_owned());
 
+    // EXEMPT(#5144): main ACP client driver; join_handle is stored on the Driver struct
+    // and aborted on drop — joinable handle lifecycle required.
     let join_handle =
         tokio::spawn(async move {
             let result = Client

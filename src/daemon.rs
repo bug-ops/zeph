@@ -120,6 +120,7 @@ fn spawn_a2a_server(
         });
     } else {
         tokio::spawn(async move {
+            // EXEMPT(#5143): no-supervisor fallback branch — supervisor is None here
             if let Err(e) = a2a_server.serve().await {
                 tracing::error!("A2A server error: {e:#}");
             }
@@ -319,12 +320,25 @@ pub(crate) async fn run_daemon(
     {
         let sqlite = memory.sqlite().clone();
         let retention_secs = config.tools.overflow.retention_days.saturating_mul(86_400);
-        tokio::spawn(async move {
+        let fut = async move {
             match sqlite.cleanup_overflow(retention_secs).await {
                 Ok(n) if n > 0 => tracing::info!("cleaned up {n} stale overflow entries"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!("overflow cleanup failed: {e}"),
             }
+        };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        mem_supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "overflow_cleanup",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
         });
     }
 
@@ -333,9 +347,23 @@ pub(crate) async fn run_daemon(
     // Wire shutdown to mem_supervisor (created before build_memory for retrieval-failure-logger).
     {
         let mut rx = shutdown_rx.clone();
-        tokio::spawn(async move {
+        let cancel = mem_cancel.clone();
+        let fut = async move {
             let _ = rx.changed().await;
-            mem_cancel.cancel();
+            cancel.cancel();
+        };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        mem_supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "mem_shutdown_bridge",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
         });
     }
 
@@ -344,9 +372,22 @@ pub(crate) async fn run_daemon(
     {
         let mut rx = shutdown_rx.clone();
         let cancel = daemon_cancel;
-        tokio::spawn(async move {
+        let fut = async move {
             let _ = rx.changed().await;
             cancel.cancel();
+        };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        task_supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "daemon_shutdown_bridge",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
         });
     }
 
@@ -393,7 +434,20 @@ pub(crate) async fn run_daemon(
         let (egress_tx, egress_rx) = tokio::sync::mpsc::channel(256);
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         scrape_executor = scrape_executor.with_egress_tx(egress_tx, dropped);
-        tokio::spawn(agent_setup::drain_egress_events(egress_rx, None));
+        let fut = agent_setup::drain_egress_events(egress_rx, None);
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        task_supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "egress_drain",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
     }
     let mut daemon_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
@@ -718,29 +772,28 @@ pub(crate) async fn run_daemon(
         shutdown_rx.clone(),
         loopback_handle,
         a2a_sanitizer,
-        Some(task_supervisor),
+        Some(task_supervisor.clone()),
         &provider,
     );
 
     #[cfg(feature = "gateway")]
-    let _gateway_handles = if config.gateway.enabled {
-        Some(spawn_gateway_server(
+    if config.gateway.enabled {
+        spawn_gateway_server(
             config,
             shutdown_rx.clone(),
             gateway_input_tx,
             // Daemon mode has no MetricsSnapshot watch channel — skip Prometheus sync.
             #[cfg(feature = "prometheus")]
             None,
-        ))
-    } else {
-        None
-    };
+            Some(&task_supervisor),
+        );
+    }
 
     let pid_file = config.daemon.pid_file.clone();
     let mut supervisor = DaemonSupervisor::new(&config.daemon, shutdown_rx.clone());
 
     let shutdown_tx_signal = shutdown_tx.clone();
-    tokio::spawn(async move {
+    let signal_fut = async move {
         #[cfg(unix)]
         {
             let mut sigterm =
@@ -761,11 +814,26 @@ pub(crate) async fn run_daemon(
             tracing::info!("received Ctrl-C, initiating daemon shutdown");
         }
         let _ = shutdown_tx_signal.send(true);
+    };
+    let signal_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(signal_fut)));
+    task_supervisor.spawn(zeph_common::TaskDescriptor {
+        name: "signal_handler",
+        restart: zeph_common::RestartPolicy::RunOnce,
+        factory: move || {
+            let f = signal_cell.lock().take();
+            async move {
+                if let Some(f) = f {
+                    f.await;
+                }
+            }
+        },
     });
 
     // Spawn a sentinel task for the supervisor to track; agent runs in current task.
+
     let mut sentinel_rx = shutdown_rx.clone();
     let sentinel = tokio::spawn(async move {
+        // EXEMPT(#5143): DaemonSupervisor::add_component requires JoinHandle by API contract
         let _ = sentinel_rx.changed().await;
         Ok(())
     });

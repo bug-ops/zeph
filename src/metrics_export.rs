@@ -888,6 +888,7 @@ pub fn spawn_metrics_sync_with_five_signal(
     }
 
     tokio::spawn(async move {
+        // EXEMPT(#5143): reusable library fn returning JoinHandle by public contract
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 

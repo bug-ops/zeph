@@ -222,7 +222,7 @@ fn spawn_tui_thread(
     }
 
     if let Some(progress_rx) = index_progress_rx {
-        tokio::spawn(forward_index_progress_to_tui(progress_rx, agent_tx));
+        tokio::spawn(forward_index_progress_to_tui(progress_rx, agent_tx)); // EXEMPT(#5143): self-terminating forwarder inside TUI thread LocalSet context
     }
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<anyhow::Result<()>>();
@@ -584,7 +584,7 @@ mod tests {
         let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
 
-        tokio::spawn(forward_status_to_tui(status_rx, agent_tx));
+        tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
         status_tx.send("Connecting tools...".into()).unwrap();
         status_tx.send("Memory ready".into()).unwrap();
@@ -607,7 +607,7 @@ mod tests {
         let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(1);
 
-        let handle = tokio::spawn(forward_status_to_tui(status_rx, agent_tx));
+        let handle = tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
         // Drop receiver — forwarder must exit cleanly when send fails.
         drop(agent_rx);
@@ -622,7 +622,7 @@ mod tests {
         let (tool_tx, tool_rx) = tokio::sync::mpsc::channel::<zeph_tools::ToolEvent>(64);
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
 
-        tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx));
+        tokio::spawn(forward_tool_events_to_tui(tool_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
         tool_tx
             .send(zeph_tools::ToolEvent::Started {

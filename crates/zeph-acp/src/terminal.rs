@@ -561,6 +561,8 @@ async fn run_terminal_handler(
                 let (data_tx, cancel) = stdin_pumps.entry(tid_str).or_insert_with(|| {
                     let (tx, rx) = mpsc::channel::<Vec<u8>>(STDIN_CHANNEL_CAPACITY);
                     let token = CancellationToken::new();
+                    // EXEMPT(#5144): per-terminal stdin pump with dedicated CancellationToken
+                    // and map-based lifecycle (stdin_pumps); supervisor adds no value here.
                     tokio::spawn(run_stdin_pump(
                         conn.clone(),
                         req.session_id.clone(),

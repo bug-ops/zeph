@@ -398,6 +398,7 @@ pub(crate) async fn build_tool_setup(
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pool: Option<&zeph_db::DbPool>,
     provider: &zeph_llm::any::AnyProvider,
+    supervisor: Option<&zeph_common::TaskSupervisor>,
 ) -> ToolSetup {
     let filter_registry = if config.tools.filters.enabled {
         zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
@@ -509,7 +510,24 @@ pub(crate) async fn build_tool_setup(
             guard_config.ema_floor,
         );
         mcp_manager_builder = mcp_manager_builder.with_embedding_guard(guard);
-        tokio::spawn(drain_embedding_guard_events(rx));
+        if let Some(sup) = supervisor {
+            let fut = drain_embedding_guard_events(rx);
+            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+            sup.spawn(zeph_common::TaskDescriptor {
+                name: "embed_guard_drain",
+                restart: zeph_common::RestartPolicy::RunOnce,
+                factory: move || {
+                    let f = cell.lock().take();
+                    async move {
+                        if let Some(f) = f {
+                            f.await;
+                        }
+                    }
+                },
+            });
+        } else {
+            tokio::spawn(drain_embedding_guard_events(rx)); // EXEMPT(#5143): supervisor not available at this call site (acp.rs passes None)
+        }
     }
     let mcp_manager = Arc::new(mcp_manager_builder);
     let (mcp_tools, mcp_outcomes) = if bare {
@@ -639,8 +657,9 @@ pub(crate) type CodeIndexerSetup = (
 pub(crate) fn spawn_ctrl_c_handler(
     cancel_signal: std::sync::Arc<tokio::sync::Notify>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
+    supervisor: Option<&zeph_common::TaskSupervisor>,
 ) {
-    tokio::spawn(async move {
+    let fut = async move {
         let mut last_ctrl_c: Option<tokio::time::Instant> = None;
         loop {
             if tokio::signal::ctrl_c().await.is_err() {
@@ -658,7 +677,24 @@ pub(crate) fn spawn_ctrl_c_handler(
             cancel_signal.notify_waiters();
             last_ctrl_c = Some(now);
         }
-    });
+    };
+    if let Some(sup) = supervisor {
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(fut)));
+        sup.spawn(zeph_common::TaskDescriptor {
+            name: "ctrl_c_handler",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+    } else {
+        tokio::spawn(fut); // EXEMPT(#5143): supervisor not available at this call site (standalone usage)
+    }
 }
 
 pub(crate) fn apply_response_cache<C: Channel>(
@@ -679,6 +715,7 @@ pub(crate) fn apply_response_cache<C: Channel>(
     let cache = std::sync::Arc::new(zeph_memory::ResponseCache::new(pool, ttl_secs));
     let cache_clone = std::sync::Arc::clone(&cache);
     let handle = tokio::spawn(async move {
+        // EXEMPT(#5143): returns JoinHandle used by caller (runner.rs:3561 cache_cleanup_handle.abort())
         let mut interval = tokio::time::interval(std::time::Duration::from_hours(1));
         interval.tick().await; // skip immediate first tick
         loop {
@@ -1102,6 +1139,7 @@ pub(crate) async fn apply_code_indexer(
 
 fn spawn_index_progress_printer(mut rx: tokio::sync::watch::Receiver<zeph_index::IndexProgress>) {
     tokio::spawn(async move {
+        // EXEMPT(#5143): single-use CLI printer, self-terminates after one eprintln; no supervisor needed
         while rx.changed().await.is_ok() {
             let p = rx.borrow_and_update().clone();
             if p.files_total > 0 {
@@ -1177,7 +1215,7 @@ fn spawn_background_indexer(
             },
         });
     } else {
-        tokio::spawn(fut);
+        tokio::spawn(fut); // EXEMPT(#5143): no-supervisor fallback for spawn_background_indexer — None branch
     }
 }
 

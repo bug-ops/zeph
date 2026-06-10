@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "unstable-elicitation")]
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 use zeph_core::channel::{ChannelMessage, LoopbackChannel, LoopbackHandle};
 use zeph_core::text::truncate_to_chars;
 use zeph_core::{
@@ -488,6 +489,8 @@ pub struct ZephAcpAgentState {
     pub(crate) diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
     /// Cancellation token for the idle reaper task.
     reaper_cancel: CancellationToken,
+    /// Supervisor for long-lived agent-level background tasks (idle reaper, etc.).
+    task_supervisor: TaskSupervisor,
     /// Canonicalized allowlist of directories ACP clients may reference in session requests.
     additional_directories_allow: Vec<std::path::PathBuf>,
     /// Auth methods to advertise in the `initialize` response. MVP: always `[Agent]`.
@@ -529,6 +532,8 @@ impl ZephAcpAgentState {
     ) -> Self {
         let lsp_config = zeph_core::config::AcpLspConfig::default();
         let max_diag_files = lsp_config.max_diagnostic_files;
+        let reaper_cancel = CancellationToken::new();
+        let task_supervisor = TaskSupervisor::new(reaper_cancel.clone());
         Self {
             spawner,
             sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -547,7 +552,8 @@ impl ZephAcpAgentState {
             max_history: 100,
             lsp_config,
             diagnostics_cache: Arc::new(RwLock::new(DiagnosticsCache::new(max_diag_files))),
-            reaper_cancel: CancellationToken::new(),
+            reaper_cancel,
+            task_supervisor,
             additional_directories_allow: Vec::new(),
             auth_methods_config: vec![zeph_core::config::AcpAuthMethod::Agent],
             timeouts: zeph_config::AcpTimeoutsConfig::default(),
@@ -664,8 +670,7 @@ impl ZephAcpAgentState {
     /// Spawn a background task that periodically evicts idle sessions.
     ///
     /// The task runs until the agent's `reaper_cancel` token is cancelled.
-    /// Tracked via a `tokio::spawn` (not `cx.spawn`) because it must survive
-    /// individual connection teardowns in HTTP/WS mode.
+    /// Registered in `task_supervisor` for lifecycle observability.
     ///
     /// Note: sessions evicted by the idle reaper are forcibly removed without sending a
     /// cumulative usage summary. Only graceful `do_close_session` emits a final `UsageUpdate`.
@@ -673,46 +678,56 @@ impl ZephAcpAgentState {
         let sessions = Arc::clone(&self.sessions);
         let idle_timeout = self.idle_timeout;
         let cancel = self.reaper_cancel.clone();
-        let span = tracing::info_span!("acp.session.reap");
-        tokio::spawn(
-            async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
-                interval.tick().await; // skip first tick
-                loop {
-                    tokio::select! {
-                        biased;
-                        () = cancel.cancelled() => break,
-                        _ = interval.tick() => {}
-                    }
-                    let now_ms = u64::try_from(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis(),
-                    )
-                    .unwrap_or(u64::MAX);
-                    let idle_timeout_ms =
-                        u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX);
-                    let expired: Vec<acp::schema::SessionId> = sessions
-                        .lock()
-                        .iter()
-                        .filter(|(_, e)| {
-                            let idle_ms =
-                                now_ms.saturating_sub(e.last_active_ms.load(Ordering::Relaxed));
-                            e.output_rx.lock().is_some() && idle_ms > idle_timeout_ms
-                        })
-                        .map(|(id, _)| id.clone())
-                        .collect();
-                    for id in expired {
-                        if let Some(entry) = sessions.lock().remove(&id) {
-                            entry.cancel_signal.notify_one();
-                            tracing::debug!(session_id = %id, "evicted idle ACP session (timeout)");
+        self.task_supervisor.spawn(TaskDescriptor {
+            name: "acp_idle_reaper",
+            restart: RestartPolicy::Restart {
+                max: 0,
+                base_delay: std::time::Duration::from_secs(1),
+            },
+            factory: move || {
+                let sessions = Arc::clone(&sessions);
+                let cancel = cancel.clone();
+                async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
+                    interval.tick().await; // skip first tick
+                    loop {
+                        tokio::select! {
+                            biased;
+                            () = cancel.cancelled() => break,
+                            _ = interval.tick() => {}
+                        }
+                        let now_ms = u64::try_from(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis(),
+                        )
+                        .unwrap_or(u64::MAX);
+                        let idle_timeout_ms =
+                            u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX);
+                        let expired: Vec<acp::schema::SessionId> = sessions
+                            .lock()
+                            .iter()
+                            .filter(|(_, e)| {
+                                let idle_ms =
+                                    now_ms.saturating_sub(e.last_active_ms.load(Ordering::Relaxed));
+                                e.output_rx.lock().is_some() && idle_ms > idle_timeout_ms
+                            })
+                            .map(|(id, _)| id.clone())
+                            .collect();
+                        for id in expired {
+                            if let Some(entry) = sessions.lock().remove(&id) {
+                                entry.cancel_signal.notify_one();
+                                tracing::debug!(
+                                    session_id = %id,
+                                    "evicted idle ACP session (timeout)"
+                                );
+                            }
                         }
                     }
                 }
-            }
-            .instrument(span),
-        );
+            },
+        });
     }
 
     /// Cancel the idle reaper task.
@@ -745,6 +760,9 @@ impl ZephAcpAgentState {
 
         let (perm_gate, perm_handler) =
             AcpPermissionGate::new(Arc::clone(&conn), self.permission_file.clone());
+        // EXEMPT(#5144): per-session handler tied to connection lifetime; many concurrent
+        // sessions → static name collision under TaskSupervisor::spawn. Self-terminating
+        // when the connection or cancel_signal closes.
         tokio::spawn(perm_handler);
 
         let (fs_exec, fs_handler) = AcpFileExecutor::new(
@@ -756,6 +774,7 @@ impl ZephAcpAgentState {
             Some(perm_gate.clone()),
         )
         .await;
+        // EXEMPT(#5144): per-session handler, same reasoning as perm_handler above.
         tokio::spawn(fs_handler);
 
         let (shell_exec, shell_handler) = AcpShellExecutor::new(
@@ -764,6 +783,7 @@ impl ZephAcpAgentState {
             Some(perm_gate.clone()),
             self.timeouts.terminal_secs,
         );
+        // EXEMPT(#5144): per-session handler, same reasoning as perm_handler above.
         tokio::spawn(shell_handler);
 
         let lsp_provider = if ide_supports_lsp {
@@ -774,6 +794,7 @@ impl ZephAcpAgentState {
                 self.lsp_config.max_references,
                 self.lsp_config.max_workspace_symbols,
             );
+            // EXEMPT(#5144): per-session handler, same reasoning as perm_handler above.
             tokio::spawn(lsp_handler);
             Some(provider)
         } else {
@@ -1364,6 +1385,8 @@ impl ZephAcpAgentState {
         if let Some(ref store) = self.store {
             let sid = session_id.to_string();
             let store = store.clone();
+            // EXEMPT(#5144): short-lived independent DB write; many fire concurrently —
+            // unique-named supervisor entries would flood the registry with no lifecycle benefit.
             tokio::spawn(async move {
                 if let Err(e) = store.save_acp_event(&sid, "user_message", &text).await {
                     tracing::warn!(error = %e, "failed to persist user message");
@@ -2119,6 +2142,8 @@ impl ZephAcpAgentState {
                 if let Some(ref store) = self.store {
                     let sid = session_id.to_string();
                     let store = store.clone();
+                    // EXEMPT(#5144): fire-and-forget DB delete+recreate; independent per-session
+                    // operation — supervisor adds no meaningful lifecycle observability here.
                     tokio::spawn(async move {
                         if let Err(e) = store.delete_acp_session_checked(&sid).await {
                             tracing::warn!(error = %e, "failed to clear session history");
@@ -2472,6 +2497,8 @@ impl ZephAcpAgentState {
                     let sid = session_id.to_string();
                     let (event_type, payload) = session_update_to_event(&update);
                     let store = store.clone();
+                    // EXEMPT(#5144): high-frequency per-event DB write; supervising each unique
+                    // task floods the registry — independent, short-lived, errors are logged.
                     tokio::spawn(async move {
                         if let Err(e) = store.save_acp_event(&sid, event_type, &payload).await {
                             tracing::warn!(error = %e, "failed to persist session event");
@@ -2600,6 +2627,8 @@ impl ZephAcpAgentState {
             let store = self.store.clone();
             let title_max_chars = self.title_max_chars;
             let sessions = Arc::clone(&self.sessions);
+            // EXEMPT(#5144): one-off LLM title generation per new session; already has a 15s
+            // timeout, errors are logged. Unique-naming each session's task floods the registry.
             tokio::spawn(async move {
                 let prompt = format!(
                     "Generate a concise 5-7 word title for a conversation that starts \

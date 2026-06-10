@@ -106,19 +106,37 @@ async fn run_foreground(
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    let sched_cancel = tokio_util::sync::CancellationToken::new();
+    let sched_supervisor = zeph_common::TaskSupervisor::new(sched_cancel.clone());
+
     // Gracefully shut down on SIGTERM/SIGINT.
-    tokio::spawn(async move {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-        let mut sigint =
-            signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
-        tokio::select! {
-            _ = sigterm.recv() => tracing::info!("received SIGTERM"),
-            _ = sigint.recv() => tracing::info!("received SIGINT"),
-        }
-        let _ = shutdown_tx.send(true);
-    });
+    {
+        let signal_fut = async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+            tokio::select! {
+                _ = sigterm.recv() => tracing::info!("received SIGTERM"),
+                _ = sigint.recv() => tracing::info!("received SIGINT"),
+            }
+            let _ = shutdown_tx.send(true);
+        };
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(signal_fut)));
+        sched_supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "sched_daemon_signal",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+    }
 
     let (mut scheduler, ctrl_tx) = zeph_scheduler::Scheduler::new(store, shutdown_rx);
     scheduler = scheduler.with_reentry_defense(
@@ -141,7 +159,22 @@ async fn run_foreground(
         let backend = std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
         let durable_cfg = std::sync::Arc::new(config.durable.clone());
         let (writer_actor, writer_handle) = zeph_durable::JournalWriter::new(local, &durable_cfg);
-        tokio::spawn(writer_actor.run());
+        {
+            let writer_fut = writer_actor.run();
+            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(writer_fut)));
+            sched_supervisor.spawn(zeph_common::TaskDescriptor {
+                name: "journal_writer",
+                restart: zeph_common::RestartPolicy::RunOnce,
+                factory: move || {
+                    let f = cell.lock().take();
+                    async move {
+                        if let Some(f) = f {
+                            f.await;
+                        }
+                    }
+                },
+            });
+        }
         let adapter = zeph_scheduler::durable::SchedulerDurableAdapter::new(
             backend,
             writer_handle,
@@ -163,9 +196,14 @@ async fn run_foreground(
     // Load periodic/one-shot tasks declared in [scheduler.tasks].
     crate::scheduler::load_config_tasks(&config.scheduler.tasks, &ctrl_tx);
 
-    zeph_scheduler::run_foreground(scheduler, &daemon_cfg)
+    let result = zeph_scheduler::run_foreground(scheduler, &daemon_cfg)
         .await
-        .context("scheduler daemon exited with error")
+        .context("scheduler daemon exited with error");
+    sched_cancel.cancel();
+    sched_supervisor
+        .shutdown_all(std::time::Duration::from_secs(5))
+        .await;
+    result
 }
 
 fn print_status_human(status: &zeph_scheduler::DaemonStatus) {

@@ -682,6 +682,7 @@ async fn check_mcp_server(
 
     let entry_clone = entry;
     let handle = tokio::spawn(async move {
+        // EXEMPT(#5143): immediately awaited at :692 to catch panics; one-off CLI check
         tokio::time::timeout(
             Duration::from_secs(mcp_timeout_secs),
             manager.add_server(&entry_clone),

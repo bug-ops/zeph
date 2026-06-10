@@ -45,6 +45,8 @@ use dashmap::DashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 #[cfg(feature = "acp-http")]
 use tokio::sync::{Mutex, broadcast};
+#[cfg(feature = "acp-http")]
+use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
 #[cfg(feature = "acp-http")]
 use axum::Json;
@@ -197,6 +199,8 @@ pub struct AcpHttpState {
     pub store: Option<Arc<SqliteStore>>,
     pub(crate) started_at: Instant,
     pub(crate) ready: Arc<AtomicBool>,
+    /// Supervisor for long-lived HTTP-level background tasks (reaper).
+    task_supervisor: Arc<TaskSupervisor>,
 }
 
 #[cfg(feature = "acp-http")]
@@ -209,6 +213,8 @@ impl AcpHttpState {
     ///
     /// [`mark_ready`]: AcpHttpState::mark_ready
     pub fn new(spawner: SendAgentSpawner, server_config: AcpServerConfig) -> Self {
+        let reaper_cancel = tokio_util::sync::CancellationToken::new();
+        let task_supervisor = Arc::new(TaskSupervisor::new(reaper_cancel));
         Self {
             connections: Arc::new(DashMap::new()),
             spawner,
@@ -217,6 +223,7 @@ impl AcpHttpState {
             store: None,
             started_at: Instant::now(),
             ready: Arc::new(AtomicBool::new(false)),
+            task_supervisor,
         }
     }
 
@@ -281,12 +288,22 @@ impl AcpHttpState {
     /// Spawn a background task that reaps idle connections every 60 seconds.
     pub fn start_reaper(&self) {
         let connections = Arc::clone(&self.connections);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_mins(1));
-            loop {
-                interval.tick().await;
-                connections.retain(|_, handle| !handle.is_expired());
-            }
+        self.task_supervisor.spawn(TaskDescriptor {
+            name: "acp_http_reaper",
+            restart: RestartPolicy::Restart {
+                max: 0,
+                base_delay: Duration::from_secs(1),
+            },
+            factory: move || {
+                let connections = Arc::clone(&connections);
+                async move {
+                    let mut interval = tokio::time::interval(Duration::from_mins(1));
+                    loop {
+                        interval.tick().await;
+                        connections.retain(|_, handle| !handle.is_expired());
+                    }
+                }
+            },
         });
     }
 }
@@ -377,6 +394,8 @@ pub(crate) fn create_connection(
 
     let (tx, _) = broadcast::channel(256);
     let tx2 = tx.clone();
+    // EXEMPT(#5144): per-connection SSE reader pump; self-terminating when the agent
+    // thread closes the pipe. Per-connection naming would flood the registry.
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {

@@ -60,6 +60,7 @@ pub(crate) fn spawn_elicitation_bridge(
     cancel_signal: Arc<tokio::sync::Notify>,
     timeout_secs: u64,
 ) -> tokio::task::JoinHandle<()> {
+    // EXEMPT(#5144): returns JoinHandle by contract; per-session lifetime via cancel_signal.
     tokio::spawn(async move {
         loop {
             tokio::select! {

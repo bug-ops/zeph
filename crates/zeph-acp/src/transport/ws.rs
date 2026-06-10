@@ -131,6 +131,8 @@ async fn handle_ws(socket: WebSocket, state: AcpHttpState) {
     let state_cleanup = state.clone();
 
     // Read task: receives WS frames, forwards text to agent, handles ping/pong/close.
+    // EXEMPT(#5144): connection-scoped tasks joined locally via tokio::select!/timeout;
+    // TaskSupervisor::spawn returns no joinable handle — migrating breaks the join semantics.
     let read_task = tokio::spawn(async move {
         let mut ping_tick = tokio::time::interval(WS_PING_INTERVAL);
         let mut last_pong_at = tokio::time::Instant::now();
@@ -189,6 +191,7 @@ async fn handle_ws(socket: WebSocket, state: AcpHttpState) {
     });
 
     // Agent-to-WS task: reads agent output lines and enqueues text frames.
+    // EXEMPT(#5144): see read_task — connection-scoped, joined via select!.
     let frame_tx_agent = frame_tx;
     let agent_task = tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
@@ -200,6 +203,7 @@ async fn handle_ws(socket: WebSocket, state: AcpHttpState) {
     });
 
     // Write task: drains the frame channel and sends to the WS sink.
+    // EXEMPT(#5144): see read_task — connection-scoped, awaited via timeout below.
     let write_task = tokio::spawn(async move {
         while let Some(frame) = frame_rx.recv().await {
             let msg = match frame {

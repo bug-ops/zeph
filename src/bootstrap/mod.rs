@@ -783,6 +783,7 @@ pub fn spawn_embed_backfill(
     >,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // EXEMPT(#5143): returns JoinHandle by documented public contract; doc-test depends on this signature
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             memory.embed_missing(progress_tx.clone()),

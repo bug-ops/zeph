@@ -220,6 +220,7 @@ fn broadcast_to_mpsc<T: Clone + Send + 'static>(
 ) -> tokio::sync::mpsc::Receiver<T> {
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
+        // EXEMPT(#5144): reusable adapter; self-terminating on cancel/broadcast close
         loop {
             tokio::select! {
                 () = cancel.cancelled() => break,
@@ -271,12 +272,26 @@ async fn build_acp_deps(
             .overflow
             .retention_days
             .saturating_mul(86_400);
-        tokio::spawn(async move {
-            match sqlite.cleanup_overflow(retention_secs).await {
-                Ok(n) if n > 0 => tracing::info!("cleaned up {n} stale overflow entries"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("overflow cleanup failed: {e}"),
-            }
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some((sqlite, retention_secs))));
+        acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "overflow_cleanup",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                let args = cell.lock().take();
+                async move {
+                    if let Some((sqlite, retention_secs)) = args {
+                        match sqlite.cleanup_overflow(retention_secs).await {
+                            Ok(n) if n > 0 => {
+                                tracing::info!("cleaned up {n} stale overflow entries");
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("overflow cleanup failed: {e}"),
+                        }
+                    } else {
+                        tracing::warn!("overflow_cleanup factory called more than once");
+                    }
+                }
+            },
         });
     }
 
@@ -326,7 +341,23 @@ async fn build_acp_deps(
         let (egress_tx, egress_rx) = tokio::sync::mpsc::channel(256);
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         scrape_executor = scrape_executor.with_egress_tx(egress_tx, dropped);
-        tokio::spawn(agent_setup::drain_egress_events(egress_rx, None));
+        {
+            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(egress_rx)));
+            acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                name: "egress_drain",
+                restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                factory: move || {
+                    let rx = cell.lock().take();
+                    async move {
+                        if let Some(rx) = rx {
+                            agent_setup::drain_egress_events(rx, None).await;
+                        } else {
+                            tracing::warn!("egress_drain factory called more than once");
+                        }
+                    }
+                },
+            });
+        }
     }
     let mut acp_audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>> = None;
     if config.tools.audit.enabled
@@ -422,20 +453,44 @@ async fn build_acp_deps(
 
     {
         let skill_tx = skill_reload_tx.clone();
-        tokio::spawn(async move {
-            let mut rx = mpsc_skill_rx;
-            while let Some(ev) = rx.recv().await {
-                let _ = skill_tx.send(ev);
-            }
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(mpsc_skill_rx)));
+        acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "skill_reload_fwd",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                let rx = cell.lock().take();
+                let tx = skill_tx.clone();
+                async move {
+                    if let Some(mut rx) = rx {
+                        while let Some(ev) = rx.recv().await {
+                            let _ = tx.send(ev);
+                        }
+                    } else {
+                        tracing::warn!("skill_reload_fwd factory called more than once");
+                    }
+                }
+            },
         });
     }
     {
         let cfg_tx = config_reload_tx.clone();
-        tokio::spawn(async move {
-            let mut rx = mpsc_config_rx;
-            while let Some(ev) = rx.recv().await {
-                let _ = cfg_tx.send(ev);
-            }
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(mpsc_config_rx)));
+        acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "config_reload_fwd",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || {
+                let rx = cell.lock().take();
+                let tx = cfg_tx.clone();
+                async move {
+                    if let Some(mut rx) = rx {
+                        while let Some(ev) = rx.recv().await {
+                            let _ = tx.send(ev);
+                        }
+                    } else {
+                        tracing::warn!("config_reload_fwd factory called more than once");
+                    }
+                }
+            },
         });
     }
 
@@ -452,26 +507,60 @@ async fn build_acp_deps(
         };
 
         let five_signal = memory.five_signal_runtime();
-        match crate::scheduler::init_scheduler(config, shutdown_rx.clone(), exp_deps, five_signal)
-            .await
+        match crate::scheduler::init_scheduler(
+            config,
+            shutdown_rx.clone(),
+            exp_deps,
+            five_signal,
+            Some(&acp_mem_supervisor),
+        )
+        .await
         {
             Some(result) => {
                 let exec = std::sync::Arc::new(result.executor);
-                let mut custom_rx = result.custom_rx;
+                let custom_rx = result.custom_rx;
                 let (ctx, _) = tokio::sync::broadcast::channel::<String>(broadcast_cap);
                 let ctx_clone = ctx.clone();
-                tokio::spawn(async move {
-                    while let Some(ev) = custom_rx.recv().await {
-                        let _ = ctx_clone.send(ev);
-                    }
+                let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(custom_rx)));
+                acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                    name: "sched_custom_fwd",
+                    restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                    factory: move || {
+                        let rx = cell.lock().take();
+                        let tx = ctx_clone.clone();
+                        async move {
+                            if let Some(mut rx) = rx {
+                                while let Some(ev) = rx.recv().await {
+                                    let _ = tx.send(ev);
+                                }
+                            } else {
+                                tracing::warn!("sched_custom_fwd factory called more than once");
+                            }
+                        }
+                    },
                 });
-                let update_tx = if let Some(mut update_rx) = result.update_rx {
+                let update_tx = if let Some(update_rx) = result.update_rx {
                     let (utx, _) = tokio::sync::broadcast::channel::<String>(broadcast_cap);
                     let utx_clone = utx.clone();
-                    tokio::spawn(async move {
-                        while let Some(ev) = update_rx.recv().await {
-                            let _ = utx_clone.send(ev);
-                        }
+                    let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(update_rx)));
+                    acp_mem_supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+                        name: "sched_update_fwd",
+                        restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+                        factory: move || {
+                            let rx = cell.lock().take();
+                            let tx = utx_clone.clone();
+                            async move {
+                                if let Some(mut rx) = rx {
+                                    while let Some(ev) = rx.recv().await {
+                                        let _ = tx.send(ev);
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        "sched_update_fwd factory called more than once"
+                                    );
+                                }
+                            }
+                        },
                     });
                     Some(utx)
                 } else {
@@ -720,6 +809,7 @@ async fn spawn_acp_agent(
             let adapter_cancel_clone = adapter_cancel.clone();
             let cancel_signal_clone = Arc::clone(&cancel_signal);
             tokio::spawn(async move {
+                // EXEMPT(#5144): per-session cancel bridge; self-terminating single await; name collision risk under spawn
                 cancel_signal_clone.notified().await;
                 adapter_cancel_clone.cancel();
             });
@@ -1445,7 +1535,7 @@ pub(crate) async fn run_acp_http_server(
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("ACP HTTP server listening on {bind_addr}");
-    let server_task = tokio::spawn(async move { ::axum::serve(listener, router).await });
+    let server_task = tokio::spawn(async move { ::axum::serve(listener, router).await }); // EXEMPT(#5144): awaited at end of fn; joinable lifecycle needed
 
     let (deps, _keepalive) = match Box::pin(build_acp_deps(
         config_path,
@@ -1677,6 +1767,7 @@ mod tests {
             let cancel_signal = std::sync::Arc::clone(&cancel_signal);
             let adapter_cancel = adapter_cancel.clone();
             tokio::spawn(async move {
+                // EXEMPT(#5144): test-only spawn
                 cancel_signal.notified().await;
                 adapter_cancel.cancel();
             });

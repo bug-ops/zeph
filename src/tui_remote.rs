@@ -26,8 +26,11 @@ pub(crate) async fn run_tui_remote(
     let (user_tx, mut user_rx) = tokio::sync::mpsc::channel::<String>(32);
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(256);
 
+    let tui_cancel = tokio_util::sync::CancellationToken::new();
+    let tui_supervisor = zeph_common::TaskSupervisor::new(tui_cancel.clone());
+
     let agent_tx_pump = agent_tx.clone();
-    tokio::spawn(async move {
+    let sse_fut = async move {
         while let Some(text) = user_rx.recv().await {
             let message = zeph_a2a::Message::user_text(&text);
             let params = zeph_a2a::SendMessageParams {
@@ -104,6 +107,20 @@ pub(crate) async fn run_tui_remote(
                 }
             }
         }
+    };
+
+    let sse_cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(sse_fut)));
+    tui_supervisor.spawn(zeph_common::TaskDescriptor {
+        name: "a2a_sse_pump",
+        restart: zeph_common::RestartPolicy::RunOnce,
+        factory: move || {
+            let f = sse_cell.lock().take();
+            async move {
+                if let Some(f) = f {
+                    f.await;
+                }
+            }
+        },
     });
 
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
@@ -127,5 +144,9 @@ pub(crate) async fn run_tui_remote(
     tui_app.set_show_source_labels(config.tui.show_source_labels);
 
     zeph_tui::run_tui(tui_app, event_rx).await?;
+    tui_cancel.cancel();
+    tui_supervisor
+        .shutdown_all(std::time::Duration::from_secs(5))
+        .await;
     Ok(())
 }
