@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use zeph_common::TaskSupervisor;
 
 type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -54,16 +55,47 @@ struct Heartbeat {
     d: Option<u64>,
 }
 
-/// Spawn the gateway connection loop, returning a handle and a receiver of incoming messages.
+/// Spawn the gateway connection loop, returning a receiver of incoming messages.
 ///
-/// The caller should abort the handle when the gateway is no longer needed.
-#[must_use]
+/// When `supervisor` is provided the task is registered as `"discord_gateway"` with
+/// `RestartPolicy::Restart { max: 5, base_delay: 2s }` so it is tracked and restarted
+/// on panic. Without a supervisor the task falls back to a plain `tokio::spawn` with a
+/// warning — acceptable in tests and early-startup paths before a supervisor is available.
+///
+/// Returns a `JoinHandle` for backwards compatibility; the handle is `None` when the task
+/// was registered with a supervisor (lifecycle is owned by the supervisor in that case).
 pub fn spawn_gateway(
     token: String,
-) -> (tokio::task::JoinHandle<()>, mpsc::Receiver<IncomingMessage>) {
+    supervisor: Option<&TaskSupervisor>,
+) -> (
+    Option<tokio::task::JoinHandle<()>>,
+    mpsc::Receiver<IncomingMessage>,
+) {
     let (tx, rx) = mpsc::channel(64);
-    let handle = tokio::spawn(gateway_loop(token, tx));
-    (handle, rx)
+    if let Some(sup) = supervisor {
+        let tx_for_factory = tx;
+        let token_for_factory = token;
+        sup.spawn(zeph_common::TaskDescriptor {
+            name: "discord_gateway",
+            restart: zeph_common::RestartPolicy::Restart {
+                max: 5,
+                base_delay: Duration::from_secs(2),
+            },
+            factory: move || {
+                let token = token_for_factory.clone();
+                let tx = tx_for_factory.clone();
+                async move { gateway_loop(token, tx).await }
+            },
+        });
+        (None, rx)
+    } else {
+        tracing::warn!(
+            "discord gateway spawned without a TaskSupervisor — task is untracked and will \
+             not be restarted on panic; attach a supervisor via with_supervisor() for production use"
+        );
+        let handle = tokio::spawn(gateway_loop(token, tx));
+        (Some(handle), rx)
+    }
 }
 
 async fn gateway_loop(token: String, tx: mpsc::Sender<IncomingMessage>) {
@@ -364,9 +396,11 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            let (handle, _rx) = spawn_gateway("invalid-token".into());
-            handle.abort();
-            let _ = handle.await;
+            let (handle, _rx) = spawn_gateway("invalid-token".into(), None);
+            if let Some(h) = handle {
+                h.abort();
+                let _ = h.await;
+            }
         });
     }
 

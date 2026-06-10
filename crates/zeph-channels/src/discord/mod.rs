@@ -9,6 +9,7 @@ pub mod rest;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
+use zeph_common::TaskSupervisor;
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
 };
@@ -23,20 +24,25 @@ const EDIT_THROTTLE: Duration = Duration::from_millis(1500);
 pub struct DiscordChannel {
     rx: mpsc::Receiver<IncomingMessage>,
     rest: rest::RestClient,
-    /// Gateway WebSocket listener. Kept alive for the duration of the channel session.
-    _gateway_handle: tokio::task::JoinHandle<()>,
+    /// Gateway WebSocket listener handle. `None` when the gateway is supervised by
+    /// a [`TaskSupervisor`] (lifecycle is owned by the supervisor in that case).
+    _gateway_handle: Option<tokio::task::JoinHandle<()>>,
     channel_id: Option<String>,
     allowed_user_ids: Vec<String>,
     allowed_role_ids: Vec<String>,
     allowed_channel_ids: Vec<String>,
     buffer: StreamingBuffer,
     message_id: Option<String>,
+    /// Optional supervisor used to register discord tasks in the workspace-wide task
+    /// registry with automatic restart on panic and lifecycle observability.
+    supervisor: Option<TaskSupervisor>,
 }
 
 impl std::fmt::Debug for DiscordChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiscordChannel")
             .field("channel_id", &self.channel_id)
+            .field("supervisor", &self.supervisor.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -44,23 +50,24 @@ impl std::fmt::Debug for DiscordChannel {
 impl DiscordChannel {
     /// Create a new Discord channel and spawn the gateway listener.
     ///
-    /// Slash commands are registered at startup in a background task (fire-and-forget).
+    /// Slash commands are registered at startup in a supervised fire-and-forget task.
     /// If registration fails, a warning is logged and the bot continues normally.
+    ///
+    /// When `supervisor` is provided the gateway and slash-command tasks are registered
+    /// in the workspace-wide task registry with automatic restart on panic and lifecycle
+    /// observability. Without a supervisor both tasks fall back to plain `tokio::spawn`
+    /// with a warning — acceptable in tests but not recommended for production.
     #[must_use]
     pub fn new(
         token: String,
         allowed_user_ids: Vec<String>,
         allowed_role_ids: Vec<String>,
         allowed_channel_ids: Vec<String>,
+        supervisor: Option<&TaskSupervisor>,
     ) -> Self {
-        let (gateway_handle, rx) = gateway::spawn_gateway(token.clone());
-        let rest = rest::RestClient::new(token);
-        // Register slash commands asynchronously; failure is non-fatal and does not
-        // affect message delivery, so the handle is intentionally not tracked.
-        let rest_for_reg = rest.clone();
-        let _handle = tokio::spawn(async move {
-            rest_for_reg.register_slash_commands().await;
-        });
+        let rest = rest::RestClient::new(token.clone());
+        let (gateway_handle, rx) = gateway::spawn_gateway(token, supervisor);
+        Self::register_slash_commands(rest.clone(), supervisor);
         Self {
             rx,
             rest,
@@ -71,6 +78,29 @@ impl DiscordChannel {
             allowed_channel_ids,
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_id: None,
+            supervisor: None,
+        }
+    }
+
+    /// Register Discord slash commands in a supervised fire-and-forget task.
+    ///
+    /// When a supervisor is provided the task is registered as `"discord_register_commands"`
+    /// so it is visible in TUI status. Without a supervisor falls back to plain `tokio::spawn`.
+    fn register_slash_commands(rest: rest::RestClient, supervisor: Option<&TaskSupervisor>) {
+        let factory = move || {
+            let rest = rest.clone();
+            async move {
+                rest.register_slash_commands().await;
+            }
+        };
+        if let Some(sup) = supervisor {
+            sup.spawn(zeph_common::TaskDescriptor {
+                name: "discord_register_commands",
+                restart: zeph_common::RestartPolicy::RunOnce,
+                factory,
+            });
+        } else {
+            tokio::spawn(factory());
         }
     }
 
@@ -363,13 +393,14 @@ mod tests {
         DiscordChannel {
             rx,
             rest,
-            _gateway_handle: tokio::spawn(std::future::pending()),
+            _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_role_ids: vec![],
             allowed_channel_ids: vec![],
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_id: None,
+            supervisor: None,
         }
     }
 
@@ -491,13 +522,14 @@ mod tests {
         let mut ch = DiscordChannel {
             rx,
             rest,
-            _gateway_handle: tokio::spawn(std::future::pending()),
+            _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_role_ids: vec![],
             allowed_channel_ids: vec![],
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_id: None,
+            supervisor: None,
         };
         tx.try_send(make_incoming("user1", "ch42", vec![])).unwrap();
         let msg = ch.try_recv().unwrap();
@@ -512,13 +544,14 @@ mod tests {
         let mut ch = DiscordChannel {
             rx,
             rest,
-            _gateway_handle: tokio::spawn(std::future::pending()),
+            _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
             allowed_user_ids: vec!["allowed-user".into()],
             allowed_role_ids: vec![],
             allowed_channel_ids: vec![],
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_id: None,
+            supervisor: None,
         };
         tx.try_send(make_incoming("unauthorized", "ch1", vec![]))
             .unwrap();
@@ -576,13 +609,14 @@ mod tests {
         let mut ch = DiscordChannel {
             rx,
             rest,
-            _gateway_handle: tokio::spawn(std::future::pending()),
+            _gateway_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: Some("ch1".into()),
             allowed_user_ids: vec!["allowed-user".into()],
             allowed_role_ids: vec![],
             allowed_channel_ids: vec![],
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_id: None,
+            supervisor: None,
         };
         // Unauthorized message first, then authorized "yes".
         tx.try_send(make_incoming("intruder", "ch1", vec![]))

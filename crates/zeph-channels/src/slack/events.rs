@@ -3,6 +3,8 @@
 
 //! Slack Events API webhook handler with request signature verification.
 
+use std::time::Duration;
+
 use axum::{
     Router,
     extract::State,
@@ -14,6 +16,7 @@ use serde_json::Value;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
+use zeph_common::TaskSupervisor;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -43,10 +46,12 @@ struct EventState {
 
 /// Spawn the Slack Events API webhook server.
 ///
-/// Returns the server's `JoinHandle` alongside the message receiver. The caller
-/// is responsible for keeping the handle alive (e.g. storing it in the owning
-/// struct) for the duration of the channel session.
-#[must_use]
+/// When `supervisor` is provided the task is registered as `"slack_events_server"` with
+/// `RestartPolicy::Restart { max: 5, base_delay: 2s }` so it is tracked and restarted
+/// on panic. Without a supervisor the task falls back to a plain `tokio::spawn` with a
+/// warning — acceptable in tests and early-startup paths before a supervisor is available.
+///
+/// Returns an `Option<JoinHandle>` (`None` when supervised) alongside the message receiver.
 pub fn spawn_event_server(
     host: String,
     port: u16,
@@ -54,7 +59,11 @@ pub fn spawn_event_server(
     bot_user_id: String,
     allowed_user_ids: Vec<String>,
     allowed_channel_ids: Vec<String>,
-) -> (tokio::task::JoinHandle<()>, mpsc::Receiver<IncomingMessage>) {
+    supervisor: Option<&TaskSupervisor>,
+) -> (
+    Option<tokio::task::JoinHandle<()>>,
+    mpsc::Receiver<IncomingMessage>,
+) {
     let (tx, rx) = mpsc::channel(64);
     let state = EventState {
         signing_secret,
@@ -64,25 +73,46 @@ pub fn spawn_event_server(
         allowed_channel_ids,
     };
 
-    let handle = tokio::spawn(async move {
-        let app = Router::new()
-            .route("/slack/events", post(handle_event))
-            .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
-            .with_state(state);
-        let listener = match tokio::net::TcpListener::bind(format!("{host}:{port}")).await {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::error!("failed to bind slack events server on port {port}: {e}");
-                return;
+    let factory = move || {
+        let state = state.clone();
+        let host = host.clone();
+        async move {
+            let app = Router::new()
+                .route("/slack/events", post(handle_event))
+                .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
+                .with_state(state);
+            let listener = match tokio::net::TcpListener::bind(format!("{host}:{port}")).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::error!("failed to bind slack events server on port {port}: {e}");
+                    return;
+                }
+            };
+            tracing::info!("slack events server listening on port {port}");
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!("slack events server error: {e}");
             }
-        };
-        tracing::info!("slack events server listening on port {port}");
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!("slack events server error: {e}");
         }
-    });
+    };
 
-    (handle, rx)
+    if let Some(sup) = supervisor {
+        sup.spawn(zeph_common::TaskDescriptor {
+            name: "slack_events_server",
+            restart: zeph_common::RestartPolicy::Restart {
+                max: 5,
+                base_delay: Duration::from_secs(2),
+            },
+            factory,
+        });
+        (None, rx)
+    } else {
+        tracing::warn!(
+            "slack events server spawned without a TaskSupervisor — task is untracked and will \
+             not be restarted on panic; attach a supervisor via with_supervisor() for production use"
+        );
+        let handle = tokio::spawn(factory());
+        (Some(handle), rx)
+    }
 }
 
 async fn handle_event(

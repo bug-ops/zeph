@@ -39,6 +39,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `refactor(channels)`: migrate Discord gateway, Discord register-commands, and Slack events server
+  raw `tokio::spawn` sites in `zeph-channels` to `TaskSupervisor`; Discord and Slack adapters now
+  accept an optional supervisor via constructor threading from `create_channel_inner`; gateway/server
+  loops use `spawn_restartable` with `Restart{max:5,base_delay:2s}`, register-commands uses `RunOnce`;
+  `cli.rs` stdin reader documented as explicit spec-039 exception (#5146).
+- `refactor(core)`: migrate `JournalWriter` raw `tokio::spawn` in `agent/plan.rs` to
+  `TaskSupervisor` using the `Arc<Mutex<Option<Fut>>>` RunOnce cell pattern; `durable_writer_task`
+  type updated from `JoinHandle<()>` to `TaskHandle`; INV-4 flush-before-abort ordering preserved;
+  double-spawn-on-replay guard unchanged (#5147).
+
 - `fix(channels)`: `TelegramChannel` now receives a `TaskSupervisor` at construction time; the
   listener task is registered under supervision so it appears in TUI status, is tracked in metrics,
   and is gracefully aborted during shutdown (closes #5185)

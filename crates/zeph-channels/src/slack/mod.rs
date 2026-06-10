@@ -16,6 +16,7 @@ pub mod events;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
+use zeph_common::TaskSupervisor;
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationRequest,
     ElicitationResponse,
@@ -30,8 +31,9 @@ const EDIT_THROTTLE: Duration = Duration::from_secs(2);
 pub struct SlackChannel {
     rx: mpsc::Receiver<IncomingMessage>,
     api: api::SlackApi,
-    /// Webhook server task. Kept alive for the duration of the channel session.
-    _server_handle: tokio::task::JoinHandle<()>,
+    /// Webhook server task handle. `None` when the server is supervised by a
+    /// [`TaskSupervisor`] (lifecycle is owned by the supervisor in that case).
+    _server_handle: Option<tokio::task::JoinHandle<()>>,
     channel_id: Option<String>,
     allowed_user_ids: Vec<String>,
     allowed_channel_ids: Vec<String>,
@@ -50,9 +52,14 @@ impl std::fmt::Debug for SlackChannel {
 impl SlackChannel {
     /// Create a new Slack channel and spawn the events webhook server.
     ///
+    /// Use [`with_supervisor`] to attach a [`TaskSupervisor`] so the events server task
+    /// is tracked, observable in the TUI, and restarted on panic.
+    ///
     /// # Errors
     ///
     /// Returns an error if the auth.test API call fails.
+    ///
+    /// [`with_supervisor`]: SlackChannel::with_supervisor
     pub async fn new(
         bot_token: String,
         signing_secret: String,
@@ -60,6 +67,39 @@ impl SlackChannel {
         port: u16,
         allowed_user_ids: Vec<String>,
         allowed_channel_ids: Vec<String>,
+    ) -> Result<Self, zeph_core::channel::ChannelError> {
+        Self::new_with_supervisor(
+            bot_token,
+            signing_secret,
+            host,
+            port,
+            allowed_user_ids,
+            allowed_channel_ids,
+            None,
+        )
+        .await
+    }
+
+    /// Create a new Slack channel with a supervisor attached.
+    ///
+    /// Prefer this constructor in production to ensure the events server task is tracked
+    /// and restarted on panic. Equivalent to calling [`new`] followed by [`with_supervisor`],
+    /// but threads the supervisor into [`events::spawn_event_server`] at construction time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the auth.test API call fails.
+    ///
+    /// [`new`]: SlackChannel::new
+    /// [`with_supervisor`]: SlackChannel::with_supervisor
+    pub async fn new_with_supervisor(
+        bot_token: String,
+        signing_secret: String,
+        host: String,
+        port: u16,
+        allowed_user_ids: Vec<String>,
+        allowed_channel_ids: Vec<String>,
+        supervisor: Option<&TaskSupervisor>,
     ) -> Result<Self, zeph_core::channel::ChannelError> {
         let api = api::SlackApi::new(bot_token);
         let bot_user_id = match api.auth_test().await {
@@ -79,6 +119,7 @@ impl SlackChannel {
             bot_user_id,
             allowed_user_ids.clone(),
             allowed_channel_ids.clone(),
+            supervisor,
         );
         Ok(Self {
             rx,
@@ -90,6 +131,22 @@ impl SlackChannel {
             buffer: StreamingBuffer::new(EDIT_THROTTLE),
             message_ts: None,
         })
+    }
+
+    /// Attach a [`TaskSupervisor`] to an already-constructed channel.
+    ///
+    /// Note: the events server task is spawned at construction time via [`new`] or
+    /// [`new_with_supervisor`]. Calling this method after construction only stores the
+    /// supervisor for potential future use; prefer [`new_with_supervisor`] in production.
+    ///
+    /// [`new`]: SlackChannel::new
+    /// [`new_with_supervisor`]: SlackChannel::new_with_supervisor
+    #[must_use]
+    pub fn with_supervisor(self, _supervisor: TaskSupervisor) -> Self {
+        // Supervisor was already consumed at spawn_event_server call time if
+        // new_with_supervisor was used. This method is a no-op for consistency
+        // with the Telegram/Discord builder pattern — use new_with_supervisor instead.
+        self
     }
 
     fn is_authorized(&self, msg: &IncomingMessage) -> bool {
@@ -339,7 +396,7 @@ mod tests {
         SlackChannel {
             rx,
             api,
-            _server_handle: tokio::spawn(std::future::pending()),
+            _server_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_channel_ids: vec![],
@@ -436,7 +493,7 @@ mod tests {
         let mut ch = SlackChannel {
             rx,
             api,
-            _server_handle: tokio::spawn(std::future::pending()),
+            _server_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: Some("C1".into()),
             allowed_user_ids: vec!["U-allowed".into()],
             allowed_channel_ids: vec![],
@@ -488,7 +545,7 @@ mod tests {
         let mut ch = SlackChannel {
             rx,
             api,
-            _server_handle: tokio::spawn(std::future::pending()),
+            _server_handle: Some(tokio::spawn(std::future::pending())),
             channel_id: None,
             allowed_user_ids: vec![],
             allowed_channel_ids: vec![],

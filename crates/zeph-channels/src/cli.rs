@@ -231,6 +231,15 @@ async fn run_piped_reader(mut history: Option<InputHistory>, tx: mpsc::Sender<Ch
 ///
 /// This makes `CliChannel::recv()` cancel-safe: messages buffered in the mpsc
 /// channel are never dropped when the `recv()` future is cancelled by `tokio::select!`.
+///
+/// # spec-039 exception
+///
+/// This site intentionally uses `tokio::spawn` directly rather than `TaskSupervisor`:
+/// the stdin reader is an interactive I/O task with process lifetime that cannot be
+/// restarted (stdin is a singleton OS resource) and no `TaskSupervisor` reaches
+/// `CliChannel` by design — the CLI path bypasses the channel builder's supervisor
+/// plumbing. This mirrors the existing `spawn_blocking` readline exceptions at
+/// cli.rs:161/463/518. A panic here terminates the process, which is correct behaviour.
 fn spawn_stdin_reader(
     is_tty: bool,
     history: Option<InputHistory>,

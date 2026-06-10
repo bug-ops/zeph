@@ -307,7 +307,24 @@ impl<C: crate::channel::Channel> Agent<C> {
             let backend =
                 std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
             let (writer_actor, handle) = zeph_durable::JournalWriter::new(local, &cfg);
-            let task_handle = tokio::spawn(async move { writer_actor.run().await });
+            let writer_fut = writer_actor.run();
+            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(writer_fut)));
+            let task_handle =
+                self.runtime
+                    .lifecycle
+                    .task_supervisor
+                    .spawn(zeph_common::TaskDescriptor {
+                        name: "journal_writer",
+                        restart: zeph_common::RestartPolicy::RunOnce,
+                        factory: move || {
+                            let f = cell.lock().take();
+                            async move {
+                                if let Some(f) = f {
+                                    f.await;
+                                }
+                            }
+                        },
+                    });
             self.services.orchestration.durable_backend = Some(backend);
             self.services.orchestration.durable_writer = Some(handle);
             self.services.orchestration.durable_writer_task = Some(task_handle);

@@ -162,7 +162,7 @@ pub(crate) struct TuiHandle {
 /// Create a channel and, in JSON mode, return the shared sink so callers can
 /// also install a [`zeph_core::json_event_layer::JsonEventLayer`] on the agent.
 /// When `supervisor` is `Some`, it is forwarded to channel adapters that support
-/// supervised task registration (currently [`zeph_channels::telegram::TelegramChannel`]).
+/// supervised task registration (Telegram, Discord, Slack).
 #[allow(clippy::unused_async)]
 pub(crate) async fn create_channel_inner(
     config: &Config,
@@ -184,6 +184,7 @@ pub(crate) async fn create_channel_inner(
             dc.allowed_user_ids.clone(),
             dc.allowed_role_ids.clone(),
             dc.allowed_channel_ids.clone(),
+            supervisor.as_ref(),
         );
         tracing::info!("running in Discord mode");
         return Ok((AnyChannel::Discord(channel), None));
@@ -194,13 +195,14 @@ pub(crate) async fn create_channel_inner(
         && let Some(bot_token) = &sl.bot_token
     {
         let signing_secret = sl.signing_secret.clone().unwrap_or_default();
-        let channel = SlackChannel::new(
+        let channel = SlackChannel::new_with_supervisor(
             bot_token.clone(),
             signing_secret,
             sl.webhook_host.clone(),
             sl.port,
             sl.allowed_user_ids.clone(),
             sl.allowed_channel_ids.clone(),
+            supervisor.as_ref(),
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
