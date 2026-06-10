@@ -511,6 +511,14 @@ impl LlmProvider for OllamaProvider {
             })
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(
+            name = "llm.embed_batch",
+            skip_all,
+            fields(provider = self.name(), model = self.embedding_model)
+        )
+    )]
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
         use crate::embed::truncate_for_embed;
 

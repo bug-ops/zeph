@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(channels)`: `TelegramChannel` now receives a `TaskSupervisor` at construction time; the
+  listener task is registered under supervision so it appears in TUI status, is tracked in metrics,
+  and is gracefully aborted during shutdown (closes #5185)
+- `fix(llm)`: `embed_batch` in `OllamaProvider` and `OpenAiProvider` now has a
+  `#[tracing::instrument]` span gated on the `profiling` feature, matching the pre-existing `embed`
+  span and the `compatible.rs` precedent; embedding operations are now visible in traces (closes #5113)
+- `fix(core)`: `handle_skills_command_as_string` and `handle_skills_confusability_as_string` in
+  `slash_commands.rs` are now instrumented with `#[tracing::instrument]` so `/skills` and
+  `/skills confusability` appear as named spans in traces (closes #5186)
 - `fix(llm)`: `ModelCache::save()` no longer blocks the tokio async thread on fsync+rename; wrapped
   in `spawn_blocking` across all four LLM backends (claude, openai, ollama, gemini) (closes #5129)
 - `fix(orchestration)`: `TopologyAdvisor::save()` no longer blocks the tokio thread during agent

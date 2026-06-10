@@ -11,6 +11,7 @@ use zeph_channels::discord::DiscordChannel;
 #[cfg(feature = "slack")]
 use zeph_channels::slack::SlackChannel;
 use zeph_channels::telegram::TelegramChannel;
+use zeph_common::TaskSupervisor;
 
 use crate::execution_mode::ExecutionMode;
 #[cfg(feature = "tui")]
@@ -160,11 +161,14 @@ pub(crate) struct TuiHandle {
 
 /// Create a channel and, in JSON mode, return the shared sink so callers can
 /// also install a [`zeph_core::json_event_layer::JsonEventLayer`] on the agent.
+/// When `supervisor` is `Some`, it is forwarded to channel adapters that support
+/// supervised task registration (currently [`zeph_channels::telegram::TelegramChannel`]).
 #[allow(clippy::unused_async)]
 pub(crate) async fn create_channel_inner(
     config: &Config,
     history: Option<CliHistory>,
     exec_mode: ExecutionMode,
+    supervisor: Option<TaskSupervisor>,
 ) -> anyhow::Result<(AnyChannel, Option<Arc<JsonEventSink>>)> {
     if exec_mode.json {
         let sink = Arc::new(JsonEventSink::new());
@@ -212,9 +216,11 @@ pub(crate) async fn create_channel_inner(
         let tg_cfg = config.telegram.as_ref().unwrap();
         let allowed = tg_cfg.allowed_users.clone();
         let stream_interval = std::time::Duration::from_millis(tg_cfg.stream_interval_ms);
-        let tg = TelegramChannel::new(token, allowed)
-            .with_stream_interval(stream_interval)
-            .start()?;
+        let mut tg = TelegramChannel::new(token, allowed).with_stream_interval(stream_interval);
+        if let Some(sup) = supervisor {
+            tg = tg.with_supervisor(sup);
+        }
+        let tg = tg.start()?;
         tracing::info!("running in Telegram mode");
         return Ok((AnyChannel::Telegram(tg), None));
     }
@@ -233,6 +239,7 @@ pub(crate) async fn create_channel_with_tui(
     tui_active: bool,
     history: Option<CliHistory>,
     exec_mode: ExecutionMode,
+    supervisor: Option<TaskSupervisor>,
 ) -> anyhow::Result<(AppChannel, Option<TuiHandle>, Option<Arc<JsonEventSink>>)> {
     if tui_active {
         let (user_tx, user_rx) = tokio::sync::mpsc::channel(32);
@@ -250,13 +257,13 @@ pub(crate) async fn create_channel_with_tui(
         };
         return Ok((AppChannel::Tui(channel), Some(handle), None));
     }
-    let (channel, sink) = create_channel_inner(config, history, exec_mode).await?;
+    let (channel, sink) = create_channel_inner(config, history, exec_mode, supervisor).await?;
     Ok((AppChannel::Standard(Box::new(channel)), None, sink))
 }
 
 #[cfg(test)]
 pub(crate) async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel> {
-    let (ch, _sink) = create_channel_inner(config, None, ExecutionMode::default()).await?;
+    let (ch, _sink) = create_channel_inner(config, None, ExecutionMode::default(), None).await?;
     Ok(ch)
 }
 

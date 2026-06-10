@@ -484,6 +484,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
+    #[tracing::instrument(skip_all, name = "core.agent.handle_skills_command")]
     async fn handle_skills_command_as_string(&mut self) -> Result<String, error::AgentError> {
         use std::collections::BTreeMap;
         use std::fmt::Write;
@@ -591,6 +592,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
+    #[tracing::instrument(skip_all, name = "core.agent.handle_skills_confusability")]
     async fn handle_skills_confusability_as_string(&mut self) -> Result<String, error::AgentError> {
         let threshold = self.services.skill.confusability_threshold;
         if threshold <= 0.0 {

@@ -970,6 +970,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(tokio::spawn(async move { warmup_provider(&p).await }))
     };
 
+    // Create the TaskSupervisor early so it can be wired into channel adapters (e.g.
+    // TelegramChannel) that need it at construction time. The shutdown bridge that
+    // connects shutdown_rx → mem_cancel is installed later, after build_shutdown().
+    let mem_cancel = tokio_util::sync::CancellationToken::new();
+    let supervisor = std::sync::Arc::new(TaskSupervisor::new(mem_cancel.clone()));
+
     // For TUI path: create the channel and start rendering immediately so the user
     // sees a spinner during the heavy init phases below. For non-TUI paths (or when
     // --tui is not passed), channel creation is deferred until after the tokio::join!
@@ -989,7 +995,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     if tui_active {
         let (ch, mut th, _sink) =
-            create_channel_with_tui(app.config(), true, None, exec_mode).await?;
+            create_channel_with_tui(app.config(), true, None, exec_mode, None).await?;
         early_tui_guard = EarlyTuiGuard::new(th.as_mut().map(|h| start_tui_early(h, app.config())));
         channel_opt = Some(ch);
         tui_handle = th;
@@ -1248,8 +1254,14 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // where cli_history is available. The TUI path was already created before build_memory.
     #[cfg(feature = "tui")]
     if !tui_active {
-        let (ch, th, sink) =
-            create_channel_with_tui(app.config(), false, cli_history, exec_mode).await?;
+        let (ch, th, sink) = create_channel_with_tui(
+            app.config(),
+            false,
+            cli_history,
+            exec_mode,
+            Some((*supervisor).clone()),
+        )
+        .await?;
         channel_opt = Some(ch);
         tui_handle = th;
         json_sink = sink;
@@ -1257,7 +1269,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     #[cfg(feature = "tui")]
     let channel = channel_opt.expect("channel always set before use");
     #[cfg(not(feature = "tui"))]
-    let (channel, json_sink) = create_channel_inner(app.config(), cli_history, exec_mode).await?;
+    let (channel, json_sink) = create_channel_inner(
+        app.config(),
+        cli_history,
+        exec_mode,
+        Some((*supervisor).clone()),
+    )
+    .await?;
 
     // Wire the Telegram reaction moderation executor when the active channel is Telegram.
     // The executor is added as the outermost layer of the CompositeExecutor chain so it
@@ -1509,8 +1527,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         zeph_core::ShellOverlaySnapshot { blocked, allowed }
     };
 
-    // Wire shutdown_rx → mem_cancel bridge so the supervisor (created before build_memory)
-    // shuts down cleanly when the shutdown signal fires.
+    // Wire the shutdown_rx → mem_cancel bridge now that shutdown_rx is available.
+    // The supervisor and mem_cancel were created earlier (before channel construction)
+    // so that TelegramChannel can be registered under supervision from the start.
     {
         let mut rx = shutdown_rx.clone();
         let cancel = mem_cancel.clone();
