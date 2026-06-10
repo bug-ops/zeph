@@ -844,6 +844,90 @@ impl App {
     pub fn throbber_state_mut(&mut self) -> &mut throbber_widgets_tui::ThrobberState {
         &mut self.throbber_state
     }
+
+    /// Toggle the collapsed state of a side-panel section by index.
+    ///
+    /// Index mapping: `0` = Skills, `1` = Memory, `2` = Resources, `3` = `SubAgents`.
+    /// Out-of-range indices are silently ignored.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let mut app = App::new(tx, rx);
+    /// app.toggle_panel_collapse(0);
+    /// assert!(app.collapsed_panels()[0]);
+    /// app.toggle_panel_collapse(0);
+    /// assert!(!app.collapsed_panels()[0]);
+    /// ```
+    pub fn toggle_panel_collapse(&mut self, idx: usize) {
+        if let Some(slot) = self.collapsed_panels.get_mut(idx) {
+            *slot = !*slot;
+        }
+    }
+
+    /// Return the current per-section collapse mask.
+    ///
+    /// Index mapping: `0` = Skills, `1` = Memory, `2` = Resources, `3` = `SubAgents`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let app = App::new(tx, rx);
+    /// assert_eq!(app.collapsed_panels(), [false; 4]);
+    /// ```
+    #[must_use]
+    pub fn collapsed_panels(&self) -> [bool; 4] {
+        self.collapsed_panels
+    }
+
+    /// Compute the effective collapse mask used for layout and rendering.
+    ///
+    /// Index 3 (`SubAgents` slot) is forced expanded when any overlay currently
+    /// owns that slot — Fleet, Durable, Tasks, plan view, or security events.
+    /// Indices 0–2 pass through the raw `collapsed_panels` value unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let mut app = App::new(tx, rx);
+    /// // Collapsing slot 3 is honoured when no overlay is active.
+    /// app.toggle_panel_collapse(3);
+    /// assert!(app.effective_collapsed()[3]);
+    /// ```
+    #[must_use]
+    pub fn effective_collapsed(&self) -> [bool; 4] {
+        let mut eff = self.collapsed_panels;
+        // Force-expand slot 3 whenever an overlay is rendering into the subagents rect.
+        let slot3_has_overlay = matches!(
+            self.active_panel,
+            Panel::SubAgents | Panel::Fleet | Panel::Durable
+        ) || self.show_task_panel
+            || self
+                .metrics
+                .orchestration_graph
+                .as_ref()
+                .is_some_and(|s| !s.is_stale() && !self.sessions.current().plan_view_active)
+            || self.has_recent_security_events();
+        if slot3_has_overlay {
+            eff[3] = false;
+        }
+        eff
+    }
 }
 
 #[cfg(test)]

@@ -2926,3 +2926,135 @@ fn auto_scroll_snaps_to_bottom_when_near_end() {
         "auto_scroll must snap to bottom when offset <= 1"
     );
 }
+
+// ---- F1: per-section sidebar collapse ----
+
+#[test]
+fn toggle_panel_collapse_toggles_and_retrieves() {
+    let (mut app, _rx, _tx) = make_app();
+    assert_eq!(
+        app.collapsed_panels(),
+        [false; 4],
+        "all panels start expanded"
+    );
+    app.toggle_panel_collapse(0);
+    assert!(
+        app.collapsed_panels()[0],
+        "skills must be collapsed after toggle"
+    );
+    app.toggle_panel_collapse(0);
+    assert!(
+        !app.collapsed_panels()[0],
+        "skills must expand on second toggle"
+    );
+}
+
+#[test]
+fn toggle_panel_collapse_out_of_range_noop() {
+    let (mut app, _rx, _tx) = make_app();
+    app.toggle_panel_collapse(99);
+    assert_eq!(app.collapsed_panels(), [false; 4]);
+}
+
+#[test]
+fn effective_collapsed_passes_through_when_no_overlay() {
+    let (mut app, _rx, _tx) = make_app();
+    app.toggle_panel_collapse(3);
+    let eff = app.effective_collapsed();
+    assert!(eff[3], "slot 3 collapse honoured when no overlay active");
+}
+
+#[test]
+fn effective_collapsed_forces_expand_slot3_when_fleet_active() {
+    let (mut app, _rx, _tx) = make_app();
+    app.toggle_panel_collapse(3);
+    app.active_panel = Panel::Fleet;
+    let eff = app.effective_collapsed();
+    assert!(
+        !eff[3],
+        "slot 3 must be force-expanded when Fleet overlay is active"
+    );
+}
+
+#[test]
+fn effective_collapsed_forces_expand_slot3_when_task_panel_open() {
+    let (mut app, _rx, _tx) = make_app();
+    app.toggle_panel_collapse(3);
+    app.show_task_panel = true;
+    let eff = app.effective_collapsed();
+    assert!(
+        !eff[3],
+        "slot 3 must be force-expanded when task panel is visible"
+    );
+}
+
+#[test]
+fn effective_collapsed_does_not_touch_slots_0_1_2() {
+    let (mut app, _rx, _tx) = make_app();
+    app.toggle_panel_collapse(0);
+    app.toggle_panel_collapse(1);
+    app.toggle_panel_collapse(2);
+    // Even with Fleet active, slots 0/1/2 pass through unchanged.
+    app.active_panel = Panel::Fleet;
+    let eff = app.effective_collapsed();
+    assert!(eff[0]);
+    assert!(eff[1]);
+    assert!(eff[2]);
+}
+
+#[test]
+fn alt_1_hotkey_toggles_skills_panel_in_normal_mode() {
+    let (mut app, _rx, _tx) = make_app();
+    app.sessions.current_mut().input_mode = InputMode::Normal;
+    assert!(!app.collapsed_panels()[0]);
+    let key = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT);
+    app.handle_event(AppEvent::Key(key));
+    assert!(
+        app.collapsed_panels()[0],
+        "Alt+1 must collapse skills panel"
+    );
+    app.handle_event(AppEvent::Key(key));
+    assert!(
+        !app.collapsed_panels()[0],
+        "Alt+1 again must expand skills panel"
+    );
+}
+
+#[test]
+fn alt_4_hotkey_toggles_subagents_panel_in_insert_mode() {
+    let (mut app, _rx, _tx) = make_app();
+    app.sessions.current_mut().input_mode = InputMode::Insert;
+    assert!(!app.collapsed_panels()[3]);
+    let key = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT);
+    app.handle_event(AppEvent::Key(key));
+    assert!(
+        app.collapsed_panels()[3],
+        "Alt+4 must collapse subagents panel in insert mode"
+    );
+}
+
+#[test]
+fn alt_2_and_3_hotkeys_toggle_memory_and_resources() {
+    let (mut app, _rx, _tx) = make_app();
+    app.sessions.current_mut().input_mode = InputMode::Normal;
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('2'),
+        KeyModifiers::ALT,
+    )));
+    app.handle_event(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('3'),
+        KeyModifiers::ALT,
+    )));
+    let panels = app.collapsed_panels();
+    assert!(panels[1], "Alt+2 must collapse memory panel");
+    assert!(panels[2], "Alt+3 must collapse resources panel");
+}
+
+#[test]
+fn collapse_slot3_with_subagents_panel_focused_force_expands() {
+    let (mut app, _rx, _tx) = make_app();
+    app.toggle_panel_collapse(3);
+    app.active_panel = Panel::SubAgents;
+    let eff = app.effective_collapsed();
+    assert!(!eff[3], "SubAgents focus must force-expand slot 3");
+}

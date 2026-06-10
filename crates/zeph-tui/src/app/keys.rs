@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 pub(super) const SCROLL_STEP_PAGE: usize = 10;
 
@@ -288,6 +289,28 @@ impl App {
                     self.push_system_message("No assistant message to copy.".to_owned());
                 }
             }
+            TuiCommand::CopyLastCodeBlock(n) => {
+                let blocks = self.last_assistant_code_blocks();
+                let text = if blocks.is_empty() {
+                    None
+                } else if n == 0 {
+                    blocks.last().cloned()
+                } else {
+                    blocks.get(n.saturating_sub(1)).cloned()
+                };
+                if let Some(text) = text {
+                    match self.clipboard.copy(&text) {
+                        Ok(()) => {
+                            self.push_system_message("Code block copied to clipboard".to_owned());
+                        }
+                        Err(e) => {
+                            self.push_system_message(format!("Copy failed: {e}"));
+                        }
+                    }
+                } else {
+                    self.push_system_message("No code block found.".to_owned());
+                }
+            }
             cmd => self.execute_plan_graph_command(cmd),
         }
     }
@@ -544,6 +567,13 @@ impl App {
                 })
             }
             [cmd] if cmd.eq_ignore_ascii_case("/copy") => Some(TuiCommand::CopyLastAssistant),
+            [cmd] if cmd.eq_ignore_ascii_case("/copyblock") => {
+                Some(TuiCommand::CopyLastCodeBlock(0))
+            }
+            [cmd, n] if cmd.eq_ignore_ascii_case("/copyblock") => {
+                let idx = n.parse::<usize>().unwrap_or(0);
+                Some(TuiCommand::CopyLastCodeBlock(idx))
+            }
             // /theme — list presets (bare command, token count == 1)
             [cmd] if cmd.eq_ignore_ascii_case("/theme") => Some(TuiCommand::ListThemes),
             // /theme <name> — switch to named theme (any non-empty name token)
@@ -754,6 +784,48 @@ impl App {
             .map(|m| m.content.clone())
     }
 
+    /// Extract all fenced code block bodies from the last assistant message.
+    ///
+    /// Returns one `String` per code block in document order. Blocks that are
+    /// still streaming-incomplete (no closing fence) are included with whatever
+    /// text has arrived so far.
+    fn last_assistant_code_blocks(&self) -> Vec<String> {
+        let Some(content) = self.last_assistant_content() else {
+            return Vec::new();
+        };
+        let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+        let parser = Parser::new_ext(&content, options);
+        let mut blocks: Vec<String> = Vec::new();
+        let mut current: Option<String> = None;
+        for event in parser {
+            match event {
+                Event::Start(Tag::CodeBlock(
+                    CodeBlockKind::Fenced(_) | CodeBlockKind::Indented,
+                )) => {
+                    current = Some(String::new());
+                }
+                Event::Text(text) => {
+                    if let Some(ref mut buf) = current {
+                        buf.push_str(&text);
+                    }
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(buf) = current.take() {
+                        blocks.push(buf);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // If streaming is incomplete, current still holds the partial block.
+        if let Some(buf) = current
+            && !buf.is_empty()
+        {
+            blocks.push(buf);
+        }
+        blocks
+    }
+
     /// Returns true if there are security events within the last 60 seconds.
     #[must_use]
     pub fn has_recent_security_events(&self) -> bool {
@@ -911,6 +983,22 @@ impl App {
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.execute_command(TuiCommand::CopyLastAssistant);
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.execute_command(TuiCommand::CopyLastCodeBlock(0));
+            }
+            // Alt+1..4: toggle per-section sidebar collapse (0=Skills, 1=Memory, 2=Resources, 3=SubAgents).
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(0);
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(1);
+            }
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(2);
+            }
+            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(3);
             }
             _ => {}
         }
@@ -1195,6 +1283,22 @@ impl App {
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.execute_command(TuiCommand::CopyLastAssistant);
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.execute_command(TuiCommand::CopyLastCodeBlock(0));
+            }
+            // Alt+1..4 work in Insert mode too so the user need not switch to Normal mode.
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(0);
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(1);
+            }
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(2);
+            }
+            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.toggle_panel_collapse(3);
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ignore Ctrl+R when slash autocomplete is open — mutual exclusion.

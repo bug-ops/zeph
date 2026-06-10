@@ -13,28 +13,45 @@ use crate::theme::SyntaxTheme;
 
 const CAPTURE_NAMES: &[&str] = &[
     "attribute",
+    "boolean",
     "comment",
     "constant",
     "constant.builtin",
     "constructor",
+    "escape",
     "function",
     "function.builtin",
+    "function.call",
+    "function.method",
     "keyword",
+    "keyword.operator",
+    "label",
     "number",
     "operator",
     "property",
     "punctuation",
     "punctuation.bracket",
     "punctuation.delimiter",
+    "punctuation.special",
+    "storageclass",
     "string",
     "string.escape",
+    "string.special",
+    "tag",
+    "text.literal",
+    "text.reference",
+    "text.title",
+    "text.uri",
     "type",
     "type.builtin",
+    "type.qualifier",
     "variable",
     "variable.builtin",
     "variable.parameter",
 ];
 
+// Custom bash query because tree-sitter-bash doesn't bundle a highlights.scm
+// compatible with tree-sitter-highlight's capture convention.
 const BASH_HIGHLIGHTS_QUERY: &str = r#"
 [(string) (raw_string) (heredoc_body) (heredoc_start)] @string
 (command_name) @function
@@ -54,6 +71,17 @@ static LANG_ALIASES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::n
         ("js", "javascript"),
         ("sh", "bash"),
         ("shell", "bash"),
+        ("ts", "typescript"),
+        ("tsx", "typescript"),
+        ("mts", "typescript"),
+        ("cts", "typescript"),
+        ("golang", "go"),
+        ("yml", "yaml"),
+        ("md", "markdown"),
+        ("mysql", "sql"),
+        ("psql", "sql"),
+        ("postgres", "sql"),
+        ("sequel", "sql"),
     ])
 });
 
@@ -76,23 +104,29 @@ pub static SYNTAX_HIGHLIGHTER: LazyLock<SyntaxHighlighter> = LazyLock::new(Synta
 
 /// Tree-sitter-based syntax highlighter for TUI code blocks.
 ///
-/// Supports Rust, Python, JavaScript, JSON, TOML, and Bash out of the box.
-/// Language aliases (`"rs"` → `"rust"`, `"sh"` → `"bash"`, etc.) are
-/// resolved transparently.
+/// Supports Rust, Python, JavaScript, TypeScript, Go, JSON, TOML, YAML, SQL,
+/// Markdown (block-level), and Bash out of the box. Language aliases
+/// (`"rs"` → `"rust"`, `"ts"` → `"typescript"`, `"yml"` → `"yaml"`, etc.)
+/// are resolved transparently.
 ///
 /// Construct via the [`SYNTAX_HIGHLIGHTER`] static for process-level sharing,
 /// or call the private `new` method directly in tests.
 ///
 /// # Supported languages
 ///
-/// | Identifier | Aliases |
-/// |------------|---------|
-/// | `rust`     | `rs`    |
-/// | `python`   | `py`    |
-/// | `javascript` | `js` |
-/// | `bash`     | `sh`, `shell` |
-/// | `json`     | —       |
-/// | `toml`     | —       |
+/// | Identifier   | Aliases                          |
+/// |--------------|----------------------------------|
+/// | `rust`       | `rs`                             |
+/// | `python`     | `py`                             |
+/// | `javascript` | `js`                             |
+/// | `typescript` | `ts`, `tsx`, `mts`, `cts`        |
+/// | `go`         | `golang`                         |
+/// | `bash`       | `sh`, `shell`                    |
+/// | `json`       | —                                |
+/// | `toml`       | —                                |
+/// | `yaml`       | `yml`                            |
+/// | `sql`        | `mysql`, `psql`, `postgres`, `sequel` |
+/// | `markdown`   | `md`                             |
 ///
 /// # Examples
 ///
@@ -118,6 +152,7 @@ pub struct SyntaxHighlighter {
 }
 
 impl SyntaxHighlighter {
+    #[allow(clippy::too_many_lines)]
     fn new() -> Self {
         let mut configs = HashMap::new();
 
@@ -163,6 +198,30 @@ impl SyntaxHighlighter {
             tree_sitter_javascript::INJECTIONS_QUERY,
         );
 
+        // TypeScript grammar only ships a delta query over JS — register TS with
+        // the full JS query prepended so string/comment/function highlighting works.
+        let ts_query = [
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            "\n",
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
+        ]
+        .concat();
+        register(
+            "typescript",
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            "typescript",
+            &ts_query,
+            "",
+        );
+
+        register(
+            "go",
+            tree_sitter_go::LANGUAGE.into(),
+            "go",
+            tree_sitter_go::HIGHLIGHTS_QUERY,
+            "",
+        );
+
         register(
             "json",
             tree_sitter_json::LANGUAGE.into(),
@@ -180,11 +239,37 @@ impl SyntaxHighlighter {
         );
 
         register(
+            "yaml",
+            tree_sitter_yaml::LANGUAGE.into(),
+            "yaml",
+            tree_sitter_yaml::HIGHLIGHTS_QUERY,
+            "",
+        );
+
+        register(
+            "sql",
+            tree_sitter_sequel::LANGUAGE.into(),
+            "sql",
+            tree_sitter_sequel::HIGHLIGHTS_QUERY,
+            "",
+        );
+
+        register(
             "bash",
             tree_sitter_bash::LANGUAGE.into(),
             "bash",
             BASH_HIGHLIGHTS_QUERY,
             "",
+        );
+
+        // Markdown block-level highlighting only. The block grammar covers
+        // headings, markers, links, and code fence delimiters.
+        register(
+            "markdown",
+            tree_sitter_md::LANGUAGE.into(),
+            "markdown",
+            tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+            tree_sitter_md::INJECTION_QUERY_BLOCK,
         );
 
         Self { configs }
@@ -257,17 +342,22 @@ impl SyntaxHighlighter {
 
 fn capture_to_style(index: usize, theme: &SyntaxTheme) -> Style {
     match CAPTURE_NAMES.get(index).copied().unwrap_or_default() {
-        "attribute" => theme.attribute,
+        "attribute" | "storageclass" => theme.attribute,
+        "boolean" | "constant" | "constant.builtin" => theme.constant,
         "comment" => theme.comment,
-        "constant" | "constant.builtin" => theme.constant,
-        "constructor" | "type" | "type.builtin" => theme.r#type,
-        "function" | "function.builtin" => theme.function,
-        "keyword" => theme.keyword,
+        "constructor" | "type" | "type.builtin" | "type.qualifier" | "tag" => theme.r#type,
+        "escape" | "string" | "string.escape" | "string.special" | "text.literal" => theme.string,
+        "function" | "function.builtin" | "function.call" | "function.method"
+        | "text.reference" | "text.uri" => theme.function,
+        "keyword" | "keyword.operator" | "text.title" => theme.keyword,
+        "label" | "property" | "variable" | "variable.builtin" | "variable.parameter" => {
+            theme.variable
+        }
         "number" => theme.number,
         "operator" => theme.operator,
-        "property" | "variable" | "variable.builtin" | "variable.parameter" => theme.variable,
-        "punctuation" | "punctuation.bracket" | "punctuation.delimiter" => theme.punctuation,
-        "string" | "string.escape" => theme.string,
+        "punctuation" | "punctuation.bracket" | "punctuation.delimiter" | "punctuation.special" => {
+            theme.punctuation
+        }
         _ => theme.default,
     }
 }
@@ -297,7 +387,11 @@ impl Default for SyntaxTheme {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    // ---- existing tests ----
 
     #[test]
     fn highlight_rust_code() {
@@ -390,5 +484,112 @@ mod tests {
         let spans = hl.highlight("rust", "let x = 1;", &theme).unwrap();
         let let_span = spans.iter().find(|s| s.content.as_ref() == "let").unwrap();
         assert_eq!(let_span.style, theme.keyword);
+    }
+
+    // ---- new language tests ----
+
+    fn assert_multi_style(lang: &str, code: &str) {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        let spans = hl.highlight(lang, code, &theme).unwrap_or_else(|| {
+            panic!("highlight returned None for language '{lang}'");
+        });
+        let styles: HashSet<_> = spans.iter().map(|s| s.style).collect();
+        assert!(
+            styles.len() > 1,
+            "expected >1 distinct style for '{lang}', got {}: {:?}",
+            styles.len(),
+            spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn highlight_typescript_multi_style() {
+        assert_multi_style(
+            "typescript",
+            "const greet = (name: string): void => {\n  console.log(name);\n};",
+        );
+    }
+
+    #[test]
+    fn highlight_typescript_alias_ts() {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        assert!(hl.highlight("ts", "let x: number = 1;", &theme).is_some());
+    }
+
+    #[test]
+    fn highlight_typescript_alias_tsx() {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        assert!(
+            hl.highlight("tsx", "const x: string = 'hello';", &theme)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn highlight_go_multi_style() {
+        assert_multi_style(
+            "go",
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n    fmt.Println(\"hello\")\n}",
+        );
+    }
+
+    #[test]
+    fn highlight_go_alias_golang() {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        assert!(hl.highlight("golang", "func f() {}", &theme).is_some());
+    }
+
+    #[test]
+    fn highlight_yaml_multi_style() {
+        assert_multi_style("yaml", "name: foo\nversion: \"1.0\"\nenabled: true\n");
+    }
+
+    #[test]
+    fn highlight_yaml_alias_yml() {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        assert!(
+            hl.highlight("yml", "key: value\nlist:\n  - a\n  - b", &theme)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn highlight_sql_multi_style() {
+        assert_multi_style("sql", "SELECT id, name FROM users WHERE active = true;");
+    }
+
+    #[test]
+    fn highlight_sql_alias_mysql() {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        assert!(hl.highlight("mysql", "SELECT * FROM t;", &theme).is_some());
+    }
+
+    #[test]
+    fn highlight_markdown_headings_and_links() {
+        assert_multi_style(
+            "markdown",
+            "# Hello World\n\n[link text](https://example.com)\n",
+        );
+    }
+
+    #[test]
+    fn highlight_markdown_alias_md() {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        assert!(hl.highlight("md", "# Title\nSome text.", &theme).is_some());
+    }
+
+    #[test]
+    fn highlight_unknown_still_none_after_new_langs() {
+        let hl = &*SYNTAX_HIGHLIGHTER;
+        let theme = SyntaxTheme::default();
+        assert!(hl.highlight("brainfuck", "+++", &theme).is_none());
+        assert!(hl.highlight("cobol", "DISPLAY 'hi'", &theme).is_none());
     }
 }

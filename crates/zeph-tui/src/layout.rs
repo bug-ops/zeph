@@ -62,7 +62,7 @@ pub fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
 /// use zeph_tui::layout::AppLayout;
 ///
 /// let area = Rect::new(0, 0, 120, 40);
-/// let layout = AppLayout::compute(area, true, 3);
+/// let layout = AppLayout::compute(area, true, 3, [false; 4]);
 /// assert_eq!(layout.header.height, 1);
 /// assert_eq!(layout.status.height, 1);
 /// assert!(layout.chat.width > layout.side_panel.width);
@@ -98,6 +98,9 @@ impl AppLayout {
     /// * `area` — the full terminal rect (from `Frame::area()`).
     /// * `show_side_panels` — `false` hides the side panels regardless of width.
     /// * `input_height` — requested composer height including borders.
+    /// * `collapsed` — per-section collapse mask `[skills, memory, resources, subagents]`.
+    ///   A collapsed section renders as a single summary row (`Length(1)`); an expanded
+    ///   section uses `Fill(1)` to share the remaining space equally.
     ///
     /// # Examples
     ///
@@ -106,15 +109,25 @@ impl AppLayout {
     /// use zeph_tui::layout::AppLayout;
     ///
     /// // Wide terminal: side panels visible.
-    /// let layout = AppLayout::compute(Rect::new(0, 0, 120, 40), true, 3);
+    /// let layout = AppLayout::compute(Rect::new(0, 0, 120, 40), true, 3, [false; 4]);
     /// assert!(layout.side_panel.width > 0);
     ///
     /// // Narrow terminal: side panels hidden.
-    /// let layout = AppLayout::compute(Rect::new(0, 0, 60, 24), true, 3);
+    /// let layout = AppLayout::compute(Rect::new(0, 0, 60, 24), true, 3, [false; 4]);
     /// assert_eq!(layout.side_panel.width, 0);
+    ///
+    /// // All panels collapsed: each gets a single summary row.
+    /// let layout = AppLayout::compute(Rect::new(0, 0, 120, 40), true, 3, [true; 4]);
+    /// assert!(layout.side_panel.width > 0);
+    /// assert_eq!(layout.skills.height, 1);
     /// ```
     #[must_use]
-    pub fn compute(area: Rect, show_side_panels: bool, input_height: u16) -> Self {
+    pub fn compute(
+        area: Rect,
+        show_side_panels: bool,
+        input_height: u16,
+        collapsed: [bool; 4],
+    ) -> Self {
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -150,14 +163,26 @@ impl AppLayout {
             ])
             .split(outer[1]);
 
+        // Each side section is either a single summary row (collapsed) or fills available space.
+        // When all four are collapsed the four Length(1) rows sit at the top and the remainder
+        // is blank; add a trailing Fill(1) spacer only in that case so the layout is clean.
+        let [c0, c1, c2, c3] = collapsed;
+        let mut side_constraints: Vec<Constraint> = [c0, c1, c2, c3]
+            .iter()
+            .map(|&col| {
+                if col {
+                    Constraint::Length(1)
+                } else {
+                    Constraint::Fill(1)
+                }
+            })
+            .collect();
+        if c0 && c1 && c2 && c3 {
+            side_constraints.push(Constraint::Fill(1));
+        }
         let side_split = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-            ])
+            .constraints(side_constraints)
             .split(main_split[2]);
 
         Self {
@@ -231,7 +256,7 @@ mod tests {
     #[test]
     fn layout_for_standard_terminal() {
         let area = Rect::new(0, 0, 120, 40);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert_eq!(layout.header.height, 1);
         assert_eq!(layout.input.height, 3);
         assert_eq!(layout.status.height, 1);
@@ -241,7 +266,7 @@ mod tests {
     #[test]
     fn layout_for_small_terminal() {
         let area = Rect::new(0, 0, 80, 24);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert_eq!(layout.header.height, 1);
         assert_eq!(layout.status.height, 1);
         assert!(layout.chat.height >= 10);
@@ -250,7 +275,7 @@ mod tests {
     #[test]
     fn layout_side_panels_stack_vertically() {
         let area = Rect::new(0, 0, 120, 40);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert!(layout.skills.y < layout.memory.y);
         assert!(layout.memory.y < layout.resources.y);
         assert!(layout.resources.y < layout.subagents.y);
@@ -259,7 +284,7 @@ mod tests {
     #[test]
     fn layout_input_below_chat() {
         let area = Rect::new(0, 0, 100, 30);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert!(layout.input.y > layout.chat.y);
         assert!(layout.status.y > layout.input.y);
     }
@@ -267,7 +292,7 @@ mod tests {
     #[test]
     fn layout_narrow_hides_side_panels() {
         let area = Rect::new(0, 0, 60, 24);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert_eq!(layout.side_panel, Rect::default());
         assert_eq!(layout.skills, Rect::default());
         assert_eq!(layout.memory, Rect::default());
@@ -279,7 +304,7 @@ mod tests {
     #[test]
     fn layout_very_narrow_hides_side_panels() {
         let area = Rect::new(0, 0, 30, 24);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert_eq!(layout.side_panel, Rect::default());
         assert_eq!(layout.skills, Rect::default());
     }
@@ -287,7 +312,7 @@ mod tests {
     #[test]
     fn layout_boundary_at_80_shows_side_panels() {
         let area = Rect::new(0, 0, 80, 24);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert!(layout.side_panel.width > 0);
         assert!(layout.skills.width > 0);
     }
@@ -295,14 +320,14 @@ mod tests {
     #[test]
     fn layout_boundary_at_79_hides_side_panels() {
         let area = Rect::new(0, 0, 79, 24);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert_eq!(layout.side_panel, Rect::default());
     }
 
     #[test]
     fn layout_toggle_off_hides_side_panels() {
         let area = Rect::new(0, 0, 120, 40);
-        let layout = AppLayout::compute(area, false, 3);
+        let layout = AppLayout::compute(area, false, 3, [false; 4]);
         assert_eq!(layout.side_panel, Rect::default());
         assert_eq!(layout.skills, Rect::default());
         assert_eq!(layout.memory, Rect::default());
@@ -314,7 +339,7 @@ mod tests {
     #[test]
     fn layout_toggle_on_shows_side_panels() {
         let area = Rect::new(0, 0, 120, 40);
-        let layout = AppLayout::compute(area, true, 3);
+        let layout = AppLayout::compute(area, true, 3, [false; 4]);
         assert!(layout.side_panel.width > 0);
         assert!(layout.skills.width > 0);
     }
@@ -355,6 +380,71 @@ mod tests {
         assert!(diff <= 2, "left={left_margin} right={right_margin}");
     }
 
+    #[test]
+    fn collapsed_panel_gets_single_row() {
+        let area = Rect::new(0, 0, 120, 40);
+        let layout = AppLayout::compute(area, true, 3, [true, false, false, false]);
+        assert_eq!(layout.skills.height, 1, "collapsed skills must be height 1");
+        assert!(
+            layout.memory.height > 1,
+            "expanded memory must be taller than 1"
+        );
+    }
+
+    #[test]
+    fn all_panels_collapsed_no_panic_and_each_height_one() {
+        let area = Rect::new(0, 0, 120, 40);
+        let layout = AppLayout::compute(area, true, 3, [true; 4]);
+        assert_eq!(layout.skills.height, 1);
+        assert_eq!(layout.memory.height, 1);
+        assert_eq!(layout.resources.height, 1);
+        assert_eq!(layout.subagents.height, 1);
+        // All four sections must still be within bounds.
+        assert!(layout.skills.y + layout.skills.height <= area.height);
+        assert!(layout.subagents.y + layout.subagents.height <= area.height);
+    }
+
+    #[test]
+    fn narrow_terminal_ignores_collapsed_mask() {
+        // width < 80 → side panels hidden regardless of collapse state.
+        let area = Rect::new(0, 0, 60, 24);
+        let layout = AppLayout::compute(area, true, 3, [true; 4]);
+        assert_eq!(layout.side_panel, Rect::default());
+        assert_eq!(layout.skills, Rect::default());
+    }
+
+    #[test]
+    fn single_expanded_panel_fills_remaining_height() {
+        let area = Rect::new(0, 0, 120, 40);
+        // Collapse first three, only subagents expanded.
+        let layout = AppLayout::compute(area, true, 3, [true, true, true, false]);
+        assert_eq!(layout.skills.height, 1);
+        assert_eq!(layout.memory.height, 1);
+        assert_eq!(layout.resources.height, 1);
+        assert!(
+            layout.subagents.height > 1,
+            "sole expanded section must be tall"
+        );
+    }
+
+    #[test]
+    fn collapse_mask_proptest_never_panics() {
+        // Manually cover all 16 combinations for a fixed area.
+        let area = Rect::new(0, 0, 120, 40);
+        for bits in 0u8..16 {
+            let c = [
+                bits & 0b0001 != 0,
+                bits & 0b0010 != 0,
+                bits & 0b0100 != 0,
+                bits & 0b1000 != 0,
+            ];
+            let layout = AppLayout::compute(area, true, 3, c);
+            // All rects must be within terminal bounds.
+            assert!(layout.skills.y + layout.skills.height <= area.height);
+            assert!(layout.subagents.y + layout.subagents.height <= area.height);
+        }
+    }
+
     mod proptest_layout {
         use super::*;
         use proptest::prelude::*;
@@ -378,9 +468,13 @@ mod tests {
                 width in 1u16..500,
                 height in 1u16..500,
                 show_side in proptest::bool::ANY,
+                c0 in proptest::bool::ANY,
+                c1 in proptest::bool::ANY,
+                c2 in proptest::bool::ANY,
+                c3 in proptest::bool::ANY,
             ) {
                 let area = Rect::new(0, 0, width, height);
-                let layout = AppLayout::compute(area, show_side, 3);
+                let layout = AppLayout::compute(area, show_side, 3, [c0, c1, c2, c3]);
 
                 assert_within_bounds(layout.header, area);
                 assert_within_bounds(layout.chat, area);

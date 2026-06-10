@@ -59,6 +59,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(tui)`: per-section sidebar collapse with `Alt+1..4` hotkeys (#5244). Each sidebar panel
+  (memory, skills, resources, subagents) can be independently collapsed to a one-line `▸ Label`
+  summary. `AppLayout::compute` derives per-section heights from `collapsed_panels: [bool; 4]` in
+  app state; `effective_collapsed()` force-expands the subagents slot when any overlay (Fleet,
+  Durable, Tasks, plan, security) is active. Hotkeys bind in both normal and insert modes.
+- `feat(tui)`: syntax highlighting extended with TypeScript, Go, YAML, Markdown, and SQL (#5099).
+  TypeScript uses a concatenated JS+TS highlight query (TS grammar is a delta over JS). Go, YAML
+  (yml alias), Markdown (md alias, block-level), and SQL (mysql/psql/postgres aliases) added.
+  Capture-name mapping table extended with 15 new entries (text.title, text.literal, escape,
+  function.method, boolean, etc.). New crates: `tree-sitter-yaml 0.7.2`, `tree-sitter-sequel
+  0.3.11`; go/ts/md grammars promoted from transitive to explicit workspace dependencies.
+- `feat(tui)`: code block presentation with surface background, language label, and copy hotkey
+  (#5098). Code blocks render with a header rule (language label + `Ctrl+Y: copy` hint), surface
+  background (`palette.surface`) applied across the full block width including syntax-highlighted
+  spans, and a closing footer rule. `CopyLastCodeBlock(usize)` action added; `Ctrl+Y` copies the
+  most-recent block (or nth block by index) in both normal and insert modes. Streaming-incomplete
+  blocks are copyable. `enum LineKind { Normal, CodeBlock }` threads through `MdRenderer::finish()`
+  to drive the right-pad pass and prevent background bleed into adjacent lines.
 - `test(tui)`: unit tests for `/theme` slash command parsing variants (`ListThemes`, `SetTheme`,
   trailing-space edge case) in `parse_session_slash` (#5245). Insta snapshot tests for
   `elicitation` and `command_palette` modals confirming `BorderType::Rounded` corners (#5243).

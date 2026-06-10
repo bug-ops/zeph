@@ -231,7 +231,7 @@ impl Theme {
                 .fg(fg(p.info))
                 .bg(fg(p.surface))
                 .add_modifier(Modifier::BOLD)),
-            code_block: am(Style::default().fg(fg(p.text))),
+            code_block: am(Style::default().fg(fg(p.text)).bg(fg(p.surface))),
             streaming_cursor: am(Style::default().fg(fg(p.muted))),
             tool_command: am(Style::default()
                 .fg(fg(p.warning))
@@ -289,7 +289,9 @@ impl Default for Theme {
                 .fg(Color::Rgb(100, 180, 255))
                 .bg(Color::Rgb(15, 30, 55))
                 .add_modifier(Modifier::BOLD),
-            code_block: Style::default().fg(Color::Rgb(190, 175, 145)),
+            code_block: Style::default()
+                .fg(Color::Rgb(190, 175, 145))
+                .bg(Color::Rgb(20, 25, 35)),
             streaming_cursor: Style::default().fg(Color::DarkGray),
             tool_command: Style::default()
                 .fg(Color::Yellow)

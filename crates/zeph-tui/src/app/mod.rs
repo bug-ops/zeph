@@ -436,8 +436,10 @@ pub struct App {
     ///
     /// `false` when `TERM=dumb`; `true` otherwise (default). Used by [`App::is_ascii_only`].
     pub(crate) unicode_capable: bool,
-    // Scaffold for future per-section collapse (see follow-up issue).
-    #[allow(dead_code)]
+    /// Per-section collapse mask: `[skills, memory, resources, subagents]`.
+    ///
+    /// Use [`toggle_panel_collapse`](crate::App::toggle_panel_collapse) to toggle and
+    /// [`effective_collapsed`](crate::App::effective_collapsed) for the layout-safe mask.
     pub(crate) collapsed_panels: [bool; 4],
 }
 

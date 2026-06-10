@@ -12,7 +12,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, MessageRole, RenderCache, RenderCacheKey, content_hash};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
 use crate::hyperlink;
-use crate::theme::{SyntaxTheme, Theme};
+use crate::theme::Theme;
 use crate::widgets::spinner::breeze_frame;
 use crate::widgets::tool_view::{ToolDensity, ToolKind, ToolStatus};
 
@@ -21,6 +21,16 @@ use crate::widgets::tool_view::{ToolDensity, ToolKind, ToolStatus};
 pub struct MdLink {
     pub text: String,
     pub url: String,
+}
+
+/// Marks whether a rendered line belongs to a fenced code block.
+///
+/// Used by the wrap loop to apply the surface background and right-pad code block
+/// rows to the full available width, distinguishing them from normal prose lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineKind {
+    Normal,
+    CodeBlock,
 }
 
 /// Returns the maximum scroll offset for the rendered content.
@@ -334,7 +344,7 @@ fn render_chat_message(
             .collect();
         let preview = visible.join("\n");
         let (styled_lines, md_links) = render_md(&preview, base_style, theme);
-        for (i, spans) in styled_lines.iter().enumerate() {
+        for (i, (kind, spans)) in styled_lines.iter().enumerate() {
             let mut line_spans = Vec::with_capacity(spans.len() + 1);
             let pfx = if i == 0 {
                 prefix.to_string()
@@ -343,7 +353,9 @@ fn render_chat_message(
             };
             line_spans.push(Span::styled(pfx, base_style));
             line_spans.extend(spans.iter().cloned());
-            lines.extend(wrap_spans(line_spans, wrap_width));
+            let wrapped = wrap_spans(line_spans, wrap_width);
+            let wrapped = pad_code_block_lines(wrapped, *kind, wrap_width, theme);
+            lines.extend(wrapped);
         }
         let hidden = total_lines - PASTE_COLLAPSED_LINES;
         let dim = Style::default().add_modifier(Modifier::DIM);
@@ -360,7 +372,7 @@ fn render_chat_message(
         render_md(&msg.content, base_style, theme)
     };
 
-    for (i, spans) in styled_lines.iter().enumerate() {
+    for (i, (kind, spans)) in styled_lines.iter().enumerate() {
         let mut line_spans = Vec::with_capacity(spans.len() + 1);
         let pfx = if i == 0 {
             prefix.to_string()
@@ -380,7 +392,10 @@ fn render_chat_message(
             line_spans.push(Span::styled("\u{2502}".to_string(), theme.streaming_cursor));
         }
 
-        lines.extend(wrap_spans(line_spans, wrap_width));
+        // wrap first, then pad code block rows (cursor span already in line_spans above)
+        let wrapped = wrap_spans(line_spans, wrap_width);
+        let wrapped = pad_code_block_lines(wrapped, *kind, wrap_width, theme);
+        lines.extend(wrapped);
     }
 
     if styled_lines.is_empty() {
@@ -773,7 +788,7 @@ fn render_with_thinking(
     content: &str,
     base_style: Style,
     theme: &Theme,
-) -> (Vec<Vec<Span<'static>>>, Vec<MdLink>) {
+) -> (Vec<(LineKind, Vec<Span<'static>>)>, Vec<MdLink>) {
     let mut all_lines = Vec::new();
     let mut md_links_buf: Vec<MdLink> = Vec::new();
     let mut remaining = content;
@@ -822,7 +837,7 @@ fn render_md(
     content: &str,
     base_style: Style,
     theme: &Theme,
-) -> (Vec<Vec<Span<'static>>>, Vec<MdLink>) {
+) -> (Vec<(LineKind, Vec<Span<'static>>)>, Vec<MdLink>) {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let parser = Parser::new_ext(content, options);
     let mut renderer = MdRenderer::new(base_style, theme);
@@ -834,6 +849,8 @@ fn render_md(
 
 struct MdRenderer<'t> {
     lines: Vec<Vec<Span<'static>>>,
+    /// One `LineKind` per entry in `lines`; parallel to `lines`.
+    line_kinds: Vec<LineKind>,
     current: Vec<Span<'static>>,
     style_stack: Vec<Style>,
     base_style: Style,
@@ -854,6 +871,7 @@ impl<'t> MdRenderer<'t> {
     fn new(base_style: Style, theme: &'t Theme) -> Self {
         Self {
             lines: Vec::new(),
+            line_kinds: Vec::new(),
             current: Vec::new(),
             style_stack: vec![base_style],
             base_style,
@@ -869,6 +887,7 @@ impl<'t> MdRenderer<'t> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn push_event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::Heading { .. }) => {
@@ -895,22 +914,51 @@ impl<'t> MdRenderer<'t> {
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 self.in_code_block = true;
-                if let CodeBlockKind::Fenced(lang) = kind {
-                    let lang = lang.trim();
-                    if !lang.is_empty() {
-                        self.code_lang = Some(lang.to_string());
-                        self.current.push(Span::styled(
-                            format!(" {lang} "),
-                            self.base_style.add_modifier(Modifier::DIM),
-                        ));
-                        self.newline();
+                let lang = if let CodeBlockKind::Fenced(ref l) = kind {
+                    let l = l.trim();
+                    if l.is_empty() {
+                        None
+                    } else {
+                        Some(l.to_string())
                     }
+                } else {
+                    None
+                };
+                self.code_lang.clone_from(&lang);
+                // Header rule: ─── lang ─── [y: copy]
+                let rule_style = self
+                    .theme
+                    .code_block
+                    .patch(Style::default().add_modifier(Modifier::DIM));
+                let lang_style = self
+                    .theme
+                    .code_block
+                    .patch(Style::default().add_modifier(Modifier::BOLD));
+                let hint_style = self
+                    .theme
+                    .code_block
+                    .patch(Style::default().add_modifier(Modifier::DIM));
+                self.current
+                    .push(Span::styled("\u{2500}".repeat(3), rule_style));
+                if let Some(ref l) = lang {
+                    self.current
+                        .push(Span::styled(format!(" {l} "), lang_style));
                 }
+                self.current
+                    .push(Span::styled(" [Ctrl+Y: copy] ", hint_style));
+                self.newline();
             }
             Event::End(TagEnd::CodeBlock) => {
+                // Emit the footer rule while still in_code_block so it gets CodeBlock tag.
+                let rule_style = self
+                    .theme
+                    .code_block
+                    .patch(Style::default().add_modifier(Modifier::DIM));
+                self.current
+                    .push(Span::styled("\u{2500}".repeat(4), rule_style));
+                self.newline();
                 self.in_code_block = false;
                 self.code_lang = None;
-                self.newline();
             }
             Event::Code(text) => {
                 if self.link_url.is_some() {
@@ -1100,14 +1148,21 @@ impl<'t> MdRenderer<'t> {
     }
 
     fn push_code_block_text(&mut self, text: &str) {
-        let syntax_theme = SyntaxTheme::default();
         let highlighted = self
             .code_lang
             .as_deref()
-            .and_then(|lang| SYNTAX_HIGHLIGHTER.highlight(lang, text, &syntax_theme));
+            .and_then(|lang| SYNTAX_HIGHLIGHTER.highlight(lang, text, &self.theme.syntax_theme));
 
         if let Some(spans) = highlighted {
             let prefix = Span::styled("  ".to_string(), self.theme.code_block);
+            // Compose surface bg onto every syntax span so the fg highlight sits on the
+            // same background as the gutter prefix and the right-pad filled by pad_code_block_lines.
+            let bg_patch = self
+                .theme
+                .code_block
+                .bg
+                .map(|bg| Style::default().bg(bg))
+                .unwrap_or_default();
             self.current.push(prefix.clone());
             for span in spans {
                 let parts: Vec<&str> = span.content.split('\n').collect();
@@ -1117,8 +1172,10 @@ impl<'t> MdRenderer<'t> {
                         self.current.push(prefix.clone());
                     }
                     if !part.is_empty() {
-                        self.current
-                            .push(Span::styled((*part).to_string(), span.style));
+                        self.current.push(Span::styled(
+                            (*part).to_string(),
+                            span.style.patch(bg_patch),
+                        ));
                     }
                 }
             }
@@ -1150,19 +1207,52 @@ impl<'t> MdRenderer<'t> {
 
     fn newline(&mut self) {
         let line = std::mem::take(&mut self.current);
+        let kind = if self.in_code_block {
+            LineKind::CodeBlock
+        } else {
+            LineKind::Normal
+        };
         self.lines.push(line);
+        self.line_kinds.push(kind);
     }
 
-    fn finish(mut self) -> (Vec<Vec<Span<'static>>>, Vec<MdLink>) {
+    fn finish(mut self) -> (Vec<(LineKind, Vec<Span<'static>>)>, Vec<MdLink>) {
         if !self.current.is_empty() {
             self.newline();
         }
         // Remove trailing empty lines
         while self.lines.last().is_some_and(Vec::is_empty) {
             self.lines.pop();
+            self.line_kinds.pop();
         }
-        (self.lines, self.md_links)
+        let tagged: Vec<(LineKind, Vec<Span<'static>>)> =
+            self.line_kinds.into_iter().zip(self.lines).collect();
+        (tagged, self.md_links)
     }
+}
+
+/// Right-pad code block visual lines so the surface background fills the full width.
+///
+/// Called after `wrap_spans` so every wrapped sub-line gets the same treatment.
+/// No-ops for `Normal` lines or when `wrap_width == 0`.
+fn pad_code_block_lines(
+    mut lines: Vec<Line<'static>>,
+    kind: LineKind,
+    wrap_width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if kind != LineKind::CodeBlock || wrap_width == 0 {
+        return lines;
+    }
+    let bg_style = Style::default().bg(theme.code_block.bg.unwrap_or_default());
+    for line in &mut lines {
+        let used: usize = line.spans.iter().map(|s| s.content.width()).sum();
+        let pad = wrap_width.saturating_sub(used);
+        if pad > 0 {
+            line.spans.push(Span::styled(" ".repeat(pad), bg_style));
+        }
+    }
+    lines
 }
 
 fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>> {
@@ -1233,12 +1323,17 @@ fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>>
 mod tests {
     use super::*;
 
+    /// Extract only the spans from tagged `render_md` output, dropping `LineKind`.
+    fn spans_only(tagged: Vec<(LineKind, Vec<Span<'static>>)>) -> Vec<Vec<Span<'static>>> {
+        tagged.into_iter().map(|(_, spans)| spans).collect()
+    }
+
     #[test]
     fn render_md_plain() {
         let theme = Theme::default();
-        let (rendered_lines, link_refs) = render_md("hello world", theme.assistant_message, &theme);
-        assert_eq!(rendered_lines.len(), 1);
-        assert_eq!(rendered_lines[0][0].content, "hello world");
+        let (tagged, link_refs) = render_md("hello world", theme.assistant_message, &theme);
+        assert_eq!(tagged.len(), 1);
+        assert_eq!(tagged[0].1[0].content, "hello world");
         assert!(link_refs.is_empty());
     }
 
@@ -1246,7 +1341,7 @@ mod tests {
     fn render_md_bold() {
         let theme = Theme::default();
         let base = theme.assistant_message;
-        let (lines, _) = render_md("say **hello** now", base, &theme);
+        let lines = spans_only(render_md("say **hello** now", base, &theme).0);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].len(), 3);
         assert_eq!(lines[0][0].content, "say ");
@@ -1258,7 +1353,7 @@ mod tests {
     #[test]
     fn render_md_inline_code() {
         let theme = Theme::default();
-        let (lines, _) = render_md("use `foo` here", theme.assistant_message, &theme);
+        let lines = spans_only(render_md("use `foo` here", theme.assistant_message, &theme).0);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0][1].content, "foo");
         assert_eq!(lines[0][1].style, theme.code_inline);
@@ -1267,20 +1362,22 @@ mod tests {
     #[test]
     fn render_md_code_block() {
         let theme = Theme::default();
-        let (lines, _) = render_md("```rust\nlet x = 1;\n```", theme.assistant_message, &theme);
-        assert!(lines.len() >= 2);
-        // Language tag line
-        assert!(lines[0][0].content.contains("rust"));
+        let (tagged, _) = render_md("```rust\nlet x = 1;\n```", theme.assistant_message, &theme);
+        assert!(tagged.len() >= 2);
+        // All code lines tagged CodeBlock
+        assert!(tagged.iter().all(|(k, _)| *k == LineKind::CodeBlock));
+        // Header line contains lang label
+        let header_text: String = tagged[0].1.iter().map(|s| s.content.as_ref()).collect();
+        assert!(header_text.contains("rust"));
         // Code content — with syntax highlighting, spans are split by token
-        let code_line = &lines[1];
-        let full_text: String = code_line.iter().map(|s| s.content.as_ref()).collect();
+        let full_text: String = tagged[1].1.iter().map(|s| s.content.as_ref()).collect();
         assert!(full_text.contains("let x = 1"));
     }
 
     #[test]
     fn render_md_list() {
         let theme = Theme::default();
-        let (lines, _) = render_md("- first\n- second", theme.assistant_message, &theme);
+        let lines = spans_only(render_md("- first\n- second", theme.assistant_message, &theme).0);
         assert!(lines.len() >= 2);
         assert!(lines[0].iter().any(|s| s.content.contains('\u{2022}')));
     }
@@ -1289,7 +1386,7 @@ mod tests {
     fn render_md_heading() {
         let theme = Theme::default();
         let base = theme.assistant_message;
-        let (lines, _) = render_md("# Title", base, &theme);
+        let lines = spans_only(render_md("# Title", base, &theme).0);
         assert!(!lines.is_empty());
         let heading_span = &lines[0][0];
         assert_eq!(heading_span.content, "Title");
@@ -1302,9 +1399,9 @@ mod tests {
     #[test]
     fn render_md_link_single() {
         let theme = Theme::default();
-        let (rendered_lines, link_refs) =
+        let (tagged, link_refs) =
             render_md("[click](https://x.com)", theme.assistant_message, &theme);
-        assert!(!rendered_lines.is_empty());
+        assert!(!tagged.is_empty());
         assert_eq!(link_refs.len(), 1);
         assert_eq!(link_refs[0].text, "click");
         assert_eq!(link_refs[0].url, "https://x.com");
@@ -1313,9 +1410,9 @@ mod tests {
     #[test]
     fn render_md_link_bold_text() {
         let theme = Theme::default();
-        let (rendered_lines, link_refs) =
+        let (tagged, link_refs) =
             render_md("[**bold**](https://x.com)", theme.assistant_message, &theme);
-        assert!(!rendered_lines.is_empty());
+        assert!(!tagged.is_empty());
         assert_eq!(link_refs.len(), 1);
         assert_eq!(link_refs[0].text, "bold");
         assert_eq!(link_refs[0].url, "https://x.com");
@@ -1355,22 +1452,22 @@ mod tests {
     fn render_with_thinking_segments() {
         let theme = Theme::default();
         let content = "<think>reasoning</think>result";
-        let (lines, _) = render_with_thinking(content, theme.assistant_message, &theme);
-        assert!(lines.len() >= 2);
+        let (tagged, _) = render_with_thinking(content, theme.assistant_message, &theme);
+        assert!(tagged.len() >= 2);
         // Thinking segment uses thinking style
-        assert_eq!(lines[0][0].style, theme.thinking_message);
+        assert_eq!(tagged[0].1[0].style, theme.thinking_message);
         // Result uses normal style
-        let last = lines.last().unwrap();
-        assert_eq!(last[0].style, theme.assistant_message);
+        let last = tagged.last().unwrap();
+        assert_eq!(last.1[0].style, theme.assistant_message);
     }
 
     #[test]
     fn render_with_thinking_streaming() {
         let theme = Theme::default();
         let content = "<think>still thinking";
-        let (lines, _) = render_with_thinking(content, theme.assistant_message, &theme);
-        assert!(!lines.is_empty());
-        assert_eq!(lines[0][0].style, theme.thinking_message);
+        let (tagged, _) = render_with_thinking(content, theme.assistant_message, &theme);
+        assert!(!tagged.is_empty());
+        assert_eq!(tagged[0].1[0].style, theme.thinking_message);
     }
 
     #[test]
@@ -1393,7 +1490,7 @@ mod tests {
     fn render_md_table_basic() {
         let theme = Theme::default();
         let md = "| A | B |\n|---|---|\n| 1 | 2 |";
-        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        let lines = spans_only(render_md(md, theme.assistant_message, &theme).0);
         // top border + header + separator + data row + bottom border = 5 lines
         assert_eq!(lines.len(), 5);
         let top: String = lines[0].iter().map(|s| s.content.as_ref()).collect();
@@ -1410,7 +1507,7 @@ mod tests {
     fn render_md_table_header_bold() {
         let theme = Theme::default();
         let md = "| Col |\n|-----|\n| val |";
-        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        let lines = spans_only(render_md(md, theme.assistant_message, &theme).0);
         // header row is lines[1]; cell text span should be bold
         let header_line = &lines[1];
         let cell_span = header_line
@@ -1424,7 +1521,7 @@ mod tests {
     fn render_md_table_header_only() {
         let theme = Theme::default();
         let md = "| X | Y |\n|---|---|";
-        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        let lines = spans_only(render_md(md, theme.assistant_message, &theme).0);
         // top + header + separator + bottom = 4 lines (no data rows)
         assert_eq!(lines.len(), 4);
     }
@@ -1433,7 +1530,7 @@ mod tests {
     fn render_md_table_single_column() {
         let theme = Theme::default();
         let md = "| Name |\n|------|\n| Alice |\n| Bob |";
-        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        let lines = spans_only(render_md(md, theme.assistant_message, &theme).0);
         // top + header + sep + 2 data rows + bottom = 6 lines
         assert_eq!(lines.len(), 6);
         let top: String = lines[0].iter().map(|s| s.content.as_ref()).collect();
@@ -1450,7 +1547,7 @@ mod tests {
     fn render_md_table_many_columns() {
         let theme = Theme::default();
         let md = "| A | B | C | D | E |\n|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 |";
-        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        let lines = spans_only(render_md(md, theme.assistant_message, &theme).0);
         // top + header + sep + data + bottom = 5 lines
         assert_eq!(lines.len(), 5);
         let header: String = lines[1].iter().map(|s| s.content.as_ref()).collect();
@@ -1466,7 +1563,7 @@ mod tests {
         // Cells with varying widths — column should expand to widest cell
         let theme = Theme::default();
         let md = "| Short | LongerHeader |\n|-------|--------|\n| x | y |";
-        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        let lines = spans_only(render_md(md, theme.assistant_message, &theme).0);
         assert_eq!(lines.len(), 5);
         // Header row: "LongerHeader" cell must appear in full
         let header: String = lines[1].iter().map(|s| s.content.as_ref()).collect();
@@ -1482,7 +1579,7 @@ mod tests {
         // Row with missing cells — should not panic, missing cells render as empty
         let theme = Theme::default();
         let md = "| A | B | C |\n|---|---|---|\n| 1 |   |   |";
-        let (lines, _) = render_md(md, theme.assistant_message, &theme);
+        let lines = spans_only(render_md(md, theme.assistant_message, &theme).0);
         assert_eq!(lines.len(), 5);
         let data: String = lines[3].iter().map(|s| s.content.as_ref()).collect();
         assert!(data.contains('1'));
@@ -2185,7 +2282,7 @@ mod tests {
         let (lines, _) = render_md("| CJK |\n| --- |\n| 测试 |", base, &theme);
         let all_text: String = lines
             .iter()
-            .flat_map(|spans| spans.iter().map(|s| s.content.as_ref()))
+            .flat_map(|(_kind, spans)| spans.iter().map(|s| s.content.as_ref()))
             .collect::<Vec<_>>()
             .join("");
         // Column width must be 4 (display width of "测试"), not 2 (char count).
@@ -2198,6 +2295,166 @@ mod tests {
         assert!(
             all_text.contains(" 测试  ") || all_text.contains(" 测试 "),
             "cell must be padded to display width 4; got: {all_text:?}"
+        );
+    }
+
+    // ── LineKind / code block presentation tests ────────────────────────────
+
+    #[test]
+    fn code_block_lines_tagged_code_block() {
+        let theme = Theme::default();
+        let (tagged, _) = render_md(
+            "```python\nprint('hi')\n```",
+            theme.assistant_message,
+            &theme,
+        );
+        assert!(!tagged.is_empty());
+        for (kind, _) in &tagged {
+            assert_eq!(
+                *kind,
+                LineKind::CodeBlock,
+                "expected CodeBlock tag on every code block line"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_lines_not_tagged_code_block() {
+        let theme = Theme::default();
+        let (tagged, _) = render_md("hello world", theme.assistant_message, &theme);
+        for (kind, _) in &tagged {
+            assert_eq!(*kind, LineKind::Normal);
+        }
+    }
+
+    #[test]
+    fn code_block_header_contains_lang_and_hint() {
+        let theme = Theme::default();
+        let (tagged, _) = render_md("```rust\nlet x = 1;\n```", theme.assistant_message, &theme);
+        let header_text: String = tagged[0].1.iter().map(|s| s.content.as_ref()).collect();
+        assert!(header_text.contains("rust"), "header must show lang");
+        assert!(header_text.contains("Ctrl+Y"), "header must show copy hint");
+    }
+
+    #[test]
+    fn empty_code_block_tagged_correctly() {
+        let theme = Theme::default();
+        let (tagged, _) = render_md("```\n```", theme.assistant_message, &theme);
+        assert!(!tagged.is_empty());
+        for (kind, _) in &tagged {
+            assert_eq!(*kind, LineKind::CodeBlock);
+        }
+    }
+
+    #[test]
+    fn text_code_text_no_bleed() {
+        let theme = Theme::default();
+        let md = "before\n```rust\ncode\n```\nafter";
+        let (tagged, _) = render_md(md, theme.assistant_message, &theme);
+        let first = &tagged[0];
+        assert_eq!(
+            first.0,
+            LineKind::Normal,
+            "prose before code must be Normal"
+        );
+        let last = tagged.last().unwrap();
+        assert_eq!(last.0, LineKind::Normal, "prose after code must be Normal");
+    }
+
+    #[test]
+    fn pad_code_block_lines_fills_to_width() {
+        let theme = Theme::default();
+        let spans = vec![Span::raw("hi")];
+        let line = Line::from(spans);
+        let padded = pad_code_block_lines(vec![line], LineKind::CodeBlock, 10, &theme);
+        let total_width: usize = padded[0].spans.iter().map(|s| s.content.width()).sum();
+        assert_eq!(total_width, 10, "padded line must fill wrap_width");
+    }
+
+    #[test]
+    fn pad_code_block_lines_noop_for_normal() {
+        let theme = Theme::default();
+        let spans = vec![Span::raw("hi")];
+        let line = Line::from(spans);
+        let result = pad_code_block_lines(vec![line], LineKind::Normal, 10, &theme);
+        assert_eq!(result[0].spans.len(), 1);
+    }
+
+    #[test]
+    fn pad_code_block_lines_noop_for_zero_width() {
+        let theme = Theme::default();
+        let spans = vec![Span::raw("hi")];
+        let line = Line::from(spans);
+        let result = pad_code_block_lines(vec![line], LineKind::CodeBlock, 0, &theme);
+        assert_eq!(result[0].spans.len(), 1);
+    }
+
+    #[test]
+    fn code_block_bg_style_applied() {
+        let theme = Theme::default();
+        assert!(
+            theme.code_block.bg.is_some(),
+            "code_block style must have a background colour"
+        );
+    }
+
+    #[test]
+    fn two_adjacent_code_blocks_both_tagged() {
+        let theme = Theme::default();
+        let md = "```rust\nfoo\n```\n```python\nbar\n```";
+        let (tagged, _) = render_md(md, theme.assistant_message, &theme);
+        assert!(
+            tagged.len() >= 4,
+            "two code blocks must produce at least 4 tagged lines"
+        );
+        for (kind, _) in &tagged {
+            assert_eq!(*kind, LineKind::CodeBlock);
+        }
+    }
+
+    #[test]
+    fn highlighted_code_spans_carry_surface_bg() {
+        let theme = Theme::default();
+        // Rust is always highlighted (registered in SYNTAX_HIGHLIGHTER).
+        let (tagged, _) = render_md("```rust\nlet x = 1;\n```", theme.assistant_message, &theme);
+        // Collect all non-gutter spans from content lines (skip header/footer rules).
+        let surface_bg = theme.code_block.bg;
+        assert!(
+            surface_bg.is_some(),
+            "code_block must have a bg for this test to be meaningful"
+        );
+        for (kind, spans) in &tagged {
+            if *kind != LineKind::CodeBlock {
+                continue;
+            }
+            for span in spans {
+                // Skip the gutter prefix ("  ") and rule-only lines.
+                if span.content.trim().is_empty() || span.content.contains('\u{2500}') {
+                    continue;
+                }
+                assert_eq!(
+                    span.style.bg, surface_bg,
+                    "syntax-highlighted span {:?} must carry surface bg",
+                    span.content
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_incomplete_code_block_produces_lines() {
+        // An unclosed fenced block (mid-stream) must still render content lines
+        // so that Ctrl+Y can copy whatever has arrived so far.
+        let theme = Theme::default();
+        let streaming_content = "```rust\nlet x = 1;\nfn foo() {";
+        let (tagged, _) = render_md(streaming_content, theme.assistant_message, &theme);
+        assert!(
+            !tagged.is_empty(),
+            "streaming-incomplete block must produce lines"
+        );
+        assert!(
+            tagged.iter().any(|(k, _)| *k == LineKind::CodeBlock),
+            "streaming-incomplete block must have at least one CodeBlock-tagged line"
         );
     }
 }

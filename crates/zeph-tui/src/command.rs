@@ -122,6 +122,9 @@ pub enum TuiCommand {
     CocoonModels,
     // Clipboard (#3685)
     CopyLastAssistant,
+    /// Copy the Nth visible code block from the last assistant message (1-indexed).
+    /// When `n` is 0, copies the last (most recent) block.
+    CopyLastCodeBlock(usize),
     // Fleet session overview (#3884)
     FleetPanel,
     // Durable execution journal (spec-064, #4949)
@@ -773,13 +776,22 @@ fn build_cocoon_commands() -> Vec<CommandEntry> {
 }
 
 fn build_clipboard_commands() -> Vec<CommandEntry> {
-    vec![CommandEntry {
-        id: "clipboard:copy",
-        label: "Copy last assistant reply to clipboard (/copy)",
-        category: "clipboard",
-        shortcut: Some("Ctrl+O"),
-        command: TuiCommand::CopyLastAssistant,
-    }]
+    vec![
+        CommandEntry {
+            id: "clipboard:copy",
+            label: "Copy last assistant reply to clipboard (/copy)",
+            category: "clipboard",
+            shortcut: Some("Ctrl+O"),
+            command: TuiCommand::CopyLastAssistant,
+        },
+        CommandEntry {
+            id: "clipboard:copyblock",
+            label: "Copy last code block from assistant reply to clipboard (/copyblock)",
+            category: "clipboard",
+            shortcut: Some("Ctrl+Y"),
+            command: TuiCommand::CopyLastCodeBlock(0),
+        },
+    ]
 }
 
 fn build_knowledge_commands() -> Vec<CommandEntry> {
@@ -959,10 +971,10 @@ mod tests {
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
         // + 1 forgetting-sweep + 3 acp + 1 sandbox:status (#3294) = 43
         // + 2 cocoon (#3673) when feature = "cocoon"
-        // + 1 clipboard:copy (#3685)
+        // + 2 clipboard (#3685, #5098)
         // + 2 worktree (#4679)
         // + 3 knowledge (#5019, #5020)
-        let expected = 49 + if cfg!(feature = "cocoon") { 2 } else { 0 };
+        let expected = 50 + if cfg!(feature = "cocoon") { 2 } else { 0 };
         assert_eq!(extra_command_registry().len(), expected);
     }
 
