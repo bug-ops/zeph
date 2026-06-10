@@ -3099,4 +3099,28 @@ mod tests {
         };
         assert_eq!(provider_effective_name(&state), "ollama");
     }
+
+    #[test]
+    fn build_config_policy_provider_set() {
+        let state = WizardState {
+            policy_enforcer_enabled: true,
+            policy_provider: "my-llm".into(),
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(config.tools.policy.enabled);
+        assert_eq!(config.tools.policy.policy_provider.as_str(), "my-llm");
+    }
+
+    #[test]
+    fn build_config_utility_window_set() {
+        let state = WizardState {
+            utility_window: 5,
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(config.tools.utility.utility_window, 5);
+    }
 }
