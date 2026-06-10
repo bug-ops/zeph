@@ -31,8 +31,12 @@ enum Priority {
 
 struct Segment {
     spans: Vec<Span<'static>>,
+    /// Abbreviated form shown under space pressure. `None` = no short form (full or drop).
+    short_spans: Option<Vec<Span<'static>>>,
     priority: Priority,
     width: u16,
+    /// Pre-computed display width of [`Segment::short_spans`], or 0 if absent.
+    short_width: u16,
 }
 
 struct SegmentList {
@@ -52,14 +56,108 @@ impl SegmentList {
         });
         self.segments.push(Segment {
             spans,
+            short_spans: None,
             priority,
             width,
+            short_width: 0,
         });
     }
 
-    /// Iteratively drop the last-pushed segment among those with the highest (lowest importance)
-    /// priority level until total fits within `max_width`, never dropping Critical.
+    /// Push a segment with an abbreviated form used under space pressure.
+    ///
+    /// When `total > max_width`, Phase A of [`SegmentList::layout`] abbreviates `full_spans`
+    /// to `short_spans` before Phase B drops segments entirely. Critical segments with a short
+    /// form are abbreviated but never dropped.
+    fn push_abbrev(
+        &mut self,
+        priority: Priority,
+        full_spans: Vec<Span<'static>>,
+        short_spans: Vec<Span<'static>>,
+    ) {
+        let width: u16 = full_spans.iter().fold(0u16, |acc, s| {
+            acc.saturating_add(u16::try_from(s.content.width()).unwrap_or(u16::MAX))
+        });
+        let short_width: u16 = short_spans.iter().fold(0u16, |acc, s| {
+            acc.saturating_add(u16::try_from(s.content.width()).unwrap_or(u16::MAX))
+        });
+        self.segments.push(Segment {
+            spans: full_spans,
+            short_spans: Some(short_spans),
+            priority,
+            width,
+            short_width,
+        });
+    }
+
+    /// Convenience for the common single-span case.
+    fn push_abbrev_styled(
+        &mut self,
+        priority: Priority,
+        full: String,
+        short: String,
+        style: ratatui::style::Style,
+    ) {
+        self.push_abbrev(
+            priority,
+            vec![Span::styled(full, style)],
+            vec![Span::styled(short, style)],
+        );
+    }
+
+    /// Apply the three-rung pressure ladder and return a flat span list.
+    ///
+    /// - **Phase A** — abbreviate: while over budget, switch the worst-priority, last-pushed
+    ///   segment that still shows its full form AND has a short form to its abbreviated
+    ///   version. Segments where `short_width >= width` (no savings) are skipped — this
+    ///   prevents an infinite loop when a short form is the same width as the full form.
+    /// - **Phase B** — drop: if still over budget, drop segments LIFO by worst priority
+    ///   (Critical exempt).
+    /// - **Phase C** — truncate: if Critical segments alone overflow, truncate the last span.
     fn layout(mut self, max_width: u16) -> Vec<Span<'static>> {
+        // Phase A — abbreviate under pressure.
+        loop {
+            let total: u16 = self
+                .segments
+                .iter()
+                .fold(0u16, |a, s| a.saturating_add(s.width));
+            if total <= max_width {
+                break;
+            }
+            // Find the worst priority among segments that can be abbreviated (have a short
+            // form that actually saves space — skip if short_width >= width).
+            let worst = self
+                .segments
+                .iter()
+                .filter(|s| s.short_spans.is_some() && s.short_width < s.width)
+                .map(|s| s.priority)
+                .max();
+            let Some(worst_priority) = worst else {
+                break;
+            };
+            // Abbreviate the last-pushed (LIFO) abbreviatable segment at that priority.
+            let abbrev_idx = self
+                .segments
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, s)| {
+                    s.priority == worst_priority
+                        && s.short_spans.is_some()
+                        && s.short_width < s.width
+                })
+                .map(|(i, _)| i);
+            if let Some(idx) = abbrev_idx {
+                let seg = &mut self.segments[idx];
+                if let Some(short) = seg.short_spans.take() {
+                    seg.width = seg.short_width;
+                    seg.spans = short;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Phase B — drop under pressure.
         loop {
             let total: u16 = self
                 .segments
@@ -123,6 +221,28 @@ impl SegmentList {
 impl Segment {
     fn into_spans(self) -> Vec<Span<'static>> {
         self.spans
+    }
+}
+
+/// Shorten token counts to the minimal non-ambiguous abbreviation.
+///
+/// Mirrors `format_tokens` but drops the label prefix, e.g. `12.3k` instead of `Tokens: 12.3k`.
+fn short_tokens(total: u64, reasoning: u64) -> String {
+    use zeph_common::format_tokens;
+    if reasoning > 0 {
+        format!(" {}(R:{})", format_tokens(total), format_tokens(reasoning))
+    } else {
+        format!(" {}", format_tokens(total))
+    }
+}
+
+/// Short form for uptime: minutes only when ≥1 min, seconds otherwise.
+fn short_uptime(secs: u64) -> String {
+    let m = secs / 60;
+    if m > 0 {
+        format!(" {m}m")
+    } else {
+        format!(" {secs}s")
     }
 }
 
@@ -211,22 +331,25 @@ fn push_medium_segments(
             )],
         );
     }
-    list.push(
+    list.push_abbrev_styled(
         Priority::Medium,
-        vec![Span::styled(
-            format!(
-                " | Skills: {} active / {} loaded",
-                metrics.active_skills.len(),
-                metrics.total_skills,
-            ),
-            theme.status_bar,
-        )],
+        format!(
+            " | Skills: {} active / {} loaded",
+            metrics.active_skills.len(),
+            metrics.total_skills,
+        ),
+        format!(
+            " Sk {}/{}",
+            metrics.active_skills.len(),
+            metrics.total_skills
+        ),
+        theme.status_bar,
     );
 }
 
 #[allow(clippy::too_many_lines)]
 fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapshot, theme: &Theme) {
-    let token_str = if metrics.reasoning_tokens > 0 {
+    let token_full = if metrics.reasoning_tokens > 0 {
         format!(
             " | Tokens: {} (R: {})",
             format_tokens(metrics.total_tokens),
@@ -235,32 +358,31 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
     } else {
         format!(" | Tokens: {}", format_tokens(metrics.total_tokens))
     };
-    list.push(
-        Priority::Low,
-        vec![Span::styled(token_str, theme.status_bar)],
+    let token_short = format!(
+        " |{}",
+        short_tokens(metrics.total_tokens, metrics.reasoning_tokens)
     );
+    list.push_abbrev_styled(Priority::Low, token_full, token_short, theme.status_bar);
+
     if metrics.cost_spent_cents > 0.0 {
-        list.push(
+        list.push_abbrev_styled(
             Priority::Low,
-            vec![Span::styled(
-                format!(" | ${:.4}", metrics.cost_spent_cents / 100.0),
-                theme.status_bar,
-            )],
+            format!(" | ${:.4}", metrics.cost_spent_cents / 100.0),
+            format!(" ${:.2}", metrics.cost_spent_cents / 100.0),
+            theme.status_bar,
         );
     }
-    list.push(
+    list.push_abbrev_styled(
         Priority::Low,
-        vec![Span::styled(
-            format!(" | API: {}", metrics.api_calls),
-            theme.status_bar,
-        )],
+        format!(" | API: {}", metrics.api_calls),
+        format!(" A{}", metrics.api_calls),
+        theme.status_bar,
     );
-    list.push(
+    list.push_abbrev_styled(
         Priority::Low,
-        vec![Span::styled(
-            format!(" | {}", format_uptime(metrics.uptime_seconds)),
-            theme.status_bar,
-        )],
+        format!(" | {}", format_uptime(metrics.uptime_seconds)),
+        short_uptime(metrics.uptime_seconds),
+        theme.status_bar,
     );
     if !metrics.shell_background_runs.is_empty() {
         list.push(
@@ -852,5 +974,119 @@ mod tests {
             !text.contains("BBBBBBBBBB"),
             "Low must be dropped: {text:?}"
         );
+    }
+
+    #[test]
+    fn phase_a_abbreviates_before_phase_b_drops() {
+        let theme = Theme::default();
+        let mut list = SegmentList::new();
+        // Critical: 10 chars — never dropped or abbreviated here (no short form).
+        list.push(
+            Priority::Critical,
+            vec![Span::styled("0123456789", theme.status_bar)],
+        );
+        // Low with short form: full=10, short=3 — abbreviatable.
+        list.push_abbrev(
+            Priority::Low,
+            vec![Span::styled("AAAAAAAAAA", theme.status_bar)],
+            vec![Span::styled("AAA", theme.status_bar)],
+        );
+        // Low without short form: 10 chars — drops in Phase B.
+        list.push(
+            Priority::Low,
+            vec![Span::styled("BBBBBBBBBB", theme.status_bar)],
+        );
+        // max_width = 23: Critical(10) + short_A(3) + B(10) = 23 — Phase A abbreviates A,
+        // then total = 23 which fits. B must NOT be dropped.
+        let spans = list.layout(23);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("0123456789"), "Critical must survive");
+        assert!(text.contains("AAA"), "abbreviated A must appear");
+        assert!(
+            !text.contains("AAAAAAAAAA"),
+            "full A must be replaced by short form"
+        );
+        assert!(
+            text.contains("BBBBBBBBBB"),
+            "B must survive — Phase A was enough"
+        );
+    }
+
+    #[test]
+    fn phase_a_skips_segment_where_short_equals_full_width() {
+        let theme = Theme::default();
+        let mut list = SegmentList::new();
+        list.push(
+            Priority::Critical,
+            vec![Span::styled("0123456789", theme.status_bar)],
+        );
+        // short_width == width — no savings, must be skipped by Phase A and dropped in Phase B.
+        list.push_abbrev(
+            Priority::Low,
+            vec![Span::styled("AAAA", theme.status_bar)],
+            vec![Span::styled("BBBB", theme.status_bar)], // same width = 4
+        );
+        // max_width = 10: only Critical fits. The abbrev segment has no savings so Phase A
+        // skips it; Phase B drops it.
+        let spans = list.layout(10);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("0123456789"), "Critical must survive");
+        assert!(
+            !text.contains("AAAA") && !text.contains("BBBB"),
+            "no-savings abbrev segment must be dropped in Phase B"
+        );
+    }
+
+    #[test]
+    fn phase_a_lifo_order_among_abbreviatable_at_same_priority() {
+        let theme = Theme::default();
+        let mut list = SegmentList::new();
+        list.push(
+            Priority::Critical,
+            vec![Span::styled("CRIT______", theme.status_bar)],
+        ); // 10
+        // Two Low abbreviatable: first pushed = A, last pushed = B.
+        // Phase A should abbreviate B first (LIFO).
+        list.push_abbrev(
+            Priority::Low,
+            vec![Span::styled("FULL_A____", theme.status_bar)], // 10
+            vec![Span::styled("sA", theme.status_bar)],         // 2
+        );
+        list.push_abbrev(
+            Priority::Low,
+            vec![Span::styled("FULL_B____", theme.status_bar)], // 10
+            vec![Span::styled("sB", theme.status_bar)],         // 2
+        );
+        // Total = 30. max_width = 22: need to save 8. Abbreviating B saves 8 (10→2). Fits.
+        let spans = list.layout(22);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("CRIT______"), "Critical must survive");
+        assert!(
+            text.contains("FULL_A____"),
+            "A must stay full — last pushed (B) abbreviated first"
+        );
+        assert!(text.contains("sB"), "B must be abbreviated (LIFO)");
+        assert!(!text.contains("FULL_B____"), "full B must not appear");
+    }
+
+    #[test]
+    fn short_tokens_no_reasoning() {
+        // Just checks the helper function used to build abbreviations.
+        assert_eq!(short_tokens(4200, 0), " 4.2k");
+    }
+
+    #[test]
+    fn short_tokens_with_reasoning() {
+        assert_eq!(short_tokens(4200, 1000), " 4.2k(R:1.0k)");
+    }
+
+    #[test]
+    fn short_uptime_seconds() {
+        assert_eq!(short_uptime(45), " 45s");
+    }
+
+    #[test]
+    fn short_uptime_minutes() {
+        assert_eq!(short_uptime(135), " 2m");
     }
 }
