@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `#[tracing::instrument]` — the old `Span::enter()` guard is not `Send` and silently loses trace
   context on task suspension in multi-threaded tokio; the attribute macro generates an async-safe
   span that correctly propagates across suspension points (closes #5138)
+- `fix(db)`: `connect_sqlite` no longer performs blocking filesystem I/O on the async tokio thread — `std::fs::create_dir_all` replaced with `tokio::fs::create_dir_all`; `open_private_truncate` and the WAL/SHM chmod loop wrapped in `tokio::task::spawn_blocking` (closes #5136, #5158)
 - `fix(tui)`: uniform `ToolDensity` matrix across all `ToolKind` variants — `Compact`/`Inline`/`Normal` modes now apply consistently to `Edit`, `Web`, `Mcp`, and `Run`/`Explore` tools; previously only `Run` and `Explore` honored grouping (closes #5102)
 - `fix(tui)`: markdown table column widths now use `unicode_width::UnicodeWidthStr::width()` instead of `chars().count()` — CJK characters and emoji no longer misalign table borders and cell padding (closes #5100)
 - `fix(memory)`: `CausalDistanceComputer::compute` no longer holds a `tokio::sync::Mutex` guard across `.await` — the external lock is replaced with an internal `std::sync::Mutex` on the cache field; `compute` now takes `&self` and BFS I/O runs lock-free, eliminating serialization of concurrent recall operations and the potential for re-entrant deadlock (closes #5107)

@@ -57,18 +57,24 @@ impl DbConfig {
         let url = if path == ":memory:" {
             "sqlite::memory:".to_string()
         } else {
-            let db_path = std::path::Path::new(path);
+            let db_path = std::path::PathBuf::from(path);
+
             if let Some(parent) = db_path.parent()
                 && !parent.as_os_str().is_empty()
             {
-                std::fs::create_dir_all(parent)?;
+                tokio::fs::create_dir_all(parent).await?;
             }
             // Pre-create with 0o600 so sqlx inherits the mode rather than using the
             // process umask. sqlx reopens the existing file via SQLITE_OPEN_CREATE.
             // WAL/SHM sidecars are created by sqlx after the pool opens and will still
             // inherit the process umask (sqlx limitation — best-effort chmod below).
-            if !db_path.exists() {
-                drop(zeph_common::fs_secure::open_private_truncate(db_path)?);
+            if tokio::fs::metadata(&db_path).await.is_err() {
+                let p = db_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    zeph_common::fs_secure::open_private_truncate(&p)
+                })
+                .await
+                .map_err(|e| std::io::Error::other(format!("spawn_blocking panicked: {e}")))??;
             }
             format!("sqlite:{path}?mode=rwc")
         };
@@ -107,15 +113,20 @@ impl DbConfig {
         // there is no way to close it without upstream sqlx support.
         #[cfg(unix)]
         if path != ":memory:" {
-            use std::os::unix::fs::PermissionsExt as _;
-            for suffix in &["", "-wal", "-shm", "-journal"] {
-                let p = format!("{path}{suffix}");
-                if let Ok(metadata) = std::fs::metadata(&p) {
-                    let mut perms = metadata.permissions();
-                    perms.set_mode(0o600);
-                    let _ = std::fs::set_permissions(&p, perms);
+            let path_owned = path.to_owned();
+            tokio::task::spawn_blocking(move || {
+                use std::os::unix::fs::PermissionsExt as _;
+                for suffix in &["", "-wal", "-shm", "-journal"] {
+                    let p = format!("{path_owned}{suffix}");
+                    if let Ok(metadata) = std::fs::metadata(&p) {
+                        let mut perms = metadata.permissions();
+                        perms.set_mode(0o600);
+                        let _ = std::fs::set_permissions(&p, perms);
+                    }
                 }
-            }
+            })
+            .await
+            .map_err(|e| std::io::Error::other(format!("spawn_blocking panicked: {e}")))?;
         }
 
         // Run a passive WAL checkpoint after migrations to avoid unbounded WAL growth.
