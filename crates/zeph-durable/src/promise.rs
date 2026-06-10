@@ -169,15 +169,17 @@ impl DurableHandle {
     /// - [`DurableError::PromiseRejected`] if `resolver_token` does not authenticate.
     /// - [`DurableError::Serialize`] if `value` cannot be serialized, or a storage error from the
     ///   backend.
+    #[tracing::instrument(
+        name = "durable.promise.resolve",
+        skip(self, resolver_token, value),
+        fields(promise_id = %id.as_uuid())
+    )]
     pub async fn resolve<T: Serialize>(
         &self,
         id: PromiseId,
         resolver_token: &[u8; RESOLVER_TOKEN_LEN],
         value: T,
     ) -> Result<(), DurableError> {
-        let span = tracing::info_span!("durable.promise.resolve", promise_id = %id.as_uuid());
-        let _enter = span.enter();
-
         let record = self
             .backend
             .promise_state(id)

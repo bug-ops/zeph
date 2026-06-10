@@ -80,10 +80,11 @@ pub(crate) struct ReplayCursor {
     backend: Arc<DurableBackendEnum>,
     execution_id: ExecutionId,
     segment_steps: u32,
-    // A tokio async mutex (intentionally held across the segment-read await): it serializes
-    // concurrent parallel-step lookups onto a single in-order loader so a segment is read once,
-    // never racing or double-reading. No other lock is taken while it is held, so it cannot
-    // deadlock.
+    // A tokio async mutex protecting the resident window and loader bookkeeping.  The lock is
+    // never held across I/O: each I/O call snapshots the decision fields, drops the guard,
+    // performs the async read, re-acquires the guard, and merges the result.  Concurrent callers
+    // are handled by the idempotency guard in `load_segment_from` and a double-check in the
+    // checkpoint preload — no deadlock is possible because no other lock is taken while it is held.
     state: Mutex<CursorState>,
 }
 
@@ -129,9 +130,9 @@ impl ReplayCursor {
     /// Returns a [`DurableError`] if a segment read fails or a stored entry cannot be decoded.
     pub(crate) async fn lookup(&self, step_id: StepId) -> Result<StepReplay, DurableError> {
         let step = step_id.value();
-        let mut state = self.state.lock().await;
-        self.ensure_loaded_through(&mut state, step).await?;
-        Ok(match state.loaded.remove(&step) {
+        self.ensure_loaded_through(step).await?;
+        let entry = self.state.lock().await.loaded.remove(&step);
+        Ok(match entry {
             Some(LoadedStep {
                 result: Some(result),
                 ..
@@ -149,45 +150,49 @@ impl ReplayCursor {
     }
 
     /// Read forward until `step` is covered or the journal is exhausted.
-    async fn ensure_loaded_through(
-        &self,
-        state: &mut CursorState,
-        step: u32,
-    ) -> Result<(), DurableError> {
-        if !state.checkpoints_preloaded {
-            self.preload_checkpoints(state).await?;
-        }
-        while !state.exhausted && state.next_step_to_load <= step {
-            self.load_segment(state).await?;
-        }
-        Ok(())
-    }
-
-    /// Inject folded step results from any compaction checkpoint, once, before the forward walk.
     ///
-    /// A checkpoint fold deletes the individual `StepResult` rows of an execution's idempotent
-    /// prefix, so those steps would otherwise read as `Fresh` on resume and re-run. Preloading the
-    /// snapshot's reconstructed results into the resident window makes the cursor serve them exactly
-    /// like a surviving row — including the idempotency key the divergence guard compares (INV-3).
-    async fn preload_checkpoints(&self, state: &mut CursorState) -> Result<(), DurableError> {
-        state.checkpoints_preloaded = true;
-        let entries = self
-            .backend
-            .read_checkpoints(self.execution_id)
-            .instrument(tracing::info_span!(
-                "durable.replay.cursor.preload",
-                execution_id = %self.execution_id.as_uuid(),
-            ))
-            .await?;
-        for entry in entries {
-            insert_entry(state, entry);
+    /// Each I/O operation (checkpoint preload, segment read) is performed without holding the
+    /// state lock: the lock is taken only to read the decision fields and to merge the result.
+    async fn ensure_loaded_through(&self, step: u32) -> Result<(), DurableError> {
+        // Checkpoint preload: check without lock, then perform I/O, then merge.
+        let needs_checkpoint = !self.state.lock().await.checkpoints_preloaded;
+        if needs_checkpoint {
+            let entries = self
+                .backend
+                .read_checkpoints(self.execution_id)
+                .instrument(tracing::info_span!(
+                    "durable.replay.cursor.preload",
+                    execution_id = %self.execution_id.as_uuid(),
+                ))
+                .await?;
+            let mut state = self.state.lock().await;
+            // Guard against a concurrent caller that already ran the preload.
+            if !state.checkpoints_preloaded {
+                state.checkpoints_preloaded = true;
+                for entry in entries {
+                    insert_entry(&mut state, entry);
+                }
+            }
+        }
+
+        loop {
+            // Snapshot decision fields without holding the lock across I/O.
+            let (exhausted, next_step_to_load) = {
+                let state = self.state.lock().await;
+                (state.exhausted, state.next_step_to_load)
+            };
+            if exhausted || next_step_to_load > step {
+                break;
+            }
+            self.load_segment_from(next_step_to_load).await?;
         }
         Ok(())
     }
 
-    /// Read one segment from `state.next_step_to_load` and fold it into the resident window.
-    async fn load_segment(&self, state: &mut CursorState) -> Result<(), DurableError> {
-        let from = state.next_step_to_load;
+    /// Read one segment starting at `from` and fold the result into the resident window.
+    ///
+    /// All async I/O happens before the state lock is re-acquired for the merge.
+    async fn load_segment_from(&self, from: u32) -> Result<(), DurableError> {
         let limit = self.segment_rows();
         let rows = async {
             let rows = self
@@ -204,12 +209,19 @@ impl ReplayCursor {
         ))
         .await?;
 
+        let mut state = self.state.lock().await;
+
+        // Another concurrent caller may have already loaded this segment; skip if so.
+        if state.next_step_to_load != from {
+            return Ok(());
+        }
+
         if rows.len() < limit {
             // A short batch is the journal's tail: there is nothing past it to truncate.
             let mut max_step = from;
             for entry in rows {
                 max_step = max_step.max(entry.step_id.value());
-                insert_entry(state, entry);
+                insert_entry(&mut state, entry);
             }
             state.exhausted = true;
             state.next_step_to_load = max_step.saturating_add(1);
@@ -224,7 +236,7 @@ impl ReplayCursor {
         let max_step = rows.iter().map(|e| e.step_id.value()).max().unwrap_or(from);
         if min_step == max_step {
             for entry in rows {
-                insert_entry(state, entry);
+                insert_entry(&mut state, entry);
             }
             state.next_step_to_load = max_step.saturating_add(1);
         } else {
@@ -232,7 +244,7 @@ impl ReplayCursor {
                 if entry.step_id.value() == max_step {
                     continue;
                 }
-                insert_entry(state, entry);
+                insert_entry(&mut state, entry);
             }
             state.next_step_to_load = max_step;
         }

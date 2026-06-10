@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(durable)`: `ReplayCursor::lookup` no longer holds a `tokio::sync::Mutex` guard across async
+  SQLite I/O — `ensure_loaded_through` now snapshots decision fields, drops the lock, performs I/O,
+  and re-acquires the lock only for the merge; concurrent callers are handled by an idempotency guard
+  on `load_segment_from` and a double-check on the checkpoint preload (closes #5127)
+- `fix(durable)`: `DurableHandle::resolve` replaced manual `span.enter()` across `.await` with
+  `#[tracing::instrument]` — the old `Span::enter()` guard is not `Send` and silently loses trace
+  context on task suspension in multi-threaded tokio; the attribute macro generates an async-safe
+  span that correctly propagates across suspension points (closes #5138)
 - `fix(tui)`: uniform `ToolDensity` matrix across all `ToolKind` variants — `Compact`/`Inline`/`Normal` modes now apply consistently to `Edit`, `Web`, `Mcp`, and `Run`/`Explore` tools; previously only `Run` and `Explore` honored grouping (closes #5102)
 - `fix(tui)`: markdown table column widths now use `unicode_width::UnicodeWidthStr::width()` instead of `chars().count()` — CJK characters and emoji no longer misalign table borders and cell padding (closes #5100)
 - `fix(memory)`: `CausalDistanceComputer::compute` no longer holds a `tokio::sync::Mutex` guard across `.await` — the external lock is replaced with an internal `std::sync::Mutex` on the cache field; `compute` now takes `&self` and BFS I/O runs lock-free, eliminating serialization of concurrent recall operations and the potential for re-entrant deadlock (closes #5107)
