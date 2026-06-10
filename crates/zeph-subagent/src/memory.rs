@@ -14,7 +14,6 @@
 //! - Files larger than 256 KiB or containing null bytes are rejected.
 //! - `<agent-memory>` tags in file content are escaped to prevent prompt injection.
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -115,13 +114,18 @@ pub fn resolve_memory_dir(scope: MemoryScope, agent_name: &str) -> Result<PathBu
 ///
 /// Returns [`SubAgentError::Invalid`] if the agent name is invalid.
 /// Returns [`SubAgentError::Memory`] if the directory cannot be created.
-pub fn ensure_memory_dir(scope: MemoryScope, agent_name: &str) -> Result<PathBuf, SubAgentError> {
+pub async fn ensure_memory_dir(
+    scope: MemoryScope,
+    agent_name: &str,
+) -> Result<PathBuf, SubAgentError> {
     let dir = resolve_memory_dir(scope, agent_name)?;
     // create_dir_all is idempotent — no need for a prior exists() check (REV-MED-02).
-    std::fs::create_dir_all(&dir).map_err(|e| SubAgentError::Memory {
-        name: agent_name.to_owned(),
-        reason: format!("cannot create memory directory '{}': {e}", dir.display()),
-    })?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| SubAgentError::Memory {
+            name: agent_name.to_owned(),
+            reason: format!("cannot create memory directory '{}': {e}", dir.display()),
+        })?;
     tracing::debug!(
         agent = agent_name,
         scope = ?scope,
@@ -146,16 +150,16 @@ pub fn ensure_memory_dir(scope: MemoryScope, agent_name: &str) -> Result<PathBuf
 /// - Opens the canonical path after the boundary check (no TOCTOU window).
 /// - Rejects files larger than 256 KiB.
 /// - Rejects files containing null bytes.
-pub fn load_memory_content(dir: &Path) -> Option<String> {
+pub async fn load_memory_content(dir: &Path) -> Option<String> {
     let memory_path = dir.join("MEMORY.md");
 
     // Canonicalize to resolve any symlinks before opening.
-    let canonical = std::fs::canonicalize(&memory_path).ok()?;
+    let canonical = tokio::fs::canonicalize(&memory_path).await.ok()?;
 
     // Boundary check: MEMORY.md must be within the memory directory.
     // REV-LOW-01: canonicalize dir separately (can't derive from canonical — symlink
     // target's parent differs from the original dir when symlink escapes boundary).
-    let canonical_dir = std::fs::canonicalize(dir).ok()?;
+    let canonical_dir = tokio::fs::canonicalize(dir).await.ok()?;
     if !canonical.starts_with(&canonical_dir) {
         tracing::warn!(
             path = %canonical.display(),
@@ -165,10 +169,8 @@ pub fn load_memory_content(dir: &Path) -> Option<String> {
         return None;
     }
 
-    // Open the canonical path — no TOCTOU window for symlink swap after this point.
-    // Read content via the same handle to avoid re-opening (REV-CRIT-01).
-    let mut file = std::fs::File::open(&canonical).ok()?;
-    let meta = file.metadata().ok()?;
+    // Stat the canonical path before reading to check size and file type.
+    let meta = tokio::fs::metadata(&canonical).await.ok()?;
 
     if !meta.is_file() {
         return None;
@@ -183,8 +185,7 @@ pub fn load_memory_content(dir: &Path) -> Option<String> {
         return None;
     }
 
-    let mut content = String::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
-    file.read_to_string(&mut content).ok()?;
+    let content = tokio::fs::read_to_string(&canonical).await.ok()?;
 
     // Security: reject files with null bytes (potential binary or injection attack).
     if content.contains('\0') {
@@ -354,27 +355,33 @@ mod tests {
 
     // ── ensure_memory_dir ────────────────────────────────────────────────────
 
-    #[test]
-    fn ensure_creates_directory_for_project_scope() {
+    #[tokio::test]
+    async fn ensure_creates_directory_for_project_scope() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let result = ensure_memory_dir(MemoryScope::Project, "test-agent").unwrap();
+        let result = ensure_memory_dir(MemoryScope::Project, "test-agent")
+            .await
+            .unwrap();
         assert!(result.exists());
         assert!(result.ends_with(".zeph/agent-memory/test-agent"));
 
         std::env::set_current_dir(orig_dir).unwrap();
     }
 
-    #[test]
-    fn ensure_idempotent_when_directory_exists() {
+    #[tokio::test]
+    async fn ensure_idempotent_when_directory_exists() {
         let tmp = tempfile::tempdir().unwrap();
         let orig_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let dir1 = ensure_memory_dir(MemoryScope::Project, "idempotent-agent").unwrap();
-        let dir2 = ensure_memory_dir(MemoryScope::Project, "idempotent-agent").unwrap();
+        let dir1 = ensure_memory_dir(MemoryScope::Project, "idempotent-agent")
+            .await
+            .unwrap();
+        let dir2 = ensure_memory_dir(MemoryScope::Project, "idempotent-agent")
+            .await
+            .unwrap();
         assert_eq!(dir1, dir2);
 
         std::env::set_current_dir(orig_dir).unwrap();
@@ -382,22 +389,22 @@ mod tests {
 
     // ── load_memory_content ───────────────────────────────────────────────────
 
-    #[test]
-    fn load_returns_none_when_no_file() {
+    #[tokio::test]
+    async fn load_returns_none_when_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(load_memory_content(tmp.path()).is_none());
+        assert!(load_memory_content(tmp.path()).await.is_none());
     }
 
-    #[test]
-    fn load_returns_content_when_file_exists() {
+    #[tokio::test]
+    async fn load_returns_content_when_file_exists() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("MEMORY.md"), "# Notes\nkey: value\n").unwrap();
-        let content = load_memory_content(tmp.path()).unwrap();
+        let content = load_memory_content(tmp.path()).await.unwrap();
         assert!(content.contains("key: value"));
     }
 
-    #[test]
-    fn load_truncates_at_200_lines() {
+    #[tokio::test]
+    async fn load_truncates_at_200_lines() {
         let tmp = tempfile::tempdir().unwrap();
         let mut lines = String::new();
         for i in 0..300 {
@@ -405,30 +412,30 @@ mod tests {
             writeln!(&mut lines, "line {i}").unwrap();
         }
         std::fs::write(tmp.path().join("MEMORY.md"), &lines).unwrap();
-        let content = load_memory_content(tmp.path()).unwrap();
+        let content = load_memory_content(tmp.path()).await.unwrap();
         let line_count = content.lines().count();
         // Truncated content has 200 data lines + 1 truncation marker line.
         assert!(line_count <= 202, "expected <= 202 lines, got {line_count}");
         assert!(content.contains("truncated at 200 lines"));
     }
 
-    #[test]
-    fn load_rejects_null_bytes() {
+    #[tokio::test]
+    async fn load_rejects_null_bytes() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("MEMORY.md"), "valid\0content").unwrap();
-        assert!(load_memory_content(tmp.path()).is_none());
+        assert!(load_memory_content(tmp.path()).await.is_none());
     }
 
-    #[test]
-    fn load_returns_none_for_empty_file() {
+    #[tokio::test]
+    async fn load_returns_none_for_empty_file() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("MEMORY.md"), "").unwrap();
-        assert!(load_memory_content(tmp.path()).is_none());
+        assert!(load_memory_content(tmp.path()).await.is_none());
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn load_rejects_symlink_escape() {
+    async fn load_rejects_symlink_escape() {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let target = outside.path().join("secret.md");
@@ -438,23 +445,23 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
         // The symlink points outside the tmp directory — should be rejected.
-        assert!(load_memory_content(tmp.path()).is_none());
+        assert!(load_memory_content(tmp.path()).await.is_none());
     }
 
-    #[test]
-    fn load_returns_none_for_whitespace_only_file() {
+    #[tokio::test]
+    async fn load_returns_none_for_whitespace_only_file() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("MEMORY.md"), "   \n\n   \n").unwrap();
-        assert!(load_memory_content(tmp.path()).is_none());
+        assert!(load_memory_content(tmp.path()).await.is_none());
     }
 
-    #[test]
-    fn load_rejects_file_over_size_cap() {
+    #[tokio::test]
+    async fn load_rejects_file_over_size_cap() {
         let tmp = tempfile::tempdir().unwrap();
         // 257 KiB of content — exceeds the 256 KiB limit.
         let content = "x".repeat(257 * 1024);
         std::fs::write(tmp.path().join("MEMORY.md"), content).unwrap();
-        assert!(load_memory_content(tmp.path()).is_none());
+        assert!(load_memory_content(tmp.path()).await.is_none());
     }
 
     // ── escape_memory_content ─────────────────────────────────────────────────

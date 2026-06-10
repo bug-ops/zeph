@@ -408,6 +408,40 @@ fn run_dry_run(source_items: &[SourceItem], total_files: usize, discovery_errors
     println!("Dry run complete. Run without --dry-run to ingest.");
 }
 
+async fn build_ingest_resources(
+    config_path: Option<&Path>,
+) -> anyhow::Result<(IngestionPipeline, IngestLedger, String, String)> {
+    let app = AppBuilder::new(config_path, None, None, None).await?;
+    let config = app.config();
+    let qdrant = QdrantOps::new(
+        &config.memory.qdrant_url,
+        config.memory.qdrant_api_key.as_ref().map(Secret::expose),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?;
+    let collection = config.memory.documents.collection.clone();
+    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
+    let provider = Arc::new(provider);
+    let embed_fn = {
+        let p = Arc::clone(&provider);
+        move |text: &str| -> zeph_llm::provider::EmbedFuture {
+            let p = Arc::clone(&p);
+            let owned = text.to_owned();
+            Box::pin(async move { p.embed(&owned).await })
+        }
+    };
+    let pipeline = IngestionPipeline::new(
+        TextSplitter::new(SplitterConfig::default()),
+        qdrant,
+        &collection,
+        Box::new(embed_fn),
+    );
+    let kn_sup = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+    let mem = app.build_memory(&provider, &kn_sup).await?;
+    let ledger = IngestLedger::new(mem.sqlite().pool().clone());
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    Ok((pipeline, ledger, batch_id, collection))
+}
+
 /// Execute the normal ingest path: build Qdrant + provider + ledger, then ingest each file.
 #[tracing::instrument(skip_all)]
 async fn run_ingest(
@@ -417,35 +451,8 @@ async fn run_ingest(
     per_source_counts: Vec<(&'static str, usize)>,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let app = AppBuilder::new(config_path, None, None, None).await?;
-    let config = app.config();
-
-    let qdrant = QdrantOps::new(
-        &config.memory.qdrant_url,
-        config.memory.qdrant_api_key.as_ref().map(Secret::expose),
-    )
-    .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?;
-
-    let collection = config.memory.documents.collection.clone();
-
-    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
-    let provider = Arc::new(provider);
-
-    let embed_fn = {
-        let p = Arc::clone(&provider);
-        move |text: &str| -> zeph_llm::provider::EmbedFuture {
-            let p = Arc::clone(&p);
-            let owned = text.to_owned();
-            Box::pin(async move { p.embed(&owned).await })
-        }
-    };
-
-    let splitter = TextSplitter::new(SplitterConfig::default());
-    let pipeline = IngestionPipeline::new(splitter, qdrant, &collection, Box::new(embed_fn));
-
-    let mem = app.build_memory(&provider).await?;
-    let ledger = IngestLedger::new(mem.sqlite().pool().clone());
-    let batch_id = uuid::Uuid::new_v4().to_string();
+    let (pipeline, ledger, batch_id, collection) =
+        Box::pin(build_ingest_resources(config_path)).await?;
 
     // FR-014: create a dedicated progress channel and spawn a CLI printer consumer.
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
@@ -803,7 +810,8 @@ async fn run_graph_ingest(
         Arc::new(p)
     };
 
-    let memory = app.build_memory(&provider).await?;
+    let kn_sup2 = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+    let memory = app.build_memory(&provider, &kn_sup2).await?;
 
     // Build SharedPostExtractValidator wrapping MemoryWriteValidator (INV-4).
     // Always Some — required on both dry-run and live paths (spec-067 §G-5 S3).
@@ -1241,7 +1249,8 @@ async fn handle_external_agent_ingest(
     let app = AppBuilder::new(config_path, None, None, None).await?;
     let app_config = app.config();
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
-    let mem = app.build_memory(&provider).await?;
+    let kn_sup3 = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+    let mem = app.build_memory(&provider, &kn_sup3).await?;
 
     // Build SharedPostExtractValidator wrapping MemoryWriteValidator (INV-4, spec-067 §G-5 S3).
     let validator_inner = zeph_sanitizer::memory_validation::MemoryWriteValidator::new(

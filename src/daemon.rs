@@ -299,7 +299,9 @@ pub(crate) async fn run_daemon(
     let budget_tokens = app.auto_budget_tokens(&provider);
 
     let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
-    let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+    let mem_cancel = tokio_util::sync::CancellationToken::new();
+    let mem_supervisor = zeph_common::TaskSupervisor::new(mem_cancel.clone());
+    let memory = std::sync::Arc::new(app.build_memory(&provider, &mem_supervisor).await?);
     let all_meta_owned: Vec<zeph_skills::loader::SkillMeta> =
         registry.read().all_meta().into_iter().cloned().collect();
     let all_meta_refs: Vec<&zeph_skills::loader::SkillMeta> = all_meta_owned.iter().collect();
@@ -327,6 +329,15 @@ pub(crate) async fn run_daemon(
     }
 
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
+
+    // Wire shutdown to mem_supervisor (created before build_memory for retrieval-failure-logger).
+    {
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = rx.changed().await;
+            mem_cancel.cancel();
+        });
+    }
 
     let daemon_cancel = tokio_util::sync::CancellationToken::new();
     let task_supervisor = zeph_common::TaskSupervisor::new(daemon_cancel.clone());

@@ -259,7 +259,9 @@ async fn build_acp_deps(
     let embedding_provider = crate::bootstrap::create_embedding_provider(app.config(), &provider);
     let budget_tokens = app.auto_budget_tokens(&provider);
     let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
-    let memory = std::sync::Arc::new(app.build_memory(&provider).await?);
+    let acp_mem_cancel = tokio_util::sync::CancellationToken::new();
+    let acp_mem_supervisor = zeph_common::TaskSupervisor::new(acp_mem_cancel);
+    let memory = std::sync::Arc::new(app.build_memory(&provider, &acp_mem_supervisor).await?);
 
     {
         let sqlite = memory.sqlite().clone();

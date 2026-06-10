@@ -97,7 +97,11 @@ fn noop_executor() -> Arc<dyn ErasedToolExecutor> {
     Arc::new(NoopExecutor)
 }
 
-fn do_spawn(mgr: &mut SubAgentManager, name: &str, prompt: &str) -> Result<String, SubAgentError> {
+async fn do_spawn(
+    mgr: &mut SubAgentManager,
+    name: &str,
+    prompt: &str,
+) -> Result<String, SubAgentError> {
     mgr.spawn(
         name,
         prompt,
@@ -107,6 +111,7 @@ fn do_spawn(mgr: &mut SubAgentManager, name: &str, prompt: &str) -> Result<Strin
         &SubAgentConfig::default(),
         SpawnContext::default(),
     )
+    .await
 }
 
 #[test]
@@ -123,23 +128,21 @@ fn load_definitions_populates_vec() {
     assert_eq!(mgr.definitions()[0].name, "helper");
 }
 
-#[test]
-fn spawn_not_found_error() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn spawn_not_found_error() {
     let mut mgr = make_manager();
-    let err = do_spawn(&mut mgr, "nonexistent", "prompt").unwrap_err();
+    let err = do_spawn(&mut mgr, "nonexistent", "prompt")
+        .await
+        .unwrap_err();
     assert!(matches!(err, SubAgentError::NotFound(_)));
 }
 
-#[test]
-fn spawn_and_cancel() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn spawn_and_cancel() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
-    let task_id = do_spawn(&mut mgr, "bot", "do stuff").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "do stuff").await.unwrap();
     assert!(!task_id.is_empty());
 
     mgr.cancel(&task_id).unwrap();
@@ -158,7 +161,7 @@ async fn collect_removes_agent() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
-    let task_id = do_spawn(&mut mgr, "bot", "do stuff").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "do stuff").await.unwrap();
     mgr.cancel(&task_id).unwrap();
 
     // Wait briefly for the task to observe cancellation
@@ -177,14 +180,12 @@ async fn collect_unknown_task_id_returns_not_found() {
     assert!(matches!(err, SubAgentError::NotFound(_)));
 }
 
-#[test]
-fn approve_secret_grants_access() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn approve_secret_grants_access() {
     let mut mgr = make_manager();
     mgr.definitions.push(def_with_secrets());
 
-    let task_id = do_spawn(&mut mgr, "bot", "work").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
     mgr.approve_secret(&task_id, "api-key", std::time::Duration::from_mins(1))
         .unwrap();
 
@@ -196,14 +197,12 @@ fn approve_secret_grants_access() {
     );
 }
 
-#[test]
-fn approve_secret_denied_for_unlisted_key() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn approve_secret_denied_for_unlisted_key() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def()); // no secrets in allowed list
 
-    let task_id = do_spawn(&mut mgr, "bot", "work").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
     let err = mgr
         .approve_secret(&task_id, "not-allowed", std::time::Duration::from_mins(1))
         .unwrap_err();
@@ -219,90 +218,80 @@ fn approve_secret_unknown_task_id_returns_not_found() {
     assert!(matches!(err, SubAgentError::NotFound(_)));
 }
 
-#[test]
-fn statuses_returns_active_agents() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn statuses_returns_active_agents() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
-    let task_id = do_spawn(&mut mgr, "bot", "work").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
     let statuses = mgr.statuses();
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].0, task_id);
 }
 
-#[test]
-fn concurrency_limit_enforced() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn concurrency_limit_enforced() {
     let mut mgr = SubAgentManager::new(1);
     mgr.definitions.push(sample_def());
 
-    let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
-    let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
+    let _first = do_spawn(&mut mgr, "bot", "first").await.unwrap();
+    let err = do_spawn(&mut mgr, "bot", "second").await.unwrap_err();
     assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
 }
 
 // --- #1619 regression tests: reserved_slots ---
 
-#[test]
-fn test_reserve_slots_blocks_spawn() {
+#[tokio::test]
+async fn test_reserve_slots_blocks_spawn() {
     // max_concurrent=2, reserved=1, active=1 → active+reserved >= max → ConcurrencyLimit.
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
     let mut mgr = SubAgentManager::new(2);
     mgr.definitions.push(sample_def());
 
     // Occupy one slot.
-    let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
+    let _first = do_spawn(&mut mgr, "bot", "first").await.unwrap();
     // Reserve the remaining slot.
     mgr.reserve_slots(1);
     // Now active(1) + reserved(1) >= max_concurrent(2) → should reject.
-    let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
+    let err = do_spawn(&mut mgr, "bot", "second").await.unwrap_err();
     assert!(
         matches!(err, SubAgentError::ConcurrencyLimit { .. }),
         "expected ConcurrencyLimit, got: {err}"
     );
 }
 
-#[test]
-fn test_release_reservation_allows_spawn() {
+#[tokio::test]
+async fn test_release_reservation_allows_spawn() {
     // After release_reservation(), the reserved slot is freed and spawn succeeds.
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
     let mut mgr = SubAgentManager::new(2);
     mgr.definitions.push(sample_def());
 
     // Reserve one slot (no active agents yet).
     mgr.reserve_slots(1);
     // active(0) + reserved(1) < max_concurrent(2), so one more spawn is allowed.
-    let _first = do_spawn(&mut mgr, "bot", "first").unwrap();
+    let _first = do_spawn(&mut mgr, "bot", "first").await.unwrap();
     // Now active(1) + reserved(1) >= max_concurrent(2) → blocked.
-    let err = do_spawn(&mut mgr, "bot", "second").unwrap_err();
+    let err = do_spawn(&mut mgr, "bot", "second").await.unwrap_err();
     assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
 
     // Release the reservation — active(1) + reserved(0) < max_concurrent(2).
     mgr.release_reservation(1);
-    let result = do_spawn(&mut mgr, "bot", "third");
+    let result = do_spawn(&mut mgr, "bot", "third").await;
     assert!(
         result.is_ok(),
         "spawn must succeed after release_reservation, got: {result:?}"
     );
 }
 
-#[test]
-fn test_reservation_with_zero_active_blocks_spawn() {
+#[tokio::test]
+async fn test_reservation_with_zero_active_blocks_spawn() {
     // Reserved slots alone (no active agents) should block spawn when reserved >= max.
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
     let mut mgr = SubAgentManager::new(2);
     mgr.definitions.push(sample_def());
 
     // Reserve all slots — no active agents.
     mgr.reserve_slots(2);
     // active(0) + reserved(2) >= max_concurrent(2) → blocked.
-    let err = do_spawn(&mut mgr, "bot", "first").unwrap_err();
+    let err = do_spawn(&mut mgr, "bot", "first").await.unwrap_err();
     assert!(
         matches!(err, SubAgentError::ConcurrencyLimit { .. }),
         "reservation alone must block spawn when reserved >= max_concurrent"
@@ -317,7 +306,7 @@ async fn background_agent_does_not_block_caller() {
     // Spawn should return immediately without waiting for LLM
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(100),
-        std::future::ready(do_spawn(&mut mgr, "bot", "work")),
+        do_spawn(&mut mgr, "bot", "work"),
     )
     .await;
     assert!(result.is_ok(), "spawn() must not block");
@@ -351,6 +340,7 @@ async fn max_turns_terminates_agent_loop() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     // Wait for completion
@@ -368,7 +358,7 @@ async fn cancellation_token_stops_agent_loop() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
-    let task_id = do_spawn(&mut mgr, "bot", "long task").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "long task").await.unwrap();
 
     // Cancel immediately
     mgr.cancel(&task_id).unwrap();
@@ -385,8 +375,8 @@ async fn shutdown_all_cancels_all_active_agents() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
-    do_spawn(&mut mgr, "bot", "task 1").unwrap();
-    do_spawn(&mut mgr, "bot", "task 2").unwrap();
+    do_spawn(&mut mgr, "bot", "task 1").await.unwrap();
+    do_spawn(&mut mgr, "bot", "task 2").await.unwrap();
 
     assert_eq!(mgr.agents.len(), 2);
     mgr.shutdown_all();
@@ -397,13 +387,11 @@ async fn shutdown_all_cancels_all_active_agents() {
     }
 }
 
-#[test]
-fn debug_impl_does_not_expose_sensitive_fields() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn debug_impl_does_not_expose_sensitive_fields() {
     let mut mgr = make_manager();
     mgr.definitions.push(def_with_secrets());
-    let task_id = do_spawn(&mut mgr, "bot", "work").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "work").await.unwrap();
     let handle = &mgr.agents[&task_id];
     let debug_str = format!("{handle:?}");
     // SubAgentHandle Debug must not expose grant contents or secrets
@@ -412,8 +400,6 @@ fn debug_impl_does_not_expose_sensitive_fields() {
 
 #[tokio::test]
 async fn llm_failure_transitions_to_failed_state() {
-    let rt_handle = tokio::runtime::Handle::current();
-    let _guard = rt_handle.enter();
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
@@ -428,6 +414,7 @@ async fn llm_failure_transitions_to_failed_state() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     // Poll until the background task transitions to Failed (or 5s timeout).
@@ -535,8 +522,6 @@ async fn tool_call_loop_two_turns() {
         }
     }
 
-    let rt_handle = tokio::runtime::Handle::current();
-    let _guard = rt_handle.enter();
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
@@ -569,6 +554,7 @@ async fn tool_call_loop_two_turns() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     // Wait for background loop to finish.
@@ -584,7 +570,7 @@ async fn collect_on_running_task_completes_eventually() {
     mgr.definitions.push(sample_def());
 
     // Spawn with a slow response so the task is still running.
-    let task_id = do_spawn(&mut mgr, "bot", "slow work").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "slow work").await.unwrap();
 
     // collect() awaits the JoinHandle, so it will finish when the task completes.
     let result =
@@ -595,17 +581,15 @@ async fn collect_on_running_task_completes_eventually() {
     assert!(inner.is_ok(), "collect returned error: {inner:?}");
 }
 
-#[test]
-fn concurrency_slot_freed_after_cancel() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn concurrency_slot_freed_after_cancel() {
     let mut mgr = SubAgentManager::new(1); // limit to 1
     mgr.definitions.push(sample_def());
 
-    let id1 = do_spawn(&mut mgr, "bot", "task 1").unwrap();
+    let id1 = do_spawn(&mut mgr, "bot", "task 1").await.unwrap();
 
     // Concurrency limit reached — second spawn should fail.
-    let err = do_spawn(&mut mgr, "bot", "task 2").unwrap_err();
+    let err = do_spawn(&mut mgr, "bot", "task 2").await.unwrap_err();
     assert!(
         matches!(err, SubAgentError::ConcurrencyLimit { .. }),
         "expected concurrency limit error, got: {err}"
@@ -615,7 +599,7 @@ fn concurrency_slot_freed_after_cancel() {
     mgr.cancel(&id1).unwrap();
 
     // Now a new spawn should succeed.
-    let result = do_spawn(&mut mgr, "bot", "task 3");
+    let result = do_spawn(&mut mgr, "bot", "task 3").await;
     assert!(
         result.is_ok(),
         "expected spawn to succeed after cancel, got: {result:?}"
@@ -645,6 +629,7 @@ async fn skill_bodies_prepended_to_system_prompt() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     // Poll until the provider is called (or 5 s timeout — guards against CI load).
@@ -696,6 +681,7 @@ async fn no_skills_does_not_add_fence_to_system_prompt() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     // Poll until the provider is called (or 5 s timeout — guards against CI load).
@@ -727,7 +713,7 @@ async fn statuses_does_not_include_collected_task() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
-    let task_id = do_spawn(&mut mgr, "bot", "task").unwrap();
+    let task_id = do_spawn(&mut mgr, "bot", "task").await.unwrap();
     assert_eq!(mgr.statuses().len(), 1);
 
     // Wait for task completion then collect.
@@ -776,6 +762,7 @@ async fn background_agent_auto_denies_secret_request() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     // Should complete without blocking — background auto-denies the secret.
@@ -788,11 +775,8 @@ async fn background_agent_auto_denies_secret_request() {
     drop(recorded);
 }
 
-#[test]
-fn spawn_with_plan_mode_definition_succeeds() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-
+#[tokio::test]
+async fn spawn_with_plan_mode_definition_succeeds() {
     let def = SubAgentDef::parse(indoc! {"
         ---
         name: planner
@@ -808,16 +792,13 @@ fn spawn_with_plan_mode_definition_succeeds() {
     let mut mgr = make_manager();
     mgr.definitions.push(def);
 
-    let task_id = do_spawn(&mut mgr, "planner", "make a plan").unwrap();
+    let task_id = do_spawn(&mut mgr, "planner", "make a plan").await.unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
 }
 
-#[test]
-fn spawn_with_disallowed_tools_definition_succeeds() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-
+#[tokio::test]
+async fn spawn_with_disallowed_tools_definition_succeeds() {
     let def = SubAgentDef::parse(indoc! {"
         ---
         name: safe-bot
@@ -839,18 +820,15 @@ fn spawn_with_disallowed_tools_definition_succeeds() {
     let mut mgr = make_manager();
     mgr.definitions.push(def);
 
-    let task_id = do_spawn(&mut mgr, "safe-bot", "task").unwrap();
+    let task_id = do_spawn(&mut mgr, "safe-bot", "task").await.unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
 }
 
 // ── #1180: default_permission_mode / default_disallowed_tools applied at spawn ──
 
-#[test]
-fn spawn_applies_default_permission_mode_from_config() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-
+#[tokio::test]
+async fn spawn_applies_default_permission_mode_from_config() {
     // Agent has Default permission mode — config sets Plan as default.
     let def =
         SubAgentDef::parse("---\nname: bot\ndescription: A bot\n---\n\nDo things.\n").unwrap();
@@ -874,16 +852,14 @@ fn spawn_applies_default_permission_mode_from_config() {
             &cfg,
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
 }
 
-#[test]
-fn spawn_does_not_override_explicit_permission_mode() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-
+#[tokio::test]
+async fn spawn_does_not_override_explicit_permission_mode() {
     // Agent explicitly sets DontAsk — config default must not override it.
     let def = SubAgentDef::parse(indoc! {"
         ---
@@ -916,16 +892,14 @@ fn spawn_does_not_override_explicit_permission_mode() {
             &cfg,
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
 }
 
-#[test]
-fn spawn_merges_global_disallowed_tools() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-
+#[tokio::test]
+async fn spawn_merges_global_disallowed_tools() {
     let def =
         SubAgentDef::parse("---\nname: bot\ndescription: A bot\n---\n\nDo things.\n").unwrap();
 
@@ -947,6 +921,7 @@ fn spawn_merges_global_disallowed_tools() {
             &cfg,
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -954,11 +929,8 @@ fn spawn_merges_global_disallowed_tools() {
 
 // ── #1182: bypass_permissions blocked without config gate ─────────────
 
-#[test]
-fn spawn_bypass_permissions_without_config_gate_is_error() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-
+#[tokio::test]
+async fn spawn_bypass_permissions_without_config_gate_is_error() {
     let def = SubAgentDef::parse(indoc! {"
         ---
         name: bypass-bot
@@ -986,15 +958,13 @@ fn spawn_bypass_permissions_without_config_gate_is_error() {
             &cfg,
             SpawnContext::default(),
         )
+        .await
         .unwrap_err();
     assert!(matches!(err, SubAgentError::Invalid(_)));
 }
 
-#[test]
-fn spawn_bypass_permissions_with_config_gate_succeeds() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-
+#[tokio::test]
+async fn spawn_bypass_permissions_with_config_gate_succeeds() {
     let def = SubAgentDef::parse(indoc! {"
         ---
         name: bypass-bot
@@ -1025,6 +995,7 @@ fn spawn_bypass_permissions_with_config_gate_succeeds() {
             &cfg,
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -1200,10 +1171,8 @@ fn resume_def_not_found_returns_not_found_error() {
     assert!(matches!(err, SubAgentError::NotFound(_)));
 }
 
-#[test]
-fn resume_concurrency_limit_reached_returns_error() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
+#[tokio::test]
+async fn resume_concurrency_limit_reached_returns_error() {
     let tmp = tempfile::tempdir().unwrap();
     let agent_id = "babe0000-0000-0000-0000-000000000000";
     write_completed_meta(tmp.path(), agent_id, "bot");
@@ -1212,14 +1181,11 @@ fn resume_concurrency_limit_reached_returns_error() {
     mgr.definitions.push(sample_def());
 
     // Occupy the single slot.
-    {
-        let _guard = rt.enter();
-        let _running_id = do_spawn(&mut mgr, "bot", "occupying slot").unwrap();
-    }
+    let _running_id = do_spawn(&mut mgr, "bot", "occupying slot").await.unwrap();
 
     let cfg = make_cfg_with_dir(tmp.path());
-    let err = rt
-        .block_on(mgr.resume(
+    let err = mgr
+        .resume(
             "babe0000",
             "continue",
             mock_provider(vec!["done"]),
@@ -1227,7 +1193,8 @@ fn resume_concurrency_limit_reached_returns_error() {
             None,
             &cfg,
             None,
-        ))
+        )
+        .await
         .unwrap_err();
     assert!(
         matches!(err, SubAgentError::ConcurrencyLimit { .. }),
@@ -1512,6 +1479,7 @@ async fn spawn_with_memory_scope_project_creates_directory() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -1565,6 +1533,7 @@ async fn spawn_with_config_default_memory_scope_applies_when_def_has_none() {
             &cfg,
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -1619,6 +1588,7 @@ async fn spawn_with_memory_blocked_by_disallowed_tools_skips_memory() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -1667,6 +1637,7 @@ async fn spawn_without_memory_scope_no_directory_created() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -1681,9 +1652,9 @@ async fn spawn_without_memory_scope_no_directory_created() {
     std::env::set_current_dir(orig_dir).unwrap();
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn build_prompt_injects_memory_block_after_behavioral_prompt() {
+async fn build_prompt_injects_memory_block_after_behavioral_prompt() {
     let tmp = tempfile::tempdir().unwrap();
     let orig_dir = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
@@ -1712,7 +1683,8 @@ fn build_prompt_injects_memory_block_after_behavioral_prompt() {
         &mut def,
         Some(MemoryScope::Project),
         &SpawnContext::default(),
-    );
+    )
+    .await;
 
     // Memory block must appear AFTER behavioral prompt text.
     let behavioral_pos = prompt.find("Behavioral instructions").unwrap();
@@ -1729,9 +1701,9 @@ fn build_prompt_injects_memory_block_after_behavioral_prompt() {
     std::env::set_current_dir(orig_dir).unwrap();
 }
 
-#[test]
+#[tokio::test]
 #[serial]
-fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
+async fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
     let tmp = tempfile::tempdir().unwrap();
     let orig_dir = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
@@ -1759,7 +1731,8 @@ fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
         &mut def,
         Some(MemoryScope::Project),
         &SpawnContext::default(),
-    );
+    )
+    .await;
 
     // read/write/edit must be auto-added to the AllowList.
     assert!(
@@ -1812,6 +1785,7 @@ async fn spawn_with_explicit_def_memory_overrides_config_default() {
             &cfg,
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -1873,6 +1847,7 @@ async fn spawn_memory_blocked_by_deny_list_policy() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
     assert!(!task_id.is_empty());
     mgr.cancel(&task_id).unwrap();
@@ -2116,8 +2091,8 @@ async fn run_agent_loop_executes_native_tool_call() {
 
 // --- Fix #2582 tests ---
 
-#[test]
-fn build_system_prompt_injects_working_directory() {
+#[tokio::test]
+async fn build_system_prompt_injects_working_directory() {
     use tempfile::TempDir;
 
     let tmp = TempDir::new().unwrap();
@@ -2133,7 +2108,7 @@ fn build_system_prompt_injects_working_directory() {
     "})
     .unwrap();
 
-    let prompt = build_system_prompt_with_memory(&mut def, None, &SpawnContext::default());
+    let prompt = build_system_prompt_with_memory(&mut def, None, &SpawnContext::default()).await;
     std::env::set_current_dir(orig).unwrap();
 
     assert!(
@@ -2248,8 +2223,6 @@ fn context_injection_last_assistant_fallback_when_no_assistant() {
 
 #[tokio::test]
 async fn spawn_model_inherit_resolves_to_parent_provider() {
-    let rt = tokio::runtime::Handle::current();
-    let _guard = rt.enter();
     let mut mgr = make_manager();
     let mut def = sample_def();
     def.model = Some(ModelSpec::Inherit);
@@ -2260,15 +2233,17 @@ async fn spawn_model_inherit_resolves_to_parent_provider() {
         ..SpawnContext::default()
     };
     // spawn should succeed without error (model resolution doesn't fail on missing provider)
-    let result = mgr.spawn(
-        "bot",
-        "task",
-        mock_provider(vec!["done"]),
-        noop_executor(),
-        None,
-        &SubAgentConfig::default(),
-        ctx,
-    );
+    let result = mgr
+        .spawn(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &SubAgentConfig::default(),
+            ctx,
+        )
+        .await;
     assert!(
         result.is_ok(),
         "spawn with Inherit model should succeed: {result:?}"
@@ -2277,29 +2252,27 @@ async fn spawn_model_inherit_resolves_to_parent_provider() {
 
 #[tokio::test]
 async fn spawn_model_named_uses_value() {
-    let rt = tokio::runtime::Handle::current();
-    let _guard = rt.enter();
     let mut mgr = make_manager();
     let mut def = sample_def();
     def.model = Some(ModelSpec::Named("fast".to_owned()));
     mgr.definitions.push(def);
 
-    let result = mgr.spawn(
-        "bot",
-        "task",
-        mock_provider(vec!["done"]),
-        noop_executor(),
-        None,
-        &SubAgentConfig::default(),
-        SpawnContext::default(),
-    );
+    let result = mgr
+        .spawn(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &SubAgentConfig::default(),
+            SpawnContext::default(),
+        )
+        .await;
     assert!(result.is_ok());
 }
 
-#[test]
-fn spawn_exceeds_max_depth_returns_error() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn spawn_exceeds_max_depth_returns_error() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
@@ -2321,6 +2294,7 @@ fn spawn_exceeds_max_depth_returns_error() {
             &cfg,
             ctx,
         )
+        .await
         .unwrap_err();
     assert!(
         matches!(err, SubAgentError::MaxDepthExceeded { depth: 2, max: 2 }),
@@ -2328,10 +2302,8 @@ fn spawn_exceeds_max_depth_returns_error() {
     );
 }
 
-#[test]
-fn spawn_at_max_depth_minus_one_succeeds() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn spawn_at_max_depth_minus_one_succeeds() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
@@ -2343,25 +2315,25 @@ fn spawn_at_max_depth_minus_one_succeeds() {
         spawn_depth: 2, // one below max → should succeed
         ..SpawnContext::default()
     };
-    let result = mgr.spawn(
-        "bot",
-        "task",
-        mock_provider(vec!["done"]),
-        noop_executor(),
-        None,
-        &cfg,
-        ctx,
-    );
+    let result = mgr
+        .spawn(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            ctx,
+        )
+        .await;
     assert!(
         result.is_ok(),
         "spawn at depth 2 with max 3 should succeed: {result:?}"
     );
 }
 
-#[test]
-fn spawn_foreground_uses_child_token() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn spawn_foreground_uses_child_token() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
@@ -2381,6 +2353,7 @@ fn spawn_foreground_uses_child_token() {
             &SubAgentConfig::default(),
             ctx,
         )
+        .await
         .unwrap();
 
     // Cancel parent — child should also be cancelled
@@ -2700,6 +2673,7 @@ async fn spawn_with_user_memory_scope_sets_memory_aware_executor() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     assert!(!task_id.is_empty());
@@ -2718,8 +2692,8 @@ async fn spawn_with_user_memory_scope_sets_memory_aware_executor() {
     }
 }
 
-#[test]
-fn build_prompt_includes_orchestrator_identity_when_name_is_set() {
+#[tokio::test]
+async fn build_prompt_includes_orchestrator_identity_when_name_is_set() {
     let mut def = SubAgentDef::parse(indoc! {"
         ---
         name: worker-agent
@@ -2734,7 +2708,7 @@ fn build_prompt_includes_orchestrator_identity_when_name_is_set() {
         orchestrator_role: Some("task-router".to_owned()),
         ..SpawnContext::default()
     };
-    let prompt = build_system_prompt_with_memory(&mut def, None, &ctx_name_and_role);
+    let prompt = build_system_prompt_with_memory(&mut def, None, &ctx_name_and_role).await;
     assert!(
         prompt.contains("You were spawned by orchestrator: planner (role: task-router)."),
         "prompt must contain full orchestrator identity line, got: {prompt}"
@@ -2749,7 +2723,7 @@ fn build_prompt_includes_orchestrator_identity_when_name_is_set() {
         orchestrator_role: None,
         ..SpawnContext::default()
     };
-    let prompt_no_role = build_system_prompt_with_memory(&mut def, None, &ctx_name_only);
+    let prompt_no_role = build_system_prompt_with_memory(&mut def, None, &ctx_name_only).await;
     assert!(
         prompt_no_role.contains("You were spawned by orchestrator: planner."),
         "prompt must contain name-only orchestrator line, got: {prompt_no_role}"
@@ -2763,7 +2737,8 @@ fn build_prompt_includes_orchestrator_identity_when_name_is_set() {
         "name-only branch must use updated wording, got: {prompt_no_role}"
     );
 
-    let prompt_no_orch = build_system_prompt_with_memory(&mut def, None, &SpawnContext::default());
+    let prompt_no_orch =
+        build_system_prompt_with_memory(&mut def, None, &SpawnContext::default()).await;
     assert!(
         !prompt_no_orch.contains("You were spawned by orchestrator"),
         "orchestrator header must be absent when orchestrator_name is None"
@@ -2775,7 +2750,7 @@ fn build_prompt_includes_orchestrator_identity_when_name_is_set() {
         orchestrator_role: Some("planner".to_owned()),
         ..SpawnContext::default()
     };
-    let prompt_role_only = build_system_prompt_with_memory(&mut def, None, &ctx_role_only);
+    let prompt_role_only = build_system_prompt_with_memory(&mut def, None, &ctx_role_only).await;
     assert!(
         !prompt_role_only.contains("You were spawned by orchestrator"),
         "orchestrator header must be absent when orchestrator_name is None (role-only case), \
@@ -2788,7 +2763,7 @@ fn build_prompt_includes_orchestrator_identity_when_name_is_set() {
         orchestrator_role: Some("planner".to_owned()),
         ..SpawnContext::default()
     };
-    let prompt_empty = build_system_prompt_with_memory(&mut def, None, &ctx_empty_name);
+    let prompt_empty = build_system_prompt_with_memory(&mut def, None, &ctx_empty_name).await;
     assert!(
         !prompt_empty.contains("You were spawned by orchestrator"),
         "orchestrator header must be absent when orchestrator_name is empty string, \
@@ -2839,10 +2814,8 @@ fn mcp_server_config(id: &str) -> zeph_config::McpServerConfig {
     serde_json::from_str(&format!(r#"{{"id":"{id}"}}"#)).unwrap()
 }
 
-#[test]
-fn spawn_context_session_mcp_servers_merged() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn spawn_context_session_mcp_servers_merged() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
@@ -2861,16 +2834,15 @@ fn spawn_context_session_mcp_servers_merged() {
             &SubAgentConfig::default(),
             ctx,
         )
+        .await
         .unwrap();
     let names = &mgr.agents[&task_id].mcp_tool_names;
     assert!(names.contains(&"existing-server".to_owned()));
     assert!(names.contains(&"new-server".to_owned()));
 }
 
-#[test]
-fn spawn_context_session_mcp_servers_dedup() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
+#[tokio::test]
+async fn spawn_context_session_mcp_servers_dedup() {
     let mut mgr = make_manager();
     mgr.definitions.push(sample_def());
 
@@ -2889,6 +2861,7 @@ fn spawn_context_session_mcp_servers_dedup() {
             &SubAgentConfig::default(),
             ctx,
         )
+        .await
         .unwrap();
     let names = &mgr.agents[&task_id].mcp_tool_names;
     assert_eq!(
@@ -3066,6 +3039,7 @@ async fn fleet_register_active_called_on_spawn() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     // Wait until the background task calls register_active.
@@ -3099,6 +3073,7 @@ async fn fleet_mark_terminal_completed_on_collect() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -3139,6 +3114,7 @@ async fn fleet_mark_terminal_cancelled_on_cancel() {
             &SubAgentConfig::default(),
             SpawnContext::default(),
         )
+        .await
         .unwrap();
 
     mgr.cancel(&task_id).unwrap();

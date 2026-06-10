@@ -7,10 +7,12 @@
 //! [`RetrievalFailureLogger::log`] on the hot path without blocking. A
 //! background task coalesces records into batches and flushes them to `SQLite`.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tracing::Instrument as _;
+use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
 use crate::store::SqliteStore;
 use crate::store::retrieval_failures::RetrievalFailureRecord;
@@ -26,18 +28,16 @@ const CLEANUP_FLUSH_INTERVAL: u32 = 500;
 /// from the recall hot path. Records are sent via a bounded channel; if the channel is
 /// full the record is silently dropped (zero hot-path latency, per INV-1).
 ///
-/// Fields are `Option` so that [`shutdown`](Self::shutdown) can take them without a
-/// move-out-of-`Drop` conflict, and so the `Drop` impl can abort any task not yet drained.
-/// `tx` is declared before `handle` to ensure the channel is closed before the handle is
-/// dropped, which allows the background task to exit cleanly when `Drop` fires.
+/// The background writer task is registered with [`TaskSupervisor`] for lifecycle
+/// visibility and graceful shutdown. Call [`shutdown`](Self::shutdown) for a clean drain.
 pub struct RetrievalFailureLogger {
-    // tx MUST be declared before handle — drop order closes the channel before the handle.
     tx: Option<mpsc::Sender<RetrievalFailureRecord>>,
-    handle: Option<tokio::task::JoinHandle<()>>,
+    /// Notified by `writer_task` after the final flush completes.
+    done: Arc<Notify>,
 }
 
 impl RetrievalFailureLogger {
-    /// Spawn the background writer task and return a logger handle.
+    /// Spawn the background writer task under `supervisor` and return a logger handle.
     ///
     /// `batch_size` records are flushed at once, or after `flush_interval` elapses,
     /// whichever comes first. Old records are purged every `CLEANUP_FLUSH_INTERVAL`
@@ -49,19 +49,32 @@ impl RetrievalFailureLogger {
         batch_size: usize,
         flush_interval: Duration,
         retention_days: u32,
+        supervisor: &TaskSupervisor,
     ) -> Self {
         let (tx, rx) = mpsc::channel(channel_capacity);
-        let handle = tokio::spawn(writer_task(
+        let done = Arc::new(Notify::new());
+        let fut = writer_task(
             sqlite,
             rx,
             batch_size,
             flush_interval,
             retention_days,
-        ));
-        Self {
-            tx: Some(tx),
-            handle: Some(handle),
-        }
+            Arc::clone(&done),
+        );
+        let cell = Arc::new(Mutex::new(Some(fut)));
+        supervisor.spawn(TaskDescriptor {
+            name: "memory.retrieval-failure-logger",
+            restart: RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().ok().and_then(|mut g| g.take());
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+        Self { tx: Some(tx), done }
     }
 
     /// Queue a retrieval failure record for async persistence.
@@ -90,27 +103,14 @@ impl RetrievalFailureLogger {
         }
     }
 
-    /// Shut down the background writer, draining any queued records.
+    /// Drain queued records and wait for the writer to flush before returning.
     ///
-    /// Closes the sender and waits for the background task to complete. Drop is
-    /// best-effort only; call this method for a clean drain on process exit.
+    /// Drops the sender so `writer_task` exits its receive loop, flushes the
+    /// remaining batch, and fires the `done` notify. `TaskSupervisor::shutdown_all`
+    /// should be called after this to clean up the registry entry.
     pub async fn shutdown(mut self) {
         drop(self.tx.take());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.await;
-        }
-    }
-}
-
-impl Drop for RetrievalFailureLogger {
-    /// Abort the background writer task on drop.
-    ///
-    /// For a clean drain (flushing queued records) call [`RetrievalFailureLogger::shutdown`]
-    /// explicitly before dropping. This impl ensures the task is not silently detached.
-    fn drop(&mut self) {
-        if let Some(handle) = &self.handle {
-            handle.abort();
-        }
+        self.done.notified().await;
     }
 }
 
@@ -120,6 +120,7 @@ async fn writer_task(
     batch_size: usize,
     flush_interval: Duration,
     retention_days: u32,
+    done: Arc<Notify>,
 ) {
     let mut batch: Vec<RetrievalFailureRecord> = Vec::with_capacity(batch_size);
     let mut flush_counter: u32 = 0;
@@ -141,6 +142,7 @@ async fn writer_task(
                     } else {
                         // Sender dropped — drain remaining and exit.
                         flush_batch(&sqlite, &mut batch, &mut flush_counter, retention_days).await;
+                        done.notify_one();
                         return;
                     }
                 }
@@ -185,9 +187,16 @@ async fn flush_batch(
 mod tests {
     use std::time::Duration;
 
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::task_supervisor::TaskSupervisor;
+
     use super::*;
     use crate::store::SqliteStore;
     use crate::store::retrieval_failures::{RetrievalFailureRecord, RetrievalFailureType};
+
+    fn make_supervisor() -> TaskSupervisor {
+        TaskSupervisor::new(CancellationToken::new())
+    }
 
     fn no_hit_record() -> RetrievalFailureRecord {
         RetrievalFailureRecord {
@@ -226,10 +235,18 @@ mod tests {
     #[tokio::test]
     async fn no_hit_failure_is_persisted() {
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
-        let logger =
-            RetrievalFailureLogger::new(sqlite.clone(), 256, 16, Duration::from_millis(10), 90);
+        let sup = make_supervisor();
+        let logger = RetrievalFailureLogger::new(
+            sqlite.clone(),
+            256,
+            16,
+            Duration::from_millis(10),
+            90,
+            &sup,
+        );
         logger.log(no_hit_record());
         logger.shutdown().await;
+        sup.shutdown_all(Duration::from_secs(5)).await;
 
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT failure_type FROM memory_retrieval_failures WHERE failure_type = 'no_hit'",
@@ -243,10 +260,18 @@ mod tests {
     #[tokio::test]
     async fn low_confidence_failure_is_persisted() {
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
-        let logger =
-            RetrievalFailureLogger::new(sqlite.clone(), 256, 16, Duration::from_millis(10), 90);
+        let sup = make_supervisor();
+        let logger = RetrievalFailureLogger::new(
+            sqlite.clone(),
+            256,
+            16,
+            Duration::from_millis(10),
+            90,
+            &sup,
+        );
         logger.log(low_confidence_record(0.3, 0.7));
         logger.shutdown().await;
+        sup.shutdown_all(Duration::from_secs(5)).await;
 
         let rows: Vec<(String, f32, f32)> = sqlx::query_as(
             "SELECT failure_type, top_score, confidence_threshold \
@@ -267,8 +292,10 @@ mod tests {
     #[tokio::test]
     async fn log_does_not_block_when_channel_is_full() {
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
+        let sup = make_supervisor();
         // capacity = 1 so the second send will be dropped
-        let logger = RetrievalFailureLogger::new(sqlite.clone(), 1, 16, Duration::from_mins(1), 90);
+        let logger =
+            RetrievalFailureLogger::new(sqlite.clone(), 1, 16, Duration::from_mins(1), 90, &sup);
         // First log fills the channel (capacity 1).
         logger.log(no_hit_record());
         // Second log must not block — try_send drops the record silently.
@@ -280,19 +307,28 @@ mod tests {
             "log() must be non-blocking even when channel is full, elapsed={elapsed:?}"
         );
         logger.shutdown().await;
+        sup.shutdown_all(Duration::from_secs(5)).await;
     }
 
     #[tokio::test]
     async fn query_text_truncated_to_512_chars() {
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
-        let logger =
-            RetrievalFailureLogger::new(sqlite.clone(), 256, 16, Duration::from_millis(10), 90);
+        let sup = make_supervisor();
+        let logger = RetrievalFailureLogger::new(
+            sqlite.clone(),
+            256,
+            16,
+            Duration::from_millis(10),
+            90,
+            &sup,
+        );
         let long_query = "x".repeat(1000);
         let mut record = no_hit_record();
         record.query_text = long_query;
         record.query_len = 1000;
         logger.log(record);
         logger.shutdown().await;
+        sup.shutdown_all(Duration::from_secs(5)).await;
 
         let rows: Vec<(String,)> =
             sqlx::query_as("SELECT query_text FROM memory_retrieval_failures")
@@ -329,13 +365,21 @@ mod tests {
     #[tokio::test]
     async fn multiple_records_batch_flushed() {
         let sqlite = SqliteStore::new(":memory:").await.unwrap();
-        let logger =
-            RetrievalFailureLogger::new(sqlite.clone(), 256, 16, Duration::from_millis(10), 90);
+        let sup = make_supervisor();
+        let logger = RetrievalFailureLogger::new(
+            sqlite.clone(),
+            256,
+            16,
+            Duration::from_millis(10),
+            90,
+            &sup,
+        );
         for _ in 0..5 {
             logger.log(no_hit_record());
         }
         logger.log(low_confidence_record(0.2, 0.8));
         logger.shutdown().await;
+        sup.shutdown_all(Duration::from_secs(5)).await;
 
         let rows: Vec<(i64,)> = sqlx::query_as("SELECT COUNT(*) FROM memory_retrieval_failures")
             .fetch_all(sqlite.pool())

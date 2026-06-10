@@ -277,7 +277,7 @@ pub(crate) fn apply_constraint_propagation(def: &mut SubAgentDef, ctx: &SpawnCon
 /// Known limitation: agents may use Read/Write/Edit beyond the memory directory.
 /// See issue #1152 for future `FilteredToolExecutor` path-restriction enhancement.
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn build_system_prompt_with_memory(
+pub(crate) async fn build_system_prompt_with_memory(
     def: &mut SubAgentDef,
     scope: Option<MemoryScope>,
     ctx: &SpawnContext,
@@ -314,7 +314,7 @@ pub(crate) fn build_system_prompt_with_memory(
         return format!("{}{}", orchestrator_header, def.system_prompt);
     }
 
-    let memory_dir = match ensure_memory_dir(scope, &def.name) {
+    let memory_dir = match ensure_memory_dir(scope, &def.name).await {
         Ok(dir) => dir,
         Err(e) => {
             tracing::warn!(
@@ -362,7 +362,7 @@ pub(crate) fn build_system_prompt_with_memory(
         path = memory_dir.display()
     );
 
-    let memory_block = load_memory_content(&memory_dir).map(|content| {
+    let memory_block = load_memory_content(&memory_dir).await.map(|content| {
         let escaped = escape_memory_content(&content);
         format!("\n\n<agent-memory>\n{escaped}\n</agent-memory>")
     });
@@ -517,7 +517,7 @@ impl SubAgentManager {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
     #[tracing::instrument(name = "subagent.manager.spawn", skip_all, fields(def_name = def_name))]
-    pub fn spawn(
+    pub async fn spawn(
         &mut self,
         def_name: &str,
         task_prompt: &str,
@@ -586,7 +586,7 @@ impl SubAgentManager {
         // IMPORTANT (REV-HIGH-03): build_system_prompt_with_memory may mutate def.tools
         // (auto-enables Read/Write/Edit for AllowList memory). FilteredToolExecutor MUST
         // be constructed AFTER this call to pick up the updated tool list.
-        let system_prompt = build_system_prompt_with_memory(&mut def, effective_memory, &ctx);
+        let system_prompt = build_system_prompt_with_memory(&mut def, effective_memory, &ctx).await;
 
         let memory_dir = effective_memory
             .and_then(|scope| super::super::memory::resolve_memory_dir(scope, &def.name).ok());
@@ -1150,7 +1150,7 @@ impl SubAgentManager {
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
-    pub fn spawn_for_task<F>(
+    pub async fn spawn_for_task<F>(
         &mut self,
         def_name: &str,
         task_prompt: &str,
@@ -1164,15 +1164,17 @@ impl SubAgentManager {
     where
         F: FnOnce(String, Result<String, SubAgentError>) + Send + 'static,
     {
-        let handle_id = self.spawn(
-            def_name,
-            task_prompt,
-            provider,
-            tool_executor,
-            skills,
-            config,
-            ctx,
-        )?;
+        let handle_id = self
+            .spawn(
+                def_name,
+                task_prompt,
+                provider,
+                tool_executor,
+                skills,
+                config,
+                ctx,
+            )
+            .await?;
 
         let handle = self
             .agents

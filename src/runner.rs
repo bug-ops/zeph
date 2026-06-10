@@ -1054,14 +1054,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         std::process::exit(130);
     });
 
+    // Create TaskSupervisor early so background tasks spawned during build_memory
+    // (e.g. retrieval-failure-logger) are registered before the shutdown bridge is wired.
+    // The shutdown bridge (shutdown_rx → mem_cancel) is attached below after build_shutdown().
+    let mem_cancel = tokio_util::sync::CancellationToken::new();
+    let supervisor = std::sync::Arc::new(TaskSupervisor::new(mem_cancel.clone()));
+
     #[cfg(feature = "tui")]
     tui_status!("Loading memory...");
     let memory = if exec_mode.bare {
         // Bare mode: use an ephemeral in-process SQLite with no Qdrant, no graph store,
-        // and no embed backfill. Avoids all startup file and network I/O.
+        // and no embed backfill. Avoids all startup file and memory I/O.
         std::sync::Arc::new(app.build_bare_memory(&provider).await?)
     } else {
-        std::sync::Arc::new(app.build_memory(&provider).await?)
+        std::sync::Arc::new(app.build_memory(&provider, &supervisor).await?)
     };
     // backfill_rx: progress tracking for embed backfill.
     // None = idle/done, Some(progress) = in progress.
@@ -1503,10 +1509,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         zeph_core::ShellOverlaySnapshot { blocked, allowed }
     };
 
-    // Create a TaskSupervisor for all memory background loops.
-    // A single bridge from shutdown_rx → cancel token replaces per-loop cancel bridges.
-    let mem_cancel = tokio_util::sync::CancellationToken::new();
-    let supervisor = std::sync::Arc::new(TaskSupervisor::new(mem_cancel.clone()));
+    // Wire shutdown_rx → mem_cancel bridge so the supervisor (created before build_memory)
+    // shuts down cleanly when the shutdown signal fires.
     {
         let mut rx = shutdown_rx.clone();
         let cancel = mem_cancel.clone();
@@ -3723,7 +3727,13 @@ async fn run_experiment_session(
     let exp_config = config.experiments.clone();
 
     // Build memory for persisting results (best effort — if unavailable, results are logged only).
-    let memory = app.build_memory(&provider_arc).await.ok().map(Arc::new);
+    let exp_cancel = tokio_util::sync::CancellationToken::new();
+    let exp_supervisor = TaskSupervisor::new(exp_cancel.clone());
+    let memory = app
+        .build_memory(&provider_arc, &exp_supervisor)
+        .await
+        .ok()
+        .map(Arc::new);
 
     let mut engine = ExperimentEngine::new(
         evaluator,

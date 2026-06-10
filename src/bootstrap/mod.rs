@@ -363,6 +363,7 @@ impl AppBuilder {
     pub async fn build_memory(
         &self,
         provider: &AnyProvider,
+        supervisor: &zeph_common::TaskSupervisor,
     ) -> Result<SemanticMemory, BootstrapError> {
         let embed_model = self.embedding_model();
         // Resolve the database path: prefer database_url (PostgreSQL) over sqlite_path.
@@ -496,7 +497,7 @@ impl AppBuilder {
         memory =
             memory.with_key_facts_dedup_threshold(self.config.memory.key_facts_dedup_threshold);
 
-        if let Some(logger) = self.build_retrieval_failure_logger(memory.sqlite()) {
+        if let Some(logger) = self.build_retrieval_failure_logger(memory.sqlite(), supervisor) {
             memory = memory.with_retrieval_failure_logger(logger);
         }
 
@@ -513,6 +514,7 @@ impl AppBuilder {
     fn build_retrieval_failure_logger(
         &self,
         sqlite: &zeph_memory::store::DbStore,
+        supervisor: &zeph_common::TaskSupervisor,
     ) -> Option<zeph_memory::RetrievalFailureLogger> {
         if !self.config.memory.retrieval_failures.enabled {
             return None;
@@ -524,6 +526,7 @@ impl AppBuilder {
             rf_cfg.batch_size,
             std::time::Duration::from_millis(rf_cfg.flush_interval_ms),
             rf_cfg.retention_days,
+            supervisor,
         );
         tracing::info!("retrieval failure logging enabled");
         Some(logger)

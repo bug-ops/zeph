@@ -414,15 +414,18 @@ impl<C: Channel> Agent<C> {
             spawn_ctx.durable_resolver = Some(seat);
         }
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
-        match mgr.spawn(
-            name,
-            prompt,
-            provider,
-            tool_executor,
-            skills,
-            &cfg,
-            spawn_ctx,
-        ) {
+        match mgr
+            .spawn(
+                name,
+                prompt,
+                provider,
+                tool_executor,
+                skills,
+                &cfg,
+                spawn_ctx,
+            )
+            .await
+        {
             Ok(id) => Some(format!(
                 "Sub-agent '{name}' started in background (id: {short})",
                 short = &id[..8.min(id.len())]
@@ -448,15 +451,18 @@ impl<C: Channel> Agent<C> {
             spawn_ctx.durable_resolver = Some(seat);
         }
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
-        let task_id = match mgr.spawn(
-            name,
-            prompt,
-            provider,
-            tool_executor,
-            skills,
-            &cfg,
-            spawn_ctx,
-        ) {
+        let task_id = match mgr
+            .spawn(
+                name,
+                prompt,
+                provider,
+                tool_executor,
+                skills,
+                &cfg,
+                spawn_ctx,
+            )
+            .await
+        {
             Ok(id) => id,
             Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
         };

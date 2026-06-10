@@ -155,16 +155,19 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         };
 
-        match mgr.spawn_for_task(
-            &agent_def_name,
-            &prompt,
-            provider,
-            tool_executor,
-            skills,
-            &cfg,
-            spawn_ctx,
-            on_done,
-        ) {
+        match mgr
+            .spawn_for_task(
+                &agent_def_name,
+                &prompt,
+                provider,
+                tool_executor,
+                skills,
+                &cfg,
+                spawn_ctx,
+                on_done,
+            )
+            .await
+        {
             Ok(handle_id) => {
                 *spawn_counter += 1;
                 let _ = self
