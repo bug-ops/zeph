@@ -23,11 +23,8 @@
 //! # Examples
 //!
 //! ```no_run
-//! use std::sync::Arc;
 //! use zeph_core::notifications::{Notifier, TurnSummary, TurnExitStatus};
-//! use zeph_common::TaskSupervisor;
 //! use zeph_config::NotificationsConfig;
-//! use tokio_util::sync::CancellationToken;
 //!
 //! let cfg = NotificationsConfig {
 //!     enabled: true,
@@ -35,7 +32,6 @@
 //!     ..Default::default()
 //! };
 //! let notifier = Notifier::new(cfg);
-//! let supervisor = Arc::new(TaskSupervisor::new(CancellationToken::new()));
 //! let summary = TurnSummary {
 //!     duration_ms: 5000,
 //!     preview: "Done. Files updated.".to_owned(),
@@ -43,19 +39,18 @@
 //!     llm_requests: 1,
 //!     exit_status: TurnExitStatus::Success,
 //! };
-//! // Fire and forget — errors are logged, never propagated.
-//! notifier.fire(&summary, &supervisor);
+//! // notifier.fire(&summary, supervisor) — called from the agent loop with
+//! // its BackgroundSupervisor; fire-and-forget, errors are logged only.
+//! let _ = notifier.should_fire(&summary); // gate check
 //! ```
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
 use tracing::warn;
-use zeph_common::TaskSupervisor;
 use zeph_config::NotificationsConfig;
 
+use crate::agent::agent_supervisor::{BackgroundSupervisor, TaskClass};
 use crate::redact::scrub_content;
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -95,16 +90,15 @@ pub struct TurnSummary {
 /// Holds a shared [`reqwest::Client`] and the resolved config. Construct once at
 /// agent startup via [`Notifier::new`] and call [`Notifier::fire`] after each turn.
 ///
-/// All I/O is spawned onto the Tokio runtime via `tokio::spawn`; `fire` returns
-/// immediately without blocking the agent loop.
+/// All I/O is routed through the agent's [`BackgroundSupervisor`] so it is
+/// visible in TUI status and bounded by the Telemetry class concurrency limit.
+/// `fire` returns immediately without blocking the agent loop.
 ///
-/// Cloning is cheap — `reqwest::Client` and the fire counter are `Arc`-backed.
+/// Cloning is cheap — `reqwest::Client` is an `Arc`-backed handle.
 #[derive(Clone)]
 pub struct Notifier {
     cfg: NotificationsConfig,
     http: reqwest::Client,
-    /// Monotonic counter to generate unique task names for `spawn_oneshot`.
-    fire_counter: Arc<AtomicU64>,
 }
 
 impl Notifier {
@@ -131,11 +125,7 @@ impl Notifier {
         {
             cfg.webhook_url = None;
         }
-        Self {
-            cfg,
-            http,
-            fire_counter: Arc::new(AtomicU64::new(0)),
-        }
+        Self { cfg, http }
     }
 
     /// Evaluate all gate conditions and return `true` when the notification should fire.
@@ -171,17 +161,16 @@ impl Notifier {
 
     /// Fire all enabled notification channels for this turn summary.
     ///
-    /// Returns immediately — all I/O is spawned as a background task via the session
-    /// [`TaskSupervisor`]. Failures are logged at `warn` level and never propagated.
-    /// The spawned task has an internal 5-second per-channel timeout.
-    pub fn fire(&self, summary: &TurnSummary, supervisor: &Arc<TaskSupervisor>) {
+    /// Returns immediately — all I/O is routed through `supervisor` as a
+    /// [`TaskClass::Telemetry`] task, making it visible in TUI status and
+    /// bounded by the class concurrency limit. Failures are logged at `warn`
+    /// level and never propagated.
+    pub(crate) fn fire(&self, summary: &TurnSummary, supervisor: &mut BackgroundSupervisor) {
         let cfg = self.cfg.clone();
         let http = self.http.clone();
         let summary = summary.clone();
 
-        let id = self.fire_counter.fetch_add(1, Ordering::Relaxed);
-        let name: Arc<str> = format!("core.notifications.fire.{id}").into();
-        supervisor.spawn_oneshot(name, move || async move {
+        supervisor.spawn(TaskClass::Telemetry, "notify_turn_complete", async move {
             fire_all_channels(&cfg, &http, &summary).await;
         });
     }

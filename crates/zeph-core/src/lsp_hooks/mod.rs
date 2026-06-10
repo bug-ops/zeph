@@ -21,11 +21,11 @@ mod hover;
 mod test_helpers;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::mpsc;
-use zeph_common::TaskSupervisor;
 use zeph_mcp::McpManager;
+
+use crate::agent::agent_supervisor::{BackgroundSupervisor, TaskClass};
 
 pub use crate::config::LspConfig;
 
@@ -54,10 +54,6 @@ pub struct LspHookRunner {
     diagnostics_rxs: Vec<DiagnosticsRx>,
     /// Sessions statistics.
     pub(crate) stats: LspStats,
-    /// Session-level supervisor for background diagnostics fetch tasks.
-    supervisor: Arc<TaskSupervisor>,
-    /// Monotonic counter for generating unique task names per diagnostics fetch.
-    fetch_counter: Arc<AtomicU64>,
 }
 
 /// Session-level statistics for the `/lsp` TUI command.
@@ -69,21 +65,15 @@ pub struct LspStats {
 }
 
 impl LspHookRunner {
-    /// Create a new runner.
+    /// Create a new runner. Token counting uses the provided `token_counter`.
     #[must_use]
-    pub fn new(
-        manager: Arc<McpManager>,
-        config: LspConfig,
-        supervisor: Arc<TaskSupervisor>,
-    ) -> Self {
+    pub fn new(manager: Arc<McpManager>, config: LspConfig) -> Self {
         Self {
             manager,
             config,
             pending_notes: Vec::new(),
             diagnostics_rxs: Vec::new(),
             stats: LspStats::default(),
-            supervisor,
-            fetch_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -122,13 +112,14 @@ impl LspHookRunner {
     /// and hover is enabled.
     ///
     /// Returns early without any MCP call if the configured server is not connected.
-    pub async fn after_tool(
+    pub(crate) async fn after_tool(
         &mut self,
         tool_name: &str,
         tool_params: &serde_json::Value,
         tool_output: &str,
         token_counter: &Arc<zeph_memory::TokenCounter>,
         sanitizer: &zeph_sanitizer::ContentSanitizer,
+        supervisor: &mut BackgroundSupervisor,
     ) {
         if !self.config.enabled {
             tracing::debug!(tool = tool_name, "LSP hook: skipped (disabled)");
@@ -148,7 +139,7 @@ impl LspHookRunner {
 
         match tool_name {
             "write" if self.config.diagnostics.enabled => {
-                self.spawn_diagnostics_fetch(tool_params, token_counter, sanitizer);
+                self.spawn_diagnostics_fetch(tool_params, token_counter, sanitizer, supervisor);
             }
             "read" if self.config.hover.enabled => {
                 if let Some(note) =
@@ -183,6 +174,7 @@ impl LspHookRunner {
         tool_params: &serde_json::Value,
         token_counter: &Arc<zeph_memory::TokenCounter>,
         sanitizer: &zeph_sanitizer::ContentSanitizer,
+        supervisor: &mut BackgroundSupervisor,
     ) {
         let Some(path) = tool_params
             .get("path")
@@ -203,9 +195,7 @@ impl LspHookRunner {
         let (tx, rx) = mpsc::channel(1);
         self.diagnostics_rxs.push(rx);
 
-        let id = self.fetch_counter.fetch_add(1, Ordering::Relaxed);
-        let name: Arc<str> = format!("core.lsp_hooks.diagnostics_fetch.{id}").into();
-        self.supervisor.spawn_oneshot(name, move || async move {
+        supervisor.spawn(TaskClass::Enrichment, "lsp_diagnostics_fetch", async move {
             // Give the LSP server time to start re-analysing after the write.
             // 200 ms is a lightweight heuristic; the diagnostic cache in mcpls
             // will serve the most-recently-published set regardless.
@@ -310,16 +300,15 @@ impl LspHookRunner {
 mod tests {
     use std::sync::Arc;
 
-    use tokio_util::sync::CancellationToken;
-    use zeph_common::TaskSupervisor;
     use zeph_mcp::McpManager;
     use zeph_memory::TokenCounter;
 
     use super::*;
+    use crate::agent::agent_supervisor::BackgroundSupervisor;
     use crate::config::{DiagnosticSeverity, LspConfig};
 
-    fn make_supervisor() -> Arc<TaskSupervisor> {
-        Arc::new(TaskSupervisor::new(CancellationToken::new()))
+    fn make_supervisor() -> BackgroundSupervisor {
+        BackgroundSupervisor::new(&zeph_config::TaskSupervisorConfig::default(), None)
     }
 
     fn make_runner(enabled: bool) -> LspHookRunner {
@@ -332,7 +321,6 @@ mod tests {
                 token_budget: 500,
                 ..LspConfig::default()
             },
-            make_supervisor(),
         )
     }
 
@@ -369,7 +357,6 @@ mod tests {
                 token_budget: 1, // extremely tight budget
                 ..LspConfig::default()
             },
-            make_supervisor(),
         );
         runner.pending_notes.push(LspNote {
             kind: "diagnostics",
@@ -426,11 +413,12 @@ mod tests {
         let tc = Arc::new(TokenCounter::default());
         let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
         let mut runner = make_runner(false); // lsp disabled
+        let mut supervisor = make_supervisor();
 
         // Even write tool should produce no notes when disabled.
         let params = serde_json::json!({ "path": "src/main.rs" });
         runner
-            .after_tool("write", &params, "", &tc, &sanitizer)
+            .after_tool("write", &params, "", &tc, &sanitizer, &mut supervisor)
             .await;
         // No background tasks spawned.
         assert!(runner.diagnostics_rxs.is_empty());
@@ -444,9 +432,10 @@ mod tests {
         let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
         // Runner enabled but no MCP server configured — is_available() returns false.
         let mut runner = make_runner(true);
+        let mut supervisor = make_supervisor();
         let params = serde_json::json!({ "path": "src/main.rs" });
         runner
-            .after_tool("write", &params, "", &tc, &sanitizer)
+            .after_tool("write", &params, "", &tc, &sanitizer, &mut supervisor)
             .await;
         // No background task spawned because server is not available.
         assert!(runner.diagnostics_rxs.is_empty());

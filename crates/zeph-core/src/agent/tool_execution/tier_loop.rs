@@ -2154,8 +2154,15 @@ impl<C: Channel> Agent<C> {
             let lsp_result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 for (name, input, output) in lsp_tool_calls {
                     if let Some(ref mut lsp) = self.services.session.lsp_hooks {
-                        lsp.after_tool(&name, &input, &output, &tc_arc, &sanitizer)
-                            .await;
+                        lsp.after_tool(
+                            &name,
+                            &input,
+                            &output,
+                            &tc_arc,
+                            &sanitizer,
+                            &mut self.runtime.lifecycle.supervisor,
+                        )
+                        .await;
                     }
                 }
             })
