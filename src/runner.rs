@@ -1880,7 +1880,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     }
 
     if config.memory.optical_forgetting.enabled {
-        let _span = tracing::info_span!("runner.memory.optical_forgetting.startup").entered();
         let store = std::sync::Arc::new(memory.sqlite().clone());
         let optical_provider = app
             .build_optical_forgetting_provider()
@@ -1888,18 +1887,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let optical_cfg = config.memory.optical_forgetting.clone();
         let forgetting_floor = config.memory.forgetting.forgetting_floor;
         let cancel = supervisor.cancellation_token();
-        supervisor.spawn(TaskDescriptor {
-            name: "mem-optical-forgetting",
-            restart: RestartPolicy::RunOnce,
-            factory: move || {
-                zeph_memory::start_optical_forgetting_loop(
-                    store.clone(),
-                    optical_provider.clone(),
-                    optical_cfg.clone(),
-                    forgetting_floor,
-                    cancel.clone(),
-                )
-            },
+        tracing::info_span!("runner.memory.optical_forgetting.startup").in_scope(|| {
+            supervisor.spawn(TaskDescriptor {
+                name: "mem-optical-forgetting",
+                restart: RestartPolicy::RunOnce,
+                factory: move || {
+                    zeph_memory::start_optical_forgetting_loop(
+                        store.clone(),
+                        optical_provider.clone(),
+                        optical_cfg.clone(),
+                        forgetting_floor,
+                        cancel.clone(),
+                    )
+                },
+            });
         });
     }
 
@@ -1933,7 +1934,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Include ephemeral plugin skill dirs in the registry.
     for tmp in &ephemeral_plugin_dirs {
         let manifest_path = tmp.path().join("plugin.toml");
-        if let Ok(manifest_str) = std::fs::read_to_string(&manifest_path)
+        if let Ok(manifest_str) = tokio::fs::read_to_string(&manifest_path).await
             && let Ok(manifest) = toml::from_str::<zeph_plugins::PluginManifest>(&manifest_str)
         {
             for entry in &manifest.skills {
@@ -2587,8 +2588,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     // Collect parent directories of candidate instruction files to watch.
     // Only include dirs within the canonical project root to avoid watching external paths.
-    let canonical_base =
-        std::fs::canonicalize(&instruction_base).unwrap_or_else(|_| instruction_base.clone());
+    let canonical_base = tokio::fs::canonicalize(&instruction_base)
+        .await
+        .unwrap_or_else(|_| instruction_base.clone());
     let mut watch_dirs: Vec<std::path::PathBuf> = Vec::new();
     watch_dirs.push(instruction_base.clone());
     watch_dirs.push(instruction_base.join(".zeph"));
@@ -2603,11 +2605,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             instruction_base.join(p)
         };
         // Boundary-check: only watch dirs within the project root.
-        if let Some(parent) = abs.parent()
-            && let Ok(canonical_parent) = std::fs::canonicalize(parent)
-            && canonical_parent.starts_with(&canonical_base)
-        {
-            watch_dirs.push(parent.to_path_buf());
+        if let Some(parent) = abs.parent() {
+            let canonical_parent = tokio::fs::canonicalize(parent).await;
+            if let Ok(canonical_parent) = canonical_parent
+                && canonical_parent.starts_with(&canonical_base)
+            {
+                watch_dirs.push(parent.to_path_buf());
+            }
         }
     }
     watch_dirs.sort();
@@ -3470,9 +3474,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     tokio::select! {
                         _ = interval.tick() => {
                             let span = tracing::info_span!("tui.cocoon.poll");
-                            let _enter = span.enter();
-                            let health = client.health_check().await;
-                            let models = client.list_models().await;
+                            let (health, models) = async {
+                                let health = client.health_check().await;
+                                let models = client.list_models().await;
+                                (health, models)
+                            }
+                            .instrument(span)
+                            .await;
                             metrics_tx_cocoon.send_modify(|m| {
                                 if let Ok(h) = &health {
                                     m.cocoon_connected = Some(h.proxy_connected);
