@@ -1124,10 +1124,16 @@ pub(crate) async fn apply_code_indexer(
                 workspace_root.clone(),
                 progress_tx,
                 cli_mode,
-                supervisor,
+                supervisor.clone(),
             );
             tracing::info!("code indexer started");
-            let watcher = start_index_watcher(config.watch, &workspace_root, indexer, status_tx);
+            let watcher = start_index_watcher(
+                config.watch,
+                &workspace_root,
+                indexer,
+                status_tx,
+                supervisor,
+            );
             (watcher, Some(progress_rx))
         }
         Err(e) => {
@@ -1224,11 +1230,12 @@ fn start_index_watcher(
     root: &std::path::Path,
     indexer: std::sync::Arc<CodeIndexer>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    supervisor: Option<zeph_common::TaskSupervisor>,
 ) -> Option<IndexWatcher> {
     if !watch {
         return None;
     }
-    match IndexWatcher::start(root, indexer, status_tx) {
+    match IndexWatcher::start(root, indexer, status_tx, supervisor) {
         Ok(w) => {
             tracing::info!("index watcher started");
             Some(w)

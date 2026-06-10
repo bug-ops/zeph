@@ -115,7 +115,10 @@ impl IndexMcpServer {
     /// Call this when watcher events indicate file changes.
     #[tracing::instrument(name = "index.mcp_server.refresh", skip_all)]
     pub async fn refresh(&self) {
-        let index = build_index(&self.project_root);
+        let root = self.project_root.clone();
+        let index = tokio::task::spawn_blocking(move || build_index(&root))
+            .await
+            .unwrap_or_default();
         *self.index.write().await = index;
     }
 }
@@ -307,15 +310,15 @@ fn run_symbol_definition(
     }
 }
 
-fn run_find_text_references(
+fn run_find_text_references_paths(
     root: &Path,
-    index: &SymbolIndex,
+    rel_paths: &[PathBuf],
     params: &FindTextReferencesParams,
 ) -> serde_json::Value {
     let name = &params.name;
     let mut hits: Vec<serde_json::Value> = Vec::new();
 
-    'outer: for rel_path in index.modules.keys() {
+    'outer: for rel_path in rel_paths {
         let abs = root.join(rel_path);
         let Ok(source) = std::fs::read_to_string(&abs) else {
             continue;
@@ -409,25 +412,35 @@ impl ToolExecutor for IndexMcpServer {
     }
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        let index = self.index.read().await;
-        let result = match call.tool_id.as_str() {
-            "symbol_definition" => {
-                let params: SymbolDefinitionParams = deserialize_params(&call.params)?;
-                run_symbol_definition(&index, &params)
+        let result = if call.tool_id == "find_text_references" {
+            // `run_find_text_references` calls `std::fs::read_to_string` in a loop.
+            // Clone the data needed out of the RwLock guard, drop the guard, then
+            // offload the blocking I/O to the dedicated blocking thread pool.
+            let params: FindTextReferencesParams = deserialize_params(&call.params)?;
+            let root = self.project_root.clone();
+            let rel_paths: Vec<PathBuf> = self.index.read().await.modules.keys().cloned().collect();
+            tokio::task::spawn_blocking(move || {
+                run_find_text_references_paths(&root, &rel_paths, &params)
+            })
+            .await
+            .unwrap_or_else(|_| serde_json::Value::Array(vec![]))
+        } else {
+            let index = self.index.read().await;
+            match call.tool_id.as_str() {
+                "symbol_definition" => {
+                    let params: SymbolDefinitionParams = deserialize_params(&call.params)?;
+                    run_symbol_definition(&index, &params)
+                }
+                "call_graph" => {
+                    let params: CallGraphParams = deserialize_params(&call.params)?;
+                    run_call_graph(&index, params)
+                }
+                "module_summary" => {
+                    let params: ModuleSummaryParams = deserialize_params(&call.params)?;
+                    run_module_summary(&index, &params)
+                }
+                _ => return Ok(None),
             }
-            "find_text_references" => {
-                let params: FindTextReferencesParams = deserialize_params(&call.params)?;
-                run_find_text_references(&self.project_root, &index, &params)
-            }
-            "call_graph" => {
-                let params: CallGraphParams = deserialize_params(&call.params)?;
-                run_call_graph(&index, params)
-            }
-            "module_summary" => {
-                let params: ModuleSummaryParams = deserialize_params(&call.params)?;
-                run_module_summary(&index, &params)
-            }
-            _ => return Ok(None),
         };
 
         let summary = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -529,11 +542,12 @@ impl Foo {
     fn find_text_references_finds_occurrences() {
         let (dir, server) = setup_with_rust_file();
         let index = server.index.blocking_read();
+        let rel_paths: Vec<PathBuf> = index.modules.keys().cloned().collect();
         let params = FindTextReferencesParams {
             name: "hello".to_string(),
             max_results: 10,
         };
-        let result = run_find_text_references(dir.path(), &index, &params);
+        let result = run_find_text_references_paths(dir.path(), &rel_paths, &params);
         let arr = result.as_array().unwrap();
         assert!(
             !arr.is_empty(),
@@ -545,11 +559,12 @@ impl Foo {
     fn find_text_references_empty_for_unknown() {
         let (dir, server) = setup_with_rust_file();
         let index = server.index.blocking_read();
+        let rel_paths: Vec<PathBuf> = index.modules.keys().cloned().collect();
         let params = FindTextReferencesParams {
             name: "zzz_not_present_zzz".to_string(),
             max_results: 10,
         };
-        let result = run_find_text_references(dir.path(), &index, &params);
+        let result = run_find_text_references_paths(dir.path(), &rel_paths, &params);
         assert!(result.as_array().unwrap().is_empty());
     }
 
@@ -656,11 +671,12 @@ impl Foo {
         std::fs::write(dir.path().join("many.rs"), &content).unwrap();
         let server = IndexMcpServer::new(dir.path());
         let index = server.index.blocking_read();
+        let rel_paths: Vec<PathBuf> = index.modules.keys().cloned().collect();
         let params = FindTextReferencesParams {
             name: "target".to_string(),
             max_results: 5,
         };
-        let result = run_find_text_references(dir.path(), &index, &params);
+        let result = run_find_text_references_paths(dir.path(), &rel_paths, &params);
         let arr = result.as_array().unwrap();
         assert!(
             arr.len() <= 5,

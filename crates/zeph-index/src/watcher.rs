@@ -34,6 +34,7 @@ use std::time::Duration;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
+use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
 use crate::error::Result;
 use crate::indexer::CodeIndexer;
@@ -60,11 +61,23 @@ fn is_gitignored(gitignore: &Gitignore, root: &Path, path: &Path) -> bool {
         .is_ignore()
 }
 
+/// Opaque handle keeping the background watcher task alive.
+#[allow(dead_code)]
+enum WatcherHandle {
+    Supervised(zeph_common::task_supervisor::TaskHandle),
+    Unsupervised(tokio::task::JoinHandle<()>),
+}
+
 /// A running file-system watcher that triggers incremental re-indexing on file saves.
 ///
-/// Created by [`IndexWatcher::start`]. Dropping the `IndexWatcher` aborts the
-/// background Tokio task and the underlying `notify` watcher, stopping all
-/// file-system monitoring.
+/// Created by [`IndexWatcher::start`].
+///
+/// When started with a supervisor (`supervisor: Some`), the background task is owned by
+/// the supervisor's `JoinSet` and lives until `supervisor.shutdown_all()` — dropping this
+/// handle does not abort it.
+///
+/// When started without a supervisor (`supervisor: None`, test-only path), dropping this
+/// handle aborts the background task and the underlying `notify` watcher.
 ///
 /// # Examples
 ///
@@ -76,12 +89,12 @@ fn is_gitignored(gitignore: &Gitignore, root: &Path, path: &Path) -> bool {
 /// # let indexer: Arc<zeph_index::indexer::CodeIndexer> = panic!("placeholder");
 ///
 /// // Start watching — the returned handle keeps the watcher alive.
-/// let _watcher = IndexWatcher::start(Path::new("."), indexer, None)?;
+/// let _watcher = IndexWatcher::start(Path::new("."), indexer, None, None)?;
 /// # Ok(())
 /// # }
 /// ```
 pub struct IndexWatcher {
-    _handle: tokio::task::JoinHandle<()>,
+    _handle: WatcherHandle,
 }
 
 impl IndexWatcher {
@@ -91,6 +104,11 @@ impl IndexWatcher {
     /// reindex begins, and an empty string is sent when it completes (clearing the TUI
     /// status bar). Pass `None` in non-TUI modes where no status indicator is needed.
     ///
+    /// When `supervisor` is `Some`, the background debounce-reindex loop is registered
+    /// as a named `RunOnce` task under `"index.watcher"` so it appears in supervisor
+    /// snapshots and is subject to graceful shutdown. When `None`, the task is spawned
+    /// directly via `tokio::spawn` for backward-compatibility.
+    ///
     /// # Errors
     ///
     /// Returns an error if the filesystem watcher cannot be initialized.
@@ -98,6 +116,7 @@ impl IndexWatcher {
         root: &Path,
         indexer: Arc<CodeIndexer>,
         status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        supervisor: Option<TaskSupervisor>,
     ) -> Result<Self> {
         const DEBOUNCE: Duration = Duration::from_millis(500);
         // Under sustained FS writes the deadline resets on every event. MAX_DEBOUNCE
@@ -139,7 +158,7 @@ impl IndexWatcher {
         let root = root.to_path_buf();
         let gitignore = build_gitignore(&root);
 
-        let handle = tokio::spawn(async move {
+        let fut = async move {
             let _debouncer = debouncer;
             let mut pending: HashSet<PathBuf> = HashSet::new();
             let mut deadline = tokio::time::Instant::now() + DEBOUNCE;
@@ -181,7 +200,29 @@ impl IndexWatcher {
                     }
                 }
             }
-        });
+        };
+
+        let handle = if let Some(sup) = supervisor {
+            // Wrap the one-shot future so the `Fn` factory can hand it off exactly once.
+            // `parking_lot::Mutex` is available transitively via `zeph_common`.
+            let fut_cell = std::sync::Arc::new(std::sync::Mutex::new(Some(fut)));
+            let task_handle = sup.spawn(TaskDescriptor {
+                name: "index.watcher",
+                restart: RestartPolicy::RunOnce,
+                factory: move || {
+                    let f = fut_cell.lock().ok().and_then(|mut g| g.take());
+                    async move {
+                        if let Some(f) = f {
+                            f.await;
+                        }
+                    }
+                },
+            });
+            WatcherHandle::Supervised(task_handle)
+        } else {
+            // Fallback: no supervisor provided (e.g. test environments).
+            WatcherHandle::Unsupervised(tokio::spawn(fut))
+        };
 
         Ok(Self { _handle: handle })
     }
@@ -219,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn start_with_valid_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let watcher = IndexWatcher::start(dir.path(), create_test_indexer().await, None);
+        let watcher = IndexWatcher::start(dir.path(), create_test_indexer().await, None, None);
         assert!(watcher.is_ok());
     }
 
@@ -228,6 +269,7 @@ mod tests {
         let result = IndexWatcher::start(
             Path::new("/nonexistent/path/xyz"),
             create_test_indexer().await,
+            None,
             None,
         );
         assert!(result.is_err());
