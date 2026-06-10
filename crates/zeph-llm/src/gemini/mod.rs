@@ -420,7 +420,7 @@ impl GeminiProvider {
             .collect();
 
         let cache = crate::model_cache::ModelCache::for_slug("gemini");
-        cache.save(&models)?;
+        cache.save(&models).await?;
         Ok(models)
     }
 }

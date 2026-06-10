@@ -161,7 +161,7 @@ impl McpManager {
         if self.lock_tool_list {
             self.tool_list_locked.insert(entry.id.clone(), ());
         }
-        let handler_cfg = self.handler_cfg_for(entry);
+        let handler_cfg = self.handler_cfg_for(entry).await;
         let client = match connect_entry(
             entry,
             &self.allowed_commands,

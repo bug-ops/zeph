@@ -67,8 +67,11 @@ impl McpManager {
         std::time::Duration::from_secs(secs)
     }
 
-    pub(super) fn handler_cfg_for(&self, entry: &ServerEntry) -> crate::client::HandlerConfig {
-        let roots = Arc::new(validate_roots(&entry.roots, &entry.id));
+    pub(super) async fn handler_cfg_for(
+        &self,
+        entry: &ServerEntry,
+    ) -> crate::client::HandlerConfig {
+        let roots = Arc::new(validate_roots(&entry.roots, &entry.id).await);
         crate::client::HandlerConfig {
             roots,
             max_description_bytes: self.max_description_bytes,
@@ -182,7 +185,7 @@ impl McpManager {
         tracing::instrument(name = "mcp.manager.connect_all", skip_all, fields(connected = tracing::field::Empty, failed = tracing::field::Empty))
     )]
     pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>) {
-        let join_set = self.spawn_non_oauth_connections(&self.last_refresh);
+        let join_set = self.spawn_non_oauth_connections(&self.last_refresh).await;
         let raw = drain_connect_results(join_set).await;
         let limits = IngestLimits {
             description_bytes: self.max_description_bytes,
@@ -194,7 +197,7 @@ impl McpManager {
         (all_tools, outcomes)
     }
 
-    fn spawn_non_oauth_connections(
+    async fn spawn_non_oauth_connections(
         &self,
         last_refresh: &Arc<DashMap<String, Instant>>,
     ) -> JoinSet<(String, Result<McpClient, McpError>)> {
@@ -218,7 +221,7 @@ impl McpManager {
             let Some(tx) = self.clone_refresh_tx() else {
                 continue;
             };
-            let handler_cfg = self.handler_cfg_for(&config);
+            let handler_cfg = self.handler_cfg_for(&config).await;
             // MF-2: register the lock BEFORE spawning the connection task so there is no
             // window between connect handshake completion and lock insertion.
             // The lock entry is removed inside handle_connect_result if connection fails.
@@ -334,7 +337,7 @@ impl McpManager {
             description_bytes: self.max_description_bytes,
             instructions_bytes: self.max_instructions_bytes,
         };
-        let join_set = self.spawn_oauth_connections(&self.last_refresh);
+        let join_set = self.spawn_oauth_connections(&self.last_refresh).await;
         let raw = drain_oauth_results(join_set).await;
         let outputs = self.process_oauth_results(raw, limits).await;
         let all_tools: Vec<McpTool> = outputs
@@ -345,7 +348,7 @@ impl McpManager {
         self.log_tool_collisions(&all_tools).await;
     }
 
-    fn spawn_oauth_connections(
+    async fn spawn_oauth_connections(
         &self,
         last_refresh: &Arc<DashMap<String, Instant>>,
     ) -> JoinSet<(String, Result<McpClient, String>)> {
@@ -392,7 +395,7 @@ impl McpManager {
             let server_id = config.id.clone();
             let trusted = matches!(config.trust_level, McpTrustLevel::Trusted);
             let timeout = config.timeout;
-            let handler_cfg = self.handler_cfg_for(&config);
+            let handler_cfg = self.handler_cfg_for(&config).await;
             let status_tx = self.status_tx.clone();
             let last_refresh = Arc::clone(last_refresh);
 
@@ -780,37 +783,37 @@ async fn drain_oauth_results(
 /// - Warns if a URI does not use `file://` scheme.
 /// - Warns if the path does not exist on the filesystem.
 /// - Filters out roots with non-`file://` URIs (MCP spec requires filesystem roots).
-pub(super) fn validate_roots(
+pub(super) async fn validate_roots(
     roots: &[rmcp::model::Root],
     server_id: &str,
 ) -> Vec<rmcp::model::Root> {
-    roots
-        .iter()
-        .filter_map(|r| {
-            if !r.uri.starts_with("file://") {
-                tracing::warn!(
-                    server_id,
-                    uri = r.uri,
-                    "MCP root URI does not use file:// scheme — skipping"
-                );
-                return None;
+    let server_id = server_id.to_owned();
+    let mut result = Vec::with_capacity(roots.len());
+    for r in roots {
+        if !r.uri.starts_with("file://") {
+            tracing::warn!(
+                server_id,
+                uri = r.uri,
+                "MCP root URI does not use file:// scheme — skipping"
+            );
+            continue;
+        }
+        let raw_path = r.uri.trim_start_matches("file://");
+        if let Ok(canonical) = tokio::fs::canonicalize(raw_path).await {
+            let canonical_uri = format!("file://{}", canonical.display());
+            let mut root = rmcp::model::Root::new(canonical_uri);
+            if let Some(ref name) = r.name {
+                root = root.with_name(name.clone());
             }
-            let raw_path = r.uri.trim_start_matches("file://");
-            if let Ok(canonical) = std::fs::canonicalize(raw_path) {
-                let canonical_uri = format!("file://{}", canonical.display());
-                let mut root = rmcp::model::Root::new(canonical_uri);
-                if let Some(ref name) = r.name {
-                    root = root.with_name(name.clone());
-                }
-                Some(root)
-            } else {
-                tracing::warn!(
-                    server_id,
-                    uri = r.uri,
-                    "MCP root path does not exist on filesystem"
-                );
-                Some(r.clone())
-            }
-        })
-        .collect()
+            result.push(root);
+        } else {
+            tracing::warn!(
+                server_id,
+                uri = r.uri,
+                "MCP root path does not exist on filesystem"
+            );
+            result.push(r.clone());
+        }
+    }
+    result
 }

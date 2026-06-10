@@ -528,7 +528,7 @@ impl ClaudeProvider {
         }
 
         let cache = crate::model_cache::ModelCache::for_slug("claude");
-        cache.save(&models)?;
+        cache.save(&models).await?;
         Ok(models)
     }
 

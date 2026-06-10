@@ -293,7 +293,7 @@ impl<C: Channel> Agent<C> {
 
         // Persist AdaptOrch Beta-arm table alongside Thompson state.
         if let Some(ref advisor) = self.services.orchestration.topology_advisor
-            && let Err(e) = advisor.save()
+            && let Err(e) = advisor.save().await
         {
             tracing::warn!(error = %e, "adaptorch: failed to persist state");
         }

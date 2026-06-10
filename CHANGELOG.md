@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(llm)`: `ModelCache::save()` no longer blocks the tokio async thread on fsync+rename; wrapped
+  in `spawn_blocking` across all four LLM backends (claude, openai, ollama, gemini) (closes #5129)
+- `fix(orchestration)`: `TopologyAdvisor::save()` no longer blocks the tokio thread during agent
+  shutdown; `parking_lot::Mutex` is released before the `spawn_blocking` boundary (closes #5130)
+- `fix(mcp)`: `validate_roots()` now uses `tokio::fs::canonicalize` instead of blocking
+  `std::fs::canonicalize`; `handler_cfg_for`, `spawn_non_oauth_connections`, and
+  `spawn_oauth_connections` made `async` accordingly (closes #5132)
+
 - `fix(durable)`: `ReplayCursor::lookup` no longer holds a `tokio::sync::Mutex` guard across async
   SQLite I/O — `ensure_loaded_through` now snapshots decision fields, drops the lock, performs I/O,
   and re-acquires the lock only for the merge; concurrent callers are handled by an idempotency guard

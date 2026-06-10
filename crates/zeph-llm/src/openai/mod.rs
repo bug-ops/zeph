@@ -489,7 +489,7 @@ impl OpenAiProvider {
 
         let slug = self.cache_slug();
         let cache = crate::model_cache::ModelCache::for_slug(&slug);
-        cache.save(&models)?;
+        cache.save(&models).await?;
         Ok(models)
     }
 

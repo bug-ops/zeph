@@ -854,20 +854,20 @@ fn ingest_tools_data_flow_blocks_high_sensitivity_on_untrusted() {
 
 // --- validate_roots ---
 
-#[test]
-fn validate_roots_empty_returns_empty() {
-    let result = validate_roots(&[], "srv");
+#[tokio::test]
+async fn validate_roots_empty_returns_empty() {
+    let result = validate_roots(&[], "srv").await;
     assert!(result.is_empty());
 }
 
-#[test]
-fn validate_roots_file_uri_is_kept() {
+#[tokio::test]
+async fn validate_roots_file_uri_is_kept() {
     use rmcp::model::Root;
     // Use temp_dir which exists on all platforms (Unix, macOS, Windows).
     let tmp = std::env::temp_dir();
     let uri = format!("file://{}", tmp.display());
     let root = Root::new(uri);
-    let result = validate_roots(&[root], "srv");
+    let result = validate_roots(&[root], "srv").await;
     assert_eq!(result.len(), 1);
     // URI is canonicalized — on macOS /tmp resolves to /private/tmp.
     assert!(result[0].uri.starts_with("file://"));
@@ -875,24 +875,24 @@ fn validate_roots_file_uri_is_kept() {
     assert!(std::path::Path::new(canonical_path).exists());
 }
 
-#[test]
-fn validate_roots_non_file_uri_is_filtered_out() {
+#[tokio::test]
+async fn validate_roots_non_file_uri_is_filtered_out() {
     use rmcp::model::Root;
     let root = Root::new("https://example.com/workspace");
-    let result = validate_roots(&[root], "srv");
+    let result = validate_roots(&[root], "srv").await;
     assert!(result.is_empty(), "non-file:// URI must be filtered");
 }
 
-#[test]
-fn validate_roots_http_uri_is_filtered_out() {
+#[tokio::test]
+async fn validate_roots_http_uri_is_filtered_out() {
     use rmcp::model::Root;
     let root = Root::new("http://localhost:8080/project");
-    let result = validate_roots(&[root], "srv");
+    let result = validate_roots(&[root], "srv").await;
     assert!(result.is_empty(), "http:// URI must be filtered");
 }
 
-#[test]
-fn validate_roots_mixed_uris_keeps_only_file() {
+#[tokio::test]
+async fn validate_roots_mixed_uris_keeps_only_file() {
     use rmcp::model::Root;
     let tmp = std::env::temp_dir();
     let roots = vec![
@@ -900,18 +900,18 @@ fn validate_roots_mixed_uris_keeps_only_file() {
         Root::new("https://evil.example.com"),
         Root::new("file:///nonexistent-path-xyz"),
     ];
-    let result = validate_roots(&roots, "srv");
+    let result = validate_roots(&roots, "srv").await;
     // Only file:// URIs are kept (path existence only emits a warn, not a filter)
     assert_eq!(result.len(), 2);
     assert!(result.iter().all(|r| r.uri.starts_with("file://")));
 }
 
-#[test]
-fn validate_roots_missing_path_is_kept_with_warning() {
+#[tokio::test]
+async fn validate_roots_missing_path_is_kept_with_warning() {
     use rmcp::model::Root;
     // Non-existent path: warn but still pass through (server decides)
     let root = Root::new("file:///nonexistent-zeph-test-path-xyz-abc");
-    let result = validate_roots(&[root], "srv");
+    let result = validate_roots(&[root], "srv").await;
     assert_eq!(
         result.len(),
         1,
@@ -919,20 +919,20 @@ fn validate_roots_missing_path_is_kept_with_warning() {
     );
 }
 
-#[test]
-fn validate_roots_path_traversal_in_uri_is_filtered_as_non_file() {
+#[tokio::test]
+async fn validate_roots_path_traversal_in_uri_is_filtered_as_non_file() {
     use rmcp::model::Root;
     // A URI with path traversal but not file:// scheme is filtered
     let root = Root::new("ftp:///../../etc/passwd");
-    let result = validate_roots(&[root], "srv");
+    let result = validate_roots(&[root], "srv").await;
     assert!(
         result.is_empty(),
         "non-file:// URI must be filtered regardless of path content"
     );
 }
 
-#[test]
-fn validate_roots_file_uri_traversal_is_canonicalized() {
+#[tokio::test]
+async fn validate_roots_file_uri_traversal_is_canonicalized() {
     use rmcp::model::Root;
     // Build a traversal path using temp_dir, which exists on all platforms.
     let tmp = std::env::temp_dir();
@@ -942,7 +942,7 @@ fn validate_roots_file_uri_traversal_is_canonicalized() {
     let traversal = parent.join(dir_name).join("..").join(dir_name);
     let uri = format!("file://{}", traversal.display());
     let root = Root::new(uri);
-    let result = validate_roots(&[root], "srv");
+    let result = validate_roots(&[root], "srv").await;
     assert_eq!(result.len(), 1);
     // After canonicalize, the traversal component must be gone.
     assert!(
@@ -1044,12 +1044,12 @@ fn elicitation_channel_is_bounded_by_capacity() {
     );
 }
 
-#[test]
-fn validate_roots_preserves_name() {
+#[tokio::test]
+async fn validate_roots_preserves_name() {
     use rmcp::model::Root;
     let tmp = std::env::temp_dir();
     let root = Root::new(format!("file://{}", tmp.display())).with_name("workspace");
-    let result = validate_roots(&[root], "srv");
+    let result = validate_roots(&[root], "srv").await;
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].name.as_deref(), Some("workspace"));
 }

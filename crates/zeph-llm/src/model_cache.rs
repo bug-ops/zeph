@@ -94,24 +94,33 @@ impl ModelCache {
 
     /// Atomically write models to disk. Writes `.tmp` then renames.
     ///
+    /// The blocking I/O is offloaded to a `spawn_blocking` thread so this
+    /// function is safe to call from an async context.
+    ///
     /// # Errors
     ///
     /// Returns an error if the directory cannot be created or the file cannot be written.
-    pub fn save(&self, models: &[RemoteModelInfo]) -> Result<(), LlmError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(LlmError::Io)?;
-        }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_secs();
-        let envelope = CacheEnvelope {
-            fetched_at: now,
-            models: models.to_vec(),
-        };
-        let json = serde_json::to_vec_pretty(&envelope).map_err(LlmError::Json)?;
-        zeph_common::fs_secure::atomic_write_private(&self.path, &json).map_err(LlmError::Io)?;
-        Ok(())
+    pub async fn save(&self, models: &[RemoteModelInfo]) -> Result<(), LlmError> {
+        let path = self.path.clone();
+        let models = models.to_vec();
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(LlmError::Io)?;
+            }
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_secs();
+            let envelope = CacheEnvelope {
+                fetched_at: now,
+                models,
+            };
+            let json = serde_json::to_vec_pretty(&envelope).map_err(LlmError::Json)?;
+            zeph_common::fs_secure::atomic_write_private(&path, &json).map_err(LlmError::Io)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| LlmError::Io(std::io::Error::other(e)))?
     }
 
     /// Remove the cache file (for `/model refresh`).
@@ -143,8 +152,8 @@ mod tests {
         assert!(c.is_stale());
     }
 
-    #[test]
-    fn fresh_cache_is_not_stale() {
+    #[tokio::test]
+    async fn fresh_cache_is_not_stale() {
         let c = tmp_cache();
         let models = vec![RemoteModelInfo {
             id: "m1".into(),
@@ -152,12 +161,12 @@ mod tests {
             context_window: Some(4096),
             created_at: None,
         }];
-        c.save(&models).unwrap();
+        c.save(&models).await.unwrap();
         assert!(!c.is_stale());
     }
 
-    #[test]
-    fn json_round_trip() {
+    #[tokio::test]
+    async fn json_round_trip() {
         let c = tmp_cache();
         let models = vec![
             RemoteModelInfo {
@@ -173,7 +182,7 @@ mod tests {
                 created_at: None,
             },
         ];
-        c.save(&models).unwrap();
+        c.save(&models).await.unwrap();
         let loaded = c.load().unwrap().unwrap();
         assert_eq!(loaded, models);
     }
@@ -196,11 +205,11 @@ mod tests {
         assert!(c.is_stale());
     }
 
-    #[test]
-    fn invalidate_removes_file() {
+    #[tokio::test]
+    async fn invalidate_removes_file() {
         let c = tmp_cache();
         let models = vec![];
-        c.save(&models).unwrap();
+        c.save(&models).await.unwrap();
         assert!(c.path.exists());
         c.invalidate();
         assert!(!c.path.exists());

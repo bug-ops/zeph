@@ -301,12 +301,13 @@ impl TopologyAdvisor {
     /// Persist the Beta-arm table to `state_path` atomically.
     ///
     /// Called from the agent shutdown hook (once per process), mirroring
-    /// `AnyProvider::save_router_state`. Failures are logged and swallowed.
+    /// `AnyProvider::save_router_state`. The blocking I/O is offloaded via
+    /// `spawn_blocking`; the lock is released before the async boundary.
     ///
     /// # Errors
     ///
     /// Returns `io::Error` when the write fails.
-    pub fn save(&self) -> io::Result<()> {
+    pub async fn save(&self) -> io::Result<()> {
         let arms_map: HashMap<String, BetaDist> = self
             .arms
             .lock()
@@ -320,13 +321,16 @@ impl TopologyAdvisor {
         };
 
         let json = serde_json::to_string_pretty(&state).map_err(io::Error::other)?;
+        let path = self.state_path.clone();
 
-        if let Some(parent) = self.state_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        atomic_write(&self.state_path, json.as_bytes())?;
-        Ok(())
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            atomic_write(&path, json.as_bytes())
+        })
+        .await
+        .map_err(io::Error::other)?
     }
 
     // ─── private helpers ─────────────────────────────────────────────────────
@@ -613,8 +617,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn persistence_round_trip() {
+    #[tokio::test]
+    async fn persistence_round_trip() {
         use zeph_llm::any::AnyProvider;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
@@ -626,7 +630,7 @@ mod tests {
                 Duration::from_secs(4),
             );
             advisor.record_outcome(TaskClass::SequentialPipeline, TopologyHint::Sequential, 1.0);
-            advisor.save().unwrap();
+            advisor.save().await.unwrap();
         }
         {
             let mock = zeph_llm::mock::MockProvider::default();
