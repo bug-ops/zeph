@@ -92,6 +92,51 @@ impl ModelCache {
         now.saturating_sub(envelope.fetched_at) > TTL_SECS
     }
 
+    /// Load cached models from a tokio async context without blocking the executor.
+    ///
+    /// Offloads the blocking file read to `spawn_blocking`. Prefer this over
+    /// [`Self::load`] when calling from `async fn`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on JSON parse failure (corrupt file).
+    pub async fn load_async(&self) -> Result<Option<Vec<RemoteModelInfo>>, LlmError> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(data) = std::fs::read(&path) else {
+                return Ok(None);
+            };
+            let envelope: CacheEnvelope = serde_json::from_slice(&data).map_err(LlmError::Json)?;
+            Ok(Some(envelope.models))
+        })
+        .await
+        .map_err(|e| LlmError::Io(std::io::Error::other(e)))?
+    }
+
+    /// Returns `true` if the cache file is missing or older than 24 hours.
+    ///
+    /// Offloads the blocking file read to `spawn_blocking`. Prefer this over
+    /// [`Self::is_stale`] when calling from `async fn`.
+    #[must_use]
+    pub async fn is_stale_async(&self) -> bool {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(data) = std::fs::read(&path) else {
+                return true;
+            };
+            let Ok(envelope) = serde_json::from_slice::<CacheEnvelope>(&data) else {
+                return true;
+            };
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_secs();
+            now.saturating_sub(envelope.fetched_at) > TTL_SECS
+        })
+        .await
+        .unwrap_or(true)
+    }
+
     /// Atomically write models to disk. Writes `.tmp` then renames.
     ///
     /// The blocking I/O is offloaded to a `spawn_blocking` thread so this
@@ -220,5 +265,46 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/models.json");
         let tmp = path.with_added_extension("tmp");
         assert_eq!(tmp.file_name().unwrap(), "models.json.tmp");
+    }
+
+    #[tokio::test]
+    async fn load_async_missing_file_returns_none() {
+        let c = tmp_cache();
+        let result = c.load_async().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_async_matches_sync_load() {
+        let c = tmp_cache();
+        let models = vec![RemoteModelInfo {
+            id: "x1".into(),
+            display_name: "X One".into(),
+            context_window: Some(2048),
+            created_at: None,
+        }];
+        c.save(&models).await.unwrap();
+        let sync_result = c.load().unwrap();
+        let async_result = c.load_async().await.unwrap();
+        assert_eq!(sync_result, async_result);
+    }
+
+    #[tokio::test]
+    async fn is_stale_async_missing_file_returns_true() {
+        let c = tmp_cache();
+        assert!(c.is_stale_async().await);
+    }
+
+    #[tokio::test]
+    async fn is_stale_async_matches_sync_is_stale() {
+        let c = tmp_cache();
+        let models = vec![RemoteModelInfo {
+            id: "y1".into(),
+            display_name: "Y One".into(),
+            context_window: None,
+            created_at: None,
+        }];
+        c.save(&models).await.unwrap();
+        assert_eq!(c.is_stale(), c.is_stale_async().await);
     }
 }

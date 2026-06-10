@@ -647,7 +647,7 @@ async fn build_acp_deps(
         acp_permission_file: config.acp.permission_file.clone(),
         acp_available_models: std::sync::Arc::new(RwLock::new(
             if config.acp.available_models.is_empty() {
-                discover_models_from_config(config)
+                discover_models_from_config(config).await
             } else {
                 config.acp.available_models.clone()
             },
@@ -1039,14 +1039,14 @@ async fn spawn_acp_agent(
 ///
 /// Each key uses `"{provider_name}:{model_id}"` format matching the provider factory.
 #[cfg(feature = "acp")]
-fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String> {
+async fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String> {
     use zeph_llm::model_cache::ModelCache;
 
     /// Expand a provider slug using its on-disk cache, or fall back to `fallback`.
-    fn expand_from_cache(slug: &str, fallback: &str) -> Vec<String> {
+    async fn expand_from_cache(slug: &str, fallback: &str) -> Vec<String> {
         let cache = ModelCache::for_slug(slug);
-        if !cache.is_stale()
-            && let Ok(Some(entries)) = cache.load()
+        if !cache.is_stale_async().await
+            && let Ok(Some(entries)) = cache.load_async().await
             && !entries.is_empty()
         {
             return entries
@@ -1062,7 +1062,7 @@ fn discover_models_from_config(config: &zeph_core::config::Config) -> Vec<String
     for entry in &config.llm.providers {
         let slug = entry.provider_type.as_str();
         let fallback = entry.model.as_deref().unwrap_or("unknown");
-        models.extend(expand_from_cache(slug, fallback));
+        models.extend(expand_from_cache(slug, fallback).await);
     }
 
     models.dedup();
@@ -1124,11 +1124,11 @@ async fn warm_model_caches(
 
     for slug in slugs {
         let cache = ModelCache::for_slug(&slug);
-        if cache.is_stale() {
+        if cache.is_stale_async().await {
             tracing::info!(provider = %slug, "model cache still stale after warm-up");
             continue;
         }
-        if let Ok(Some(entries)) = cache.load()
+        if let Ok(Some(entries)) = cache.load_async().await
             && !entries.is_empty()
         {
             let new_keys: Vec<String> = entries
@@ -1494,7 +1494,7 @@ pub(crate) async fn run_acp_http_server(
         provider_factory: Some(build_acp_provider_factory(app.config())),
         available_models: std::sync::Arc::new(parking_lot::RwLock::new(
             if app.config().acp.available_models.is_empty() {
-                discover_models_from_config(app.config())
+                discover_models_from_config(app.config()).await
             } else {
                 app.config().acp.available_models.clone()
             },

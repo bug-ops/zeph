@@ -54,10 +54,10 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// List available models, returning a formatted string.
     pub(crate) async fn model_list_as_string(&mut self) -> String {
         let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
-        let cached = if cache.is_stale() {
+        let cached = if cache.is_stale_async().await {
             None
         } else {
-            cache.load().unwrap_or(None)
+            cache.load_async().await.unwrap_or(None)
         };
         let models = if let Some(m) = cached {
             m
@@ -80,15 +80,15 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Switch to a different model, returning a result message.
     pub(crate) async fn model_switch_as_string(&mut self, model_id: &str) -> String {
         let cache = zeph_llm::model_cache::ModelCache::for_slug(self.provider.name());
-        let known_models: Option<Vec<zeph_llm::model_cache::RemoteModelInfo>> = if cache.is_stale()
-        {
-            match self.provider.list_models_remote().await {
-                Ok(m) if !m.is_empty() => Some(m),
-                _ => None,
-            }
-        } else {
-            cache.load().unwrap_or(None)
-        };
+        let known_models: Option<Vec<zeph_llm::model_cache::RemoteModelInfo>> =
+            if cache.is_stale_async().await {
+                match self.provider.list_models_remote().await {
+                    Ok(m) if !m.is_empty() => Some(m),
+                    _ => None,
+                }
+            } else {
+                cache.load_async().await.unwrap_or(None)
+            };
         let list_unavailable = known_models.is_none();
         if let Some(models) = known_models {
             if !models.iter().any(|m| m.id == model_id) {

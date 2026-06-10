@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use tracing::Instrument as _;
 use zeph_common::timestamp;
 use zeph_core::agent::Agent;
 use zeph_core::instructions::InstructionBlock;
@@ -241,6 +242,7 @@ impl BenchRunner {
     /// # Errors
     ///
     /// Returns [`BenchError`] if the dataset cannot be loaded or a scenario run fails.
+    #[tracing::instrument(skip_all, fields(dataset = loader.name()), name = "bench.run_dataset")]
     pub async fn run_dataset<L, E>(
         &self,
         loader: &L,
@@ -254,13 +256,6 @@ impl BenchRunner {
     {
         let scenarios = loader.load(path)?;
         let filtered = filter_scenarios(&scenarios, &opts, loader.name())?;
-
-        let _span = tracing::info_span!(
-            "bench.run_dataset",
-            dataset = loader.name(),
-            scenarios = filtered.len(),
-        )
-        .entered();
 
         let model_id = self.provider.model_identifier().to_owned();
 
@@ -276,10 +271,10 @@ impl BenchRunner {
         };
 
         for scenario in filtered {
-            let _s = tracing::info_span!("bench.scenario", id = %scenario.id).entered();
-
             let t0 = Instant::now();
-            let response_text = Box::pin(self.run_one(scenario, opts.memory_mode)).await?;
+            let response_text = Box::pin(self.run_one(scenario, opts.memory_mode))
+                .instrument(tracing::info_span!("bench.scenario", id = %scenario.id))
+                .await?;
             let elapsed_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
 
             let eval = evaluator.evaluate(scenario, &response_text);
@@ -310,6 +305,7 @@ impl BenchRunner {
     ///
     /// Returns [`BenchError`] if the dataset cannot be loaded, the env factory fails, or
     /// `TauBenchEvaluator::from_scenario` fails (malformed metadata).
+    #[tracing::instrument(skip_all, fields(dataset = loader.name()), name = "bench.run_dataset_with_env_factory")]
     pub async fn run_dataset_with_env_factory<L, F, X>(
         &self,
         loader: &L,
@@ -325,13 +321,6 @@ impl BenchRunner {
         let scenarios = loader.load(path)?;
         let filtered = filter_scenarios(&scenarios, &opts, loader.name())?;
 
-        let _span = tracing::info_span!(
-            "bench.run_dataset_with_env_factory",
-            dataset = loader.name(),
-            scenarios = filtered.len(),
-        )
-        .entered();
-
         let model_id = self.provider.model_identifier().to_owned();
 
         let mut run = BenchRun {
@@ -346,8 +335,6 @@ impl BenchRunner {
         };
 
         for scenario in filtered {
-            let _s = tracing::info_span!("bench.scenario", id = %scenario.id).entered();
-
             let (executor, trace) = env_factory(scenario)?;
             let evaluator = TauBenchEvaluator::from_scenario(scenario, trace)?;
 
@@ -358,6 +345,7 @@ impl BenchRunner {
                 opts.memory_mode,
                 ResponseMode::ToolUse,
             ))
+            .instrument(tracing::info_span!("bench.scenario", id = %scenario.id))
             .await?;
             let elapsed_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -412,6 +400,7 @@ impl BenchRunner {
     /// Called by both [`BenchRunner::run_dataset`] (with `NoopExecutor` + `TerseAnswer`) and
     /// [`BenchRunner::run_dataset_with_env_factory`] (with the domain env + `ToolUse`).
     #[allow(clippy::too_many_lines)] // sequential setup steps; splitting adds indirection without clarity
+    #[tracing::instrument(skip_all, fields(scenario_id = %scenario.id, mode = ?mode), name = "bench.run_one")]
     async fn run_one_with_executor<X: ToolExecutor + Send + Sync + 'static>(
         &self,
         scenario: &Scenario,
@@ -419,12 +408,6 @@ impl BenchRunner {
         memory_mode: MemoryMode,
         mode: ResponseMode,
     ) -> Result<String, BenchError> {
-        let _span = tracing::info_span!(
-            "bench.run_one",
-            scenario_id = %scenario.id,
-            mode = ?mode,
-        )
-        .entered();
         let channel = BenchmarkChannel::from_turns(scenario.turns.clone());
         if channel.total() == 0 {
             return Err(BenchError::InvalidFormat(format!(
