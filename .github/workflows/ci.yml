@@ -137,7 +137,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler,testing"
+          - features: "desktop,ide,server,chat,pdf,scheduler,testing,deep-link"
             label: desktop-ide-server-chat-pdf-scheduler
           - features: bench
             label: bench
@@ -163,7 +163,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler"
+          - features: "desktop,ide,server,chat,pdf,scheduler,deep-link"
             label: desktop-ide-server-chat-pdf-scheduler
           - features: bench
             label: bench
@@ -203,7 +203,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: taiki-e/install-action@f5b277aa8941a90c16bc1cd6ab9363e0502b7d31 # nextest
       - name: Build and archive tests
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler" --lib --bins --tests --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler,deep-link" --lib --bins --tests --archive-file nextest-archive.tar.zst
       - name: Upload test archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -449,9 +449,9 @@ jobs:
         with:
           shared-key: "ci"
       - name: Build docs (all features except candle)
-        run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler"
+        run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler,deep-link"
       - name: Doc-tests
-        run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler"
+        run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler,deep-link"
 
   validate-specs:
     name: Validate Specs

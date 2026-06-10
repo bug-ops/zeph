@@ -814,6 +814,27 @@ mod tests {
                 );
             });
         }
+
+        #[test]
+        #[serial]
+        fn scheme_status_linux_stale_when_binary_path_differs_both_exist() {
+            with_temp_home(|home| {
+                // File A: registered binary (exists on disk)
+                let file_a = home.join("binary-a");
+                std::fs::write(&file_a, b"a").expect("write file_a");
+                // File B: current exe stand-in (also exists on disk)
+                let file_b = home.join("binary-b");
+                std::fs::write(&file_b, b"b").expect("write file_b");
+
+                super::super::register_linux(&file_a.to_string_lossy()).expect("register_linux");
+                // Both paths exist — reaches the path-comparison branch (line 313).
+                let status = super::super::scheme_status_linux(Some(&file_b));
+                assert!(
+                    matches!(status, super::super::SchemeStatus::Stale(_)),
+                    "expected Stale when registered path != current_exe, got {status:?}"
+                );
+            });
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -946,6 +967,28 @@ mod tests {
                 assert!(
                     matches!(status, super::super::SchemeStatus::Stale(_)),
                     "expected Stale for missing binary, got {status:?}"
+                );
+            });
+        }
+
+        // NOTE: no macOS runner in CI — this test runs locally on macOS only.
+        #[test]
+        #[serial]
+        fn scheme_status_macos_stale_when_binary_path_differs() {
+            with_temp_home(|home| {
+                // File A: registered binary (exists on disk so path-comparison branch is reached).
+                let file_a = home.join("binary-a");
+                std::fs::write(&file_a, b"a").expect("write file_a");
+                // File B: current exe stand-in (also exists, but path differs from A).
+                let file_b = home.join("binary-b");
+                std::fs::write(&file_b, b"b").expect("write file_b");
+
+                super::super::register_macos(&file_a.to_string_lossy()).expect("register_macos");
+                // Both paths exist — execution reaches the path-comparison branch.
+                let status = super::super::scheme_status_macos(Some(&file_b));
+                assert!(
+                    matches!(status, super::super::SchemeStatus::Stale(_)),
+                    "expected Stale when registered path != current_exe, got {status:?}"
                 );
             });
         }

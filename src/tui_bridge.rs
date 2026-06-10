@@ -370,7 +370,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
 
     // TASK-8: emit a one-shot deep-link notification within 1 s of launch.
     // Tracked in `forwarders` so it is aborted cleanly when the TUI or agent exits.
-    #[cfg(feature = "deep-link")]
+    #[cfg(all(feature = "deep-link", feature = "tui"))]
     if let Some(uri) = params.deep_link_uri.take() {
         forwarders.spawn(deep_link_notification_task(agent_tx.clone(), uri));
     }
@@ -409,7 +409,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
 }
 
 /// Emits a deep-link launch notification in the TUI status bar, then clears it after 3 s.
-#[cfg(feature = "deep-link")]
+#[cfg(all(feature = "deep-link", feature = "tui"))]
 async fn deep_link_notification_task(
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
     uri: String,
