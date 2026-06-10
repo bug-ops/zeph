@@ -5,6 +5,7 @@
 use zeph_tui::{App, EventReader};
 
 #[cfg(all(feature = "tui", feature = "a2a"))]
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_tui_remote(
     url: String,
     config_path: Option<&std::path::Path>,
@@ -109,7 +110,16 @@ pub(crate) async fn run_tui_remote(
     let reader = EventReader::new(event_tx, Duration::from_millis(100));
     std::thread::spawn(move || reader.run());
 
-    let mut tui_app = App::new(user_tx, agent_rx).with_tool_density(config.tui.tool_density);
+    let tui_theme = {
+        use zeph_tui::theme::{Theme, resolve_color_mode, resolve_palette};
+        let theme_cfg = &config.tui.theme;
+        resolve_palette(&theme_cfg.name)
+            .map(|p| Theme::from_palette_with_mode(&p, resolve_color_mode(theme_cfg.color_mode)))
+            .unwrap_or_default()
+    };
+    let mut tui_app = App::new(user_tx, agent_rx)
+        .with_tool_density(config.tui.tool_density)
+        .with_theme(tui_theme);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
 
     zeph_tui::run_tui(tui_app, event_rx).await?;

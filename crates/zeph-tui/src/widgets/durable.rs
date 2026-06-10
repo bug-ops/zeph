@@ -70,8 +70,8 @@ pub fn render(
     frame: &mut Frame,
     area: Rect,
     list_state: &mut ListState,
+    theme: &Theme,
 ) {
-    let theme = Theme::default();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.panel_border)

@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use crate::file_picker::FilePickerState;
 use crate::theme::Theme;
 
-pub fn render(state: &FilePickerState, frame: &mut Frame, input_area: Rect) {
+pub fn render(state: &FilePickerState, frame: &mut Frame, input_area: Rect, theme: &Theme) {
     let match_count = state.matches().len();
     let visible_items = u16::try_from(match_count.min(10)).unwrap_or(10);
     // border top + query line + border bottom = 3 overhead; items in between
@@ -19,8 +19,6 @@ pub fn render(state: &FilePickerState, frame: &mut Frame, input_area: Rect) {
     let popup = Rect::new(input_area.x, y, input_area.width, height);
 
     frame.render_widget(Clear, popup);
-
-    let theme = Theme::default();
 
     // Split popup: first line for query, rest for list
     let query_area = Rect::new(popup.x + 1, popup.y + 1, popup.width.saturating_sub(2), 1);
@@ -99,7 +97,8 @@ mod tests {
         let (state, _dir) = make_state(&["src/main.rs", "src/lib.rs", "README.md"], "");
         let input_area = ratatui::layout::Rect::new(0, 15, 60, 3);
         let output = render_to_string(60, 20, |frame, _area| {
-            super::render(&state, frame, input_area);
+            let theme = crate::theme::Theme::default();
+            super::render(&state, frame, input_area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -110,7 +109,8 @@ mod tests {
         state.update_query("main");
         let input_area = ratatui::layout::Rect::new(0, 15, 60, 3);
         let output = render_to_string(60, 20, |frame, _area| {
-            super::render(&state, frame, input_area);
+            let theme = crate::theme::Theme::default();
+            super::render(&state, frame, input_area, &theme);
         });
         assert_snapshot!(output);
     }

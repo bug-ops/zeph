@@ -310,6 +310,75 @@ impl ToolDensity {
     }
 }
 
+/// Terminal colour capability override for the TUI theme system.
+///
+/// `Auto` runs OS-level detection at startup; any other value forces the specified mode
+/// and skips detection entirely. Resolution is performed once at TUI startup and stored in
+/// the [`App`](crate::App) theme.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [tui.theme]
+/// color_mode = "truecolor"   # force 24-bit even if $COLORTERM is unset
+/// ```
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_config::ColorMode;
+///
+/// let mode: ColorMode = toml::from_str("\"auto\"").unwrap();
+/// assert_eq!(mode, ColorMode::Auto);
+/// let never: ColorMode = toml::from_str("\"never\"").unwrap();
+/// assert_eq!(never, ColorMode::Never);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum ColorMode {
+    /// Run terminal capability detection at startup (default).
+    #[default]
+    Auto,
+    /// Force 24-bit RGB output; skip capability detection.
+    Truecolor,
+    /// Force RGB → xterm-256 downgrade.
+    Ansi256,
+    /// Force RGB → ANSI-16 downgrade.
+    Ansi16,
+    /// Strip all colour; retain text modifiers only (equivalent to `NO_COLOR`).
+    Never,
+}
+
+/// Theme configuration nested under `[tui.theme]` in TOML.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [tui.theme]
+/// name = "zephyr"
+/// color_mode = "auto"
+/// ```
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_config::ThemeConfig;
+///
+/// let cfg = ThemeConfig::default();
+/// assert_eq!(cfg.name, "");
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    /// Named theme preset (e.g. `"zephyr"`, `"gruvbox-dark"`).
+    ///
+    /// Empty string resolves to the `zephyr` built-in preset.
+    pub name: String,
+    /// Terminal colour capability override. Default: `auto` (detect at runtime).
+    pub color_mode: ColorMode,
+}
+
 /// TUI (terminal user interface) configuration, nested under `[tui]` in TOML.
 ///
 /// # Example (TOML)
@@ -318,8 +387,12 @@ impl ToolDensity {
 /// [tui]
 /// show_source_labels = true
 /// tool_density = "inline"
+///
+/// [tui.theme]
+/// name = "zephyr"
+/// color_mode = "auto"
 /// ```
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TuiConfig {
     /// Show memory source labels (episodic / semantic / graph) in the message view.
     /// Default: `false`.
@@ -334,6 +407,9 @@ pub struct TuiConfig {
     /// Fleet panel configuration (auto-refresh interval and max sessions displayed).
     #[serde(default)]
     pub fleet: FleetConfig,
+    /// Theme and colour capability configuration.
+    #[serde(default)]
+    pub theme: ThemeConfig,
 }
 
 /// Configuration for the TUI fleet panel (#3884).

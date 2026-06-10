@@ -78,9 +78,7 @@ fn render_probe_last_line<'a>(metrics: &'a MetricsSnapshot, lines: &mut Vec<Line
     }
 }
 
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     let mut mem_lines = vec![Line::from(format!(
         "  SQLite: {} msgs",
         metrics.sqlite_message_count
@@ -178,7 +176,8 @@ mod tests {
         };
 
         let output = render_to_string(30, 8, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -194,7 +193,8 @@ mod tests {
         };
 
         let output = render_to_string(50, 10, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -213,7 +213,8 @@ mod tests {
         };
 
         let output = render_to_string(50, 12, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -253,7 +254,8 @@ mod tests {
         };
 
         let output = render_to_string(70, 14, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -272,7 +274,8 @@ mod tests {
         };
 
         let output = render_to_string(50, 10, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -289,7 +292,8 @@ mod tests {
         };
 
         let output = render_to_string(50, 12, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }

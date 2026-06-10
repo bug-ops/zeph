@@ -10,9 +10,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::metrics::{McpServerConnectionStatus, MetricsSnapshot, SkillConfidence};
 use crate::theme::Theme;
 
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     let has_mcp = !metrics.active_mcp_tools.is_empty() || metrics.mcp_tool_count > 0;
     let chunks = if has_mcp {
         Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area)
@@ -125,8 +123,9 @@ mod tests {
             ..MetricsSnapshot::default()
         };
 
+        let theme = crate::theme::Theme::default();
         let output = render_to_string(30, 10, |frame, area| {
-            super::render(&metrics, frame, area);
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -151,8 +150,9 @@ mod tests {
             ..MetricsSnapshot::default()
         };
 
+        let theme = crate::theme::Theme::default();
         let output = render_to_string(50, 10, |frame, area| {
-            super::render(&metrics, frame, area);
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -223,8 +223,9 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         // No skill_confidence entries → should render with "  - " prefix
+        let theme = crate::theme::Theme::default();
         let output = render_to_string(40, 8, |frame, area| {
-            super::render(&metrics, frame, area);
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("- unknown-skill"),

@@ -128,9 +128,13 @@ impl ReverseSearchState {
 }
 
 /// Render the reverse-search overlay anchored above `input_area`.
-pub fn render(state: &ReverseSearchState, history: &[String], frame: &mut Frame, input_area: Rect) {
-    let theme = Theme::default();
-
+pub fn render(
+    state: &ReverseSearchState,
+    history: &[String],
+    frame: &mut Frame,
+    input_area: Rect,
+    theme: &Theme,
+) {
     let visible = if state.matches.is_empty() {
         1
     } else {
@@ -324,7 +328,8 @@ mod tests {
         let history = vec![];
         let state = ReverseSearchState::new(&history);
         let output = render_to_string(80, 24, |frame, area| {
-            render(&state, &history, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&state, &history, frame, area, &theme);
         });
         assert!(output.contains("History"));
         assert!(output.contains("no history"));
@@ -335,7 +340,8 @@ mod tests {
         let history = make_history(&["first prompt", "second prompt"]);
         let state = ReverseSearchState::new(&history);
         let output = render_to_string(80, 24, |frame, area| {
-            render(&state, &history, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&state, &history, frame, area, &theme);
         });
         assert!(output.contains("History"));
         assert!(output.contains("second prompt"));
@@ -351,7 +357,8 @@ mod tests {
         let state = ReverseSearchState::new(&history);
         // Must not panic — that is the primary assertion (previously panicked at byte boundary).
         let output = render_to_string(60, 24, |frame, area| {
-            render(&state, &history, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&state, &history, frame, area, &theme);
         });
         assert!(output.contains("History"), "overlay must render: {output}");
     }

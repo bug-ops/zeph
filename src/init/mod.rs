@@ -290,6 +290,10 @@ pub(crate) struct WizardState {
     /// Whether to require confirmation before injecting a deep-link prompt (INV-TRUST).
     #[cfg(feature = "deep-link")]
     pub(crate) deep_link_confirm_before_prompt: bool,
+    /// TUI visual theme name (preset or user file).
+    pub(crate) tui_theme_name: String,
+    /// Terminal colour mode override.
+    pub(crate) tui_color_mode: zeph_config::ColorMode,
 }
 
 impl Default for WizardState {
@@ -481,6 +485,8 @@ impl Default for WizardState {
             deep_link_register: false,
             #[cfg(feature = "deep-link")]
             deep_link_confirm_before_prompt: true,
+            tui_theme_name: "classic".to_owned(),
+            tui_color_mode: zeph_config::ColorMode::Auto,
         }
     }
 }
@@ -555,6 +561,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_knowledge(&mut state)?;
     #[cfg(feature = "deep-link")]
     step_deep_link(&mut state)?;
+    step_tui_theme(&mut state)?;
     step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -1204,6 +1211,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         config.deep_link.confirm_before_prompt = state.deep_link_confirm_before_prompt;
     }
 
+    // Apply TUI theme (#5087).
+    config.tui.theme.name.clone_from(&state.tui_theme_name);
+    config.tui.theme.color_mode = state.tui_color_mode;
+
     config
 }
 
@@ -1766,6 +1777,75 @@ fn step_deep_link(state: &mut WizardState) -> anyhow::Result<()> {
             .default(true)
             .interact()?;
     }
+
+    println!();
+    Ok(())
+}
+
+/// Ask the user to choose a TUI colour theme and terminal colour mode.
+///
+/// Skipped when the `tui` feature is not compiled in (selecting a theme for a CLI-only build
+/// is pointless). Always shows a list of built-in presets plus an "enter custom name" option.
+///
+/// # Errors
+///
+/// Returns an error if the terminal prompt interaction fails.
+fn step_tui_theme(state: &mut WizardState) -> anyhow::Result<()> {
+    use dialoguer::Select;
+
+    println!("== TUI Theme ==\n");
+    println!("Choose the visual colour palette for the TUI dashboard (--tui).");
+    println!("You can change this later in config.toml under [tui.theme].\n");
+
+    let presets = [
+        "classic (default — matches pre-2.0 colours)",
+        "zephyr (dark blue-green)",
+        "zephyr-light (light variant)",
+        "high-contrast",
+        "catppuccin-mocha",
+        "gruvbox-dark",
+        "solarized-dark",
+    ];
+    let preset_names = [
+        "classic",
+        "zephyr",
+        "zephyr-light",
+        "high-contrast",
+        "catppuccin-mocha",
+        "gruvbox-dark",
+        "solarized-dark",
+    ];
+
+    let idx = Select::new()
+        .with_prompt("TUI theme")
+        .items(presets)
+        .default(0)
+        .interact()?;
+
+    preset_names[idx].clone_into(&mut state.tui_theme_name);
+
+    let color_mode_labels = [
+        "auto (detect terminal capability)",
+        "truecolor (24-bit RGB — requires a modern terminal)",
+        "ansi256 (256-colour fallback)",
+        "ansi16 (basic 16 colours)",
+        "never (disable colour / respect NO_COLOR)",
+    ];
+    let color_modes = [
+        zeph_config::ColorMode::Auto,
+        zeph_config::ColorMode::Truecolor,
+        zeph_config::ColorMode::Ansi256,
+        zeph_config::ColorMode::Ansi16,
+        zeph_config::ColorMode::Never,
+    ];
+
+    let cm_idx = Select::new()
+        .with_prompt("Terminal colour mode")
+        .items(color_mode_labels)
+        .default(0)
+        .interact()?;
+
+    state.tui_color_mode = color_modes[cm_idx];
 
     println!();
     Ok(())

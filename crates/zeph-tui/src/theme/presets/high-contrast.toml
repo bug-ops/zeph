@@ -1,0 +1,15 @@
+bg      = "#000000"
+surface = "#0D0D0D"
+text    = "#FFFFFF"
+muted   = "#AAAAAA"
+accent  = "#00FFFF"
+success = "#00FF00"
+warning = "#FFFF00"
+error   = "#FF0000"
+info    = "#00CCFF"
+border  = "#FFFFFF"
+
+[extended]
+accent_alt = "#FF8800"
+highlight  = "#FFDD00"
+header_bg  = "#002244"

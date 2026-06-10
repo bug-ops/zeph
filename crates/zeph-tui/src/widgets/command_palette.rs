@@ -84,9 +84,7 @@ impl Default for CommandPaletteState {
     }
 }
 
-pub fn render(state: &CommandPaletteState, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-
+pub fn render(state: &CommandPaletteState, frame: &mut Frame, area: Rect, theme: &Theme) {
     #[allow(clippy::cast_possible_truncation)]
     let height = (state.filtered.len() as u16 + 4).clamp(6, 20);
     let popup = centered_rect(60, height, area);
@@ -265,7 +263,8 @@ mod tests {
     fn render_command_palette_snapshot() {
         let state = CommandPaletteState::new();
         let output = render_to_string(80, 24, |frame, area| {
-            render(&state, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&state, frame, area, &theme);
         });
         assert!(output.contains("Command Palette"));
         assert!(output.contains("skill:list"));
@@ -280,7 +279,8 @@ mod tests {
         state.push_char('e');
         state.push_char('w');
         let output = render_to_string(80, 24, |frame, area| {
-            render(&state, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&state, frame, area, &theme);
         });
         assert!(
             output.contains("view:cost")

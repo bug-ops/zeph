@@ -10,8 +10,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use crate::metrics::{MetricsSnapshot, SecurityEventCategory};
 use crate::theme::Theme;
 
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     let block = Block::default()
         .title(" Security ")
         .borders(Borders::ALL)
@@ -266,7 +265,8 @@ mod tests {
     fn renders_no_events_message_when_all_zero() {
         let metrics = MetricsSnapshot::default();
         let output = render_to_string(40, 10, |frame, area| {
-            render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&metrics, frame, area, &theme);
         });
         assert!(output.contains("No security events."));
     }
@@ -278,7 +278,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(40, 12, |frame, area| {
-            render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&metrics, frame, area, &theme);
         });
         assert!(output.contains('3'));
     }
@@ -297,7 +298,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(50, 25, |frame, area| {
-            render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&metrics, frame, area, &theme);
         });
         assert!(output.contains("web_scrape") || output.contains("inj"));
     }
@@ -316,7 +318,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(50, 25, |frame, area| {
-            render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Exfil") || output.contains("exfil") || output.contains("llm_output")
@@ -337,7 +340,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(50, 25, |frame, area| {
-            render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&metrics, frame, area, &theme);
         });
         assert!(output.contains("quar") || output.contains("web_scrape"));
     }
@@ -356,7 +360,8 @@ mod tests {
             ));
         }
         let output = render_to_string(60, 30, |frame, area| {
-            render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&metrics, frame, area, &theme);
         });
         // Last 5: sources 3..7 should appear, first 3 should not.
         assert!(output.contains("source_7"), "last event must be rendered");
@@ -375,7 +380,8 @@ mod tests {
         let metrics = MetricsSnapshot::default();
         // height=0 means inner area is zero — must not panic
         render_to_string(40, 0, |frame, area| {
-            render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&metrics, frame, area, &theme);
         });
     }
 }

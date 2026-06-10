@@ -115,12 +115,10 @@ pub fn command_id_to_slash_form(id: &str) -> String {
     format!("/{}", id.replace(':', " "))
 }
 
-pub fn render(state: &SlashAutocompleteState, frame: &mut Frame, input_area: Rect) {
+pub fn render(state: &SlashAutocompleteState, frame: &mut Frame, input_area: Rect, theme: &Theme) {
     if state.filtered.is_empty() {
         return;
     }
-
-    let theme = Theme::default();
 
     let visible = state.filtered.len().min(MAX_VISIBLE);
     #[allow(clippy::cast_possible_truncation)]
@@ -263,7 +261,8 @@ mod tests {
     fn render_slash_autocomplete_snapshot() {
         let state = SlashAutocompleteState::new();
         let output = render_to_string(80, 24, |frame, area| {
-            render(&state, frame, area);
+            let theme = crate::theme::Theme::default();
+            render(&state, frame, area, &theme);
         });
         assert!(output.contains("Commands"));
         assert!(output.contains("skill:list"));

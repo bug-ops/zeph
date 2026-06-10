@@ -193,7 +193,8 @@ pub use telemetry::{TelemetryBackend, TelemetryConfig};
 pub use tools::{AuditDestination, SandboxBackend, ToolCompressionConfig};
 pub use ui::{
     AcpAuthMethod, AcpConfig, AcpLspConfig, AcpSubagentsConfig, AcpTimeoutsConfig, AcpTransport,
-    AdditionalDir, AdditionalDirError, FleetConfig, SubagentPresetConfig, ToolDensity, TuiConfig,
+    AdditionalDir, AdditionalDirError, ColorMode, FleetConfig, SubagentPresetConfig, ThemeConfig,
+    ToolDensity, TuiConfig,
 };
 pub use ui::{DiagnosticSeverity, DiagnosticsConfig, HoverConfig, LspConfig};
 pub use vigil::VigilConfig;

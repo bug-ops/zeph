@@ -9,7 +9,6 @@ use throbber_widgets_tui::BRAILLE_SIX;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode};
-use crate::theme::Theme;
 use zeph_common::text::format_tokens;
 
 pub fn render(
@@ -20,7 +19,7 @@ pub fn render(
     activity_label: Option<&str>,
     spinner_idx: u8,
 ) {
-    let theme = Theme::default();
+    let theme = &app.theme;
 
     let base_title = match app.input_mode() {
         InputMode::Normal => " Press 'i' to type",

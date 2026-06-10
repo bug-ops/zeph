@@ -1,0 +1,15 @@
+bg      = "#002B36"
+surface = "#073642"
+text    = "#839496"
+muted   = "#586E75"
+accent  = "#2AA198"
+success = "#859900"
+warning = "#B58900"
+error   = "#DC322F"
+info    = "#268BD2"
+border  = "#073642"
+
+[extended]
+accent_alt = "#CB4B16"
+highlight  = "#B58900"
+header_bg  = "#001F27"

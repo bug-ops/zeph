@@ -72,9 +72,7 @@ fn build_agent_list_item<'a>(sa: &SubAgentMetrics, tick: u8, selected: bool) -> 
 }
 
 /// Non-interactive render (used when `SubAgents` panel is not focused).
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     if metrics.sub_agents.is_empty() {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -110,10 +108,8 @@ pub fn render_interactive(
     frame: &mut Frame,
     area: Rect,
     tick: u8,
+    theme: &Theme,
 ) {
-    use crate::theme::Theme;
-    let theme = Theme::default();
-
     if metrics.sub_agents.is_empty() {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -662,9 +658,7 @@ fn handle_key_confirm_delete(
 }
 
 /// Render the agent definition manager panel as a floating overlay.
-pub fn render_manager(state: &mut AgentManagerState, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-
+pub fn render_manager(state: &mut AgentManagerState, frame: &mut Frame, area: Rect, theme: &Theme) {
     // Center floating panel
     let panel = centered_rect(80, 80, area);
     frame.render_widget(Clear, panel);
@@ -673,15 +667,15 @@ pub fn render_manager(state: &mut AgentManagerState, frame: &mut Frame, area: Re
         AgentManagerState::List {
             definitions,
             list_state,
-        } => render_list(definitions, list_state, &theme, frame, panel),
+        } => render_list(definitions, list_state, theme, frame, panel),
         AgentManagerState::Detail { definitions, index } => {
-            render_detail(definitions, *index, &theme, frame, panel);
+            render_detail(definitions, *index, theme, frame, panel);
         }
         AgentManagerState::Create { form, .. } => {
-            render_form(form, "Create Sub-Agent", &theme, frame, panel);
+            render_form(form, "Create Sub-Agent", theme, frame, panel);
         }
         AgentManagerState::Edit { form, .. } => {
-            render_form(form, "Edit Sub-Agent", &theme, frame, panel);
+            render_form(form, "Edit Sub-Agent", theme, frame, panel);
         }
         AgentManagerState::ConfirmDelete {
             definitions,
@@ -693,7 +687,7 @@ pub fn render_manager(state: &mut AgentManagerState, frame: &mut Frame, area: Re
             *index,
             *non_project,
             *awaiting_second,
-            &theme,
+            theme,
             frame,
             panel,
         ),
@@ -1002,7 +996,8 @@ mod tests {
     fn subagents_widget_renders_placeholder_when_empty() {
         let metrics = MetricsSnapshot::default();
         let output = render_to_string(60, 5, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Sub-Agents") && output.contains("No sub-agents"),
@@ -1040,7 +1035,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(50, 10, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(output.contains("Sub-Agents"));
         assert!(output.contains("code-reviewer"));
@@ -1078,7 +1074,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(60, 10, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(output.contains("[plan]"));
         assert!(output.contains("[bypass!]"));
@@ -1097,8 +1094,9 @@ mod tests {
             make_def("writer", "Writes tests"),
         ];
         let mut state = AgentManagerState::from_definitions(defs);
+        let theme = crate::theme::Theme::default();
         let output = render_to_string(80, 20, |frame, area| {
-            render_manager(&mut state, frame, area);
+            render_manager(&mut state, frame, area, &theme);
         });
         assert!(output.contains("reviewer"));
         assert!(output.contains("writer"));

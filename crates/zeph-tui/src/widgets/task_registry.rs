@@ -103,8 +103,13 @@ fn build_list_item(snapshot: &TaskSnapshot, tick: u8) -> ListItem<'static> {
 /// * `tick` — current animation tick (wraps via `% SPINNER_FRAMES.len()`).
 /// * `area` — terminal rect to render into.
 /// * `frame` — ratatui frame for widget rendering.
-pub fn render(snapshots: &[TaskSnapshot], tick: u8, area: Rect, frame: &mut Frame<'_>) {
-    let theme = Theme::default();
+pub fn render(
+    snapshots: &[TaskSnapshot],
+    tick: u8,
+    area: Rect,
+    frame: &mut Frame<'_>,
+    theme: &Theme,
+) {
     let title = format!(" Tasks ({}) ", snapshots.len());
     let block = Block::default()
         .borders(Borders::ALL)
@@ -166,7 +171,8 @@ mod tests {
     fn render_empty_does_not_panic() {
         // Must not panic; displays placeholder text.
         let output = render_to_string(50, 6, |frame, area| {
-            super::render(&[], 0, area, frame);
+            let theme = crate::theme::Theme::default();
+            super::render(&[], 0, area, frame, &theme);
         });
         assert!(
             output.contains("No supervised tasks"),
@@ -178,7 +184,8 @@ mod tests {
     fn render_running_task_shows_name_and_status() {
         let snapshots = [running_snapshot("config-watcher")];
         let output = render_to_string(60, 5, |frame, area| {
-            super::render(&snapshots, 0, area, frame);
+            let theme = crate::theme::Theme::default();
+            super::render(&snapshots, 0, area, frame, &theme);
         });
         assert!(output.contains("config-watcher"), "name missing: {output}");
         assert!(output.contains("Running"), "status missing: {output}");
@@ -188,7 +195,8 @@ mod tests {
     fn render_completed_task_shows_status() {
         let snapshots = [completed_snapshot("memory-loop")];
         let output = render_to_string(60, 5, |frame, area| {
-            super::render(&snapshots, 0, area, frame);
+            let theme = crate::theme::Theme::default();
+            super::render(&snapshots, 0, area, frame, &theme);
         });
         assert!(output.contains("memory-loop"), "name missing: {output}");
         assert!(output.contains("Completed"), "status missing: {output}");
@@ -198,7 +206,8 @@ mod tests {
     fn render_failed_task_shows_status() {
         let snapshots = [failed_snapshot("scheduler")];
         let output = render_to_string(60, 5, |frame, area| {
-            super::render(&snapshots, 0, area, frame);
+            let theme = crate::theme::Theme::default();
+            super::render(&snapshots, 0, area, frame, &theme);
         });
         assert!(output.contains("scheduler"), "name missing: {output}");
         assert!(output.contains("Failed"), "status missing: {output}");
@@ -212,7 +221,8 @@ mod tests {
             failed_snapshot("scheduler"),
         ];
         let output = render_to_string(70, 8, |frame, area| {
-            super::render(&snapshots, 2, area, frame);
+            let theme = crate::theme::Theme::default();
+            super::render(&snapshots, 2, area, frame, &theme);
         });
         assert_snapshot!(output);
     }

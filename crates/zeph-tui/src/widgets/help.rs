@@ -12,9 +12,7 @@ use crate::theme::Theme;
 // 29 data rows + 1 header row + 2 border lines
 const POPUP_HEIGHT: u16 = 32;
 
-pub fn render(frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-
+pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
     let popup = centered_rect(70, POPUP_HEIGHT, area);
     frame.render_widget(Clear, popup);
 
@@ -108,7 +106,8 @@ mod tests {
     #[test]
     fn help_default() {
         let output = render_to_string(80, 30, |frame, area| {
-            super::render(frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(frame, area, &theme);
         });
         assert_snapshot!(output);
     }

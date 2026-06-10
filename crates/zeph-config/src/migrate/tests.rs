@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        64,
-        "MIGRATIONS registry must contain all 64 sequential steps"
+        65,
+        "MIGRATIONS registry must contain all 65 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 64);
+    assert_eq!(MIGRATIONS.len(), 65);
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–64).
+    // Names must follow the documented step order (steps 1–65).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1750,6 +1750,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_deep_link_config",
         "migrate_memory_graph_recall_include_imported",
         "migrate_policy_provider_and_utility_window",
+        "migrate_tui_theme_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2776,5 +2777,43 @@ fn step_63_idempotent_on_own_output() {
     assert_eq!(
         second.output, first.output,
         "output must be unchanged on second run"
+    );
+}
+
+// ── Step 65 — migrate_tui_theme_config (#5087) ────────────────────────────
+
+#[test]
+fn step_65_adds_tui_theme_block_when_absent() {
+    let src = "[tui]\ntool_density = \"compact\"\n";
+    let result = migrate_tui_theme_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.sections_changed.contains(&"tui.theme".to_owned()),
+        "sections_changed must include tui.theme"
+    );
+    assert!(
+        result.output.contains("tui.theme"),
+        "output must reference tui.theme"
+    );
+}
+
+#[test]
+fn step_65_noop_when_tui_theme_section_present() {
+    let src = "[tui]\ntool_density = \"compact\"\n\n[tui.theme]\nname = \"zephyr\"\n";
+    let result = migrate_tui_theme_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_65_idempotent_on_own_output() {
+    let src = "[tui]\ntool_density = \"compact\"\n";
+    let first = migrate_tui_theme_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_tui_theme_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
     );
 }

@@ -89,7 +89,30 @@ impl App {
             fleet_list_state: ratatui::widgets::ListState::default(),
             durable_snapshot: crate::widgets::durable::DurableSnapshot::default(),
             durable_list_state: ratatui::widgets::ListState::default(),
+            theme: crate::theme::Theme::default(),
         }
+    }
+
+    /// Override the visual theme with a palette-derived [`crate::theme::Theme`].
+    ///
+    /// Called once at startup after [`crate::theme::Theme::from_palette_with_mode`] has been
+    /// built from the user's config and detected terminal colour capability.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::{App, theme::{Theme, SemanticPalette}};
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx)
+    ///     .with_theme(Theme::from_palette(&SemanticPalette::zephyr()));
+    /// ```
+    #[must_use]
+    pub fn with_theme(mut self, theme: crate::theme::Theme) -> Self {
+        self.theme = theme;
+        self
     }
 
     /// Return `true` while the splash screen should be displayed.

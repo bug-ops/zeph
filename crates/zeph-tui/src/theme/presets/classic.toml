@@ -1,0 +1,16 @@
+# Maps the legacy hardcoded Theme::default() values to palette roles.
+bg      = "#000000"
+surface = "#0F1E37"
+text    = "#C8C8D2"
+muted   = "#696969"
+accent  = "#00FFFF"
+success = "#008000"
+warning = "#FFFF00"
+error   = "#FF0000"
+info    = "#64B4FF"
+border  = "#808080"
+
+[extended]
+accent_alt = "#B95519"
+highlight  = "#D7963C"
+header_bg  = "#142850"

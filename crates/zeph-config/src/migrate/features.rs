@@ -407,3 +407,66 @@ pub fn migrate_knowledge_config(toml_src: &str) -> Result<MigrationResult, Migra
         sections_changed: vec!["knowledge".to_owned()],
     })
 }
+
+/// Inject a commented-out `[tui.theme]` advisory block when absent (#5087).
+///
+/// The `[tui.theme]` section was added in the TUI Theme System 2.0. Existing configs parse
+/// fine without it (all fields have defaults), but surfacing the new keys lets users discover
+/// and customise them.
+///
+/// No-op when `[tui.theme]` is already present (active or commented-out), determined by a
+/// section-scoped scan that only looks inside the `[tui]` body — identical to the idempotency
+/// strategy used in step 63.
+///
+/// # Errors
+///
+/// Returns `MigrateError::TomlParse` if the input is not valid TOML; infallible otherwise.
+pub fn migrate_tui_theme_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Section-scoped idempotency: check only inside [tui] for [tui.theme].
+    // A raw `toml_src.contains("[tui.theme]")` would also match `# [tui.theme]` advisory
+    // blocks appended by earlier runs, but we restrict to the live [tui] body.
+    let in_tui_section = {
+        let mut in_section = false;
+        toml_src.lines().any(|l| {
+            let t = l.trim();
+            if !t.starts_with('#') && t.starts_with('[') && !t.starts_with("[[") {
+                in_section = t == "[tui]";
+                return false;
+            }
+            if t.starts_with('#') {
+                let inner = t.trim_start_matches('#').trim();
+                if inner.starts_with('[') {
+                    in_section = false;
+                    return false;
+                }
+                return in_section && (inner == "[tui.theme]" || inner.starts_with("tui.theme"));
+            }
+            in_section && (t == "[tui.theme]" || t.starts_with("tui.theme"))
+        })
+    };
+
+    if in_tui_section || toml_src.contains("[tui.theme]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let raw = doc.to_string();
+    let comment = "\n# [tui.theme] — TUI visual theme (Theme System 2.0, #5087).\n\
+         # name sets the colour palette. Built-in presets: classic, zephyr, zephyr-light,\n\
+         # high-contrast, catppuccin-mocha, gruvbox-dark, solarized-dark.\n\
+         # Custom palettes: drop a TOML file in ~/.config/zeph/themes/<name>.toml.\n\
+         # [tui.theme]\n\
+         # name         = \"classic\"   # default: classic (matches pre-2.0 colours)\n\
+         # color_mode   = \"auto\"      # auto | truecolor | ansi256 | ansi16 | never\n";
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["tui.theme".to_owned()],
+    })
+}

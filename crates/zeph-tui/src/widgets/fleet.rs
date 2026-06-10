@@ -71,9 +71,13 @@ fn build_session_item(row: &AgentSessionRow, selected: bool) -> ListItem<'static
 /// Render the fleet panel.
 ///
 /// `list_state` is used for scroll position tracking.
-pub fn render(snapshot: &FleetSnapshot, frame: &mut Frame, area: Rect, list_state: &mut ListState) {
-    let theme = Theme::default();
-
+pub fn render(
+    snapshot: &FleetSnapshot,
+    frame: &mut Frame,
+    area: Rect,
+    list_state: &mut ListState,
+    theme: &Theme,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.panel_border)

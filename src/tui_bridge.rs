@@ -53,6 +53,26 @@ pub(crate) struct EarlyTuiHandle {
     pub(crate) agent_tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 }
 
+/// Resolve the TUI [`Theme`](zeph_tui::theme::Theme) from the config section `[tui.theme]`.
+///
+/// Loads the palette from the configured preset or user file, detects terminal colour
+/// capability (respecting `color_mode` and `NO_COLOR`), and derives the theme. Falls back to
+/// [`zeph_tui::theme::Theme::default()`] on any error so startup always succeeds.
+#[cfg(feature = "tui")]
+fn build_tui_theme(config: &zeph_core::config::Config) -> zeph_tui::theme::Theme {
+    use zeph_tui::theme::{Theme, resolve_color_mode, resolve_palette};
+    let theme_cfg = &config.tui.theme;
+    let palette = match resolve_palette(&theme_cfg.name) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("TUI theme '{}' could not be loaded: {e}", theme_cfg.name);
+            return Theme::default();
+        }
+    };
+    let mode = resolve_color_mode(theme_cfg.color_mode);
+    Theme::from_palette_with_mode(&palette, mode)
+}
+
 /// Start TUI rendering immediately (Phase 1).
 ///
 /// Extracts `agent_rx` from `tui_handle`, creates the TUI `App`, spawns the rendering task,
@@ -80,7 +100,8 @@ pub(crate) fn start_tui_early(
         .expect("agent_rx already taken by start_tui_early");
     let mut tui_app = zeph_tui::App::new(tui_handle.user_tx.clone(), agent_rx)
         .with_command_tx(tui_handle.command_tx.clone())
-        .with_tool_density(config.tui.tool_density);
+        .with_tool_density(config.tui.tool_density)
+        .with_theme(build_tui_theme(config));
     tui_app.set_show_source_labels(config.tui.show_source_labels);
     tui_app.set_show_balance(config.cocoon.show_balance);
 
@@ -174,6 +195,7 @@ fn spawn_tui_thread(
     show_source_labels: bool,
     show_balance: bool,
     tool_density: zeph_config::ToolDensity,
+    theme: zeph_tui::theme::Theme,
     metrics_rx: Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
     task_supervisor: Option<zeph_common::task_supervisor::TaskSupervisor>,
     index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
@@ -186,7 +208,8 @@ fn spawn_tui_thread(
     let mut tui_app = zeph_tui::App::new(user_tx, agent_rx)
         .with_cancel_signal(cancel_signal)
         .with_command_tx(command_tx)
-        .with_tool_density(tool_density);
+        .with_tool_density(tool_density)
+        .with_theme(theme);
     tui_app.set_show_source_labels(show_source_labels);
     tui_app.set_show_balance(show_balance);
 
@@ -254,6 +277,7 @@ fn tui_command_context(config: &zeph_core::config::Config, cli_tafc: bool) -> Tu
 }
 
 #[cfg(feature = "tui")]
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_tui_agent<C: Channel + 'static>(
     agent: zeph_core::agent::Agent<C>,
     mut params: TuiRunParams<'_>,
@@ -293,6 +317,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
             params.config.tui.show_source_labels,
             params.config.cocoon.show_balance,
             params.config.tui.tool_density,
+            build_tui_theme(params.config),
             params.metrics_rx.take(),
             params.task_supervisor.take(),
             params.index_progress_rx.take(),

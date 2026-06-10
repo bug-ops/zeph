@@ -205,8 +205,7 @@ fn sanitize_field_name(s: &str) -> String {
 }
 
 /// Render the elicitation modal dialog over the full screen area.
-pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
+pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, theme: &Theme) {
     let n_fields = state.request.fields.len();
 
     // Height: 2 (borders) + 1 (title) + 1 (message) + 1 (blank) + n*2 (fields) + 2 (buttons)
@@ -252,7 +251,7 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect) {
 
     // Fields
     if !state.request.fields.is_empty() {
-        render_fields(state, frame, chunks[2], &theme);
+        render_fields(state, frame, chunks[2], theme);
     }
 
     // Key hint

@@ -10,8 +10,7 @@ use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     let collapsed = area.height < 30;
     let mut lines: Vec<Line<'_>> = Vec::new();
     append_llm_section(&mut lines, metrics);
@@ -236,7 +235,8 @@ mod tests {
         };
 
         let output = render_to_string(35, 12, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
     }
@@ -255,7 +255,8 @@ mod tests {
         };
 
         let output = render_to_string(35, 13, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Max context: 1M"),
@@ -271,7 +272,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(35, 30, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Embed: nomic-embed-text"),
@@ -283,7 +285,8 @@ mod tests {
     fn resources_omits_embedding_model_when_empty() {
         let metrics = MetricsSnapshot::default();
         let output = render_to_string(35, 30, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             !output.contains("Embed:"),
@@ -298,7 +301,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(35, 30, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Budget: 200000"),
@@ -313,7 +317,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(35, 30, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Learning: ON"),
@@ -345,7 +350,8 @@ mod tests {
         };
 
         let output = render_to_string(40, 30, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Vault: age"),
@@ -375,7 +381,8 @@ mod tests {
             ..MetricsSnapshot::default()
         };
         let output = render_to_string(50, 30, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("Background Shell"),
@@ -402,7 +409,8 @@ mod tests {
         };
 
         let output = render_to_string(40, 20, |frame, area| {
-            super::render(&metrics, frame, area);
+            let theme = crate::theme::Theme::default();
+            super::render(&metrics, frame, area, &theme);
         });
         assert!(
             output.contains("vault:age"),

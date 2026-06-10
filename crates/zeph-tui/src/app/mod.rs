@@ -423,6 +423,8 @@ pub struct App {
     pub(crate) durable_snapshot: crate::widgets::durable::DurableSnapshot,
     /// List scroll state for the durable panel.
     pub(crate) durable_list_state: ratatui::widgets::ListState,
+    /// Active visual theme. Derived from config at startup via [`crate::theme::Theme::from_palette_with_mode`].
+    pub(crate) theme: crate::theme::Theme,
 }
 
 mod draw;

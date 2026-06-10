@@ -9,9 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::layout::centered_rect;
 use crate::theme::Theme;
 
-pub fn render(prompt: &str, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-
+pub fn render(prompt: &str, frame: &mut Frame, area: Rect, theme: &Theme) {
     let popup = centered_rect(50, 7, area);
 
     frame.render_widget(Clear, popup);
@@ -45,8 +43,9 @@ mod tests {
 
     #[test]
     fn confirm_with_prompt() {
+        let theme = crate::theme::Theme::default();
         let output = render_to_string(60, 20, |frame, area| {
-            super::render("Delete all files?", frame, area);
+            super::render("Delete all files?", frame, area, &theme);
         });
         assert_snapshot!(output);
     }

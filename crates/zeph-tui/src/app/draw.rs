@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::layout::AppLayout;
-use crate::theme::Theme;
 use crate::widgets;
 
 use super::{App, Panel};
@@ -42,36 +41,32 @@ impl App {
         widgets::status::render(self, &self.metrics, frame, layout.status);
 
         if let Some(state) = &self.file_picker_state {
-            widgets::file_picker::render(state, frame, layout.input);
+            widgets::file_picker::render(state, frame, layout.input, &self.theme);
         }
 
         if let Some(state) = &self.slash_autocomplete {
-            widgets::slash_autocomplete::render(state, frame, layout.input);
+            widgets::slash_autocomplete::render(state, frame, layout.input, &self.theme);
         }
 
         if let Some(state) = &self.reverse_search {
-            widgets::reverse_search::render(
-                state,
-                &self.sessions.current().input_history,
-                frame,
-                layout.input,
-            );
+            let history = self.sessions.current().input_history.clone();
+            widgets::reverse_search::render(state, &history, frame, layout.input, &self.theme);
         }
 
         if let Some(state) = &self.confirm_state {
-            widgets::confirm::render(&state.prompt, frame, frame.area());
+            widgets::confirm::render(&state.prompt, frame, frame.area(), &self.theme);
         }
 
         if let Some(state) = &self.elicitation_state {
-            widgets::elicitation::render(&state.dialog, frame, frame.area());
+            widgets::elicitation::render(&state.dialog, frame, frame.area(), &self.theme);
         }
 
         if let Some(palette) = &self.command_palette {
-            widgets::command_palette::render(palette, frame, frame.area());
+            widgets::command_palette::render(palette, frame, frame.area(), &self.theme);
         }
 
         if self.show_help {
-            widgets::help::render(frame, frame.area());
+            widgets::help::render(frame, frame.area(), &self.theme);
         }
     }
 
@@ -79,7 +74,7 @@ impl App {
         use ratatui::text::{Line, Span};
         use ratatui::widgets::Paragraph;
 
-        let theme = Theme::default();
+        let theme = &self.theme;
 
         let provider = if self.metrics.provider_name.is_empty() {
             "---"
@@ -108,8 +103,8 @@ impl App {
     }
 
     fn draw_side_panel(&mut self, frame: &mut ratatui::Frame, layout: &AppLayout) {
-        widgets::skills::render(&self.metrics, frame, layout.skills);
-        widgets::memory::render(&self.metrics, frame, layout.memory);
+        widgets::skills::render(&self.metrics, frame, layout.skills, &self.theme);
+        widgets::memory::render(&self.metrics, frame, layout.memory, &self.theme);
 
         // Split the resources area into: context gauge (3 rows), compaction badge (3 rows),
         // and the remaining resources panel. Each gauge/badge needs at least its border rows.
@@ -125,7 +120,7 @@ impl App {
                 .split(layout.resources);
             widgets::context_gauge::render(&self.metrics, frame, context_split[0]);
             widgets::compaction_badge::render(&self.metrics, frame, context_split[1]);
-            widgets::resources::render(&self.metrics, frame, context_split[2]);
+            widgets::resources::render(&self.metrics, frame, context_split[2], &self.theme);
         }
 
         let tick = self.throbber_state.index().cast_unsigned();
@@ -144,13 +139,14 @@ impl App {
                 frame,
                 layout.subagents,
                 tick,
+                &self.theme,
             );
         } else if has_graph && !self.sessions.current().plan_view_active {
             widgets::plan_view::render(&self.metrics, frame, layout.subagents, tick);
         } else if self.has_recent_security_events() {
-            widgets::security::render(&self.metrics, frame, layout.subagents);
+            widgets::security::render(&self.metrics, frame, layout.subagents, &self.theme);
         } else {
-            widgets::subagents::render(&self.metrics, frame, layout.subagents);
+            widgets::subagents::render(&self.metrics, frame, layout.subagents, &self.theme);
         }
 
         // Overlay fleet panel over the subagents slot when `f` key is active (#3884).
@@ -160,6 +156,7 @@ impl App {
                 frame,
                 layout.subagents,
                 &mut self.fleet_list_state,
+                &self.theme,
             );
         }
 
@@ -170,6 +167,7 @@ impl App {
                 frame,
                 layout.subagents,
                 &mut self.durable_list_state,
+                &self.theme,
             );
         }
 
@@ -181,10 +179,11 @@ impl App {
                     tick,
                     layout.subagents,
                     frame,
+                    &self.theme,
                 );
             } else {
                 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-                let theme = Theme::default();
+                let theme = &self.theme;
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme.panel_border)

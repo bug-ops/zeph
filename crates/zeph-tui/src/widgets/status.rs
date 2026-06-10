@@ -127,8 +127,8 @@ impl Segment {
 }
 
 pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
-    let theme = Theme::default();
-    let list = build_segment_list(app, metrics, &theme);
+    let theme = &app.theme;
+    let list = build_segment_list(app, metrics, theme);
     let spans = list.layout(area.width);
     let line = Line::from(spans);
     let paragraph = Paragraph::new(line).style(theme.status_bar);

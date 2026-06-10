@@ -23,7 +23,7 @@ pub use features::{
     migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
     migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
-    migrate_orchestration_persistence,
+    migrate_orchestration_persistence, migrate_tui_theme_config,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -613,10 +613,10 @@ use steps::{
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
     MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
     MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateTuiThemeConfig, MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–64).
+/// Ordered registry of all sequential migration steps (steps 1–65).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -727,6 +727,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateMemoryGraphRecallIncludeImported),
             // Step 64 — add policy_provider and utility_window advisory comments (#5067)
             Box::new(MigratePolicyProviderAndUtilityWindow),
+            // Step 65 — add [tui.theme] advisory block (Theme System 2.0, #5087)
+            Box::new(MigrateTuiThemeConfig),
         ]
     });
 

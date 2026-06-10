@@ -29,7 +29,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
         return 0;
     }
 
-    let theme = Theme::default();
+    let theme = &app.theme;
     let inner_height = area.height.saturating_sub(2) as usize;
     // 2 for block borders + 2 for accent prefix ("▎ ") added per line
     let wrap_width = area.width.saturating_sub(4) as usize;
@@ -49,7 +49,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
         cache,
         area.width,
         wrap_width,
-        &theme,
+        theme,
         app.tool_expanded(),
         app.tool_density(),
         app.show_source_labels(),
