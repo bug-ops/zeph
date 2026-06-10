@@ -1226,7 +1226,8 @@ impl ZephAcpAgentState {
         args: acp::schema::NewSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::NewSessionResponse> {
-        self.validate_additional_directories(&args.additional_directories)?;
+        self.validate_additional_directories(&args.additional_directories)
+            .await?;
         self.evict_oldest_idle_session_if_full()?;
 
         let session_id = acp::schema::SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -1488,7 +1489,8 @@ impl ZephAcpAgentState {
         args: acp::schema::LoadSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::LoadSessionResponse> {
-        self.validate_additional_directories(&args.additional_directories)?;
+        self.validate_additional_directories(&args.additional_directories)
+            .await?;
         if self.sessions.lock().contains_key(&args.session_id) {
             return Ok(acp::schema::LoadSessionResponse::new());
         }
@@ -1635,7 +1637,8 @@ impl ZephAcpAgentState {
         args: acp::schema::ForkSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::ForkSessionResponse> {
-        self.validate_additional_directories(&args.additional_directories)?;
+        self.validate_additional_directories(&args.additional_directories)
+            .await?;
         let in_memory = self.sessions.lock().contains_key(&args.session_id);
 
         if !in_memory {
@@ -1743,7 +1746,8 @@ impl ZephAcpAgentState {
         args: acp::schema::ResumeSessionRequest,
         cx: &acp::ConnectionTo<acp::Client>,
     ) -> acp::Result<acp::schema::ResumeSessionResponse> {
-        self.validate_additional_directories(&args.additional_directories)?;
+        self.validate_additional_directories(&args.additional_directories)
+            .await?;
         if self.sessions.lock().contains_key(&args.session_id) {
             return Ok(acp::schema::ResumeSessionResponse::new());
         }
@@ -1938,7 +1942,7 @@ impl ZephAcpAgentState {
     /// Each requested path is canonicalized and checked with `Path::starts_with` (component-aware)
     /// against every entry in `self.additional_directories_allow`. Returns an `invalid_params`
     /// error if any path is not covered by the allowlist.
-    fn validate_additional_directories(
+    async fn validate_additional_directories(
         &self,
         requested: &[std::path::PathBuf],
     ) -> acp::Result<Vec<std::path::PathBuf>> {
@@ -1951,7 +1955,7 @@ impl ZephAcpAgentState {
         }
         let mut out = Vec::with_capacity(requested.len());
         for p in requested {
-            let canon = std::fs::canonicalize(p).map_err(|e| {
+            let canon = tokio::fs::canonicalize(p).await.map_err(|e| {
                 acp::Error::invalid_params()
                     .data(format!("cannot canonicalize {}: {e}", p.display()))
             })?;

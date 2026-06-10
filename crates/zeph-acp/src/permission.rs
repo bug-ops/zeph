@@ -420,17 +420,21 @@ async fn run_permission_handler(
                         _ => None,
                     };
                     if let Some(d) = decision {
-                        let mut guard = cache.write();
-                        // Insert session-scoped key for fast in-process lookup.
-                        guard.insert(session_cache_key, d);
-                        // For patterned tools, cache at binary granularity.
-                        if let Some(ref bin) = cmd_binary {
-                            guard.insert(format!("{tool_name}\x01{bin}"), d);
-                        } else {
-                            // Simple tool — cache at tool-name level.
-                            guard.insert(tool_name.clone(), d);
-                        }
-                        save_persisted(&permission_file, &rebuild_persisted(&guard));
+                        let persisted = {
+                            let mut guard = cache.write();
+                            // Insert session-scoped key for fast in-process lookup.
+                            guard.insert(session_cache_key, d);
+                            // For patterned tools, cache at binary granularity.
+                            if let Some(ref bin) = cmd_binary {
+                                guard.insert(format!("{tool_name}\x01{bin}"), d);
+                            } else {
+                                // Simple tool — cache at tool-name level.
+                                guard.insert(tool_name.clone(), d);
+                            }
+                            rebuild_persisted(&guard)
+                        };
+                        let file = permission_file.clone();
+                        tokio::task::spawn_blocking(move || save_persisted(&file, &persisted));
                     }
 
                     Ok(allowed)
