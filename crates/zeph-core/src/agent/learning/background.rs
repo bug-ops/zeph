@@ -24,6 +24,7 @@ pub(super) fn defer_clear_status(
     ClearStatusOnDrop(tx)
 }
 
+#[tracing::instrument(name = "core.learning.write_skill_file", skip_all, level = "debug")]
 pub(super) async fn write_skill_file(
     skill_paths: &[PathBuf],
     skill_name: &str,
@@ -84,6 +85,7 @@ pub(super) struct AriseTaskArgs {
     pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
+#[tracing::instrument(name = "core.learning.arise_trace_task", skip_all, level = "debug")]
 pub(super) async fn arise_trace_task(args: AriseTaskArgs) {
     let _clear_status = defer_clear_status(args.status_tx.clone());
     let prompt = zeph_skills::evolution::build_trace_improvement_prompt(
@@ -128,6 +130,11 @@ pub(super) async fn arise_trace_task(args: AriseTaskArgs) {
     arise_store_version(args, generated).await;
 }
 
+#[tracing::instrument(
+    name = "core.learning.arise_check_domain_gate",
+    skip_all,
+    level = "debug"
+)]
 async fn arise_check_domain_gate(args: &AriseTaskArgs, generated: &str) -> bool {
     if !args.domain_success_gate {
         return true;
@@ -163,6 +170,7 @@ async fn arise_check_domain_gate(args: &AriseTaskArgs, generated: &str) -> bool 
     }
 }
 
+#[tracing::instrument(name = "core.learning.arise_store_version", skip_all, level = "debug")]
 async fn arise_store_version(args: AriseTaskArgs, generated: String) {
     let active = match args
         .memory
@@ -266,6 +274,7 @@ pub(super) struct StemTaskArgs {
     pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
+#[tracing::instrument(name = "core.learning.stem_detection_task", skip_all, level = "debug")]
 pub(super) async fn stem_detection_task(args: StemTaskArgs) {
     let _clear_status = defer_clear_status(args.status_tx.clone());
     if let Err(e) = args
@@ -318,6 +327,7 @@ pub(super) async fn stem_detection_task(args: StemTaskArgs) {
     }
 }
 
+#[tracing::instrument(name = "core.learning.stem_generate_skill", skip_all, level = "debug")]
 async fn stem_generate_skill(
     args: &StemTaskArgs,
     seq: &str,
@@ -391,6 +401,7 @@ pub(super) struct ErlTaskArgs {
     pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
+#[tracing::instrument(name = "core.learning.erl_reflection_task", skip_all, level = "debug")]
 pub(super) async fn erl_reflection_task(args: ErlTaskArgs) {
     let _clear_status = defer_clear_status(args.status_tx.clone());
     let prompt = zeph_skills::erl::build_reflection_extract_prompt(

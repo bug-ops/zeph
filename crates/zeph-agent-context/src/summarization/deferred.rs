@@ -125,6 +125,10 @@ pub fn count_deferred_summaries(messages: &[Message]) -> usize {
 /// # Errors
 ///
 /// This function is infallible — LLM errors and timeouts are logged and the batch stops.
+#[tracing::instrument(
+    name = "agent_context.summarization.maybe_summarize_tool_pair",
+    skip_all
+)]
 pub(crate) async fn maybe_summarize_tool_pair(
     summ: &mut ContextSummarizationView<'_>,
     providers: &ProviderHandles,
@@ -279,6 +283,10 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
 ///
 /// Returns `ContextError::Memory` if the `SQLite` call fails. Both deferred queues are
 /// always cleared regardless of the outcome so the agent can continue.
+#[tracing::instrument(
+    name = "agent_context.summarization.flush_deferred_summaries",
+    skip_all
+)]
 pub(crate) async fn flush_deferred_summaries(
     summ: &mut ContextSummarizationView<'_>,
 ) -> Result<(), ContextError> {

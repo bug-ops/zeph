@@ -237,6 +237,11 @@ impl TraceExtractor {
     }
 
     /// Process a single raw candidate string through the parse → scan → embed → decide pipeline.
+    #[tracing::instrument(
+        name = "skills.trace_extraction.process_candidate",
+        skip_all,
+        fields(session_id)
+    )]
     async fn process_candidate(
         &self,
         raw_candidate: &str,
@@ -290,6 +295,11 @@ impl TraceExtractor {
         .await;
     }
 
+    #[tracing::instrument(
+        name = "skills.trace_extraction.apply_decision",
+        skip_all,
+        fields(session_id)
+    )]
     async fn apply_decision(
         &self,
         skill: &GeneratedSkill,
@@ -381,23 +391,18 @@ impl TraceExtractor {
     /// # Errors
     ///
     /// Returns `SkillError::Other` on timeout or LLM failure.
+    #[tracing::instrument(name = "skills.trace_extraction.call_extract_llm", skip_all)]
     async fn call_extract_llm(&self, prompt_text: &str) -> Result<String, SkillError> {
-        async move {
-            let messages = vec![
-                Message::from_legacy(Role::System, EXTRACTION_SYSTEM_PROMPT),
-                Message::from_legacy(Role::User, prompt_text),
-            ];
-            tokio::time::timeout(self.llm_timeout, self.extract_provider.chat(&messages))
-                .await
-                .map_err(|_| {
-                    SkillError::Timeout(
-                        u64::try_from(self.llm_timeout.as_millis()).unwrap_or(u64::MAX),
-                    )
-                })?
-                .map_err(|e| SkillError::Other(format!("extraction LLM failed: {e}")))
-        }
-        .instrument(tracing::info_span!("skills.trace_extraction.llm_call"))
-        .await
+        let messages = vec![
+            Message::from_legacy(Role::System, EXTRACTION_SYSTEM_PROMPT),
+            Message::from_legacy(Role::User, prompt_text),
+        ];
+        tokio::time::timeout(self.llm_timeout, self.extract_provider.chat(&messages))
+            .await
+            .map_err(|_| {
+                SkillError::Timeout(u64::try_from(self.llm_timeout.as_millis()).unwrap_or(u64::MAX))
+            })?
+            .map_err(|e| SkillError::Other(format!("extraction LLM failed: {e}")))
     }
 
     /// Embed a candidate skill description for similarity check.
@@ -405,24 +410,18 @@ impl TraceExtractor {
     /// # Errors
     ///
     /// Returns `SkillError::Other` on timeout or provider failure.
+    #[tracing::instrument(name = "skills.trace_extraction.embed_candidate", skip(self, skill), fields(candidate = %skill.name))]
     async fn embed_candidate(&self, skill: &GeneratedSkill) -> Result<SkillEmbedding, SkillError> {
-        async move {
-            tokio::time::timeout(
-                self.llm_timeout,
-                self.embed_provider.embed(&skill.meta.description),
-            )
-            .await
-            .map_err(|_| {
-                SkillError::Timeout(u64::try_from(self.llm_timeout.as_millis()).unwrap_or(u64::MAX))
-            })?
-            .map(SkillEmbedding::from_raw)
-            .map_err(|e| SkillError::Other(format!("embed failed: {e}")))
-        }
-        .instrument(tracing::info_span!(
-            "skills.trace_extraction.embed",
-            candidate = %skill.name,
-        ))
+        tokio::time::timeout(
+            self.llm_timeout,
+            self.embed_provider.embed(&skill.meta.description),
+        )
         .await
+        .map_err(|_| {
+            SkillError::Timeout(u64::try_from(self.llm_timeout.as_millis()).unwrap_or(u64::MAX))
+        })?
+        .map(SkillEmbedding::from_raw)
+        .map_err(|e| SkillError::Other(format!("embed failed: {e}")))
     }
 
     /// Write a candidate skill to the quarantine directory. Logs on failure.
