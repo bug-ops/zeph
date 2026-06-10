@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `feat(tui)`: breeze spinner (▹▹▹→▸▹▹→▸▸▹→▸▸▸→▹▸▸→▹▹▸) replaces braille throbber across all
+  five spinner sites; ASCII fallback (..→>..→>>.→>>>→.>>→..>) keyed off `detect_unicode_capable()`.
+  Shared `widgets/spinner.rs` module ensures one motion language everywhere (closes #5095).
+- `feat(tui)`: human-voice status verb dictionary maps raw `tui_status!` strings to short,
+  lowercase present-tense verb phrases with optional muted detail ("searching · memory").
+  37-entry `FRAGMENTS` table in `widgets/status_verbs.rs`; unmapped strings pass through verbatim
+  (closes #5097).
+- `feat(tui)`: splash wordmark replaces static cyan ASCII banner with branded `≈ zeph` lockup:
+  aqua-to-ice gradient (truecolor), plain accent (ANSI-16), `~ zeph` (ASCII-only); version line,
+  slogan "think further.", quick-hints row, and 3-tier responsive layout (closes #5094).
+- `feat(tui)`: `detect_unicode_capable()` in `theme/color_mode.rs` — independent of `NO_COLOR`;
+  `TERM=dumb` or non-UTF-8 locale disables Unicode glyphs without affecting color mode.
+
 ### Changed
 
 - `refactor(core)`: migrate 17 direct `tokio::spawn` sites in `zeph-core` to `TaskSupervisor`/`BackgroundSupervisor` supervision; long-lived watchers (`ConfigWatcher`, `FileWatcher`, `InstructionWatcher`, `SystemMetricsCollector`) use `spawn_oneshot`, turn-scoped tasks (`heuristic_promotion`, `trace_extraction`, `experiment_session`, `durable_journal_writer`) use `spawn_oneshot` with unique per-invocation names via atomic counters (closes #5145)
