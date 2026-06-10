@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `feat(tracing)`: instrument 17 hot-path async fns in `zeph-core` agent module
+  (`tool_execution/mod.rs`, `autodream.rs`, `hooks_dispatch.rs`,
+  `context/summarization/{scheduling,compaction,deferred}.rs`) with
+  `#[tracing::instrument]` spans using `core.{agent|tool|context}.<fn>` naming,
+  making compaction, PII scrubbing, cache, and file-change paths visible in traces
+  (closes #5181, #5182, #5183).
+
 - `refactor(agent-context)`: collapse 10 structurally identical inject-sanitize blocks in
   `apply_prepared_context` into a single `slots` slice + loop, eliminating DRY violation
   (closes #5117).
