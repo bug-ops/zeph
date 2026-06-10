@@ -571,6 +571,11 @@ fn render_grouped_tool_cell(
     let mut lines = wrap_spans(summary_spans, wrap_width);
 
     if tool_density == ToolDensity::Compact {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        if let Some(last) = lines.last_mut() {
+            last.spans
+                .push(Span::styled("  (press 'e' to expand)", dim));
+        }
         return lines;
     }
 
@@ -2057,6 +2062,10 @@ mod tests {
             .join("");
         assert!(text.contains("Explored"), "compact: summary present");
         assert!(!text.contains("f0.rs"), "compact: no sub-list items");
+        assert!(
+            text.contains("press 'e' to expand"),
+            "compact: expand affordance shown"
+        );
     }
 
     #[test]
