@@ -286,6 +286,7 @@ impl RouterProvider {
     /// Persist current bandit state to disk. No-op if bandit strategy is not active.
     ///
     /// Uses [`tokio::task::spawn_blocking`] so it is safe to call from any async context.
+    #[tracing::instrument(name = "llm.router.builder.save_bandit_state", skip_all)]
     pub async fn save_bandit_state(&self) {
         let (Some(bandit), Some(path)) = (&self.bandit, &self.bandit_state_path) else {
             return;
@@ -410,6 +411,7 @@ impl RouterProvider {
 
     /// Persist current reputation state to disk. No-op if reputation is disabled.
     /// Uses [`tokio::task::spawn_blocking`] so it is safe to call from any async context.
+    #[tracing::instrument(name = "llm.router.builder.save_reputation_state", skip_all)]
     pub async fn save_reputation_state(&self) {
         let (Some(reputation), Some(path)) = (&self.reputation, &self.reputation_state_path) else {
             return;
@@ -511,6 +513,7 @@ impl RouterProvider {
     ///
     /// Uses [`tokio::task::spawn_blocking`] so it is safe to call from any async context,
     /// including mid-request paths.
+    #[tracing::instrument(name = "llm.router.builder.save_thompson_state", skip_all)]
     pub async fn save_thompson_state(&self) {
         let (Some(thompson), Some(path)) = (&self.thompson, &self.thompson_state_path) else {
             return;
@@ -561,6 +564,7 @@ impl RouterProvider {
     /// # Errors
     ///
     /// Always succeeds (errors per-provider are swallowed).
+    #[tracing::instrument(name = "llm.router.builder.list_models_remote", skip_all)]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {

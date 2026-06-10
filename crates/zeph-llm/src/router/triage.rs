@@ -207,6 +207,7 @@ impl TriageRouter {
 
     /// Classify the last user message and return the selected provider index into `tier_providers`.
     /// On failure (timeout, parse error), returns `default_index`.
+    #[tracing::instrument(name = "llm.router.triage.classify", skip_all)]
     async fn classify(&self, messages: &[Message]) -> usize {
         let start = std::time::Instant::now();
         self.metrics.calls.fetch_add(1, Ordering::Relaxed);
@@ -230,6 +231,7 @@ impl TriageRouter {
         }
     }
 
+    #[tracing::instrument(name = "llm.router.triage.try_classify", skip_all)]
     async fn try_classify(&self, messages: &[Message]) -> Option<ComplexityTier> {
         let prompt = build_triage_prompt(messages);
         let triage_msg = Message {

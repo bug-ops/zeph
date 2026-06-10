@@ -71,6 +71,7 @@ const MIN_INTER_LEN: usize = 50;
 ///
 /// Returns `None` when either text is shorter than the minimum guard or embedding fails.
 /// `0.0` = identical, `0.5` = orthogonal, `1.0` = opposite.
+#[tracing::instrument(name = "llm.router.coe.inter_divergence", skip_all)]
 pub async fn inter_divergence(
     primary: &str,
     secondary: &str,
@@ -139,6 +140,7 @@ pub fn decide(entropy: Option<f64>, divergence: Option<f32>, config: &CoeConfig)
 /// # Errors
 ///
 /// Secondary/embed failures are swallowed and cause fallback to the primary response (COE-02).
+#[tracing::instrument(name = "llm.router.coe.run_coe", skip_all)]
 pub async fn run_coe(
     coe: &CoeRouter,
     primary_name: String,

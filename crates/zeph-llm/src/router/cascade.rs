@@ -291,6 +291,7 @@ fn build_judge_prompt(response: &str) -> String {
 /// # Errors
 ///
 /// Any `LlmError` from the judge call or a timeout is swallowed and represented as `None`.
+#[tracing::instrument(name = "llm.router.cascade.judge_score", skip_all)]
 pub async fn judge_score(
     judge: &dyn LlmProviderDyn,
     response: &str,
