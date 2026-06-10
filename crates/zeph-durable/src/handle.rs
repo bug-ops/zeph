@@ -178,6 +178,11 @@ impl DurableContext {
     /// assert_eq!(lines, 42);
     /// # Ok(()) }
     /// ```
+    #[tracing::instrument(
+        name = "durable.context.step",
+        skip_all,
+        fields(execution_id = %self.execution_id.as_uuid(), step_name = desc.name())
+    )]
     pub async fn step<T, F, Fut>(&self, desc: StepDescriptor, op: F) -> Result<T, DurableError>
     where
         T: Serialize + DeserializeOwned + Send,
@@ -195,6 +200,11 @@ impl DurableContext {
     /// # Errors
     ///
     /// Identical to [`step`](DurableContext::step).
+    #[tracing::instrument(
+        name = "durable.context.step_recorded",
+        skip_all,
+        fields(execution_id = %self.execution_id.as_uuid(), step_name = desc.name())
+    )]
     pub async fn step_recorded<T, F, Fut>(
         &self,
         desc: StepDescriptor,
@@ -231,6 +241,11 @@ impl DurableContext {
     ///
     /// - [`DurableError::StepCapExceeded`] if the promise would exceed the per-execution step cap.
     /// - A storage error if the promise row cannot be read or inserted.
+    #[tracing::instrument(
+        name = "durable.context.promise",
+        skip_all,
+        fields(execution_id = %self.execution_id.as_uuid())
+    )]
     pub async fn promise<T>(&self) -> Result<DurablePromise<T>, DurableError> {
         let step_id = self.checked_step_id()?;
         let promise_id = PromiseId::derive(self.execution_id, step_id);
@@ -305,6 +320,7 @@ impl DurableContext {
     }
 
     /// Read a promise's state and, if resolved, open and decode its value.
+    #[tracing::instrument(name = "durable.context.take_resolved_promise", skip_all, fields(promise_id = %id.as_uuid()))]
     async fn take_resolved_promise<T: DeserializeOwned>(
         &self,
         id: PromiseId,
@@ -338,6 +354,11 @@ impl DurableContext {
     ///
     /// - [`DurableError::StepCapExceeded`] if the timer would exceed the per-execution step cap.
     /// - A storage error if the timer cannot be armed or its state read.
+    #[tracing::instrument(
+        name = "durable.context.sleep_until",
+        skip_all,
+        fields(execution_id = %self.execution_id.as_uuid())
+    )]
     pub async fn sleep_until(&self, due: SystemTime) -> Result<(), DurableError> {
         let step_id = self.checked_step_id()?;
         let timer_id = TimerId::derive(self.execution_id, step_id);
@@ -400,6 +421,7 @@ impl DurableContext {
     ///
     /// The soft step-cap fold runs on a spawned task so it never blocks step dispatch; call this at
     /// a turn boundary to ensure the journal is compacted before the next phase observes it.
+    #[tracing::instrument(name = "durable.context.drain_background", skip_all, fields(execution_id = %self.execution_id.as_uuid()))]
     pub async fn drain_background(&self) {
         let mut set = {
             let mut guard = self
@@ -549,6 +571,7 @@ impl DurableContext {
     }
 
     /// Compare a journaled step's fingerprint against the current descriptor's; abort on mismatch.
+    #[tracing::instrument(name = "durable.context.check_divergence", skip_all, fields(step_id = step_id.value()))]
     async fn check_divergence(
         &self,
         step_id: StepId,
@@ -565,6 +588,7 @@ impl DurableContext {
     }
 
     /// Mark the execution aborted and disable replay so it restarts fresh (FR-DE-03).
+    #[tracing::instrument(name = "durable.context.on_divergence", skip_all, fields(step_id = step_id.value(), execution_id = %self.execution_id.as_uuid()))]
     async fn on_divergence(&self, step_id: StepId) {
         self.diverged.store(true, Ordering::Release);
         tracing::warn!(
@@ -582,6 +606,7 @@ impl DurableContext {
     }
 
     /// Apply the [`OnAmbiguous`] policy for a guarded step resumed in the ambiguous window.
+    #[tracing::instrument(name = "durable.context.resolve_ambiguous", skip_all, fields(step_id = step_id.value(), execution_id = %self.execution_id.as_uuid()))]
     async fn resolve_ambiguous<T, F, Fut>(
         &self,
         step_id: StepId,
@@ -615,6 +640,7 @@ impl DurableContext {
     }
 
     /// Invoke the operation closure, mapping its failure to [`DurableError::StepFailed`].
+    #[tracing::instrument(name = "durable.context.run_op", skip_all, fields(step_id = step_id.value(), step_name = name))]
     async fn run_op<T, F, Fut>(
         &self,
         op: F,
@@ -633,6 +659,7 @@ impl DurableContext {
     }
 
     /// Journal a step's already-serialized result with the durability class its effect requires.
+    #[tracing::instrument(name = "durable.context.journal_result", skip_all, fields(step_id = step_id.value(), effect_class = effect.as_str(), step_name = name))]
     async fn journal_result(
         &self,
         payload: bytes::Bytes,
@@ -690,6 +717,7 @@ impl DurableContext {
     }
 
     /// ACK an append, degrading to non-durable mode on a writer timeout (INV-12) rather than failing.
+    #[tracing::instrument(name = "durable.context.append_acked_degrading", skip_all, fields(step_name = name))]
     async fn append_acked_degrading(
         &self,
         entry: JournalEntry,

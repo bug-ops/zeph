@@ -38,6 +38,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(durable)`: add `#[tracing::instrument]` to hot-path async fns in `zeph-durable`:
+  `JournalWriter::run`, `flush_buffer`, `JournalWriterHandle::append_acked`, `flush`
+  (closes #5204); `DurableContext::step`, `step_recorded`, `promise`, `sleep_until`,
+  `drain_background`, `take_resolved_promise`, `check_divergence`, `on_divergence`,
+  `resolve_ambiguous`, `run_op`, `journal_result`, `append_acked_degrading`
+  (closes #5205); `DurableTimerService::run`, `fire_due`; `DurableRetentionService::run`.
+  All `run` loops wrapped in per-iteration spans (`durable.{writer,timer,retention}.run.iter`);
+  no `span.entered()` across `.await`.
 - `feat(tui)`: breeze spinner (▹▹▹→▸▹▹→▸▸▹→▸▸▸→▹▸▸→▹▹▸) replaces braille throbber across all
   five spinner sites; ASCII fallback (..→>..→>>.→>>>→.>>→..>) keyed off `detect_unicode_capable()`.
   Shared `widgets/spinner.rs` module ensures one motion language everywhere (closes #5095).

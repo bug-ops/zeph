@@ -19,6 +19,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::Instrument as _;
+
 use crate::backend::DurableBackendEnum;
 use crate::backend::local::now_unix_millis;
 
@@ -69,16 +71,20 @@ impl DurableTimerService {
     /// Each tick fires every timer whose `due_at` has elapsed (including, on the first tick after a
     /// restart, timers that came due during downtime — FR-DE-06). A backend error is logged and the
     /// loop continues so a transient failure does not strand future timers.
+    #[tracing::instrument(name = "durable.timer.run", skip_all)]
     pub async fn run(self) {
         let mut tick = tokio::time::interval(self.poll_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            self.fire_due().await;
+            self.fire_due()
+                .instrument(tracing::info_span!("durable.timer.run.iter"))
+                .await;
         }
     }
 
     /// Fire every currently-due timer once. Exposed for a deterministic test poll.
+    #[tracing::instrument(name = "durable.timer.fire_due", skip_all)]
     pub(crate) async fn fire_due(&self) {
         let now = now_unix_millis();
         let due = match self.backend.due_timers(now).await {

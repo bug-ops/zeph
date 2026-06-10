@@ -218,6 +218,7 @@ impl DurableRetentionService {
     ///
     /// Each tick prunes terminal executions older than their TTL; a prune failure is logged and the
     /// loop continues (a transient database error must not kill retention).
+    #[tracing::instrument(name = "durable.retention.run", skip_all)]
     pub async fn run(self) {
         let mut tick = tokio::time::interval(self.interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -226,14 +227,18 @@ impl DurableRetentionService {
         tick.tick().await;
         loop {
             tick.tick().await;
-            match self.backend.prune(&self.policy).await {
-                Ok(deleted) => {
-                    tracing::debug!(deleted, "durable retention prune sweep completed");
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "durable retention prune sweep failed; will retry");
+            async {
+                match self.backend.prune(&self.policy).await {
+                    Ok(deleted) => {
+                        tracing::debug!(deleted, "durable retention prune sweep completed");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "durable retention prune sweep failed; will retry");
+                    }
                 }
             }
+            .instrument(tracing::info_span!("durable.retention.run.iter"))
+            .await;
         }
     }
 }

@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument as _;
 
 use crate::backend::local::LocalBackend;
 use crate::config::DurableConfig;
@@ -116,6 +117,7 @@ impl JournalWriter {
     /// before every acked commit (INV-4), and emits a `durable.journal.writer.queue_depth` gauge per
     /// commit cycle. When the channel closes it drains any remaining buffered entries and returns,
     /// so the supervisor can restart it cleanly.
+    #[tracing::instrument(name = "durable.writer.run", skip_all)]
     pub async fn run(mut self) {
         let resume = match self.backend.max_seq().await {
             Ok(seq) => seq,
@@ -134,33 +136,45 @@ impl JournalWriter {
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
-            tokio::select! {
-                maybe_msg = self.rx.recv() => match maybe_msg {
-                    Some(JournalMsg::AppendBuffered(entry)) => {
-                        buffer.push(entry);
-                        if buffer.len() >= self.max_batch {
-                            self.flush_buffer(&mut buffer).await;
+            let keep_running = async {
+                tokio::select! {
+                    maybe_msg = self.rx.recv() => match maybe_msg {
+                        Some(JournalMsg::AppendBuffered(entry)) => {
+                            buffer.push(entry);
+                            if buffer.len() >= self.max_batch {
+                                self.flush_buffer(&mut buffer).await;
+                            }
+                            true
                         }
-                    }
-                    Some(JournalMsg::AppendAcked(entry, reply)) => {
-                        // INV-4: every causally-preceding buffered entry is durable before the
-                        // exactly-once entry commits.
+                        Some(JournalMsg::AppendAcked(entry, reply)) => {
+                            // INV-4: every causally-preceding buffered entry is durable before the
+                            // exactly-once entry commits.
+                            self.flush_buffer(&mut buffer).await;
+                            let result = self.backend.append(entry).await;
+                            let _ = reply.send(result);
+                            true
+                        }
+                        Some(JournalMsg::Flush(reply)) => {
+                            self.flush_buffer(&mut buffer).await;
+                            let _ = reply.send(());
+                            true
+                        }
+                        None => {
+                            self.flush_buffer(&mut buffer).await;
+                            false
+                        }
+                    },
+                    _ = flush.tick() => {
                         self.flush_buffer(&mut buffer).await;
-                        let result = self.backend.append(entry).await;
-                        let _ = reply.send(result);
+                        true
                     }
-                    Some(JournalMsg::Flush(reply)) => {
-                        self.flush_buffer(&mut buffer).await;
-                        let _ = reply.send(());
-                    }
-                    None => {
-                        self.flush_buffer(&mut buffer).await;
-                        break;
-                    }
-                },
-                _ = flush.tick() => {
-                    self.flush_buffer(&mut buffer).await;
                 }
+            }
+            .instrument(tracing::info_span!("durable.writer.run.iter"))
+            .await;
+
+            if !keep_running {
+                break;
             }
         }
         tracing::info!("journal writer stopped");
@@ -170,6 +184,7 @@ impl JournalWriter {
     ///
     /// A failed group-commit drops the buffered entries with a `WARN` (they re-run safely on
     /// resume) rather than wedging the actor.
+    #[tracing::instrument(name = "durable.writer.flush_buffer", skip_all, fields(batch_size = buffer.len()))]
     async fn flush_buffer(&self, buffer: &mut Vec<JournalEntry>) {
         if buffer.is_empty() {
             return;
@@ -226,6 +241,7 @@ impl JournalWriterHandle {
     /// Returns [`DurableError::JournalUnavailable`] if the writer does not acknowledge within the
     /// timeout or is unreachable, and propagates a backend [`DurableError`] if the commit itself
     /// fails. The caller never blocks indefinitely (INV-12).
+    #[tracing::instrument(name = "durable.writer.append_acked", skip_all)]
     pub async fn append_acked(&self, entry: JournalEntry) -> Result<JournalSeq, DurableError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let send_and_wait = async {
@@ -249,6 +265,7 @@ impl JournalWriterHandle {
     ///
     /// Returns [`DurableError::JournalUnavailable`] if the writer does not confirm within the
     /// timeout or is unreachable.
+    #[tracing::instrument(name = "durable.writer.flush", skip_all)]
     pub async fn flush(&self) -> Result<(), DurableError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let send_and_wait = async {
