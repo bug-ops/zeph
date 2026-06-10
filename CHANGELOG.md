@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(agent-context)`: collapse 10 structurally identical inject-sanitize blocks in
+  `apply_prepared_context` into a single `slots` slice + loop, eliminating DRY violation
+  (closes #5117).
+- `refactor(knowledge)`: extract `build_shared_validator` helper to deduplicate identical
+  `SharedPostExtractValidator` construction in `run_graph_ingest` and
+  `handle_external_agent_ingest` (closes #5118).
+
 ### Fixed
 
 - `fix(skills)`: migrate `SkillWatcher` background task from raw `tokio::spawn` to

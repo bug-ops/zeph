@@ -604,6 +604,22 @@ fn print_ingest_report(report: &IngestReport) {
     }
 }
 
+/// Build a [`SharedPostExtractValidator`] that gates graph extraction via [`zeph_sanitizer::memory_validation::MemoryWriteValidator`].
+///
+/// Wraps `cfg` in a `MemoryWriteValidator` and returns it as the shared closure expected by
+/// `SemanticMemory::ingest_documents` (INV-4, spec-067 §G-5 S3).
+#[allow(clippy::unnecessary_wraps)] // SharedPostExtractValidator is Option<Arc<...>>; callers pass it directly
+fn build_shared_validator(
+    cfg: zeph_config::sanitizer::MemoryWriteValidationConfig,
+) -> SharedPostExtractValidator {
+    let inner = zeph_sanitizer::memory_validation::MemoryWriteValidator::new(cfg);
+    Some(Arc::new(move |r| {
+        inner
+            .validate_graph_extraction(r)
+            .map_err(|e| e.to_string())
+    }))
+}
+
 /// Execute the graph-sink ingest path for `--source subagents` (spec-067 Phase 2, FR-020..024).
 ///
 /// Discovers subagent JSONL transcripts under the project-anchored transcript dir,
@@ -818,14 +834,7 @@ async fn run_graph_ingest(
     // Always Some — required on both dry-run and live paths (spec-067 §G-5 S3).
     // TODO(critic): P4 — ingest sanitizer covers entity-name PII + counts; edge-fact bodies
     // length-capped only, no body PII / exfiltration URL scan (#5023 INV-4 MVP boundary).
-    let validator_inner = zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
-        config.security.memory_validation.clone(),
-    );
-    let shared_validator: SharedPostExtractValidator = Some(Arc::new(move |r| {
-        validator_inner
-            .validate_graph_extraction(r)
-            .map_err(|e| e.to_string())
-    }));
+    let shared_validator = build_shared_validator(config.security.memory_validation.clone());
 
     let batch_cfg = IngestBatchConfig {
         dry_run,
@@ -1255,14 +1264,7 @@ async fn handle_external_agent_ingest(
     let mem = app.build_memory(&provider, &kn_sup3).await?;
 
     // Build SharedPostExtractValidator wrapping MemoryWriteValidator (INV-4, spec-067 §G-5 S3).
-    let validator_inner = zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
-        app_config.security.memory_validation.clone(),
-    );
-    let shared_validator: SharedPostExtractValidator = Some(Arc::new(move |r| {
-        validator_inner
-            .validate_graph_extraction(r)
-            .map_err(|e| e.to_string())
-    }));
+    let shared_validator = build_shared_validator(app_config.security.memory_validation.clone());
 
     let config = IngestBatchConfig::default();
     let report = mem

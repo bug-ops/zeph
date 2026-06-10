@@ -788,89 +788,60 @@ impl ContextService {
         let mut inserted_count: usize = 0;
 
         // Insert memory messages at position 1 (all sanitized before insertion — CRIT-02).
-        if let Some(msg) = prepared.graph_facts.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected knowledge graph facts into context");
-        }
-        if let Some(msg) = prepared.doc_rag.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected document RAG context");
-        }
-        if let Some(msg) = prepared.corrections.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected past corrections into context");
-        }
-        if let Some(msg) = prepared.recall.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-        }
-        if let Some(msg) = prepared.cross_session.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::LlmSummary, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-        }
-        if let Some(msg) = prepared.summaries.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::LlmSummary, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected summaries into context");
-        }
-        if let Some(msg) = prepared.persona_facts.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected persona facts into context");
-        }
-        if let Some(msg) = prepared
-            .trajectory_hints
-            .filter(|_| window.messages.len() > 1)
-        {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected trajectory hints into context");
-        }
-        if let Some(msg) = prepared.tree_memory.filter(|_| window.messages.len() > 1) {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected tree memory summary into context");
-        }
-        if let Some(msg) = prepared
-            .reasoning_hints
-            .filter(|_| window.messages.len() > 1)
-        {
-            let sanitized = self
-                .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, view)
-                .await;
-            window.messages.insert(1, sanitized);
-            inserted_count += 1;
-            tracing::debug!("injected reasoning strategies into context");
+        // Each tuple: (optional message, hint, optional debug label).
+        let slots: &[(Option<Message>, MemorySourceHint, Option<&str>)] = &[
+            (
+                prepared.graph_facts,
+                MemorySourceHint::ExternalContent,
+                Some("injected knowledge graph facts into context"),
+            ),
+            (
+                prepared.doc_rag,
+                MemorySourceHint::ExternalContent,
+                Some("injected document RAG context"),
+            ),
+            (
+                prepared.corrections,
+                MemorySourceHint::ConversationHistory,
+                Some("injected past corrections into context"),
+            ),
+            (prepared.recall, MemorySourceHint::ConversationHistory, None),
+            (prepared.cross_session, MemorySourceHint::LlmSummary, None),
+            (
+                prepared.summaries,
+                MemorySourceHint::LlmSummary,
+                Some("injected summaries into context"),
+            ),
+            (
+                prepared.persona_facts,
+                MemorySourceHint::ExternalContent,
+                Some("injected persona facts into context"),
+            ),
+            (
+                prepared.trajectory_hints,
+                MemorySourceHint::ExternalContent,
+                Some("injected trajectory hints into context"),
+            ),
+            (
+                prepared.tree_memory,
+                MemorySourceHint::ExternalContent,
+                Some("injected tree memory summary into context"),
+            ),
+            (
+                prepared.reasoning_hints,
+                MemorySourceHint::ExternalContent,
+                Some("injected reasoning strategies into context"),
+            ),
+        ];
+        for (opt_msg, hint, label) in slots.iter().cloned() {
+            if let Some(msg) = opt_msg.filter(|_| window.messages.len() > 1) {
+                let sanitized = self.sanitize_memory_message(msg, hint, view).await;
+                window.messages.insert(1, sanitized);
+                inserted_count += 1;
+                if let Some(lbl) = label {
+                    tracing::debug!("{lbl}");
+                }
+            }
         }
 
         // Code context: sanitize inline, return body to caller via ContextDelta.
