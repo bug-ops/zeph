@@ -485,7 +485,7 @@ impl Default for WizardState {
             deep_link_register: false,
             #[cfg(feature = "deep-link")]
             deep_link_confirm_before_prompt: true,
-            tui_theme_name: "classic".to_owned(),
+            tui_theme_name: "zephyr".to_owned(),
             tui_color_mode: zeph_config::ColorMode::Auto,
         }
     }
@@ -1798,8 +1798,8 @@ fn step_tui_theme(state: &mut WizardState) -> anyhow::Result<()> {
     println!("You can change this later in config.toml under [tui.theme].\n");
 
     let presets = [
-        "classic (default — matches pre-2.0 colours)",
-        "zephyr (dark blue-green)",
+        "zephyr (default — dark blue-green)",
+        "classic (legacy look, matches pre-2.0 colours)",
         "zephyr-light (light variant)",
         "high-contrast",
         "catppuccin-mocha",
@@ -1807,8 +1807,8 @@ fn step_tui_theme(state: &mut WizardState) -> anyhow::Result<()> {
         "solarized-dark",
     ];
     let preset_names = [
-        "classic",
         "zephyr",
+        "classic",
         "zephyr-light",
         "high-contrast",
         "catppuccin-mocha",

@@ -43,9 +43,13 @@ pub fn compute_diff(old: &str, new: &str) -> Vec<DiffLine> {
 }
 
 #[must_use]
-pub fn render_diff_lines(lines: &[DiffLine], file_path: &str, theme: &Theme) -> Vec<Line<'static>> {
+pub fn render_diff_lines(
+    lines: &[DiffLine],
+    file_path: &str,
+    theme: &Theme,
+    syntax_theme: &SyntaxTheme,
+) -> Vec<Line<'static>> {
     let lang = lang_from_path(file_path);
-    let syntax_theme = SyntaxTheme::default();
     let mut result = Vec::new();
 
     // Header
@@ -72,8 +76,7 @@ pub fn render_diff_lines(lines: &[DiffLine], file_path: &str, theme: &Theme) -> 
         let content = dl.content.trim_end_matches('\n');
         let mut line_spans = vec![Span::styled(format!("{gutter} "), gutter_style)];
 
-        let highlighted =
-            lang.and_then(|l| SYNTAX_HIGHLIGHTER.highlight(l, content, &syntax_theme));
+        let highlighted = lang.and_then(|l| SYNTAX_HIGHLIGHTER.highlight(l, content, syntax_theme));
 
         if let Some(spans) = highlighted {
             for span in spans {
@@ -172,7 +175,7 @@ mod tests {
     fn render_diff_lines_has_header() {
         let diff_lines = compute_diff("", "line\n");
         let theme = Theme::default();
-        let rendered = render_diff_lines(&diff_lines, "test.rs", &theme);
+        let rendered = render_diff_lines(&diff_lines, "test.rs", &theme, &theme.syntax_theme);
         assert!(!rendered.is_empty());
         let header: String = rendered[0]
             .spans

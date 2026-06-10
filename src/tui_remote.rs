@@ -113,9 +113,13 @@ pub(crate) async fn run_tui_remote(
     let tui_theme = {
         use zeph_tui::theme::{Theme, resolve_color_mode, resolve_palette};
         let theme_cfg = &config.tui.theme;
-        resolve_palette(&theme_cfg.name)
-            .map(|p| Theme::from_palette_with_mode(&p, resolve_color_mode(theme_cfg.color_mode)))
-            .unwrap_or_default()
+        match resolve_palette(&theme_cfg.name) {
+            Ok(p) => Theme::from_palette_with_mode(&p, resolve_color_mode(theme_cfg.color_mode)),
+            Err(e) => {
+                tracing::warn!("TUI theme '{}' could not be loaded: {e}", theme_cfg.name);
+                Theme::default()
+            }
+        }
     };
     let mut tui_app = App::new(user_tx, agent_rx)
         .with_tool_density(config.tui.tool_density)

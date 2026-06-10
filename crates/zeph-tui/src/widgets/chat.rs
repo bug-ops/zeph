@@ -655,7 +655,12 @@ fn render_tool_message(
         } else {
             let diff_lines =
                 super::diff::compute_diff(&diff_data.old_content, &diff_data.new_content);
-            let rendered = super::diff::render_diff_lines(&diff_lines, &diff_data.file_path, theme);
+            let rendered = super::diff::render_diff_lines(
+                &diff_lines,
+                &diff_data.file_path,
+                theme,
+                &theme.syntax_theme,
+            );
             let mut wrapped: Vec<Line<'static>> = Vec::new();
             for line in rendered {
                 let mut prefixed_spans = vec![Span::styled(indent.to_string(), Style::default())];

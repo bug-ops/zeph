@@ -38,6 +38,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(tui)`: theme system 2.0 — semantic palette, 7 built-in presets, color-mode downgrade pipeline, init wizard theme step, and migration step 65 (closes #5087, #5088, #5089)
+  - New `crates/zeph-tui/src/theme/` module: `SemanticPalette` (10 colour roles + `ExtendedRoles`), `Rgb` newtype with `#rrggbb` hex serde, `EffectiveColorMode` with ANSI-256 dual-candidate downgrade (cube + gray-ramp, pick nearest), `NO_COLOR` detection per no-color.org spec.
+  - 7 built-in presets embedded at compile time: `zephyr` (default), `classic` (legacy look), `zephyr-light`, `high-contrast`, `catppuccin-mocha`, `gruvbox-dark`, `solarized-dark`.
+  - User theme files loadable from `~/.config/zeph/themes/<name>.toml` with path-traversal guard, symlink rejection, and 64 KiB cap enforced at read time.
+  - `Theme::from_palette_with_mode` derives all widget styles once at startup; widget render functions receive `&Theme` — no per-frame allocation.
+  - `build_tui_theme()` helper wires palette + color mode into the TUI App at startup (`tui_bridge.rs`, `tui_remote.rs`).
+  - Migration step 65 (`MigrateTuiThemeConfig`) appends a commented `[tui.theme]` advisory block to existing configs; idempotent with section-scoped scan.
+  - `--init` wizard `step_tui_theme`: Select prompts for preset (default: zephyr) and color mode (default: auto).
+
 - `fix(config)`: config load failures are no longer silent (#5071, #5067, #5072)
   - Missing config file now prints a one-line notice to stderr and falls back to defaults instead of silently using defaults. Existing configs with parse errors now exit with a non-zero status and print the TOML error with file path and line number.
   - `--init` wizard `step_policy` now prompts for `tools.policy.policy_provider` (LLM-assisted policy checks, leave blank to skip) and `tools.utility.utility_window` (consecutive low-utility call threshold, 0 = disabled).

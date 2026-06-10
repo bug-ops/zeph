@@ -176,27 +176,45 @@ fn validate_theme_name(name: &str) -> Result<(), ThemeLoadError> {
 /// Returns [`ThemeLoadError`] if the name is not found, the file is too large, or
 /// the TOML cannot be parsed.
 fn load_user_theme(name: &str) -> Result<SemanticPalette, ThemeLoadError> {
+    use std::io::Read;
+
     const MAX_SIZE: u64 = 64 * 1024; // 64 KiB
 
     let themes_dir = user_themes_dir();
     let path = themes_dir.join(format!("{name}.toml"));
 
-    let meta = std::fs::metadata(&path).map_err(|_| ThemeLoadError::NotFound {
+    // Reject symlinks before opening to prevent following links out of the themes dir.
+    let meta = std::fs::symlink_metadata(&path).map_err(|_| ThemeLoadError::NotFound {
         name: name.to_owned(),
         path: path.clone(),
     })?;
-
-    let size = meta.len();
-    if size > MAX_SIZE {
-        return Err(ThemeLoadError::FileTooLarge { path, size });
+    if meta.file_type().is_symlink() {
+        return Err(ThemeLoadError::NotFound {
+            name: name.to_owned(),
+            path,
+        });
     }
 
-    let content = std::fs::read_to_string(&path).map_err(|e| ThemeLoadError::Io {
+    // Read with an explicit byte cap — authoritative regardless of metadata/TOCTOU race.
+    let f = std::fs::File::open(&path).map_err(|e| ThemeLoadError::Io {
         path: path.clone(),
         source: e,
     })?;
+    let mut buf = String::new();
+    f.take(MAX_SIZE + 1)
+        .read_to_string(&mut buf)
+        .map_err(|e| ThemeLoadError::Io {
+            path: path.clone(),
+            source: e,
+        })?;
+    if buf.len() as u64 > MAX_SIZE {
+        return Err(ThemeLoadError::FileTooLarge {
+            path,
+            size: buf.len() as u64,
+        });
+    }
 
-    toml::from_str(&content).map_err(|e| ThemeLoadError::Parse {
+    toml::from_str(&buf).map_err(|e| ThemeLoadError::Parse {
         name: name.to_owned(),
         source: e,
     })

@@ -460,7 +460,7 @@ pub fn migrate_tui_theme_config(toml_src: &str) -> Result<MigrationResult, Migra
          # high-contrast, catppuccin-mocha, gruvbox-dark, solarized-dark.\n\
          # Custom palettes: drop a TOML file in ~/.config/zeph/themes/<name>.toml.\n\
          # [tui.theme]\n\
-         # name         = \"classic\"   # default: classic (matches pre-2.0 colours)\n\
+         # name         = \"zephyr\"    # default: zephyr (new default since 2.0; use \"classic\" for legacy look)\n\
          # color_mode   = \"auto\"      # auto | truecolor | ansi256 | ansi16 | never\n";
     let output = format!("{raw}{comment}");
 

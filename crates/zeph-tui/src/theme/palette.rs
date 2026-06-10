@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// ```rust
 /// use zeph_tui::theme::palette::Rgb;
 ///
-/// let r: Rgb = serde_json::from_str(r#""#1FB9A8""#).unwrap();
+/// let r: Rgb = serde_json::from_str(r##""#1FB9A8""##).unwrap();
 /// assert_eq!(r, Rgb(0x1F, 0xB9, 0xA8));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

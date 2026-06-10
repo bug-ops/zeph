@@ -51,6 +51,7 @@ zeph-subagent.workspace = true
 expectrl.workspace = true
 insta.workspace = true
 proptest.workspace = true
+serial_test.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util.workspace = true

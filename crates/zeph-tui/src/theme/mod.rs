@@ -156,6 +156,11 @@ pub struct Theme {
     pub tool_success: Style,
     /// Style for the bullet of a failed tool call.
     pub tool_failure: Style,
+    /// Syntax-highlight styles for code blocks and diffs.
+    ///
+    /// Initialised once at startup; passed as `&theme.syntax_theme` to `render_diff_lines`
+    /// and the syntax highlighter so that `SyntaxTheme::default()` is never called per frame.
+    pub syntax_theme: SyntaxTheme,
 }
 
 impl Theme {
@@ -246,6 +251,7 @@ impl Theme {
             turn_separator: am(Style::default().fg(fg(p.muted)).add_modifier(Modifier::DIM)),
             tool_success: am(Style::default().fg(fg(p.success))),
             tool_failure: am(Style::default().fg(fg(p.error))),
+            syntax_theme: SyntaxTheme::default(),
         }
     }
 }
@@ -304,6 +310,7 @@ impl Default for Theme {
                 .add_modifier(Modifier::DIM),
             tool_success: Style::default().fg(Color::Green),
             tool_failure: Style::default().fg(Color::Red),
+            syntax_theme: SyntaxTheme::default(),
         }
     }
 }

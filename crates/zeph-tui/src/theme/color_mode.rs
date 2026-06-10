@@ -385,4 +385,17 @@ mod tests {
             EffectiveColorMode::Never
         );
     }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(unsafe_code)]
+    fn auto_with_no_color_env_resolves_to_never() {
+        // Temporarily set NO_COLOR. Per no-color.org, presence alone (even empty) disables colour.
+        // serial guards against parallel tests mutating the same env var.
+        // SAFETY: single-threaded via #[serial]; no other test reads this env var concurrently.
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+        let result = resolve_color_mode(ColorMode::Auto);
+        unsafe { std::env::remove_var("NO_COLOR") };
+        assert_eq!(result, EffectiveColorMode::Never);
+    }
 }

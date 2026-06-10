@@ -328,10 +328,10 @@ impl ToolDensity {
 /// ```rust
 /// use zeph_config::ColorMode;
 ///
-/// let mode: ColorMode = toml::from_str("\"auto\"").unwrap();
+/// let mode: ColorMode = toml::from_str("value = \"auto\"")
+///     .map(|t: toml::Table| t["value"].clone().try_into().unwrap())
+///     .unwrap();
 /// assert_eq!(mode, ColorMode::Auto);
-/// let never: ColorMode = toml::from_str("\"never\"").unwrap();
-/// assert_eq!(never, ColorMode::Never);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
