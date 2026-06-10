@@ -14,7 +14,7 @@ use zeph_core::channel::{
 };
 
 use self::gateway::IncomingMessage;
-use crate::streaming::StreamingBuffer;
+use crate::streaming::{StreamingBuffer, StreamingSend};
 
 const MAX_MESSAGE_LEN: usize = 2000;
 const EDIT_THROTTLE: Duration = Duration::from_millis(1500);
@@ -147,6 +147,28 @@ impl DiscordChannel {
     }
 }
 
+impl StreamingSend for DiscordChannel {
+    async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
+        Self::send_or_edit(self).await
+    }
+
+    fn streaming_buffer(&self) -> &StreamingBuffer {
+        &self.buffer
+    }
+
+    fn streaming_buffer_mut(&mut self) -> &mut StreamingBuffer {
+        &mut self.buffer
+    }
+
+    fn has_pending_message(&self) -> bool {
+        self.message_id.is_some()
+    }
+
+    fn clear_pending_message(&mut self) {
+        self.message_id = None;
+    }
+}
+
 impl Channel for DiscordChannel {
     fn supports_exit(&self) -> bool {
         false
@@ -235,11 +257,7 @@ impl Channel for DiscordChannel {
         tracing::instrument(name = "channels.discord.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
     )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
-        self.buffer.push(chunk);
-        if self.buffer.should_flush() {
-            self.send_or_edit().await?;
-        }
-        Ok(())
+        StreamingSend::streaming_send_chunk(self, chunk).await
     }
 
     #[cfg_attr(
@@ -247,12 +265,7 @@ impl Channel for DiscordChannel {
         tracing::instrument(name = "channels.discord.flush_chunks", skip_all, level = "debug")
     )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        if self.message_id.is_some() || !self.buffer.is_empty() {
-            self.send_or_edit().await?;
-        }
-        self.buffer.reset();
-        self.message_id = None;
-        Ok(())
+        StreamingSend::streaming_flush_chunks(self).await
     }
 
     #[cfg_attr(

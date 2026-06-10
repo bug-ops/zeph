@@ -1,15 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Shared streaming buffer used by all channel adapters that support
+//! Shared streaming buffer and helpers used by all channel adapters that support
 //! edit-in-place streaming (Telegram, Discord, Slack).
 //!
 //! Each adapter holds one [`StreamingBuffer`] instance. Chunks are pushed via
 //! [`push`][StreamingBuffer::push]; the adapter checks [`should_flush`][StreamingBuffer::should_flush]
 //! to decide whether to issue an API edit, then calls either [`take`][StreamingBuffer::take]
 //! (drain) or [`mark_flushed`][StreamingBuffer::mark_flushed] (Telegram: read without drain).
+//!
+//! The [`StreamingSend`] trait extracts the common `send_chunk` / `flush_chunks`
+//! logic that is otherwise duplicated across Discord, Slack, and Telegram.
 
 use std::time::{Duration, Instant};
+
+use zeph_core::channel::ChannelError;
 
 /// Accumulates streaming LLM chunks and throttles edit-in-place updates.
 ///
@@ -211,6 +216,65 @@ impl StreamingBuffer {
     #[must_use]
     pub fn len(&self) -> usize {
         self.accumulated.len()
+    }
+}
+
+/// Shared streaming send/flush logic for edit-in-place channel adapters.
+///
+/// Implementing this trait eliminates the duplicated `send_chunk` / `flush_chunks`
+/// bodies that would otherwise appear verbatim in Discord, Slack, and Telegram.
+///
+/// Implementors must provide:
+/// - [`send_or_edit`](StreamingSend::send_or_edit) — the adapter-specific API call.
+/// - [`streaming_buffer`](StreamingSend::streaming_buffer) /
+///   [`streaming_buffer_mut`](StreamingSend::streaming_buffer_mut) — access to the shared buffer.
+/// - [`has_pending_message`](StreamingSend::has_pending_message) — whether a sent message can be
+///   edited in place.
+/// - [`clear_pending_message`](StreamingSend::clear_pending_message) — reset the stored message
+///   ID / timestamp.
+///
+/// Default methods [`streaming_send_chunk`](StreamingSend::streaming_send_chunk) and
+/// [`streaming_flush_chunks`](StreamingSend::streaming_flush_chunks) encode the shared
+/// accumulate-and-throttle pattern.
+#[allow(async_fn_in_trait)]
+pub trait StreamingSend {
+    /// Issue one API call: send a new message or edit the last one in place.
+    async fn send_or_edit(&mut self) -> Result<(), ChannelError>;
+
+    /// Shared read access to the streaming buffer.
+    fn streaming_buffer(&self) -> &StreamingBuffer;
+
+    /// Exclusive access to the streaming buffer.
+    fn streaming_buffer_mut(&mut self) -> &mut StreamingBuffer;
+
+    /// Returns `true` when a message has been sent and can be edited in place.
+    fn has_pending_message(&self) -> bool;
+
+    /// Clear the stored message ID / timestamp so the next send creates a new message.
+    fn clear_pending_message(&mut self);
+
+    /// Accumulate `chunk` and call [`send_or_edit`] when the throttle window has elapsed.
+    ///
+    /// [`send_or_edit`]: StreamingSend::send_or_edit
+    async fn streaming_send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
+        self.streaming_buffer_mut().push(chunk);
+        if self.streaming_buffer().should_flush() {
+            self.send_or_edit().await?;
+        }
+        Ok(())
+    }
+
+    /// Finalise the stream: perform one last [`send_or_edit`] when there is
+    /// outstanding text or an editable message, then clear all streaming state.
+    ///
+    /// [`send_or_edit`]: StreamingSend::send_or_edit
+    async fn streaming_flush_chunks(&mut self) -> Result<(), ChannelError> {
+        if self.has_pending_message() || !self.streaming_buffer().is_empty() {
+            self.send_or_edit().await?;
+        }
+        self.streaming_buffer_mut().reset();
+        self.clear_pending_message();
+        Ok(())
     }
 }
 

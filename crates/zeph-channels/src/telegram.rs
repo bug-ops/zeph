@@ -265,19 +265,38 @@ impl TelegramChannel {
         self
     }
 
-    /// Spawn a task that registers bot commands in the Telegram menu.
-    fn register_commands(bot: Bot) {
-        tokio::spawn(async move {
-            let commands = vec![
-                BotCommand::new("start", "Start a new conversation"),
-                BotCommand::new("reset", "Reset conversation history"),
-                BotCommand::new("skills", "List loaded skills"),
-                BotCommand::new("agent", "Manage sub-agents (list/spawn/status/cancel)"),
-            ];
-            if let Err(e) = bot.set_my_commands(commands).await {
-                tracing::warn!("failed to register bot commands: {e}");
+    /// Spawn a fire-and-forget task that registers bot commands in the Telegram menu.
+    ///
+    /// When a supervisor is provided the task is registered under `telegram_register_commands`
+    /// so it is visible in TUI status and metrics. Without a supervisor the task falls back to
+    /// a plain `tokio::spawn` — this only happens in tests and early-startup paths before
+    /// the agent attaches a supervisor via [`with_supervisor`].
+    ///
+    /// [`with_supervisor`]: TelegramChannel::with_supervisor
+    fn register_commands(bot: Bot, supervisor: Option<&TaskSupervisor>) {
+        let factory = move || {
+            let bot = bot.clone();
+            async move {
+                let commands = vec![
+                    BotCommand::new("start", "Start a new conversation"),
+                    BotCommand::new("reset", "Reset conversation history"),
+                    BotCommand::new("skills", "List loaded skills"),
+                    BotCommand::new("agent", "Manage sub-agents (list/spawn/status/cancel)"),
+                ];
+                if let Err(e) = bot.set_my_commands(commands).await {
+                    tracing::warn!("failed to register bot commands: {e}");
+                }
             }
-        });
+        };
+        if let Some(sup) = supervisor {
+            sup.spawn(zeph_common::TaskDescriptor {
+                name: "telegram_register_commands",
+                restart: zeph_common::RestartPolicy::RunOnce,
+                factory,
+            });
+        } else {
+            tokio::spawn(factory());
+        }
     }
 
     /// Spawn the teloxide update listener and return `self` ready for use.
@@ -300,25 +319,38 @@ impl TelegramChannel {
         if self.bot_to_bot {
             let api_ext = self.api_ext.clone();
             let active_flag = self.bot_to_bot_active.clone();
-            tokio::spawn(async move {
-                let settings = BotAccessSettings {
-                    allow_user_messages: true,
-                    allow_bot_messages: true,
-                };
-                match api_ext.set_managed_bot_access_settings(&settings).await {
-                    Ok(_) => {
-                        active_flag.store(true, Ordering::Release);
-                        tracing::info!(
-                            "bot-to-bot communication enabled via setManagedBotAccessSettings"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "setManagedBotAccessSettings failed: {e}; bot-to-bot disabled"
-                        );
+            let factory = move || {
+                let api_ext = api_ext.clone();
+                let active_flag = active_flag.clone();
+                async move {
+                    let settings = BotAccessSettings {
+                        allow_user_messages: true,
+                        allow_bot_messages: true,
+                    };
+                    match api_ext.set_managed_bot_access_settings(&settings).await {
+                        Ok(_) => {
+                            active_flag.store(true, Ordering::Release);
+                            tracing::info!(
+                                "bot-to-bot communication enabled via setManagedBotAccessSettings"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "setManagedBotAccessSettings failed: {e}; bot-to-bot disabled"
+                            );
+                        }
                     }
                 }
-            });
+            };
+            if let Some(sup) = &self.supervisor {
+                sup.spawn(zeph_common::TaskDescriptor {
+                    name: "telegram_bot_to_bot_setup",
+                    restart: zeph_common::RestartPolicy::RunOnce,
+                    factory,
+                });
+            } else {
+                tokio::spawn(factory());
+            }
         }
 
         let (tx, rx) = mpsc::channel::<IncomingMessage>(64);
@@ -347,7 +379,7 @@ impl TelegramChannel {
         let max_bot_chain_depth = self.max_bot_chain_depth;
         let bot_reply_counters = self.bot_reply_counters.clone();
 
-        Self::register_commands(bot.clone());
+        Self::register_commands(bot.clone(), self.supervisor.as_ref());
 
         let bot_for_factory = bot.clone();
         let allowed_for_factory = allowed.clone();
@@ -403,6 +435,10 @@ impl TelegramChannel {
                 factory: listener_factory,
             });
         } else {
+            tracing::warn!(
+                "telegram listener spawned without a TaskSupervisor — task is untracked and will \
+                 not be restarted on panic; attach a supervisor via with_supervisor() for production use"
+            );
             tokio::spawn(listener_factory());
         }
 

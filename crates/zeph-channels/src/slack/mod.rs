@@ -22,7 +22,7 @@ use zeph_core::channel::{
 };
 
 use self::events::IncomingMessage;
-use crate::streaming::StreamingBuffer;
+use crate::streaming::{StreamingBuffer, StreamingSend};
 
 const EDIT_THROTTLE: Duration = Duration::from_secs(2);
 
@@ -148,6 +148,28 @@ impl SlackChannel {
     }
 }
 
+impl StreamingSend for SlackChannel {
+    async fn send_or_edit(&mut self) -> Result<(), ChannelError> {
+        Self::send_or_edit(self).await
+    }
+
+    fn streaming_buffer(&self) -> &StreamingBuffer {
+        &self.buffer
+    }
+
+    fn streaming_buffer_mut(&mut self) -> &mut StreamingBuffer {
+        &mut self.buffer
+    }
+
+    fn has_pending_message(&self) -> bool {
+        self.message_ts.is_some()
+    }
+
+    fn clear_pending_message(&mut self) {
+        self.message_ts = None;
+    }
+}
+
 impl Channel for SlackChannel {
     fn supports_exit(&self) -> bool {
         false
@@ -223,11 +245,7 @@ impl Channel for SlackChannel {
         tracing::instrument(name = "channels.slack.send_chunk", skip_all, level = "debug", fields(chunk_len = %chunk.len()))
     )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
-        self.buffer.push(chunk);
-        if self.buffer.should_flush() {
-            self.send_or_edit().await?;
-        }
-        Ok(())
+        StreamingSend::streaming_send_chunk(self, chunk).await
     }
 
     #[cfg_attr(
@@ -235,12 +253,7 @@ impl Channel for SlackChannel {
         tracing::instrument(name = "channels.slack.flush_chunks", skip_all, level = "debug")
     )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        if self.message_ts.is_some() || !self.buffer.is_empty() {
-            self.send_or_edit().await?;
-        }
-        self.buffer.reset();
-        self.message_ts = None;
-        Ok(())
+        StreamingSend::streaming_flush_chunks(self).await
     }
 
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
