@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        65,
-        "MIGRATIONS registry must contain all 65 sequential steps"
+        66,
+        "MIGRATIONS registry must contain all 66 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 65);
+    assert_eq!(MIGRATIONS.len(), 66);
 }
 
 #[test]
@@ -1751,6 +1751,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_memory_graph_recall_include_imported",
         "migrate_policy_provider_and_utility_window",
         "migrate_tui_theme_config",
+        "migrate_tui_theme_defaults",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2815,5 +2816,80 @@ fn step_65_idempotent_on_own_output() {
     assert_eq!(
         second.output, first.output,
         "output unchanged on second run"
+    );
+}
+
+// ── Step 66 — migrate_tui_theme_defaults (#5091) ──────────────────────────
+
+#[test]
+fn step_66_inserts_defaults_when_section_present_but_keys_absent() {
+    let src = "[tui]\ntool_density = \"compact\"\n\n[tui.theme]\n";
+    let result = migrate_tui_theme_defaults(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.sections_changed.contains(&"tui.theme".to_owned()),
+        "sections_changed must include tui.theme"
+    );
+    assert!(
+        result.output.contains("name"),
+        "output must contain name key"
+    );
+    assert!(
+        result.output.contains("color_mode"),
+        "output must contain color_mode key"
+    );
+    assert!(
+        result.output.contains("zephyr"),
+        "name default must be zephyr"
+    );
+    assert!(
+        result.output.contains("auto"),
+        "color_mode default must be auto"
+    );
+}
+
+#[test]
+fn step_66_noop_when_section_absent() {
+    let src = "[tui]\ntool_density = \"compact\"\n";
+    let result = migrate_tui_theme_defaults(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_66_noop_when_both_keys_present() {
+    let src = "[tui]\ntool_density = \"compact\"\n\n[tui.theme]\nname = \"gruvbox-dark\"\ncolor_mode = \"truecolor\"\n";
+    let result = migrate_tui_theme_defaults(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_66_idempotent_on_own_output() {
+    let src = "[tui]\ntool_density = \"compact\"\n\n[tui.theme]\n";
+    let first = migrate_tui_theme_defaults(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_tui_theme_defaults(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+#[test]
+fn step_66_inserts_only_missing_key_when_one_present() {
+    let src = "[tui.theme]\nname = \"classic\"\n";
+    let result = migrate_tui_theme_defaults(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.output.contains("color_mode"),
+        "color_mode must be inserted"
+    );
+    // name must not be duplicated
+    assert_eq!(
+        result.output.matches("name").count(),
+        1,
+        "name must appear exactly once"
     );
 }

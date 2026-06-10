@@ -7,6 +7,8 @@
 //! the [`Migration`](super::Migration) trait, and the [`MIGRATIONS`](super::MIGRATIONS)
 //! registry remain in the parent module.
 
+use regex::Regex;
+
 use super::{MigrateError, MigrationResult};
 
 /// Strip any existing `[memory.compression.predictor]` section from the config (#3251).
@@ -405,6 +407,110 @@ pub fn migrate_knowledge_config(toml_src: &str) -> Result<MigrationResult, Migra
         output,
         changed_count: 1,
         sections_changed: vec!["knowledge".to_owned()],
+    })
+}
+
+static TUI_THEME_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"(?m)^[ \t]*\[tui\.theme\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+});
+
+/// Insert active `name` and `color_mode` defaults into `[tui.theme]` when the section
+/// exists but those keys are absent (#5091).
+///
+/// Step 65 added a commented-out advisory block so users could discover the new section.
+/// This step upgrades configs that already have an active `[tui.theme]` section (either
+/// hand-edited or promoted from the advisory block) by injecting the two mandatory keys
+/// with their safe defaults so that the runtime never falls back to compiled-in values
+/// silently.
+///
+/// The step is idempotent: if either key is already present the function is a no-op.
+/// If the `[tui.theme]` section is absent entirely the step is also a no-op (step 65
+/// handles that case).
+///
+/// # Errors
+///
+/// Returns `MigrateError::TomlParse` if the input is not valid TOML.
+pub fn migrate_tui_theme_defaults(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Check whether a key with the exact name exists inside [tui.theme].
+    // Uses exact-key matching: trim the line, strip a leading `#` for commented keys,
+    // split on `=`, and compare the key token — prevents prefix false-positives
+    // (e.g. `name_hint` must NOT satisfy `has_name`).
+    let key_in_tui_theme = |key: &str| {
+        let mut in_tui_theme = false;
+        toml_src.lines().any(|l| {
+            let t = l.trim();
+            // Section header line — update scope flag and keep scanning.
+            if !t.starts_with('#') && t.starts_with('[') {
+                in_tui_theme = t == "[tui.theme]";
+                return false;
+            }
+            if !in_tui_theme {
+                return false;
+            }
+            // Strip optional leading `#` for commented-out keys.
+            let body = t.trim_start_matches('#').trim();
+            // Extract the key token (everything before `=`), trim whitespace.
+            let lhs = body.split('=').next().unwrap_or("").trim();
+            lhs == key
+        })
+    };
+
+    let has_name = key_in_tui_theme("name");
+    let has_color_mode = key_in_tui_theme("color_mode");
+
+    // If [tui.theme] is absent, step 65 handles it — this step is a no-op.
+    let has_section = toml_src.contains("[tui.theme]");
+    if !has_section || (has_name && has_color_mode) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Normalise: ensure the source ends with a newline so the regex can always
+    // match the header line (hand-edited files may omit the trailing newline).
+    let owned;
+    let src = if toml_src.ends_with('\n') {
+        toml_src
+    } else {
+        owned = format!("{toml_src}\n");
+        &owned
+    };
+
+    if !TUI_THEME_HEADER_RE.is_match(src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut insert = String::new();
+    if !has_name {
+        insert
+            .push_str("name       = \"zephyr\"  # built-in preset; see /theme for alternatives\n");
+    }
+    if !has_color_mode {
+        insert.push_str("color_mode = \"auto\"    # auto | truecolor | ansi256 | ansi16 | never\n");
+    }
+
+    let output = TUI_THEME_HEADER_RE
+        .replacen(src, 1, |caps: &regex::Captures| {
+            format!("{}{insert}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["tui.theme".to_owned()]
+        } else {
+            Vec::new()
+        },
     })
 }
 

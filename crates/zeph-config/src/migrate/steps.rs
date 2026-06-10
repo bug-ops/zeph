@@ -22,7 +22,10 @@
 //! step 60 adds `[tools.shell]` checkpoints (#4990);
 //! step 61 adds `[knowledge]` section advisory notice (spec-067, #5017);
 //! step 62 adds `[deep_link]` advisory notice (spec-066, #5011);
-//! step 63 adds `recall_include_imported` to `[memory.graph]` (#5015).
+//! step 63 adds `recall_include_imported` to `[memory.graph]` (#5015);
+//! step 64 adds `policy_provider` and `utility_window` advisory comments (#5067);
+//! step 65 adds `[tui.theme]` advisory block (Theme System 2.0, #5087);
+//! step 66 inserts active `name`/`color_mode` defaults into `[tui.theme]` (#5091).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -54,7 +57,8 @@ use super::{
     migrate_session_recap_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
     migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_theme_config,
-    migrate_vigil_config, migrate_worktree_config, migrate_worktree_git_timeout,
+    migrate_tui_theme_defaults, migrate_vigil_config, migrate_worktree_config,
+    migrate_worktree_git_timeout,
 };
 
 // ── Wrapper structs for all 64 sequential migration steps ───────────────────────────────────────
@@ -771,5 +775,16 @@ impl Migration for MigrateTuiThemeConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_tui_theme_config(toml_src)
+    }
+}
+
+pub(super) struct MigrateTuiThemeDefaults;
+impl Migration for MigrateTuiThemeDefaults {
+    fn name(&self) -> &'static str {
+        "migrate_tui_theme_defaults"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_tui_theme_defaults(toml_src)
     }
 }
