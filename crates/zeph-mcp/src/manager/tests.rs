@@ -450,7 +450,7 @@ fn make_tool(server_id: &str, name: &str) -> McpTool {
 async fn refresh_task_updates_watch_channel() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let mut rx = mgr.subscribe_tool_changes();
-    mgr.spawn_refresh_task();
+    mgr.spawn_refresh_task(None);
 
     // Send a refresh event directly through the internal channel.
     let tx = mgr.clone_refresh_tx().unwrap();
@@ -471,7 +471,7 @@ async fn refresh_task_updates_watch_channel() {
 async fn refresh_task_multiple_servers_combined() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let mut rx = mgr.subscribe_tool_changes();
-    mgr.spawn_refresh_task();
+    mgr.spawn_refresh_task(None);
 
     let tx = mgr.clone_refresh_tx().unwrap();
     tx.try_send(crate::client::ToolRefreshEvent {
@@ -496,7 +496,7 @@ async fn refresh_task_multiple_servers_combined() {
 async fn refresh_task_replaces_tools_for_same_server() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let mut rx = mgr.subscribe_tool_changes();
-    mgr.spawn_refresh_task();
+    mgr.spawn_refresh_task(None);
 
     let tx = mgr.clone_refresh_tx().unwrap();
     tx.try_send(crate::client::ToolRefreshEvent {
@@ -526,7 +526,7 @@ async fn refresh_task_replaces_tools_for_same_server() {
 #[tokio::test]
 async fn shutdown_all_terminates_refresh_task() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
-    mgr.spawn_refresh_task();
+    mgr.spawn_refresh_task(None);
     // The refresh task should terminate naturally after shutdown drops all senders.
     mgr.shutdown_all_shared().await;
     // If we try to send after shutdown, the tx should be gone.
@@ -536,7 +536,7 @@ async fn shutdown_all_terminates_refresh_task() {
 #[tokio::test]
 async fn remove_server_cleans_up_server_tools() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
-    mgr.spawn_refresh_task();
+    mgr.spawn_refresh_task(None);
 
     // Inject a tool via refresh event.
     let tx = mgr.clone_refresh_tx().unwrap();

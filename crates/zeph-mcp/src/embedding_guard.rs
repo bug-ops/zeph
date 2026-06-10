@@ -61,6 +61,12 @@ struct CentroidState {
 /// Default timeout for embedding computation inside the background anomaly-check task.
 const DEFAULT_EMBED_TIMEOUT_MS: u64 = 5000;
 
+/// Maximum number of concurrent in-flight embedding tasks spawned by [`EmbeddingAnomalyGuard::check_async`].
+///
+/// When this limit is reached, new calls are silently dropped (fail-open). The guard
+/// is a background observation layer and must never stall the tool output path.
+const MAX_CONCURRENT_EMBED_TASKS: usize = 32;
+
 /// Detects anomalous MCP tool output via embedding distance from a per-server centroid.
 ///
 /// `check_async()` is fire-and-forget: it returns immediately and sends results via
@@ -78,6 +84,8 @@ pub struct EmbeddingAnomalyGuard {
     /// Maximum milliseconds to wait for the embedding computation. `0` means no timeout.
     embed_timeout_ms: u64,
     result_tx: mpsc::UnboundedSender<EmbeddingGuardEvent>,
+    /// Bounds concurrent in-flight embedding tasks; tasks are dropped (fail-open) when full.
+    task_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for EmbeddingAnomalyGuard {
@@ -116,6 +124,7 @@ impl EmbeddingAnomalyGuard {
             ema_floor,
             embed_timeout_ms: DEFAULT_EMBED_TIMEOUT_MS,
             result_tx: tx,
+            task_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_EMBED_TASKS)),
         };
         (guard, rx)
     }
@@ -162,6 +171,14 @@ impl EmbeddingAnomalyGuard {
             return;
         };
 
+        let Some(permit) = self.task_semaphore.clone().try_acquire_owned().ok() else {
+            tracing::debug!(
+                server_id,
+                "embedding guard: concurrent task limit reached, skipping check"
+            );
+            return;
+        };
+
         let embed_fn = Arc::clone(&self.embed_fn);
         let threshold = self.threshold;
         let embed_timeout_ms = self.embed_timeout_ms;
@@ -171,6 +188,7 @@ impl EmbeddingAnomalyGuard {
         let output = tool_output.to_owned();
 
         tokio::spawn(async move {
+            let _permit = permit; // released when task completes
             let embed_result = if embed_timeout_ms > 0 {
                 let timeout = Duration::from_millis(embed_timeout_ms);
                 if let Ok(r) = tokio::time::timeout(timeout, (embed_fn)(&output)).await {

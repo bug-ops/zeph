@@ -8,19 +8,25 @@
 //! Only `SKILL.md` file changes trigger an event; other filesystem activity is
 //! silently ignored.
 //!
-//! The watcher task runs for as long as the [`SkillWatcher`] handle is alive.
-//! Dropping the handle aborts the background task and stops all watches.
+//! The watcher task is registered with the provided [`TaskSupervisor`] under the
+//! name `"skills.watcher"` so it is visible to `list_tasks()` and participates
+//! in graceful shutdown via `shutdown_all()`.
 //!
 //! # Examples
 //!
 //! ```rust,no_run
-//! use tokio::sync::mpsc;
-//! use zeph_skills::watcher::{SkillEvent, SkillWatcher};
 //! use std::path::PathBuf;
+//! use std::sync::Arc;
+//!
+//! use tokio::sync::mpsc;
+//! use tokio_util::sync::CancellationToken;
+//! use zeph_common::TaskSupervisor;
+//! use zeph_skills::watcher::{SkillEvent, SkillWatcher};
 //!
 //! # async fn run() -> Result<(), zeph_skills::SkillError> {
+//! let supervisor = TaskSupervisor::new(CancellationToken::new());
 //! let (tx, mut rx) = mpsc::channel(16);
-//! let _watcher = SkillWatcher::start(&[PathBuf::from("/path/to/skills")], tx)?;
+//! let _watcher = SkillWatcher::start(&[PathBuf::from("/path/to/skills")], tx, &supervisor)?;
 //!
 //! while let Some(event) = rx.recv().await {
 //!     match event {
@@ -33,10 +39,12 @@
 //! ```
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
+use zeph_common::TaskSupervisor;
 
 use crate::error::SkillError;
 
@@ -53,20 +61,28 @@ pub enum SkillEvent {
 
 /// Handle to the background filesystem watcher task.
 ///
-/// Dropping this value aborts the watcher task and releases all filesystem watches.
+/// When the `SkillWatcher` is dropped the underlying task is cancelled through the
+/// supervisor's `CancellationToken`. All filesystem watches are released when the
+/// `_debouncer` inside the task is dropped on exit.
 pub struct SkillWatcher {
-    _handle: tokio::task::JoinHandle<()>,
+    _handle: zeph_common::task_supervisor::BlockingHandle<()>,
 }
 
 impl SkillWatcher {
     /// Start watching directories for SKILL.md changes.
     ///
     /// Sends `SkillEvent::Changed` on any filesystem change (debounced 500ms).
+    /// The watcher task is registered under `"skills.watcher"` in `supervisor`
+    /// and is visible to `list_tasks()` and abortable via `shutdown_all()`.
     ///
     /// # Errors
     ///
     /// Returns an error if the filesystem watcher cannot be initialized.
-    pub fn start(paths: &[PathBuf], tx: mpsc::Sender<SkillEvent>) -> Result<Self, SkillError> {
+    pub fn start(
+        paths: &[PathBuf],
+        tx: mpsc::Sender<SkillEvent>,
+        supervisor: &TaskSupervisor,
+    ) -> Result<Self, SkillError> {
         let (notify_tx, mut notify_rx) = mpsc::channel(16);
 
         let mut debouncer = new_debouncer(
@@ -97,7 +113,7 @@ impl SkillWatcher {
                 .watch(path, notify::RecursiveMode::Recursive)?;
         }
 
-        let handle = tokio::spawn(async move {
+        let handle = supervisor.spawn_oneshot(Arc::from("skills.watcher"), move || async move {
             let _debouncer = debouncer;
             while notify_rx.recv().await.is_some() {
                 if tx.send(SkillEvent::Changed).await.is_err() {
@@ -112,13 +128,23 @@ impl SkillWatcher {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::TaskSupervisor;
+
     use super::*;
+
+    fn test_supervisor() -> Arc<TaskSupervisor> {
+        Arc::new(TaskSupervisor::new(CancellationToken::new()))
+    }
 
     #[tokio::test]
     async fn start_with_valid_directory() {
         let dir = tempfile::tempdir().unwrap();
         let (tx, _rx) = mpsc::channel(16);
-        let watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx);
+        let sup = test_supervisor();
+        let watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx, &sup);
         assert!(watcher.is_ok());
     }
 
@@ -127,22 +153,28 @@ mod tests {
         let dir1 = tempfile::tempdir().unwrap();
         let dir2 = tempfile::tempdir().unwrap();
         let (tx, _rx) = mpsc::channel(16);
-        let watcher =
-            SkillWatcher::start(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()], tx);
+        let sup = test_supervisor();
+        let watcher = SkillWatcher::start(
+            &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
+            tx,
+            &sup,
+        );
         assert!(watcher.is_ok());
     }
 
     #[tokio::test]
     async fn start_with_nonexistent_directory_fails() {
         let (tx, _rx) = mpsc::channel(16);
-        let result = SkillWatcher::start(&[PathBuf::from("/nonexistent/path/xyz")], tx);
+        let sup = test_supervisor();
+        let result = SkillWatcher::start(&[PathBuf::from("/nonexistent/path/xyz")], tx, &sup);
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn start_with_empty_paths() {
         let (tx, _rx) = mpsc::channel(16);
-        let watcher = SkillWatcher::start(&[], tx);
+        let sup = test_supervisor();
+        let watcher = SkillWatcher::start(&[], tx, &sup);
         assert!(watcher.is_ok());
     }
 
@@ -150,7 +182,8 @@ mod tests {
     async fn detects_skill_file_change() {
         let dir = tempfile::tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+        let sup = test_supervisor();
+        let _watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx, &sup).unwrap();
 
         let skill_path = dir.path().join("SKILL.md");
         std::fs::write(&skill_path, "initial").unwrap();
@@ -169,7 +202,8 @@ mod tests {
     async fn ignores_non_skill_file_change() {
         let dir = tempfile::tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+        let sup = test_supervisor();
+        let _watcher = SkillWatcher::start(&[dir.path().to_path_buf()], tx, &sup).unwrap();
 
         let other_path = dir.path().join("README.md");
         std::fs::write(&other_path, "content").unwrap();

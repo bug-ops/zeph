@@ -547,7 +547,7 @@ pub(crate) async fn build_tool_setup(
     let mcp_elicitation_rx = mcp_manager.take_elicitation_rx();
     if !bare {
         // Spawn the background task that processes tools/list_changed events.
-        mcp_manager.spawn_refresh_task();
+        mcp_manager.spawn_refresh_task(supervisor);
     }
 
     let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));

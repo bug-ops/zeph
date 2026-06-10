@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(skills)`: migrate `SkillWatcher` background task from raw `tokio::spawn` to
+  `TaskSupervisor::spawn_oneshot` so the watcher is named, observable in `list_tasks()`,
+  and abortable via `shutdown_all()` (closes #5170).
+- `fix(mcp)`: migrate `McpManager::spawn_refresh_task` from raw `tokio::spawn` to
+  `TaskSupervisor::spawn` with `RestartPolicy::RunOnce`; bound `EmbeddingAnomalyGuard`
+  concurrent fire-and-forget spawns with an `Arc<Semaphore>` (capacity 32) so the guard
+  no longer leaks untracked tasks (closes #5202).
+- `fix(llm)`: eliminate raw `tokio::spawn` in `CandleProvider::chat_stream` by replacing
+  the fake-streaming mpsc pattern with `tokio_stream::iter` over pre-built chunks —
+  structured concurrency, no dropped `JoinHandle` (closes #5219).
+
 ### Added
 
 - `feat(tui)`: breeze spinner (▹▹▹→▸▹▹→▸▸▹→▸▸▸→▹▸▸→▹▹▸) replaces braille throbber across all

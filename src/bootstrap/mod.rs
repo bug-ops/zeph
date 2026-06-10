@@ -1132,16 +1132,17 @@ impl AppBuilder {
 
         let skill_paths = self.skill_paths_for_watcher();
         let (skill_tx, skill_reload_rx) = instrumented_channel(4, "skill_reload_rx");
-        let skill_watcher = match SkillWatcher::start(&skill_paths, skill_tx.into_inner()) {
-            Ok(w) => {
-                tracing::info!("skill watcher started");
-                Some(w)
-            }
-            Err(e) => {
-                tracing::warn!("skill watcher unavailable: {e:#}");
-                None
-            }
-        };
+        let skill_watcher =
+            match SkillWatcher::start(&skill_paths, skill_tx.into_inner(), supervisor) {
+                Ok(w) => {
+                    tracing::info!("skill watcher started");
+                    Some(w)
+                }
+                Err(e) => {
+                    tracing::warn!("skill watcher unavailable: {e:#}");
+                    None
+                }
+            };
 
         let (config_tx, config_reload_rx) = instrumented_channel(4, "config_reload_rx");
         let config_watcher =

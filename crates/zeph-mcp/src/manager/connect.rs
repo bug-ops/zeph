@@ -86,10 +86,14 @@ impl McpManager {
     /// when all senders are dropped (i.e., after `shutdown_all_shared()` drops `refresh_tx`
     /// and all connected clients are shut down).
     ///
+    /// When `supervisor` is `Some`, the task is registered under `"mcp.refresh_task"` and
+    /// participates in graceful shutdown via `shutdown_all()`. When `None` (test contexts),
+    /// a raw `tokio::spawn` is used.
+    ///
     /// # Panics
     ///
     /// Panics if the refresh receiver has already been taken (i.e., this method is called twice).
-    pub fn spawn_refresh_task(&self) {
+    pub fn spawn_refresh_task(&self, supervisor: Option<&zeph_common::TaskSupervisor>) {
         let rx = self
             .refresh_rx
             .lock()
@@ -106,7 +110,7 @@ impl McpManager {
         let lock_tool_list = self.lock_tool_list;
         let tool_list_locked = Arc::clone(&self.tool_list_locked);
 
-        tokio::spawn(async move {
+        let task = async move {
             let mut rx = rx;
             while let Some(event) = rx.recv().await {
                 // MF-2: reject refresh for locked servers before any processing.
@@ -161,7 +165,27 @@ impl McpManager {
                 let _ = tools_watch_tx.send(all_tools);
             }
             tracing::debug!("MCP refresh task terminated: channel closed");
-        });
+        };
+
+        if let Some(sup) = supervisor {
+            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(task)));
+            // spawn() requires Fn; wrap the FnOnce payload in Arc<Mutex<Option>> so the
+            // factory can be called once for RunOnce without capturing by move.
+            sup.spawn(zeph_common::TaskDescriptor {
+                name: "mcp.refresh_task",
+                restart: zeph_common::RestartPolicy::RunOnce,
+                factory: move || {
+                    let fut = cell.lock().take();
+                    async move {
+                        if let Some(f) = fut {
+                            f.await;
+                        }
+                    }
+                },
+            });
+        } else {
+            tokio::spawn(task); // EXEMPT(test): no supervisor available in unit-test context
+        }
     }
 
     /// Connect to all non-OAuth configured servers concurrently.

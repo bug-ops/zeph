@@ -257,27 +257,22 @@ impl LlmProvider for CandleProvider {
         self.dispatch(messages.to_vec()).await
     }
 
-    // NOTE: MVP fake streaming — generates all tokens then chunks
+    // NOTE: MVP fake streaming — generates all tokens then chunks into 32-byte slices.
+    // No spawn needed: text is fully available before streaming begins, so we yield
+    // pre-built chunks via tokio_stream::iter (structured concurrency, no JoinHandle).
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let text = self.dispatch(messages.to_vec()).await?;
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-
-        tokio::spawn(async move {
-            let mut start = 0;
-            while start < text.len() {
-                let mut end = (start + 32).min(text.len());
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
-                let chunk = StreamChunk::Content(text[start..end].to_string());
-                if tx.send(Ok(chunk)).await.is_err() {
-                    break;
-                }
-                start = end;
+        let mut chunks: Vec<Result<StreamChunk, LlmError>> = Vec::new();
+        let mut start = 0;
+        while start < text.len() {
+            let mut end = (start + 32).min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
             }
-        });
-
-        Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
+            chunks.push(Ok(StreamChunk::Content(text[start..end].to_string())));
+            start = end;
+        }
+        Ok(Box::pin(tokio_stream::iter(chunks)))
     }
 
     fn supports_streaming(&self) -> bool {
