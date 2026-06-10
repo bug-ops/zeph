@@ -5,6 +5,11 @@ use crate::agent::Agent;
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
+    #[tracing::instrument(
+        name = "core.context.maybe_summarize_tool_pair",
+        skip_all,
+        level = "debug"
+    )]
     pub(in crate::agent) async fn maybe_summarize_tool_pair(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         let providers = self.providers();
@@ -22,6 +27,11 @@ impl<C: Channel> Agent<C> {
         svc.apply_deferred_summaries(&mut summ)
     }
 
+    #[tracing::instrument(
+        name = "core.context.flush_deferred_summaries",
+        skip_all,
+        level = "debug"
+    )]
     pub(in crate::agent) async fn flush_deferred_summaries(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         let mut summ = self.summarization_view();

@@ -26,6 +26,7 @@ impl<C: Channel> Agent<C> {
     /// Called after each tool batch completes. The check is a single syscall and has
     /// negligible cost. Only fires when cwd actually changed (defense-in-depth: normally
     /// only `set_working_directory` changes cwd; shell child processes cannot affect it).
+    #[tracing::instrument(name = "core.agent.check_cwd_changed", skip_all, level = "debug")]
     pub(crate) async fn check_cwd_changed(&mut self) {
         let current = match std::env::current_dir() {
             Ok(p) => p,
@@ -74,6 +75,7 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
     }
     /// Handle a `FileChangedEvent` from the file watcher.
+    #[tracing::instrument(name = "core.agent.handle_file_changed", skip_all, level = "debug")]
     pub(crate) async fn handle_file_changed(
         &mut self,
         event: crate::file_watcher::FileChangedEvent,

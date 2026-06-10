@@ -18,6 +18,7 @@ impl<C: Channel> Agent<C> {
     /// - Status messages collected during the service call are forwarded to `channel.send_status`.
     /// - `context_compactions` and `compaction_hard_count` metrics are updated — the service
     ///   cannot access these because `MetricsCallback` is not part of [`ContextSummarizationView`].
+    #[tracing::instrument(name = "core.context.maybe_compact", skip_all, level = "debug")]
     pub(in crate::agent) async fn maybe_compact(
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
@@ -84,6 +85,11 @@ impl<C: Channel> Agent<C> {
     /// because Focus state is not part of [`ContextSummarizationView`]. Focus
     /// auto-consolidation lives only on `Agent<C>` and is not delegated to
     /// `ContextService`.
+    #[tracing::instrument(
+        name = "core.context.maybe_proactive_compress",
+        skip_all,
+        level = "debug"
+    )]
     pub(in crate::agent) async fn maybe_proactive_compress(
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
@@ -98,6 +104,11 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Emit a UX status signal when tokens were actually freed by compaction.
+    #[tracing::instrument(
+        name = "core.context.emit_compaction_status_signal",
+        skip_all,
+        level = "debug"
+    )]
     pub(in crate::agent) async fn emit_compaction_status_signal(&mut self, tokens_before: u64) {
         let tokens_after = self.runtime.providers.cached_prompt_tokens;
         if tokens_after < tokens_before {

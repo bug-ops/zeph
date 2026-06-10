@@ -23,6 +23,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// [`ContextSummarizationView`]: zeph_agent_context::state::ContextSummarizationView
     /// [`AgentError`]: crate::agent::error::AgentError
+    #[tracing::instrument(name = "core.context.compact_context", skip_all, level = "debug")]
     pub(in crate::agent) async fn compact_context(
         &mut self,
     ) -> Result<CompactionOutcome, crate::agent::error::AgentError> {
@@ -91,6 +92,11 @@ impl<C: Channel> Agent<C> {
     ///
     /// Extracts all fields from `&self` synchronously before the first `.await` so
     /// `&self` is not held across the await boundary (required for `Send` futures).
+    #[tracing::instrument(
+        name = "core.context.load_compression_guidelines_for_compact",
+        skip_all,
+        level = "debug"
+    )]
     pub(super) async fn load_compression_guidelines_for_compact(&mut self) -> Option<String> {
         let enabled = self
             .services

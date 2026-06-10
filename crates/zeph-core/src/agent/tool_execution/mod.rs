@@ -189,6 +189,7 @@ impl<C: Channel> Agent<C> {
             .map_or("", |m| m.content.as_str())
     }
 
+    #[tracing::instrument(name = "core.tool.summarize_tool_output", skip_all, level = "debug")]
     pub(super) async fn summarize_tool_output(&self, output: &str, threshold: usize) -> String {
         let truncated = zeph_tools::truncate_tool_output_at(output, threshold);
         let query = self.last_user_query();
@@ -232,6 +233,11 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    #[tracing::instrument(
+        name = "core.tool.maybe_summarize_tool_output",
+        skip_all,
+        level = "debug"
+    )]
     pub(super) async fn maybe_summarize_tool_output(&self, output: &str) -> String {
         let threshold = self.tool_orchestrator.overflow_config.threshold;
         if output.len() <= threshold {
@@ -314,6 +320,7 @@ impl<C: Channel> Agent<C> {
     /// Run regex PII filter and (optionally) NER classifier, merge spans, and redact in one pass.
     ///
     /// Thin wrapper: delegates to [`SecurityState::scrub_pii`] and applies metrics side-effects.
+    #[tracing::instrument(name = "core.tool.scrub_pii_union", skip_all, level = "debug")]
     async fn scrub_pii_union(&mut self, text: &str, tool_name: &str) -> String {
         let result = self.services.security.scrub_pii(text, tool_name).await;
         if result.ner_timeouts > 0 {
@@ -336,6 +343,11 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Delegate guardrail check to [`SecurityState::check_guardrail`].
+    #[tracing::instrument(
+        name = "core.tool.apply_guardrail_to_tool_output",
+        skip_all,
+        level = "debug"
+    )]
     async fn apply_guardrail_to_tool_output(&self, body: String, tool_name: &str) -> String {
         self.services
             .security
@@ -428,6 +440,7 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.content.as_str())
     }
 
+    #[tracing::instrument(name = "core.tool.check_response_cache", skip_all, level = "debug")]
     async fn check_response_cache(&mut self) -> Result<CacheCheckResult, super::error::AgentError> {
         let Some(ref cache) = self.services.session.response_cache else {
             return Ok(CacheCheckResult::Miss {
@@ -514,6 +527,7 @@ impl<C: Channel> Agent<C> {
         })
     }
 
+    #[tracing::instrument(name = "core.tool.store_response_in_cache", skip_all, level = "debug")]
     async fn store_response_in_cache(&self, response: &str, query_embedding: Option<Vec<f32>>) {
         let Some(ref cache) = self.services.session.response_cache else {
             return;

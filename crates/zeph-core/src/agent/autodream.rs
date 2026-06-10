@@ -65,6 +65,7 @@ impl<C: Channel> super::Agent<C> {
     /// Fires after the main agent loop exits. Uses the configured
     /// `consolidation_provider` (falls back to the primary provider).
     /// Respects `max_iterations` as a safety bound via timeout.
+    #[tracing::instrument(name = "core.agent.maybe_autodream", skip_all, level = "debug")]
     pub(super) async fn maybe_autodream(&mut self) {
         let cfg = self.services.memory.subsystems.autodream_config.clone();
         if !cfg.enabled {
@@ -158,6 +159,7 @@ impl<C: Channel> super::Agent<C> {
         self.flush_taco_hit_counts().await;
     }
 
+    #[tracing::instrument(name = "core.agent.flush_taco_hit_counts", skip_all, level = "debug")]
     async fn flush_taco_hit_counts(&self) {
         if let Some(ref compressor) = self.services.taco_compressor
             && let Err(e) = compressor.flush_hit_counts().await
