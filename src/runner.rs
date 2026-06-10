@@ -16,6 +16,7 @@ use crate::tui_bridge::forward_status_to_stderr;
 use crate::tui_bridge::{
     TuiRunParams, forward_index_progress_to_tui, run_tui_agent, start_tui_early,
 };
+use tracing::Instrument as _;
 
 use crate::bootstrap::find_repo_root;
 use crate::bootstrap::load_config_or_default;

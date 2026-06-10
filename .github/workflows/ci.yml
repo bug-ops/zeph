@@ -402,9 +402,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        bundle: [desktop, ide, server, chat, ml, bench]
+        bundle: [desktop, ide, server, chat, ml, bench, full]
         include:
           - bundle: ml
+            allow_failure: true
+          - bundle: full
             allow_failure: true
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

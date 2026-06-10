@@ -519,7 +519,9 @@ pub fn spawn_cocoon_health_checks(
         supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
             name: "core.provider_factory.cocoon_health_check",
             restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
-            factory: move || async move {
+            factory: move || {
+                let client = client.clone();
+                async move {
                 match client.health_check().await {
                     Ok(h) => {
                         tracing::info!(
@@ -535,6 +537,7 @@ pub fn spawn_cocoon_health_checks(
                              inference requests will return LlmError::Unavailable until the sidecar is running"
                         );
                     }
+                }
                 }
             },
         });
