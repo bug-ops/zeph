@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// Tracing instrumentation on deeply-nested async state machines (scheduler tick + catch-up path)
+// requires a higher recursion limit for the compiler's layout queries.
+#![recursion_limit = "256"]
+
 //! Cron-based periodic task scheduler with `SQLite` persistence.
 //!
 //! `zeph-scheduler` drives time-based work inside the Zeph agent. It supports two

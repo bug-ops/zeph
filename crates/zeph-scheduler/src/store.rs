@@ -114,6 +114,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns [`SchedulerError::Db`] if the connection cannot be established.
+    #[tracing::instrument(name = "sched.store.open", skip_all, fields(path = %path), err)]
     pub async fn open(path: &str) -> Result<Self, SchedulerError> {
         let pool = zeph_db::DbConfig {
             url: path.to_string(),
@@ -134,6 +135,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if any migration fails.
+    #[tracing::instrument(name = "sched.store.init", skip_all, err)]
     pub async fn init(&self) -> Result<(), SchedulerError> {
         zeph_db::run_migrations(&self.pool).await?;
         Ok(())
@@ -144,6 +146,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
+    #[tracing::instrument(name = "sched.store.upsert_job", skip_all, fields(task = %name), err)]
     pub async fn upsert_job(
         &self,
         name: &str,
@@ -159,6 +162,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
+    #[tracing::instrument(name = "sched.store.upsert_job_with_mode", skip_all, fields(task = %name), err)]
     pub async fn upsert_job_with_mode(
         &self,
         name: &str,
@@ -180,6 +184,7 @@ impl JobStore {
     ///
     /// Returns an error if the SQL statement fails.
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(name = "sched.store.upsert_job_with_provenance", skip_all, fields(task = %name), err)]
     pub async fn upsert_job_with_provenance(
         &self,
         name: &str,
@@ -219,6 +224,7 @@ impl JobStore {
     ///
     /// Returns [`SchedulerError::DuplicateJob`] on unique constraint violation,
     /// or [`SchedulerError::Database`] on other SQL errors.
+    #[tracing::instrument(name = "sched.store.insert_job", skip_all, fields(task = %name), err)]
     pub async fn insert_job(
         &self,
         name: &str,
@@ -257,6 +263,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
+    #[tracing::instrument(name = "sched.store.record_run", skip_all, fields(task = %name), err)]
     pub async fn record_run(
         &self,
         name: &str,
@@ -279,6 +286,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
+    #[tracing::instrument(name = "sched.store.mark_done", skip_all, fields(task = %name), err)]
     pub async fn mark_done(&self, name: &str) -> Result<(), SchedulerError> {
         zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET status = 'done', last_run = CURRENT_TIMESTAMP WHERE name = ?"
@@ -297,6 +305,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
+    #[tracing::instrument(name = "sched.store.mark_error", skip_all, fields(task = %name), err)]
     pub async fn mark_error(&self, name: &str) -> Result<(), SchedulerError> {
         zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET status = 'error' WHERE name = ?"
@@ -312,6 +321,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
+    #[tracing::instrument(name = "sched.store.delete_job", skip_all, fields(task = %name), err)]
     pub async fn delete_job(&self, name: &str) -> Result<bool, SchedulerError> {
         let result = zeph_db::query(sql!("DELETE FROM scheduled_jobs WHERE name = ?"))
             .bind(name)
@@ -325,6 +335,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
+    #[tracing::instrument(name = "sched.store.job_exists", skip_all, fields(task = %name), err)]
     pub async fn job_exists(&self, name: &str) -> Result<bool, SchedulerError> {
         let row: Option<(i64,)> =
             zeph_db::query_as(sql!("SELECT 1 FROM scheduled_jobs WHERE name = ?"))
@@ -339,6 +350,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL statement fails.
+    #[tracing::instrument(name = "sched.store.set_next_run", skip_all, fields(task = %name), err)]
     pub async fn set_next_run(&self, name: &str, next_run: &str) -> Result<(), SchedulerError> {
         zeph_db::query(sql!(
             "UPDATE scheduled_jobs SET next_run = ? WHERE name = ?"
@@ -355,6 +367,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
+    #[tracing::instrument(name = "sched.store.get_next_run", skip_all, fields(task = %name), err)]
     pub async fn get_next_run(&self, name: &str) -> Result<Option<String>, SchedulerError> {
         let row: Option<(Option<String>,)> =
             zeph_db::query_as(sql!("SELECT next_run FROM scheduled_jobs WHERE name = ?"))
@@ -373,6 +386,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
+    #[tracing::instrument(name = "sched.store.list_jobs", skip_all, err)]
     pub async fn list_jobs(&self) -> Result<Vec<ScheduledTaskRecord>, SchedulerError> {
         let rows: Vec<(String, String, String, Option<String>)> = zeph_db::query_as(
             sql!("SELECT name, kind, task_mode, COALESCE(next_run, run_at) FROM scheduled_jobs WHERE status != 'done' ORDER BY name"),
@@ -400,6 +414,7 @@ impl JobStore {
     /// # Errors
     ///
     /// Returns an error if the SQL query fails.
+    #[tracing::instrument(name = "sched.store.list_jobs_full", skip_all, err)]
     pub async fn list_jobs_full(&self) -> Result<Vec<ScheduledTaskInfo>, SchedulerError> {
         #[allow(clippy::type_complexity)]
         let rows: Vec<(String, String, String, String, Option<String>, String, String, String)> =

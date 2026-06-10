@@ -455,6 +455,7 @@ impl Scheduler {
     /// Execute a named periodic task and advance its `next_run`.
     ///
     /// Returns `Ok(true)` if the task was found and executed, `Ok(false)` if not found.
+    #[tracing::instrument(name = "scheduler.run_periodic_task", skip_all, fields(task = %name), err)]
     async fn run_periodic_task_by_name(
         &self,
         name: &str,
@@ -591,6 +592,7 @@ impl Scheduler {
         }
     }
 
+    #[tracing::instrument(name = "scheduler.drain_channel", skip_all, level = "debug")]
     async fn drain_channel(&mut self) {
         while let Ok(msg) = self.task_rx.try_recv() {
             match msg {
@@ -613,6 +615,7 @@ impl Scheduler {
         }
     }
 
+    #[tracing::instrument(name = "scheduler.register_descriptor", skip_all, fields(task = %desc.name))]
     async fn register_descriptor(&mut self, desc: TaskDescriptor) {
         // Check capacity only when adding a new task (upsert of existing name does not count).
         let is_new = !self.tasks.iter().any(|t| t.name == desc.name);
@@ -912,6 +915,7 @@ impl Scheduler {
     }
 
     /// Inject a custom oneshot task prompt, wrapping in durable exactly-once journaling when available.
+    #[tracing::instrument(name = "scheduler.inject_custom_task", skip_all, fields(task = %task.name), err)]
     async fn inject_custom_task(
         &self,
         task: &ScheduledTask,
