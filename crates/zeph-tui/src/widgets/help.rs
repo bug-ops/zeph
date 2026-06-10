@@ -81,6 +81,9 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
             "/theme <name> (cycle)",
             "palette: app:theme cycles zephyr → zephyr-light → high-contrast",
         ),
+        keybind_row("/motion full", "wave animation on input separator row"),
+        keybind_row("/motion minimal", "breeze spinner, no wave"),
+        keybind_row("/motion off", "no animation (static row)"),
     ];
 
     let header = Row::new([

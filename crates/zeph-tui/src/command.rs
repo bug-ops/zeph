@@ -144,6 +144,9 @@ pub enum TuiCommand {
     ListThemes,
     /// Switch to the named theme preset or user file.
     SetTheme(String),
+    // Motion control (#5096)
+    /// Set the TUI animation budget at runtime (`full`, `minimal`, or `off`).
+    SetMotion(zeph_config::Motion),
 }
 
 /// Metadata for a single entry in the command palette.

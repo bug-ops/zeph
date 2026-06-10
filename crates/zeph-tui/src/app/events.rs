@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::time::Instant;
+
 use tokio::sync::mpsc;
 
 use crate::event::{AgentEvent, AppEvent};
@@ -16,6 +18,7 @@ impl App {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => {
                 self.throbber_state.calc_next();
+                self.wave_tick = self.wave_tick.saturating_add(1);
             }
             AppEvent::Resize(_, _) => {
                 self.sessions.current_mut().render_cache.clear();
@@ -56,6 +59,8 @@ impl App {
         match event {
             AgentEvent::Chunk(text) => {
                 self.sessions.current_mut().status_label = None;
+                // New token chunk — refresh stall clock.
+                self.last_progress_at = Instant::now();
                 if let Some(last) = self.sessions.current_mut().messages.last_mut()
                     && last.role == MessageRole::Assistant
                     && last.streaming
@@ -98,10 +103,16 @@ impl App {
             AgentEvent::Typing => {
                 self.pending_count = self.pending_count.saturating_sub(1);
                 self.sessions.current_mut().status_label = Some("thinking...".to_owned());
+                // Turn begins — initialize the stall clock so the first frame is Swell, not Stalled.
+                self.last_progress_at = Instant::now();
             }
             AgentEvent::Status(text) => {
                 self.sessions.current_mut().status_label =
                     if text.is_empty() { None } else { Some(text) };
+                // Non-empty status update counts as progress (supervisor activity, tool dispatch…).
+                if self.sessions.current().status_label.is_some() {
+                    self.last_progress_at = Instant::now();
+                }
                 self.auto_scroll();
             }
             AgentEvent::ToolStart {
@@ -124,6 +135,7 @@ impl App {
                 tool_call_id,
                 ..
             } => {
+                self.last_progress_at = Instant::now();
                 let pos = if tool_call_id.is_empty() {
                     // Shell tool chunks arrive without a tool_call_id; fall back to the last
                     // streaming Tool message (there is at most one active at a time).

@@ -6,6 +6,7 @@
 // via /sdd. See arch-assessment-revised-2026-04-26T02-04-23.md PR 9.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
@@ -441,6 +442,25 @@ pub struct App {
     /// Use [`toggle_panel_collapse`](crate::App::toggle_panel_collapse) to toggle and
     /// [`effective_collapsed`](crate::App::effective_collapsed) for the layout-safe mask.
     pub(crate) collapsed_panels: [bool; 4],
+
+    // --- Wave animation (#5096) ---
+    /// Animation budget for the input separator row.
+    ///
+    /// Sourced from `[tui] motion` in config; runtime-switchable via `/motion`.
+    pub(crate) motion: zeph_config::Motion,
+
+    /// Monotonic tick counter for the wave animation phase.
+    ///
+    /// Incremented once per `AppEvent::Tick` (250 ms). `u64` never wraps within
+    /// a session lifetime. Used as the explicit `t` argument to [`crate::widgets::wave::sample`]
+    /// so that the wave renderer stays purely deterministic.
+    pub(crate) wave_tick: u64,
+
+    /// Timestamp of the last observed progress event (token chunk or status change).
+    ///
+    /// Initialized at the moment the agent transitions to busy, NOT at `App` construction
+    /// — otherwise the first frame after a long idle gap would falsely read as `Stalled`.
+    pub(crate) last_progress_at: Instant,
 }
 
 mod draw;

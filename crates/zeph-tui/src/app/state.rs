@@ -5,6 +5,7 @@
 //! state (input, messages, scroll, panels, metrics, and display toggles).
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, watch};
 use zeph_common::task_supervisor::TaskSupervisor;
@@ -95,6 +96,9 @@ impl App {
             effective_color_mode: crate::theme::EffectiveColorMode::Truecolor,
             unicode_capable: crate::theme::detect_unicode_capable(),
             collapsed_panels: [false; 4],
+            motion: zeph_config::Motion::Full,
+            wave_tick: 0,
+            last_progress_at: Instant::now(),
         }
     }
 
@@ -927,6 +931,94 @@ impl App {
             eff[3] = false;
         }
         eff
+    }
+
+    /// Configure the animation budget from config.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_config::Motion;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(1);
+    /// let (_, agent_rx) = mpsc::channel(1);
+    /// let app = App::new(user_tx, agent_rx).with_motion(Motion::Minimal);
+    /// assert_eq!(app.motion(), Motion::Minimal);
+    /// ```
+    #[must_use]
+    pub fn with_motion(mut self, motion: zeph_config::Motion) -> Self {
+        self.motion = motion;
+        self
+    }
+
+    /// Return the current animation budget.
+    #[must_use]
+    pub fn motion(&self) -> zeph_config::Motion {
+        self.motion
+    }
+
+    /// Return the monotonic wave-tick counter.
+    ///
+    /// Passed as `t` into [`crate::widgets::wave::sample`] / [`crate::widgets::wave::glyphs`].
+    #[must_use]
+    pub fn wave_tick(&self) -> u64 {
+        self.wave_tick
+    }
+
+    /// Derive the current wave animation state from live agent state.
+    ///
+    /// Stalled is checked first so a hung turn never reads as Streaming or Swell.
+    ///
+    /// # Stall behaviour
+    ///
+    /// A slow time-to-first-token > `stall_threshold` shows `Stalled` before any token
+    /// arrives, because `last_progress_at` is set when the turn goes busy (Typing/Status)
+    /// and the threshold starts counting from that moment. Accepted for v1 simplicity.
+    #[must_use]
+    pub fn wave_state(&self) -> crate::widgets::wave::WaveState {
+        use crate::widgets::wave::WaveState;
+
+        if !self.is_agent_busy() {
+            return WaveState::Idle;
+        }
+
+        // Stalled: no progress for longer than the threshold.
+        let stall_threshold = std::time::Duration::from_secs(10);
+        if self.last_progress_at.elapsed() > stall_threshold {
+            return WaveState::Stalled;
+        }
+
+        // Tool execution.
+        if self.has_running_tool() {
+            return WaveState::Tool;
+        }
+
+        // Parallel background tasks.
+        let bg = self.metrics.bg_enrichment_inflight
+            + self.metrics.bg_telemetry_inflight
+            + self.metrics.bg_inflight;
+        if bg >= 2 {
+            #[allow(clippy::cast_possible_truncation)]
+            return WaveState::Parallel {
+                sines: (bg as u8).clamp(2, 3),
+            };
+        }
+
+        // Streaming: last message is a streaming assistant message.
+        if self
+            .sessions
+            .current()
+            .messages
+            .last()
+            .is_some_and(|m| m.streaming && m.role == crate::types::MessageRole::Assistant)
+        {
+            return WaveState::Streaming;
+        }
+
+        // Swell: busy but awaiting first token.
+        WaveState::Swell
     }
 }
 

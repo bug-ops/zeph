@@ -212,6 +212,15 @@ impl App {
                     }
                 }
             }
+            TuiCommand::SetMotion(m) => {
+                self.motion = m;
+                let label = match m {
+                    zeph_config::Motion::Full => "full (wave animation)",
+                    zeph_config::Motion::Minimal => "minimal (breeze spinner)",
+                    zeph_config::Motion::Off => "off (static)",
+                };
+                self.push_system_message(format!("Motion set to: {label}"));
+            }
             TuiCommand::SessionBrowser => {
                 if let Some(ref tx) = self.command_tx {
                     let _ = tx.try_send(cmd);
@@ -579,6 +588,21 @@ impl App {
             // /theme <name> — switch to named theme (any non-empty name token)
             [cmd, name] if cmd.eq_ignore_ascii_case("/theme") && !name.is_empty() => {
                 Some(TuiCommand::SetTheme((*name).to_owned()))
+            }
+            // /motion <full|minimal|off> — set animation budget at runtime
+            [cmd, level]
+                if cmd.eq_ignore_ascii_case("/motion")
+                    && matches!(
+                        level.to_ascii_lowercase().as_str(),
+                        "full" | "minimal" | "off"
+                    ) =>
+            {
+                let m = match level.to_ascii_lowercase().as_str() {
+                    "minimal" => zeph_config::Motion::Minimal,
+                    "off" => zeph_config::Motion::Off,
+                    _ => zeph_config::Motion::Full,
+                };
+                Some(TuiCommand::SetMotion(m))
             }
             _ => None,
         }

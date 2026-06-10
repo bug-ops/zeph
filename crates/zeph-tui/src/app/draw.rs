@@ -33,6 +33,9 @@ impl App {
         let activity_label = self.status_label().map(str::to_owned);
         let supervisor_label = self.supervisor_activity_label();
         let effective_label = activity_label.or(supervisor_label);
+        let wave_state = self.wave_state();
+        let wave_tick = self.wave_tick();
+        let motion = self.motion();
         widgets::input::render(
             self,
             frame,
@@ -40,6 +43,9 @@ impl App {
             busy,
             effective_label.as_deref(),
             spinner_idx,
+            wave_state,
+            wave_tick,
+            motion,
         );
         widgets::status::render(self, &self.metrics, frame, layout.status);
 

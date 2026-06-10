@@ -379,6 +379,33 @@ pub struct ThemeConfig {
     pub color_mode: ColorMode,
 }
 
+/// Controls how much animation the TUI renders.
+///
+/// Set via `[tui] motion = "full" | "minimal" | "off"` in TOML.
+/// Default: `full`.
+///
+/// - `full` — wave animation on the input separator row while busy, no breeze spinner.
+/// - `minimal` — animated breeze spinner (current behaviour before #5096), no wave.
+/// - `off` — no animation at all; input row is frame-invariant even while busy.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [tui]
+/// motion = "minimal"
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Motion {
+    /// Wave animation on the input separator row while busy.
+    #[default]
+    Full,
+    /// Animated breeze spinner, no wave.
+    Minimal,
+    /// No animation; input row is frame-invariant.
+    Off,
+}
+
 /// TUI (terminal user interface) configuration, nested under `[tui]` in TOML.
 ///
 /// # Example (TOML)
@@ -387,6 +414,7 @@ pub struct ThemeConfig {
 /// [tui]
 /// show_source_labels = true
 /// tool_density = "inline"
+/// motion = "full"
 ///
 /// [tui.theme]
 /// name = "zephyr"
@@ -404,6 +432,11 @@ pub struct TuiConfig {
     /// Default: `inline`.
     #[serde(default)]
     pub tool_density: ToolDensity,
+    /// Animation budget for the input separator row.
+    ///
+    /// `full` = wave (default), `minimal` = breeze spinner, `off` = static.
+    #[serde(default)]
+    pub motion: Motion,
     /// Fleet panel configuration (auto-refresh interval and max sessions displayed).
     #[serde(default)]
     pub fleet: FleetConfig,
