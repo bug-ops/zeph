@@ -1227,7 +1227,7 @@ mod tests {
         let (mut scheduler, _msg_tx) = Scheduler::new(store, rx);
         scheduler.init().await.unwrap();
 
-        let handle = tokio::spawn(async move { scheduler.run().await });
+        let handle = tokio::spawn(async move { scheduler.run().await }); // EXEMPT: test-only
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let _ = tx.send(true);
         tokio::time::timeout(std::time::Duration::from_secs(2), handle)

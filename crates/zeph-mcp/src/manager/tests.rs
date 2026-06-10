@@ -1645,3 +1645,27 @@ fn startup_retry_backoff_ms_default_is_1000() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     assert_eq!(mgr.startup_retry_backoff_ms, 1_000);
 }
+
+#[tokio::test]
+async fn spawn_refresh_task_with_supervisor_registers_task() {
+    let cancel = CancellationToken::new();
+    let supervisor = zeph_common::TaskSupervisor::new(cancel.clone());
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+
+    mgr.spawn_refresh_task(Some(&supervisor));
+
+    // Give the supervisor time to register the task before checking.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let names: Vec<String> = supervisor
+        .snapshot()
+        .into_iter()
+        .map(|s| s.name.to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "mcp.refresh_task"),
+        "supervisor must have a task named 'mcp.refresh_task', got: {names:?}"
+    );
+
+    cancel.cancel();
+}

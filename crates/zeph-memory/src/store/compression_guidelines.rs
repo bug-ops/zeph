@@ -1055,11 +1055,12 @@ mod tests {
         let tasks: Vec<_> = (0..8_i64)
             .map(|i| {
                 let s = Arc::clone(&store);
-                tokio::spawn(async move {
+                let fut = async move {
                     s.save_compression_guidelines(&format!("guideline {i}"), i, None)
                         .await
                         .expect("concurrent save must succeed")
-                })
+                };
+                tokio::spawn(fut) // EXEMPT: test-only concurrent writers for UNIQUE version constraint test
             })
             .collect();
 

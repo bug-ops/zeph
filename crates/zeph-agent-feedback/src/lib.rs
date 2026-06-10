@@ -1955,7 +1955,7 @@ mod tests {
         // Delay exceeds the 30s guard so the timeout fires before provider responds.
         let mock = zeph_llm::mock::MockProvider::default().with_delay(60_000);
         let provider = zeph_llm::any::AnyProvider::Mock(mock);
-        let handle = tokio::spawn(async move {
+        let evaluate_fut = async move {
             JudgeDetector::evaluate(
                 &provider,
                 "user msg",
@@ -1964,7 +1964,8 @@ mod tests {
                 Duration::from_secs(30),
             )
             .await
-        });
+        };
+        let handle = tokio::spawn(evaluate_fut); // EXEMPT: test-only mock time
         tokio::time::advance(Duration::from_secs(31)).await;
         let result = handle.await.expect("task panicked");
         assert!(

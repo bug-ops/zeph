@@ -421,7 +421,7 @@ mod tests {
     async fn confirm_sends_request_and_returns_response() {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
 
-        let confirm_fut = tokio::spawn(async move { ch.confirm("delete?").await.unwrap() });
+        let confirm_fut = tokio::spawn(async move { ch.confirm("delete?").await.unwrap() }); // EXEMPT: test-only
 
         let evt = agent_rx.recv().await.unwrap();
         if let AgentEvent::ConfirmRequest {
@@ -442,7 +442,7 @@ mod tests {
     async fn confirm_returns_false_on_rejection() {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
 
-        let confirm_fut = tokio::spawn(async move { ch.confirm("proceed?").await.unwrap() });
+        let confirm_fut = tokio::spawn(async move { ch.confirm("proceed?").await.unwrap() }); // EXEMPT: test-only
 
         let evt = agent_rx.recv().await.unwrap();
         if let AgentEvent::ConfirmRequest { response_tx, .. } = evt {
@@ -458,7 +458,7 @@ mod tests {
     async fn confirm_errors_when_receiver_dropped() {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
 
-        let confirm_fut = tokio::spawn(async move { ch.confirm("test?").await });
+        let confirm_fut = tokio::spawn(async move { ch.confirm("test?").await }); // EXEMPT: test-only
 
         let evt = agent_rx.recv().await.unwrap();
         if let AgentEvent::ConfirmRequest { response_tx, .. } = evt {

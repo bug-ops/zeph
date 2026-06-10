@@ -1111,7 +1111,7 @@ mod tests {
 
         tokio::time::pause();
 
-        let handle = tokio::spawn(async move { evaluator.evaluate(&slow_subject).await });
+        let handle = tokio::spawn(async move { evaluator.evaluate(&slow_subject).await }); // EXEMPT: test-only mock time
 
         // Yield so the spawned task can register its sleep, then advance past the timeout.
         tokio::task::yield_now().await;
@@ -1167,7 +1167,7 @@ mod tests {
 
         tokio::time::pause();
 
-        let handle = tokio::spawn(async move { evaluator.evaluate(&subject).await });
+        let handle = tokio::spawn(async move { evaluator.evaluate(&subject).await }); // EXEMPT: test-only mock time
 
         // Advance time past judge timeout twice (once per sequential judge call).
         tokio::task::yield_now().await;

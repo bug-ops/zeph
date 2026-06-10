@@ -239,13 +239,14 @@ impl A2aServer {
 
         let eviction_handle = self.task_ttl.map(|ttl| {
             let tm = self.state.task_manager.clone();
-            tokio::spawn(async move {
+            let eviction_loop = async move {
                 let mut interval = tokio::time::interval(Duration::from_mins(1));
                 loop {
                     interval.tick().await;
                     tm.evict_expired(ttl).await;
                 }
-            })
+            };
+            tokio::spawn(eviction_loop) // EXEMPT: aborted in serve() below; no supervisor in A2aServer
         });
 
         let router = build_router_with_full_config(

@@ -173,6 +173,7 @@ fn check_legacy_artifact_paths(config: &Config) {
 /// less-privileged config editing. Do not propagate this path from end-user input.
 async fn build_typed_pages_state(
     config: &Config,
+    supervisor: Option<&zeph_common::TaskSupervisor>,
 ) -> Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>> {
     use zeph_config::TypedPagesEnforcement;
     use zeph_context::typed_page::{CompactionAuditSink, InvariantRegistry, TypedPagesState};
@@ -189,7 +190,8 @@ async fn build_typed_pages_state(
             .map(|p| p.join("audit").join("compaction.jsonl"));
 
         if let Some(path) = default_path {
-            match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity).await {
+            match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity, supervisor).await
+            {
                 Ok(sink) => {
                     tracing::info!(
                         path = %path.display(),
@@ -209,7 +211,7 @@ async fn build_typed_pages_state(
         }
     } else {
         let path = std::path::PathBuf::from(&tp_cfg.audit_path);
-        match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity).await {
+        match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity, supervisor).await {
             Ok(sink) => {
                 tracing::info!(path = %path.display(), "typed-pages audit sink opened");
                 Some(sink)
@@ -2383,7 +2385,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     // Build TypedPagesState if enabled (#3630). Done before the builder chain because
     // CompactionAuditSink::open is async.
-    let typed_pages_state = build_typed_pages_state(config).await;
+    let typed_pages_state = build_typed_pages_state(config, Some(&*supervisor)).await;
 
     let agent = Agent::new_with_registry_arc(
         provider.clone(),

@@ -249,7 +249,7 @@ mod tests {
         let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
         let cfg = Arc::new(fast_config());
         let (writer, handle) = JournalWriter::new(local, &cfg);
-        let task = tokio::spawn(writer.run());
+        let task = tokio::spawn(writer.run()); // EXEMPT: test-only helper
         (SchedulerDurableAdapter::new(backend, handle, cfg), task)
     }
 

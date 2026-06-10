@@ -92,12 +92,12 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        let handle = tokio::spawn(async move {
+        let server_loop = async move {
             for resp in responses {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     break;
                 };
-                tokio::spawn(async move {
+                let conn = async move {
                     let (reader, mut writer) = stream.split();
                     let mut buf_reader = BufReader::new(reader);
                     // Drain headers
@@ -110,9 +110,11 @@ mod tests {
                         }
                     }
                     writer.write_all(resp.as_bytes()).await.ok();
-                });
+                };
+                tokio::spawn(conn); // EXEMPT: test-only per-connection handler inside mock server
             }
-        });
+        };
+        let handle = tokio::spawn(server_loop); // EXEMPT: test-only mock server; handle returned to caller
 
         (port, handle)
     }

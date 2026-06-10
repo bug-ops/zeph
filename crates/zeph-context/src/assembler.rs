@@ -722,11 +722,12 @@ pub(crate) async fn fetch_reasoning_strategies(
         None
     } else {
         let mem_clone = mem.clone();
-        Some(tokio::spawn(async move {
+        let mark_used = async move {
             if let Err(e) = mem_clone.mark_reasoning_used(&injected_ids).await {
                 tracing::warn!(error = %e, "reasoning: mark_used failed");
             }
-        }))
+        };
+        Some(tokio::spawn(mark_used)) // EXEMPT: handle returned to caller via PreparedContext::background_tasks
     };
 
     Ok((Some(Message::from_legacy(Role::System, body)), handle))

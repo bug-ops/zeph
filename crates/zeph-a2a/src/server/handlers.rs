@@ -157,7 +157,7 @@ async fn handle_send_message(
         .processor
         .process(task.id.clone(), params.message, event_tx);
 
-    let proc_handle = tokio::spawn(proc_future);
+    let proc_handle = tokio::spawn(proc_future); // EXEMPT: awaited inside timeout block below
     let abort_handle = proc_handle.abort_handle();
 
     let (accumulated, final_state) = match tokio::time::timeout(state.request_timeout, async {
@@ -351,7 +351,7 @@ pub async fn stream_handler(
     tracing::debug!(authenticated = identity.authenticated, "a2a stream request");
     let (tx, rx) = mpsc::channel::<Event>(32);
 
-    let handle = tokio::spawn(async move {
+    let sse_task = async move {
         let Some(message) = req.params.message else {
             let _ = tx
                 .send(
@@ -364,7 +364,8 @@ pub async fn stream_handler(
         };
 
         stream_task(state, message, tx).await;
-    });
+    };
+    let handle = tokio::spawn(sse_task); // EXEMPT: abort_handle captured by GuardedStream; bounded to SSE connection
 
     // AbortOnDrop ensures the processing task is aborted when the SSE stream is
     // dropped — i.e., when the client disconnects before the stream completes.
@@ -465,7 +466,7 @@ async fn stream_task(state: AppState, message: crate::types::Message, tx: mpsc::
     let (event_tx, mut event_rx) = mpsc::channel::<ProcessorEvent>(32);
     let proc_future = state.processor.process(task_id.clone(), message, event_tx);
 
-    let proc_handle = tokio::spawn(proc_future);
+    let proc_handle = tokio::spawn(proc_future); // EXEMPT: awaited in drain_processor_events below
     let abort_handle = proc_handle.abort_handle();
 
     let final_state = tokio::select! {

@@ -187,7 +187,7 @@ impl EmbeddingAnomalyGuard {
         let tool_name: ToolName = tool_name.into();
         let output = tool_output.to_owned();
 
-        tokio::spawn(async move {
+        let embed_task = async move {
             let _permit = permit; // released when task completes
             let embed_result = if embed_timeout_ms > 0 {
                 let timeout = Duration::from_millis(embed_timeout_ms);
@@ -244,7 +244,8 @@ impl EmbeddingAnomalyGuard {
                     );
                 }
             }
-        });
+        };
+        tokio::spawn(embed_task); // EXEMPT(#5202): per-call embed in &self; supervisor unreachable; fail-open via channel
     }
 
     /// Record a clean output for centroid updates. Call from the background result processor.

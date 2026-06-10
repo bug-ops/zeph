@@ -949,7 +949,7 @@ mod tests {
         let indexer = CodeIndexer::new(store, slow_provider, IndexerConfig::default());
 
         // Spawn the operation so we can advance mock time from the test body.
-        let handle = tokio::spawn(async move { indexer.ensure_collection_for_provider().await });
+        let handle = tokio::spawn(async move { indexer.ensure_collection_for_provider().await }); // EXEMPT: test-only mock time
         tokio::time::advance(std::time::Duration::from_secs(16)).await;
         let result = handle.await.unwrap();
 

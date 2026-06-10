@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
 // ── PageType ──────────────────────────────────────────────────────────────────
 
@@ -905,7 +906,7 @@ enum AuditCommand {
 /// use std::path::Path;
 ///
 /// # async fn example() {
-/// let sink = CompactionAuditSink::open(Path::new(".local/audit/compaction.jsonl"), 256)
+/// let sink = CompactionAuditSink::open(Path::new(".local/audit/compaction.jsonl"), 256, None)
 ///     .await
 ///     .unwrap();
 /// # }
@@ -922,11 +923,19 @@ impl CompactionAuditSink {
     /// `capacity` is the bounded channel depth; records dropped when full are counted
     /// in the internal drop counter and logged at WARN.
     ///
+    /// When `supervisor` is `Some`, the background writer task is registered as
+    /// `"context.audit_sink"` for lifecycle management. When `None`, the task is
+    /// spawned directly (test environments only).
+    ///
     /// # Errors
     ///
     /// Returns an error when `path` cannot be opened for appending.
     #[tracing::instrument(name = "context.typed_page.open", skip_all)]
-    pub async fn open(path: &std::path::Path, capacity: usize) -> Result<Self, std::io::Error> {
+    pub async fn open(
+        path: &std::path::Path,
+        capacity: usize,
+        supervisor: Option<&TaskSupervisor>,
+    ) -> Result<Self, std::io::Error> {
         use tokio::io::AsyncWriteExt as _;
 
         if let Some(parent) = path.parent() {
@@ -942,7 +951,7 @@ impl CompactionAuditSink {
         let drop_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let drop_counter_bg = drop_counter.clone();
 
-        tokio::spawn(async move {
+        let fut = async move {
             let mut writer = tokio::io::BufWriter::new(file);
             while let Some(cmd) = rx.recv().await {
                 match cmd {
@@ -970,7 +979,25 @@ impl CompactionAuditSink {
             if dropped > 0 {
                 tracing::warn!(dropped, "compaction audit sink closed with dropped records");
             }
-        });
+        };
+
+        if let Some(sup) = supervisor {
+            let fut_cell = Arc::new(parking_lot::Mutex::new(Some(fut)));
+            sup.spawn(TaskDescriptor {
+                name: "context.audit_sink",
+                restart: RestartPolicy::RunOnce,
+                factory: move || {
+                    let f = fut_cell.lock().take();
+                    async move {
+                        if let Some(f) = f {
+                            f.await;
+                        }
+                    }
+                },
+            });
+        } else {
+            tokio::spawn(fut); // EXEMPT: supervisor=None fallback (test environments only)
+        }
 
         Ok(Self { tx, drop_counter })
     }
@@ -1432,7 +1459,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
 
-        let sink = CompactionAuditSink::open(&path, 64).await.unwrap();
+        let sink = CompactionAuditSink::open(&path, 64, None).await.unwrap();
         let record = CompactedPageRecord {
             ts: "2026-04-19T00:00:00Z".into(),
             turn_id: "1".into(),
@@ -1470,7 +1497,7 @@ mod tests {
         let path = dir.path().join("audit_full.jsonl");
 
         // Capacity 1: first send fills the channel, subsequent sends are dropped.
-        let sink = CompactionAuditSink::open(&path, 1).await.unwrap();
+        let sink = CompactionAuditSink::open(&path, 1, None).await.unwrap();
 
         let make_record = || CompactedPageRecord {
             ts: "2026-04-19T00:00:00Z".into(),
@@ -1504,7 +1531,7 @@ mod tests {
     async fn audit_sink_flush_does_not_panic() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit_flush.jsonl");
-        let sink = CompactionAuditSink::open(&path, 16).await.unwrap();
+        let sink = CompactionAuditSink::open(&path, 16, None).await.unwrap();
         // flush on an empty sink must not panic or deadlock.
         sink.flush().await;
     }
@@ -1593,8 +1620,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cap0.jsonl");
         // capacity=0 used to panic in tokio::sync::mpsc::channel(0); must clamp to 1.
-        let sink = CompactionAuditSink::open(&path, 0).await.unwrap();
+        let sink = CompactionAuditSink::open(&path, 0, None).await.unwrap();
         sink.flush().await;
+    }
+
+    #[tokio::test]
+    async fn audit_sink_open_with_supervisor_registers_task() {
+        use tokio_util::sync::CancellationToken;
+        use zeph_common::TaskSupervisor;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit_sup.jsonl");
+        let cancel = CancellationToken::new();
+        let supervisor = TaskSupervisor::new(cancel.clone());
+
+        let sink = CompactionAuditSink::open(&path, 64, Some(&supervisor))
+            .await
+            .unwrap();
+        sink.flush().await;
+
+        // Give the supervisor time to register the task before checking.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let names: Vec<String> = supervisor
+            .snapshot()
+            .into_iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "context.audit_sink"),
+            "supervisor must have a task named 'context.audit_sink', got: {names:?}"
+        );
+
+        cancel.cancel();
     }
 
     // ── Regression: F3 — non-ASCII body must not panic on prefix slice ────────

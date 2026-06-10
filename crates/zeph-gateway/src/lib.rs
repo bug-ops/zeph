@@ -35,8 +35,7 @@
 //!     let (webhook_tx, mut webhook_rx) = mpsc::channel::<String>(64);
 //!     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 //!
-//!     // Spawn a consumer that processes incoming webhook messages.
-//!     tokio::spawn(async move {
+//!     tokio::spawn(async move { // EXEMPT: doc-example only
 //!         while let Some(msg) = webhook_rx.recv().await {
 //!             println!("received: {msg}");
 //!         }

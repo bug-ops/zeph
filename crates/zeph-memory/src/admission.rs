@@ -907,9 +907,10 @@ mod tests {
             .with_embed_delay(10_000)
             .with_embedding(vec![0.0; 4]);
         let provider = zeph_llm::any::AnyProvider::Mock(mock);
-        let handle = tokio::spawn(async move {
+        let novelty_fut = async move {
             compute_semantic_novelty("hello", &provider, None, Duration::from_secs(5)).await
-        });
+        };
+        let handle = tokio::spawn(novelty_fut); // EXEMPT: test-only tokio::time::pause harness
         tokio::time::advance(std::time::Duration::from_secs(6)).await;
         let result = handle.await.expect("task panicked");
         assert!(
@@ -930,7 +931,7 @@ mod tests {
             threshold: 0.5,
             provider: None,
         };
-        let handle = tokio::spawn(async move {
+        let goal_fut = async move {
             compute_goal_utility(
                 "content",
                 "goal",
@@ -940,7 +941,8 @@ mod tests {
                 Duration::from_secs(5),
             )
             .await
-        });
+        };
+        let handle = tokio::spawn(goal_fut); // EXEMPT: test-only tokio::time::pause harness
         tokio::time::advance(std::time::Duration::from_secs(6)).await;
         let result = handle.await.expect("task panicked");
         assert!(

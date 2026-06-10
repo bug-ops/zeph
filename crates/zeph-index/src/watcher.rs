@@ -220,8 +220,7 @@ impl IndexWatcher {
             });
             WatcherHandle::Supervised(task_handle)
         } else {
-            // Fallback: no supervisor provided (e.g. test environments).
-            WatcherHandle::Unsupervised(tokio::spawn(fut))
+            WatcherHandle::Unsupervised(tokio::spawn(fut)) // EXEMPT: supervisor=None fallback (test environments only)
         };
 
         Ok(Self { _handle: handle })

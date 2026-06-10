@@ -1771,7 +1771,7 @@ mod tests {
             .expect("hold write lock");
 
         let batch_store = store.clone();
-        let batch = tokio::spawn(async move {
+        let batch_fut = async move {
             batch_store
                 .record_skill_outcomes_batch(
                     &["git".to_string()],
@@ -1781,7 +1781,8 @@ mod tests {
                     Some("waited_for_writer"),
                 )
                 .await
-        });
+        };
+        let batch = tokio::spawn(batch_fut); // EXEMPT: test-only concurrent writer to exercise BEGIN IMMEDIATE serialization
 
         sleep(Duration::from_millis(100)).await;
         writer_tx.commit().await.expect("commit writer");

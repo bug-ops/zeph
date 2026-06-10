@@ -686,13 +686,9 @@ mod tests {
 
         // spawn_consolidation_loop must return immediately when interval=0.
         let cancel = CancellationToken::new();
-        let handle = tokio::spawn(spawn_consolidation_loop(
-            store.clone(),
-            config,
-            provider,
-            None,
-            cancel.clone(),
-        ));
+        let consolidation_fut =
+            spawn_consolidation_loop(store.clone(), config, provider, None, cancel.clone());
+        let handle = tokio::spawn(consolidation_fut); // EXEMPT: test-only spawn to drive the loop under tokio::time::timeout
         // Give it time to exit on its own.
         tokio::time::timeout(Duration::from_millis(100), handle)
             .await

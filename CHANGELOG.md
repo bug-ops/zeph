@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the fake-streaming mpsc pattern with `tokio_stream::iter` over pre-built chunks —
   structured concurrency, no dropped `JoinHandle` (closes #5219).
 
+
 ### Added
 
 - `feat(tui)`: breeze spinner (▹▹▹→▸▹▹→▸▸▹→▸▸▸→▹▸▸→▹▹▸) replaces braille throbber across all

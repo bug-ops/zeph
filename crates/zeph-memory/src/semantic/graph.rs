@@ -762,13 +762,14 @@ impl SemanticMemory {
             cancel,
         };
 
-        tokio::spawn(run_graph_extraction_task(
+        let extraction_fut = run_graph_extraction_task(
             content,
             context_messages,
             config,
             post_extract_validator,
             ctx,
-        ))
+        );
+        tokio::spawn(extraction_fut) // EXEMPT: JoinHandle returned to caller; awaited inside BackgroundSupervisor task in zeph-core
     }
 
     /// Signal cooperative cancellation to the current background graph-extraction task.

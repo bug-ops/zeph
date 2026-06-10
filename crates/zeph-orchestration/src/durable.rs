@@ -312,7 +312,7 @@ mod tests {
         let local = Arc::new(local);
         let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
         let (writer, handle) = JournalWriter::new(local, &test_config());
-        tokio::spawn(async move { writer.run().await });
+        tokio::spawn(async move { writer.run().await }); // EXEMPT: test-only helper
         (backend, handle)
     }
 
