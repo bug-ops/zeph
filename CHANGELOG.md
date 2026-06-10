@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: uniform `ToolDensity` matrix across all `ToolKind` variants — `Compact`/`Inline`/`Normal` modes now apply consistently to `Edit`, `Web`, `Mcp`, and `Run`/`Explore` tools; previously only `Run` and `Explore` honored grouping (closes #5102)
+- `fix(tui)`: markdown table column widths now use `unicode_width::UnicodeWidthStr::width()` instead of `chars().count()` — CJK characters and emoji no longer misalign table borders and cell padding (closes #5100)
+
 - `fix(knowledge)`: external-agent ingest (`--source claude-code`, `--source codex`) now passes `MemoryWriteValidator` sanitizer gate to `ingest_documents` — INV-4 violation where `handle_external_agent_ingest` called with `None` validator, bypassing entity-name PII checks and entity/edge count limits (closes #5081)
 - `fix(memory)`: `IngestSourceKind::graph_origin()` now correctly returns `GraphOrigin::ExternalAgent` for the `ExternalAgent` variant (was `GraphOrigin::Ingest`); adapters updated to call `kind.graph_origin()` instead of hardcoding origin, removing dead code path (closes #5082)
 - `fix(knowledge)`: replaced blocking `std::fs::read_to_string` / `std::fs::canonicalize` calls with `tokio::fs` async equivalents in async ingest functions; wrapped `enumerate_all_sources`, `enumerate_claude_code_paths`, `enumerate_codex_paths`, and subagent glob discovery in `tokio::task::spawn_blocking` to avoid stalling the async runtime on large session histories (closes #5080)

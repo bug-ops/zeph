@@ -555,6 +555,7 @@ fn render_grouped_tool_cell(
     let (verb, noun_singular, noun_plural) = match kind {
         ToolKind::Explore => ("Explored", "file", "files"),
         ToolKind::Run => ("Ran", "command", "commands"),
+        ToolKind::Edit => ("Edited", "file", "files"),
         ToolKind::Web => ("Fetched", "page", "pages"),
         ToolKind::Mcp => ("Called", "tool", "tools"),
         _ => ("Processed", "item", "items"),
@@ -1072,7 +1073,9 @@ impl<'t> MdRenderer<'t> {
             spans.push(Span::styled("\u{2502}".to_string(), border_style));
             for (ci, &w) in col_widths.iter().enumerate() {
                 let text = row.get(ci).map_or("", String::as_str);
-                let padded = format!(" {text:<w$} ");
+                let cell_width = text.width();
+                let padding = w.saturating_sub(cell_width);
+                let padded = format!(" {text}{} ", " ".repeat(padding));
                 spans.push(Span::styled(padded, cell_style));
                 spans.push(Span::styled("\u{2502}".to_string(), border_style));
             }
@@ -1942,14 +1945,27 @@ mod tests {
     }
 
     #[test]
-    fn group_messages_non_groupable_stays_single() {
+    fn group_messages_edit_is_groupable() {
         let msgs = vec![
             make_write_msg("a.rs"),
             make_write_msg("b.rs"),
             make_write_msg("c.rs"),
         ];
         let groups = group_messages(&msgs);
-        assert_eq!(groups.len(), 3, "write_file is Edit — not groupable");
+        assert_eq!(groups.len(), 1, "write_file is Edit — now groupable");
+        assert!(matches!(groups[0], MessageGroup::Grouped { .. }));
+    }
+
+    #[test]
+    fn group_messages_other_not_groupable() {
+        let make_other = |name: &str| {
+            let mut m = make_chat_msg(crate::app::MessageRole::Tool, name);
+            m.tool_name = None;
+            m
+        };
+        let msgs = vec![make_other("a"), make_other("b"), make_other("c")];
+        let groups = group_messages(&msgs);
+        assert_eq!(groups.len(), 3, "nameless tools (Other) remain ungrouped");
         assert!(
             groups
                 .iter()
@@ -2130,6 +2146,33 @@ mod tests {
         assert_eq!(
             second, "語テ",
             "second line should be '語テ'; got {second:?}"
+        );
+    }
+
+    #[test]
+    fn emit_table_cjk_cell_column_width() {
+        // "测试" = 2 CJK chars, display width = 4 terminal columns
+        // The rendered top border for that column must be ─────── (4+2 = 6 dashes),
+        // and the cell line must contain " 测试  " (1 space + 2 chars + 2 spaces for padding
+        // to reach width=4) — total cell content width = 1 + 4 + 1 = 6 cols.
+        let theme = crate::theme::Theme::default();
+        let base = ratatui::style::Style::default();
+        let (lines, _) = render_md("| CJK |\n| --- |\n| 测试 |", base, &theme);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|spans| spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("");
+        // Column width must be 4 (display width of "测试"), not 2 (char count).
+        // The top border for a width-4 column is "──────" (4+2 dashes inside ┌ and ┬/┐).
+        assert!(
+            all_text.contains("──────"),
+            "border must be 6 dashes for a display-width-4 CJK cell; got: {all_text:?}"
+        );
+        // The cell row must pad correctly: " 测试  " (1 leading space + 4 cols + 1 trailing = 6)
+        assert!(
+            all_text.contains(" 测试  ") || all_text.contains(" 测试 "),
+            "cell must be padded to display width 4; got: {all_text:?}"
         );
     }
 }

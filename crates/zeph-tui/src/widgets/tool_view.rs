@@ -1,6 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Tool-view primitives: [`ToolKind`], [`ToolStatus`], and the density matrix.
+//!
+//! ## Density matrix
+//!
+//! Every `(ToolKind, ToolDensity)` pair maps to a single render mode:
+//!
+//! | `ToolDensity`  | All `ToolKind` variants                                    |
+//! |----------------|------------------------------------------------------------|
+//! | `Compact`      | Collapsed to a one-line group summary (no output body)     |
+//! | `Inline`       | Minimal view: header + truncated output with ellipsis      |
+//! | `Block`        | Fully expanded: header + full output body                  |
+//!
+//! The mapping is applied uniformly in [`ToolKind::is_groupable`]: every kind
+//! participates in grouping so that density controls have a consistent effect
+//! regardless of which tool was called.
+
 /// Re-export of [`zeph_config::ToolDensity`] for use within the TUI widget layer.
 ///
 /// Consumers within `zeph-tui` should import this re-export rather than
@@ -70,11 +86,15 @@ impl ToolKind {
         }
     }
 
-    /// Returns `true` for kinds that can be visually grouped when consecutive.
+    /// Returns `true` when consecutive tool messages of the same kind can be
+    /// collapsed into a group summary.
     ///
-    /// Only `Run` and `Explore` tools are grouped because they tend to appear
-    /// in repetitive sequences (e.g. 10 `read_file` calls). Edit, Web, and MCP
-    /// tools carry distinct content that should remain individually visible.
+    /// All `ToolKind` variants are groupable so that [`ToolDensity`] takes
+    /// uniform effect: `Compact` collapses every kind to a one-liner, `Inline`
+    /// shows a truncated summary, and `Block` expands fully — regardless of
+    /// whether the tool was a shell command, an edit, a web fetch, or an MCP
+    /// call. Nameless tool messages (classified as [`ToolKind::Other`]) are
+    /// excluded because they lack sufficient context for a meaningful summary.
     ///
     /// # Examples
     ///
@@ -83,11 +103,14 @@ impl ToolKind {
     ///
     /// assert!(ToolKind::Explore.is_groupable());
     /// assert!(ToolKind::Run.is_groupable());
-    /// assert!(!ToolKind::Edit.is_groupable());
+    /// assert!(ToolKind::Edit.is_groupable());
+    /// assert!(ToolKind::Web.is_groupable());
+    /// assert!(ToolKind::Mcp.is_groupable());
+    /// assert!(!ToolKind::Other.is_groupable());
     /// ```
     #[must_use]
     pub fn is_groupable(self) -> bool {
-        matches!(self, Self::Run | Self::Explore)
+        !matches!(self, Self::Other)
     }
 
     /// Short display label for the kind, shown in group summary lines.
@@ -214,9 +237,9 @@ mod tests {
     fn tool_kind_groupable() {
         assert!(ToolKind::Run.is_groupable());
         assert!(ToolKind::Explore.is_groupable());
-        assert!(!ToolKind::Edit.is_groupable());
-        assert!(!ToolKind::Web.is_groupable());
-        assert!(!ToolKind::Mcp.is_groupable());
+        assert!(ToolKind::Edit.is_groupable());
+        assert!(ToolKind::Web.is_groupable());
+        assert!(ToolKind::Mcp.is_groupable());
         assert!(!ToolKind::Other.is_groupable());
     }
 
