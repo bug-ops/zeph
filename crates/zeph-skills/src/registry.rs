@@ -50,7 +50,7 @@
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use walkdir::WalkDir;
@@ -85,7 +85,12 @@ pub struct SkillRegistry {
     /// Skills whose `skill_dir` is under one of these paths are hub-installed and
     /// must never have their `.bundled` marker respected — the marker would bypass
     /// the injection scanner (defense-in-depth for #3040).
-    hub_dirs: Vec<std::path::PathBuf>,
+    hub_dirs: Vec<PathBuf>,
+    /// Skills that failed to load during the last `load()` or `reload()` call.
+    ///
+    /// Each entry is `(path_to_SKILL_md, error_message)`. Populated during `load()`;
+    /// callers use `load_errors()` to surface failures to the user.
+    load_errors: Vec<(PathBuf, String)>,
 }
 
 impl std::fmt::Debug for SkillRegistry {
@@ -94,6 +99,7 @@ impl std::fmt::Debug for SkillRegistry {
             .field("count", &self.entries.len())
             .field("fingerprint", &self.fingerprint)
             .field("hub_dirs", &self.hub_dirs.len())
+            .field("load_errors", &self.load_errors.len())
             .finish()
     }
 }
@@ -166,6 +172,7 @@ impl SkillRegistry {
     pub fn load(paths: &[impl AsRef<Path>]) -> Self {
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
+        let mut load_errors: Vec<(PathBuf, String)> = Vec::new();
 
         for base in paths {
             let base = base.as_ref();
@@ -205,7 +212,11 @@ impl SkillRegistry {
                             tracing::debug!("duplicate skill '{}', skipping", skill_path.display());
                         }
                     }
-                    Err(e) => tracing::warn!("skipping {}: {e:#}", skill_path.display()),
+                    Err(e) => {
+                        let reason = format!("{e:#}");
+                        tracing::warn!("skipping {}: {reason}", skill_path.display());
+                        load_errors.push((skill_path.to_path_buf(), reason));
+                    }
                 }
             }
         }
@@ -217,16 +228,38 @@ impl SkillRegistry {
             entries,
             fingerprint,
             hub_dirs: Vec::new(),
+            load_errors,
         }
     }
 
     /// Reload skills from the given paths, replacing the current set.
     ///
     /// Hub directories registered via [`Self::with_hub_dirs`] are preserved across reloads.
+    /// Load errors from the previous call are replaced with those from the new load.
     pub fn reload(&mut self, paths: &[impl AsRef<Path>]) {
         let hub_dirs = std::mem::take(&mut self.hub_dirs);
         *self = Self::load(paths);
         self.hub_dirs = hub_dirs;
+    }
+
+    /// Skills that failed to load during the last [`Self::load`] or [`Self::reload`] call.
+    ///
+    /// Each entry is `(path_to_SKILL_md, error_message)`. Empty when all skills loaded
+    /// successfully or when the registry was created via [`Self::empty`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use zeph_skills::registry::SkillRegistry;
+    ///
+    /// let registry = SkillRegistry::load(&["/path/to/skills"]);
+    /// for (path, reason) in registry.load_errors() {
+    ///     eprintln!("warning: skill '{}' skipped: {}", path.display(), reason);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn load_errors(&self) -> &[(PathBuf, String)] {
+        &self.load_errors
     }
 
     /// Content fingerprint based on file metadata (name + mtime + size).
@@ -484,6 +517,9 @@ mod tests {
         let registry = SkillRegistry::load(&[dir.path().to_path_buf()]);
         assert_eq!(registry.all_meta().len(), 1);
         assert_eq!(registry.all_meta()[0].name, "good");
+        let errors = registry.load_errors();
+        assert_eq!(errors.len(), 1);
+        assert!(!errors[0].1.is_empty());
     }
 
     #[test]

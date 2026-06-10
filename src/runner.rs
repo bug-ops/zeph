@@ -1116,6 +1116,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         registry.read().all_meta().into_iter().cloned().collect();
     let skill_count = all_meta_owned.len();
 
+    // Emit load errors to the user immediately at startup.
+    for (path, reason) in registry.read().load_errors() {
+        let name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("<unknown>");
+        let _ = agent_status_tx.send(format!("warning: skill '{name}' skipped: {reason}"));
+    }
+
     // Populate trust DB for all loaded skills.
     {
         let trust_cfg = config.skills.trust.clone();

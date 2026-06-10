@@ -489,15 +489,16 @@ impl<C: crate::channel::Channel> Agent<C> {
         use std::collections::BTreeMap;
         use std::fmt::Write;
 
-        let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
-            .services
-            .skill
-            .registry
-            .read()
-            .all_meta()
-            .into_iter()
-            .cloned()
-            .collect();
+        let (all_meta, load_errors): (
+            Vec<zeph_skills::loader::SkillMeta>,
+            Vec<(std::path::PathBuf, String)>,
+        ) = {
+            let reg = self.services.skill.registry.read();
+            (
+                reg.all_meta().into_iter().cloned().collect(),
+                reg.load_errors().to_vec(),
+            )
+        };
 
         // Clone Arc before .await to avoid holding &self across suspension points.
         let memory = self.services.memory.persistence.memory.clone();
@@ -555,6 +556,13 @@ impl<C: crate::channel::Channel> Agent<C> {
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("failed to load skill usage: {e:#}"),
+            }
+        }
+
+        if !load_errors.is_empty() {
+            output.push_str("\nFailed to load:\n");
+            for (path, reason) in &load_errors {
+                let _ = writeln!(output, "- {}: {reason}", path.display());
             }
         }
 
