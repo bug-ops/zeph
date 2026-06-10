@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across
+  `zeph-core` learning pipeline (`write_skill_file`, `arise_trace_task`,
+  `arise_check_domain_gate`, `arise_store_version`, `stem_detection_task`,
+  `stem_generate_skill`, `erl_reflection_task`), `zeph-agent-context` deferred
+  summarization (`maybe_summarize_tool_pair`, `flush_deferred_summaries`), and
+  `zeph-skills` trace extraction (`process_candidate`, `apply_decision`,
+  `call_extract_llm`, `embed_candidate`) using `core.learning.*`,
+  `agent_context.summarization.*`, and `skills.trace_extraction.*` span prefixes
+  (closes #5176, #5196, #5171).
+
 - `feat(tracing)`: instrument 17 hot-path async fns in `zeph-core` agent module
   (`tool_execution/mod.rs`, `autodream.rs`, `hooks_dispatch.rs`,
   `context/summarization/{scheduling,compaction,deferred}.rs`) with
