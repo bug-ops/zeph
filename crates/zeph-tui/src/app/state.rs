@@ -164,7 +164,7 @@ impl App {
 
     /// Return the current theme generation counter.
     ///
-    /// Passed into [`RenderCacheKey::theme_generation`] so the render cache is
+    /// Passed into `RenderCacheKey::theme_generation` so the render cache is
     /// invalidated after every theme swap.
     ///
     /// # Examples
