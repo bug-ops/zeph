@@ -475,30 +475,6 @@ fn build_cocoon_provider(
     let timeout = std::time::Duration::from_secs(config.timeouts.llm_request_timeout_secs);
     let client = std::sync::Arc::new(CocoonClient::new(base_url, access_hash, timeout));
 
-    if entry.cocoon_health_check {
-        let client_clone = std::sync::Arc::clone(&client);
-        // Fire-and-forget: intentional. The health check is advisory-only; a failure
-        // does not block provider construction.
-        drop(tokio::spawn(async move {
-            match client_clone.health_check().await {
-                Ok(h) => {
-                    tracing::info!(
-                        proxy_connected = h.proxy_connected,
-                        worker_count = h.worker_count,
-                        "cocoon sidecar health check passed"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "cocoon sidecar health check failed; \
-                         inference requests will return LlmError::Unavailable until the sidecar is running"
-                    );
-                }
-            }
-        }));
-    }
-
     let model = entry
         .model
         .clone()
@@ -507,6 +483,62 @@ fn build_cocoon_provider(
     let provider = CocoonProvider::new(model, max_tokens, entry.embedding_model.clone(), client);
 
     Ok(AnyProvider::Cocoon(provider))
+}
+
+/// Spawn an advisory health-check for all Cocoon providers that have `cocoon_health_check = true`.
+///
+/// Registers each check as a one-shot supervised task so it is observable via
+/// [`TaskSupervisor::snapshot`] and abortable on shutdown. Failures are logged at `warn` level
+/// and never propagated — the check is purely advisory.
+///
+/// Call this once after [`build_provider_from_entry`] has succeeded for all providers, passing
+/// the session-level supervisor. The function is a no-op when `cocoon` feature is not enabled
+/// or no provider has `cocoon_health_check = true`.
+#[cfg(feature = "cocoon")]
+pub fn spawn_cocoon_health_checks(
+    providers: &[&ProviderEntry],
+    config: &Config,
+    supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
+) {
+    for entry in providers {
+        if entry.provider_type != ProviderKind::Cocoon || !entry.cocoon_health_check {
+            continue;
+        }
+        let base_url = entry
+            .cocoon_client_url
+            .as_deref()
+            .unwrap_or("http://localhost:10000")
+            .to_owned();
+        let access_hash = config
+            .secrets
+            .cocoon_access_hash
+            .as_ref()
+            .map(|s| s.expose().to_owned());
+        let timeout = std::time::Duration::from_secs(config.timeouts.llm_request_timeout_secs);
+        let client = std::sync::Arc::new(CocoonClient::new(&base_url, access_hash, timeout));
+        supervisor.spawn(zeph_common::task_supervisor::TaskDescriptor {
+            name: "core.provider_factory.cocoon_health_check",
+            restart: zeph_common::task_supervisor::RestartPolicy::RunOnce,
+            factory: move || async move {
+                match client.health_check().await {
+                    Ok(h) => {
+                        tracing::info!(
+                            proxy_connected = h.proxy_connected,
+                            worker_count = h.worker_count,
+                            "cocoon sidecar health check passed"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "cocoon sidecar health check failed; \
+                             inference requests will return LlmError::Unavailable until the sidecar is running"
+                        );
+                    }
+                }
+            },
+        });
+    }
 }
 
 #[cfg(feature = "candle")]

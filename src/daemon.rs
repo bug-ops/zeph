@@ -406,7 +406,8 @@ pub(crate) async fn run_daemon(
             &config.tools,
             config.security.autonomy_level,
         ))
-        .with_output_filters(filter_registry);
+        .with_output_filters(filter_registry)
+        .with_task_supervisor(task_supervisor.clone());
     if config.tools.sandbox.enabled {
         let denied_present = !config.tools.sandbox.denied_domains.is_empty();
         match zeph_tools::sandbox::build_sandbox_with_policy(
@@ -558,7 +559,10 @@ pub(crate) async fn run_daemon(
     )
     .await;
 
-    let watchers = app.build_watchers();
+    let watchers = {
+        let sup_arc = std::sync::Arc::new(task_supervisor.clone());
+        app.build_watchers(&sup_arc)
+    };
     let _skill_watcher = watchers.skill_watcher;
     let reload_rx = watchers.skill_reload_rx.into_inner();
     let _config_watcher = watchers.config_watcher;

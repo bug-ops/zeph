@@ -21,8 +21,10 @@ mod hover;
 mod test_helpers;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::mpsc;
+use zeph_common::TaskSupervisor;
 use zeph_mcp::McpManager;
 
 pub use crate::config::LspConfig;
@@ -52,6 +54,10 @@ pub struct LspHookRunner {
     diagnostics_rxs: Vec<DiagnosticsRx>,
     /// Sessions statistics.
     pub(crate) stats: LspStats,
+    /// Session-level supervisor for background diagnostics fetch tasks.
+    supervisor: Arc<TaskSupervisor>,
+    /// Monotonic counter for generating unique task names per diagnostics fetch.
+    fetch_counter: Arc<AtomicU64>,
 }
 
 /// Session-level statistics for the `/lsp` TUI command.
@@ -63,15 +69,21 @@ pub struct LspStats {
 }
 
 impl LspHookRunner {
-    /// Create a new runner. Token counting uses the provided `token_counter`.
+    /// Create a new runner.
     #[must_use]
-    pub fn new(manager: Arc<McpManager>, config: LspConfig) -> Self {
+    pub fn new(
+        manager: Arc<McpManager>,
+        config: LspConfig,
+        supervisor: Arc<TaskSupervisor>,
+    ) -> Self {
         Self {
             manager,
             config,
             pending_notes: Vec::new(),
             diagnostics_rxs: Vec::new(),
             stats: LspStats::default(),
+            supervisor,
+            fetch_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -191,7 +203,9 @@ impl LspHookRunner {
         let (tx, rx) = mpsc::channel(1);
         self.diagnostics_rxs.push(rx);
 
-        tokio::spawn(async move {
+        let id = self.fetch_counter.fetch_add(1, Ordering::Relaxed);
+        let name: Arc<str> = format!("core.lsp_hooks.diagnostics_fetch.{id}").into();
+        self.supervisor.spawn_oneshot(name, move || async move {
             // Give the LSP server time to start re-analysing after the write.
             // 200 ms is a lightweight heuristic; the diagnostic cache in mcpls
             // will serve the most-recently-published set regardless.
@@ -296,11 +310,17 @@ impl LspHookRunner {
 mod tests {
     use std::sync::Arc;
 
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::TaskSupervisor;
     use zeph_mcp::McpManager;
     use zeph_memory::TokenCounter;
 
     use super::*;
     use crate::config::{DiagnosticSeverity, LspConfig};
+
+    fn make_supervisor() -> Arc<TaskSupervisor> {
+        Arc::new(TaskSupervisor::new(CancellationToken::new()))
+    }
 
     fn make_runner(enabled: bool) -> LspHookRunner {
         let enforcer = zeph_mcp::PolicyEnforcer::new(vec![]);
@@ -312,6 +332,7 @@ mod tests {
                 token_budget: 500,
                 ..LspConfig::default()
             },
+            make_supervisor(),
         )
     }
 
@@ -348,6 +369,7 @@ mod tests {
                 token_budget: 1, // extremely tight budget
                 ..LspConfig::default()
             },
+            make_supervisor(),
         );
         runner.pending_notes.push(LspNote {
             kind: "diagnostics",

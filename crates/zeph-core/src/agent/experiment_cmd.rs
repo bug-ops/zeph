@@ -222,37 +222,37 @@ impl<C: Channel> Agent<C> {
         let cancel = engine.cancel_token();
         self.services.experiments.cancel = Some(cancel);
         let notify_tx = self.services.experiments.notify_tx.clone();
-        // Not routed through BackgroundSupervisor: long-running multi-minute LLM session with its
-        // own CancellationToken and single-instance invariant enforced by `experiments.cancel`.
-        // BackgroundSupervisor::spawn() returns bool (no JoinHandle), uses Drop-on-overflow
-        // semantics, and has only small-fast task classes (Telemetry/Enrichment); routing an
-        // experiment session through it would silently drop it when the Telemetry pool is full,
-        // producing a misleading "starting" message with no experiment actually running.
-        // The handle is stored in ExperimentState so shutdown() can abort it if needed.
-        let handle = tokio::spawn(async move {
-            let mut engine = engine;
-            let msg = match engine.run().await {
-                Ok(report) => {
-                    let accepted = report.results.iter().filter(|r| r.accepted).count();
-                    let wall_secs =
-                        f64::from(u32::try_from(report.wall_time_ms).unwrap_or(u32::MAX)) / 1000.0;
-                    format!(
-                        "Experiment session `{}` complete: {}/{} accepted, \
-                         baseline {:.3} → {:.3} (improvement {:.3}), {wall_secs:.1}s{}",
-                        &report.session_id[..report.session_id.len().min(8)],
-                        accepted,
-                        report.results.len(),
-                        report.baseline_score,
-                        report.final_score,
-                        report.total_improvement,
-                        if report.cancelled { " [cancelled]" } else { "" },
-                    )
-                }
-                Err(e) => format!("Experiment session failed: {e}"),
-            };
-            let _ = notify_tx.send(msg).await;
-        });
-        self.services.experiments.handle = Some(handle);
+        // Routed through TaskSupervisor for observability and graceful shutdown. The handle is
+        // stored in ExperimentState so shutdown() can abort it if the CancellationToken is not
+        // observed in time (e.g. the task is blocked on I/O).
+        let task_handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
+            std::sync::Arc::from("agent.experiments.session"),
+            move || async move {
+                let mut engine = engine;
+                let msg = match engine.run().await {
+                    Ok(report) => {
+                        let accepted = report.results.iter().filter(|r| r.accepted).count();
+                        let wall_secs =
+                            f64::from(u32::try_from(report.wall_time_ms).unwrap_or(u32::MAX))
+                                / 1000.0;
+                        format!(
+                            "Experiment session `{}` complete: {}/{} accepted, \
+                                 baseline {:.3} → {:.3} (improvement {:.3}), {wall_secs:.1}s{}",
+                            &report.session_id[..report.session_id.len().min(8)],
+                            accepted,
+                            report.results.len(),
+                            report.baseline_score,
+                            report.final_score,
+                            report.total_improvement,
+                            if report.cancelled { " [cancelled]" } else { "" },
+                        )
+                    }
+                    Err(e) => format!("Experiment session failed: {e}"),
+                };
+                let _ = notify_tx.send(msg).await;
+            },
+        );
+        self.services.experiments.handle = Some(task_handle);
         format!(
             "Experiment session starting (max {max_n} experiments). \
              Use /experiment stop to cancel. Results will be shown when complete."

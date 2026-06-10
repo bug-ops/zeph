@@ -261,7 +261,7 @@ async fn build_acp_deps(
     let budget_tokens = app.auto_budget_tokens(&provider);
     let registry = std::sync::Arc::new(RwLock::new(app.build_registry()));
     let acp_mem_cancel = tokio_util::sync::CancellationToken::new();
-    let acp_mem_supervisor = zeph_common::TaskSupervisor::new(acp_mem_cancel);
+    let acp_mem_supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(acp_mem_cancel));
     let memory = std::sync::Arc::new(app.build_memory(&provider, &acp_mem_supervisor).await?);
 
     {
@@ -313,7 +313,8 @@ async fn build_acp_deps(
             &config.tools,
             config.security.autonomy_level,
         ))
-        .with_output_filters(filter_registry);
+        .with_output_filters(filter_registry)
+        .with_task_supervisor((*acp_mem_supervisor).clone());
     if config.tools.sandbox.enabled {
         let denied_present = !config.tools.sandbox.denied_domains.is_empty();
         match zeph_tools::sandbox::build_sandbox_with_policy(
@@ -438,7 +439,7 @@ async fn build_acp_deps(
         skill_reload_rx: mpsc_skill_rx,
         config_watcher,
         config_reload_rx: mpsc_config_rx,
-    } = app.build_watchers();
+    } = app.build_watchers(&acp_mem_supervisor);
     let config_path_owned = app.config_path().to_owned();
     let (_, shutdown_rx) = AppBuilder::build_shutdown();
 

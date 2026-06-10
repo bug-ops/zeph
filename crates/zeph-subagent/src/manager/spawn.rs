@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeph_config::{BgIsolation, ContentIsolationConfig, SubAgentConfig};
@@ -681,7 +680,7 @@ impl SubAgentManager {
             llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
         };
 
-        let join_handle: JoinHandle<Result<String, SubAgentError>> = tokio::spawn(async move {
+        let join_handle = self.spawn_agent_task(Arc::from(task_id.as_str()), move || async move {
             // INV-1: acquire the cwd lock when the worktree subsystem is active,
             // regardless of whether this specific agent opted into worktree isolation.
             let _cwd_guard: Option<CwdRestoreGuard> =
@@ -1058,8 +1057,10 @@ impl SubAgentManager {
             );
         }
         let new_task_id_for_loop = new_task_id.clone();
-        let join_handle: JoinHandle<Result<String, SubAgentError>> =
-            tokio::spawn(run_agent_loop(AgentLoopArgs {
+        let resumed_mcp_tool_names_for_handle = resumed_mcp_tool_names.clone();
+        let llm_timeout = std::time::Duration::from_secs(config.llm_timeout_secs);
+        let join_handle = self.spawn_agent_task(Arc::from(new_task_id.as_str()), move || {
+            run_agent_loop(AgentLoopArgs {
                 provider,
                 executor,
                 system_prompt,
@@ -1079,10 +1080,11 @@ impl SubAgentManager {
                 initial_messages,
                 transcript_writer,
                 spawn_depth: 0,
-                mcp_tool_names: resumed_mcp_tool_names.clone(),
+                mcp_tool_names: resumed_mcp_tool_names,
                 content_isolation: ContentIsolationConfig::default(),
-                llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
-            }));
+                llm_timeout,
+            })
+        });
 
         let resume_handle_transcript_dir = if config.transcript_enabled {
             Some(dir.clone())
@@ -1103,7 +1105,7 @@ impl SubAgentManager {
             secret_tx,
             started_at_str: crate::transcript::utc_now(),
             transcript_dir: resume_handle_transcript_dir,
-            mcp_tool_names: resumed_mcp_tool_names,
+            mcp_tool_names: resumed_mcp_tool_names_for_handle,
         };
 
         self.agents.insert(new_task_id.clone(), handle);
@@ -1176,20 +1178,19 @@ impl SubAgentManager {
             )
             .await?;
 
-        let handle = self
+        let original_join = self
             .agents
             .get_mut(&handle_id)
-            .expect("just spawned agent must exist");
-
-        let original_join = handle
+            .expect("just spawned agent must exist")
             .join_handle
             .take()
             .expect("just spawned agent must have a join handle");
 
         let handle_id_clone = handle_id.clone();
-        let wrapped_join: tokio::task::JoinHandle<Result<String, SubAgentError>> =
-            tokio::spawn(async move {
-                let result = original_join.await;
+        let wrapped_join = self.spawn_agent_task(
+            Arc::from(format!("{handle_id}-notify").as_str()),
+            move || async move {
+                let result = original_join.join().await;
 
                 let (notify_result, output) = match result {
                     Ok(Ok(output)) => (Ok(output.clone()), Ok(output)),
@@ -1200,8 +1201,8 @@ impl SubAgentManager {
                             Err(SubAgentError::Spawn(msg)),
                         )
                     }
-                    Err(join_err) => {
-                        let msg = format!("task panicked: {join_err:?}");
+                    Err(blocking_err) => {
+                        let msg = format!("task aborted or panicked: {blocking_err:?}");
                         (
                             Err(SubAgentError::TaskPanic(msg.clone())),
                             Err(SubAgentError::TaskPanic(msg)),
@@ -1212,9 +1213,13 @@ impl SubAgentManager {
                 on_done(handle_id_clone, notify_result);
 
                 output
-            });
+            },
+        );
 
-        handle.join_handle = Some(wrapped_join);
+        self.agents
+            .get_mut(&handle_id)
+            .expect("just spawned agent must exist")
+            .join_handle = Some(wrapped_join);
 
         Ok(handle_id)
     }

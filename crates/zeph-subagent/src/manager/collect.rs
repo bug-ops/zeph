@@ -44,7 +44,9 @@ impl SubAgentManager {
         handle.grants.revoke_all();
 
         let result = if let Some(jh) = handle.join_handle.take() {
-            jh.await.map_err(|e| SubAgentError::Spawn(e.to_string()))?
+            jh.join()
+                .await
+                .map_err(|e| SubAgentError::Spawn(e.to_string()))?
         } else {
             Ok(String::new())
         };

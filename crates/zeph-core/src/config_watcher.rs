@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
+use zeph_common::{TaskSupervisor, task_supervisor::BlockingHandle};
 
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +29,7 @@ pub enum ConfigEvent {
 }
 
 pub struct ConfigWatcher {
-    _handle: tokio::task::JoinHandle<()>,
+    _handle: BlockingHandle<()>,
 }
 
 impl ConfigWatcher {
@@ -40,7 +42,11 @@ impl ConfigWatcher {
     ///
     /// Returns an error if the filesystem watcher cannot be initialized
     /// or the config file path has no parent directory.
-    pub fn start(path: &Path, tx: mpsc::Sender<ConfigEvent>) -> Result<Self, ConfigWatcherError> {
+    pub fn start(
+        path: &Path,
+        tx: mpsc::Sender<ConfigEvent>,
+        supervisor: &Arc<TaskSupervisor>,
+    ) -> Result<Self, ConfigWatcherError> {
         let dir = path
             .parent()
             .ok_or(ConfigWatcherError::NoParentDir)?
@@ -78,14 +84,17 @@ impl ConfigWatcher {
             .watcher()
             .watch(&dir, notify::RecursiveMode::NonRecursive)?;
 
-        let handle = tokio::spawn(async move {
-            let _debouncer = debouncer;
-            while notify_rx.recv().await.is_some() {
-                if tx.send(ConfigEvent::Changed).await.is_err() {
-                    break;
+        let handle = supervisor.spawn_oneshot(
+            std::sync::Arc::from("core.config_watcher"),
+            move || async move {
+                let _debouncer = debouncer;
+                while notify_rx.recv().await.is_some() {
+                    if tx.send(ConfigEvent::Changed).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            },
+        );
 
         Ok(Self { _handle: handle })
     }
@@ -93,7 +102,14 @@ impl ConfigWatcher {
 
 #[cfg(test)]
 mod tests {
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::TaskSupervisor;
+
     use super::*;
+
+    fn make_supervisor() -> Arc<TaskSupervisor> {
+        Arc::new(TaskSupervisor::new(CancellationToken::new()))
+    }
 
     #[tokio::test]
     async fn start_with_valid_config_file() {
@@ -101,14 +117,16 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, "key = 1").unwrap();
         let (tx, _rx) = mpsc::channel(16);
-        let watcher = ConfigWatcher::start(&config_path, tx);
+        let sup = make_supervisor();
+        let watcher = ConfigWatcher::start(&config_path, tx, &sup);
         assert!(watcher.is_ok());
     }
 
     #[tokio::test]
     async fn start_with_nonexistent_parent_fails() {
         let (tx, _rx) = mpsc::channel(16);
-        let result = ConfigWatcher::start(Path::new("/nonexistent/dir/config.toml"), tx);
+        let sup = make_supervisor();
+        let result = ConfigWatcher::start(Path::new("/nonexistent/dir/config.toml"), tx, &sup);
         assert!(result.is_err());
     }
 
@@ -119,7 +137,8 @@ mod tests {
         std::fs::write(&config_path, "initial = true").unwrap();
 
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = ConfigWatcher::start(&config_path, tx).unwrap();
+        let sup = make_supervisor();
+        let _watcher = ConfigWatcher::start(&config_path, tx, &sup).unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         std::fs::write(&config_path, "updated = true").unwrap();
@@ -137,8 +156,9 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, "key = 1").unwrap();
 
+        let sup = make_supervisor();
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = ConfigWatcher::start(&config_path, tx).unwrap();
+        let _watcher = ConfigWatcher::start(&config_path, tx, &sup).unwrap();
 
         // Drain any late FSEvents from the initial config write before creating other file
         tokio::time::sleep(Duration::from_millis(800)).await;

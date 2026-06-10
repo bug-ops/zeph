@@ -1127,7 +1127,7 @@ impl AppBuilder {
     /// Returns a [`WatcherBundle`] containing the watchers and their reload receivers.
     /// On failure to start a watcher (e.g. inotify limit exceeded), it is omitted and a
     /// warning is logged — the agent continues without hot-reload for that subsystem.
-    pub fn build_watchers(&self) -> WatcherBundle {
+    pub fn build_watchers(&self, supervisor: &Arc<zeph_common::TaskSupervisor>) -> WatcherBundle {
         use zeph_core::instrumented_channel::instrumented_channel;
 
         let skill_paths = self.skill_paths_for_watcher();
@@ -1144,16 +1144,17 @@ impl AppBuilder {
         };
 
         let (config_tx, config_reload_rx) = instrumented_channel(4, "config_reload_rx");
-        let config_watcher = match ConfigWatcher::start(&self.config_path, config_tx.into_inner()) {
-            Ok(w) => {
-                tracing::info!("config watcher started");
-                Some(w)
-            }
-            Err(e) => {
-                tracing::warn!("config watcher unavailable: {e:#}");
-                None
-            }
-        };
+        let config_watcher =
+            match ConfigWatcher::start(&self.config_path, config_tx.into_inner(), supervisor) {
+                Ok(w) => {
+                    tracing::info!("config watcher started");
+                    Some(w)
+                }
+                Err(e) => {
+                    tracing::warn!("config watcher unavailable: {e:#}");
+                    None
+                }
+            };
 
         WatcherBundle {
             skill_watcher,

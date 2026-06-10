@@ -3551,3 +3551,73 @@ mod worktree_cleanup_guard_tests {
         tokio::task::yield_now().await;
     }
 }
+
+// ── TaskSupervisor integration tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn supervised_subagent_task_is_visible_in_supervisor() {
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::task_supervisor::TaskStatus;
+
+    let cancel = CancellationToken::new();
+    let supervisor = TaskSupervisor::new(cancel.clone());
+
+    let mut mgr = make_manager();
+    mgr.set_task_supervisor(supervisor.clone());
+    mgr.definitions.push(sample_def());
+
+    let task_id = do_spawn(&mut mgr, "bot", "supervised work").await.unwrap();
+
+    // Yield so the spawn_oneshot future has a chance to register in supervisor state.
+    tokio::task::yield_now().await;
+
+    let snaps = supervisor.snapshot();
+    let found = snaps.iter().any(|s| {
+        s.name.as_ref() == task_id.as_str()
+            && matches!(
+                s.status,
+                TaskStatus::Running | TaskStatus::Completed | TaskStatus::Failed { .. }
+            )
+    });
+    assert!(
+        found,
+        "subagent task '{task_id}' must appear in supervisor snapshot; got: {snaps:?}"
+    );
+
+    // Abort: cancel supervisor and verify the agent transitions to Canceled.
+    mgr.cancel(&task_id).unwrap();
+    assert_eq!(mgr.agents[&task_id].state, SubAgentState::Canceled);
+
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn supervised_subagent_abort_via_cancel_cleans_up() {
+    use tokio_util::sync::CancellationToken;
+
+    let cancel = CancellationToken::new();
+    let supervisor = TaskSupervisor::new(cancel.clone());
+
+    let mut mgr = make_manager();
+    mgr.set_task_supervisor(supervisor.clone());
+    mgr.definitions.push(sample_def());
+
+    let task_id = do_spawn(&mut mgr, "bot", "abort test").await.unwrap();
+
+    // Cancel the subagent via the manager.
+    mgr.cancel(&task_id).unwrap();
+
+    // Wait briefly for the task to observe cancellation.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // collect() removes the handle from the active map.
+    let result = mgr.collect(&task_id).await;
+    assert!(
+        !mgr.agents.contains_key(&task_id),
+        "handle must be removed after collect"
+    );
+    // Result may be empty or partial — both are acceptable for a cancelled task.
+    let _ = result;
+
+    cancel.cancel();
+}

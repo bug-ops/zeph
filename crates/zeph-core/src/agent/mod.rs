@@ -1394,7 +1394,7 @@ impl<C: Channel> Agent<C> {
         if let Some(ref notifier) = self.runtime.lifecycle.notifier
             && gate_ok
         {
-            notifier.fire(&summary);
+            notifier.fire(&summary, &self.runtime.lifecycle.task_supervisor);
         }
 
         // 2) turn_complete hooks — fire-and-forget via supervisor.

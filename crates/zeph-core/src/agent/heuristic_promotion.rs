@@ -96,22 +96,26 @@ impl<C: Channel> super::Agent<C> {
             "heuristic_promotion: starting background task"
         );
 
-        self.services.learning_engine.heuristic_promotion_handle = Some(tokio::spawn(
-            run_promotion_loop(
-                provider,
-                embed_provider,
-                output_dir,
-                db_pool,
-                interval_hours,
-                threshold,
-                min_confidence,
-                merge_threshold,
-                dedup_threshold,
-                merge_enabled,
-                status_tx,
-            )
-            .in_current_span(),
-        ));
+        let task_handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
+            std::sync::Arc::from("agent.learning.heuristic_promotion"),
+            move || {
+                run_promotion_loop(
+                    provider,
+                    embed_provider,
+                    output_dir,
+                    db_pool,
+                    interval_hours,
+                    threshold,
+                    min_confidence,
+                    merge_threshold,
+                    dedup_threshold,
+                    merge_enabled,
+                    status_tx,
+                )
+                .in_current_span()
+            },
+        );
+        self.services.learning_engine.heuristic_promotion_handle = Some(task_handle);
     }
 }
 

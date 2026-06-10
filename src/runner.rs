@@ -960,10 +960,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     } else {
         app.build_registry()
     };
+    // Create the TaskSupervisor early so it can be wired into watchers and channel adapters
+    // that need it at construction time. The shutdown bridge that connects
+    // shutdown_rx → mem_cancel is installed later, after build_shutdown().
+    let mem_cancel = tokio_util::sync::CancellationToken::new();
+    let supervisor = std::sync::Arc::new(TaskSupervisor::new(mem_cancel.clone()));
+
     let watchers = if exec_mode.bare {
         crate::bootstrap::WatcherBundle::empty()
     } else {
-        app.build_watchers()
+        app.build_watchers(&supervisor)
     };
     let summary_provider = app.build_summary_provider();
 
@@ -977,11 +983,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(tokio::spawn(async move { warmup_provider(&p).await })) // EXEMPT(#5143): awaited before agent.run(), needs JoinHandle
     };
 
-    // Create the TaskSupervisor early so it can be wired into channel adapters (e.g.
-    // TelegramChannel) that need it at construction time. The shutdown bridge that
-    // connects shutdown_rx → mem_cancel is installed later, after build_shutdown().
-    let mem_cancel = tokio_util::sync::CancellationToken::new();
-    let supervisor = std::sync::Arc::new(TaskSupervisor::new(mem_cancel.clone()));
+    #[cfg(feature = "cocoon")]
+    {
+        let provider_refs: Vec<&zeph_core::config::ProviderEntry> =
+            config.llm.providers.iter().collect();
+        zeph_core::provider_factory::spawn_cocoon_health_checks(
+            &provider_refs,
+            config,
+            &supervisor,
+        );
+    }
 
     // For TUI path: create the channel and start rendering immediately so the user
     // sees a spinner during the heavy init phases below. For non-TUI paths (or when
@@ -1592,6 +1603,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let _sysinfo_handle = zeph_core::system_metrics::spawn_system_metrics_task(
         config.telemetry.system_metrics_interval_secs,
         shutdown_rx.clone(),
+        &supervisor,
     );
 
     {
@@ -2620,16 +2632,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let _instruction_watcher = if watch_dirs.is_empty() {
         tracing::debug!("no instruction watch dirs, hot-reload disabled");
         let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
-        zeph_core::instructions::InstructionWatcher::start(&[], tx2)
+        zeph_core::instructions::InstructionWatcher::start(&[], tx2, &supervisor)
             .expect("empty-path watcher always succeeds")
     } else {
-        zeph_core::instructions::InstructionWatcher::start(&watch_dirs, instruction_reload_tx)
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "instruction watcher failed, hot-reload disabled");
-                let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
-                zeph_core::instructions::InstructionWatcher::start(&[], tx2)
-                    .expect("empty-path watcher always succeeds")
-            })
+        zeph_core::instructions::InstructionWatcher::start(
+            &watch_dirs,
+            instruction_reload_tx,
+            &supervisor,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "instruction watcher failed, hot-reload disabled");
+            let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
+            zeph_core::instructions::InstructionWatcher::start(&[], tx2, &supervisor)
+                .expect("empty-path watcher always succeeds")
+        })
     };
 
     let agent = agent
@@ -2778,7 +2794,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     // Wire LSP context injection hooks when the feature is enabled and configured.
     let agent = if config.lsp.enabled {
-        let runner = zeph_core::lsp_hooks::LspHookRunner::new(lsp_mcp_manager, config.lsp.clone());
+        let runner = zeph_core::lsp_hooks::LspHookRunner::new(
+            lsp_mcp_manager,
+            config.lsp.clone(),
+            std::sync::Arc::clone(&supervisor),
+        );
         agent.with_lsp_hooks(runner)
     } else {
         agent
@@ -2925,6 +2945,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             mgr.set_fleet_registry(registry);
         }
 
+        mgr.set_task_supervisor((*supervisor).clone());
         // Propagate root worktree config into agents_config so SubAgentManager::spawn
         // can read it without a reference to the full Config.
         let mut agents_config = config.agents.clone();

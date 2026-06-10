@@ -387,9 +387,9 @@ impl<C: Channel> Agent<C> {
         // Bounded to avoid hanging shutdown when the LLM call inside the task stalls.
         if let Some(h) = self.services.learning_engine.trace_extraction_handle.take() {
             let deadline = std::time::Duration::from_mins(2);
-            match tokio::time::timeout(deadline, h).await {
+            match tokio::time::timeout(deadline, h.join()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => tracing::warn!("trace_extraction: task panicked at shutdown: {e}"),
+                Ok(Err(e)) => tracing::warn!("trace_extraction: task error at shutdown: {e}"),
                 Err(_) => tracing::warn!(
                     "trace_extraction: timed out at shutdown ({}s), aborting",
                     deadline.as_secs()

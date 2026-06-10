@@ -14,9 +14,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use zeph_common::SkillTrustLevel;
+use zeph_common::task_supervisor::BlockingHandle;
+use zeph_common::{SkillTrustLevel, TaskSupervisor};
 use zeph_config::{ContentIsolationConfig, McpServerConfig};
 use zeph_llm::provider::Message;
 
@@ -171,8 +172,8 @@ pub struct SubAgentHandle {
     pub task_id: String,
     /// Cached state — may lag the background task by one watch broadcast.
     pub state: SubAgentState,
-    /// Tokio join handle for the background agent loop task.
-    pub join_handle: Option<JoinHandle<Result<String, SubAgentError>>>,
+    /// Supervised handle for the background agent loop task.
+    pub join_handle: Option<BlockingHandle<Result<String, SubAgentError>>>,
     /// Cancellation token; cancelled on [`SubAgentManager::cancel`] or drop.
     pub cancel: CancellationToken,
     /// Watch receiver for live status updates from the agent loop.
@@ -320,6 +321,11 @@ pub struct SubAgentManager {
     /// `OwnedMutexGuard` is held for the full duration of `run_agent_loop` via the
     /// `CwdRestoreGuard` RAII wrapper.
     cwd_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Optional supervisor for subagent lifecycle tasks.
+    ///
+    /// When set, each spawned agent loop task is registered under its task ID so it is
+    /// visible to TUI status panels and shutdown is coordinated through the supervisor.
+    task_supervisor: Option<TaskSupervisor>,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -337,6 +343,7 @@ impl std::fmt::Debug for SubAgentManager {
             .field("max_hook_tasks", &self.max_hook_tasks)
             .field("worktree_manager", &self.worktree_manager.is_some())
             .field("cwd_lock", &"<Mutex>")
+            .field("task_supervisor", &self.task_supervisor.is_some())
             .finish()
     }
 }
@@ -358,7 +365,17 @@ impl SubAgentManager {
             max_hook_tasks: 64,
             worktree_manager: None,
             cwd_lock: Arc::new(tokio::sync::Mutex::new(())),
+            task_supervisor: None,
         }
+    }
+
+    /// Inject a [`TaskSupervisor`] so subagent lifecycle tasks are registered and visible.
+    ///
+    /// Must be called before the first [`spawn`][Self::spawn]. When set, each spawned agent
+    /// loop task is registered under its task ID and is observable in TUI status panels and
+    /// [`TaskSupervisor::snapshot`].
+    pub fn set_task_supervisor(&mut self, supervisor: TaskSupervisor) {
+        self.task_supervisor = Some(supervisor);
     }
 
     /// Inject a [`DefaultWorktreeManager`][zeph_worktree::DefaultWorktreeManager] into the
@@ -390,6 +407,31 @@ impl SubAgentManager {
             return;
         }
         self.hook_tasks.spawn(future);
+    }
+
+    /// Spawns a named subagent task under the session [`TaskSupervisor`] if one is configured,
+    /// making the task visible in TUI status and abortable on shutdown via
+    /// [`TaskSupervisor::shutdown_all`].
+    ///
+    /// Falls back to a transient local supervisor when no session supervisor has been wired via
+    /// [`SubAgentManager::set_task_supervisor`] — the task runs but is not tracked globally.
+    /// The returned [`BlockingHandle`] type is identical in both cases so call sites are uniform.
+    pub(crate) fn spawn_agent_task<F, Fut, R>(
+        &self,
+        name: Arc<str>,
+        factory: F,
+    ) -> BlockingHandle<R>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        if let Some(ref sup) = self.task_supervisor {
+            sup.spawn_oneshot(name, factory)
+        } else {
+            let local = TaskSupervisor::new(CancellationToken::new());
+            local.spawn_oneshot(name, factory)
+        }
     }
 
     /// Reserve `n` concurrency slots for the orchestration scheduler.

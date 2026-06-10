@@ -408,6 +408,9 @@ pub(crate) async fn build_tool_setup(
     let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
         .with_permissions(permission_policy)
         .with_output_filters(filter_registry);
+    if let Some(sup) = supervisor {
+        shell_executor = shell_executor.with_task_supervisor(sup.clone());
+    }
     if config.tools.sandbox.enabled {
         let denied_present = !config.tools.sandbox.denied_domains.is_empty();
         let _span = tracing::info_span!(

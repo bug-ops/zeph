@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
+use zeph_common::{TaskSupervisor, task_supervisor::BlockingHandle};
 
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -31,7 +33,7 @@ pub struct FileChangedEvent {
 /// Call `stop()` on the watcher to shut it down cleanly. The watcher
 /// is also stopped automatically when all senders are dropped.
 pub struct FileChangeWatcher {
-    handle: tokio::task::JoinHandle<()>,
+    handle: BlockingHandle<()>,
 }
 
 impl std::fmt::Debug for FileChangeWatcher {
@@ -59,6 +61,7 @@ impl FileChangeWatcher {
         watch_paths: &[PathBuf],
         debounce_ms: u64,
         tx: mpsc::Sender<FileChangedEvent>,
+        supervisor: &Arc<TaskSupervisor>,
     ) -> Result<Self, FileWatcherError> {
         if watch_paths.is_empty() {
             return Err(FileWatcherError::NoWatchPaths);
@@ -93,14 +96,17 @@ impl FileChangeWatcher {
             }
         }
 
-        let handle = tokio::spawn(async move {
-            let _debouncer = debouncer;
-            while let Some(path) = notify_rx.recv().await {
-                if tx.send(FileChangedEvent { path }).await.is_err() {
-                    break;
+        let handle = supervisor.spawn_oneshot(
+            std::sync::Arc::from("core.file_watcher"),
+            move || async move {
+                let _debouncer = debouncer;
+                while let Some(path) = notify_rx.recv().await {
+                    if tx.send(FileChangedEvent { path }).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            },
+        );
 
         Ok(Self { handle })
     }
@@ -108,12 +114,20 @@ impl FileChangeWatcher {
 
 #[cfg(test)]
 mod tests {
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::TaskSupervisor;
+
     use super::*;
+
+    fn make_supervisor() -> Arc<TaskSupervisor> {
+        Arc::new(TaskSupervisor::new(CancellationToken::new()))
+    }
 
     #[tokio::test]
     async fn start_with_empty_paths_fails() {
+        let sup = make_supervisor();
         let (tx, _rx) = mpsc::channel(16);
-        let result = FileChangeWatcher::start(&[], 500, tx);
+        let result = FileChangeWatcher::start(&[], 500, tx, &sup);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -124,8 +138,9 @@ mod tests {
     #[tokio::test]
     async fn start_with_valid_dir() {
         let dir = tempfile::tempdir().unwrap();
+        let sup = make_supervisor();
         let (tx, _rx) = mpsc::channel(16);
-        let result = FileChangeWatcher::start(&[dir.path().to_path_buf()], 500, tx);
+        let result = FileChangeWatcher::start(&[dir.path().to_path_buf()], 500, tx, &sup);
         assert!(result.is_ok());
     }
 
@@ -135,8 +150,10 @@ mod tests {
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "initial").unwrap();
 
+        let sup = make_supervisor();
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = FileChangeWatcher::start(&[dir.path().to_path_buf()], 500, tx).unwrap();
+        let _watcher =
+            FileChangeWatcher::start(&[dir.path().to_path_buf()], 500, tx, &sup).unwrap();
 
         // Wait for watcher to settle before modifying.
         tokio::time::sleep(Duration::from_millis(100)).await;

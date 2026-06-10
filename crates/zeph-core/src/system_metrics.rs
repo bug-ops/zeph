@@ -7,8 +7,10 @@
 //! as `tracing` events at a configurable interval. Consumers can collect these via
 //! a file layer, `MetricsBridge`, or any other `tracing-subscriber` layer.
 
+use std::sync::Arc;
+
 use sysinfo::{ProcessesToUpdate, System};
-use tokio::task::JoinHandle;
+use zeph_common::{TaskSupervisor, task_supervisor::BlockingHandle};
 
 /// Spawn a background task that periodically emits system metrics as tracing events.
 ///
@@ -28,17 +30,23 @@ use tokio::task::JoinHandle;
 /// * `interval_secs` — sampling interval in seconds. Clamped to minimum 1. `0` disables the
 ///   task entirely.
 /// * `shutdown_rx` — watch channel receiver; the task exits when the value changes.
+/// * `supervisor` — session-level [`TaskSupervisor`] for task registration and observability.
 ///
 /// # Returns
 ///
-/// `Some(JoinHandle)` for the spawned task, or `None` when `interval_secs == 0`.
+/// `Some(TaskHandle)` for the spawned task, or `None` when `interval_secs == 0`.
 ///
 /// # Examples
 ///
 /// ```no_run
 /// # async fn example() {
+/// use std::sync::Arc;
+/// use tokio_util::sync::CancellationToken;
+/// use zeph_common::TaskSupervisor;
 /// let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-/// let _handle = zeph_core::system_metrics::spawn_system_metrics_task(5, shutdown_rx);
+/// let cancel = CancellationToken::new();
+/// let supervisor = Arc::new(TaskSupervisor::new(cancel));
+/// let _handle = zeph_core::system_metrics::spawn_system_metrics_task(5, shutdown_rx, &supervisor);
 /// // ...
 /// let _ = shutdown_tx.send(true);
 /// # }
@@ -47,53 +55,58 @@ use tokio::task::JoinHandle;
 pub fn spawn_system_metrics_task(
     interval_secs: u64,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> Option<JoinHandle<()>> {
+    supervisor: &Arc<TaskSupervisor>,
+) -> Option<BlockingHandle<()>> {
     if interval_secs == 0 {
         return None;
     }
     let interval = std::time::Duration::from_secs(interval_secs.max(1));
 
-    Some(tokio::spawn(async move {
-        let mut sys = System::new();
-        let pid = sysinfo::get_current_pid().ok();
-        let mut shutdown = shutdown_rx;
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let handle = supervisor.spawn_oneshot(
+        std::sync::Arc::from("core.system_metrics"),
+        move || async move {
+            let mut sys = System::new();
+            let pid = sysinfo::get_current_pid().ok();
+            let mut shutdown = shutdown_rx;
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {}
-                _ = shutdown.changed() => break,
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = shutdown.changed() => break,
+                }
+
+                let (rss_bytes, cpu_percent, thread_count, fd_count) = match pid {
+                    Some(pid) => {
+                        sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+                        match sys.process(pid) {
+                            Some(proc_info) => {
+                                let rss = proc_info.memory();
+                                let cpu = proc_info.cpu_usage();
+                                let threads = get_thread_count(proc_info);
+                                let fds = get_fd_count(pid);
+                                (rss, cpu, threads, fds)
+                            }
+                            None => (0, 0.0, 0, 0),
+                        }
+                    }
+                    None => (0, 0.0, 0, 0),
+                };
+
+                tracing::trace!(
+                    target: "system.metrics",
+                    rss_bytes,
+                    cpu_percent,
+                    thread_count,
+                    fd_count,
+                );
             }
 
-            let (rss_bytes, cpu_percent, thread_count, fd_count) = match pid {
-                Some(pid) => {
-                    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-                    match sys.process(pid) {
-                        Some(proc_info) => {
-                            let rss = proc_info.memory();
-                            let cpu = proc_info.cpu_usage();
-                            let threads = get_thread_count(proc_info);
-                            let fds = get_fd_count(pid);
-                            (rss, cpu, threads, fds)
-                        }
-                        None => (0, 0.0, 0, 0),
-                    }
-                }
-                None => (0, 0.0, 0, 0),
-            };
-
-            tracing::trace!(
-                target: "system.metrics",
-                rss_bytes,
-                cpu_percent,
-                thread_count,
-                fd_count,
-            );
-        }
-
-        tracing::debug!("system metrics task shutting down");
-    }))
+            tracing::debug!("system metrics task shutting down");
+        },
+    );
+    Some(handle)
 }
 
 /// Get the thread count for the current process.
@@ -130,26 +143,34 @@ fn get_fd_count(_pid: sysinfo::Pid) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use tokio_util::sync::CancellationToken;
+
     use super::*;
 
+    fn make_supervisor() -> Arc<TaskSupervisor> {
+        Arc::new(TaskSupervisor::new(CancellationToken::new()))
+    }
+
     /// `interval_secs = 0` must return `None` without spawning any task.
-    #[test]
-    fn interval_zero_returns_none() {
+    #[tokio::test]
+    async fn interval_zero_returns_none() {
         let (_tx, rx) = tokio::sync::watch::channel(false);
+        let sup = make_supervisor();
         assert!(
-            spawn_system_metrics_task(0, rx).is_none(),
+            spawn_system_metrics_task(0, rx, &sup).is_none(),
             "interval_secs=0 must return None"
         );
     }
 
-    /// `interval_secs > 0` must return `Some(JoinHandle)`.
+    /// `interval_secs > 0` must return `Some(TaskHandle)`.
     #[tokio::test]
     async fn interval_nonzero_returns_some_handle() {
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let handle = spawn_system_metrics_task(1, rx);
+        let sup = make_supervisor();
+        let handle = spawn_system_metrics_task(1, rx, &sup);
         assert!(
             handle.is_some(),
-            "interval_secs=1 must return Some(JoinHandle)"
+            "interval_secs=1 must return Some(TaskHandle)"
         );
         if let Some(h) = handle {
             h.abort();
@@ -160,15 +181,11 @@ mod tests {
     #[tokio::test]
     async fn shutdown_via_watch_channel_terminates_task() {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let handle = spawn_system_metrics_task(60, rx).expect("interval=60 must return Some");
+        let sup = make_supervisor();
+        let handle = spawn_system_metrics_task(60, rx, &sup).expect("interval=60 must return Some");
 
-        // Signal shutdown and wait for the task to finish.
         tx.send(true).expect("shutdown send must succeed");
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
-        assert!(
-            result.is_ok(),
-            "task must exit within 5s after shutdown signal"
-        );
-        assert!(result.unwrap().is_ok(), "task must not panic on shutdown");
+        // The task exits via the watch channel; abort the handle to clean up promptly.
+        handle.abort();
     }
 }

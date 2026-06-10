@@ -95,21 +95,27 @@ impl<C: Channel> super::Agent<C> {
             .as_ref()
             .map(|tx| tx.send("Extracting skills from session…".into()));
 
-        self.services.learning_engine.trace_extraction_handle = Some(tokio::spawn(run_extraction(
-            extract_provider,
-            embed_provider,
-            output_dir,
-            max_turns,
-            max_input_bytes,
-            merge_threshold,
-            dedup_threshold,
-            merge_enabled,
-            existing_meta,
-            user_messages,
-            conversation_id,
-            db_pool,
-            status_tx,
-        )));
+        let blocking_handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
+            std::sync::Arc::from("agent.learning.trace_extraction"),
+            move || {
+                run_extraction(
+                    extract_provider,
+                    embed_provider,
+                    output_dir,
+                    max_turns,
+                    max_input_bytes,
+                    merge_threshold,
+                    dedup_threshold,
+                    merge_enabled,
+                    existing_meta,
+                    user_messages,
+                    conversation_id,
+                    db_pool,
+                    status_tx,
+                )
+            },
+        );
+        self.services.learning_engine.trace_extraction_handle = Some(blocking_handle);
     }
 
     /// Check whether `session_id` already exists in `skill_trace_sessions`.

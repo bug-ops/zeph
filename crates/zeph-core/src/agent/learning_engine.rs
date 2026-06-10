@@ -43,12 +43,12 @@ pub(crate) struct LearningEngine {
     ///
     /// Set by `maybe_extract_skills_from_trace`; awaited at shutdown so the extraction
     /// task is not silently dropped if the agent exits before it completes.
-    pub(crate) trace_extraction_handle: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) trace_extraction_handle: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
     /// Handle for the periodic heuristic promotion background task (`AutoSkill A6`, spec 061).
     ///
     /// Set by `maybe_start_heuristic_promotion` at agent startup when
     /// `heuristic_promotion_enabled = true`. Aborted at shutdown.
-    pub(crate) heuristic_promotion_handle: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) heuristic_promotion_handle: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
 }
 
 impl LearningEngine {

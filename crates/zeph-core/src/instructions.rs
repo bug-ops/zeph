@@ -4,10 +4,12 @@
 use std::collections::HashSet;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tokio::sync::mpsc;
+use zeph_common::{TaskSupervisor, task_supervisor::BlockingHandle};
 
 use crate::config::ProviderKind;
 
@@ -17,7 +19,7 @@ pub enum InstructionEvent {
 }
 
 pub struct InstructionWatcher {
-    _handle: tokio::task::JoinHandle<()>,
+    _handle: BlockingHandle<()>,
 }
 
 impl InstructionWatcher {
@@ -31,6 +33,7 @@ impl InstructionWatcher {
     pub fn start(
         paths: &[PathBuf],
         tx: mpsc::Sender<InstructionEvent>,
+        supervisor: &Arc<TaskSupervisor>,
     ) -> Result<Self, notify::Error> {
         let (notify_tx, mut notify_rx) = mpsc::channel(16);
 
@@ -67,15 +70,18 @@ impl InstructionWatcher {
         }
 
         tracing::debug!(paths = paths.len(), "starting instruction watcher");
-        let handle = tokio::spawn(async move {
-            let _debouncer = debouncer;
-            while notify_rx.recv().await.is_some() {
-                tracing::debug!("instruction file change detected, signaling reload");
-                if tx.send(InstructionEvent::Changed).await.is_err() {
-                    break;
+        let handle = supervisor.spawn_oneshot(
+            std::sync::Arc::from("core.instruction_watcher"),
+            move || async move {
+                let _debouncer = debouncer;
+                while notify_rx.recv().await.is_some() {
+                    tracing::debug!("instruction file change detected, signaling reload");
+                    if tx.send(InstructionEvent::Changed).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            },
+        );
 
         Ok(Self { _handle: handle })
     }
@@ -292,29 +298,41 @@ pub async fn load_instructions_async(
 
 #[cfg(test)]
 mod watcher_tests {
-    use super::*;
+    use std::sync::Arc;
+
     use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+    use zeph_common::TaskSupervisor;
+
+    use super::*;
+
+    fn make_supervisor() -> Arc<TaskSupervisor> {
+        Arc::new(TaskSupervisor::new(CancellationToken::new()))
+    }
 
     #[tokio::test]
     async fn start_with_valid_directory() {
         let dir = tempfile::tempdir().unwrap();
+        let sup = make_supervisor();
         let (tx, _rx) = mpsc::channel(16);
-        let result = InstructionWatcher::start(&[dir.path().to_path_buf()], tx);
+        let result = InstructionWatcher::start(&[dir.path().to_path_buf()], tx, &sup);
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn start_with_empty_paths() {
+        let sup = make_supervisor();
         let (tx, _rx) = mpsc::channel(16);
-        let result = InstructionWatcher::start(&[], tx);
+        let result = InstructionWatcher::start(&[], tx, &sup);
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn detects_md_file_change() {
         let dir = tempfile::tempdir().unwrap();
+        let sup = make_supervisor();
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx, &sup).unwrap();
 
         let md_path = dir.path().join("zeph.md");
         std::fs::write(&md_path, "initial").unwrap();
@@ -332,8 +350,9 @@ mod watcher_tests {
     #[tokio::test]
     async fn ignores_non_md_file_change() {
         let dir = tempfile::tempdir().unwrap();
+        let sup = make_supervisor();
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx, &sup).unwrap();
 
         let other_path = dir.path().join("notes.txt");
         std::fs::write(&other_path, "content").unwrap();
@@ -348,8 +367,9 @@ mod watcher_tests {
         let md_path = dir.path().join("zeph.md");
         std::fs::write(&md_path, "content").unwrap();
 
+        let sup = make_supervisor();
         let (tx, mut rx) = mpsc::channel(16);
-        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx).unwrap();
+        let _watcher = InstructionWatcher::start(&[dir.path().to_path_buf()], tx, &sup).unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         std::fs::remove_file(&md_path).unwrap();

@@ -1577,6 +1577,7 @@ impl<C: Channel> Agent<C> {
                     &fc.watch_paths,
                     fc.debounce_ms,
                     tx,
+                    &self.runtime.lifecycle.task_supervisor,
                 ) {
                     Ok(watcher) => {
                         self.runtime.lifecycle.file_watcher = Some(watcher);

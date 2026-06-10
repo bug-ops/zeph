@@ -35,7 +35,7 @@ use serde::Deserialize;
 use arc_swap::ArcSwap;
 use parking_lot::{Mutex, RwLock};
 
-use zeph_common::ToolName;
+use zeph_common::{TaskSupervisor, ToolName};
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ShellConfig;
@@ -362,6 +362,30 @@ pub struct ShellExecutor {
     risk_chain: Option<Arc<RiskChainAccumulator>>,
     /// Cumulative score threshold above which the risk chain blocks execution.
     risk_chain_threshold: f32,
+    /// Optional supervisor for background shell run tasks.
+    ///
+    /// When set, each background run task is registered under its `RunId` so it is
+    /// visible in TUI status panels and aborted on supervisor shutdown.
+    task_supervisor: Option<DebugIgnored<TaskSupervisor>>,
+}
+
+/// Wrapper that implements `Debug` by omitting the inner value.
+///
+/// Used for fields whose types do not implement `Debug` but are held on structs that
+/// derive it. The wrapper is transparent for all other trait implementations.
+struct DebugIgnored<T>(T);
+
+impl<T> std::fmt::Debug for DebugIgnored<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<...>")
+    }
+}
+
+impl<T> std::ops::Deref for DebugIgnored<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
 }
 
 /// Fully resolved execution context for a single shell invocation.
@@ -436,6 +460,7 @@ impl ShellExecutor {
             default_env: None,
             risk_chain: None,
             risk_chain_threshold: config.risk_chain_threshold.unwrap_or(0.7),
+            task_supervisor: None::<DebugIgnored<TaskSupervisor>>,
         }
     }
 
@@ -562,6 +587,17 @@ impl ShellExecutor {
         tx: tokio::sync::mpsc::Sender<BackgroundCompletion>,
     ) -> Self {
         self.background_completion_tx = Some(tx);
+        self
+    }
+
+    /// Attach a [`TaskSupervisor`] so background shell run tasks are registered and observable.
+    ///
+    /// When set, each [`spawn_background`][Self::spawn_background] call registers the run task
+    /// under its `RunId` in the supervisor, making it visible to TUI status panels and
+    /// gracefully aborted on supervisor shutdown.
+    #[must_use]
+    pub fn with_task_supervisor(mut self, supervisor: TaskSupervisor) -> Self {
+        self.task_supervisor = Some(DebugIgnored(supervisor));
         self
     }
 
@@ -1880,17 +1916,37 @@ impl ShellExecutor {
             self.skill_env.read().clone();
         let command_owned = command.to_owned();
 
-        tokio::spawn(run_background_task(
-            run_id,
-            command_owned,
-            timeout,
-            abort,
-            background_runs,
-            tool_event_tx,
-            background_completion_tx,
-            skill_env_snapshot,
-            env_blocklist,
-        ));
+        if let Some(ref sup) = self.task_supervisor {
+            let task_name: Arc<str> = Arc::from(format!("shell_bg_{run_id}").as_str());
+            // spawn_oneshot registers the task in the supervisor under its RunId name,
+            // making it observable in TUI status. The returned handle is intentionally
+            // dropped: completion is signalled via background_completion_tx, not via join.
+            drop(sup.spawn_oneshot(task_name, move || {
+                run_background_task(
+                    run_id,
+                    command_owned,
+                    timeout,
+                    abort,
+                    background_runs,
+                    tool_event_tx,
+                    background_completion_tx,
+                    skill_env_snapshot,
+                    env_blocklist,
+                )
+            }));
+        } else {
+            tokio::spawn(run_background_task(
+                run_id,
+                command_owned,
+                timeout,
+                abort,
+                background_runs,
+                tool_event_tx,
+                background_completion_tx,
+                skill_env_snapshot,
+                env_blocklist,
+            ));
+        }
 
         Ok(run_id)
     }
@@ -1949,17 +2005,34 @@ impl ShellExecutor {
         let cwd = resolved.cwd.clone();
         let command_owned = command.to_owned();
 
-        tokio::spawn(run_background_task_with_env(
-            run_id,
-            command_owned,
-            timeout,
-            abort,
-            background_runs,
-            tool_event_tx,
-            background_completion_tx,
-            env,
-            cwd,
-        ));
+        if let Some(ref sup) = self.task_supervisor {
+            let task_name: Arc<str> = Arc::from(format!("shell_bg_{run_id}").as_str());
+            drop(sup.spawn_oneshot(task_name, move || {
+                run_background_task_with_env(
+                    run_id,
+                    command_owned,
+                    timeout,
+                    abort,
+                    background_runs,
+                    tool_event_tx,
+                    background_completion_tx,
+                    env,
+                    cwd,
+                )
+            }));
+        } else {
+            tokio::spawn(run_background_task_with_env(
+                run_id,
+                command_owned,
+                timeout,
+                abort,
+                background_runs,
+                tool_event_tx,
+                background_completion_tx,
+                env,
+                cwd,
+            ));
+        }
 
         Ok(run_id)
     }
@@ -2083,7 +2156,7 @@ async fn run_background_task(
     // stdout/stderr are guaranteed piped — set above before spawn.
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let mut line_rx = spawn_output_readers(stdout, stderr);
+    let (mut line_rx, _reader_tasks) = spawn_output_readers(stdout, stderr);
 
     let mut combined = String::new();
     let mut stdout_buf = String::new();
@@ -2215,7 +2288,7 @@ async fn run_background_task_with_env(
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let mut line_rx = spawn_output_readers(stdout, stderr);
+    let (mut line_rx, _reader_tasks) = spawn_output_readers(stdout, stderr);
 
     let mut combined = String::new();
     let mut stdout_buf = String::new();
@@ -2766,7 +2839,7 @@ async fn execute_bash(
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let mut line_rx = spawn_output_readers(stdout, stderr);
+    let (mut line_rx, _reader_tasks) = spawn_output_readers(stdout, stderr);
 
     let mut combined = String::new();
     let mut stdout_buf = String::new();
@@ -2883,7 +2956,7 @@ async fn execute_bash_with_context(
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let mut line_rx = spawn_output_readers(stdout, stderr);
+    let (mut line_rx, _reader_tasks) = spawn_output_readers(stdout, stderr);
 
     let mut combined = String::new();
     let mut stdout_buf = String::new();
@@ -2968,16 +3041,23 @@ fn spawn_error_envelope(e: &std::io::Error) -> (ShellOutputEnvelope, String) {
 
 // Channel carries (is_stderr, line) so we can accumulate separate buffers
 // while still building a combined interleaved string for streaming and LLM context.
+//
+// Returns the line receiver and a JoinSet holding the two reader tasks. The caller must
+// keep the JoinSet alive for the duration of the read loop — dropping it aborts the readers.
 fn spawn_output_readers(
     stdout: tokio::process::ChildStdout,
     stderr: tokio::process::ChildStderr,
-) -> tokio::sync::mpsc::Receiver<(bool, String)> {
+) -> (
+    tokio::sync::mpsc::Receiver<(bool, String)>,
+    tokio::task::JoinSet<()>,
+) {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let (line_tx, line_rx) = tokio::sync::mpsc::channel::<(bool, String)>(64);
+    let mut readers = tokio::task::JoinSet::new();
 
     let stdout_tx = line_tx.clone();
-    tokio::spawn(async move {
+    readers.spawn(async move {
         let mut reader = BufReader::new(stdout);
         let mut buf = String::new();
         while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
@@ -2986,7 +3066,7 @@ fn spawn_output_readers(
         }
     });
 
-    tokio::spawn(async move {
+    readers.spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut buf = String::new();
         while reader.read_line(&mut buf).await.unwrap_or(0) > 0 {
@@ -2995,7 +3075,7 @@ fn spawn_output_readers(
         }
     });
 
-    line_rx
+    (line_rx, readers)
 }
 
 /// Terminal condition of the streaming select loop.

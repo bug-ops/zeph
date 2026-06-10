@@ -686,11 +686,11 @@ pub(crate) struct OrchestrationState {
     // Same as durable_backend: accessed through plan.rs ensure_durable_backend().
     #[allow(dead_code)]
     pub(crate) durable_writer: Option<zeph_durable::JournalWriterHandle>,
-    /// [`TaskHandle`] for the background `JournalWriter` actor task, tracked by `TaskSupervisor`.
+    /// [`BlockingHandle`] for the background `JournalWriter` actor task, tracked by `TaskSupervisor`.
     ///
     /// Kept so the agent can abort the writer on shutdown rather than relying on process exit.
     /// `None` until `ensure_durable_backend()` initialises the backend for the first time.
-    pub(crate) durable_writer_task: Option<zeph_common::task_supervisor::TaskHandle>,
+    pub(crate) durable_writer_task: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
     /// Cipher for encrypting P2 budget snapshots. `None` when `encrypt_payload = false`.
     pub(crate) durable_cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
 }
@@ -708,9 +708,9 @@ pub(crate) struct ExperimentState {
     pub(crate) config: crate::config::ExperimentConfig,
     /// Cancellation token for a running experiment session. `Some` means an experiment is active.
     pub(crate) cancel: Option<tokio_util::sync::CancellationToken>,
-    /// `JoinHandle` for the background experiment task. Stored so shutdown can abort it if the
+    /// Handle for the background experiment task. Stored so shutdown can abort it if the
     /// `CancellationToken` signal is not observed in time (e.g. the task is blocked on I/O).
-    pub(crate) handle: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) handle: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
     /// Pre-built config snapshot used as the experiment baseline (agent path).
     pub(crate) baseline: zeph_experiments::ConfigSnapshot,
     /// Dedicated judge provider for evaluation. When `Some`, the evaluator uses this provider

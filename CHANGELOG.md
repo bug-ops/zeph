@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(core)`: migrate 17 direct `tokio::spawn` sites in `zeph-core` to `TaskSupervisor`/`BackgroundSupervisor` supervision; long-lived watchers (`ConfigWatcher`, `FileWatcher`, `InstructionWatcher`, `SystemMetricsCollector`) use `spawn_oneshot`, turn-scoped tasks (`heuristic_promotion`, `trace_extraction`, `experiment_session`, `durable_journal_writer`) use `spawn_oneshot` with unique per-invocation names via atomic counters (closes #5145)
+- `refactor(tools,subagent)`: migrate 11 direct `tokio::spawn` sites in `zeph-tools` and `zeph-subagent` to supervised task management; shell background runs now tracked via `TaskSupervisor`, subagent lifecycle tasks abortable on shutdown (closes #5148)
+
 ### Fixed
 
 - `fix(worktree)`: `WorktreeManager::create` called `canonicalize_root` (sync `std::fs`) directly

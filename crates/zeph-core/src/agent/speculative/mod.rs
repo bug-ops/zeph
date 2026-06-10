@@ -48,17 +48,11 @@ use prediction::Prediction;
 
 pub use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
 
-enum SweepHandle {
-    Supervised(zeph_common::task_supervisor::TaskHandle),
-    Raw(tokio::task::JoinHandle<()>),
-}
+struct SweepHandle(zeph_common::task_supervisor::TaskHandle);
 
 impl SweepHandle {
     fn abort(self) {
-        match self {
-            SweepHandle::Supervised(h) => h.abort(),
-            SweepHandle::Raw(h) => h.abort(),
-        }
+        self.0.abort();
     }
 }
 
@@ -145,17 +139,9 @@ impl SpeculationEngine {
                     }
                 },
             });
-            Some(SweepHandle::Supervised(task_handle))
+            Some(SweepHandle(task_handle))
         } else {
-            let jh = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(5));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    interval.tick().await;
-                    SpeculativeCache::sweep_expired_inner(&shared);
-                }
-            });
-            Some(SweepHandle::Raw(jh))
+            None
         };
 
         Self {
@@ -487,53 +473,23 @@ mod tests {
         );
     }
 
-    /// Verify that the background sweeper task is aborted when `SpeculationEngine` is dropped
-    /// (no-supervisor path uses `SweepHandle::Raw(JoinHandle)`).
+    /// Verify that an engine without a supervisor has no sweeper handle and drops cleanly.
     #[tokio::test]
-    async fn sweeper_aborted_on_drop() {
+    async fn sweeper_none_without_supervisor() {
         let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
         let config = SpeculativeConfig {
             mode: SpeculationMode::Decoding,
             ..Default::default()
         };
 
+        // Without a supervisor the sweeper is not started — this is the expected test-harness
+        // behaviour. Verify that construction and drop do not panic.
         let engine = SpeculationEngine::new(Arc::clone(&exec), config);
-
-        // Extract the raw join handle BEFORE dropping so we can check it afterwards.
-        // We do this by peeking into the engine's sweeper via a helper that aborts it
-        // and stores whether it was running. Since we cannot move the JoinHandle out
-        // of the engine without unsafe, we instead:
-        //   1. Spawn an independently observable task to stand in for detection.
-        //   2. Verify the engine's Drop impl aborts the sweeper by confirming that
-        //      `sweeper` field is Some before drop and the engine can be dropped cleanly.
-        //
-        // The most reliable test for abort-on-drop: create a task that never exits,
-        // attach its AbortHandle externally, drop the engine, yield, then confirm abort.
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let witness = tokio::spawn(async move {
-            // This task signals when it starts and then parks indefinitely.
-            let _ = tx.send(());
-            tokio::time::sleep(Duration::from_hours(1)).await;
-        });
-        // Wait for witness to start.
-        let _ = rx.await;
-        // The engine's sweeper is an independent task. Dropping the engine must abort it.
-        drop(engine);
-        // Yield to tokio to let the drop/abort propagate.
-        tokio::task::yield_now().await;
-
-        // The witness task is unrelated to the engine — it must still be running (not aborted).
-        assert!(!witness.is_finished(), "unrelated task must not be aborted");
-        witness.abort();
-
-        // Now verify via a second engine that the sweeper field is populated and that
-        // Drop runs without panic (tests the abort path directly).
-        let engine2 = SpeculationEngine::new(exec, SpeculativeConfig::default());
         assert!(
-            engine2.sweeper.is_some(),
-            "sweeper handle must be Some after construction"
+            engine.sweeper.is_none(),
+            "sweeper must be None when no supervisor is provided"
         );
-        drop(engine2); // Must not panic — exercises SweepHandle::Raw abort path.
+        drop(engine);
     }
 
     /// Verify sweeper abort via the supervised path (`SweepHandle::Supervised`).

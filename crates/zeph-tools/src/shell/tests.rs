@@ -3348,3 +3348,69 @@ mod resolve_context {
         assert!(!has_traversal("relative\\path\\file.txt"));
     }
 }
+
+// ── TaskSupervisor integration tests ─────────────────────────────────────────
+
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn supervised_background_task_is_visible_in_supervisor() {
+    use zeph_common::task_supervisor::TaskStatus;
+
+    let cancel = CancellationToken::new();
+    let supervisor = TaskSupervisor::new(cancel.clone());
+
+    let config = ShellConfig {
+        max_background_runs: 4,
+        background_timeout_secs: 30,
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config).with_task_supervisor(supervisor.clone());
+
+    // Spawn a long-running background command so it stays Running long enough to observe.
+    let run_id = executor.spawn_background("sleep 10").await.unwrap();
+
+    // Give the tokio runtime one tick to register the task in the supervisor.
+    tokio::task::yield_now().await;
+
+    let snaps = supervisor.snapshot();
+    let task_name = format!("shell_bg_{run_id}");
+    let found = snaps.iter().any(|s| {
+        s.name.as_ref() == task_name
+            && matches!(s.status, TaskStatus::Running | TaskStatus::Completed)
+    });
+    assert!(
+        found,
+        "background task '{task_name}' must appear in supervisor snapshot, got: {snaps:?}"
+    );
+
+    // Clean up: cancel the supervisor so the sleep is killed.
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn supervised_background_run_limit_still_enforced() {
+    let cancel = CancellationToken::new();
+    let supervisor = TaskSupervisor::new(cancel.clone());
+
+    // cap of 1 so the second spawn hits the limit immediately.
+    let config = ShellConfig {
+        max_background_runs: 1,
+        background_timeout_secs: 30,
+        ..default_config()
+    };
+    let executor = ShellExecutor::new(&config).with_task_supervisor(supervisor.clone());
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // First spawn occupies the single slot.
+        let _id = executor.spawn_background("sleep 10").await.unwrap();
+        // Second spawn must be rejected regardless of supervisor presence.
+        let err = executor.spawn_background("sleep 10").await.unwrap_err();
+        assert!(
+            matches!(err, ToolError::Blocked { .. }),
+            "cap must be enforced with supervisor wired; got: {err:?}"
+        );
+    }
+
+    cancel.cancel();
+}
