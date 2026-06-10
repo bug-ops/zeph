@@ -976,7 +976,10 @@ mod integration {
     fn splash_shown_initially() {
         let (mut app, _rx, _tx) = make_app();
         let output = draw_app(&mut app, 80, 24);
-        assert!(output.contains("Type a message to start."));
+        assert!(
+            output.contains("zeph"),
+            "splash must contain 'zeph' wordmark, got: {output}"
+        );
     }
 
     #[test]

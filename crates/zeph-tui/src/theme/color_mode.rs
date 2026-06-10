@@ -68,6 +68,45 @@ pub fn resolve_color_mode(mode: ColorMode) -> EffectiveColorMode {
     }
 }
 
+/// Detect whether the terminal is capable of rendering Unicode glyphs.
+///
+/// This is independent of colour support — a terminal with `NO_COLOR` set may still
+/// render Unicode box-drawing and symbol characters perfectly. Conversely, `TERM=dumb`
+/// typically implies a plain-text pipe environment where Unicode glyphs are not safe.
+///
+/// Detection order:
+/// 1. `TERM=dumb` → ASCII only.
+/// 2. `LANG` or `LC_ALL` containing `UTF-8` or `UTF8` → Unicode capable.
+/// 3. Default → Unicode capable (opt-in to ASCII, not opt-out).
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::theme::color_mode::detect_unicode_capable;
+///
+/// // In a normal UTF-8 terminal environment, Unicode is supported.
+/// // (Result depends on environment; the function does not panic.)
+/// let _ = detect_unicode_capable();
+/// ```
+#[must_use]
+pub fn detect_unicode_capable() -> bool {
+    // TERM=dumb → plain text pipe, ASCII only.
+    if std::env::var("TERM").as_deref() == Ok("dumb") {
+        return false;
+    }
+    // Any LC_ALL / LANG mentioning UTF-8 or UTF8 → Unicode OK.
+    for var in ["LC_ALL", "LANG"] {
+        if let Ok(val) = std::env::var(var) {
+            let upper = val.to_uppercase();
+            if upper.contains("UTF-8") || upper.contains("UTF8") {
+                return true;
+            }
+        }
+    }
+    // Default: assume Unicode capable. ASCII mode is opt-in via TERM=dumb.
+    true
+}
+
 /// Detect the terminal's colour capability from the environment.
 ///
 /// Per <https://no-color.org>: `NO_COLOR` disables colour when *present*, regardless of value.

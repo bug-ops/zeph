@@ -5,14 +5,48 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
-use throbber_widgets_tui::BRAILLE_SIX;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode};
+use crate::theme::Theme;
+use crate::widgets::spinner::breeze_frame;
+use crate::widgets::status_verbs::humanize;
 use zeph_common::text::format_tokens;
 
 /// Prompt glyph shown at the beginning of the separator line.
 const PROMPT_GLYPH: &str = "›";
+
+/// Append spinner + human-voice label spans to the separator line.
+fn push_spinner_spans<'a>(
+    spans: &mut Vec<Span<'a>>,
+    spinner_idx: u8,
+    activity_label: Option<&'a str>,
+    app: &App,
+    theme: &'a Theme,
+) {
+    let symbol = breeze_frame(u64::from(spinner_idx), app.is_ascii_only());
+    if let Some(label) = activity_label {
+        let phrase = humanize(label);
+        if phrase.verb.is_empty() {
+            // humanize returned empty (whitespace-only label) — show bare spinner
+            spans.push(Span::styled(format!("  {symbol}"), theme.highlight));
+        } else {
+            spans.push(Span::styled(
+                format!("  {symbol} {}", phrase.verb),
+                theme.highlight,
+            ));
+            if !phrase.detail.is_empty() {
+                spans.push(Span::styled(
+                    format!(" · {}", phrase.detail),
+                    theme.system_message,
+                ));
+            }
+        }
+    } else {
+        spans.push(Span::styled(format!("  {symbol}"), theme.highlight));
+    }
+    spans.push(Span::styled("  esc to interrupt", theme.system_message));
+}
 
 pub fn render(
     app: &App,
@@ -53,15 +87,7 @@ pub fn render(
         sep_spans.push(Span::styled("  [editing queued]", theme.highlight));
     }
     if busy {
-        let sym_idx = usize::from(spinner_idx) % BRAILLE_SIX.symbols.len();
-        let symbol = BRAILLE_SIX.symbols[sym_idx];
-        let spinner_span = if let Some(label) = activity_label {
-            Span::styled(format!("  {symbol} {label}"), theme.highlight)
-        } else {
-            Span::styled(format!("  {symbol}"), theme.highlight)
-        };
-        sep_spans.push(spinner_span);
-        sep_spans.push(Span::styled("  esc to interrupt", theme.system_message));
+        push_spinner_spans(&mut sep_spans, spinner_idx, activity_label, app, theme);
     }
 
     // Render separator line in the top row of the area.
@@ -205,9 +231,9 @@ mod tests {
             super::render(&app, frame, area, true, Some("Thinking..."), 0);
         });
         // On a 40-column terminal the full "esc to interrupt" hint may be truncated;
-        // verify that the activity label is present, which confirms the spinner path ran.
+        // humanize() lowercases the verb, so check for "thinking" (lowercase).
         assert!(
-            output.contains("Thinking"),
+            output.contains("thinking"),
             "activity label must appear when busy; got: {output:?}"
         );
     }

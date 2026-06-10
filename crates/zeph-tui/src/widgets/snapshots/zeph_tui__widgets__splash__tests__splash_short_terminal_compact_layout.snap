@@ -1,0 +1,6 @@
+---
+source: crates/zeph-tui/src/widgets/splash.rs
+expression: output
+---
+                   ≈ zeph  think further.                   
+           / commands  @ files  ? keys  Tab panels

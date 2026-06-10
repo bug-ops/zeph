@@ -12,11 +12,9 @@ use zeph_subagent::{ModelSpec, SubAgentDef, ToolPolicy, is_valid_agent_name};
 use crate::layout::truncate_to_width;
 use crate::metrics::{MetricsSnapshot, SubAgentMetrics};
 use crate::theme::Theme;
+use crate::widgets::spinner::breeze_frame;
 
 // ── Runtime sub-agent monitor ─────────────────────────────────────────────────
-
-/// Spinner frames for working agents.
-const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn state_color(state: &str) -> Color {
     match state {
@@ -28,14 +26,19 @@ fn state_color(state: &str) -> Color {
     }
 }
 
-fn build_agent_list_item<'a>(sa: &SubAgentMetrics, tick: u8, selected: bool) -> ListItem<'a> {
+fn build_agent_list_item<'a>(
+    sa: &SubAgentMetrics,
+    tick: u8,
+    selected: bool,
+    ascii: bool,
+) -> ListItem<'a> {
     let color = state_color(&sa.state);
     let is_working = matches!(sa.state.as_str(), "working" | "submitted");
     let spinner = if is_working {
-        let idx = (tick as usize) % SPINNER_FRAMES.len();
-        SPINNER_FRAMES[idx].to_string()
+        breeze_frame(u64::from(tick), ascii)
     } else {
-        "  ".to_owned()
+        // Pad to 3 spaces to match the 3-cell active frame, preventing column jitter.
+        "   "
     };
 
     let bg_marker = if sa.background { " [bg]" } else { "" };
@@ -85,10 +88,12 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         return;
     }
 
+    // Non-interactive view uses tick=0 (no animation); ascii flag is irrelevant when idle,
+    // but kept for consistency if a working agent appears in the static view.
     let items: Vec<ListItem<'_>> = metrics
         .sub_agents
         .iter()
-        .map(|sa| build_agent_list_item(sa, 0, false))
+        .map(|sa| build_agent_list_item(sa, 0, false, false))
         .collect();
 
     let list = List::new(items).block(
@@ -109,6 +114,7 @@ pub fn render_interactive(
     area: Rect,
     tick: u8,
     theme: &Theme,
+    ascii: bool,
 ) {
     if metrics.sub_agents.is_empty() {
         let block = Block::default()
@@ -127,7 +133,7 @@ pub fn render_interactive(
         .sub_agents
         .iter()
         .enumerate()
-        .map(|(i, sa)| build_agent_list_item(sa, tick, selected == Some(i)))
+        .map(|(i, sa)| build_agent_list_item(sa, tick, selected == Some(i), ascii))
         .collect();
 
     let list = List::new(items).block(

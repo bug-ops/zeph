@@ -432,6 +432,10 @@ pub struct App {
     pub(crate) theme_name: String,
     /// Resolved terminal colour capability, stored once at startup for consistent re-derivation.
     pub(crate) effective_color_mode: crate::theme::EffectiveColorMode,
+    /// Whether the terminal can render Unicode glyphs. Independent of colour support.
+    ///
+    /// `false` when `TERM=dumb`; `true` otherwise (default). Used by [`App::is_ascii_only`].
+    pub(crate) unicode_capable: bool,
     // Scaffold for future per-section collapse (see follow-up issue).
     #[allow(dead_code)]
     pub(crate) collapsed_panels: [bool; 4],

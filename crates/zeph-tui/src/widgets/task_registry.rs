@@ -26,9 +26,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use zeph_common::task_supervisor::{TaskSnapshot, TaskStatus};
 
 use crate::theme::Theme;
-
-/// Braille spinner frames for animated running tasks.
-const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+use crate::widgets::spinner::breeze_frame;
 
 fn status_color(status: &TaskStatus) -> Color {
     match status {
@@ -60,17 +58,17 @@ fn format_uptime(started_at: Instant) -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
-fn build_list_item(snapshot: &TaskSnapshot, tick: u8) -> ListItem<'static> {
+fn build_list_item(snapshot: &TaskSnapshot, tick: u8, ascii: bool) -> ListItem<'static> {
     let color = status_color(&snapshot.status);
     let is_active = matches!(
         snapshot.status,
         TaskStatus::Running | TaskStatus::Restarting { .. }
     );
     let spinner = if is_active {
-        let idx = (tick as usize) % SPINNER_FRAMES.len();
-        SPINNER_FRAMES[idx].to_string()
+        breeze_frame(u64::from(tick), ascii)
     } else {
-        "  ".to_owned()
+        // Pad to 3 spaces to match the 3-cell active frame, preventing column jitter.
+        "   "
     };
 
     let uptime = format_uptime(snapshot.started_at);
@@ -109,6 +107,7 @@ pub fn render(
     area: Rect,
     frame: &mut Frame<'_>,
     theme: &Theme,
+    ascii: bool,
 ) {
     let title = format!(" Tasks ({}) ", snapshots.len());
     let block = Block::default()
@@ -124,7 +123,10 @@ pub fn render(
         return;
     }
 
-    let items: Vec<ListItem<'_>> = snapshots.iter().map(|s| build_list_item(s, tick)).collect();
+    let items: Vec<ListItem<'_>> = snapshots
+        .iter()
+        .map(|s| build_list_item(s, tick, ascii))
+        .collect();
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 }
@@ -172,7 +174,7 @@ mod tests {
         // Must not panic; displays placeholder text.
         let output = render_to_string(50, 6, |frame, area| {
             let theme = crate::theme::Theme::default();
-            super::render(&[], 0, area, frame, &theme);
+            super::render(&[], 0, area, frame, &theme, false);
         });
         assert!(
             output.contains("No supervised tasks"),
@@ -185,7 +187,7 @@ mod tests {
         let snapshots = [running_snapshot("config-watcher")];
         let output = render_to_string(60, 5, |frame, area| {
             let theme = crate::theme::Theme::default();
-            super::render(&snapshots, 0, area, frame, &theme);
+            super::render(&snapshots, 0, area, frame, &theme, false);
         });
         assert!(output.contains("config-watcher"), "name missing: {output}");
         assert!(output.contains("Running"), "status missing: {output}");
@@ -196,7 +198,7 @@ mod tests {
         let snapshots = [completed_snapshot("memory-loop")];
         let output = render_to_string(60, 5, |frame, area| {
             let theme = crate::theme::Theme::default();
-            super::render(&snapshots, 0, area, frame, &theme);
+            super::render(&snapshots, 0, area, frame, &theme, false);
         });
         assert!(output.contains("memory-loop"), "name missing: {output}");
         assert!(output.contains("Completed"), "status missing: {output}");
@@ -207,7 +209,7 @@ mod tests {
         let snapshots = [failed_snapshot("scheduler")];
         let output = render_to_string(60, 5, |frame, area| {
             let theme = crate::theme::Theme::default();
-            super::render(&snapshots, 0, area, frame, &theme);
+            super::render(&snapshots, 0, area, frame, &theme, false);
         });
         assert!(output.contains("scheduler"), "name missing: {output}");
         assert!(output.contains("Failed"), "status missing: {output}");
@@ -222,7 +224,7 @@ mod tests {
         ];
         let output = render_to_string(70, 8, |frame, area| {
             let theme = crate::theme::Theme::default();
-            super::render(&snapshots, 2, area, frame, &theme);
+            super::render(&snapshots, 2, area, frame, &theme, false);
         });
         assert_snapshot!(output);
     }

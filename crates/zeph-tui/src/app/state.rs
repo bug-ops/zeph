@@ -93,6 +93,7 @@ impl App {
             theme_generation: 0,
             theme_name: "zephyr".to_owned(),
             effective_color_mode: crate::theme::EffectiveColorMode::Truecolor,
+            unicode_capable: crate::theme::detect_unicode_capable(),
             collapsed_panels: [false; 4],
         }
     }
@@ -268,6 +269,51 @@ impl App {
     #[must_use]
     pub fn active_theme_name(&self) -> &str {
         &self.theme_name
+    }
+
+    /// Return the resolved terminal colour mode stored at startup.
+    ///
+    /// Used by widgets to choose between Unicode and ASCII fallback rendering.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::{App, theme::EffectiveColorMode};
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx);
+    /// assert_eq!(app.effective_color_mode(), EffectiveColorMode::Truecolor);
+    /// ```
+    #[must_use]
+    pub fn effective_color_mode(&self) -> crate::theme::EffectiveColorMode {
+        self.effective_color_mode
+    }
+
+    /// Return `true` when the terminal cannot render Unicode glyphs and ASCII-only output
+    /// should be used in place of box-drawing characters and spinners.
+    ///
+    /// Unicode capability is detected independently from colour support. A terminal with
+    /// `NO_COLOR` set (which produces `EffectiveColorMode::Never`) may still render `▹▸`
+    /// perfectly. Only `TERM=dumb` or a non-UTF-8 locale forces ASCII mode.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// // Default app created in a normal environment reports Unicode capable.
+    /// let app = App::new(user_tx, agent_rx);
+    /// // is_ascii_only() depends on TERM/LANG env vars, not color mode.
+    /// let _ = app.is_ascii_only();
+    /// ```
+    #[must_use]
+    pub fn is_ascii_only(&self) -> bool {
+        !self.unicode_capable
     }
 
     /// Invalidate render caches in every session slot.

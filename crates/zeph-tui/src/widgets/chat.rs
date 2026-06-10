@@ -7,13 +7,13 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
-use throbber_widgets_tui::BRAILLE_SIX;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, MessageRole, RenderCache, RenderCacheKey, content_hash};
 use crate::highlight::SYNTAX_HIGHLIGHTER;
 use crate::hyperlink;
 use crate::theme::{SyntaxTheme, Theme};
+use crate::widgets::spinner::breeze_frame;
 use crate::widgets::tool_view::{ToolDensity, ToolKind, ToolStatus};
 
 /// A markdown link extracted during rendering: visible display text and target URL.
@@ -49,12 +49,8 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
         app.tool_expanded(),
         app.tool_density(),
         app.show_source_labels(),
-        usize::try_from(
-            app.throbber_state()
-                .index()
-                .rem_euclid(i8::try_from(BRAILLE_SIX.symbols.len()).unwrap_or(i8::MAX)),
-        )
-        .unwrap_or(0),
+        usize::try_from(app.throbber_state().index().rem_euclid(6)).unwrap_or(0),
+        app.is_ascii_only(),
         app.theme_generation(),
     );
 
@@ -111,6 +107,7 @@ fn collect_message_lines_from(
     tool_density: ToolDensity,
     show_labels: bool,
     throbber_idx: usize,
+    ascii: bool,
     theme_generation: u64,
 ) -> (Vec<Line<'static>>, Vec<MdLink>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -183,6 +180,7 @@ fn collect_message_lines_from(
                             tool_expanded,
                             tool_density,
                             throbber_idx,
+                            ascii,
                             theme,
                             wrap_width,
                             show_labels,
@@ -263,11 +261,13 @@ fn collect_message_lines_from(
     (lines, all_md_links)
 }
 
+#[allow(clippy::too_many_arguments)] // structured inputs; a Params struct would not reduce complexity
 fn render_message_lines(
     msg: &crate::app::ChatMessage,
     tool_expanded: bool,
     tool_density: ToolDensity,
     throbber_idx: usize,
+    ascii: bool,
     theme: &Theme,
     wrap_width: usize,
     show_labels: bool,
@@ -279,6 +279,7 @@ fn render_message_lines(
             tool_expanded,
             tool_density,
             throbber_idx,
+            ascii,
             theme,
             wrap_width,
             show_labels,
@@ -608,6 +609,7 @@ fn render_tool_message(
     tool_expanded: bool,
     tool_density: ToolDensity,
     throbber_idx: usize,
+    ascii: bool,
     theme: &Theme,
     wrap_width: usize,
     _show_labels: bool,
@@ -624,7 +626,7 @@ fn render_tool_message(
     let status = ToolStatus::from_streaming_and_success(msg.streaming, msg.success);
     let status_span = match status {
         ToolStatus::Running => {
-            let symbol = BRAILLE_SIX.symbols[throbber_idx];
+            let symbol = breeze_frame(throbber_idx as u64, ascii);
             Span::styled(format!("{symbol} "), theme.streaming_cursor)
         }
         ToolStatus::Success => Span::styled("\u{25cf} ", theme.tool_success),
@@ -1604,6 +1606,7 @@ mod tests {
             ToolDensity::Inline,
             false,
             0,
+            false,
             0,
         );
         let all_text: String = lines
@@ -1630,6 +1633,7 @@ mod tests {
             false,
             ToolDensity::Compact,
             0,
+            false,
             &theme,
             200,
             false,
@@ -1661,6 +1665,7 @@ mod tests {
             ToolDensity::Inline,
             false,
             0,
+            false,
             0,
         );
         let has_bg = lines
@@ -1684,6 +1689,7 @@ mod tests {
             false,
             ToolDensity::Block,
             0,
+            false,
             &theme,
             200,
             false,
@@ -1706,6 +1712,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             0,
+            false,
             &theme,
             200,
             false,
@@ -1738,6 +1745,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             0,
+            false,
             &theme,
             200,
             false,
@@ -1760,6 +1768,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             0,
+            false,
             &theme,
             200,
             false,
@@ -1782,6 +1791,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             0,
+            false,
             &theme,
             200,
             false,
@@ -1811,6 +1821,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             0,
+            false,
             &theme,
             200,
             false,
@@ -1833,6 +1844,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             0,
+            false,
             &theme,
             200,
             false,
@@ -2107,6 +2119,7 @@ mod tests {
             ToolDensity::Inline,
             false,
             0,
+            false,
             0,
         );
         let text: String = lines

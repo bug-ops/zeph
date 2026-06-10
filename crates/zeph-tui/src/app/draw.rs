@@ -16,7 +16,7 @@ impl App {
 
         self.draw_header(frame, layout.header);
         if self.sessions.current().show_splash {
-            widgets::splash::render(frame, layout.chat);
+            widgets::splash::render(frame, layout.chat, self.effective_color_mode());
         } else {
             let mut cache = std::mem::take(&mut self.sessions.current_mut().render_cache);
             let max_scroll = widgets::chat::render(self, frame, layout.chat, &mut cache);
@@ -150,6 +150,7 @@ impl App {
         }
 
         let tick = self.throbber_state.index().cast_unsigned();
+        let ascii = self.is_ascii_only();
         let has_graph = self.metrics.orchestration_graph.as_ref().is_some_and(|s| {
             // Use is_stale() to check if snapshot is too old to show (IC4).
             !s.is_stale()
@@ -166,9 +167,10 @@ impl App {
                 layout.subagents,
                 tick,
                 &self.theme,
+                ascii,
             );
         } else if has_graph && !self.sessions.current().plan_view_active {
-            widgets::plan_view::render(&self.metrics, frame, layout.subagents, tick);
+            widgets::plan_view::render(&self.metrics, frame, layout.subagents, tick, ascii);
         } else if self.has_recent_security_events() {
             widgets::security::render(&self.metrics, frame, layout.subagents, &self.theme);
         } else {
@@ -206,6 +208,7 @@ impl App {
                     layout.subagents,
                     frame,
                     &self.theme,
+                    ascii,
                 );
             } else {
                 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};

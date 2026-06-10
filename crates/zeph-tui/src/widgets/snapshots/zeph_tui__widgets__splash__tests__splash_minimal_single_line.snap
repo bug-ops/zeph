@@ -1,0 +1,5 @@
+---
+source: crates/zeph-tui/src/widgets/splash.rs
+expression: output
+---
+                           ≈ zeph

@@ -19,7 +19,9 @@ pub mod color_mode;
 pub mod palette;
 pub mod presets;
 
-pub use color_mode::{EffectiveColorMode, apply_mode, map_color, resolve_color_mode};
+pub use color_mode::{
+    EffectiveColorMode, apply_mode, detect_unicode_capable, map_color, resolve_color_mode,
+};
 pub use palette::{ExtendedRoles, Rgb, SemanticPalette};
 pub use presets::{Preset, ThemeLoadError, resolve_palette};
 

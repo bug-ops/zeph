@@ -8,13 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::metrics::MetricsSnapshot;
-
-/// Spinner characters cycled using the frame counter from `ThrobberState` tick parity.
-const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-fn spinner_char(tick: u8) -> char {
-    SPINNER_CHARS[tick as usize % SPINNER_CHARS.len()]
-}
+use crate::widgets::spinner::breeze_frame;
 
 fn status_color(status: &str) -> Color {
     match status {
@@ -36,15 +30,16 @@ fn render_placeholder(frame: &mut Frame, area: Rect) {
     frame.render_widget(para, area);
 }
 
-fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8) -> Row<'static> {
+fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool) -> Row<'static> {
     let color = status_color(&task.status);
     let icon = if task.status == "running" {
         Span::styled(
-            spinner_char(tick).to_string(),
+            breeze_frame(u64::from(tick), ascii).to_owned(),
             Style::default().fg(Color::Yellow),
         )
     } else {
-        Span::raw(" ")
+        // Pad idle to 3 spaces to match the 3-cell wide active frame, preventing column jitter.
+        Span::raw("   ")
     };
 
     let title_display = if task.title.len() > 28 {
@@ -97,7 +92,20 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8) -> Row<'stat
 ///
 /// When `metrics.orchestration_graph` is `None`, renders a placeholder paragraph.
 /// When it contains a snapshot, renders a table with per-task rows.
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8) {
+/// Render the plan view widget in the given area.
+///
+/// When `metrics.orchestration_graph` is `None`, renders a placeholder paragraph.
+/// When it contains a snapshot, renders a table with per-task rows showing status,
+/// name, and a spinner for running tasks.
+///
+/// # Arguments
+///
+/// * `metrics` — current metrics snapshot.
+/// * `frame` — ratatui frame for widget rendering.
+/// * `area` — terminal rect to render into.
+/// * `tick` — current animation tick.
+/// * `ascii` — when `true`, uses ASCII-only spinner frames for terminals without Unicode support.
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8, ascii: bool) {
     let Some(ref snapshot) = metrics.orchestration_graph else {
         render_placeholder(frame, area);
         return;
@@ -118,7 +126,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8
         ),
         "running" => format!(
             " Plan {} [running…]: {} ",
-            spinner_char(tick),
+            breeze_frame(u64::from(tick), ascii),
             truncate_goal(&snapshot.goal, 30)
         ),
         "completed" => format!(" Plan [completed]: {} ", truncate_goal(&snapshot.goal, 30)),
@@ -140,7 +148,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8
         .title(Line::from(title_span));
 
     let widths = [
-        Constraint::Length(2),  // spinner or status icon
+        Constraint::Length(4),  // spinner or status icon (3 cells + 1 padding)
         Constraint::Length(3),  // id
         Constraint::Fill(1),    // title
         Constraint::Length(10), // status
@@ -160,7 +168,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8
     let rows: Vec<Row<'_>> = snapshot
         .tasks
         .iter()
-        .map(|task| build_task_row(task, tick))
+        .map(|task| build_task_row(task, tick, ascii))
         .collect();
 
     let table = Table::new(rows, widths)
@@ -214,7 +222,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render(metrics, frame, area, 0);
+                render(metrics, frame, area, 0, false);
             })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -320,10 +328,14 @@ mod tests {
     }
 
     #[test]
-    fn spinner_chars_cycle() {
-        // Ensure all 10 spinner chars are reachable.
-        let chars: Vec<char> = (0..10u8).map(spinner_char).collect();
-        assert_eq!(chars.len(), 10);
-        assert!(chars.iter().all(|c| SPINNER_CHARS.contains(c)));
+    fn breeze_frame_cycles_in_plan_view() {
+        use crate::widgets::spinner::breeze_frame;
+        // All 6 breeze frames are reachable from tick 0..5.
+        let frames: Vec<&str> = (0u8..6)
+            .map(|t| breeze_frame(u64::from(t), false))
+            .collect();
+        assert_eq!(frames.len(), 6);
+        assert_eq!(frames[0], "▹▹▹");
+        assert_eq!(frames[3], "▸▸▸");
     }
 }
