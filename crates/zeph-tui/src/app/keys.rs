@@ -1590,4 +1590,28 @@ mod tests {
     fn slash_unknown_returns_none() {
         assert_eq!(App::parse_session_slash("/unknown"), None);
     }
+
+    #[test]
+    fn slash_theme_bare_lists_themes() {
+        assert_eq!(
+            App::parse_session_slash("/theme"),
+            Some(TuiCommand::ListThemes)
+        );
+    }
+
+    #[test]
+    fn slash_theme_with_name_sets_theme() {
+        assert_eq!(
+            App::parse_session_slash("/theme zephyr"),
+            Some(TuiCommand::SetTheme("zephyr".to_owned()))
+        );
+    }
+
+    #[test]
+    fn slash_theme_trailing_space_lists_themes() {
+        assert_eq!(
+            App::parse_session_slash("/theme "),
+            Some(TuiCommand::ListThemes)
+        );
+    }
 }

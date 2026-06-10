@@ -1,0 +1,26 @@
+---
+source: crates/zeph-tui/src/widgets/command_palette.rs
+expression: output
+---
+                                                                                
+                                                                                
+                ╭────────────── Command Palette ───────────────╮                
+                │:                                             │                
+                │                                              │                
+                │skill:list            List loaded skills      │                
+                │mcp:list              List MCP servers and too│                
+                │memory:stats          Show memory statistics  │                
+                │view:cost             Show cost breakdown     │                
+                │view:tools            List available tools    │                
+                │view:config           Show active configuratio│                
+                │view:autonomy         Show autonomy/trust leve│                
+                │tasks                 Toggle task registry pan│                
+                │fleet                 Fleet: show agent sessio│                
+                │durable               Durable: show durable ex│                
+                │session:new           Start new conversation  │                
+                │session:history       Browse session history [│                
+                │session:next          Switch to next session (│                
+                │session:prev          Switch to previous sessi│                
+                │session:close         Close current session (/│                
+                │session:undo          Undo last shell checkpoi│                
+                ╰──────────────────────────────────────────────╯

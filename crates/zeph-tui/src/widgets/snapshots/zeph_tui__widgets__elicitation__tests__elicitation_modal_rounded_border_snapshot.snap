@@ -1,0 +1,22 @@
+---
+source: crates/zeph-tui/src/widgets/elicitation.rs
+expression: output
+---
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+            ╭──────────── MCP Elicitation: test-server ────────────╮            
+            │Please fill in the form                               │            
+            │                                                      │            
+            │                                                      │            
+            │username*: ▌                                          │            
+            │                                                      │            
+            │agree: [ ] No                                         │            
+            │                                                      │            
+            │                                                      │            
+            │                                                      │            
+            │       [Tab] next  [Enter] submit  [Esc] cancel       │            
+            ╰──────────────────────────────────────────────────────╯

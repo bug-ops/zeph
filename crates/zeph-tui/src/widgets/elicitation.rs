@@ -452,4 +452,27 @@ mod tests {
         state.next_field();
         assert_eq!(state.field_idx, 0);
     }
+
+    #[test]
+    fn elicitation_modal_rounded_border_snapshot() {
+        use insta::assert_snapshot;
+
+        use crate::test_utils::render_to_string;
+
+        let req = make_request(vec![
+            string_field("username", true),
+            ElicitationField {
+                name: "agree".to_owned(),
+                description: None,
+                field_type: ElicitationFieldType::Boolean,
+                required: false,
+            },
+        ]);
+        let state = ElicitationDialogState::new(req);
+        let theme = crate::theme::Theme::default();
+        let output = render_to_string(80, 24, |frame, area| {
+            super::render(&state, frame, area, &theme);
+        });
+        assert_snapshot!(output);
+    }
 }

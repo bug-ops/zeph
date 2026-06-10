@@ -261,6 +261,18 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_rounded_border_snapshot() {
+        use insta::assert_snapshot;
+
+        let state = CommandPaletteState::new();
+        let output = render_to_string(80, 24, |frame, area| {
+            let theme = crate::theme::Theme::default();
+            render(&state, frame, area, &theme);
+        });
+        assert_snapshot!(output);
+    }
+
+    #[test]
     fn render_command_palette_snapshot() {
         let state = CommandPaletteState::new();
         let output = render_to_string(80, 24, |frame, area| {
