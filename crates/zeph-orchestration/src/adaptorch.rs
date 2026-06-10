@@ -233,51 +233,45 @@ impl TopologyAdvisor {
     /// Classify the goal and sample the best topology hint for this turn.
     ///
     /// Classification failures fall back to `TaskClass::Unknown` + `TopologyHint::Hybrid`.
+    #[tracing::instrument(name = "orchestration.adaptorch.recommend", skip_all, fields(goal_len = goal.len()))]
     pub async fn recommend(&self, goal: &str) -> AdvisorVerdict {
-        async move {
-            self.metrics.classify_calls.fetch_add(1, Ordering::Relaxed);
+        self.metrics.classify_calls.fetch_add(1, Ordering::Relaxed);
 
-            let class = tokio::time::timeout(self.classify_timeout, self.classify(goal))
-                .await
-                .unwrap_or_else(|_| {
-                    self.metrics
-                        .classify_timeouts
-                        .fetch_add(1, Ordering::Relaxed);
-                    TaskClass::Unknown
-                });
+        let class = tokio::time::timeout(self.classify_timeout, self.classify(goal))
+            .await
+            .unwrap_or_else(|_| {
+                self.metrics
+                    .classify_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                TaskClass::Unknown
+            });
 
-            let fallback = class == TaskClass::Unknown;
-            let (hint, exploit) = self.sample_arm(class);
+        let fallback = class == TaskClass::Unknown;
+        let (hint, exploit) = self.sample_arm(class);
 
-            match hint {
-                TopologyHint::Parallel => {
-                    self.metrics.hint_parallel.fetch_add(1, Ordering::Relaxed);
-                }
-                TopologyHint::Sequential => {
-                    self.metrics.hint_sequential.fetch_add(1, Ordering::Relaxed);
-                }
-                TopologyHint::Hierarchical => {
-                    self.metrics
-                        .hint_hierarchical
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-                TopologyHint::Hybrid => {
-                    self.metrics.hint_hybrid.fetch_add(1, Ordering::Relaxed);
-                }
+        match hint {
+            TopologyHint::Parallel => {
+                self.metrics.hint_parallel.fetch_add(1, Ordering::Relaxed);
             }
-
-            AdvisorVerdict {
-                class,
-                hint,
-                exploit,
-                fallback,
+            TopologyHint::Sequential => {
+                self.metrics.hint_sequential.fetch_add(1, Ordering::Relaxed);
+            }
+            TopologyHint::Hierarchical => {
+                self.metrics
+                    .hint_hierarchical
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            TopologyHint::Hybrid => {
+                self.metrics.hint_hybrid.fetch_add(1, Ordering::Relaxed);
             }
         }
-        .instrument(tracing::info_span!(
-            "orchestration.adaptorch.recommend",
-            goal_len = goal.len(),
-        ))
-        .await
+
+        AdvisorVerdict {
+            class,
+            hint,
+            exploit,
+            fallback,
+        }
     }
 
     /// Record the binary outcome of a plan guided by `(class, hint)`.

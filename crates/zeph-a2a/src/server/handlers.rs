@@ -104,6 +104,7 @@ fn error_response(
 /// Completed tasks and their message content are not written to a persistent audit log.
 /// Only `tracing::debug` is emitted per request. For structured audit trails, a `SQLite`
 /// append-only log should be added here. Tracked as a known gap — see architecture doc.
+#[tracing::instrument(name = "a2a.jsonrpc", skip_all, fields(method = %raw.method, authenticated = %identity.authenticated))]
 pub async fn jsonrpc_handler(
     State(state): State<AppState>,
     Extension(identity): Extension<AuthIdentity>,
@@ -130,6 +131,7 @@ pub async fn jsonrpc_handler(
     Json(response)
 }
 
+#[tracing::instrument(name = "a2a.handle_send_message", skip_all)]
 async fn handle_send_message(
     state: AppState,
     id: serde_json::Value,
@@ -217,6 +219,7 @@ async fn handle_send_message(
     }
 }
 
+#[tracing::instrument(name = "a2a.handle_get_task", skip_all)]
 async fn handle_get_task(
     state: AppState,
     id: serde_json::Value,
@@ -240,6 +243,7 @@ async fn handle_get_task(
     }
 }
 
+#[tracing::instrument(name = "a2a.handle_cancel_task", skip_all)]
 async fn handle_cancel_task(
     state: AppState,
     id: serde_json::Value,
@@ -338,6 +342,7 @@ fn status_event(
     sse_rpc_event(&event)
 }
 
+#[tracing::instrument(name = "a2a.stream", skip_all, fields(authenticated = %identity.authenticated))]
 pub async fn stream_handler(
     State(state): State<AppState>,
     Extension(identity): Extension<AuthIdentity>,

@@ -752,6 +752,7 @@ impl ContextService {
     /// must apply via `inject_code_context`, plus the count of messages freshly inserted at
     /// indices `1..1+inserted_count` (used by the fidelity scorer as the exempt range — INV-10).
     #[allow(clippy::too_many_lines)] // sequential message injection: order matters, cannot split
+    #[tracing::instrument(name = "agent_context.service.apply_prepared_context", skip_all)]
     async fn apply_prepared_context(
         &self,
         window: &mut MessageWindowView<'_>,
