@@ -50,6 +50,7 @@ const COLLECTION_NAME: &str = "zeph_conversations";
 /// # Errors
 ///
 /// Returns an error if Qdrant cannot be reached or collection creation fails.
+#[tracing::instrument(name = "memory.embed_store.ensure_collection", skip_all)]
 pub async fn ensure_qdrant_collection(
     ops: &QdrantOps,
     collection: &str,
@@ -146,6 +147,7 @@ impl EmbeddingStore {
     }
 
     /// Return `true` if the backing store is reachable and healthy.
+    #[tracing::instrument(name = "memory.embed_store.health_check", skip_all)]
     pub async fn health_check(&self) -> bool {
         self.ops.health_check().await.unwrap_or(false)
     }
@@ -157,6 +159,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if Qdrant cannot be reached or collection creation fails.
+    #[tracing::instrument(name = "memory.embed_store.ensure_collection", skip_all)]
     pub async fn ensure_collection(&self, vector_size: u64) -> Result<(), MemoryError> {
         self.ops
             .ensure_collection(&self.collection, vector_size)
@@ -178,6 +181,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
+    #[tracing::instrument(name = "memory.embed_store.store_with_tool_context", skip_all)]
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store_with_tool_context(
         &self,
@@ -252,6 +256,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
+    #[tracing::instrument(name = "memory.embed_store.store", skip_all)]
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store(
         &self,
@@ -319,6 +324,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert or `SQLite` insert fails.
+    #[tracing::instrument(name = "memory.embed_store.store_with_category", skip_all)]
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn store_with_category(
         &self,
@@ -382,6 +388,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant search fails.
+    #[tracing::instrument(name = "memory.embed_store.search", skip_all)]
     pub async fn search(
         &self,
         query_vector: &[f32],
@@ -476,6 +483,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the store backend cannot be reached.
+    #[tracing::instrument(name = "memory.embed_store.collection_exists", skip_all)]
     pub async fn collection_exists(&self, name: &str) -> Result<bool, MemoryError> {
         self.ops.collection_exists(name).await.map_err(Into::into)
     }
@@ -485,6 +493,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if Qdrant cannot be reached or collection creation fails.
+    #[tracing::instrument(name = "memory.embed_store.ensure_named_collection", skip_all)]
     pub async fn ensure_named_collection(
         &self,
         name: &str,
@@ -501,6 +510,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert fails.
+    #[tracing::instrument(name = "memory.embed_store.store_to_collection", skip_all)]
     pub async fn store_to_collection(
         &self,
         collection: &str,
@@ -526,6 +536,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant upsert fails.
+    #[tracing::instrument(name = "memory.embed_store.upsert_to_collection", skip_all)]
     pub async fn upsert_to_collection(
         &self,
         collection: &str,
@@ -549,6 +560,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the Qdrant search fails.
+    #[tracing::instrument(name = "memory.embed_store.search_collection", skip_all)]
     pub async fn search_collection(
         &self,
         collection: &str,
@@ -576,6 +588,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the underlying scroll operation fails.
+    #[tracing::instrument(name = "memory.embed_store.scroll_all_entity_ids", skip_all)]
     pub async fn scroll_all_entity_ids(
         &self,
         collection: &str,
@@ -606,6 +619,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the underlying delete operation fails.
+    #[tracing::instrument(name = "memory.embed_store.delete_from_collection", skip_all)]
     pub async fn delete_from_collection(
         &self,
         collection: &str,
@@ -627,6 +641,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the underlying store returns a non-`Unsupported` error.
+    #[tracing::instrument(name = "memory.embed_store.get_vectors_from_collection", skip_all)]
     pub async fn get_vectors_from_collection(
         &self,
         collection: &str,
@@ -649,6 +664,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
+    #[tracing::instrument(name = "memory.embed_store.get_vectors", skip_all)]
     pub async fn get_vectors(
         &self,
         ids: &[MessageId],
@@ -702,6 +718,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` metadata query or vector store retrieval fails.
+    #[tracing::instrument(name = "memory.embed_store.get_vectors_for_messages", skip_all)]
     pub async fn get_vectors_for_messages(
         &self,
         ids: &[MessageId],
@@ -769,6 +786,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns [`MemoryError`] if the `SQLite` query or the vector store delete fails.
+    #[tracing::instrument(name = "memory.embed_store.delete_by_message_ids", skip_all)]
     pub async fn delete_by_message_ids(&self, ids: &[MessageId]) -> Result<usize, MemoryError> {
         if ids.is_empty() {
             return Ok(0);
@@ -799,6 +817,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
+    #[tracing::instrument(name = "memory.embed_store.has_embedding", skip_all)]
     pub async fn has_embedding(&self, message_id: MessageId) -> Result<bool, MemoryError> {
         let row: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM embeddings_metadata WHERE message_id = ?"
@@ -819,6 +838,7 @@ impl EmbeddingStore {
     /// # Errors
     ///
     /// Returns an error if the `SQLite` query fails.
+    #[tracing::instrument(name = "memory.embed_store.is_epoch_current", skip_all)]
     pub async fn is_epoch_current(
         &self,
         entity_name: &str,

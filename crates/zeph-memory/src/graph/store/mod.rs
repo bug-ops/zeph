@@ -97,6 +97,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.upsert_entity", skip_all)]
     pub async fn upsert_entity(
         &self,
         surface_name: &str,
@@ -132,6 +133,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.find_entity", skip_all)]
     pub async fn find_entity(
         &self,
         canonical_name: &str,
@@ -155,6 +157,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.find_entity_by_id", skip_all)]
     pub async fn find_entity_by_id(&self, entity_id: i64) -> Result<Option<Entity>, MemoryError> {
         let row: Option<EntityRow> = zeph_db::query_as(
             sql!("SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
@@ -172,6 +175,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.set_entity_qdrant_point_id", skip_all)]
     pub async fn set_entity_qdrant_point_id(
         &self,
         entity_id: i64,
@@ -207,6 +211,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.find_entities_fuzzy", skip_all)]
     pub async fn find_entities_fuzzy(
         &self,
         query: &str,
@@ -279,6 +284,7 @@ impl GraphStore {
     ///
     /// Returns an error if the PRAGMA execution fails.
     #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    #[tracing::instrument(name = "memory.graph.store.checkpoint_wal", skip_all)]
     pub async fn checkpoint_wal(&self) -> Result<(), MemoryError> {
         zeph_db::query("PRAGMA wal_checkpoint(PASSIVE)")
             .execute(&self.pool)
@@ -293,6 +299,7 @@ impl GraphStore {
     /// Never returns an error.
     #[cfg(feature = "postgres")]
     #[allow(clippy::unused_async)]
+    #[tracing::instrument(name = "memory.graph.store.checkpoint_wal", skip_all)]
     pub async fn checkpoint_wal(&self) -> Result<(), MemoryError> {
         Ok(())
     }
@@ -317,6 +324,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.add_alias", skip_all)]
     pub async fn add_alias(&self, entity_id: i64, alias_name: &str) -> Result<(), MemoryError> {
         let insert_alias_sql = format!(
             "{} INTO graph_entity_aliases (entity_id, alias_name) VALUES (?, ?){}",
@@ -338,6 +346,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.find_entity_by_alias", skip_all)]
     pub async fn find_entity_by_alias(
         &self,
         alias_name: &str,
@@ -368,6 +377,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.aliases_for_entity", skip_all)]
     pub async fn aliases_for_entity(
         &self,
         entity_id: i64,
@@ -389,6 +399,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails or `entity_type` parsing fails.
+    #[tracing::instrument(name = "memory.graph.store.all_entities", skip_all)]
     pub async fn all_entities(&self) -> Result<Vec<Entity>, MemoryError> {
         use futures::TryStreamExt as _;
         self.all_entities_stream().try_collect().await
@@ -399,6 +410,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.entity_count", skip_all)]
     pub async fn entity_count(&self) -> Result<i64, MemoryError> {
         let count: i64 = zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM graph_entities"))
             .fetch_one(&self.pool)
@@ -424,6 +436,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(name = "memory.graph.store.insert_edge", skip_all)]
     pub async fn insert_edge(
         &self,
         source_entity_id: i64,
@@ -459,7 +472,9 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[allow(clippy::too_many_arguments)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[tracing::instrument(name = "memory.graph.store.insert_edge_typed", skip_all)]
     pub async fn insert_edge_typed(
         &self,
         source_entity_id: i64,
@@ -558,6 +573,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database update fails.
+    #[tracing::instrument(name = "memory.graph.store.invalidate_edge", skip_all)]
     pub async fn invalidate_edge(&self, edge_id: i64) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "UPDATE graph_edges SET valid_to = CURRENT_TIMESTAMP, expired_at = CURRENT_TIMESTAMP
@@ -576,6 +592,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database update fails.
+    #[tracing::instrument(
+        name = "memory.graph.store.invalidate_edge_with_supersession",
+        skip_all
+    )]
     pub async fn invalidate_edge_with_supersession(
         &self,
         old_edge_id: i64,
@@ -611,6 +631,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.edges_for_entities", skip_all, fields(count = entity_ids.len()))]
     pub async fn edges_for_entities(
         &self,
         entity_ids: &[i64],
@@ -638,6 +659,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
+    #[tracing::instrument(name = "memory.graph.store.query_batch_edges", skip_all)]
     async fn query_batch_edges(
         &self,
         entity_ids: &[i64],
@@ -717,6 +739,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.edges_for_entity", skip_all)]
     pub async fn edges_for_entity(&self, entity_id: i64) -> Result<Vec<Edge>, MemoryError> {
         let origin_filter = if self.recall_include_imported {
             ""
@@ -746,6 +769,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails or if `limit` overflows `i64`.
     // Raw access — does not apply recall_include_imported filter; for filtered recall use query_batch_edges / edges_for_entity.
+    #[tracing::instrument(name = "memory.graph.store.edge_history_for_entity", skip_all)]
     pub async fn edge_history_for_entity(
         &self,
         entity_id: i64,
@@ -775,6 +799,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     // Raw access — does not apply recall_include_imported filter; for filtered recall use query_batch_edges / edges_for_entity.
+    #[tracing::instrument(name = "memory.graph.store.edges_between", skip_all)]
     pub async fn edges_between(
         &self,
         entity_a: i64,
@@ -804,6 +829,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     // Raw access — does not apply recall_include_imported filter; for filtered recall use query_batch_edges / edges_for_entity.
+    #[tracing::instrument(name = "memory.graph.store.edges_exact", skip_all)]
     pub async fn edges_exact(
         &self,
         source_entity_id: i64,
@@ -830,6 +856,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.active_edge_count", skip_all)]
     pub async fn active_edge_count(&self) -> Result<i64, MemoryError> {
         let count: i64 = zeph_db::query_scalar(sql!(
             "SELECT COUNT(*) FROM graph_edges WHERE valid_to IS NULL"
@@ -844,6 +871,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.edge_type_distribution", skip_all)]
     pub async fn edge_type_distribution(&self) -> Result<Vec<(String, i64)>, MemoryError> {
         let rows: Vec<(String, i64)> = zeph_db::query_as(
             sql!("SELECT edge_type, COUNT(*) FROM graph_edges WHERE valid_to IS NULL GROUP BY edge_type ORDER BY edge_type"),
@@ -864,6 +892,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails or JSON serialization fails.
+    #[tracing::instrument(name = "memory.graph.store.upsert_community", skip_all)]
     pub async fn upsert_community(
         &self,
         name: &str,
@@ -897,6 +926,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.community_fingerprints", skip_all)]
     pub async fn community_fingerprints(&self) -> Result<HashMap<String, i64>, MemoryError> {
         let rows: Vec<(String, i64)> = zeph_db::query_as(sql!(
             "SELECT fingerprint, id FROM graph_communities WHERE fingerprint IS NOT NULL"
@@ -911,6 +941,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.delete_community_by_id", skip_all)]
     pub async fn delete_community_by_id(&self, id: i64) -> Result<(), MemoryError> {
         zeph_db::query(sql!("DELETE FROM graph_communities WHERE id = ?"))
             .bind(id)
@@ -927,6 +958,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.clear_community_fingerprint", skip_all)]
     pub async fn clear_community_fingerprint(&self, id: i64) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "UPDATE graph_communities SET fingerprint = NULL WHERE id = ?"
@@ -945,6 +977,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails or JSON parsing fails.
+    #[tracing::instrument(name = "memory.graph.store.community_for_entity", skip_all)]
     pub async fn community_for_entity(
         &self,
         entity_id: i64,
@@ -981,6 +1014,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails or JSON parsing fails.
+    #[tracing::instrument(name = "memory.graph.store.all_communities", skip_all)]
     pub async fn all_communities(&self) -> Result<Vec<Community>, MemoryError> {
         let rows: Vec<CommunityRow> = zeph_db::query_as(sql!(
             "SELECT id, name, summary, entity_ids, fingerprint, created_at, updated_at
@@ -1012,6 +1046,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.community_count", skip_all)]
     pub async fn community_count(&self) -> Result<i64, MemoryError> {
         let count: i64 = zeph_db::query_scalar(sql!("SELECT COUNT(*) FROM graph_communities"))
             .fetch_one(&self.pool)
@@ -1026,6 +1061,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.get_metadata", skip_all)]
     pub async fn get_metadata(&self, key: &str) -> Result<Option<String>, MemoryError> {
         let val: Option<String> =
             zeph_db::query_scalar(sql!("SELECT value FROM graph_metadata WHERE key = ?"))
@@ -1040,6 +1076,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.set_metadata", skip_all)]
     pub async fn set_metadata(&self, key: &str, value: &str) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "INSERT INTO graph_metadata (key, value) VALUES (?, ?)
@@ -1059,6 +1096,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.extraction_count", skip_all)]
     pub async fn extraction_count(&self) -> Result<i64, MemoryError> {
         let val = self.get_metadata("extraction_count").await?;
         Ok(val.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0))
@@ -1095,6 +1133,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.edges_after_id", skip_all)]
     pub async fn edges_after_id(
         &self,
         after_id: i64,
@@ -1121,6 +1160,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails or JSON parsing fails.
+    #[tracing::instrument(name = "memory.graph.store.find_community_by_id", skip_all)]
     pub async fn find_community_by_id(&self, id: i64) -> Result<Option<Community>, MemoryError> {
         let row: Option<CommunityRow> = zeph_db::query_as(sql!(
             "SELECT id, name, summary, entity_ids, fingerprint, created_at, updated_at
@@ -1153,6 +1193,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.delete_all_communities", skip_all)]
     pub async fn delete_all_communities(&self) -> Result<(), MemoryError> {
         zeph_db::query(sql!("DELETE FROM graph_communities"))
             .execute(&self.pool)
@@ -1173,6 +1214,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.find_entities_ranked", skip_all)]
     pub async fn find_entities_ranked(
         &self,
         query: &str,
@@ -1215,6 +1257,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.entity_structural_scores", skip_all, fields(count = entity_ids.len()))]
     pub async fn entity_structural_scores(
         &self,
         entity_ids: &[i64],
@@ -1302,6 +1345,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
+    #[tracing::instrument(name = "memory.graph.store.entity_community_ids", skip_all, fields(count = entity_ids.len()))]
     pub async fn entity_community_ids(
         &self,
         entity_ids: &[i64],
@@ -1337,6 +1381,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.record_edge_retrieval", skip_all, fields(count = edge_ids.len()))]
     pub async fn record_edge_retrieval(&self, edge_ids: &[i64]) -> Result<(), MemoryError> {
         const MAX_BATCH: usize = 490;
         let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
@@ -1410,6 +1455,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.entity_ids_in", skip_all, fields(count = ids.len()))]
     pub async fn entity_ids_in(&self, ids: &[i64]) -> Result<Vec<i64>, MemoryError> {
         const MAX_BATCH: usize = 490;
         if ids.is_empty() {
@@ -1439,6 +1485,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.qdrant_point_ids_for_entities", skip_all, fields(count = entity_ids.len()))]
     pub async fn qdrant_point_ids_for_entities(
         &self,
         entity_ids: &[i64],
@@ -1477,6 +1524,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.decay_edge_retrieval_counts", skip_all)]
     pub async fn decay_edge_retrieval_counts(
         &self,
         decay_lambda: f64,
@@ -1504,6 +1552,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.delete_expired_edges", skip_all)]
     pub async fn delete_expired_edges(&self, retention_days: u32) -> Result<usize, MemoryError> {
         let days = i64::from(retention_days);
         let result = zeph_db::query(sql!(
@@ -1522,6 +1571,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.delete_orphan_entities", skip_all)]
     pub async fn delete_orphan_entities(&self, retention_days: u32) -> Result<usize, MemoryError> {
         let days = i64::from(retention_days);
         let result = zeph_db::query(sql!(
@@ -1553,6 +1603,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns [`MemoryError::Sqlx`] on database failure.
+    #[tracing::instrument(name = "memory.graph.store.delete_batch", skip_all)]
     pub async fn delete_batch(&self, batch_id: &str) -> Result<(u64, u64), MemoryError> {
         let edge_result = zeph_db::query(sql!("DELETE FROM graph_edges WHERE import_batch_id = ?"))
             .bind(batch_id)
@@ -1587,6 +1638,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns [`MemoryError::Sqlx`] on database failure.
+    #[tracing::instrument(name = "memory.graph.store.delete_batch_in_tx", skip_all)]
     pub async fn delete_batch_in_tx(
         &self,
         batch_id: &str,
@@ -1624,6 +1676,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.cap_entities", skip_all)]
     pub async fn cap_entities(&self, max_entities: usize) -> Result<usize, MemoryError> {
         let current = self.entity_count().await?;
         let max = i64::try_from(max_entities)?;
@@ -1666,6 +1719,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.edges_at_timestamp", skip_all)]
     pub async fn edges_at_timestamp(
         &self,
         entity_id: i64,
@@ -1712,6 +1766,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.edge_history", skip_all)]
     pub async fn edge_history(
         &self,
         source_entity_id: i64,
@@ -1780,6 +1835,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
+    #[tracing::instrument(name = "memory.graph.store.bfs", skip_all)]
     pub async fn bfs(
         &self,
         start_entity_id: i64,
@@ -1800,6 +1856,8 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "memory.graph.store.bfs_with_depth", skip_all)]
     pub async fn bfs_with_depth(
         &self,
         start_entity_id: i64,
@@ -1818,6 +1876,8 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "memory.graph.store.bfs_at_timestamp", skip_all)]
     pub async fn bfs_at_timestamp(
         &self,
         start_entity_id: i64,
@@ -1843,6 +1903,8 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "memory.graph.store.bfs_typed", skip_all)]
     pub async fn bfs_typed(
         &self,
         start_entity_id: i64,
@@ -1863,6 +1925,8 @@ impl GraphStore {
     ///
     /// All IDs used in dynamic SQL come from our own database — no user input reaches the
     /// format string, so there is no SQL injection risk.
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "memory.graph.store.bfs_core", skip_all)]
     async fn bfs_core(
         &self,
         start_entity_id: i64,
@@ -1944,6 +2008,8 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "memory.graph.store.bfs_core_typed", skip_all)]
     async fn bfs_core_typed(
         &self,
         start_entity_id: i64,
@@ -2040,6 +2106,8 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if any database query fails.
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "memory.graph.store.bfs_fetch_results_typed", skip_all)]
     async fn bfs_fetch_results_typed(
         &self,
         depth_map: std::collections::HashMap<i64, u32>,
@@ -2124,6 +2192,8 @@ impl GraphStore {
     }
 
     /// Fetch entities and edges for a completed BFS depth map.
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(name = "memory.graph.store.bfs_fetch_results", skip_all)]
     async fn bfs_fetch_results(
         &self,
         depth_map: std::collections::HashMap<i64, u32>,
@@ -2212,6 +2282,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.find_entity_by_name", skip_all)]
     pub async fn find_entity_by_name(&self, name: &str) -> Result<Vec<Entity>, MemoryError> {
         let find_by_name_sql = format!(
             "SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id \
@@ -2240,6 +2311,10 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(
+        name = "memory.graph.store.unprocessed_messages_for_backfill",
+        skip_all
+    )]
     pub async fn unprocessed_messages_for_backfill(
         &self,
         limit: usize,
@@ -2265,6 +2340,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.unprocessed_message_count", skip_all)]
     pub async fn unprocessed_message_count(&self) -> Result<i64, MemoryError> {
         let count: i64 = zeph_db::query_scalar(sql!(
             "SELECT COUNT(*) FROM messages WHERE graph_processed = 0"
@@ -2279,6 +2355,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.mark_messages_graph_processed", skip_all, fields(count = ids.len()))]
     pub async fn mark_messages_graph_processed(
         &self,
         ids: &[crate::types::MessageId],
@@ -2459,6 +2536,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.ensure_episode", skip_all)]
     pub async fn ensure_episode(&self, conversation_id: i64) -> Result<i64, MemoryError> {
         // Ensure the conversation row exists before inserting into graph_episodes,
         // which has a FK referencing conversations(id). On a fresh database the agent
@@ -2490,6 +2568,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.link_entity_to_episode", skip_all)]
     pub async fn link_entity_to_episode(
         &self,
         episode_id: i64,
@@ -2512,6 +2591,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.episodes_for_entity", skip_all)]
     pub async fn episodes_for_entity(
         &self,
         entity_id: i64,
@@ -2607,6 +2687,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database transaction fails.
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(name = "memory.graph.store.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede_with_turn_index_and_metrics(
         &self,
         source_entity_id: i64,
@@ -2711,7 +2792,9 @@ impl GraphStore {
     /// # Errors
     ///
     /// Propagates errors from [`Self::insert_or_supersede_with_metrics`].
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[allow(clippy::too_many_arguments)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[tracing::instrument(name = "memory.graph.store.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede(
         &self,
         source_entity_id: i64,
@@ -2750,7 +2833,9 @@ impl GraphStore {
     /// # Errors
     ///
     /// Propagates errors from [`Self::insert_or_supersede_with_metrics`].
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[allow(clippy::too_many_arguments)]
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[tracing::instrument(name = "memory.graph.store.insert_or_supersede_conflict", skip_all)]
     pub async fn insert_or_supersede_with_conflict_detection(
         &self,
         source_entity_id: i64,
@@ -2873,10 +2958,12 @@ impl GraphStore {
     ///
     /// Returns [`MemoryError::SupersedeCycle`] when the CTE detects a cycle (depth exceeds cap
     /// but the chain has not terminated), or a database error on query failure.
+    #[tracing::instrument(name = "memory.graph.store.check_supersede_depth", skip_all)]
     pub async fn check_supersede_depth(&self, head_id: i64) -> Result<usize, MemoryError> {
         Self::check_supersede_depth_with_pool(&self.pool, head_id).await
     }
 
+    #[tracing::instrument(name = "memory.graph.store.check_supersede_depth_pool", skip_all)]
     async fn check_supersede_depth_with_pool(
         pool: &zeph_db::DbPool,
         head_id: i64,
@@ -2918,6 +3005,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns [`crate::error::MemoryError`] if the SQL query fails.
+    #[tracing::instrument(name = "memory.graph.store.source_message_ids_for_edges", skip_all, fields(count = edge_ids.len()))]
     pub async fn source_message_ids_for_edges(
         &self,
         edge_ids: &[i64],
@@ -2945,6 +3033,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns [`crate::error::MemoryError`] if the SQL query fails.
+    #[tracing::instrument(name = "memory.graph.store.source_entity_id_for_edge", skip_all)]
     pub async fn source_entity_id_for_edge(
         &self,
         edge_id: i64,
@@ -2966,6 +3055,7 @@ impl GraphStore {
     /// # Errors
     ///
     /// Returns [`crate::error::MemoryError`] if the SQL query or entity name lookup fails.
+    #[tracing::instrument(name = "memory.graph.store.bfs_edges_at_depth", skip_all)]
     pub async fn bfs_edges_at_depth(
         &self,
         entity_id: i64,
@@ -3071,6 +3161,7 @@ type Tx<'a> = zeph_db::DbTransaction<'a>;
 /// Look up a byte-identical active edge (FR-015 reassertion path).
 ///
 /// Returns the existing edge ID when all columns match exactly, or `None` otherwise.
+#[tracing::instrument(name = "memory.graph.store.find_identical_active_edge", skip_all)]
 async fn find_identical_active_edge(
     tx: &mut Tx<'_>,
     src: i64,
@@ -3104,6 +3195,7 @@ async fn find_identical_active_edge(
 ///
 /// This ensures SYNAPSE synaptic variables are updated on every reassertion, including the
 /// APEX append-only path where identical edges are not superseded but re-confirmed.
+#[tracing::instrument(name = "memory.graph.store.record_reassertion", skip_all)]
 async fn record_reassertion(
     tx: &mut Tx<'_>,
     head_id: i64,
@@ -3157,6 +3249,7 @@ async fn record_reassertion(
 }
 
 /// Find the current active head edge for `(src, canonical_relation, edge_type)`.
+#[tracing::instrument(name = "memory.graph.store.find_prior_active_head", skip_all)]
 async fn find_prior_active_head(
     tx: &mut Tx<'_>,
     src: i64,
@@ -3183,6 +3276,7 @@ async fn find_prior_active_head(
 /// Verify the supersede chain depth for `head_id` does not exceed [`SUPERSEDE_DEPTH_CAP`].
 ///
 /// Returns `Err(MemoryError::SupersedeDepthExceeded)` when the cap would be exceeded.
+#[tracing::instrument(name = "memory.graph.store.check_supersede_depth_in_tx", skip_all)]
 async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryError> {
     let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
     let depth: Option<i64> = sqlx::query_scalar(
@@ -3209,6 +3303,7 @@ async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<()
 
 /// Insert a new edge row and return its generated ID.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(name = "memory.graph.store.insert_new_edge", skip_all)]
 async fn insert_new_edge(
     tx: &mut Tx<'_>,
     src: i64,
@@ -3255,6 +3350,7 @@ async fn insert_new_edge(
 /// Deactivate the prior head by setting `valid_to` and `expired_at`, leaving `superseded_by`
 /// unset. Must be called **before** inserting the new row to avoid violating
 /// `uq_graph_edges_active_head` — the unique index is enforced at statement level, not at commit.
+#[tracing::instrument(name = "memory.graph.store.expire_prior_head", skip_all)]
 async fn expire_prior_head(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryError> {
     zeph_db::query(sql!(
         "UPDATE graph_edges
@@ -3270,6 +3366,7 @@ async fn expire_prior_head(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryEr
 
 /// Back-fill `superseded_by` on the already-expired prior head after the new row has been
 /// inserted and its ID is known.
+#[tracing::instrument(name = "memory.graph.store.set_superseded_by", skip_all)]
 async fn set_superseded_by(tx: &mut Tx<'_>, head_id: i64, new_id: i64) -> Result<(), MemoryError> {
     zeph_db::query(sql!(
         "UPDATE graph_edges SET superseded_by = ? WHERE id = ?"

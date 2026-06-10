@@ -248,6 +248,7 @@ impl InMemoryFacade {
 }
 
 impl MemoryFacade for InMemoryFacade {
+    #[tracing::instrument(name = "memory.facade.in_memory.remember", skip_all)]
     async fn remember(&self, entry: MemoryEntry) -> Result<MessageId, MemoryError> {
         let mut id_guard = self.lock_next_id()?;
         *id_guard += 1;
@@ -257,6 +258,7 @@ impl MemoryFacade for InMemoryFacade {
         Ok(MessageId(id))
     }
 
+    #[tracing::instrument(name = "memory.facade.in_memory.recall", skip_all)]
     async fn recall(&self, query: &str, limit: usize) -> Result<Vec<MemoryMatch>, MemoryError> {
         let entries = self.lock_entries()?;
         let query_lower = query.to_lowercase();
@@ -275,6 +277,7 @@ impl MemoryFacade for InMemoryFacade {
         Ok(matches)
     }
 
+    #[tracing::instrument(name = "memory.facade.in_memory.summarize", skip_all)]
     async fn summarize(&self, conv_id: ConversationId) -> Result<String, MemoryError> {
         let entries = self.lock_entries()?;
         let texts: Vec<&str> = entries
@@ -285,6 +288,7 @@ impl MemoryFacade for InMemoryFacade {
         Ok(texts.join("\n"))
     }
 
+    #[tracing::instrument(name = "memory.facade.in_memory.compact", skip_all)]
     async fn compact(&self, ctx: &CompactionContext) -> Result<CompactionResult, MemoryError> {
         let mut entries = self.lock_entries()?;
         let ids_to_remove: Vec<i64> = entries
@@ -310,6 +314,7 @@ impl MemoryFacade for InMemoryFacade {
 // ── SemanticMemory impl ───────────────────────────────────────────────────────
 
 impl MemoryFacade for crate::semantic::SemanticMemory {
+    #[tracing::instrument(name = "memory.facade.remember", skip_all)]
     async fn remember(&self, entry: MemoryEntry) -> Result<MessageId, MemoryError> {
         let parts_json = serde_json::to_string(&entry.parts).map_err(MemoryError::Json)?;
         let (id_opt, _embedded) = self
@@ -326,6 +331,7 @@ impl MemoryFacade for crate::semantic::SemanticMemory {
         })
     }
 
+    #[tracing::instrument(name = "memory.facade.recall", skip_all)]
     async fn recall(&self, query: &str, limit: usize) -> Result<Vec<MemoryMatch>, MemoryError> {
         let recalled = self.recall(query, limit, None).await?;
         Ok(recalled
@@ -338,6 +344,7 @@ impl MemoryFacade for crate::semantic::SemanticMemory {
             .collect())
     }
 
+    #[tracing::instrument(name = "memory.facade.summarize", skip_all)]
     async fn summarize(&self, conv_id: ConversationId) -> Result<String, MemoryError> {
         let summaries = self.load_summaries(conv_id).await?;
         Ok(summaries
@@ -347,6 +354,7 @@ impl MemoryFacade for crate::semantic::SemanticMemory {
             .join("\n"))
     }
 
+    #[tracing::instrument(name = "memory.facade.compact", skip_all)]
     async fn compact(&self, ctx: &CompactionContext) -> Result<CompactionResult, MemoryError> {
         let before = self.message_count(ctx.conversation_id).await?;
         let messages_compacted = usize::try_from(before).unwrap_or(0);
