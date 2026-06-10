@@ -626,6 +626,76 @@ mod age_tests {
         assert_eq!(keys, vec!["alpha", "bar", "zoo"]);
     }
 
+    // --- async load/save tests (#5134) ---
+
+    /// load_async offloads I/O and returns the same vault as the sync load.
+    #[tokio::test]
+    async fn age_vault_load_async_roundtrip() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"ASYNC_KEY": "async_val"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let vault = AgeVaultProvider::load_async(&key_path, &vault_path)
+            .await
+            .unwrap();
+        assert_eq!(vault.get("ASYNC_KEY"), Some("async_val"));
+    }
+
+    /// save_async persists changes that can be read back via load_async.
+    #[tokio::test]
+    async fn age_vault_save_async_roundtrip() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"ORIG": "original"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let mut vault = AgeVaultProvider::load_async(&key_path, &vault_path)
+            .await
+            .unwrap();
+        vault.set_secret_mut("ADDED".to_owned(), "added_val".to_owned());
+        vault.save_async().await.unwrap();
+
+        let reloaded = AgeVaultProvider::load_async(&key_path, &vault_path)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.get("ORIG"), Some("original"));
+        assert_eq!(reloaded.get("ADDED"), Some("added_val"));
+    }
+
+    /// load_async propagates the error when the key file is missing.
+    #[tokio::test]
+    async fn age_vault_load_async_missing_key_errors() {
+        use std::path::Path;
+        let err = AgeVaultProvider::load_async(
+            Path::new("/nonexistent/key.txt"),
+            Path::new("/nonexistent/vault.age"),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AgeVaultError::KeyRead(_)));
+    }
+
+    /// save_async leaves no .tmp file after a successful write.
+    #[tokio::test]
+    async fn age_vault_save_async_leaves_no_tmp() {
+        let identity = age::x25519::Identity::generate();
+        let json = serde_json::json!({"K": "v"});
+        let encrypted = encrypt_json(&identity, &json);
+        let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
+
+        let vault = AgeVaultProvider::load_async(&key_path, &vault_path)
+            .await
+            .unwrap();
+        vault.save_async().await.unwrap();
+
+        let tmp_path = vault_path.with_added_extension("tmp");
+        assert!(
+            !tmp_path.exists(),
+            ".age.tmp must not exist after save_async()"
+        );
+    }
+
     #[test]
     fn age_vault_into_iter_consumes_all_entries() {
         // Regression: drain() was replaced with into_iter(). Verify all entries

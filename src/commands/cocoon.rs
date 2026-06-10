@@ -263,8 +263,7 @@ async fn check_vault_key(
             };
             match AgeVaultProvider::new(Path::new(key), Path::new(path)) {
                 Ok(p) => {
-                    use std::sync::Arc;
-                    use tokio::sync::RwLock;
+                    use std::sync::{Arc, RwLock};
                     Box::new(ArcAgeVaultProvider(Arc::new(RwLock::new(p))))
                 }
                 Err(e) => {

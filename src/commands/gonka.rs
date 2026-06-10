@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
 use zeph_config::ProviderKind;

@@ -25,7 +25,9 @@ pub use skills::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::{RwLock, watch};
+use std::sync::RwLock;
+
+use tokio::sync::watch;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::GraphStore;
@@ -177,7 +179,8 @@ impl AppBuilder {
                 let path = vault_args.vault_path.ok_or_else(|| {
                     BootstrapError::Provider("--vault-path required for age backend".into())
                 })?;
-                let provider = AgeVaultProvider::new(Path::new(&key), Path::new(&path))
+                let provider = AgeVaultProvider::load_async(Path::new(&key), Path::new(&path))
+                    .await
                     .map_err(BootstrapError::VaultInit)?;
                 let arc = Arc::new(RwLock::new(provider));
                 let boxed: Box<dyn VaultProvider> =

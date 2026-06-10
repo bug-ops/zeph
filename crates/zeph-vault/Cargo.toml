@@ -22,6 +22,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
+tracing.workspace = true
 zeph-common.workspace = true
 zeroize = { workspace = true, features = ["derive", "serde"] }
 

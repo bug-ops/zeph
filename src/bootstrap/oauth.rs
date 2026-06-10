@@ -3,13 +3,11 @@
 
 //! OAuth credential store backed by Zeph's age vault.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use rmcp::transport::auth::{AuthError, CredentialStore, StoredCredentials};
-use tokio::sync::RwLock;
 
 use zeph_core::vault::AgeVaultProvider;
-use zeph_core::vault::VaultProvider as _;
 
 /// `CredentialStore` backed by Zeph's age vault.
 ///
@@ -46,11 +44,12 @@ impl VaultCredentialStore {
 #[async_trait::async_trait]
 impl CredentialStore for VaultCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        let guard = self.vault.read().await;
-        let value = guard
-            .get_secret(&self.vault_key)
-            .await
-            .map_err(|e| AuthError::InternalError(format!("vault read: {e}")))?;
+        let value = self
+            .vault
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.vault_key)
+            .map(str::to_owned);
         match value {
             None => Ok(None),
             Some(json) => {
@@ -67,7 +66,9 @@ impl CredentialStore for VaultCredentialStore {
         let vault = Arc::clone(&self.vault);
         let key = self.vault_key.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = vault.blocking_write();
+            let mut guard = vault
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.set_secret_mut(key, json);
             guard
                 .save()
@@ -81,7 +82,9 @@ impl CredentialStore for VaultCredentialStore {
         let vault = Arc::clone(&self.vault);
         let key = self.vault_key.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = vault.blocking_write();
+            let mut guard = vault
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.remove_secret_mut(&key);
             guard
                 .save()

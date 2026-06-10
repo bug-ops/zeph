@@ -394,7 +394,7 @@ pub(crate) async fn build_tool_setup(
     with_tool_events: bool,
     bare: bool,
     runtime_ctx: RuntimeContext,
-    age_vault: Option<&Arc<tokio::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
+    age_vault: Option<&Arc<std::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     pool: Option<&zeph_db::DbPool>,
     provider: &zeph_llm::any::AnyProvider,

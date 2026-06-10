@@ -158,6 +158,9 @@ impl AgeVaultProvider {
     /// [`save`][Self::save] can re-encrypt and persist changes without requiring callers to
     /// pass paths again.
     ///
+    /// This method performs blocking I/O on the calling thread. Use [`load_async`][Self::load_async]
+    /// when calling from an async context to avoid stalling the tokio executor.
+    ///
     /// # Errors
     ///
     /// Returns [`AgeVaultError`] on key/vault read failure, parse error, or decryption failure.
@@ -174,6 +177,7 @@ impl AgeVaultProvider {
     /// )?;
     /// # Ok::<_, zeph_vault::AgeVaultError>(())
     /// ```
+    #[tracing::instrument(name = "vault.age.load", skip_all, err)]
     pub fn load(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
         let key_str =
             Zeroizing::new(std::fs::read_to_string(key_path).map_err(AgeVaultError::KeyRead)?);
@@ -187,10 +191,48 @@ impl AgeVaultProvider {
         })
     }
 
+    /// Async variant of [`load`][Self::load] — offloads blocking I/O to a `spawn_blocking` thread.
+    ///
+    /// Use this when calling from an async context to avoid stalling the tokio executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgeVaultError`] on key/vault read failure, parse error, decryption failure, or
+    /// if the blocking task panics.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// # async fn example() -> Result<(), zeph_vault::AgeVaultError> {
+    /// let vault = AgeVaultProvider::load_async(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn load_async(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
+        let key_path = key_path.to_owned();
+        let vault_path = vault_path.to_owned();
+        tokio::task::spawn_blocking(move || Self::load(&key_path, &vault_path))
+            .await
+            .map_err(|e| {
+                AgeVaultError::Io(std::io::Error::other(format!(
+                    "spawn_blocking panicked: {e}"
+                )))
+            })?
+    }
+
     /// Serialize and re-encrypt secrets to vault file using atomic write (temp + rename).
     ///
     /// Re-reads and re-parses the key file on each call. For CLI one-shot use this is
     /// acceptable; if used in a long-lived context consider caching the parsed identity.
+    ///
+    /// This method performs blocking I/O on the calling thread. Use [`save_async`][Self::save_async]
+    /// when calling from an async context to avoid stalling the tokio executor.
     ///
     /// # Errors
     ///
@@ -210,6 +252,7 @@ impl AgeVaultProvider {
     /// vault.save()?;
     /// # Ok::<_, zeph_vault::AgeVaultError>(())
     /// ```
+    #[tracing::instrument(name = "vault.age.save", skip_all, err)]
     pub fn save(&self) -> Result<(), AgeVaultError> {
         let key_str = Zeroizing::new(
             std::fs::read_to_string(&self.key_path).map_err(AgeVaultError::KeyRead)?,
@@ -217,6 +260,49 @@ impl AgeVaultProvider {
         let identity = parse_identity(&key_str)?;
         let ciphertext = encrypt_secrets(&identity, &self.secrets)?;
         atomic_write(&self.vault_path, &ciphertext)
+    }
+
+    /// Async variant of [`save`][Self::save] — offloads blocking I/O to a `spawn_blocking` thread.
+    ///
+    /// Use this when calling from an async context to avoid stalling the tokio executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgeVaultError`] on encryption or write failure, or if the blocking task panics.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use zeph_vault::AgeVaultProvider;
+    ///
+    /// # async fn example() -> Result<(), zeph_vault::AgeVaultError> {
+    /// let mut vault = AgeVaultProvider::load(
+    ///     Path::new("/etc/zeph/vault-key.txt"),
+    ///     Path::new("/etc/zeph/secrets.age"),
+    /// )?;
+    /// vault.set_secret_mut("MY_TOKEN".into(), "tok_abc123".into());
+    /// vault.save_async().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn save_async(&self) -> Result<(), AgeVaultError> {
+        let key_path = self.key_path.clone();
+        let vault_path = self.vault_path.clone();
+        let secrets = self.secrets.clone();
+        tokio::task::spawn_blocking(move || {
+            let key_str =
+                Zeroizing::new(std::fs::read_to_string(&key_path).map_err(AgeVaultError::KeyRead)?);
+            let identity = parse_identity(&key_str)?;
+            let ciphertext = encrypt_secrets(&identity, &secrets)?;
+            atomic_write(&vault_path, &ciphertext)
+        })
+        .await
+        .map_err(|e| {
+            AgeVaultError::Io(std::io::Error::other(format!(
+                "spawn_blocking panicked: {e}"
+            )))
+        })?
     }
 
     /// Insert or update a secret in the in-memory map.
