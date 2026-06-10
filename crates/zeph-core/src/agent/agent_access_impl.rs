@@ -1031,7 +1031,42 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         &'a mut self,
         path: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async move { Ok(self.handle_image_as_string(path)) })
+        use std::path::Component;
+        use zeph_llm::provider::{ImageData, MessagePart};
+
+        let p = std::path::Path::new(path);
+        if p.is_absolute()
+            || path.starts_with('/')
+            || p.components().any(|c| c == Component::ParentDir)
+        {
+            return Box::pin(async move {
+                Ok("Invalid image path: path traversal not allowed".to_owned())
+            });
+        }
+
+        let path_owned = path.to_owned();
+        Box::pin(async move {
+            let path_for_task = path_owned.clone();
+            let read_result = tokio::task::spawn_blocking(move || std::fs::read(&path_for_task))
+                .await
+                .map_err(|e| CommandError::new(format!("spawn_blocking join error: {e}")))?;
+            let data = match read_result {
+                Ok(d) => d,
+                Err(e) => return Ok(format!("Cannot read image {path_owned}: {e}")),
+            };
+            if data.len() > crate::agent::message_queue::MAX_IMAGE_BYTES {
+                return Ok(format!(
+                    "Image {path_owned} exceeds size limit ({} MB), skipping",
+                    crate::agent::message_queue::MAX_IMAGE_BYTES / 1024 / 1024
+                ));
+            }
+            let mime_type =
+                crate::agent::message_queue::detect_image_mime(Some(&path_owned)).to_string();
+            self.msg
+                .pending_image_parts
+                .push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
+            Ok(format!("Image loaded: {path_owned}. Send your message."))
+        })
     }
 
     // ----- /mcp -----

@@ -33,14 +33,17 @@ impl<C: crate::channel::Channel> Agent<C> {
     pub(crate) async fn model_refresh_as_string(&mut self) -> String {
         if let Some(cache_dir) = dirs::cache_dir() {
             let models_dir = cache_dir.join("zeph").join("models");
-            if let Ok(entries) = std::fs::read_dir(&models_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                        let _ = std::fs::remove_file(&path);
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(entries) = std::fs::read_dir(&models_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                            let _ = std::fs::remove_file(&path);
+                        }
                     }
                 }
-            }
+            })
+            .await;
         }
         match self.provider.list_models_remote().await {
             Ok(models) => format!("Fetched {} models.", models.len()),

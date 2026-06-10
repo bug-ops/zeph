@@ -337,6 +337,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     /// Load an image and return a status string for use via [`AgentAccess::load_image`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn handle_image_as_string(&mut self, path: &str) -> String {
         use std::path::Component;
         use zeph_llm::provider::{ImageData, MessagePart};

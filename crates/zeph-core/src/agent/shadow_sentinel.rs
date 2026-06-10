@@ -692,7 +692,10 @@ impl ShadowSentinel {
     /// Call once at session shutdown to ensure no DB writes are silently dropped.
     /// All errors have already been logged inside each task; this method only joins the handles.
     pub async fn drain_pending(&self) {
-        let mut set = self.pending_writes.lock().await;
+        let mut set = {
+            let mut guard = self.pending_writes.lock().await;
+            std::mem::take(&mut *guard)
+        };
         while set.join_next().await.is_some() {}
     }
 
