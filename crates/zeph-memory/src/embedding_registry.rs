@@ -168,6 +168,7 @@ impl EmbeddingRegistry {
     /// # Errors
     ///
     /// Returns [`EmbeddingRegistryError`] on Qdrant or embedding failures.
+    #[tracing::instrument(name = "memory.embed_registry.sync", skip_all, err)]
     pub async fn sync<T: Embeddable>(
         &mut self,
         items: &[T],
@@ -286,6 +287,7 @@ impl EmbeddingRegistry {
     /// Returns [`EmbeddingRegistryError::DimensionProbe`] when the query vector dimension does not
     /// match the stored collection dimension.  Returns [`EmbeddingRegistryError::Embedding`] if the
     /// embed function fails, or [`EmbeddingRegistryError::VectorStore`] on Qdrant search failure.
+    #[tracing::instrument(name = "memory.embed_registry.search_raw", skip_all, err)]
     pub async fn search_raw(
         &self,
         query: &str,
@@ -383,6 +385,12 @@ impl EmbeddingRegistry {
         uuid::Uuid::new_v5(&self.namespace, key.as_bytes()).to_string()
     }
 
+    #[tracing::instrument(
+        name = "memory.embed_registry.ensure_collection",
+        skip_all,
+        err,
+        level = "debug"
+    )]
     async fn ensure_collection(
         &self,
         embed_fn: &impl Fn(&str) -> EmbedFuture,
@@ -468,10 +476,21 @@ impl EmbeddingRegistry {
     }
 
     /// Store `dim` in the dimension cache so `search_raw` can validate without a Qdrant round-trip.
+    #[tracing::instrument(
+        name = "memory.embed_registry.set_cached_dim",
+        skip_all,
+        level = "debug"
+    )]
     async fn set_cached_dim(&self, dim: u64) {
         *self.cached_dim.write().await = Some(dim);
     }
 
+    #[tracing::instrument(
+        name = "memory.embed_registry.probe_vector_size",
+        skip_all,
+        err,
+        level = "debug"
+    )]
     async fn probe_vector_size(
         &self,
         embed_fn: &impl Fn(&str) -> EmbedFuture,
@@ -483,6 +502,12 @@ impl EmbeddingRegistry {
         Ok(probe.len() as u64)
     }
 
+    #[tracing::instrument(
+        name = "memory.embed_registry.recreate_collection",
+        skip_all,
+        err,
+        level = "debug"
+    )]
     async fn recreate_collection(
         &self,
         embed_fn: &impl Fn(&str) -> EmbedFuture,
@@ -542,8 +567,6 @@ fn build_work_set<'a, T: Embeddable>(
 
 /// Await each pre-created embed future and collect the resulting Qdrant points.
 ///
-/// Await each pre-created embed future and collect the resulting Qdrant points.
-///
 /// `work_items` is `(key, hash, embed_future, point_id, item_payload)` — point IDs and payloads
 /// must be pre-computed to avoid a double-borrow on the `EmbeddingRegistry` when `hashes` is
 /// mutably borrowed.
@@ -552,6 +575,12 @@ fn build_work_set<'a, T: Embeddable>(
 /// after each successful embed.  Updates `stats.added`/`stats.updated` and `hashes` in place.
 ///
 /// Returns a `Vec<PointStruct>` ready for upsert, or an error if payload serialization fails.
+#[tracing::instrument(
+    name = "memory.embed_registry.embed_and_collect_points",
+    skip_all,
+    err,
+    level = "debug"
+)]
 #[allow(clippy::too_many_arguments)]
 async fn embed_and_collect_points(
     work_items: Vec<(String, String, EmbedFuture, String, serde_json::Value)>,

@@ -35,6 +35,7 @@ use super::types::{EdgeType, GraphFact};
 /// # Errors
 ///
 /// Returns an error if any database query fails.
+#[tracing::instrument(name = "memory.graph.retrieval.graph_recall", skip_all, err)]
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
 pub async fn graph_recall(
     store: &GraphStore,
@@ -205,6 +206,11 @@ pub async fn graph_recall(
 ///
 /// Returns `false` when `embed()` fails (caller should return empty seeds).
 /// On search failure: logs warning and leaves map empty (caller continues normally).
+#[tracing::instrument(
+    name = "memory.graph.retrieval.seed_embedding_fallback",
+    skip_all,
+    level = "debug"
+)]
 async fn seed_embedding_fallback(
     store: &GraphStore,
     emb_store: &EmbeddingStore,
@@ -250,6 +256,12 @@ async fn seed_embedding_fallback(
     true
 }
 
+#[tracing::instrument(
+    name = "memory.graph.retrieval.find_seed_entities",
+    skip_all,
+    err,
+    level = "debug"
+)]
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn find_seed_entities(
     store: &GraphStore,
@@ -400,6 +412,7 @@ pub(crate) async fn find_seed_entities(
 /// # Errors
 ///
 /// Returns an error if any database query fails.
+#[tracing::instrument(name = "memory.graph.retrieval.graph_recall_activated", skip_all, err)]
 #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
 pub async fn graph_recall_activated(
     store: &GraphStore,

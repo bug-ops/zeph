@@ -68,6 +68,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if Qdrant cannot be reached or collection creation fails.
+    #[tracing::instrument(name = "memory.qdrant.ensure_collection", skip_all, err)]
     pub async fn ensure_collection(&self, collection: &str, vector_size: u64) -> QdrantResult<()> {
         if self
             .client
@@ -110,6 +111,12 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error only on hard Qdrant communication failures.
+    #[tracing::instrument(
+        name = "memory.qdrant.get_collection_vector_size",
+        skip_all,
+        err,
+        level = "debug"
+    )]
     pub(crate) async fn get_collection_vector_size(
         &self,
         collection: &str,
@@ -138,6 +145,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if Qdrant cannot be reached.
+    #[tracing::instrument(name = "memory.qdrant.collection_exists", skip_all, err)]
     pub async fn collection_exists(&self, collection: &str) -> QdrantResult<bool> {
         self.client
             .collection_exists(collection)
@@ -150,6 +158,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the collection cannot be deleted.
+    #[tracing::instrument(name = "memory.qdrant.delete_collection", skip_all, err)]
     pub async fn delete_collection(&self, collection: &str) -> QdrantResult<()> {
         self.client
             .delete_collection(collection)
@@ -163,6 +172,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the upsert fails.
+    #[tracing::instrument(name = "memory.qdrant.upsert", skip_all, err)]
     pub async fn upsert(&self, collection: &str, points: Vec<PointStruct>) -> QdrantResult<()> {
         self.client
             .upsert_points(UpsertPointsBuilder::new(collection, points).wait(true))
@@ -179,6 +189,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the search fails.
+    #[tracing::instrument(name = "memory.qdrant.search", skip_all, err)]
     pub async fn search(
         &self,
         collection: &str,
@@ -202,6 +213,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the deletion fails.
+    #[tracing::instrument(name = "memory.qdrant.delete_by_ids", skip_all, err)]
     pub async fn delete_by_ids(&self, collection: &str, ids: Vec<PointId>) -> QdrantResult<()> {
         if ids.is_empty() {
             return Ok(());
@@ -224,6 +236,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the scroll operation fails.
+    #[tracing::instrument(name = "memory.qdrant.scroll_all", skip_all, err)]
     pub async fn scroll_all(
         &self,
         collection: &str,
@@ -278,6 +291,7 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if the scroll operation fails.
+    #[tracing::instrument(name = "memory.qdrant.scroll_all_with_point_ids", skip_all, err)]
     pub async fn scroll_all_with_point_ids(
         &self,
         collection: &str,
@@ -336,6 +350,11 @@ impl QdrantOps {
     /// # Errors
     ///
     /// Returns an error if any Qdrant operation fails.
+    #[tracing::instrument(
+        name = "memory.qdrant.ensure_collection_with_quantization",
+        skip_all,
+        err
+    )]
     pub async fn ensure_collection_with_quantization(
         &self,
         collection: &str,
@@ -528,13 +547,19 @@ impl crate::vector_store::VectorStore for QdrantOps {
     }
 
     fn health_check(&self) -> BoxFuture<'_, Result<bool, crate::VectorStoreError>> {
-        Box::pin(async move {
-            self.client
-                .health_check()
-                .await
-                .map(|_| true)
-                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))
-        })
+        use tracing::Instrument as _;
+        Box::pin(
+            async move {
+                match self.client.health_check().await {
+                    Ok(_) => Ok(true),
+                    Err(e) => {
+                        tracing::warn!(err = %e, "health_check failed");
+                        Err(crate::VectorStoreError::Collection(e.to_string()))
+                    }
+                }
+            }
+            .instrument(tracing::debug_span!("memory.qdrant.health_check")),
+        )
     }
 
     fn create_keyword_indexes(
@@ -543,21 +568,25 @@ impl crate::vector_store::VectorStore for QdrantOps {
         fields: &[&str],
     ) -> BoxFuture<'_, Result<(), crate::VectorStoreError>> {
         use qdrant_client::qdrant::{CreateFieldIndexCollectionBuilder, FieldType};
+        use tracing::Instrument as _;
         let collection = collection.to_owned();
         let fields: Vec<String> = fields.iter().map(|f| (*f).to_owned()).collect();
-        Box::pin(async move {
-            for field in &fields {
-                self.client
-                    .create_field_index(CreateFieldIndexCollectionBuilder::new(
-                        &collection,
-                        field.as_str(),
-                        FieldType::Keyword,
-                    ))
-                    .await
-                    .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+        Box::pin(
+            async move {
+                for field in &fields {
+                    self.client
+                        .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                            &collection,
+                            field.as_str(),
+                            FieldType::Keyword,
+                        ))
+                        .await
+                        .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+                }
+                Ok(())
             }
-            Ok(())
-        })
+            .instrument(tracing::debug_span!("memory.qdrant.create_keyword_indexes")),
+        )
     }
 
     fn get_points(
@@ -565,48 +594,55 @@ impl crate::vector_store::VectorStore for QdrantOps {
         collection: &str,
         ids: Vec<String>,
     ) -> BoxFuture<'_, Result<Vec<crate::VectorPoint>, crate::VectorStoreError>> {
+        use tracing::Instrument as _;
         let collection = collection.to_owned();
-        Box::pin(async move {
-            if ids.is_empty() {
-                return Ok(Vec::new());
-            }
-            let point_ids: Vec<PointId> = ids.into_iter().map(PointId::from).collect();
-            let response = self
-                .client
-                .get_points(
-                    GetPointsBuilder::new(&collection, point_ids)
-                        .with_vectors(true)
-                        .with_payload(true),
-                )
-                .await
-                .map_err(|e| crate::VectorStoreError::Search(e.to_string()))?;
+        Box::pin(
+            async move {
+                if ids.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let point_ids: Vec<PointId> = ids.into_iter().map(PointId::from).collect();
+                let response = self
+                    .client
+                    .get_points(
+                        GetPointsBuilder::new(&collection, point_ids)
+                            .with_vectors(true)
+                            .with_payload(true),
+                    )
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(err = %e, "get_points failed");
+                        crate::VectorStoreError::Search(e.to_string())
+                    })?;
 
-            let mut result = Vec::with_capacity(response.result.len());
-            for point in response.result {
-                let Some(id_str) = point_id_to_string(point.id) else {
-                    continue;
-                };
-                // Use VectorsOutput::get_vector() to extract the default dense vector.
-                let vector = match point.vectors.and_then(|v| v.get_vector()) {
-                    Some(VectorVariant::Dense(dv)) => dv.data,
-                    _ => continue,
-                };
-                let payload: HashMap<String, serde_json::Value> = point
-                    .payload
-                    .into_iter()
-                    .filter_map(|(k, v)| {
-                        let json = qdrant_value_to_json(v.kind?)?;
-                        Some((k, json))
-                    })
-                    .collect();
-                result.push(crate::VectorPoint {
-                    id: id_str,
-                    vector,
-                    payload,
-                });
+                let mut result = Vec::with_capacity(response.result.len());
+                for point in response.result {
+                    let Some(id_str) = point_id_to_string(point.id) else {
+                        continue;
+                    };
+                    // Use VectorsOutput::get_vector() to extract the default dense vector.
+                    let vector = match point.vectors.and_then(|v| v.get_vector()) {
+                        Some(VectorVariant::Dense(dv)) => dv.data,
+                        _ => continue,
+                    };
+                    let payload: HashMap<String, serde_json::Value> = point
+                        .payload
+                        .into_iter()
+                        .filter_map(|(k, v)| {
+                            let json = qdrant_value_to_json(v.kind?)?;
+                            Some((k, json))
+                        })
+                        .collect();
+                    result.push(crate::VectorPoint {
+                        id: id_str,
+                        vector,
+                        payload,
+                    });
+                }
+                Ok(result)
             }
-            Ok(result)
-        })
+            .instrument(tracing::debug_span!("memory.qdrant.get_points")),
+        )
     }
 }
 
