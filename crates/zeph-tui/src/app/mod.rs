@@ -461,6 +461,10 @@ pub struct App {
     /// Initialized at the moment the agent transitions to busy, NOT at `App` construction
     /// — otherwise the first frame after a long idle gap would falsely read as `Stalled`.
     pub(crate) last_progress_at: Instant,
+
+    /// Reusable buffer for wave glyph spans, allocated once and passed into
+    /// [`crate::widgets::wave::glyphs`] each busy frame to avoid per-frame `Vec` allocation.
+    pub(crate) wave_buf: Vec<ratatui::text::Span<'static>>,
 }
 
 mod draw;

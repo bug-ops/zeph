@@ -33,7 +33,7 @@ fn push_label_spans<'a>(
     let symbol = if animated {
         breeze_frame(u64::from(spinner_idx), app.is_ascii_only())
     } else {
-        // Static glyph — frame-invariant under Motion::Off.
+        // Static glyph — no animated symbol under Motion::Off; other separator content (token estimate, label) still reflects live state.
         "·"
     };
     if let Some(label) = activity_label {
@@ -75,6 +75,7 @@ fn build_full_busy_sep<'a>(
     wave_state: WaveState,
     wave_tick: u64,
     theme: &'a Theme,
+    wave_buf: &mut Vec<Span<'static>>,
 ) -> Vec<Span<'static>> {
     const PROMPT_W: u16 = 2; // "› " width
 
@@ -109,21 +110,16 @@ fn build_full_busy_sep<'a>(
         spans.push(Span::raw(" ")); // gutter
         let color_mode = app.effective_color_mode();
         let ascii = app.is_ascii_only();
-        // wave_buf is borrowed mutably from App in draw.rs via app.wave_buf — but here we
-        // own the call through `&App` read access. We allocate a local buffer because the
-        // caller already has a `&App` borrow and `wave_buf` is `pub(crate)`. The cost is
-        // one Vec allocation per busy frame in Full mode; acceptable (amortized by capacity).
-        let mut local_buf: Vec<Span<'static>> = Vec::with_capacity(wave_w as usize);
         glyphs(
             wave_state,
             u32::from(wave_w),
             wave_tick,
             color_mode,
             ascii,
-            &mut local_buf,
+            wave_buf,
             theme,
         );
-        spans.extend(local_buf);
+        spans.extend_from_slice(wave_buf);
     }
 
     spans
@@ -164,7 +160,14 @@ fn build_spinner_busy_sep<'a>(
     if app.editing_queued() {
         spans.push(Span::styled("  [editing queued]", theme.highlight));
     }
-    push_label_spans(&mut spans, spinner_idx, activity_label, app, theme, animated);
+    push_label_spans(
+        &mut spans,
+        spinner_idx,
+        activity_label,
+        app,
+        theme,
+        animated,
+    );
     spans
 }
 
@@ -273,6 +276,7 @@ pub fn render(
     wave_state: WaveState,
     wave_tick: u64,
     motion: Motion,
+    wave_buf: &mut Vec<Span<'static>>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -289,13 +293,12 @@ pub fn render(
                 wave_state,
                 wave_tick,
                 theme,
+                wave_buf,
             ),
             Motion::Minimal => {
                 build_spinner_busy_sep(spinner_idx, activity_label, app, theme, true)
             }
-            Motion::Off => {
-                build_spinner_busy_sep(spinner_idx, activity_label, app, theme, false)
-            }
+            Motion::Off => build_spinner_busy_sep(spinner_idx, activity_label, app, theme, false),
         }
     } else {
         build_idle_sep(app, theme)
@@ -331,11 +334,39 @@ mod tests {
         App::new(user_tx, agent_rx)
     }
 
+    /// Thin wrapper so existing tests don't need to manage `wave_buf` themselves.
+    #[allow(clippy::too_many_arguments)]
+    fn render_input(
+        app: &App,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        busy: bool,
+        activity_label: Option<&str>,
+        spinner_idx: u8,
+        wave_state: crate::widgets::wave::WaveState,
+        wave_tick: u64,
+        motion: zeph_config::Motion,
+    ) {
+        let mut buf = Vec::new();
+        super::render(
+            app,
+            frame,
+            area,
+            busy,
+            activity_label,
+            spinner_idx,
+            wave_state,
+            wave_tick,
+            motion,
+            &mut buf,
+        );
+    }
+
     #[test]
     fn input_insert_mode() {
         let app = make_app();
         let output = render_to_string(40, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -360,7 +391,7 @@ mod tests {
             ),
         ));
         let output = render_to_string(40, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -379,7 +410,7 @@ mod tests {
     fn input_busy_shows_spinner() {
         let app = make_app();
         let output = render_to_string(60, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -401,7 +432,7 @@ mod tests {
     fn input_idle_width_80() {
         let app = make_app();
         let output = render_to_string(80, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -420,7 +451,7 @@ mod tests {
     fn input_busy_width_40() {
         let app = make_app();
         let output = render_to_string(40, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -444,7 +475,7 @@ mod tests {
     fn input_busy_width_80() {
         let app = make_app();
         let output = render_to_string(80, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -469,7 +500,7 @@ mod tests {
             crate::event::AgentEvent::ContextEstimate(14_200),
         ));
         let output = render_to_string(80, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -491,7 +522,7 @@ mod tests {
     fn input_hides_token_estimate_when_zero() {
         let app = make_app();
         let output = render_to_string(80, 5, |frame, area| {
-            super::render(
+            render_input(
                 &app,
                 frame,
                 area,
@@ -540,5 +571,100 @@ mod tests {
             format!("~{}", zeph_common::text::format_tokens(100_000)),
             "~100.0k"
         );
+    }
+
+    // C2: Motion::Full busy-path tests (wave render integration)
+
+    #[test]
+    fn input_busy_full_streaming_width_80() {
+        let app = make_app();
+        let output = render_to_string(80, 5, |frame, area| {
+            render_input(
+                &app,
+                frame,
+                area,
+                true,
+                Some("Streaming..."),
+                0,
+                crate::widgets::wave::WaveState::Streaming,
+                5,
+                zeph_config::Motion::Full,
+            );
+        });
+        // Separator must have the prompt glyph and label.
+        assert!(
+            output.contains('›'),
+            "prompt glyph must appear in Full+busy; got: {output:?}"
+        );
+        assert!(
+            output.contains("esc to interrupt"),
+            "interrupt hint must appear; got: {output:?}"
+        );
+        // Wave glyphs OR the label fills the row — no block-element crash check.
+        assert!(
+            !output.is_empty(),
+            "render must not produce empty output; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn input_busy_full_narrow_wave_skipped() {
+        // width=20 is narrow enough that wave_w saturates to 0 after prompt (2) + label (~18).
+        let app = make_app();
+        let output = render_to_string(20, 5, |frame, area| {
+            render_input(
+                &app,
+                frame,
+                area,
+                true,
+                None,
+                0,
+                crate::widgets::wave::WaveState::Swell,
+                0,
+                zeph_config::Motion::Full,
+            );
+        });
+        // No wave block characters when wave_w == 0.
+        for glyph in &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] {
+            assert!(
+                !output.contains(glyph),
+                "no wave glyphs should appear on narrow terminal; got: {output:?}"
+            );
+        }
+        // Label must still be present.
+        assert!(
+            output.contains('›'),
+            "prompt glyph must appear even on narrow terminal; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn input_busy_motion_off() {
+        let app = make_app();
+        let output = render_to_string(80, 5, |frame, area| {
+            render_input(
+                &app,
+                frame,
+                area,
+                true,
+                Some("Streaming..."),
+                0,
+                crate::widgets::wave::WaveState::Streaming,
+                5,
+                zeph_config::Motion::Off,
+            );
+        });
+        // Interrupt hint must be present.
+        assert!(
+            output.contains("esc to interrupt"),
+            "interrupt hint must appear in Off mode; got: {output:?}"
+        );
+        // No block-element wave glyphs.
+        for glyph in &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] {
+            assert!(
+                !output.contains(glyph),
+                "no wave glyphs should appear under Motion::Off; got: {output:?}"
+            );
+        }
     }
 }

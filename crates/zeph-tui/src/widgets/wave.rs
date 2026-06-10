@@ -265,16 +265,8 @@ pub fn glyphs<'a>(
                 let b = sample(state, x, t);
                 row.push_str(ramp[b]);
             }
-            buf.push(Span::styled(
-                // SAFETY: this is a String built entirely from `&'static str` glyphs,
-                // but `Span<'static>` requires `Cow<'static, str>`. We leak it here to
-                // satisfy the lifetime. The buffer is at most ~160 bytes per frame and is
-                // replaced each frame (capacity retained), so the leak is bounded by the
-                // number of unique strings created (one per frame per Ansi mode call).
-                // In practice ratatui re-renders ~4x/s while busy, which is negligible.
-                std::borrow::Cow::Owned(row),
-                style,
-            ));
+            // Owned String satisfies the 'static bound — dropped with the Span next frame.
+            buf.push(Span::styled(std::borrow::Cow::Owned(row), style));
         }
         EffectiveColorMode::Never => {
             // Modifiers only — no colour. Single span.

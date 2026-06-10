@@ -23,6 +23,10 @@ use super::{
     RenderCache, SubAgentSidebarState, TranscriptCache, is_tool_use_only, parse_tool_output,
 };
 
+/// No-progress duration after which the wave transitions to `Stalled`.
+/// TODO: wire to `config.tui.stall_threshold_secs` (deferred per #5096 v1 scope)
+const STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl App {
     /// Create a new `App` with the given I/O channels.
     ///
@@ -99,6 +103,7 @@ impl App {
             motion: zeph_config::Motion::Full,
             wave_tick: 0,
             last_progress_at: Instant::now(),
+            wave_buf: Vec::new(),
         }
     }
 
@@ -985,8 +990,7 @@ impl App {
         }
 
         // Stalled: no progress for longer than the threshold.
-        let stall_threshold = std::time::Duration::from_secs(10);
-        if self.last_progress_at.elapsed() > stall_threshold {
+        if self.last_progress_at.elapsed() > STALL_THRESHOLD {
             return WaveState::Stalled;
         }
 
@@ -996,9 +1000,9 @@ impl App {
         }
 
         // Parallel background tasks.
-        let bg = self.metrics.bg_enrichment_inflight
-            + self.metrics.bg_telemetry_inflight
-            + self.metrics.bg_inflight;
+        // Use bg_inflight (all-classes total) — avoids double-counting since
+        // bg_enrichment_inflight and bg_telemetry_inflight are already included in bg_inflight.
+        let bg = self.metrics.bg_inflight;
         if bg >= 2 {
             #[allow(clippy::cast_possible_truncation)]
             return WaveState::Parallel {
