@@ -100,7 +100,7 @@ impl AcpFileExecutor {
     ///
     /// `can_read` / `can_write` gate which tool definitions are advertised.
     /// `permission_gate` is used to request user confirmation before writing files.
-    pub fn new(
+    pub async fn new(
         conn: Arc<acp::ConnectionTo<acp::Client>>,
         session_id: acp::schema::SessionId,
         can_read: bool,
@@ -108,7 +108,7 @@ impl AcpFileExecutor {
         cwd: PathBuf,
         permission_gate: Option<AcpPermissionGate>,
     ) -> (Self, impl std::future::Future<Output = ()> + Send + 'static) {
-        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+        let cwd = tokio::fs::canonicalize(&cwd).await.unwrap_or(cwd);
         let (tx, rx) = mpsc::channel::<FsRequest>(FS_CHANNEL_CAPACITY);
         let handler = async move { run_fs_handler(conn, rx).await };
         (
