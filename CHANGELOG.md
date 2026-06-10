@@ -46,6 +46,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (closes #5205); `DurableTimerService::run`, `fire_due`; `DurableRetentionService::run`.
   All `run` loops wrapped in per-iteration spans (`durable.{writer,timer,retention}.run.iter`);
   no `span.entered()` across `.await`.
+- `feat(tui)`: status bar pressure abbreviation — adds a short-form tier before segment dropping.
+  Each segment now declares full and abbreviated forms (`12.3k tokens` → `12.3k`, `$0.01` → `$0.01`,
+  etc.); pressure ladder is full → short → drop (Critical segments never drop). Unicode-aware width
+  math throughout; hang-guard skips abbreviation when the short form is no narrower (closes #5101).
+- `feat(tui)`: live wave animation on the input separator row encodes agent state as a waveform —
+  idle shows a static line; TTFT-wait a slow swell; streaming a ripple; tool execution a choppy wave;
+  parallel background tasks a superposition of sines; stalled a flatline with error tint. Rendered
+  with `▁▂▃▄▅▆▇█` glyphs, aqua truecolor gradient, flat ansi16 accent, and `~-~-` ASCII fallback.
+  `[tui] motion = "full" | "minimal" | "off"` config field; `/motion` slash command for live switching;
+  zero allocations per frame via reused `wave_buf`; deterministic `sample(t, x, state)` pure function
+  for snapshot testing (closes #5096).
 - `feat(tui)`: breeze spinner (▹▹▹→▸▹▹→▸▸▹→▸▸▸→▹▸▸→▹▹▸) replaces braille throbber across all
   five spinner sites; ASCII fallback (..→>..→>>.→>>>→.>>→..>) keyed off `detect_unicode_capable()`.
   Shared `widgets/spinner.rs` module ensures one motion language everywhere (closes #5095).
