@@ -127,20 +127,31 @@ pub(crate) async fn run_tui_remote(
     let reader = EventReader::new(event_tx, Duration::from_millis(100));
     std::thread::spawn(move || reader.run());
 
-    let tui_theme = {
-        use zeph_tui::theme::{Theme, resolve_color_mode, resolve_palette};
+    let (tui_theme, tui_theme_name, tui_color_mode) = {
+        use zeph_tui::theme::{EffectiveColorMode, Theme, resolve_color_mode, resolve_palette};
         let theme_cfg = &config.tui.theme;
+        let mode = resolve_color_mode(theme_cfg.color_mode);
         match resolve_palette(&theme_cfg.name) {
-            Ok(p) => Theme::from_palette_with_mode(&p, resolve_color_mode(theme_cfg.color_mode)),
+            Ok(p) => (
+                Theme::from_palette_with_mode(&p, mode),
+                theme_cfg.name.clone(),
+                mode,
+            ),
             Err(e) => {
                 tracing::warn!("TUI theme '{}' could not be loaded: {e}", theme_cfg.name);
-                Theme::default()
+                (
+                    Theme::default(),
+                    "zephyr".to_owned(),
+                    EffectiveColorMode::Truecolor,
+                )
             }
         }
     };
     let mut tui_app = App::new(user_tx, agent_rx)
         .with_tool_density(config.tui.tool_density)
-        .with_theme(tui_theme);
+        .with_theme(tui_theme)
+        .with_theme_name(tui_theme_name)
+        .with_effective_color_mode(tui_color_mode);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
 
     zeph_tui::run_tui(tui_app, event_rx).await?;

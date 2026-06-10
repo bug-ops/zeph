@@ -186,7 +186,30 @@ impl App {
                 self.push_system_message("New conversation started.".to_owned());
             }
             TuiCommand::ToggleTheme => {
-                self.push_system_message("Theme switching is not yet implemented.".to_owned());
+                self.cycle_theme();
+                self.push_system_message(format!("Theme: {}", self.active_theme_name()));
+            }
+            TuiCommand::ListThemes => {
+                self.push_system_message(
+                    "Available themes: zephyr, zephyr-light, high-contrast, classic, \
+                     catppuccin-mocha, gruvbox-dark, solarized-dark\n\
+                     Usage: /theme <name>"
+                        .to_owned(),
+                );
+            }
+            TuiCommand::SetTheme(name) => {
+                let name = name.clone();
+                match self.apply_theme(&name) {
+                    Ok(()) => {
+                        self.push_system_message(format!(
+                            "Theme switched to: {}",
+                            self.active_theme_name()
+                        ));
+                    }
+                    Err(e) => {
+                        self.push_system_message(format!("Theme error: {e}"));
+                    }
+                }
             }
             TuiCommand::SessionBrowser => {
                 if let Some(ref tx) = self.command_tx {
@@ -521,6 +544,12 @@ impl App {
                 })
             }
             [cmd] if cmd.eq_ignore_ascii_case("/copy") => Some(TuiCommand::CopyLastAssistant),
+            // /theme — list presets (bare command, token count == 1)
+            [cmd] if cmd.eq_ignore_ascii_case("/theme") => Some(TuiCommand::ListThemes),
+            // /theme <name> — switch to named theme (any non-empty name token)
+            [cmd, name] if cmd.eq_ignore_ascii_case("/theme") && !name.is_empty() => {
+                Some(TuiCommand::SetTheme((*name).to_owned()))
+            }
             _ => None,
         }
     }

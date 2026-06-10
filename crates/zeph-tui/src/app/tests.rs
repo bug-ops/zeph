@@ -962,14 +962,14 @@ mod integration {
         app.sessions.current_mut().input_mode = InputMode::Normal;
 
         let before = draw_app(&mut app, 120, 40);
-        assert!(before.contains("Skills"));
-        assert!(before.contains("Memory"));
+        assert!(before.contains("skills"));
+        assert!(before.contains("memory"));
 
         let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
 
         let after = draw_app(&mut app, 120, 40);
-        assert!(!after.contains("Skills ("));
+        assert!(!after.contains("skills  "));
     }
 
     #[test]
@@ -1232,6 +1232,7 @@ mod render_cache_tests {
             tool_expanded: false,
             tool_density: zeph_config::ToolDensity::Inline,
             show_labels: false,
+            theme_generation: 0,
         }
     }
 
@@ -1930,8 +1931,8 @@ fn draw_header_shows_1m_ctx_badge_when_extended_context() {
         app.draw_header(frame, area);
     });
     assert!(
-        output.contains("[1M CTX]"),
-        "header must contain [1M CTX] badge when extended_context is true; got: {output:?}"
+        output.contains("1M CTX"),
+        "header must contain 1M CTX badge when extended_context is true; got: {output:?}"
     );
 }
 

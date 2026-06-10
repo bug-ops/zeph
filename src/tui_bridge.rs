@@ -55,22 +55,35 @@ pub(crate) struct EarlyTuiHandle {
 
 /// Resolve the TUI [`Theme`](zeph_tui::theme::Theme) from the config section `[tui.theme]`.
 ///
-/// Loads the palette from the configured preset or user file, detects terminal colour
-/// capability (respecting `color_mode` and `NO_COLOR`), and derives the theme. Falls back to
-/// [`zeph_tui::theme::Theme::default()`] on any error so startup always succeeds.
+/// Returns the resolved theme, the palette name (for cycle tracking), and the effective colour
+/// mode (for re-derivation on runtime swap without re-running OS detection). Falls back to the
+/// default theme on any error so startup always succeeds.
 #[cfg(feature = "tui")]
-fn build_tui_theme(config: &zeph_core::config::Config) -> zeph_tui::theme::Theme {
-    use zeph_tui::theme::{Theme, resolve_color_mode, resolve_palette};
+fn build_tui_theme(
+    config: &zeph_core::config::Config,
+) -> (
+    zeph_tui::theme::Theme,
+    String,
+    zeph_tui::theme::EffectiveColorMode,
+) {
+    use zeph_tui::theme::{EffectiveColorMode, Theme, resolve_color_mode, resolve_palette};
     let theme_cfg = &config.tui.theme;
-    let palette = match resolve_palette(&theme_cfg.name) {
-        Ok(p) => p,
+    let mode = resolve_color_mode(theme_cfg.color_mode);
+    match resolve_palette(&theme_cfg.name) {
+        Ok(p) => (
+            Theme::from_palette_with_mode(&p, mode),
+            theme_cfg.name.clone(),
+            mode,
+        ),
         Err(e) => {
             tracing::warn!("TUI theme '{}' could not be loaded: {e}", theme_cfg.name);
-            return Theme::default();
+            (
+                Theme::default(),
+                "zephyr".to_owned(),
+                EffectiveColorMode::Truecolor,
+            )
         }
-    };
-    let mode = resolve_color_mode(theme_cfg.color_mode);
-    Theme::from_palette_with_mode(&palette, mode)
+    }
 }
 
 /// Start TUI rendering immediately (Phase 1).
@@ -98,10 +111,13 @@ pub(crate) fn start_tui_early(
         .agent_rx
         .take()
         .expect("agent_rx already taken by start_tui_early");
+    let (tui_theme, tui_theme_name, tui_color_mode) = build_tui_theme(config);
     let mut tui_app = zeph_tui::App::new(tui_handle.user_tx.clone(), agent_rx)
         .with_command_tx(tui_handle.command_tx.clone())
         .with_tool_density(config.tui.tool_density)
-        .with_theme(build_tui_theme(config));
+        .with_theme(tui_theme)
+        .with_theme_name(tui_theme_name)
+        .with_effective_color_mode(tui_color_mode);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
     tui_app.set_show_balance(config.cocoon.show_balance);
 
@@ -196,6 +212,8 @@ fn spawn_tui_thread(
     show_balance: bool,
     tool_density: zeph_config::ToolDensity,
     theme: zeph_tui::theme::Theme,
+    theme_name: String,
+    effective_color_mode: zeph_tui::theme::EffectiveColorMode,
     metrics_rx: Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
     task_supervisor: Option<zeph_common::task_supervisor::TaskSupervisor>,
     index_progress_rx: Option<tokio::sync::watch::Receiver<zeph_index::IndexProgress>>,
@@ -209,7 +227,9 @@ fn spawn_tui_thread(
         .with_cancel_signal(cancel_signal)
         .with_command_tx(command_tx)
         .with_tool_density(tool_density)
-        .with_theme(theme);
+        .with_theme(theme)
+        .with_theme_name(theme_name)
+        .with_effective_color_mode(effective_color_mode);
     tui_app.set_show_source_labels(show_source_labels);
     tui_app.set_show_balance(show_balance);
 
@@ -309,6 +329,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
         (early.tui_done, early.agent_tx)
     } else {
         // Legacy path: TUI hasn't started yet, create App and spawn its thread now.
+        let (legacy_theme, legacy_theme_name, legacy_color_mode) = build_tui_theme(params.config);
         let done_rx = spawn_tui_thread(
             user_tx,
             agent_rx.expect("agent_rx not set in TuiHandle"),
@@ -317,7 +338,9 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
             params.config.tui.show_source_labels,
             params.config.cocoon.show_balance,
             params.config.tui.tool_density,
-            build_tui_theme(params.config),
+            legacy_theme,
+            legacy_theme_name,
+            legacy_color_mode,
             params.metrics_rx.take(),
             params.task_supervisor.take(),
             params.index_progress_rx.take(),

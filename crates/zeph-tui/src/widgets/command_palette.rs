@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::command::{CommandEntry, filter_commands};
 use crate::layout::centered_rect;
@@ -93,6 +93,7 @@ pub fn render(state: &CommandPaletteState, frame: &mut Frame, area: Rect, theme:
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.panel_border)
         .title(" Command Palette ")
         .title_alignment(Alignment::Center);

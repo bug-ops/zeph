@@ -1,35 +1,17 @@
 ---
 source: crates/zeph-tui/src/widgets/resources.rs
-assertion_line: 290
 expression: output
 ---
-┌ Resources ───────────────────────────┐
-│  LLM                                 │
-│    Provider: claude                  │
-│    Model: claude-sonnet-4-6          │
-│    Embed: nomic-embed-text           │
-│    Context: 10000 | Latency: 180ms   │
-│  Session                             │
-│    Tokens: 15000 | API: 7            │
-│    Budget: 200000 | Compact: 120000  │
-│  Infra                               │
-│    Vault: age | Channel: tui         │
-│    Learning: ON | Cache: ON | Autosav│
-│    MCP: 2/2 connected, 14 tools      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-│                                      │
-└──────────────────────────────────────┘
+resources                               
+  LLM                                   
+    Provider: claude                    
+    Model: claude-sonnet-4-6            
+    Embed: nomic-embed-text             
+    Context: 10000 | Latency: 180ms     
+  Session                               
+    Tokens: 15000 | API: 7              
+    Budget: 200000 | Compact: 120000    
+  Infra                                 
+    Vault: age | Channel: tui           
+    Learning: ON | Cache: ON | Autosave:
+    MCP: 2/2 connected, 14 tools

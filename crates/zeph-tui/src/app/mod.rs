@@ -425,6 +425,16 @@ pub struct App {
     pub(crate) durable_list_state: ratatui::widgets::ListState,
     /// Active visual theme. Derived from config at startup via [`crate::theme::Theme::from_palette_with_mode`].
     pub(crate) theme: crate::theme::Theme,
+    /// Monotonic counter bumped on every theme swap; threads into [`RenderCacheKey`] to
+    /// force cache misses when the user switches themes mid-session.
+    pub(crate) theme_generation: u64,
+    /// Name of the currently-active theme preset or user file.
+    pub(crate) theme_name: String,
+    /// Resolved terminal colour capability, stored once at startup for consistent re-derivation.
+    pub(crate) effective_color_mode: crate::theme::EffectiveColorMode,
+    // Scaffold for future per-section collapse (see follow-up issue).
+    #[allow(dead_code)]
+    pub(crate) collapsed_panels: [bool; 4],
 }
 
 mod draw;

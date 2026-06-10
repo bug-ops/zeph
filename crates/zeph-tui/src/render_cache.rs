@@ -8,9 +8,11 @@ use crate::widgets::tool_view::ToolDensity;
 
 /// Cache key for a single rendered chat message.
 ///
-/// Two keys compare equal only when the content, terminal width, and all
-/// display flags are identical. Any mismatch causes a cache miss and
-/// re-render.
+/// Two keys compare equal only when the content, terminal width, theme generation,
+/// and all display flags are identical. Any mismatch causes a cache miss and
+/// re-render. The `theme_generation` field increments on every theme swap,
+/// forcing a cache miss after the user switches themes so that cached `Line`s
+/// (which bake in theme `Style` values) are not reused with stale colours.
 ///
 /// # Examples
 ///
@@ -18,8 +20,8 @@ use crate::widgets::tool_view::ToolDensity;
 /// use zeph_tui::render_cache::RenderCacheKey;
 /// use zeph_config::ToolDensity;
 ///
-/// let k1 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
-/// let k2 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
+/// let k1 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
+/// let k2 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
 /// assert_eq!(k1, k2);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +36,8 @@ pub struct RenderCacheKey {
     pub tool_density: ToolDensity,
     /// Whether source-label badges are shown on assistant messages.
     pub show_labels: bool,
+    /// Monotonic counter bumped on each theme swap; forces cache miss after a switch.
+    pub theme_generation: u64,
 }
 
 /// A single cached render result for a chat message.
@@ -67,7 +71,7 @@ pub struct RenderCacheEntry {
 /// use zeph_config::ToolDensity;
 ///
 /// let mut cache = RenderCache::default();
-/// let key = RenderCacheKey { content_hash: 42, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
+/// let key = RenderCacheKey { content_hash: 42, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
 /// cache.put(0, key, vec![], vec![]);
 /// assert!(cache.get(0, &key).is_some());
 /// ```
@@ -89,7 +93,7 @@ impl RenderCache {
     /// use zeph_config::ToolDensity;
     ///
     /// let mut cache = RenderCache::default();
-    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
+    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
     /// assert!(cache.get(0, &key).is_none()); // cold cache
     /// ```
     pub fn get(&self, idx: usize, key: &RenderCacheKey) -> Option<(&[Line<'static>], &[MdLink])> {
@@ -112,7 +116,7 @@ impl RenderCache {
     /// use zeph_config::ToolDensity;
     ///
     /// let mut cache = RenderCache::default();
-    /// let key = RenderCacheKey { content_hash: 7, terminal_width: 100, tool_expanded: true, tool_density: ToolDensity::Inline, show_labels: false };
+    /// let key = RenderCacheKey { content_hash: 7, terminal_width: 100, tool_expanded: true, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
     /// cache.put(0, key, vec![], vec![]);
     /// assert!(cache.get(0, &key).is_some());
     /// ```
@@ -144,7 +148,7 @@ impl RenderCache {
     /// use zeph_config::ToolDensity;
     ///
     /// let mut cache = RenderCache::default();
-    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
+    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
     /// cache.put(0, key, vec![], vec![]);
     /// cache.invalidate(0);
     /// assert!(cache.get(0, &key).is_none());
@@ -164,7 +168,7 @@ impl RenderCache {
     /// use zeph_config::ToolDensity;
     ///
     /// let mut cache = RenderCache::default();
-    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
+    /// let key = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
     /// cache.put(0, key, vec![], vec![]);
     /// cache.clear();
     /// assert!(cache.get(0, &key).is_none());
@@ -187,12 +191,12 @@ impl RenderCache {
     ///
     /// let mut cache = RenderCache::default();
     /// for i in 0..3u64 {
-    ///     let key = RenderCacheKey { content_hash: i, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
+    ///     let key = RenderCacheKey { content_hash: i, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
     ///     cache.put(i as usize, key, vec![], vec![]);
     /// }
     /// cache.shift(1);
     /// // Old index 1 is now at index 0.
-    /// let key1 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false };
+    /// let key1 = RenderCacheKey { content_hash: 1, terminal_width: 80, tool_expanded: false, tool_density: ToolDensity::Inline, show_labels: false, theme_generation: 0 };
     /// assert!(cache.get(0, &key1).is_some());
     /// ```
     pub fn shift(&mut self, count: usize) {
@@ -234,6 +238,7 @@ mod tests {
             tool_expanded: false,
             tool_density: ToolDensity::Inline,
             show_labels: false,
+            theme_generation: 0,
         }
     }
 

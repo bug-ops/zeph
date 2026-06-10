@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -44,24 +44,34 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         })
         .collect();
 
-    let skills = Paragraph::new(skill_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.panel_border)
-            .title(format!(
-                " Skills ({} active / {} loaded) ",
-                metrics.active_skills.len(),
-                metrics.total_skills
-            )),
-    );
+    // Section header: lowercase muted label, no border box
+    let skills_header = Line::from(Span::styled(
+        format!(
+            "skills  {} active / {} loaded",
+            metrics.active_skills.len(),
+            metrics.total_skills
+        ),
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ));
+    let mut skills_content = vec![skills_header];
+    skills_content.extend(skill_lines);
+    let skills = Paragraph::new(skills_content).block(Block::default().borders(Borders::NONE));
     frame.render_widget(skills, chunks[0]);
 
     if has_mcp {
         let mut mcp_lines: Vec<Line<'_>> = Vec::new();
+        mcp_lines.push(Line::from(Span::styled(
+            format!(
+                "mcp tools  {}/{}",
+                metrics.active_mcp_tools.len(),
+                metrics.mcp_tool_count
+            ),
+            theme.system_message.add_modifier(Modifier::BOLD),
+        )));
         for srv in &metrics.mcp_servers {
             let (indicator, color) = match srv.status {
-                McpServerConnectionStatus::Connected => ("OK", Color::Green),
-                McpServerConnectionStatus::Failed => ("FAIL", Color::Red),
+                McpServerConnectionStatus::Connected => ("ok", Color::Green),
+                McpServerConnectionStatus::Failed => ("fail", Color::Red),
                 _ => ("?", Color::DarkGray),
             };
             mcp_lines.push(Line::from(vec![
@@ -73,16 +83,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         for t in &metrics.active_mcp_tools {
             mcp_lines.push(Line::from(format!("  - {t}")));
         }
-        let mcp = Paragraph::new(mcp_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.panel_border)
-                .title(format!(
-                    " MCP Tools ({}/{}) ",
-                    metrics.active_mcp_tools.len(),
-                    metrics.mcp_tool_count
-                )),
-        );
+        let mcp = Paragraph::new(mcp_lines).block(Block::default().borders(Borders::NONE));
         frame.render_widget(mcp, chunks[1]);
     }
 }

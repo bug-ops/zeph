@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use zeph_core::channel::{ElicitationFieldType, ElicitationRequest};
 
 use crate::layout::centered_rect;
@@ -221,6 +221,7 @@ pub fn render(state: &ElicitationDialogState, frame: &mut Frame, area: Rect, the
 
     let outer_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.panel_border)
         .title(title.as_str())
         .title_alignment(Alignment::Center);

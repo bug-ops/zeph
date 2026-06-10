@@ -778,6 +778,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     )
     .await?;
 
+    // Apply --theme CLI override before build_tui_theme runs (all three TUI entry paths read config).
+    #[cfg(feature = "tui")]
+    if let Some(ref theme_name) = cli.theme {
+        app.config_mut().tui.theme.name.clone_from(theme_name);
+    }
+
     // Resolve ExecutionMode from CLI + config, then validate mutual exclusions.
     let exec_mode = crate::execution_mode::ExecutionMode::from_cli_and_config(&cli, app.config());
     crate::startup_checks::validate_mode_compatibility(&cli, app.config())?;

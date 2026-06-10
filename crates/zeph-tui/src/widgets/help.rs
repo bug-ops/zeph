@@ -4,13 +4,13 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Row, Table};
 
 use crate::layout::centered_rect;
 use crate::theme::Theme;
 
-// 29 data rows + 1 header row + 2 border lines
-const POPUP_HEIGHT: u16 = 32;
+// 33 data rows + 1 header row + 2 border lines
+const POPUP_HEIGHT: u16 = 36;
 
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
     let popup = centered_rect(70, POPUP_HEIGHT, area);
@@ -70,6 +70,17 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         keybind_row("y", "confirm"),
         keybind_row("n / Esc", "cancel"),
+        Row::new([Cell::from(""), Cell::from("")]),
+        Row::new([
+            Cell::from(Span::styled("Slash commands", theme.panel_title)),
+            Cell::from(""),
+        ]),
+        keybind_row("/theme", "list available themes"),
+        keybind_row("/theme <name>", "switch theme, e.g. /theme gruvbox-dark"),
+        keybind_row(
+            "/theme <name> (cycle)",
+            "palette: app:theme cycles zephyr → zephyr-light → high-contrast",
+        ),
     ];
 
     let header = Row::new([
@@ -85,6 +96,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
     .block(
         Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(theme.panel_border)
             .title(" Help — press ? or Esc to close ")
             .title_alignment(Alignment::Center),

@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use throbber_widgets_tui::BRAILLE_SIX;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -30,18 +30,14 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     }
 
     let theme = &app.theme;
-    let inner_height = area.height.saturating_sub(2) as usize;
-    // 2 for block borders + 2 for accent prefix ("▎ ") added per line
-    let wrap_width = area.width.saturating_sub(4) as usize;
+    // No border: full area height is usable content (+2 rows vs bordered).
+    let inner_height = area.height as usize;
+    // No border: only the 2-col accent prefix ("▎ ") is subtracted (+2 cols vs bordered).
+    let wrap_width = area.width.saturating_sub(2) as usize;
 
     // Use visible_messages() to support subagent transcript view.
     let messages = app.visible_messages();
     let truncation_info = app.transcript_truncation_info();
-    let title = if let Some(ref name) = app.view_target().subagent_name().map(str::to_owned) {
-        format!(" Subagent: {name} ")
-    } else {
-        " Chat ".to_owned()
-    };
 
     let (mut lines, all_md_links) = collect_message_lines_from(
         &messages,
@@ -59,6 +55,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
                 .rem_euclid(i8::try_from(BRAILLE_SIX.symbols.len()).unwrap_or(i8::MAX)),
         )
         .unwrap_or(0),
+        app.theme_generation(),
     );
 
     let total = lines.len();
@@ -76,12 +73,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     let scroll = max_scroll - effective_offset;
 
     let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.panel_border)
-                .title(title),
-        )
+        .block(Block::default())
         .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
 
     frame.render_widget(paragraph, area);
@@ -119,6 +111,7 @@ fn collect_message_lines_from(
     tool_density: ToolDensity,
     show_labels: bool,
     throbber_idx: usize,
+    theme_generation: u64,
 ) -> (Vec<Line<'static>>, Vec<MdLink>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut all_md_links: Vec<MdLink> = Vec::new();
@@ -170,6 +163,7 @@ fn collect_message_lines_from(
                     tool_expanded,
                     tool_density,
                     show_labels,
+                    theme_generation,
                 };
 
                 // All messages (including streaming) use the render cache. For streaming
@@ -245,6 +239,7 @@ fn collect_message_lines_from(
                     tool_expanded,
                     tool_density,
                     show_labels,
+                    theme_generation,
                 };
 
                 let group_lines: Vec<Line<'static>> = if let Some((cached_lines, _)) =
@@ -1609,6 +1604,7 @@ mod tests {
             ToolDensity::Inline,
             false,
             0,
+            0,
         );
         let all_text: String = lines
             .iter()
@@ -1664,6 +1660,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             false,
+            0,
             0,
         );
         let has_bg = lines
@@ -2109,6 +2106,7 @@ mod tests {
             false,
             ToolDensity::Inline,
             false,
+            0,
             0,
         );
         let text: String = lines

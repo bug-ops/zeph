@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::file_picker::FilePickerState;
 use crate::theme::Theme;
@@ -32,6 +32,7 @@ pub fn render(state: &FilePickerState, frame: &mut Frame, input_area: Rect, them
     // Outer block
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.panel_border)
         .title(" Files ")
         .title_style(theme.panel_title);

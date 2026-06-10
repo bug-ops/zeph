@@ -24,6 +24,7 @@ impl App {
             self.sessions.current_mut().scroll_offset =
                 self.sessions.current().scroll_offset.min(max_scroll);
         }
+        self.draw_separator(frame, layout.separator);
         self.draw_side_panel(frame, &layout);
         let spinner_idx = self.throbber_state().index().cast_unsigned();
         let busy = self.is_agent_busy();
@@ -71,6 +72,7 @@ impl App {
     }
 
     pub(super) fn draw_header(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        use ratatui::style::Modifier;
         use ratatui::text::{Line, Span};
         use ratatui::widgets::Paragraph;
 
@@ -88,18 +90,42 @@ impl App {
         };
 
         let ctx_badge = if self.metrics.extended_context {
-            " [1M CTX]"
+            "  1M CTX"
         } else {
             ""
         };
-        let text = format!(
-            " Zeph v{} | Provider: {provider} | Model: {model}{ctx_badge}",
-            env!("CARGO_PKG_VERSION")
+
+        // Brand name rendered bold, metadata in muted style — no solid background.
+        let brand_style = theme.panel_title.add_modifier(Modifier::BOLD);
+        let meta_style = theme.system_message;
+
+        let meta = format!(
+            "  {provider}  {model}  v{}{}",
+            env!("CARGO_PKG_VERSION"),
+            ctx_badge,
         );
 
-        let line = Line::from(Span::styled(text, theme.header));
-        let paragraph = Paragraph::new(line).style(theme.header);
-        frame.render_widget(paragraph, area);
+        let line = Line::from(vec![
+            Span::styled("⬡ zeph", brand_style),
+            Span::styled(meta, meta_style),
+        ]);
+
+        // Transparent background: no .style() wrapper that would paint the row.
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn draw_separator(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        use ratatui::text::Line;
+        use ratatui::widgets::Paragraph;
+
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        // Fill each row of the separator column with the vertical bar glyph.
+        let rows: Vec<Line<'_>> = (0..area.height)
+            .map(|_| Line::from(ratatui::text::Span::styled("│", self.theme.panel_border)))
+            .collect();
+        frame.render_widget(Paragraph::new(rows), area);
     }
 
     fn draw_side_panel(&mut self, frame: &mut ratatui::Frame, layout: &AppLayout) {

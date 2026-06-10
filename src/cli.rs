@@ -18,6 +18,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) tui: bool,
 
+    /// Override the TUI theme for this session (preset or user file name, e.g. gruvbox-dark)
+    #[arg(long, value_name = "NAME")]
+    pub(crate) theme: Option<String>,
+
     /// Run in headless daemon mode (requires a2a feature)
     #[cfg(feature = "a2a")]
     #[arg(long)]

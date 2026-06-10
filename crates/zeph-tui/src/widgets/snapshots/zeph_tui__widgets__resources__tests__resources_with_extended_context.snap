@@ -2,16 +2,10 @@
 source: crates/zeph-tui/src/widgets/resources.rs
 expression: output
 ---
-┌ Resources ──────────────────────┐
-│  LLM                            │
-│    Provider: claude             │
-│    Model: claude-sonnet-4-6     │
-│    Context: 50000 | Latency: 400│
-│    Max context: 1M              │
-│  Session: 75000 tok | 3 calls   │
-│                                 │
-│                                 │
-│                                 │
-│                                 │
-│                                 │
-└─────────────────────────────────┘
+resources                          
+  LLM                              
+    Provider: claude               
+    Model: claude-sonnet-4-6       
+    Context: 50000 | Latency: 400ms
+    Max context: 1M                
+  Session: 75000 tok | 3 calls

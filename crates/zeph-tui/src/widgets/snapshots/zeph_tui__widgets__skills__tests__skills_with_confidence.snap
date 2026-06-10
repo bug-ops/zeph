@@ -1,15 +1,7 @@
 ---
 source: crates/zeph-tui/src/widgets/skills.rs
-assertion_line: 156
 expression: output
 ---
-┌ Skills (2 active / 3 loaded) ──────────────────┐
-│  git  [███████░] 92% (42)                      │
-│  docker  [███░░░░░] 35% (5)                    │
-│                                                │
-│                                                │
-│                                                │
-│                                                │
-│                                                │
-│                                                │
-└────────────────────────────────────────────────┘
+skills  2 active / 3 loaded                       
+  git  [███████░] 92% (42)                        
+  docker  [███░░░░░] 35% (5)

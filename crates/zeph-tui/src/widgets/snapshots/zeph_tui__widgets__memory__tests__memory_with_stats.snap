@@ -2,11 +2,10 @@
 source: crates/zeph-tui/src/widgets/memory.rs
 expression: output
 ---
-┌ Memory ────────────────────┐
-│  SQLite: 42 msgs           │
-│  Vector: qdrant (connected)│
-│  Conv ID: ---              │
-│  Embeddings: 10            │
-│  Graph: 0 entities, 0 edges│
-│  Graph extractions: 0 ok, 0│
-└────────────────────────────┘
+memory                        
+  sqlite: 42 msgs             
+  vector: qdrant (connected)  
+  conv id: ---                
+  embeddings: 10              
+  graph: 0 entities, 0 edges, 
+  graph extractions: 0 ok, 0 f

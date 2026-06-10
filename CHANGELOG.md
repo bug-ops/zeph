@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `feat(tui)`: theme config, `/theme` slash command, `ToggleTheme` real implementation, hot-reload,
+  and `--theme` CLI flag (#5090). `SemanticPalette` presets (`zephyr`, `zephyr-light`,
+  `high-contrast`, etc.) are selectable at runtime; `apply_theme` validates names against path
+  traversal via `resolve_palette`, bumps a `theme_generation` counter so all session render caches
+  are invalidated on swap.
+- `feat(tui)`: borderless chat and input areas, rounded modal dialogs, transparent header bar
+  (#5092). Chat area uses full available height without a surrounding border box; input replaces
+  `Borders::ALL` with a thin separator line and `›` prompt glyph; `confirm`, `help`,
+  `command_palette`, `elicitation`, and `file_picker` modals use `BorderType::Rounded`; header
+  renders `⬡ zeph` brand glyph with muted metadata on transparent background.
+- `feat(tui)`: dashboard restyle with lowercase section headers and 1-column vertical separator
+  between chat and sidebar (#5093). `skills`, `memory`, and `resources` panels use muted bold
+  section labels in place of titled `Borders::ALL` blocks; `AppLayout` gains a `separator` field
+  for the 1-column vertical bar glyph between chat and side panels. Per-section collapse is deferred
+  to a follow-up issue.
+
 ### Fixed
 
 - `fix(channels)`: `TelegramChannel` now receives a `TaskSupervisor` at construction time; the

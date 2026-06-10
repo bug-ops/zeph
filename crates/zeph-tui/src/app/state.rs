@@ -90,6 +90,10 @@ impl App {
             durable_snapshot: crate::widgets::durable::DurableSnapshot::default(),
             durable_list_state: ratatui::widgets::ListState::default(),
             theme: crate::theme::Theme::default(),
+            theme_generation: 0,
+            theme_name: "zephyr".to_owned(),
+            effective_color_mode: crate::theme::EffectiveColorMode::Truecolor,
+            collapsed_panels: [false; 4],
         }
     }
 
@@ -113,6 +117,168 @@ impl App {
     pub fn with_theme(mut self, theme: crate::theme::Theme) -> Self {
         self.theme = theme;
         self
+    }
+
+    /// Set the active theme name for cycle tracking and status echoes.
+    ///
+    /// Must be called at every construction site that supplies a non-default theme so that
+    /// `cycle_theme` starts cycling from the correct position.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx).with_theme_name("gruvbox-dark");
+    /// ```
+    #[must_use]
+    pub fn with_theme_name(mut self, name: impl Into<String>) -> Self {
+        self.theme_name = name.into();
+        self
+    }
+
+    /// Set the resolved colour mode used to re-derive themes on runtime swap.
+    ///
+    /// Store the `EffectiveColorMode` resolved once at startup so that `apply_theme`
+    /// produces consistent downgrade behaviour without re-running OS detection per swap.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::{App, theme::EffectiveColorMode};
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx)
+    ///     .with_effective_color_mode(EffectiveColorMode::Truecolor);
+    /// ```
+    #[must_use]
+    pub fn with_effective_color_mode(mut self, mode: crate::theme::EffectiveColorMode) -> Self {
+        self.effective_color_mode = mode;
+        self
+    }
+
+    /// Return the current theme generation counter.
+    ///
+    /// Passed into [`RenderCacheKey::theme_generation`] so the render cache is
+    /// invalidated after every theme swap.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx);
+    /// assert_eq!(app.theme_generation(), 0);
+    /// ```
+    #[must_use]
+    pub fn theme_generation(&self) -> u64 {
+        self.theme_generation
+    }
+
+    /// Apply a named theme preset or user file, updating the active theme and bumping
+    /// the generation counter so that all session render caches are invalidated.
+    ///
+    /// On success the new theme name is stored for cycle tracking.
+    /// On error the existing theme is left unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::theme::ThemeLoadError`] if the name fails validation or the
+    /// palette file cannot be parsed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let mut app = App::new(user_tx, agent_rx);
+    /// let gen_before = app.theme_generation();
+    /// let _ = app.apply_theme("zephyr-light");
+    /// assert!(app.theme_generation() > gen_before);
+    /// ```
+    pub fn apply_theme(&mut self, name: &str) -> Result<(), crate::theme::ThemeLoadError> {
+        use crate::theme::{Theme, ThemeLoadError, resolve_palette};
+        // Reject empty names — always routes to listing, never implicit preset resolution.
+        if name.is_empty() {
+            return Err(ThemeLoadError::UnsafeName(String::new()));
+        }
+        let palette = resolve_palette(name)?;
+        let new_theme = Theme::from_palette_with_mode(&palette, self.effective_color_mode);
+        self.theme = new_theme;
+        name.clone_into(&mut self.theme_name);
+        self.theme_generation += 1;
+        // Invalidate render caches for ALL sessions (theme is global, not per-session).
+        self.clear_all_render_caches();
+        Ok(())
+    }
+
+    /// Cycle to the next preset in the fixed cycle list `["zephyr", "zephyr-light", "high-contrast"]`.
+    ///
+    /// Finds the current theme name in the cycle list and advances to the next entry,
+    /// wrapping around. If the current name is not in the list, starts from `"zephyr"`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let mut app = App::new(user_tx, agent_rx).with_theme_name("zephyr");
+    /// app.cycle_theme();
+    /// assert_eq!(app.active_theme_name(), "zephyr-light");
+    /// ```
+    pub fn cycle_theme(&mut self) {
+        const CYCLE: &[&str] = &["zephyr", "zephyr-light", "high-contrast"];
+        let pos = CYCLE
+            .iter()
+            .position(|&n| n == self.theme_name.as_str())
+            .unwrap_or(0);
+        let next = CYCLE[(pos + 1) % CYCLE.len()];
+        if let Err(e) = self.apply_theme(next) {
+            tracing::warn!("cycle_theme: failed to load '{}': {e}", next);
+        }
+    }
+
+    /// Return the name of the currently-active theme.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx).with_theme_name("gruvbox-dark");
+    /// assert_eq!(app.active_theme_name(), "gruvbox-dark");
+    /// ```
+    #[must_use]
+    pub fn active_theme_name(&self) -> &str {
+        &self.theme_name
+    }
+
+    /// Invalidate render caches in every session slot.
+    ///
+    /// Called on theme swap because cached `Line`s bake in theme `Style` values — stale
+    /// styles from the old theme would otherwise persist until a content change triggers a
+    /// miss. Must clear ALL sessions, not only the currently-active one.
+    fn clear_all_render_caches(&mut self) {
+        for slot in self.sessions.iter_mut() {
+            slot.render_cache.clear();
+        }
     }
 
     /// Return `true` while the splash screen should be displayed.
@@ -631,5 +797,93 @@ impl App {
     /// Called by the tick handler to advance the spinner frame each tick.
     pub fn throbber_state_mut(&mut self) -> &mut throbber_widgets_tui::ThrobberState {
         &mut self.throbber_state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use super::App;
+
+    fn make_app() -> App {
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        App::new(user_tx, agent_rx)
+    }
+
+    #[test]
+    fn apply_theme_path_traversal_rejected() {
+        let mut app = make_app();
+        assert!(
+            app.apply_theme("../../etc/passwd").is_err(),
+            "path traversal must be rejected"
+        );
+        assert!(
+            app.apply_theme("bad..name").is_err(),
+            "dotdot in name must be rejected"
+        );
+        assert!(app.apply_theme("").is_err(), "empty name must be rejected");
+        // Theme must remain unchanged after all failed attempts.
+        assert_eq!(app.active_theme_name(), "zephyr");
+    }
+
+    #[test]
+    fn apply_theme_valid_bumps_generation() {
+        let mut app = make_app();
+        let gen_before = app.theme_generation();
+        app.apply_theme("zephyr-light").expect("valid theme");
+        assert!(
+            app.theme_generation() > gen_before,
+            "generation must increment"
+        );
+        assert_eq!(app.active_theme_name(), "zephyr-light");
+    }
+
+    #[test]
+    fn apply_theme_invalidates_all_session_caches() {
+        use crate::app::RenderCacheKey;
+        use crate::widgets::tool_view::ToolDensity;
+
+        let mut app = make_app();
+
+        // Add a second session (pub(crate) — accessible within the same crate).
+        let _slot2_key = app.sessions.create("session 2");
+
+        // Populate the render cache of the current (first) session.
+        let dummy_key = RenderCacheKey {
+            content_hash: 1,
+            terminal_width: 80,
+            tool_expanded: false,
+            tool_density: ToolDensity::Inline,
+            show_labels: false,
+            theme_generation: 0,
+        };
+        app.sessions
+            .current_mut()
+            .render_cache
+            .put(0, dummy_key, vec![], vec![]);
+
+        // Verify the entry is present before the theme swap.
+        let hit_before = app.sessions.current().render_cache.get(0, &dummy_key);
+        assert!(hit_before.is_some(), "cache must contain the seeded entry");
+
+        // Swap theme → must clear caches in ALL sessions.
+        app.apply_theme("zephyr-light").expect("valid theme");
+
+        // After the swap the key has a stale theme_generation, so get() returns None.
+        let hit_after = app.sessions.current().render_cache.get(0, &dummy_key);
+        assert!(
+            hit_after.is_none(),
+            "cache must be cleared (or invalidated) on theme swap"
+        );
+    }
+
+    #[test]
+    fn with_theme_name_builder_sets_name() {
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx).with_theme_name("gruvbox-dark");
+        assert_eq!(app.active_theme_name(), "gruvbox-dark");
     }
 }

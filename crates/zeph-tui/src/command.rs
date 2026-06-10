@@ -112,7 +112,9 @@ pub enum TuiCommand {
     AcpAuthMethodsView,
     AcpStatus,
     // ACP sub-agent delegation (#3272)
-    SubagentSpawn { command: String },
+    SubagentSpawn {
+        command: String,
+    },
     // Sandbox egress status (#3294)
     SandboxStatus,
     // Cocoon sidecar inspection (#3673)
@@ -134,6 +136,11 @@ pub enum TuiCommand {
     KnowledgeStatus,
     KnowledgeRollbackPrompt,
     KnowledgeIngestPrompt,
+    // Theme runtime switching (#5090)
+    /// List all available theme presets.
+    ListThemes,
+    /// Switch to the named theme preset or user file.
+    SetTheme(String),
 }
 
 /// Metadata for a single entry in the command palette.
@@ -333,10 +340,17 @@ fn build_app_commands() -> Vec<CommandEntry> {
         },
         CommandEntry {
             id: "app:theme",
-            label: "Toggle theme (dark/light)",
+            label: "Cycle theme (zephyr → zephyr-light → high-contrast)",
             category: "app",
             shortcut: None,
             command: TuiCommand::ToggleTheme,
+        },
+        CommandEntry {
+            id: "app:theme-list",
+            label: "List available themes (/theme)",
+            category: "app",
+            shortcut: None,
+            command: TuiCommand::ListThemes,
         },
     ]
 }
@@ -936,7 +950,7 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 24);
+        assert_eq!(command_registry().len(), 25);
     }
 
     #[test]

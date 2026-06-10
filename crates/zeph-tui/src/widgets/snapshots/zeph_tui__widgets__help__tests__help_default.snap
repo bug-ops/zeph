@@ -1,9 +1,8 @@
 ---
 source: crates/zeph-tui/src/widgets/help.rs
-assertion_line: 113
 expression: output
 ---
-            ┌─────────── Help — press ? or Esc to close ───────────┐            
+            ╭─────────── Help — press ? or Esc to close ───────────╮            
             │Key                 Action                            │            
             │Normal mode                                           │            
             │q                   quit                              │            
@@ -32,4 +31,4 @@ expression: output
             │Esc                 return to normal mode             │            
             │Ctrl+U              clear input                       │            
             │Ctrl+K              clear queue                       │            
-            └──────────────────────────────────────────────────────┘
+            ╰──────────────────────────────────────────────────────╯

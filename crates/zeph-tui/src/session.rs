@@ -169,6 +169,11 @@ impl SessionRegistry {
         self.slots.iter()
     }
 
+    /// Mutably iterate over all slots in insertion order.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut SessionSlot> {
+        self.slots.values_mut()
+    }
+
     /// Focus the next slot cyclically. Single-slot case: no-op (silent).
     pub fn switch_next(&mut self) {
         if self.slots.len() <= 1 {

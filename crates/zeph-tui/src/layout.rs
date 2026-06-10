@@ -72,6 +72,8 @@ pub struct AppLayout {
     pub header: Rect,
     /// Main chat / transcript area.
     pub chat: Rect,
+    /// One-column vertical separator between chat and side panels (zero when panels hidden).
+    pub separator: Rect,
     /// Combined side-panel column (zero when hidden).
     pub side_panel: Rect,
     /// Skills mini-panel within the side column.
@@ -127,6 +129,7 @@ impl AppLayout {
             return Self {
                 header: outer[0],
                 chat: outer[1],
+                separator: Rect::default(),
                 side_panel: Rect::default(),
                 skills: Rect::default(),
                 memory: Rect::default(),
@@ -137,9 +140,14 @@ impl AppLayout {
             };
         }
 
+        // chat | 1-col separator | side panels
         let main_split = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .constraints([
+                Constraint::Percentage(69),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
             .split(outer[1]);
 
         let side_split = Layout::default()
@@ -150,12 +158,13 @@ impl AppLayout {
                 Constraint::Percentage(25),
                 Constraint::Percentage(25),
             ])
-            .split(main_split[1]);
+            .split(main_split[2]);
 
         Self {
             header: outer[0],
             chat: main_split[0],
-            side_panel: main_split[1],
+            separator: main_split[1],
+            side_panel: main_split[2],
             skills: side_split[0],
             memory: side_split[1],
             resources: side_split[2],

@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -79,40 +79,43 @@ fn render_probe_last_line<'a>(metrics: &'a MetricsSnapshot, lines: &mut Vec<Line
 }
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
-    let mut mem_lines = vec![Line::from(format!(
-        "  SQLite: {} msgs",
-        metrics.sqlite_message_count
-    ))];
+    let mut mem_lines = vec![
+        Line::from(Span::styled(
+            "memory",
+            theme.system_message.add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("  sqlite: {} msgs", metrics.sqlite_message_count)),
+    ];
     if metrics.qdrant_available {
         mem_lines.push(Line::from(format!(
-            "  Vector: {} (connected)",
+            "  vector: {} (connected)",
             metrics.vector_backend
         )));
     } else if !metrics.vector_backend.is_empty() {
         mem_lines.push(Line::from(format!(
-            "  Vector: {} (offline)",
+            "  vector: {} (offline)",
             metrics.vector_backend
         )));
     }
     mem_lines.push(Line::from(format!(
-        "  Conv ID: {}",
+        "  conv id: {}",
         metrics
             .sqlite_conversation_id
             .map_or_else(|| "---".to_string(), |id| id.to_string())
     )));
     mem_lines.push(Line::from(format!(
-        "  Embeddings: {}",
+        "  embeddings: {}",
         metrics.embeddings_generated
     )));
     {
         mem_lines.push(Line::from(format!(
-            "  Graph: {} entities, {} edges, {} communities",
+            "  graph: {} entities, {} edges, {} communities",
             metrics.graph_entities_total,
             metrics.graph_edges_total,
             metrics.graph_communities_total,
         )));
         mem_lines.push(Line::from(format!(
-            "  Graph extractions: {} ok, {} failed",
+            "  graph extractions: {} ok, {} failed",
             metrics.graph_extraction_count, metrics.graph_extraction_failures,
         )));
     }
@@ -132,29 +135,24 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         let s = pct(metrics.compaction_probe_soft_failures);
         let h = pct(metrics.compaction_probe_failures);
         let e = pct(metrics.compaction_probe_errors);
-        mem_lines.push(Line::from(format!("  Probe: P {p}% S {s}% H {h}% E {e}%")));
+        mem_lines.push(Line::from(format!("  probe: P {p}% S {s}% H {h}% E {e}%")));
 
         render_probe_last_line(metrics, &mut mem_lines);
     }
 
     if metrics.semantic_fact_count > 0 {
         mem_lines.push(Line::from(format!(
-            "  Semantic facts: {}",
+            "  semantic facts: {}",
             metrics.semantic_fact_count,
         )));
     }
     if metrics.guidelines_version > 0 {
         mem_lines.push(Line::from(format!(
-            "  Guidelines: v{} ({})",
+            "  guidelines: v{} ({})",
             metrics.guidelines_version, metrics.guidelines_updated_at,
         )));
     }
-    let memory = Paragraph::new(mem_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.panel_border)
-            .title(" Memory "),
-    );
+    let memory = Paragraph::new(mem_lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(memory, area);
 }
 

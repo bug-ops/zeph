@@ -2,15 +2,9 @@
 source: crates/zeph-tui/src/widgets/resources.rs
 expression: output
 ---
-┌ Resources ──────────────────────┐
-│  LLM                            │
-│    Provider: claude             │
-│    Model: opus-4                │
-│    Context: 8000 | Latency: 250m│
-│  Session: 12000 tok | 5 calls   │
-│                                 │
-│                                 │
-│                                 │
-│                                 │
-│                                 │
-└─────────────────────────────────┘
+resources                          
+  LLM                              
+    Provider: claude               
+    Model: opus-4                  
+    Context: 8000 | Latency: 250ms 
+  Session: 12000 tok | 5 calls

@@ -3,7 +3,8 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
+use ratatui::style::Modifier;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::layout::truncate_to_width;
@@ -12,19 +13,17 @@ use crate::theme::Theme;
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     let collapsed = area.height < 30;
-    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+        "resources",
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ))];
     append_llm_section(&mut lines, metrics);
     append_session_section(&mut lines, metrics, collapsed);
     append_infra_section(&mut lines, metrics, collapsed);
     append_shell_background_section(&mut lines, metrics);
     append_turn_latency_section(&mut lines, metrics);
     append_classifier_section(&mut lines, metrics);
-    let resources = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.panel_border)
-            .title(" Resources "),
-    );
+    let resources = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(resources, area);
 }
 
