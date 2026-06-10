@@ -30,7 +30,7 @@ impl DocumentLoader for PdfLoader {
         let path = path.to_path_buf();
         let max_size = self.max_file_size;
         Box::pin(async move {
-            let path = std::fs::canonicalize(&path)?;
+            let path = tokio::fs::canonicalize(&path).await?;
 
             let meta = tokio::fs::metadata(&path).await?;
             if meta.len() > max_size {

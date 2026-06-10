@@ -1263,18 +1263,13 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         let managed_dir = self.services.skill.managed_dir.clone();
         let mcp_allowed = self.services.mcp.allowed_commands.clone();
         let base_shell_allowed = self.runtime.lifecycle.startup_shell_overlay.allowed.clone();
-        // Collect ephemeral plugin names for display in the list subcommand.
-        let ephemeral_names: Vec<String> = self
+        // Collect manifest paths for ephemeral plugins. Reading the actual files is
+        // deferred into the async block below to avoid blocking the tokio worker thread.
+        let ephemeral_manifest_paths: Vec<std::path::PathBuf> = self
             .runtime
             .ephemeral_plugins
             .iter()
-            .filter_map(|tmp| {
-                let manifest_path = tmp.path().join("plugin.toml");
-                std::fs::read_to_string(manifest_path)
-                    .ok()
-                    .and_then(|s| toml::from_str::<zeph_plugins::PluginManifest>(&s).ok())
-                    .map(|m| m.plugin.name)
-            })
+            .map(|tmp| tmp.path().join("plugin.toml"))
             .collect();
 
         // Resolve scanner once, before the async block captures `self`.
@@ -1338,6 +1333,19 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             {
                 return Ok(err);
             }
+
+            // Resolve ephemeral plugin names asynchronously before entering the blocking task.
+            let ephemeral_names: Vec<String> = {
+                use futures::future::join_all;
+                let futs = ephemeral_manifest_paths.into_iter().map(|p| async move {
+                    tokio::fs::read_to_string(&p)
+                        .await
+                        .ok()
+                        .and_then(|s| toml::from_str::<zeph_plugins::PluginManifest>(&s).ok())
+                        .map(|m| m.plugin.name)
+                });
+                join_all(futs).await.into_iter().flatten().collect()
+            };
 
             // PluginManager performs synchronous filesystem I/O (copy, remove_dir_all,
             // read_dir). Run on a blocking thread to avoid stalling the tokio worker.

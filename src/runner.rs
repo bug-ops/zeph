@@ -3872,8 +3872,9 @@ async fn run_experiment_session(
             anyhow::anyhow!("--experiment-run requires experiments.benchmark_file")
         })?;
 
-    let benchmark = BenchmarkSet::from_file(&benchmark_path)
-        .map_err(|e| anyhow::anyhow!("failed to load benchmark: {e}"))?;
+    let benchmark = tokio::task::spawn_blocking(move || BenchmarkSet::from_file(&benchmark_path))
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking panicked: {e}"))??;
 
     let provider_arc = Arc::new(provider);
     // Use a dedicated eval provider when `eval_provider` is configured to avoid self-judge bias.
