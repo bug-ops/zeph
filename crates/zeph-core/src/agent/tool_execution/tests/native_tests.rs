@@ -546,8 +546,6 @@ async fn record_chat_metrics_calls_observe_llm_latency() {
 
 fn make_agent_with_lsp_note(note: &'static str) -> Agent<MockChannel> {
     use std::sync::Arc;
-    use tokio_util::sync::CancellationToken;
-    use zeph_common::TaskSupervisor;
     let mut agent = Agent::new(
         mock_provider(vec![String::new()]),
         MockChannel::new(vec![]),
@@ -558,7 +556,6 @@ fn make_agent_with_lsp_note(note: &'static str) -> Agent<MockChannel> {
     );
     let enforcer = zeph_mcp::PolicyEnforcer::new(vec![]);
     let manager = Arc::new(zeph_mcp::McpManager::new(vec![], vec![], enforcer));
-    let sup = Arc::new(TaskSupervisor::new(CancellationToken::new()));
     let mut lsp_runner = crate::lsp_hooks::LspHookRunner::new(
         manager,
         crate::lsp_hooks::LspConfig {
@@ -566,7 +563,6 @@ fn make_agent_with_lsp_note(note: &'static str) -> Agent<MockChannel> {
             token_budget: 500,
             ..crate::lsp_hooks::LspConfig::default()
         },
-        sup,
     );
     lsp_runner.push_note("hover", note, 5);
     agent.services.session.lsp_hooks = Some(lsp_runner);
@@ -622,9 +618,6 @@ async fn lsp_notes_not_duplicated_on_retry() {
     );
     let enforcer = zeph_mcp::PolicyEnforcer::new(vec![]);
     let manager = Arc::new(zeph_mcp::McpManager::new(vec![], vec![], enforcer));
-    let sup = Arc::new(zeph_common::TaskSupervisor::new(
-        tokio_util::sync::CancellationToken::new(),
-    ));
     let mut lsp_runner = crate::lsp_hooks::LspHookRunner::new(
         manager,
         crate::lsp_hooks::LspConfig {
@@ -632,7 +625,6 @@ async fn lsp_notes_not_duplicated_on_retry() {
             token_budget: 500,
             ..crate::lsp_hooks::LspConfig::default()
         },
-        sup,
     );
     lsp_runner.push_note("hover", "fn bar() -> bool", 5);
 

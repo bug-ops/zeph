@@ -2794,11 +2794,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     // Wire LSP context injection hooks when the feature is enabled and configured.
     let agent = if config.lsp.enabled {
-        let runner = zeph_core::lsp_hooks::LspHookRunner::new(
-            lsp_mcp_manager,
-            config.lsp.clone(),
-            std::sync::Arc::clone(&supervisor),
-        );
+        let runner = zeph_core::lsp_hooks::LspHookRunner::new(lsp_mcp_manager, config.lsp.clone());
         agent.with_lsp_hooks(runner)
     } else {
         agent
