@@ -121,6 +121,10 @@ impl TuiChannel {
 }
 
 impl Channel for TuiChannel {
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.recv", skip_all)
+    )]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         match self.user_input_rx.recv().await {
             Some(text) => {
@@ -148,6 +152,10 @@ impl Channel for TuiChannel {
         })
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send", skip_all)
+    )]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         // Full message is the final rendered response for a turn; losing it leaves the chat
         // panel blank. Use a bounded timeout rather than try_send.
@@ -167,6 +175,10 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_chunk", skip_all)
+    )]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.accumulated.push_str(chunk);
         // Non-critical: dropping a chunk loses partial streaming output but agent continues.
@@ -176,18 +188,30 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.flush_chunks", skip_all)
+    )]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         // Non-critical: visual signal that streaming ended.
         let _ = self.agent_event_tx.try_send(AgentEvent::Flush);
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_typing", skip_all)
+    )]
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
         // Non-critical: throbber hint only.
         let _ = self.agent_event_tx.try_send(AgentEvent::Typing);
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_status", skip_all)
+    )]
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         // Non-critical: informational status text.
         let _ = self
@@ -196,12 +220,20 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_queue_count", skip_all)
+    )]
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         // Non-critical: display-only counter.
         let _ = self.agent_event_tx.try_send(AgentEvent::QueueCount(count));
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_context_estimate", skip_all)
+    )]
     async fn send_context_estimate(&mut self, tokens: usize) -> Result<(), ChannelError> {
         // Non-critical: informational estimate shown in the input block title.
         let _ = self
@@ -210,6 +242,10 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_diff", skip_all)
+    )]
     async fn send_diff(
         &mut self,
         diff: zeph_core::DiffData,
@@ -236,6 +272,10 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_tool_start", skip_all)
+    )]
     async fn send_tool_start(&mut self, event: ToolStartEvent) -> Result<(), ChannelError> {
         let command = event
             .params
@@ -257,6 +297,10 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_tool_output", skip_all)
+    )]
     async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
         tracing::debug!(
             tool_name = %event.tool_name.as_str(),
@@ -293,6 +337,10 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.confirm", skip_all)
+    )]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.agent_event_tx
@@ -305,6 +353,10 @@ impl Channel for TuiChannel {
         rx.await.map_err(|_| ChannelError::ConfirmCancelled)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.elicit", skip_all)
+    )]
     async fn elicit(
         &mut self,
         request: ElicitationRequest,
@@ -320,6 +372,10 @@ impl Channel for TuiChannel {
         rx.await.map_err(|_| ChannelError::ChannelClosed)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.notify_foreground_subagent_started", skip_all)
+    )]
     async fn notify_foreground_subagent_started(
         &mut self,
         id: &str,
@@ -335,6 +391,10 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.notify_foreground_subagent_completed", skip_all)
+    )]
     async fn notify_foreground_subagent_completed(
         &mut self,
         id: &str,

@@ -10,10 +10,10 @@
 //! missing) the panel shows the [`STATUS_UNAVAILABLE`] message.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 use crate::theme::Theme;
 
@@ -72,31 +72,29 @@ pub fn render(
     list_state: &mut ListState,
     theme: &Theme,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.panel_border)
-        .title(Span::styled(
-            " Durable [D] ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+    let exec_count = snapshot.executions.len();
+    let header_text = format!("durable · {exec_count}  [D]");
+    let header = Line::from(Span::styled(
+        header_text,
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ));
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(header), splits[0]);
 
-    let placeholder = if !snapshot.available {
-        Some((STATUS_UNAVAILABLE, Color::Yellow))
-    } else if snapshot.executions.is_empty() {
-        Some(("No durable executions recorded.", Color::DarkGray))
-    } else {
-        None
-    };
-
-    if let Some((text, color)) = placeholder {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let msg = ratatui::widgets::Paragraph::new(text).style(Style::default().fg(color));
-        frame.render_widget(msg, inner);
+    if !snapshot.available {
+        let msg = Paragraph::new(STATUS_UNAVAILABLE).style(Style::default().fg(Color::Yellow));
+        frame.render_widget(msg, splits[1]);
         return;
     }
 
-    let header = ListItem::new(Line::from(vec![Span::styled(
+    if snapshot.executions.is_empty() {
+        let msg = Paragraph::new("No durable executions recorded.")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(msg, splits[1]);
+        return;
+    }
+
+    let col_header = ListItem::new(Line::from(vec![Span::styled(
         format!(
             " {:<10}  {:<16}{:<10}{:>6}  {:>6}",
             "ID", "KIND", "STATUS", "STEPS", "AGE"
@@ -104,7 +102,7 @@ pub fn render(
         Style::default().add_modifier(Modifier::BOLD),
     )]));
 
-    let mut items: Vec<ListItem> = vec![header];
+    let mut items: Vec<ListItem> = vec![col_header];
     for (i, row) in snapshot.executions.iter().enumerate() {
         let selected = list_state.selected() == Some(i + 1);
         let base = if selected {
@@ -123,10 +121,8 @@ pub fn render(
         items.push(ListItem::new(line));
     }
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    frame.render_stateful_widget(list, area, list_state);
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    frame.render_stateful_widget(list, splits[1], list_state);
 }
 
 #[cfg(test)]

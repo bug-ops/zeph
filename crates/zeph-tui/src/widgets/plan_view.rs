@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Cell, Paragraph, Row, Table};
 
 use crate::metrics::MetricsSnapshot;
 use crate::widgets::spinner::breeze_frame;
@@ -22,12 +22,16 @@ fn status_color(status: &str) -> Color {
     }
 }
 
-fn render_placeholder(frame: &mut Frame, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("Plan");
+fn render_placeholder(frame: &mut Frame, area: Rect, theme: &crate::theme::Theme) {
+    let header = Line::from(Span::styled(
+        "plan · idle",
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ));
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(header), splits[0]);
     let para = Paragraph::new("No active plan. Use /plan <goal> to create one.")
-        .block(block)
         .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(para, area);
+    frame.render_widget(para, splits[1]);
 }
 
 fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool) -> Row<'static> {
@@ -105,47 +109,55 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool)
 /// * `area` — terminal rect to render into.
 /// * `tick` — current animation tick.
 /// * `ascii` — when `true`, uses ASCII-only spinner frames for terminals without Unicode support.
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8, ascii: bool) {
+pub fn render(
+    metrics: &MetricsSnapshot,
+    frame: &mut Frame,
+    area: Rect,
+    tick: u8,
+    ascii: bool,
+    theme: &crate::theme::Theme,
+) {
     let Some(ref snapshot) = metrics.orchestration_graph else {
-        render_placeholder(frame, area);
+        render_placeholder(frame, area, theme);
         return;
     };
 
     // Stale snapshots (completed/failed/canceled >30s ago) show as empty.
     if snapshot.is_stale() {
-        render_placeholder(frame, area);
+        render_placeholder(frame, area, theme);
         return;
     }
 
     let any_running = snapshot.tasks.iter().any(|t| t.status == "running");
 
-    let title = match snapshot.status.as_str() {
-        "created" => format!(
-            " Plan [pending confirmation]: {} ",
-            truncate_goal(&snapshot.goal, 30)
-        ),
-        "running" => format!(
-            " Plan {} [running…]: {} ",
-            breeze_frame(u64::from(tick), ascii),
-            truncate_goal(&snapshot.goal, 30)
-        ),
-        "completed" => format!(" Plan [completed]: {} ", truncate_goal(&snapshot.goal, 30)),
-        "failed" => format!(" Plan [failed]: {} ", truncate_goal(&snapshot.goal, 30)),
-        "paused" => format!(" Plan [paused]: {} ", truncate_goal(&snapshot.goal, 30)),
-        "canceled" => format!(" Plan [canceled]: {} ", truncate_goal(&snapshot.goal, 30)),
-        _ => format!(" Plan: {} ", truncate_goal(&snapshot.goal, 30)),
+    let status_tag = match snapshot.status.as_str() {
+        "created" => "pending",
+        "running" => {
+            if any_running {
+                breeze_frame(u64::from(tick), ascii)
+            } else {
+                "running"
+            }
+        }
+        "completed" => "completed",
+        "failed" => "failed",
+        "paused" => "paused",
+        "canceled" => "canceled",
+        _ => "active",
     };
-
-    // Show a spinner in the title when tasks are actively running.
-    let title_span = if any_running {
-        Span::styled(title, Style::default().fg(Color::Yellow))
+    let goal_short = truncate_goal(&snapshot.goal, 30);
+    let header_text = format!("plan · {status_tag} · {goal_short}");
+    let header_style = if any_running {
+        theme
+            .system_message
+            .add_modifier(Modifier::BOLD)
+            .fg(Color::Yellow)
     } else {
-        Span::raw(title)
+        theme.system_message.add_modifier(Modifier::BOLD)
     };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(title_span));
+    let header = Line::from(Span::styled(header_text, header_style));
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(header), splits[0]);
 
     let widths = [
         Constraint::Length(4),  // spinner or status icon (3 cells + 1 padding)
@@ -156,7 +168,7 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8
         Constraint::Length(8),  // duration
     ];
 
-    let header = Row::new([
+    let col_header = Row::new([
         Cell::from(""),
         Cell::from("#").style(Style::default().fg(Color::DarkGray)),
         Cell::from("Title").style(Style::default().fg(Color::DarkGray)),
@@ -172,11 +184,10 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, tick: u8
         .collect();
 
     let table = Table::new(rows, widths)
-        .header(header)
-        .block(block)
+        .header(col_header)
         .column_spacing(1);
 
-    frame.render_widget(table, area);
+    frame.render_widget(table, splits[1]);
 }
 
 fn truncate_goal(goal: &str, max: usize) -> String {
@@ -222,7 +233,14 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render(metrics, frame, area, 0, false);
+                render(
+                    metrics,
+                    frame,
+                    area,
+                    0,
+                    false,
+                    &crate::theme::Theme::default(),
+                );
             })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();

@@ -4,10 +4,10 @@
 //! TUI fleet panel: shows a live table of all agent sessions (#3884).
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use zeph_common::format_tokens;
 use zeph_memory::store::agent_sessions::{AgentSessionRow, SessionStatus};
 
@@ -78,24 +78,30 @@ pub fn render(
     list_state: &mut ListState,
     theme: &Theme,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.panel_border)
-        .title(Span::styled(
-            " Fleet [f] ",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+    let header_text = format!(
+        "fleet · {} session{}  [f]",
+        snapshot.sessions.len(),
+        if snapshot.sessions.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
+    );
+    let header = Line::from(Span::styled(
+        header_text,
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ));
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(header), splits[0]);
 
     if snapshot.sessions.is_empty() {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let msg = ratatui::widgets::Paragraph::new("No agent sessions recorded.")
+        let msg = Paragraph::new("No agent sessions recorded.")
             .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(msg, inner);
+        frame.render_widget(msg, splits[1]);
         return;
     }
 
-    let header = ListItem::new(Line::from(vec![Span::styled(
+    let col_header = ListItem::new(Line::from(vec![Span::styled(
         format!(
             " {:<8}  {:<12}{:<11}{:<5}{:<22}{:>5}  {:<15}{}",
             "ID", "KIND", "STATUS", "CH", "MODEL", "TURNS", "P/C TOKENS", "COST"
@@ -103,16 +109,14 @@ pub fn render(
         Style::default().add_modifier(Modifier::BOLD),
     )]));
 
-    let mut items: Vec<ListItem> = vec![header];
+    let mut items: Vec<ListItem> = vec![col_header];
     for (i, row) in snapshot.sessions.iter().enumerate() {
         let selected = list_state.selected() == Some(i + 1);
         items.push(build_session_item(row, selected));
     }
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    frame.render_stateful_widget(list, area, list_state);
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    frame.render_stateful_widget(list, splits[1], list_state);
 }
 
 #[cfg(test)]

@@ -19,10 +19,10 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{List, ListItem, Paragraph};
 use zeph_common::task_supervisor::{TaskSnapshot, TaskStatus};
 
 use crate::theme::Theme;
@@ -109,17 +109,18 @@ pub fn render(
     theme: &Theme,
     ascii: bool,
 ) {
-    let title = format!(" Tasks ({}) ", snapshots.len());
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.panel_border)
-        .title(title);
+    let header_text = format!("tasks · {}", snapshots.len());
+    let header = Line::from(Span::styled(
+        header_text,
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ));
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(header), splits[0]);
 
     if snapshots.is_empty() {
-        let paragraph = Paragraph::new(" No supervised tasks registered yet.")
-            .block(block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        let paragraph =
+            Paragraph::new("No supervised tasks registered yet.").style(theme.system_message);
+        frame.render_widget(paragraph, splits[1]);
         return;
     }
 
@@ -127,8 +128,8 @@ pub fn render(
         .iter()
         .map(|s| build_list_item(s, tick, ascii))
         .collect();
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    let list = List::new(items);
+    frame.render_widget(list, splits[1]);
 }
 
 #[cfg(test)]

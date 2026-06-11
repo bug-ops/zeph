@@ -147,35 +147,65 @@ impl App {
         layout: &AppLayout,
         effective: [bool; 4],
     ) {
+        use ratatui::layout::{Constraint, Direction, Layout};
+
+        let focused_panel = self.active_panel;
+
         if effective[0] {
-            self.render_collapsed_summary(frame, layout.skills, "Skills");
+            self.render_collapsed_summary(
+                frame,
+                layout.skills,
+                "skills",
+                focused_panel == super::Panel::Skills,
+            );
+        } else if focused_panel == super::Panel::Skills {
+            self.render_section_header(frame, layout.skills, "skills");
+            let inner = shrink_top(layout.skills, 1);
+            widgets::skills::render(&self.metrics, frame, inner, &self.theme);
         } else {
             widgets::skills::render(&self.metrics, frame, layout.skills, &self.theme);
         }
 
         if effective[1] {
-            self.render_collapsed_summary(frame, layout.memory, "Memory");
+            self.render_collapsed_summary(
+                frame,
+                layout.memory,
+                "memory",
+                focused_panel == super::Panel::Memory,
+            );
+        } else if focused_panel == super::Panel::Memory {
+            self.render_section_header(frame, layout.memory, "memory");
+            let inner = shrink_top(layout.memory, 1);
+            widgets::memory::render(&self.metrics, frame, inner, &self.theme);
         } else {
             widgets::memory::render(&self.metrics, frame, layout.memory, &self.theme);
         }
 
         if effective[2] {
-            self.render_collapsed_summary(frame, layout.resources, "Resources");
+            self.render_collapsed_summary(
+                frame,
+                layout.resources,
+                "resources",
+                focused_panel == super::Panel::Resources,
+            );
         } else {
-            // Split the resources area into: context gauge (3 rows), compaction badge (3 rows),
-            // and the remaining resources panel. Each gauge/badge needs at least its border rows.
-            use ratatui::layout::{Constraint, Direction, Layout};
-            let context_split = Layout::default()
+            let resources_area = if focused_panel == super::Panel::Resources {
+                self.render_section_header(frame, layout.resources, "resources");
+                shrink_top(layout.resources, 1)
+            } else {
+                layout.resources
+            };
+            let splits = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(3),
                     Constraint::Length(3),
                     Constraint::Min(0),
                 ])
-                .split(layout.resources);
-            widgets::context_gauge::render(&self.metrics, frame, context_split[0]);
-            widgets::compaction_badge::render(&self.metrics, frame, context_split[1]);
-            widgets::resources::render(&self.metrics, frame, context_split[2], &self.theme);
+                .split(resources_area);
+            widgets::context_gauge::render(&self.metrics, frame, splits[0]);
+            widgets::compaction_badge::render(&self.metrics, frame, splits[1]);
+            widgets::resources::render(&self.metrics, frame, splits[2], &self.theme);
         }
 
         let tick = self.throbber_state.index().cast_unsigned();
@@ -187,79 +217,132 @@ impl App {
         let panel_focused = self.active_panel == Panel::SubAgents;
 
         if effective[3] {
-            self.render_collapsed_summary(frame, layout.subagents, "Agents");
+            self.render_collapsed_summary(
+                frame,
+                layout.subagents,
+                "agents",
+                focused_panel == Panel::SubAgents,
+            );
         } else {
-            // When SubAgents panel is focused (`a` key), always show the interactive sidebar.
-            // Otherwise: auto-show plan when graph active, security events, or subagents list.
-            if panel_focused {
-                widgets::subagents::render_interactive(
-                    &self.metrics,
-                    &mut self.subagent_sidebar,
-                    frame,
-                    layout.subagents,
+            self.render_subagents_slot(
+                frame,
+                layout.subagents,
+                tick,
+                ascii,
+                panel_focused,
+                has_graph,
+            );
+        }
+    }
+
+    fn render_subagents_slot(
+        &mut self,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        tick: u8,
+        ascii: bool,
+        panel_focused: bool,
+        has_graph: bool,
+    ) {
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::Paragraph;
+
+        // When SubAgents panel is focused (`a` key), always show the interactive sidebar.
+        // Otherwise: auto-show plan when graph active, security events, or subagents list.
+        if panel_focused {
+            widgets::subagents::render_interactive(
+                &self.metrics,
+                &mut self.subagent_sidebar,
+                frame,
+                area,
+                tick,
+                &self.theme,
+                ascii,
+            );
+        } else if has_graph && !self.sessions.current().plan_view_active {
+            widgets::plan_view::render(&self.metrics, frame, area, tick, ascii, &self.theme);
+        } else if self.has_recent_security_events() {
+            widgets::security::render(&self.metrics, frame, area, &self.theme);
+        } else {
+            widgets::subagents::render(&self.metrics, frame, area, &self.theme);
+        }
+
+        // Overlay fleet panel over the subagents slot when `f` key is active (#3884).
+        if self.active_panel == Panel::Fleet {
+            widgets::fleet::render(
+                &self.fleet_snapshot,
+                frame,
+                area,
+                &mut self.fleet_list_state,
+                &self.theme,
+            );
+        }
+
+        // Overlay durable panel over the subagents slot when `D` key is active (spec-064, #4949).
+        if self.active_panel == Panel::Durable {
+            widgets::durable::render(
+                &self.durable_snapshot,
+                frame,
+                area,
+                &mut self.durable_list_state,
+                &self.theme,
+            );
+        }
+
+        // Overlay task registry over the subagents slot when `/tasks` is toggled.
+        if self.show_task_panel {
+            if self.task_supervisor.is_some() {
+                widgets::task_registry::render(
+                    &self.cached_task_snapshots,
                     tick,
+                    area,
+                    frame,
                     &self.theme,
                     ascii,
                 );
-            } else if has_graph && !self.sessions.current().plan_view_active {
-                widgets::plan_view::render(&self.metrics, frame, layout.subagents, tick, ascii);
-            } else if self.has_recent_security_events() {
-                widgets::security::render(&self.metrics, frame, layout.subagents, &self.theme);
             } else {
-                widgets::subagents::render(&self.metrics, frame, layout.subagents, &self.theme);
-            }
-
-            // Overlay fleet panel over the subagents slot when `f` key is active (#3884).
-            if self.active_panel == Panel::Fleet {
-                widgets::fleet::render(
-                    &self.fleet_snapshot,
-                    frame,
-                    layout.subagents,
-                    &mut self.fleet_list_state,
-                    &self.theme,
-                );
-            }
-
-            // Overlay durable panel over the subagents slot when `D` key is active (spec-064, #4949).
-            if self.active_panel == Panel::Durable {
-                widgets::durable::render(
-                    &self.durable_snapshot,
-                    frame,
-                    layout.subagents,
-                    &mut self.durable_list_state,
-                    &self.theme,
-                );
-            }
-
-            // Overlay task registry over the subagents slot when `/tasks` is toggled.
-            if self.show_task_panel {
-                if self.task_supervisor.is_some() {
-                    widgets::task_registry::render(
-                        &self.cached_task_snapshots,
-                        tick,
-                        layout.subagents,
-                        frame,
-                        &self.theme,
-                        ascii,
-                    );
-                } else {
-                    use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-                    let theme = &self.theme;
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme.panel_border)
-                        .title(" Tasks ");
-                    let paragraph = Paragraph::new(" Task supervisor not available.")
-                        .block(block)
-                        .wrap(Wrap { trim: true });
-                    frame.render_widget(paragraph, layout.subagents);
-                }
+                let theme = &self.theme;
+                let header = Line::from(vec![
+                    Span::styled("⬡ ", theme.highlight),
+                    Span::styled("tasks  supervisor not available", theme.system_message),
+                ]);
+                frame.render_widget(Paragraph::new(header), area);
             }
         }
     }
 
     /// Render a single-row collapsed summary bar for the given panel label.
+    ///
+    /// When `focused` is true the brand glyph prefix and accent color replace the muted style.
     fn render_collapsed_summary(
+        &self,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        label: &str,
+        focused: bool,
+    ) {
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::Paragraph;
+
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let line = if focused {
+            Line::from(vec![
+                Span::styled("⬡ ", self.theme.highlight),
+                Span::styled(label, self.theme.highlight),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("▸ ", self.theme.panel_border),
+                Span::styled(label, self.theme.panel_title),
+            ])
+        };
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    /// Render a single-row focused section header (brand glyph + accent color).
+    fn render_section_header(
         &self,
         frame: &mut ratatui::Frame,
         area: ratatui::layout::Rect,
@@ -272,9 +355,27 @@ impl App {
             return;
         }
         let line = Line::from(vec![
-            Span::styled("▸ ", self.theme.panel_border),
-            Span::styled(label, self.theme.panel_title),
+            Span::styled("⬡ ", self.theme.highlight),
+            Span::styled(label, self.theme.highlight),
         ]);
         frame.render_widget(Paragraph::new(line), area);
+    }
+}
+
+/// Return `area` with the top `n` rows removed.
+fn shrink_top(area: ratatui::layout::Rect, n: u16) -> ratatui::layout::Rect {
+    if n >= area.height {
+        return ratatui::layout::Rect {
+            x: area.x,
+            y: area.y + area.height,
+            width: area.width,
+            height: 0,
+        };
+    }
+    ratatui::layout::Rect {
+        x: area.x,
+        y: area.y + n,
+        width: area.width,
+        height: area.height - n,
     }
 }

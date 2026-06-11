@@ -76,15 +76,22 @@ fn build_agent_list_item<'a>(
 
 /// Non-interactive render (used when `SubAgents` panel is not focused).
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
+    use ratatui::text::Span;
+
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
     if metrics.sub_agents.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.panel_border)
-            .title(" Sub-Agents ");
-        let paragraph = Paragraph::new(" No sub-agents. Use /agent spawn <name> to create one.")
-            .block(block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        let header = Line::from(Span::styled(
+            "agents · none",
+            theme.system_message.add_modifier(Modifier::BOLD),
+        ));
+        let body = Paragraph::new(vec![
+            header,
+            Line::from("  No sub-agents. Use /agent spawn <name> to create one."),
+        ]);
+        frame.render_widget(body, area);
         return;
     }
 
@@ -96,13 +103,19 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         .map(|sa| build_agent_list_item(sa, 0, false, false))
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.panel_border)
-            .title(format!(" Sub-Agents ({}) ", metrics.sub_agents.len())),
-    );
-    frame.render_widget(list, area);
+    let header = Line::from(Span::styled(
+        format!("agents · {}", metrics.sub_agents.len()),
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ));
+
+    // Render header, then the list below it.
+    if area.height <= 1 {
+        frame.render_widget(Paragraph::new(vec![header]), area);
+        return;
+    }
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(vec![header]), splits[0]);
+    frame.render_widget(List::new(items), splits[1]);
 }
 
 /// Interactive render: shows selection highlight and spinner animation.
@@ -116,15 +129,25 @@ pub fn render_interactive(
     theme: &Theme,
     ascii: bool,
 ) {
+    use ratatui::text::Span;
+
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
     if metrics.sub_agents.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.highlight)
-            .title(" Sub-Agents [focused] ");
-        let paragraph = Paragraph::new(" No sub-agents. Use /agent spawn <name> to create one.")
-            .block(block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        let header = Line::from(vec![
+            Span::styled("⬡ ", theme.highlight),
+            Span::styled(
+                "agents · none  [j/k=nav  Esc=close]",
+                theme.highlight.add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let body = Paragraph::new(vec![
+            header,
+            Line::from("  No sub-agents. Use /agent spawn <name> to create one."),
+        ]);
+        frame.render_widget(body, area);
         return;
     }
 
@@ -136,16 +159,24 @@ pub fn render_interactive(
         .map(|(i, sa)| build_agent_list_item(sa, tick, selected == Some(i), ascii))
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme.highlight)
-            .title(format!(
-                " Sub-Agents ({}) [j/k=nav  Enter=view  Esc=close] ",
+    let header = Line::from(vec![
+        Span::styled("⬡ ", theme.highlight),
+        Span::styled(
+            format!(
+                "agents · {}  [j/k=nav  Enter=view  Esc=close]",
                 metrics.sub_agents.len()
-            )),
-    );
-    frame.render_stateful_widget(list, area, &mut sidebar.list_state);
+            ),
+            theme.highlight.add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    if area.height <= 1 {
+        frame.render_widget(Paragraph::new(vec![header]), area);
+        return;
+    }
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(vec![header]), splits[0]);
+    frame.render_stateful_widget(List::new(items), splits[1], &mut sidebar.list_state);
 }
 
 // ── Definition manager ────────────────────────────────────────────────────────
@@ -1006,8 +1037,8 @@ mod tests {
             super::render(&metrics, frame, area, &theme);
         });
         assert!(
-            output.contains("Sub-Agents") && output.contains("No sub-agents"),
-            "expected placeholder text, got: {output:?}"
+            output.contains("agents") && output.contains("No sub-agents"),
+            "expected placeholder text with data-first header, got: {output:?}"
         );
     }
 
@@ -1044,7 +1075,10 @@ mod tests {
             let theme = crate::theme::Theme::default();
             super::render(&metrics, frame, area, &theme);
         });
-        assert!(output.contains("Sub-Agents"));
+        assert!(
+            output.contains("agents"),
+            "expected data-first header; got: {output:?}"
+        );
         assert!(output.contains("code-reviewer"));
         assert!(output.contains("test-writer"));
         assert!(output.contains("[dont_ask]"));

@@ -247,6 +247,7 @@ profiling = [
     "zeph-skills/profiling",
     "zeph-mcp/profiling",
     "zeph-channels/profiling",
+    "zeph-tui?/profiling",
 ]
 profiling-alloc = ["profiling", "zeph-core/profiling-alloc"]
 profiling-pyroscope = ["profiling", "otel", "dep:pprof"]

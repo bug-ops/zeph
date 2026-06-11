@@ -2,23 +2,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem, Paragraph};
 
 use crate::metrics::{MetricsSnapshot, SecurityEventCategory};
 use crate::theme::Theme;
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
-    let block = Block::default()
-        .title(" Security ")
-        .borders(Borders::ALL)
-        .style(theme.panel_border);
+    let event_count = metrics.security_events.len();
+    let header_text = format!(
+        "security · {event_count} event{}",
+        if event_count == 1 { "" } else { "s" }
+    );
+    let header = Line::from(Span::styled(
+        header_text,
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ));
+    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(header), splits[0]);
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
+    let inner = splits[1];
     if inner.height == 0 {
         return;
     }

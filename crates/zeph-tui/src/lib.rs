@@ -100,6 +100,10 @@ pub use types::{ChatMessage, InputMode, MessageRole, PasteState};
 ///     run_tui(app, event_rx).await
 /// }
 /// ```
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "tui.lib.run_tui", skip_all)
+)]
 pub async fn run_tui(mut app: App, mut event_rx: mpsc::Receiver<AppEvent>) -> Result<(), TuiError> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -142,6 +146,10 @@ enum DirtyState {
     Full,
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "tui.lib.tui_loop", skip_all)
+)]
 async fn tui_loop(
     app: &mut App,
     event_rx: &mut mpsc::Receiver<AppEvent>,
