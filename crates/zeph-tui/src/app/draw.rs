@@ -16,9 +16,26 @@ impl App {
             collapsed,
         );
 
+        // Micro-delight state is advanced in tick_delights() (called on AppEvent::Tick).
+        // draw() only reads the current state for rendering.
+        let now = self.anim_tick();
+        let cur_show_splash = self.sessions.current().show_splash;
+        let shimmer_enabled =
+            self.motion != zeph_config::Motion::Off && self.delights.splash_shimmer;
+
         self.draw_header(frame, layout.header);
-        if self.sessions.current().show_splash {
-            widgets::splash::render(frame, layout.chat, self.effective_color_mode());
+        if cur_show_splash {
+            let shimmer_phase = if shimmer_enabled {
+                self.splash_shimmer.phase(now)
+            } else {
+                None
+            };
+            widgets::splash::render(
+                frame,
+                layout.chat,
+                self.effective_color_mode(),
+                shimmer_phase,
+            );
         } else {
             let mut cache = std::mem::take(&mut self.sessions.current_mut().render_cache);
             let max_scroll = widgets::chat::render(self, frame, layout.chat, &mut cache);
@@ -65,6 +82,11 @@ impl App {
         if let Some(state) = &self.reverse_search {
             let history = self.sessions.current().input_history.clone();
             widgets::reverse_search::render(state, &history, frame, layout.input, &self.theme);
+        }
+
+        // Render toasts above the input, below modal overlays.
+        if self.motion != zeph_config::Motion::Off && self.delights.toasts {
+            widgets::toast::render(&self.toasts, frame, layout.chat, &self.theme, now);
         }
 
         if let Some(state) = &self.confirm_state {

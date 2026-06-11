@@ -56,9 +56,9 @@ use super::{
     migrate_session_persist_provider_overrides, migrate_session_provider_persistence,
     migrate_session_recap_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
-    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_theme_config,
-    migrate_tui_theme_defaults, migrate_vigil_config, migrate_worktree_config,
-    migrate_worktree_git_timeout,
+    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
+    migrate_tui_theme_config, migrate_tui_theme_defaults, migrate_vigil_config,
+    migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
 // ── Wrapper structs for all 64 sequential migration steps ───────────────────────────────────────
@@ -786,5 +786,16 @@ impl Migration for MigrateTuiThemeDefaults {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_tui_theme_defaults(toml_src)
+    }
+}
+
+pub(super) struct MigrateTuiDelights;
+impl Migration for MigrateTuiDelights {
+    fn name(&self) -> &'static str {
+        "migrate_tui_delights"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_tui_delights(toml_src)
     }
 }

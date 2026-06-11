@@ -23,7 +23,8 @@ pub use features::{
     migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
     migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
-    migrate_orchestration_persistence, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_orchestration_persistence, migrate_tui_delights, migrate_tui_theme_config,
+    migrate_tui_theme_defaults,
 };
 pub use infra::*;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
@@ -613,11 +614,11 @@ use steps::{
     MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
     MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
     MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
-    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateVigilConfig, MigrateWorktreeConfig,
-    MigrateWorktreeGitTimeout,
+    MigrateTuiDelights, MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateVigilConfig,
+    MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–66).
+/// Ordered registry of all sequential migration steps (steps 1–67).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -732,6 +733,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateTuiThemeConfig),
             // Step 66 — insert active name/color_mode defaults into [tui.theme] (#5091)
             Box::new(MigrateTuiThemeDefaults),
+            // Step 67 — add [tui.delights] advisory block (#5104)
+            Box::new(MigrateTuiDelights),
         ]
     });
 

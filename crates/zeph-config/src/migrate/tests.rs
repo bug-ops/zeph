@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        66,
-        "MIGRATIONS registry must contain all 66 sequential steps"
+        67,
+        "MIGRATIONS registry must contain all 67 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 66);
+    assert_eq!(MIGRATIONS.len(), 67);
 }
 
 #[test]
@@ -1752,6 +1752,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_policy_provider_and_utility_window",
         "migrate_tui_theme_config",
         "migrate_tui_theme_defaults",
+        "migrate_tui_delights",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2891,5 +2892,50 @@ fn step_66_inserts_only_missing_key_when_one_present() {
         result.output.matches("name").count(),
         1,
         "name must appear exactly once"
+    );
+}
+
+// ── Step 67 — migrate_tui_delights (#5104) ────────────────────────────────
+
+#[test]
+fn step_67_injects_delights_block_when_tui_present_and_no_delights() {
+    let src = "[tui]\nmotion = \"full\"\n";
+    let result = migrate_tui_delights(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.output.contains("[tui.delights]"),
+        "advisory block must be injected"
+    );
+    assert!(
+        result.output.contains("stream_metrics"),
+        "stream_metrics key must be in advisory"
+    );
+    assert_eq!(result.sections_changed, vec!["tui.delights"]);
+}
+
+#[test]
+fn step_67_noop_when_tui_delights_already_present() {
+    let src = "[tui]\nmotion = \"full\"\n\n[tui.delights]\nstream_metrics = false\n";
+    let result = migrate_tui_delights(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_67_noop_when_no_tui_section() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_tui_delights(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_67_idempotent_on_commented_delights() {
+    // Simulate a config where the advisory was already injected (commented-out header present).
+    let src = "[tui]\nmotion = \"full\"\n\n# [tui.delights]\n# stream_metrics = true\n";
+    let result = migrate_tui_delights(src).expect("migrate");
+    assert_eq!(
+        result.changed_count, 0,
+        "must not inject twice when commented-out delights already present"
     );
 }

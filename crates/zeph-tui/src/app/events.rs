@@ -19,6 +19,7 @@ impl App {
             AppEvent::Tick => {
                 self.throbber_state.calc_next();
                 self.wave_tick = self.wave_tick.saturating_add(1);
+                self.tick_delights();
             }
             AppEvent::Resize(_, _) => {
                 self.sessions.current_mut().render_cache.clear();
@@ -73,6 +74,9 @@ impl App {
                         .push(ChatMessage::new(MessageRole::Assistant, text).streaming());
                     self.trim_messages();
                 }
+                // Micro-delight: update streaming rate estimate with current completion tokens.
+                let completion_tokens = self.metrics.completion_tokens;
+                self.stream_rate.on_token_chunk(completion_tokens);
                 // No explicit cache invalidation needed: the cache key includes
                 // content_hash, so new chunk content causes a natural cache miss.
                 self.auto_scroll();
@@ -105,6 +109,8 @@ impl App {
                 self.sessions.current_mut().status_label = Some("thinking...".to_owned());
                 // Turn begins — initialize the stall clock so the first frame is Swell, not Stalled.
                 self.last_progress_at = Instant::now();
+                // Micro-delight: reset streaming rate tracker for this new turn.
+                self.stream_rate.on_turn_start();
             }
             AgentEvent::Status(text) => {
                 self.sessions.current_mut().status_label =
@@ -376,6 +382,60 @@ impl App {
             msg.filter_stats = filter_stats;
         }
         self.auto_scroll();
+        self.maybe_flash_completed_group();
+    }
+
+    /// If the most recently completed tool message belongs to a fully-resolved group,
+    /// trigger a completion flash for that group (#5104).
+    ///
+    /// Groups are defined as a contiguous run of [`MessageRole::Tool`] messages in the
+    /// transcript. We scan backward from the last Tool message to find the group's
+    /// `start_idx`, then verify that every message in the run is no longer streaming.
+    fn maybe_flash_completed_group(&mut self) {
+        if self.motion == zeph_config::Motion::Off || !self.delights.completion_flash {
+            return;
+        }
+
+        let messages = &self.sessions.current().messages;
+
+        // Find the last Tool message index.
+        let Some(last_tool_pos) = messages.iter().rposition(|m| m.role == MessageRole::Tool) else {
+            return;
+        };
+
+        // Walk backward to find the start of the contiguous Tool run.
+        let mut start_idx = last_tool_pos;
+        while start_idx > 0 && messages[start_idx - 1].role == MessageRole::Tool {
+            start_idx -= 1;
+        }
+
+        // Check that every message in this run is finalized (not streaming).
+        let all_done = messages[start_idx..=last_tool_pos]
+            .iter()
+            .all(|m| !m.streaming && m.success.is_some());
+        if !all_done {
+            return;
+        }
+
+        // Avoid re-flashing a group that already flashed this tick cycle.
+        if self.sessions.current().flashed_groups.contains(&start_idx) {
+            return;
+        }
+
+        let group_size = last_tool_pos - start_idx + 1;
+        let now = self.anim_tick();
+        self.sessions.current_mut().flashed_groups.insert(start_idx);
+        self.sessions.current_mut().flash.insert(start_idx, now);
+
+        // Show a transient success toast when the toasts delight is also enabled.
+        if self.delights.toasts {
+            let text = if group_size == 1 {
+                "Tool done".to_owned()
+            } else {
+                format!("{group_size} tools done")
+            };
+            self.push_toast(text, crate::delights::ToastKind::Success);
+        }
     }
 
     #[must_use]

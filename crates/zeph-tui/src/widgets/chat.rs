@@ -49,6 +49,14 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     let messages = app.visible_messages();
     let truncation_info = app.transcript_truncation_info();
 
+    let flash_enabled = app.motion != zeph_config::Motion::Off && app.delights.completion_flash;
+    let flash_groups = if flash_enabled {
+        app.sessions.current().flash.active_set(app.anim_tick())
+    } else {
+        std::collections::HashSet::new()
+    };
+    let flash_style = app.theme.tool_accent;
+
     let (mut lines, all_md_links) = collect_message_lines_from(
         &messages,
         truncation_info.as_deref(),
@@ -62,6 +70,8 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
         usize::try_from(app.throbber_state().index().rem_euclid(6)).unwrap_or(0),
         app.is_ascii_only(),
         app.theme_generation(),
+        &flash_groups,
+        flash_style,
     );
 
     let total = lines.len();
@@ -119,6 +129,8 @@ fn collect_message_lines_from(
     throbber_idx: usize,
     ascii: bool,
     theme_generation: u64,
+    flash_groups: &std::collections::HashSet<usize>,
+    flash_style: ratatui::style::Style,
 ) -> (Vec<Line<'static>>, Vec<MdLink>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut all_md_links: Vec<MdLink> = Vec::new();
@@ -261,7 +273,13 @@ fn collect_message_lines_from(
                     rendered
                 };
 
+                let flash_active = flash_groups.contains(start_idx);
                 for mut line in group_lines {
+                    if flash_active {
+                        for span in &mut line.spans {
+                            span.style = span.style.patch(flash_style);
+                        }
+                    }
                     line.spans.insert(0, Span::raw("  "));
                     lines.push(line);
                 }
@@ -1705,6 +1723,8 @@ mod tests {
             0,
             false,
             0,
+            &std::collections::HashSet::new(),
+            ratatui::style::Style::default(),
         );
         let all_text: String = lines
             .iter()
@@ -1764,6 +1784,8 @@ mod tests {
             0,
             false,
             0,
+            &std::collections::HashSet::new(),
+            ratatui::style::Style::default(),
         );
         let has_bg = lines
             .iter()
@@ -2218,6 +2240,8 @@ mod tests {
             0,
             false,
             0,
+            &std::collections::HashSet::new(),
+            ratatui::style::Style::default(),
         );
         let text: String = lines
             .iter()

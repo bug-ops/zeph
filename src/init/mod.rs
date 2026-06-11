@@ -294,6 +294,8 @@ pub(crate) struct WizardState {
     pub(crate) tui_theme_name: String,
     /// Terminal colour mode override.
     pub(crate) tui_color_mode: zeph_config::ColorMode,
+    /// Whether TUI micro-delights are enabled (tok/s, toasts, flash, scroll, shimmer).
+    pub(crate) tui_delights_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -487,6 +489,7 @@ impl Default for WizardState {
             deep_link_confirm_before_prompt: true,
             tui_theme_name: "zephyr".to_owned(),
             tui_color_mode: zeph_config::ColorMode::Auto,
+            tui_delights_enabled: true,
         }
     }
 }
@@ -562,6 +565,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     #[cfg(feature = "deep-link")]
     step_deep_link(&mut state)?;
     step_tui_theme(&mut state)?;
+    step_tui_delights(&mut state)?;
     step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -1215,6 +1219,17 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.tui.theme.name.clone_from(&state.tui_theme_name);
     config.tui.theme.color_mode = state.tui_color_mode;
 
+    // Apply TUI delights (#5104).
+    if !state.tui_delights_enabled {
+        config.tui.delights = zeph_config::DelightsConfig {
+            stream_metrics: false,
+            toasts: false,
+            completion_flash: false,
+            smooth_scroll: false,
+            splash_shimmer: false,
+        };
+    }
+
     config
 }
 
@@ -1790,6 +1805,29 @@ fn step_deep_link(state: &mut WizardState) -> anyhow::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the terminal prompt interaction fails.
+fn step_tui_delights(state: &mut WizardState) -> anyhow::Result<()> {
+    use dialoguer::Confirm;
+    println!("== TUI Micro-Delights ==\n");
+    println!("Enable animated micro-delights in the TUI dashboard:");
+    println!("  • tok/s and TTFT in the status bar during/after LLM turns");
+    println!("  • ephemeral toast notifications (theme switch, copy, etc.)");
+    println!("  • completion flash on finished tool groups");
+    println!("  • smooth scroll on page jumps");
+    println!("  • one-shot shimmer on the splash wordmark");
+    println!();
+    println!("All are controlled by [tui.delights] in config.toml.");
+    println!("motion = off acts as a master kill-switch regardless.\n");
+
+    let enabled = Confirm::new()
+        .with_prompt("Enable TUI micro-delights?")
+        .default(true)
+        .interact()?;
+
+    state.tui_delights_enabled = enabled;
+    println!();
+    Ok(())
+}
+
 fn step_tui_theme(state: &mut WizardState) -> anyhow::Result<()> {
     use dialoguer::Select;
 

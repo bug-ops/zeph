@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `feat(tui)`: micro-delights — five opt-in animation enhancements gated by
+  `[tui.delights]` config block and master-controlled by `tui.motion` (#5104):
+  - **Stream metrics**: tok/s rolling-window estimate (Low priority, status bar,
+    visible while streaming) and TTFT in milliseconds/seconds (shown after each turn).
+  - **Ephemeral toasts**: transient overlay notifications (cap 3, ~3s TTL, tick-
+    deterministic expiry); shown on tool-group completion when `completion_flash`
+    and `toasts` are both enabled.
+  - **Completion flash**: accent tint applied to all spans in a fully-resolved
+    tool-message group for ~400ms (4 ticks) after the last tool output arrives.
+  - **Smooth scroll**: ease-out-cubic interpolation (3 ticks, ~300ms) on
+    `PageUp`/`PageDown` and Insert-mode page scroll; single-line j/k scrolls
+    bypass animation; `motion = Off` falls back to instant offset change.
+  - **Splash shimmer**: one-shot bell-curve brightness sweep across the `zeph`
+    wordmark on each new splash show (~1.2s, 12 ticks); resets on rising edge of
+    `show_splash`; `shimmer_phase = None` is byte-identical to pre-feature baseline.
+  - All five features individually toggleable via `[tui.delights]` TOML fields
+    (all default `true`); `motion = Minimal` reduces to 1-tick flash / instant
+    scroll / single-frame shimmer; `motion = Off` suppresses all animation.
+  - Migration step 67 injects advisory `[tui.delights]` comment block into
+    existing configs that have a `[tui]` section (idempotent, 3-case unit-tested).
+  - Interactive wizard (`--init`) includes a `step_tui_delights` Confirm prompt.
+  - `FlashState` and `ScrollAnim` placed on `SessionSlot` (session-scoped) to
+    prevent cross-session bleed; `ToastQueue` and `SplashShimmer` on `App`.
+
 ### Changed
 
 - `feat(tracing)`: add `#[tracing::instrument]` to 21 async fns in `zeph-memory`

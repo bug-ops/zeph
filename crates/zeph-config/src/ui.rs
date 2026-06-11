@@ -406,6 +406,53 @@ pub enum Motion {
     Off,
 }
 
+/// Micro-delight toggles for the TUI dashboard (#5104).
+///
+/// All features default to `true`. The `motion = off` setting in [`TuiConfig`]
+/// acts as a master kill-switch that overrides every individual toggle.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [tui.delights]
+/// stream_metrics   = true   # tok/s during streaming + TTFT in status bar
+/// toasts           = true   # ephemeral overlay notifications
+/// completion_flash = true   # accent tint on finished tool groups
+/// smooth_scroll    = true   # eased multi-frame scroll on page jumps
+/// splash_shimmer   = true   # one-shot gradient sweep across the wordmark
+/// ```
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DelightsConfig {
+    /// Show tok/s during streaming and TTFT after each turn in the status bar.
+    #[serde(default = "default_true")]
+    pub stream_metrics: bool,
+    /// Ephemeral toast notifications (theme switched, copied, task done).
+    #[serde(default = "default_true")]
+    pub toasts: bool,
+    /// One-frame accent tint when a tool group finishes.
+    #[serde(default = "default_true")]
+    pub completion_flash: bool,
+    /// Eased multi-frame interpolation on page scroll.
+    #[serde(default = "default_true")]
+    pub smooth_scroll: bool,
+    /// One-shot gradient shimmer across the splash wordmark at startup.
+    #[serde(default = "default_true")]
+    pub splash_shimmer: bool,
+}
+
+impl Default for DelightsConfig {
+    fn default() -> Self {
+        Self {
+            stream_metrics: true,
+            toasts: true,
+            completion_flash: true,
+            smooth_scroll: true,
+            splash_shimmer: true,
+        }
+    }
+}
+
 /// TUI (terminal user interface) configuration, nested under `[tui]` in TOML.
 ///
 /// # Example (TOML)
@@ -419,6 +466,13 @@ pub enum Motion {
 /// [tui.theme]
 /// name = "zephyr"
 /// color_mode = "auto"
+///
+/// [tui.delights]
+/// stream_metrics   = true
+/// toasts           = true
+/// completion_flash = true
+/// smooth_scroll    = true
+/// splash_shimmer   = true
 /// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TuiConfig {
@@ -443,6 +497,11 @@ pub struct TuiConfig {
     /// Theme and colour capability configuration.
     #[serde(default)]
     pub theme: ThemeConfig,
+    /// Micro-delight toggles (tok/s, toasts, flash, scroll, shimmer). All default `true`.
+    ///
+    /// `motion = off` overrides all toggles regardless of their individual values.
+    #[serde(default)]
+    pub delights: DelightsConfig,
 }
 
 /// Configuration for the TUI fleet panel (#3884).

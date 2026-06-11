@@ -931,18 +931,20 @@ impl App {
                     self.sessions.current().scroll_offset.saturating_sub(1);
             }
             KeyCode::PageUp => {
-                self.sessions.current_mut().scroll_offset = self
+                let to = self
                     .sessions
                     .current()
                     .scroll_offset
                     .saturating_add(SCROLL_STEP_PAGE);
+                self.begin_scroll(to);
             }
             KeyCode::PageDown => {
-                self.sessions.current_mut().scroll_offset = self
+                let to = self
                     .sessions
                     .current()
                     .scroll_offset
                     .saturating_sub(SCROLL_STEP_PAGE);
+                self.begin_scroll(to);
             }
             KeyCode::Home => {
                 self.sessions.current_mut().scroll_offset =
@@ -1127,18 +1129,20 @@ impl App {
     fn handle_insert_scroll_keys(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::PageUp => {
-                self.sessions.current_mut().scroll_offset = self
+                let to = self
                     .sessions
                     .current()
                     .scroll_offset
                     .saturating_add(SCROLL_STEP_PAGE);
+                self.begin_scroll(to);
             }
             KeyCode::PageDown => {
-                self.sessions.current_mut().scroll_offset = self
+                let to = self
                     .sessions
                     .current()
                     .scroll_offset
                     .saturating_sub(SCROLL_STEP_PAGE);
+                self.begin_scroll(to);
             }
             _ => return false,
         }

@@ -26,5 +26,6 @@ pub mod status;
 pub mod status_verbs;
 pub mod subagents;
 pub mod task_registry;
+pub mod toast;
 pub mod tool_view;
 pub mod wave;

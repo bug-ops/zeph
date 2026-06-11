@@ -104,6 +104,10 @@ impl App {
             wave_tick: 0,
             last_progress_at: Instant::now(),
             wave_buf: Vec::new(),
+            delights: zeph_config::DelightsConfig::default(),
+            stream_rate: crate::delights::StreamRate::new(),
+            toasts: crate::delights::ToastQueue::new(),
+            splash_shimmer: crate::delights::SplashShimmer::new(),
         }
     }
 
@@ -972,6 +976,107 @@ impl App {
         self.wave_tick
     }
 
+    /// Apply micro-delight configuration (#5104).
+    ///
+    /// Called at construction time from `tui_bridge` to propagate `[tui.delights]` config.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    /// use zeph_config::DelightsConfig;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let app = App::new(tx, rx).with_delights(DelightsConfig::default());
+    /// ```
+    #[must_use]
+    pub fn with_delights(mut self, delights: zeph_config::DelightsConfig) -> Self {
+        self.delights = delights;
+        self
+    }
+
+    /// Return the current animation tick counter.
+    ///
+    /// Aliased from `wave_tick` so animation code can read it by an intent-revealing name.
+    /// Free-running at ~10fps (100ms/tick via `EventReader`). Never pauses.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let app = App::new(tx, rx);
+    /// assert_eq!(app.anim_tick(), 0);
+    /// ```
+    #[must_use]
+    pub fn anim_tick(&self) -> u64 {
+        self.wave_tick
+    }
+
+    /// Begin an animated scroll to `target_offset` for the current session.
+    ///
+    /// When smooth-scroll is disabled (`motion = Off` or `delights.smooth_scroll = false`),
+    /// the offset is set directly. Single-line scrolls (j/k) bypass this and write
+    /// `scroll_offset` directly — animation is reserved for page-sized jumps.
+    pub(crate) fn begin_scroll(&mut self, target_offset: usize) {
+        let smooth = self.motion != zeph_config::Motion::Off && self.delights.smooth_scroll;
+        if smooth {
+            // Use the in-flight animation's destination as the starting point so that
+            // two rapid PageDown presses chain correctly instead of producing identical
+            // animations from the same stale scroll_offset.
+            let cur = self.sessions.current();
+            let from = cur.scroll_anim.as_ref().map_or(cur.scroll_offset, |a| a.to);
+            let now = self.anim_tick();
+            self.sessions.current_mut().scroll_anim = Some(crate::session::ScrollAnim {
+                from,
+                to: target_offset,
+                start_tick: now,
+            });
+        } else {
+            self.sessions.current_mut().scroll_offset = target_offset;
+        }
+    }
+
+    /// Enqueue an ephemeral toast notification.
+    ///
+    /// **MUST** be called only from the render thread (inside `handle_event` /
+    /// `handle_agent_event`). Off-thread origins must be routed as `AgentEvent` or
+    /// `AppEvent` variants — never mutate the queue cross-thread.
+    pub(crate) fn push_toast(&mut self, text: impl Into<String>, kind: crate::delights::ToastKind) {
+        let tick = self.anim_tick();
+        self.toasts.push(text, kind, tick);
+    }
+
+    /// Whether any animation-driven feature is currently active.
+    ///
+    /// Provided as an optional future hook for a deferred CPU-optimization issue
+    /// (suppress idle redraws when nothing animates). NOT wired to the redraw gate
+    /// in this PR — the `EventReader` already drives 10fps unconditionally.
+    #[must_use]
+    pub fn wants_animation_frame(&self) -> bool {
+        if self.motion == zeph_config::Motion::Off {
+            return false;
+        }
+        let t = self.anim_tick();
+        let flash_active = self
+            .sessions
+            .current()
+            .flash
+            .pending
+            .values()
+            .any(|&born| t.saturating_sub(born) < crate::session::FLASH_TICKS);
+        let scroll_active = self.sessions.current().scroll_anim.is_some();
+        self.toasts.has_active(t)
+            || flash_active
+            || scroll_active
+            || self.splash_shimmer.is_active(t)
+    }
+
     /// Derive the current wave animation state from live agent state.
     ///
     /// Stalled is checked first so a hung turn never reads as Streaming or Swell.
@@ -1023,6 +1128,44 @@ impl App {
 
         // Swell: busy but awaiting first token.
         WaveState::Swell
+    }
+
+    /// Advance all micro-delight animations by one tick.
+    ///
+    /// Called from [`crate::app::events`] on every `AppEvent::Tick` so that
+    /// animation state advances unconditionally, regardless of whether a draw
+    /// frame is suppressed by `DirtyState::AnimationOnly`.
+    pub(crate) fn tick_delights(&mut self) {
+        let now = self.anim_tick();
+
+        // Prune expired toasts.
+        self.toasts.prune(now);
+
+        // Advance current session's scroll animation.
+        if let Some(ref anim) = self.sessions.current().scroll_anim {
+            let (offset, done) = anim.current_offset(now);
+            self.sessions.current_mut().scroll_offset = offset;
+            if done {
+                self.sessions.current_mut().scroll_anim = None;
+            }
+        }
+
+        // Prune expired flash entries for the current session.
+        self.sessions.current_mut().flash.prune(now);
+
+        // Detect show_splash rising edge (false → true) → reset shimmer for fresh sweep.
+        let cur_show_splash = self.sessions.current().show_splash;
+        if cur_show_splash && !self.sessions.current().prev_show_splash {
+            self.splash_shimmer.reset();
+        }
+        self.sessions.current_mut().prev_show_splash = cur_show_splash;
+
+        // Activate shimmer on first splash frame.
+        let shimmer_enabled =
+            self.motion != zeph_config::Motion::Off && self.delights.splash_shimmer;
+        if shimmer_enabled && cur_show_splash {
+            self.splash_shimmer.activate(now);
+        }
     }
 }
 

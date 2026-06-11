@@ -11,6 +11,87 @@ use regex::Regex;
 
 use super::{MigrateError, MigrationResult};
 
+/// Regex matching the `[tui]` section header line (used by step 67).
+static TUI_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"(?m)^[ \t]*\[tui\][ \t]*(?:#[^\r\n]*)?\r?\n").expect("static pattern")
+});
+
+/// Inject a commented-out `[tui.delights]` advisory block when absent (#5104).
+///
+/// No-op when `[tui]` is absent (config doesn't use TUI at all) or when
+/// `[tui.delights]` already exists (active or commented) — idempotent.
+///
+/// # Errors
+///
+/// Returns `MigrateError::TomlParse` if the input is not valid TOML; infallible otherwise.
+pub fn migrate_tui_delights(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // No [tui] section → no-op.
+    if !toml_src.contains("[tui]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Idempotency: scan for [tui.delights] already present (active or commented-out).
+    let already_present = toml_src.lines().any(|l| {
+        let t = l.trim().trim_start_matches('#').trim();
+        t == "[tui.delights]" || t.starts_with("[tui.delights]")
+    });
+    if already_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    // Normalise trailing newline so the regex always matches.
+    let owned;
+    let src = if toml_src.ends_with('\n') {
+        toml_src
+    } else {
+        owned = format!("{toml_src}\n");
+        &owned
+    };
+
+    if !TUI_HEADER_RE.is_match(src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let advisory = "\n# [tui.delights] — micro-delight toggles (all default true, #5104).\n\
+         # motion = off acts as a master kill-switch regardless of individual settings.\n\
+         # [tui.delights]\n\
+         # stream_metrics   = true  # tok/s during streaming + TTFT after turn in status bar\n\
+         # toasts           = true  # ephemeral overlay notifications (theme switch, copy, etc.)\n\
+         # completion_flash = true  # accent tint on a finished tool group for ~400 ms\n\
+         # smooth_scroll    = true  # eased multi-frame interpolation on page-up / page-down\n\
+         # splash_shimmer   = true  # one-shot gradient sweep across the wordmark at startup\n";
+
+    let output = TUI_HEADER_RE
+        .replacen(src, 1, |caps: &regex::Captures| {
+            format!("{}{advisory}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["tui.delights".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 /// Strip any existing `[memory.compression.predictor]` section from the config (#3251).
 ///
 /// The compression predictor feature was removed. This migration cleans up both active

@@ -433,6 +433,31 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
     if !security_spans.is_empty() {
         list.push(Priority::Low, security_spans);
     }
+    // Stream metrics: tok/s while streaming, TTFT after turn completes (#5104).
+    // Suppressed entirely when motion=Off (master kill-switch, same as all other delights).
+    if app.motion != zeph_config::Motion::Off && app.delights.stream_metrics {
+        if app.is_agent_busy()
+            && let Some(rate) = app.stream_rate.tokens_per_sec()
+        {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let rate_int = rate as u32;
+            list.push_abbrev_styled(
+                Priority::Low,
+                format!(" | {}", crate::delights::format_toks(rate)),
+                format!(" {rate_int}t/s"),
+                theme.status_bar,
+            );
+        }
+        if let Some(ttft_ms) = app.stream_rate.ttft_ms() {
+            list.push_abbrev_styled(
+                Priority::Low,
+                format!(" | {}", crate::delights::format_ttft(ttft_ms)),
+                format!(" {ttft_ms}ms"),
+                theme.status_bar,
+            );
+        }
+    }
+
     if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
         list.push(
             Priority::Low,
@@ -1088,5 +1113,38 @@ mod tests {
     #[test]
     fn short_uptime_minutes() {
         assert_eq!(short_uptime(135), " 2m");
+    }
+
+    /// Off-state byte-identity: motion=Off must suppress tok/s and TTFT segments
+    /// even when `stream_rate` holds live data.  This is the test that would have
+    /// caught the missing guard in M1.
+    #[test]
+    fn motion_off_suppresses_stream_metrics_segments() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.motion = zeph_config::Motion::Off;
+        // Inject synthetic TTFT so the render path would include it if the guard is absent.
+        app.stream_rate.last_ttft_ms = Some(123);
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        assert!(
+            !output.contains("TTFT"),
+            "motion=Off must suppress TTFT segment; got: {output:?}"
+        );
+        assert!(
+            !output.contains("tok/s") && !output.contains("t/s"),
+            "motion=Off must suppress tok/s segment; got: {output:?}"
+        );
     }
 }

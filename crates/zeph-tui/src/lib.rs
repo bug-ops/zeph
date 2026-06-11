@@ -41,6 +41,7 @@ pub mod app;
 pub mod channel;
 pub mod clipboard;
 pub mod command;
+pub(crate) mod delights;
 pub mod error;
 pub mod event;
 pub mod file_picker;

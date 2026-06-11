@@ -12,6 +12,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::delights::shimmer_brightness;
 use crate::theme::{EffectiveColorMode, map_color};
 
 // Aqua (#22d3ee) and ice (#e0f2fe) — gradient endpoints for the `zeph` letters.
@@ -45,18 +46,30 @@ const QUICK_HINTS: &[(&str, &str)] = &[
 /// - ≥ 8 rows: full layout (wordmark + slogan + version + hints).
 /// - 3–7 rows: two-line compact layout.
 /// - < 3 rows: single wordmark line.
-pub fn render(frame: &mut Frame, area: Rect, color_mode: EffectiveColorMode) {
+///
+/// `shimmer_phase` drives the one-shot highlight sweep across the wordmark (#5104).
+/// Pass `None` to render the static gradient (off-state, byte-identical to pre-feature).
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    color_mode: EffectiveColorMode,
+    shimmer_phase: Option<u64>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let lines = build_lines(area.height, color_mode);
+    let lines = build_lines(area.height, color_mode, shimmer_phase);
     let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
 }
 
-fn build_lines(height: u16, mode: EffectiveColorMode) -> Vec<Line<'static>> {
-    let wordmark = wordmark_line(mode);
+fn build_lines(
+    height: u16,
+    mode: EffectiveColorMode,
+    shimmer_phase: Option<u64>,
+) -> Vec<Line<'static>> {
+    let wordmark = wordmark_line(mode, shimmer_phase);
     let hints = hints_line(mode);
 
     if height < 3 {
@@ -65,7 +78,7 @@ fn build_lines(height: u16, mode: EffectiveColorMode) -> Vec<Line<'static>> {
 
     if height < 8 {
         // Compact: wordmark + slogan on one line, hints on the next.
-        let compact = compact_wordmark_line(mode);
+        let compact = compact_wordmark_line(mode, shimmer_phase);
         return vec![compact, hints];
     }
 
@@ -86,10 +99,10 @@ fn build_lines(height: u16, mode: EffectiveColorMode) -> Vec<Line<'static>> {
 }
 
 /// Single-line wordmark: `≈ zeph` (or `~ zeph` in ASCII mode) with gradient or plain colour.
-fn wordmark_line(mode: EffectiveColorMode) -> Line<'static> {
+fn wordmark_line(mode: EffectiveColorMode, shimmer_phase: Option<u64>) -> Line<'static> {
     match mode {
         EffectiveColorMode::Truecolor | EffectiveColorMode::Ansi256 => {
-            gradient_wordmark_line("≈ ", mode)
+            gradient_wordmark_line("≈ ", mode, shimmer_phase)
         }
         EffectiveColorMode::Ansi16 => {
             Line::from(Span::styled("≈ zeph", Style::default().fg(ACCENT)))
@@ -99,10 +112,10 @@ fn wordmark_line(mode: EffectiveColorMode) -> Line<'static> {
 }
 
 /// Compact single-line: `≈ zeph  think further.` for 3–7 row layouts.
-fn compact_wordmark_line(mode: EffectiveColorMode) -> Line<'static> {
+fn compact_wordmark_line(mode: EffectiveColorMode, shimmer_phase: Option<u64>) -> Line<'static> {
     match mode {
         EffectiveColorMode::Truecolor | EffectiveColorMode::Ansi256 => {
-            let mut spans = gradient_wordmark_spans("≈ ", mode);
+            let mut spans = gradient_wordmark_spans("≈ ", mode, shimmer_phase);
             spans.push(Span::styled(
                 format!("  {SLOGAN}"),
                 Style::default().fg(MUTED),
@@ -140,42 +153,69 @@ fn hints_line(mode: EffectiveColorMode) -> Line<'static> {
 }
 
 /// Build a `Line` with the gradient wordmark (full-layout version).
-fn gradient_wordmark_line(prefix: &'static str, mode: EffectiveColorMode) -> Line<'static> {
-    Line::from(gradient_wordmark_spans(prefix, mode))
+fn gradient_wordmark_line(
+    prefix: &'static str,
+    mode: EffectiveColorMode,
+    shimmer_phase: Option<u64>,
+) -> Line<'static> {
+    Line::from(gradient_wordmark_spans(prefix, mode, shimmer_phase))
 }
 
 /// Build the gradient wordmark spans: prefix in accent, `zeph` in interpolated colours.
 ///
+/// When `shimmer_phase` is `Some(tick)`, each letter's brightness is boosted by a bell-curve
+/// envelope centred on the shimmer position, producing a moving highlight sweep (#5104).
+/// When `shimmer_phase` is `None` the output is byte-identical to the pre-feature baseline.
+///
 /// Colors are passed through [`map_color`] so that `Ansi256` terminals receive indexed
 /// colors instead of truecolor RGB escape sequences.
-fn gradient_wordmark_spans(prefix: &'static str, mode: EffectiveColorMode) -> Vec<Span<'static>> {
+fn gradient_wordmark_spans(
+    prefix: &'static str,
+    mode: EffectiveColorMode,
+    shimmer_phase: Option<u64>,
+) -> Vec<Span<'static>> {
     let accent_style = Style::default().fg(map_color(ACCENT, mode));
     let letters: &[char] = &['z', 'e', 'p', 'h'];
-    let n = letters.len();
+    let n_letters = letters.len();
 
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(1 + n);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(1 + n_letters);
     spans.push(Span::styled(prefix, accent_style));
 
-    for (i, ch) in letters.iter().enumerate() {
+    for (letter_pos, ch) in letters.iter().enumerate() {
         #[allow(clippy::cast_precision_loss)]
-        let t = if n <= 1 {
+        let interp = if n_letters <= 1 {
             0.0_f32
         } else {
-            i as f32 / (n - 1) as f32
+            letter_pos as f32 / (n_letters - 1) as f32
         };
-        let color = map_color(lerp_rgb(AQUA, ICE, t), mode);
+        let (red, green, blue) = lerp_rgb_components(AQUA, ICE, interp);
+
+        // Apply shimmer brightness boost per letter when shimmer is active.
+        let (red, green, blue) = if let Some(phase) = shimmer_phase {
+            let boost = shimmer_brightness(letter_pos, n_letters, phase);
+            boost_rgb(red, green, blue, boost)
+        } else {
+            (red, green, blue)
+        };
+
+        let color = map_color(Color::Rgb(red, green, blue), mode);
         spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
     }
 
     spans
 }
 
-/// Linear interpolation between two RGB colours.
-fn lerp_rgb((r1, g1, b1): (u8, u8, u8), (r2, g2, b2): (u8, u8, u8), t: f32) -> Color {
-    let r = lerp_channel(r1, r2, t);
-    let g = lerp_channel(g1, g2, t);
-    let b = lerp_channel(b1, b2, t);
-    Color::Rgb(r, g, b)
+/// Linear interpolation between two RGB colours, returning components.
+fn lerp_rgb_components(
+    (r1, g1, b1): (u8, u8, u8),
+    (r2, g2, b2): (u8, u8, u8),
+    t: f32,
+) -> (u8, u8, u8) {
+    (
+        lerp_channel(r1, r2, t),
+        lerp_channel(g1, g2, t),
+        lerp_channel(b1, b2, t),
+    )
 }
 
 fn lerp_channel(a: u8, b: u8, t: f32) -> u8 {
@@ -183,6 +223,16 @@ fn lerp_channel(a: u8, b: u8, t: f32) -> u8 {
     {
         (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8
     }
+}
+
+/// Boost RGB channels towards white by `amount` in [0, 1].
+fn boost_rgb(r: u8, g: u8, b: u8, amount: f32) -> (u8, u8, u8) {
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let boost = |c: u8| -> u8 {
+        let boosted = f32::from(c) + (255.0 - f32::from(c)) * amount;
+        boosted.min(255.0) as u8
+    };
+    (boost(r), boost(g), boost(b))
 }
 
 #[cfg(test)]
@@ -194,7 +244,7 @@ mod tests {
 
     fn render(width: u16, height: u16, mode: EffectiveColorMode) -> String {
         render_to_string(width, height, |frame, area| {
-            super::render(frame, area, mode);
+            super::render(frame, area, mode, None);
         })
     }
 
@@ -274,7 +324,30 @@ mod tests {
     fn splash_zero_area_no_panic() {
         // Must not panic on a zero-size area.
         render_to_string(0, 0, |frame, area| {
-            super::render(frame, area, EffectiveColorMode::Truecolor);
+            super::render(frame, area, EffectiveColorMode::Truecolor, None);
         });
+    }
+
+    #[test]
+    fn splash_shimmer_none_matches_baseline() {
+        // `shimmer_phase = None` must produce byte-identical output to pre-feature baseline.
+        let without_shimmer = render(60, 20, EffectiveColorMode::Truecolor);
+        let with_none = render_to_string(60, 20, |frame, area| {
+            super::render(frame, area, EffectiveColorMode::Truecolor, None);
+        });
+        assert_eq!(
+            without_shimmer, with_none,
+            "shimmer_phase=None must be byte-identical to baseline (off-state)"
+        );
+    }
+
+    #[test]
+    fn splash_shimmer_active_does_not_panic() {
+        // Active shimmer must not panic for any phase in [0, SHIMMER_TICKS).
+        for phase in 0..crate::delights::SHIMMER_TICKS {
+            render_to_string(60, 20, |frame, area| {
+                super::render(frame, area, EffectiveColorMode::Truecolor, Some(phase));
+            });
+        }
     }
 }

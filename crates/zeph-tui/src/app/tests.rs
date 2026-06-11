@@ -2844,6 +2844,8 @@ fn paste_state_consumed_on_submit() {
 #[test]
 fn insert_mode_page_up_scrolls_transcript() {
     let (mut app, _rx, _tx) = make_app();
+    // Disable smooth scroll so offset changes are immediate (no animation needed).
+    app.motion = zeph_config::Motion::Off;
     app.sessions.current_mut().input_mode = InputMode::Insert;
     app.sessions.current_mut().scroll_offset = 0;
     app.handle_event(AppEvent::Key(KeyEvent::new(
@@ -2860,6 +2862,7 @@ fn insert_mode_page_up_scrolls_transcript() {
 #[test]
 fn insert_mode_page_down_scrolls_transcript() {
     let (mut app, _rx, _tx) = make_app();
+    app.motion = zeph_config::Motion::Off;
     app.sessions.current_mut().input_mode = InputMode::Insert;
     app.sessions.current_mut().scroll_offset = 20;
     app.handle_event(AppEvent::Key(KeyEvent::new(
@@ -2876,6 +2879,7 @@ fn insert_mode_page_down_scrolls_transcript() {
 #[test]
 fn insert_mode_page_down_saturates_at_zero() {
     let (mut app, _rx, _tx) = make_app();
+    app.motion = zeph_config::Motion::Off;
     app.sessions.current_mut().input_mode = InputMode::Insert;
     app.sessions.current_mut().scroll_offset = 5;
     app.handle_event(AppEvent::Key(KeyEvent::new(
@@ -3057,4 +3061,90 @@ fn collapse_slot3_with_subagents_panel_focused_force_expands() {
     app.active_panel = Panel::SubAgents;
     let eff = app.effective_collapsed();
     assert!(!eff[3], "SubAgents focus must force-expand slot 3");
+}
+
+// ── M2: wants_animation_frame unit tests (#5104) ─────────────────────────────
+
+#[test]
+fn wants_animation_frame_false_when_motion_off() {
+    let (mut app, _rx, _tx) = make_app();
+    app.motion = zeph_config::Motion::Off;
+
+    // Inject active toast — must still return false under motion=Off.
+    app.toasts
+        .push("hello", crate::delights::ToastKind::Success, 0);
+    // Inject active shimmer.
+    app.splash_shimmer.activate(0);
+    // Inject active flash.
+    app.sessions.current_mut().flash.insert(0, 0);
+    // Inject active scroll animation.
+    app.sessions.current_mut().scroll_anim = Some(crate::session::ScrollAnim {
+        from: 0,
+        to: 10,
+        start_tick: 0,
+    });
+
+    assert!(
+        !app.wants_animation_frame(),
+        "motion=Off must suppress all animation frames"
+    );
+}
+
+#[test]
+fn wants_animation_frame_false_when_all_idle() {
+    let (app, _rx, _tx) = make_app();
+    // Fresh app: no toasts, no flash, no scroll anim, no shimmer.
+    assert!(
+        !app.wants_animation_frame(),
+        "idle app must not want animation frames"
+    );
+}
+
+#[test]
+fn wants_animation_frame_true_while_toast_active() {
+    let (mut app, _rx, _tx) = make_app();
+    let tick = app.anim_tick();
+    app.toasts
+        .push("msg", crate::delights::ToastKind::Success, tick);
+    assert!(
+        app.wants_animation_frame(),
+        "active toast must trigger animation frame"
+    );
+}
+
+#[test]
+fn wants_animation_frame_true_while_flash_active() {
+    let (mut app, _rx, _tx) = make_app();
+    let tick = app.anim_tick();
+    app.sessions.current_mut().flash.insert(0, tick);
+    assert!(
+        app.wants_animation_frame(),
+        "active flash must trigger animation frame"
+    );
+}
+
+#[test]
+fn wants_animation_frame_true_while_scroll_active() {
+    let (mut app, _rx, _tx) = make_app();
+    let tick = app.anim_tick();
+    app.sessions.current_mut().scroll_anim = Some(crate::session::ScrollAnim {
+        from: 0,
+        to: 5,
+        start_tick: tick,
+    });
+    assert!(
+        app.wants_animation_frame(),
+        "active scroll animation must trigger animation frame"
+    );
+}
+
+#[test]
+fn wants_animation_frame_true_while_shimmer_active() {
+    let (mut app, _rx, _tx) = make_app();
+    let tick = app.anim_tick();
+    app.splash_shimmer.activate(tick);
+    assert!(
+        app.wants_animation_frame(),
+        "active shimmer must trigger animation frame"
+    );
 }

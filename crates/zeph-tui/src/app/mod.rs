@@ -451,7 +451,7 @@ pub struct App {
 
     /// Monotonic tick counter for the wave animation phase.
     ///
-    /// Incremented once per `AppEvent::Tick` (250 ms). `u64` never wraps within
+    /// Incremented once per `AppEvent::Tick` (100 ms). `u64` never wraps within
     /// a session lifetime. Used as the explicit `t` argument to [`crate::widgets::wave::sample`]
     /// so that the wave renderer stays purely deterministic.
     pub(crate) wave_tick: u64,
@@ -465,6 +465,16 @@ pub struct App {
     /// Reusable buffer for wave glyph spans, allocated once and passed into
     /// [`crate::widgets::wave::glyphs`] each busy frame to avoid per-frame `Vec` allocation.
     pub(crate) wave_buf: Vec<ratatui::text::Span<'static>>,
+
+    // --- Micro-delights (#5104) ---
+    /// Individual feature toggles sourced from `[tui.delights]` in config.
+    pub(crate) delights: zeph_config::DelightsConfig,
+    /// Approximate streaming rate and TTFT for the status bar.
+    pub(crate) stream_rate: crate::delights::StreamRate,
+    /// Ephemeral toast queue rendered as an overlay above the chat area.
+    pub(crate) toasts: crate::delights::ToastQueue,
+    /// One-shot shimmer state for the splash wordmark.
+    pub(crate) splash_shimmer: crate::delights::SplashShimmer,
 }
 
 mod draw;

@@ -6,11 +6,98 @@
 //! Phase-1: always exactly one [`SessionSlot`] owned by [`SessionRegistry`].
 //! Phase-2 will add `SessionNew` and multi-slot rendering.
 
+use std::collections::HashMap;
+
 use tokio::sync::oneshot;
 
 use crate::app::{AgentViewTarget, TranscriptCache, TuiTranscriptEntry};
 use crate::render_cache::RenderCache;
 use crate::types::{ChatMessage, InputMode, PasteState};
+
+/// Duration (in animation ticks) for the completion flash tint. ≈400ms at 10fps.
+pub(crate) const FLASH_TICKS: u64 = 4;
+
+/// Duration (in animation ticks) for the smooth-scroll easing. ≈300ms at 10fps.
+pub(crate) const SCROLL_ANIM_TICKS: u64 = 3;
+
+/// Per-session flash state for tool-group completion tints (#5104).
+///
+/// Keyed by `start_idx` (the group's first message index within this session's
+/// transcript) so flashes from different groups don't interfere. Session-scoped to
+/// prevent cross-session bleed when the user switches between [`SessionSlot`]s.
+pub(crate) struct FlashState {
+    /// `start_idx → born_tick`: groups currently mid-flash.
+    pub(crate) pending: HashMap<usize, u64>,
+}
+
+impl FlashState {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: HashMap::new(),
+        }
+    }
+
+    /// Record a new flash for `start_idx` at the given tick.
+    pub(crate) fn insert(&mut self, start_idx: usize, born_tick: u64) {
+        self.pending.insert(start_idx, born_tick);
+    }
+
+    /// Collect all currently active `start_idx` values as a set.
+    pub(crate) fn active_set(&self, now: u64) -> std::collections::HashSet<usize> {
+        self.pending
+            .iter()
+            .filter(|&(_, &born)| now.saturating_sub(born) < FLASH_TICKS)
+            .map(|(&idx, _)| idx)
+            .collect()
+    }
+
+    /// Evict all expired flashes.
+    pub(crate) fn prune(&mut self, now: u64) {
+        self.pending
+            .retain(|_, &mut born| now.saturating_sub(born) < FLASH_TICKS);
+    }
+}
+
+/// Per-session smooth-scroll animation state (#5104).
+///
+/// Session-scoped alongside `scroll_offset` to prevent one session's easing from
+/// bleeding into another when the user switches [`SessionSlot`]s.
+pub(crate) struct ScrollAnim {
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) start_tick: u64,
+}
+
+impl ScrollAnim {
+    /// Compute the eased integer offset at the current tick.
+    ///
+    /// Uses ease-out-cubic: fast start, decelerates near target.
+    /// Returns `to` (and marks completion) when `elapsed >= SCROLL_ANIM_TICKS`.
+    #[must_use]
+    pub(crate) fn current_offset(&self, now: u64) -> (usize, bool) {
+        let elapsed = now.saturating_sub(self.start_tick);
+        if elapsed >= SCROLL_ANIM_TICKS {
+            return (self.to, true);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let t = elapsed as f32 / SCROLL_ANIM_TICKS as f32;
+        // Ease-out cubic: 1 - (1-t)^3
+        let eased = 1.0_f32 - (1.0 - t).powi(3);
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss
+        )]
+        let offset = if self.from <= self.to {
+            let delta = self.to - self.from;
+            self.from + (delta as f32 * eased).round() as usize
+        } else {
+            let delta = self.from - self.to;
+            self.from - (delta as f32 * eased).round() as usize
+        };
+        (offset, false)
+    }
+}
 
 /// Maximum number of chat messages retained per session slot.
 pub(crate) const MAX_TUI_MESSAGES: usize = 2000;
@@ -63,6 +150,18 @@ pub(crate) struct SessionSlot {
     pub show_splash: bool,
     pub plan_view_active: bool,
     pub status_label: Option<String>,
+
+    // Micro-delight state — session-scoped to prevent cross-session bleed (#5104).
+    pub(crate) flash: FlashState,
+    pub(crate) scroll_anim: Option<ScrollAnim>,
+    /// Set of `start_idx` values that have already had their flash triggered,
+    /// preventing re-fires on re-render of an old completed group.
+    pub(crate) flashed_groups: std::collections::HashSet<usize>,
+    /// Previous `show_splash` value used for rising-edge detection (shimmer reset).
+    ///
+    /// Kept on `SessionSlot` (not `App`) so that switching sessions in phase-2
+    /// multi-slot mode correctly re-triggers the shimmer for each slot independently.
+    pub(crate) prev_show_splash: bool,
 }
 
 impl SessionSlot {
@@ -87,19 +186,28 @@ impl SessionSlot {
             show_splash: true,
             plan_view_active: false,
             status_label: None,
+            flash: FlashState::new(),
+            scroll_anim: None,
+            flashed_groups: std::collections::HashSet::new(),
+            prev_show_splash: false,
         }
     }
 
     /// Evict oldest messages when the buffer exceeds `MAX_TUI_MESSAGES`.
     ///
     /// Shifts the render cache to match the drained messages, preserving cached renders
-    /// for the remaining entries.
+    /// for the remaining entries. Flash state is cleared entirely because all `start_idx`
+    /// keys are invalidated after the drain — stale indices in `flashed_groups` would
+    /// permanently suppress the flash on a recycled group.
     pub fn trim_messages(&mut self) {
         if self.messages.len() > MAX_TUI_MESSAGES {
             let excess = self.messages.len() - MAX_TUI_MESSAGES;
             self.messages.drain(0..excess);
             self.render_cache.shift(excess);
             self.scroll_offset = self.scroll_offset.saturating_sub(excess);
+            // All start_idx values are now stale; reset to avoid index-aliasing bugs.
+            self.flash.pending.clear();
+            self.flashed_groups.clear();
         }
     }
 }
@@ -321,5 +429,30 @@ mod tests {
         }
         slot.trim_messages();
         assert_eq!(slot.messages.len(), MAX_TUI_MESSAGES);
+    }
+
+    #[test]
+    fn trim_messages_clears_flash_state() {
+        let mut slot = SessionSlot::new(SlotId::FIRST, "test");
+        for i in 0..(MAX_TUI_MESSAGES + 5) {
+            slot.messages
+                .push(ChatMessage::new(MessageRole::User, format!("msg {i}")));
+        }
+        // Inject stale flash entries using old start_idx values.
+        slot.flash.insert(0, 42);
+        slot.flash.insert(3, 43);
+        slot.flashed_groups.insert(1);
+        slot.flashed_groups.insert(2);
+
+        slot.trim_messages();
+
+        assert!(
+            slot.flash.pending.is_empty(),
+            "flash.pending must be cleared after trim"
+        );
+        assert!(
+            slot.flashed_groups.is_empty(),
+            "flashed_groups must be cleared after trim"
+        );
     }
 }
