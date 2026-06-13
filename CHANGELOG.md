@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across
+  three crates. `zeph-mcp` `connect.rs`: `spawn_non_oauth_connections`,
+  `process_connect_results`, `commit_connect_outputs`, `handle_connect_result`
+  (with `server_id` field), `spawn_oauth_connections`, `process_oauth_results`,
+  `commit_oauth_outputs` — MCP connect pipeline inner latency now visible in
+  traces. `zeph-channels` `discord/gateway.rs`: `gateway_loop`, `run_session`,
+  `ack_interaction`; `slack/events.rs`: `handle_event` — WebSocket reconnect
+  loop and event handling now traced. `zeph-vault` `age.rs`: `load_async`,
+  `save_async` — vault startup path now visible. All spans unconditional, use
+  `skip_all` to prevent sensitive args from leaking into traces. Closes #5203,
+  #5189, #5210.
+
 - `feat(tracing)`: add `#[tracing::instrument]` to hot-path async fns in
   `zeph-sanitizer` (9 fns across `causal_ipi`, `sanitizer`, `ipi_filter`,
   `quarantine`), `zeph-a2a` client and discovery (11 fns), and

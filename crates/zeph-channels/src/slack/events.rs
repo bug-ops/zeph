@@ -115,6 +115,7 @@ pub fn spawn_event_server(
     }
 }
 
+#[tracing::instrument(name = "channels.slack.handle_event", skip_all)]
 async fn handle_event(
     State(state): State<EventState>,
     headers: HeaderMap,

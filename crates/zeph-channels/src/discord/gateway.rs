@@ -98,6 +98,7 @@ pub fn spawn_gateway(
     }
 }
 
+#[tracing::instrument(name = "channels.discord.gateway_loop", skip_all)]
 async fn gateway_loop(token: String, tx: mpsc::Sender<IncomingMessage>) {
     loop {
         match run_session(&token, &tx).await {
@@ -112,6 +113,7 @@ async fn gateway_loop(token: String, tx: mpsc::Sender<IncomingMessage>) {
     }
 }
 
+#[tracing::instrument(name = "channels.discord.run_session", skip_all)]
 async fn run_session(
     token: &str,
     tx: &mpsc::Sender<IncomingMessage>,
@@ -262,6 +264,7 @@ fn parse_interaction_create(d: &Value) -> Option<(IncomingMessage, InteractionAc
 ///
 /// Uses type 5 (`DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE`) so Discord shows a thinking indicator
 /// while the agent processes the command and sends a follow-up message.
+#[tracing::instrument(name = "channels.discord.ack_interaction", skip_all, err)]
 async fn ack_interaction(
     ack: &InteractionAck,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -221,6 +221,7 @@ impl McpManager {
         (all_tools, outcomes)
     }
 
+    #[tracing::instrument(name = "mcp.manager.spawn_non_oauth_connections", skip_all)]
     async fn spawn_non_oauth_connections(
         &self,
         last_refresh: &Arc<DashMap<String, Instant>>,
@@ -274,6 +275,7 @@ impl McpManager {
         join_set
     }
 
+    #[tracing::instrument(name = "mcp.manager.process_connect_results", skip_all)]
     async fn process_connect_results(
         &self,
         raw: Vec<(String, Result<McpClient, McpError>)>,
@@ -289,6 +291,7 @@ impl McpManager {
         outputs
     }
 
+    #[tracing::instrument(name = "mcp.manager.commit_connect_outputs", skip_all)]
     async fn commit_connect_outputs(
         &self,
         outputs: Vec<ConnectOutput>,
@@ -372,6 +375,7 @@ impl McpManager {
         self.log_tool_collisions(&all_tools).await;
     }
 
+    #[tracing::instrument(name = "mcp.manager.spawn_oauth_connections", skip_all)]
     async fn spawn_oauth_connections(
         &self,
         last_refresh: &Arc<DashMap<String, Instant>>,
@@ -441,6 +445,7 @@ impl McpManager {
         join_set
     }
 
+    #[tracing::instrument(name = "mcp.manager.process_oauth_results", skip_all)]
     async fn process_oauth_results(
         &self,
         raw: Vec<(String, Result<McpClient, String>)>,
@@ -475,6 +480,7 @@ impl McpManager {
         outputs
     }
 
+    #[tracing::instrument(name = "mcp.manager.commit_oauth_outputs", skip_all)]
     async fn commit_oauth_outputs(&self, outputs: Vec<ConnectOutput>) {
         // Batch-commit to shared maps in separate guarded blocks — never hold one
         // lock across another .await (same pattern as connect_all).
@@ -552,6 +558,7 @@ impl McpManager {
     /// Returns a [`ConnectOutput`] with all owned data the caller must commit to the
     /// shared maps. The caller is responsible for inserting this data under a write
     /// guard after all async work completes.
+    #[tracing::instrument(name = "mcp.manager.handle_connect_result", skip_all, fields(server_id = %server_id))]
     async fn handle_connect_result(
         &self,
         server_id: String,

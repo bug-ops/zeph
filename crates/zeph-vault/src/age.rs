@@ -214,6 +214,7 @@ impl AgeVaultProvider {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(name = "vault.age.load_async", skip_all, err)]
     pub async fn load_async(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError> {
         let key_path = key_path.to_owned();
         let vault_path = vault_path.to_owned();
@@ -286,6 +287,7 @@ impl AgeVaultProvider {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(name = "vault.age.save_async", skip_all, err)]
     pub async fn save_async(&self) -> Result<(), AgeVaultError> {
         let key_path = self.key_path.clone();
         let vault_path = self.vault_path.clone();
