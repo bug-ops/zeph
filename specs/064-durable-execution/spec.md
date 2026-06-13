@@ -1157,6 +1157,7 @@ wiring; `zeph-durable` provides the key via `StepHandle`, not a config field.
 | **044** subagent lifecycle | Transcript JSONL + `.meta.json` remains the human record | P4 adds a durable promise for control state; transcript unchanged. |
 | **057** agent persistence | `NEVER double-persist`; `sanitize_tool_pairs` discards orphans | P1 replays journaled steps (no re-insert). `Idempotent` step replay skips `op`. The discard becomes a resume (INV-10). |
 | **063** worktree subsystem | Subagent spawning, cwd isolation | P4 durable resume reuses the existing respawn path; CwdGuard discipline is unaffected. |
+| **068** session persistence | Mirrors the `zeph-durable` append-only journal, bounded-buffer replay cursor, and single-writer actor — but at the conversation/context level, not the task/step level. `zeph-session` MUST NOT depend on `zeph-durable` (INV-1: no agent types). The two journals are independent and reference each other only by opaque IDs. If shared primitives are extracted, they belong in `zeph-common`. See `specs/068-session-persistence/spec.md §3` and `§15` (NEVER). |
 
 ---
 

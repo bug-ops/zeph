@@ -28,6 +28,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   support to §17; annotate §16.2 perf claims as unmeasured; note reserved config stanzas are
   intentionally commented until supervisor-backed implementations land (#3677)
 
+### Added
+
+- `spec(068-session-persistence)`: add specification for session persistence, event log replay,
+  fork semantics, context condensation, and `zeph serve` persistent agent service mode.
+  Introduces `zeph-session` crate, migration 105 (`acp_sessions` column additions for
+  `last_seq`/`event_count`/`forked_from`/`forked_at_seq`/`status`/`last_condensed_seq`),
+  INV-SP-1..4 crash-safety invariants, per-session actor model (mpsc-in/broadcast-out),
+  and `/conv` TUI command namespace. Closes #2807, #3102, #3074.
+
 ### Changed
 
 - `feat(hooks)`: add optional `if` conditional field to `HookDef` with `tool:<token>` DSL — hooks
