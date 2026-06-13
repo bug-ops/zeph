@@ -20,6 +20,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bench.tau2.retail.replay_actions`, `bench.tau2.retail.execute_tool_call`) so tool-dispatch
   latency is visible in traces. Closes #5316.
 
+- `refactor(tui)`: migrate 27 `TuiCommand` variants from `execute_command()` fallback into
+  `reduce()`, enforcing INV-R1 (single mutation point). Groups A/B (pure state mutations +
+  formatter reads) return `vec![]`; Group C (fixed-string agent-input sends) return
+  `vec![Effect::SendUserInput(...)]`. `Effect` now derives `PartialEq`; 8 formatter methods
+  bumped to `pub(crate)`; `handle_plan_command`/`handle_memory_command` deleted (empty after
+  migration); 49 new reducer unit tests added. Deferred: theme commands (blocked on #5308),
+  `command_tx` arms, clipboard duplicates, `prefill_input` arms, session-switch arms.
+  Closes #5298.
+
 ### Fixed
 
 - `fix(tui)`: remove duplicate `last_assistant_content` / `last_assistant_code_blocks`
