@@ -86,6 +86,10 @@ struct CascadeEvalResult {
 
 /// Evaluate a cascade response: score it, record the verdict in shared state, and
 /// compute whether the token budget is exhausted.
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(name = "llm.router.cascade.evaluate_response", skip_all)
+)]
 async fn cascade_evaluate_response(
     provider_name: &str,
     response: &str,
@@ -281,6 +285,10 @@ impl RouterProvider {
     /// occurs, the user experiences: cheap model's full response time + expensive model's
     /// TTFT. This is strictly worse than direct routing to the expensive model for
     /// hard queries. Acceptable for v1; see CRIT-01 in critic handoff for alternatives.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.router.cascade.chat_stream", skip_all)
+    )]
     #[allow(clippy::too_many_lines)] // sequential cascade semantics: buffer→classify→escalate
     pub(crate) async fn cascade_chat_stream(
         &self,

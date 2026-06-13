@@ -177,6 +177,7 @@ impl PluginManager {
     /// - [`PluginError::NotFound`] — plugin is not installed.
     /// - [`PluginError::DependencyRequired`] — at least one enabled plugin depends on this one.
     /// - [`PluginError::Io`] — the plugin directory cannot be removed.
+    #[tracing::instrument(name = "plugins.install.remove", skip_all)]
     pub fn remove(&self, name: &str) -> Result<RemoveResult, PluginError> {
         validate_plugin_name(name)?;
         let plugin_dir = self.plugins_dir.join(name);
@@ -241,6 +242,7 @@ impl PluginManager {
     /// - [`PluginError::MissingDependency`] — a declared dependency is not installed.
     /// - [`PluginError::DependencyCycle`] — the dependency graph contains a cycle.
     /// - [`PluginError::Io`] — the `.disabled` marker cannot be removed.
+    #[tracing::instrument(name = "plugins.install.enable", skip_all)]
     pub fn enable(&self, name: &str) -> Result<(), PluginError> {
         validate_plugin_name(name)?;
         let mut visiting: Vec<String> = Vec::new();
@@ -353,6 +355,7 @@ impl PluginManager {
     /// # Ok(())
     /// # }
     /// ```
+    #[tracing::instrument(name = "plugins.install.disable", skip_all)]
     pub fn disable(&self, name: &str, force: bool) -> Result<DisableResult, PluginError> {
         validate_plugin_name(name)?;
         let plugin_dir = self.plugins_dir.join(name);

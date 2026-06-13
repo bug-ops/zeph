@@ -535,6 +535,7 @@ impl SubAgentManager {
     /// # Errors
     ///
     /// Returns [`SubAgentError`] if a CLI-sourced definition file fails to parse.
+    #[tracing::instrument(name = "subagent.manager.load_definitions_with_sources", skip_all)]
     pub async fn load_definitions_with_sources(
         &mut self,
         ordered_paths: &[PathBuf],

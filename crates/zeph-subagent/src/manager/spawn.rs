@@ -275,6 +275,7 @@ pub(crate) fn apply_constraint_propagation(def: &mut SubAgentDef, ctx: &SpawnCon
 /// directory path is provided as a soft boundary via the system prompt instruction.
 /// Known limitation: agents may use Read/Write/Edit beyond the memory directory.
 /// See issue #1152 for future `FilteredToolExecutor` path-restriction enhancement.
+#[tracing::instrument(name = "subagent.manager.build_system_prompt_with_memory", skip_all)]
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) async fn build_system_prompt_with_memory(
     def: &mut SubAgentDef,
@@ -1151,6 +1152,7 @@ impl SubAgentManager {
     ///
     /// Panics if the internal agent entry is missing after a successful `spawn` call.
     /// This is a programming error and should never occur in normal operation.
+    #[tracing::instrument(name = "subagent.manager.spawn_for_task", skip_all)]
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn spawn_for_task<F>(
         &mut self,

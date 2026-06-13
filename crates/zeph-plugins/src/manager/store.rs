@@ -19,6 +19,7 @@ impl PluginManager {
     /// # Errors
     ///
     /// Returns [`PluginError`] if the plugins directory cannot be read.
+    #[tracing::instrument(name = "plugins.store.list_installed", skip_all)]
     pub fn list_installed(&self) -> Result<Vec<InstalledPlugin>, PluginError> {
         if !self.plugins_dir.exists() {
             return Ok(Vec::new());

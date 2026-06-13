@@ -52,6 +52,7 @@ impl PluginManager {
     ///     Ok(())
     /// }
     /// ```
+    #[tracing::instrument(name = "plugins.security.scan_targets", skip_all)]
     pub fn scan_targets(&self, source: &str) -> Result<Vec<SkillScanInput>, PluginError> {
         // Cap per-file reads to prevent memory DoS when scanning untrusted plugin archives.
         const MAX_SKILL_MD_READ_BYTES: u64 = 512 * 1024; // 512 KiB

@@ -114,6 +114,7 @@ pub fn resolve_memory_dir(scope: MemoryScope, agent_name: &str) -> Result<PathBu
 ///
 /// Returns [`SubAgentError::Invalid`] if the agent name is invalid.
 /// Returns [`SubAgentError::Memory`] if the directory cannot be created.
+#[tracing::instrument(name = "subagent.memory.ensure_memory_dir", skip_all)]
 pub async fn ensure_memory_dir(
     scope: MemoryScope,
     agent_name: &str,
@@ -150,6 +151,7 @@ pub async fn ensure_memory_dir(
 /// - Opens the canonical path after the boundary check (no TOCTOU window).
 /// - Rejects files larger than 256 KiB.
 /// - Rejects files containing null bytes.
+#[tracing::instrument(name = "subagent.memory.load_memory_content", skip_all)]
 pub async fn load_memory_content(dir: &Path) -> Option<String> {
     let memory_path = dir.join("MEMORY.md");
 
