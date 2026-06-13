@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `trace_extractor.rs` (always-on); `miner::embed_existing` retains its
   existing `profiling`-gated span. Closes #5290, #5291.
 
+- `refactor(llm)`: replace 4 `expect()` calls in `cascade_chat` and
+  `cascade_chat_stream` with `ok_or_else(|| LlmError::Other(...))?`, converting
+  unreachable-in-practice panics into recoverable errors that propagate through
+  the normal error path. Closes #5287.
+
+- `refactor(llm)`: extract the duplicated ~20-line rate-limited ASI coherence
+  warn/trace block from `ema_ordered_providers` and `thompson_ordered_providers`
+  in `router/select.rs` into a private `maybe_warn_asi_coherence()` helper,
+  reducing the duplication and making future changes to the warn logic a
+  one-place edit. Closes #5286.
+
 ### Added
 
 - `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across

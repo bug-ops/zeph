@@ -150,11 +150,11 @@ impl RouterProvider {
         let cfg = self
             .cascade_config
             .as_ref()
-            .expect("cascade_config must be set");
+            .ok_or_else(|| LlmError::Other("cascade_config not set".into()))?;
         let cascade_state = self
             .cascade_state
             .as_ref()
-            .expect("cascade_state must be set");
+            .ok_or_else(|| LlmError::Other("cascade_state not set".into()))?;
 
         let mut escalations_remaining = cfg.max_escalations;
         let mut best: Option<(String, f64)> = None; // (response, score)
@@ -291,11 +291,11 @@ impl RouterProvider {
         let cfg = self
             .cascade_config
             .as_ref()
-            .expect("cascade_config must be set");
+            .ok_or_else(|| LlmError::Other("cascade_config not set".into()))?;
         let cascade_state = self
             .cascade_state
             .as_ref()
-            .expect("cascade_state must be set");
+            .ok_or_else(|| LlmError::Other("cascade_state not set".into()))?;
 
         let mut escalations_remaining = cfg.max_escalations;
         let mut tokens_used: u32 = 0;
