@@ -701,6 +701,13 @@ fn spawn_guest_proxy(
         ChannelError::Other(format!("guest proxy: TcpListener conversion failed: {e}"))
     })?;
 
+    // EXEMPT: guest proxy is a singleton loopback axum server bound to an ephemeral port;
+    // restarting via TaskSupervisor would require rebinding the port and re-pointing
+    // bot.set_api_url() — the JoinHandle is stored in TelegramChannel and tied to its lifetime.
+    tracing::warn!(
+        "guest proxy spawned without TaskSupervisor — singleton task, lifecycle bound to \
+         TelegramChannel; handle is tracked via guest_proxy_handle field"
+    );
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             tracing::warn!("guest proxy axum serve error: {e}");

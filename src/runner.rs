@@ -173,6 +173,7 @@ fn check_legacy_artifact_paths(config: &Config) {
 /// read from the agent's configuration file, which already requires file-system write access.
 /// No canonicalization or prefix-check is performed because the threat model does not include
 /// less-privileged config editing. Do not propagate this path from end-user input.
+#[tracing::instrument(name = "runner.build_typed_pages_state", skip_all)]
 async fn build_typed_pages_state(
     config: &Config,
     supervisor: Option<&zeph_common::TaskSupervisor>,
@@ -3746,6 +3747,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 /// Load persisted RL routing head weights from memory store.
 ///
 /// Returns `None` when no weights are stored yet (cold start) or on any DB error.
+#[tracing::instrument(name = "runner.load_rl_head", skip_all)]
 pub(crate) async fn load_rl_head(
     memory: &zeph_memory::semantic::SemanticMemory,
 ) -> Option<zeph_skills::rl_head::RoutingHead> {
@@ -3782,6 +3784,7 @@ pub(crate) async fn load_rl_head(
 /// embedding provider with a single empty-string call to determine the actual
 /// output dimension at runtime. Falls back to 1536 with a WARN when the probe
 /// also fails, instructing the operator to set `skills.rl_embed_dim` explicitly.
+#[tracing::instrument(name = "runner.resolve_rl_embed_dim", skip_all)]
 pub(crate) async fn resolve_rl_embed_dim(
     skills_config: &zeph_core::config::SkillsConfig,
     embedding_provider: &LlmAnyProvider,
@@ -3821,6 +3824,7 @@ pub(crate) async fn resolve_rl_embed_dim(
 /// # Errors
 ///
 /// Returns an error if the database cannot be opened or the query fails.
+#[tracing::instrument(name = "runner.run_experiment_report", skip_all)]
 async fn run_experiment_report(app: &crate::bootstrap::AppBuilder) -> anyhow::Result<()> {
     use zeph_memory::store::SqliteStore;
 

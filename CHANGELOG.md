@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `fix(channels)`: add `// EXEMPT` annotation and `tracing::warn!` to the raw `tokio::spawn` in
+  `spawn_guest_proxy()` (`crates/zeph-channels/src/telegram.rs`), matching the documentation
+  pattern used by the three other untracked Telegram spawn sites. The guest proxy is a singleton
+  axum server bound to an ephemeral port; TaskSupervisor routing is not feasible because restart
+  would require rebinding the port and re-pointing `bot.set_api_url()`. Closes #5309.
+
+- `feat(tracing)`: add `#[tracing::instrument]` to four startup-path async functions in
+  `src/runner.rs` — `build_typed_pages_state`, `load_rl_head`, `resolve_rl_embed_dim`, and
+  `run_experiment_report` — making their latency visible in Perfetto/Jaeger traces. Closes #5199.
+
 - `refactor(bench)`: extract shared `write_atomic` helper into `zeph_bench::utils` and remove the
   byte-for-byte duplicate copies from `baseline.rs` and `results.rs`. Closes #5314.
 
