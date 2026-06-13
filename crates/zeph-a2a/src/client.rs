@@ -138,6 +138,7 @@ impl A2aClient {
     /// # Errors
     /// Returns `A2aError` on network, JSON, or JSON-RPC errors, or `A2aError::Timeout`
     /// if the request exceeds the configured `request_timeout`.
+    #[tracing::instrument(name = "a2a.client.send_message", skip_all, err)]
     pub async fn send_message(
         &self,
         endpoint: &str,
@@ -150,6 +151,7 @@ impl A2aClient {
 
     /// # Errors
     /// Returns `A2aError` on network failure or if the SSE connection cannot be established.
+    #[tracing::instrument(name = "a2a.client.stream_message", skip_all, err)]
     pub async fn stream_message(
         &self,
         endpoint: &str,
@@ -207,6 +209,7 @@ impl A2aClient {
     /// # Errors
     /// Returns `A2aError` on network, JSON, or JSON-RPC errors, or `A2aError::Timeout`
     /// if the request exceeds the configured `request_timeout`.
+    #[tracing::instrument(name = "a2a.client.get_task", skip_all, err)]
     pub async fn get_task(
         &self,
         endpoint: &str,
@@ -220,6 +223,7 @@ impl A2aClient {
     /// # Errors
     /// Returns `A2aError` on network, JSON, or JSON-RPC errors, or `A2aError::Timeout`
     /// if the request exceeds the configured `request_timeout`.
+    #[tracing::instrument(name = "a2a.client.cancel_task", skip_all, err)]
     pub async fn cancel_task(
         &self,
         endpoint: &str,
@@ -230,6 +234,7 @@ impl A2aClient {
             .await
     }
 
+    #[tracing::instrument(name = "a2a.client.validate_endpoint", skip_all, err)]
     async fn validate_endpoint(&self, endpoint: &str) -> Result<(), A2aError> {
         if self.require_tls && !endpoint.starts_with("https://") {
             return Err(A2aError::Security(format!(
@@ -265,6 +270,7 @@ impl A2aClient {
         Ok(())
     }
 
+    #[tracing::instrument(name = "a2a.client.rpc_call", skip_all, err)]
     async fn rpc_call<P: Serialize, R: DeserializeOwned>(
         &self,
         endpoint: &str,

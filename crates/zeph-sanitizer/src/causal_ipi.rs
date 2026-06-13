@@ -161,6 +161,7 @@ impl TurnCausalAnalyzer {
     ///
     /// Returns `CausalIpiError::LlmError` on provider failure, `CausalIpiError::Timeout`
     /// on probe timeout.
+    #[tracing::instrument(name = "sanitizer.causal_ipi.probe", skip_all, err)]
     pub async fn probe(&self, context_summary: &str) -> Result<String, CausalIpiError> {
         let content = format!("{context_summary}\n\n{PROBE_QUESTION}");
         self.call_probe(&content).await
@@ -181,6 +182,7 @@ impl TurnCausalAnalyzer {
     ///
     /// Returns `CausalIpiError::LlmError` on provider failure, `CausalIpiError::Timeout`
     /// on probe timeout.
+    #[tracing::instrument(name = "sanitizer.causal_ipi.post_probe", skip_all, err)]
     pub async fn post_probe(
         &self,
         context_summary: &str,

@@ -88,6 +88,7 @@ impl AgentRegistry {
     ///
     /// Returns [`A2aError`] wrapping an HTTP transport failure, or a [`A2aError`] discovery
     /// variant on non-2xx HTTP status or JSON parse failure.
+    #[tracing::instrument(name = "a2a.discovery.discover", skip_all, err)]
     pub async fn discover(&self, base_url: &str) -> Result<AgentCard, A2aError> {
         let url = format!("{}{WELL_KNOWN_PATH}", base_url.trim_end_matches('/'));
         let card: AgentCard = tokio::time::timeout(self.request_timeout, async {
@@ -129,6 +130,7 @@ impl AgentRegistry {
     ///
     /// Returns [`A2aError`] if the cached entry is expired and the re-fetch via
     /// [`discover`](Self::discover) fails.
+    #[tracing::instrument(name = "a2a.discovery.get_or_discover", skip_all, err)]
     pub async fn get_or_discover(&self, base_url: &str) -> Result<AgentCard, A2aError> {
         {
             let cache = self.cache.read().await;
@@ -147,6 +149,7 @@ impl AgentRegistry {
     /// fetched and will not expire until `ttl` has elapsed from the time of this call.
     ///
     /// Useful when the card is already known (e.g., loaded from config) or in tests.
+    #[tracing::instrument(name = "a2a.discovery.register", skip_all)]
     pub async fn register(&self, base_url: String, card: AgentCard) {
         let mut cache = self.cache.write().await;
         cache.insert(
@@ -162,6 +165,7 @@ impl AgentRegistry {
     ///
     /// This does not trigger any eviction or re-fetch. Call [`evict_stale`](Self::evict_stale)
     /// first if you only want cards that are still within their TTL.
+    #[tracing::instrument(name = "a2a.discovery.all", skip_all)]
     pub async fn all(&self) -> Vec<AgentCard> {
         let cache = self.cache.read().await;
         cache.values().map(|e| e.card.clone()).collect()
@@ -171,6 +175,7 @@ impl AgentRegistry {
     ///
     /// Intended for periodic background cleanup. The A2A server does not call this
     /// automatically — callers should schedule it as needed (e.g., via a periodic task).
+    #[tracing::instrument(name = "a2a.discovery.evict_stale", skip_all)]
     pub async fn evict_stale(&self) {
         let mut cache = self.cache.write().await;
         cache.retain(|_, entry| entry.fetched_at.elapsed() < self.ttl);

@@ -263,6 +263,7 @@ impl IpiFilter {
     /// assert_eq!(verdict.score, 0.0);
     /// # }
     /// ```
+    #[tracing::instrument(name = "sanitizer.ipi_filter.filter_async", skip_all, err)]
     pub async fn filter_async(&self, text: String) -> Result<IpiVerdict, tokio::task::JoinError> {
         let this = self.clone();
         tokio::task::spawn_blocking(move || this.filter(&text)).await

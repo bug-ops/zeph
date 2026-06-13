@@ -163,6 +163,7 @@ impl QuarantinedSummarizer {
     /// - [`QuarantineError::Timeout`] — the provider did not respond within `timeout_ms`.
     /// - [`QuarantineError::LlmError`] — the provider call failed (network error, etc.).
     /// - [`QuarantineError::EmptyResponse`] — the provider returned an empty string.
+    #[tracing::instrument(name = "sanitizer.quarantine.extract_facts", skip_all, err)]
     pub async fn extract_facts(
         &self,
         input: &SanitizedContent,

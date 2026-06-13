@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(tracing)`: add `#[tracing::instrument]` to hot-path async fns in
+  `zeph-sanitizer` (9 fns across `causal_ipi`, `sanitizer`, `ipi_filter`,
+  `quarantine`), `zeph-a2a` client and discovery (11 fns), and
+  `zeph-llm` `CandleProvider` (4 fns, `profiling`-gated). Sanitizer and A2A
+  spans use `skip_all` to prevent leaking sensitive content into traces;
+  CandleProvider follows the `#[cfg_attr(feature = "profiling", ...)]`
+  pattern consistent with `ollama` and `openai` providers. Closes #5211,
+  #5235, #5221.
+
 - `feat(tui)`: micro-delights — five opt-in animation enhancements gated by
   `[tui.delights]` config block and master-controlled by `tui.motion` (#5104):
   - **Stream metrics**: tok/s rolling-window estimate (Low priority, status bar,

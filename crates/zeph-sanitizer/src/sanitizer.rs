@@ -309,6 +309,7 @@ impl ContentSanitizer {
     ///
     /// Returns `LlmError` if the underlying model fails.
     #[cfg(feature = "classifiers")]
+    #[tracing::instrument(name = "sanitizer.sanitizer.detect_pii", skip_all, err)]
     pub async fn detect_pii(
         &self,
         text: &str,
@@ -602,6 +603,7 @@ impl ContentSanitizer {
     /// Returns [`BinaryStageOutcome::Final`] on classifier error or timeout; the
     /// verdict is the regex fallback and the caller **must not** invoke Stage 2.
     #[cfg(feature = "classifiers")]
+    #[tracing::instrument(name = "sanitizer.sanitizer.run_binary_stage", skip_all)]
     async fn run_binary_stage(
         &self,
         backend: &dyn zeph_llm::classifier::ClassifierBackend,
@@ -647,6 +649,7 @@ impl ContentSanitizer {
     /// classifier timeout, `MisalignedInstruction`, `Unknown`, or
     /// `AlignedInstruction` below threshold.
     #[cfg(feature = "classifiers")]
+    #[tracing::instrument(name = "sanitizer.sanitizer.refine_with_three_class", skip_all)]
     async fn refine_with_three_class(
         &self,
         text: &str,
@@ -714,6 +717,7 @@ impl ContentSanitizer {
     ///
     /// When no classifier backend is attached, also falls back to regex detection.
     #[cfg(feature = "classifiers")]
+    #[tracing::instrument(name = "sanitizer.sanitizer.classify_injection", skip_all)]
     pub async fn classify_injection(&self, text: &str) -> InjectionVerdict {
         if !self.enabled {
             return self.regex_fallback_verdict(text);
