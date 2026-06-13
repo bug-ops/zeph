@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::debug;
-use zeph_common::task_supervisor::TaskSupervisor;
+use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
@@ -27,6 +27,18 @@ pub use crate::types::{ChatMessage, InputMode, MessageRole};
 use crate::types::PasteState;
 
 const MAX_VISIBLE_INPUT_LINES: u16 = 3;
+
+/// Tracks an in-flight background file-index build.
+///
+/// When a [`TaskSupervisor`] is wired into the `App`, the build is routed through it
+/// so it appears in the task registry panel and is bounded by the blocking semaphore.
+/// In environments without a supervisor (e.g., tests) the bare oneshot receiver is used.
+enum PendingFileIndex {
+    /// Supervised via [`TaskSupervisor::spawn_blocking`].
+    Supervised(BlockingHandle<crate::file_picker::FileIndex>),
+    /// Bare `tokio::task::spawn_blocking` — supervisor not available.
+    Bare(oneshot::Receiver<crate::file_picker::FileIndex>),
+}
 
 /// The currently focused side panel in the TUI layout.
 ///
@@ -399,7 +411,7 @@ pub struct App {
     editing_queued: bool,
     hyperlinks: Vec<HyperlinkSpan>,
     cancel_signal: Option<Arc<Notify>>,
-    pending_file_index: Option<oneshot::Receiver<FileIndex>>,
+    pending_file_index: Option<PendingFileIndex>,
     /// Interactive selection state for the subagent sidebar (stays global per arch v2 E5).
     pub subagent_sidebar: SubAgentSidebarState,
     /// Optional handle to the `TaskSupervisor` for the task registry panel.

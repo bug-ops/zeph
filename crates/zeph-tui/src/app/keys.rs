@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 pub(super) const SCROLL_STEP_PAGE: usize = 10;
 
@@ -249,7 +248,7 @@ impl App {
                 let _ = self.user_input_tx.try_send("/cocoon models".to_owned());
             }
             TuiCommand::CopyLastAssistant => {
-                if let Some(text) = self.last_assistant_content() {
+                if let Some(text) = self.last_assistant_content_pub() {
                     match self.clipboard.copy(&text) {
                         Ok(()) => self.push_system_message(
                             "Last assistant message copied to clipboard".to_owned(),
@@ -263,7 +262,7 @@ impl App {
                 }
             }
             TuiCommand::CopyLastCodeBlock(n) => {
-                let blocks = self.last_assistant_code_blocks();
+                let blocks = self.last_assistant_code_blocks_pub();
                 let text = if blocks.is_empty() {
                     None
                 } else if n == 0 {
@@ -793,60 +792,6 @@ impl App {
         self.sessions.current_mut().scroll_offset = 0;
     }
 
-    /// Return the content of the last assistant message in the current session,
-    /// or `None` if no assistant message exists yet.
-    fn last_assistant_content(&self) -> Option<String> {
-        self.sessions
-            .current()
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == MessageRole::Assistant)
-            .map(|m| m.content.clone())
-    }
-
-    /// Extract all fenced code block bodies from the last assistant message.
-    ///
-    /// Returns one `String` per code block in document order. Blocks that are
-    /// still streaming-incomplete (no closing fence) are included with whatever
-    /// text has arrived so far.
-    fn last_assistant_code_blocks(&self) -> Vec<String> {
-        let Some(content) = self.last_assistant_content() else {
-            return Vec::new();
-        };
-        let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
-        let parser = Parser::new_ext(&content, options);
-        let mut blocks: Vec<String> = Vec::new();
-        let mut current: Option<String> = None;
-        for event in parser {
-            match event {
-                Event::Start(Tag::CodeBlock(
-                    CodeBlockKind::Fenced(_) | CodeBlockKind::Indented,
-                )) => {
-                    current = Some(String::new());
-                }
-                Event::Text(text) => {
-                    if let Some(ref mut buf) = current {
-                        buf.push_str(&text);
-                    }
-                }
-                Event::End(TagEnd::CodeBlock) => {
-                    if let Some(buf) = current.take() {
-                        blocks.push(buf);
-                    }
-                }
-                _ => {}
-            }
-        }
-        // If streaming is incomplete, current still holds the partial block.
-        if let Some(buf) = current
-            && !buf.is_empty()
-        {
-            blocks.push(buf);
-        }
-        blocks
-    }
-
     /// Returns true if there are security events within the last 60 seconds.
     #[must_use]
     pub fn has_recent_security_events(&self) -> bool {
@@ -1242,15 +1187,27 @@ impl App {
     }
 
     pub(super) fn open_file_picker(&mut self) {
+        use std::sync::Arc;
+
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let needs_rebuild = self.file_index.as_ref().is_none_or(FileIndex::is_stale);
         if needs_rebuild && self.pending_file_index.is_none() {
             self.sessions.current_mut().status_label = Some("indexing files...".to_owned());
-            let (tx, rx) = oneshot::channel();
-            tokio::task::spawn_blocking(move || {
-                let _ = tx.send(FileIndex::build(&root));
-            });
-            self.pending_file_index = Some(rx);
+            let pending = if let Some(sup) = &self.task_supervisor {
+                let handle = sup.spawn_blocking(Arc::from("tui.file_index.build"), move || {
+                    FileIndex::build(&root)
+                });
+                super::PendingFileIndex::Supervised(handle)
+            } else {
+                // EXEMPT: supervisor not wired (test environments); bare spawn is acceptable here
+                // because the oneshot receiver is stored in pending_file_index and polled every tick.
+                let (tx, rx) = oneshot::channel();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(FileIndex::build(&root));
+                });
+                super::PendingFileIndex::Bare(rx)
+            };
+            self.pending_file_index = Some(pending);
             return;
         }
         if let Some(idx) = &self.file_index {
@@ -1261,20 +1218,35 @@ impl App {
     /// Checks if the background file index build has completed and, if so,
     /// installs the result and opens the picker.
     pub fn poll_pending_file_index(&mut self) {
-        let Some(rx) = self.pending_file_index.as_mut() else {
+        let Some(pending) = self.pending_file_index.take() else {
             return;
         };
-        match rx.try_recv() {
-            Ok(idx) => {
+        let poll_result = match pending {
+            super::PendingFileIndex::Supervised(handle) => match handle.try_join() {
+                Ok(Ok(idx)) => Some(Ok(idx)),
+                Ok(Err(_)) => Some(Err(())),
+                Err(handle) => {
+                    self.pending_file_index = Some(super::PendingFileIndex::Supervised(handle));
+                    return;
+                }
+            },
+            super::PendingFileIndex::Bare(mut rx) => match rx.try_recv() {
+                Ok(idx) => Some(Ok(idx)),
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    self.pending_file_index = Some(super::PendingFileIndex::Bare(rx));
+                    return;
+                }
+                Err(oneshot::error::TryRecvError::Closed) => Some(Err(())),
+            },
+        };
+        match poll_result {
+            Some(Ok(idx)) => {
                 let picker = FilePickerState::new(&idx);
                 self.file_index = Some(idx);
                 self.file_picker_state = Some(picker);
-                self.pending_file_index = None;
                 self.sessions.current_mut().status_label = None;
             }
-            Err(oneshot::error::TryRecvError::Empty) => {}
-            Err(oneshot::error::TryRecvError::Closed) => {
-                self.pending_file_index = None;
+            Some(Err(())) | None => {
                 self.sessions.current_mut().status_label = None;
             }
         }
@@ -1300,7 +1272,7 @@ mod tests {
     #[test]
     fn last_assistant_content_returns_none_when_empty() {
         let (app, _rx, _tx) = make_app();
-        assert_eq!(app.last_assistant_content(), None);
+        assert_eq!(app.last_assistant_content_pub(), None);
     }
 
     #[test]
@@ -1310,7 +1282,7 @@ mod tests {
             .current_mut()
             .messages
             .push(ChatMessage::new(MessageRole::User, "hello"));
-        assert_eq!(app.last_assistant_content(), None);
+        assert_eq!(app.last_assistant_content_pub(), None);
     }
 
     #[test]
@@ -1328,7 +1300,7 @@ mod tests {
             .current_mut()
             .messages
             .push(ChatMessage::new(MessageRole::Assistant, "second"));
-        assert_eq!(app.last_assistant_content(), Some("second".to_owned()));
+        assert_eq!(app.last_assistant_content_pub(), Some("second".to_owned()));
     }
 
     #[test]

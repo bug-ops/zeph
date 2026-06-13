@@ -1861,7 +1861,7 @@ mod file_picker_tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (idx, _dir) = build_temp_index(&["foo.rs"]);
         let _ = tx.send(idx);
-        app.pending_file_index = Some(rx);
+        app.pending_file_index = Some(PendingFileIndex::Bare(rx));
         app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
 
         // Give the oneshot a moment to be ready (it already is since we sent before assigning)
@@ -1906,7 +1906,7 @@ mod file_picker_tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<crate::file_picker::FileIndex>();
         // Drop sender without sending — simulates spawn_blocking panic
         drop(tx);
-        app.pending_file_index = Some(rx);
+        app.pending_file_index = Some(PendingFileIndex::Bare(rx));
         app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
 
         app.poll_pending_file_index();

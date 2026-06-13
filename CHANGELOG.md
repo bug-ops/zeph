@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: remove duplicate `last_assistant_content` / `last_assistant_code_blocks`
+  from `keys.rs`; call-sites now use the `pub(crate)` versions in `state.rs`. Closes #5296.
+
+- `fix(tui)`: route `FileIndex::build` through `TaskSupervisor::spawn_blocking` when a
+  supervisor is available, making the file-picker index build visible to TUI task tracking
+  and metrics per spec-039. Falls back to a bare `spawn_blocking` (EXEMPT) when no
+  supervisor is wired. Annotated `transcript.rs` one-shot load as EXEMPT. Closes #5297.
+
 - `fix(index)`: wrap `embed_batch` in `tokio::time::timeout` in `FileIndexWorker::index_file`
   (`indexer.rs:572`). Previously the call had no timeout guard, meaning a slow or hung
   embedding provider could stall the indexer pipeline indefinitely. Adds
