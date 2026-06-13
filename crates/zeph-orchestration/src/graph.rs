@@ -309,6 +309,38 @@ pub enum ExecutionMode {
     Sequential,
 }
 
+/// Controls network access for a task node during orchestrated execution.
+///
+/// **Advisory only** — this field is not yet read at runtime. See the
+/// `TODO(enforcement)` on the `Deny` variant and `specs/069-threat-model/spec.md §5`.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_orchestration::graph::NetworkScope;
+///
+/// let scope = NetworkScope::Deny;
+/// assert_eq!(NetworkScope::default(), NetworkScope::Inherit);
+/// let parsed: NetworkScope = serde_json::from_str("\"deny\"").unwrap();
+/// assert_eq!(parsed, NetworkScope::Deny);
+/// ```
+#[non_exhaustive]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkScope {
+    /// Inherit the global `allow_network` setting (default, no per-task restriction).
+    #[default]
+    Inherit,
+    /// Explicitly allow network egress (shell network commands + scrape/fetch) for this task.
+    Allow,
+    /// Deny all network egress for this task regardless of global config.
+    // TODO(enforcement): wire to spawned sub-agent launch in handle_scheduler_spawn_action.
+    // See scheduler_loop.rs spawn_for_task — it does not thread per-task scope today.
+    Deny,
+}
+
 /// A single node in the task DAG.
 ///
 /// Constructed by [`Planner`] and stored inside a [`TaskGraph`].  The
@@ -325,6 +357,8 @@ pub enum ExecutionMode {
 /// assert_eq!(node.status, TaskStatus::Pending);
 /// assert!(node.depends_on.is_empty());
 /// assert_eq!(node.execution_mode, ExecutionMode::Parallel);
+/// assert!(node.network_scope.is_none());
+/// assert!(node.asset_sensitivity.is_none());
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskNode {
@@ -383,6 +417,22 @@ pub struct TaskNode {
     /// emits a `tracing::warn!`. Hard enforcement is deferred post-v1.0.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget_cents: Option<f64>,
+
+    /// Per-task network egress policy. Advisory only for spawned sub-agents.
+    ///
+    /// `None` / `Inherit` = inherit the executor/global `allow_network` default.
+    /// See [`NetworkScope`] for enforcement caveats and `specs/069-threat-model/spec.md §5`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_scope: Option<NetworkScope>,
+
+    /// Sensitivity level of assets accessed by this task.
+    ///
+    /// Used by the orchestration planner to annotate tasks that touch sensitive resources
+    /// (vault keys, user credentials, private memory). Advisory only in the current
+    /// implementation — the dispatcher does not yet auto-restrict the tool allow-list
+    /// based on this field. See `specs/069-threat-model/spec.md §5`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_sensitivity: Option<zeph_config::AssetSensitivity>,
 }
 
 impl TaskNode {
@@ -407,6 +457,8 @@ impl TaskNode {
             predicate_outcome: None,
             execution_environment: None,
             token_budget_cents: None,
+            network_scope: None,
+            asset_sensitivity: None,
         }
     }
 }
@@ -949,5 +1001,84 @@ mod tests {
         assert_eq!(p, ExecutionMode::Parallel);
         let s: ExecutionMode = serde_json::from_str("\"sequential\"").unwrap();
         assert_eq!(s, ExecutionMode::Sequential);
+    }
+
+    #[test]
+    fn test_task_node_missing_network_scope_deserializes_as_none() {
+        // Old SQLite blobs without network_scope must deserialize to None without error.
+        let json = r#"{
+            "id": 0,
+            "title": "t",
+            "description": "d",
+            "agent_hint": null,
+            "status": "pending",
+            "depends_on": [],
+            "result": null,
+            "assigned_agent": null,
+            "retry_count": 0,
+            "failure_strategy": null,
+            "max_retries": null
+        }"#;
+        let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
+        assert!(node.network_scope.is_none());
+        assert!(node.asset_sensitivity.is_none());
+    }
+
+    #[test]
+    fn test_network_scope_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&NetworkScope::Inherit).unwrap(),
+            "\"inherit\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NetworkScope::Allow).unwrap(),
+            "\"allow\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NetworkScope::Deny).unwrap(),
+            "\"deny\""
+        );
+        let inherit: NetworkScope = serde_json::from_str("\"inherit\"").unwrap();
+        assert_eq!(inherit, NetworkScope::Inherit);
+        let deny: NetworkScope = serde_json::from_str("\"deny\"").unwrap();
+        assert_eq!(deny, NetworkScope::Deny);
+    }
+
+    #[test]
+    fn test_network_scope_default_is_inherit() {
+        assert_eq!(NetworkScope::default(), NetworkScope::Inherit);
+    }
+
+    #[test]
+    fn test_task_node_new_has_none_scope_fields() {
+        let node = TaskNode::new(0, "t", "d");
+        assert!(node.network_scope.is_none());
+        assert!(node.asset_sensitivity.is_none());
+    }
+
+    #[test]
+    fn test_task_node_network_scope_roundtrip() {
+        let mut node = TaskNode::new(0, "t", "d");
+        node.network_scope = Some(NetworkScope::Deny);
+        node.asset_sensitivity = Some(zeph_config::AssetSensitivity::Confidential);
+        let json = serde_json::to_string(&node).unwrap();
+        let restored: TaskNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.network_scope, Some(NetworkScope::Deny));
+        assert_eq!(
+            restored.asset_sensitivity,
+            Some(zeph_config::AssetSensitivity::Confidential)
+        );
+    }
+
+    #[test]
+    fn test_task_node_skip_serializing_if_none_scope() {
+        // When fields are None, they should not appear in the JSON output.
+        let node = TaskNode::new(0, "t", "d");
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(!json.contains("network_scope"), "none should be omitted");
+        assert!(
+            !json.contains("asset_sensitivity"),
+            "none should be omitted"
+        );
     }
 }

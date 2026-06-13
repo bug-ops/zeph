@@ -48,8 +48,8 @@ use super::{
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_microcompact_config,
-    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_otel_filter, migrate_planner_model_to_provider,
+    migrate_orchestration_asset_sensitivity, migrate_orchestration_orchestrator_provider,
+    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
     migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
     migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
@@ -61,7 +61,7 @@ use super::{
     migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
-// ── Wrapper structs for all 64 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 69 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -809,5 +809,17 @@ impl Migration for MigrateTuiMouse {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_tui_mouse(toml_src)
+    }
+}
+
+/// Step 69 — add `default_asset_sensitivity` advisory comment under `[orchestration]` (spec-068, #3934).
+pub(super) struct MigrateOrchestrationAssetSensitivity;
+impl Migration for MigrateOrchestrationAssetSensitivity {
+    fn name(&self) -> &'static str {
+        "migrate_orchestration_asset_sensitivity"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_orchestration_asset_sensitivity(toml_src)
     }
 }

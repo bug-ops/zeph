@@ -98,7 +98,7 @@ pub use command::PlanCommand;
 pub use dag::lookahead_tools;
 pub use error::OrchestrationError;
 pub use graph::{
-    ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, PlanSlug,
+    ExecutionMode, FailureStrategy, GraphId, GraphPersistence, GraphStatus, NetworkScope, PlanSlug,
     PredicateOutcome, TaskGraph, TaskId, TaskNode, TaskResult, TaskStatus, VerifyPredicate,
 };
 pub use lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error};

@@ -133,8 +133,8 @@ pub use dump_format::DumpFormat;
 pub use durable::{DurableBackend, DurableConfig, RetentionPolicy};
 pub use execution::{EnvironmentConfig, ExecutionConfig};
 pub use experiment::{
-    AdaptOrchConfig, ExperimentConfig, ExperimentSchedule, FailureStrategy, OrchestrationConfig,
-    PlanCacheConfig,
+    AdaptOrchConfig, AssetSensitivity, ExperimentConfig, ExperimentSchedule, FailureStrategy,
+    OrchestrationConfig, PlanCacheConfig,
 };
 pub use features::{
     CavemanConfig, CompressionSpectrumConfig, CostConfig, DaemonConfig, DebugConfig, GatewayConfig,

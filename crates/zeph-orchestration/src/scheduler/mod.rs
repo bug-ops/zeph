@@ -815,6 +815,7 @@ mod tests {
             persistence_enabled: true,
             orchestrator_provider: Default::default(),
             default_task_budget_cents: 0.0,
+            default_asset_sensitivity: zeph_config::AssetSensitivity::default(),
             aggregator_timeout_secs: 60,
             planner_timeout_secs: 120,
             verifier_timeout_secs: 30,

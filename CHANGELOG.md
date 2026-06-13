@@ -37,6 +37,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   INV-SP-1..4 crash-safety invariants, per-session actor model (mpsc-in/broadcast-out),
   and `/conv` TUI command namespace. Closes #2807, #3102, #3074.
 
+- `feat(security)`: add MATRA threat model spec `specs/069-threat-model/spec.md` — asset
+  inventory, attack trees (vault exfiltration, shell RCE, SSRF, memory poisoning, channel
+  exfiltration), control mapping with residual risk scores, uncontrolled blast radius analysis,
+  and six binding invariants. Closes #3913.
+
+- `feat(orchestration)`: add `NetworkScope` enum (`Inherit`/`Allow`/`Deny`) to
+  `crates/zeph-orchestration/src/graph.rs` and `AssetSensitivity` enum
+  (`Public`/`Internal`/`Confidential`) to `crates/zeph-config/src/experiment.rs`. Both types
+  are advisory only — `NetworkScope` controls per-task network egress annotation; enforcement
+  for spawned sub-agents is deferred (see `specs/069-threat-model/spec.md §5`). Adds
+  `TaskNode::network_scope` and `TaskNode::asset_sensitivity` optional fields with `#[serde(default)]`
+  for backward-compatible deserialization of existing SQLite blobs. Adds
+  `OrchestrationConfig::default_asset_sensitivity` with `config --migrate-config` step 69.
+  Closes #3934.
+
 ### Changed
 
 - `feat(hooks)`: add optional `if` conditional field to `HookDef` with `tool:<token>` DSL — hooks

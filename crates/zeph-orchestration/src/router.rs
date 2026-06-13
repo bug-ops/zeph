@@ -161,6 +161,8 @@ mod tests {
             predicate_outcome: None,
             execution_environment: None,
             token_budget_cents: None,
+            network_scope: None,
+            asset_sensitivity: None,
         }
     }
 

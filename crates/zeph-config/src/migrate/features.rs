@@ -723,3 +723,46 @@ pub fn migrate_tui_theme_config(toml_src: &str) -> Result<MigrationResult, Migra
         sections_changed: vec!["tui.theme".to_owned()],
     })
 }
+
+/// Step 69 — add `default_asset_sensitivity` advisory comment to `[orchestration]` (spec-068, #3934).
+///
+/// Advisory only: the migration is informational — it surfaces the new option without
+/// changing behaviour. Skipped when the key is already present or `[orchestration]` is absent.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML document cannot be parsed.
+pub fn migrate_orchestration_asset_sensitivity(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("default_asset_sensitivity")
+        || toml_src.contains("# default_asset_sensitivity")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    if !toml_src.contains("[orchestration]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# default_asset_sensitivity = \"public\"  \
+        # advisory asset sensitivity: public | internal | confidential (spec-068, #3934)\n";
+    let output = toml_src.replacen(
+        "[orchestration]\n",
+        &format!("[orchestration]\n{comment}"),
+        1,
+    );
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["orchestration.default_asset_sensitivity".to_owned()],
+    })
+}

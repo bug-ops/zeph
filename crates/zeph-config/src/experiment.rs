@@ -8,6 +8,36 @@ use crate::providers::ProviderName;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Sensitivity level of an asset accessed by an orchestrated task.
+///
+/// Set per-task on `TaskNode::asset_sensitivity` and graph-wide via
+/// [`OrchestrationConfig::default_asset_sensitivity`].  In the current
+/// implementation this is **advisory only** — the dispatcher does not yet
+/// auto-restrict the tool allow-list based on this field.
+/// See `specs/069-threat-model/spec.md §5` for enforcement caveats.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_config::AssetSensitivity;
+///
+/// assert_eq!(AssetSensitivity::default(), AssetSensitivity::Public);
+/// let s: AssetSensitivity = serde_json::from_str("\"confidential\"").unwrap();
+/// assert_eq!(s, AssetSensitivity::Confidential);
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetSensitivity {
+    /// No sensitive assets accessed (default).
+    #[default]
+    Public,
+    /// Sensitive but not secret: user data, conversation history, semantic memory.
+    Internal,
+    /// Highly sensitive: vault keys, API credentials, private tokens.
+    Confidential,
+}
+
 /// Strategy applied when a task in the orchestration graph fails.
 ///
 /// Set at the graph level via [`OrchestrationConfig::default_failure_strategy`] and overridden
@@ -393,6 +423,16 @@ pub struct OrchestrationConfig {
     #[serde(default)]
     pub default_task_budget_cents: f64,
 
+    /// Default asset sensitivity level for task nodes that do not set their own.
+    ///
+    /// Advisory only in the current implementation — the dispatcher does not yet
+    /// auto-restrict tool access based on this field. See `specs/069-threat-model/spec.md §5`.
+    ///
+    /// TOML: `[orchestration] default_asset_sensitivity = "public"`
+    /// Default: `public` (no restriction).
+    #[serde(default)]
+    pub default_asset_sensitivity: AssetSensitivity,
+
     /// Timeout in seconds for aggregation LLM calls. Default: 60.
     ///
     /// On timeout the aggregator falls back to raw concatenation so that a graph
@@ -454,6 +494,7 @@ impl Default for OrchestrationConfig {
             persistence_enabled: default_persistence_enabled(),
             orchestrator_provider: ProviderName::default(),
             default_task_budget_cents: 0.0,
+            default_asset_sensitivity: AssetSensitivity::default(),
             aggregator_timeout_secs: default_aggregator_timeout_secs(),
             planner_timeout_secs: default_planner_timeout_secs(),
             verifier_timeout_secs: default_verifier_timeout_secs(),
@@ -701,5 +742,53 @@ mod tests {
             "missing field must use default 0.7, got {}",
             cfg.completeness_threshold
         );
+    }
+
+    #[test]
+    fn asset_sensitivity_default_is_public() {
+        assert_eq!(AssetSensitivity::default(), AssetSensitivity::Public);
+    }
+
+    #[test]
+    fn asset_sensitivity_serde_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&AssetSensitivity::Public).unwrap(),
+            "\"public\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AssetSensitivity::Confidential).unwrap(),
+            "\"confidential\""
+        );
+        let v: AssetSensitivity = serde_json::from_str("\"internal\"").unwrap();
+        assert_eq!(v, AssetSensitivity::Internal);
+    }
+
+    #[test]
+    fn orchestration_config_default_asset_sensitivity_is_public() {
+        let cfg = OrchestrationConfig::default();
+        assert_eq!(cfg.default_asset_sensitivity, AssetSensitivity::Public);
+    }
+
+    #[test]
+    fn orchestration_config_asset_sensitivity_toml_roundtrip() {
+        let toml_in = "enabled = true\ndefault_asset_sensitivity = \"confidential\"\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert_eq!(
+            cfg.default_asset_sensitivity,
+            AssetSensitivity::Confidential
+        );
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        let cfg2: OrchestrationConfig = toml::from_str(&serialized).expect("re-deserialize");
+        assert_eq!(
+            cfg2.default_asset_sensitivity,
+            AssetSensitivity::Confidential
+        );
+    }
+
+    #[test]
+    fn orchestration_config_missing_asset_sensitivity_uses_default() {
+        let toml_in = "enabled = true\n";
+        let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
+        assert_eq!(cfg.default_asset_sensitivity, AssetSensitivity::Public);
     }
 }
