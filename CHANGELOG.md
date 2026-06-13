@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(index)`: wrap `embed_batch` in `tokio::time::timeout` in `FileIndexWorker::index_file`
+  (`indexer.rs:572`). Previously the call had no timeout guard, meaning a slow or hung
+  embedding provider could stall the indexer pipeline indefinitely. Adds
+  `embed_batch_timeout_secs` (default 60 s) to `IndexerConfig`, consistent with the
+  existing `embed_timeout_secs` pattern in `RetrieverConfig`. Exceeding the timeout
+  returns `IndexError::EmbedTimeout` and skips the batch. Closes #5293.
+
+- `fix(index)`: add `#[tracing::instrument(name = "index.store.ensure_collection",
+  skip_all)]` to `CodeStore::ensure_collection` (`store.rs:177`). The function was the
+  only uninstrumented public async fn in `CodeStore`, making Qdrant collection-creation
+  timing and errors invisible in traces. Closes #5292.
+
 ### Changed
 
 - `refactor(skills)`: extract shared `embed_skills_with_timeout` free function

@@ -174,6 +174,7 @@ impl CodeStore {
     /// # Errors
     ///
     /// Returns an error if `Qdrant` operations fail.
+    #[tracing::instrument(name = "index.store.ensure_collection", skip_all)]
     pub async fn ensure_collection(&self, vector_size: u64) -> Result<()> {
         self.ops
             .ensure_collection_with_quantization(

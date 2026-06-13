@@ -97,6 +97,14 @@ pub struct IndexerConfig {
     /// resolution happens in the binary bootstrap before this struct is constructed.
     /// Setting this field does not change which provider is used.
     pub embedding_provider: String,
+    /// Timeout in seconds for a single `embed_batch` call. Default: 60.
+    ///
+    /// Batch embedding calls cover an entire file's worth of chunks and can take
+    /// longer than a single-query embed, so this is set higher than the retriever's
+    /// `embed_timeout_secs` (10 s). Exceeding the timeout yields
+    /// [`crate::error::IndexError::EmbedTimeout`] and skips the batch rather than
+    /// blocking the indexer indefinitely.
+    pub embed_batch_timeout_secs: u64,
 }
 
 impl Default for IndexerConfig {
@@ -109,6 +117,7 @@ impl Default for IndexerConfig {
             max_file_bytes: 512 * 1024,
             embed_concurrency: 1,
             embedding_provider: String::new(),
+            embed_batch_timeout_secs: 60,
         }
     }
 }
@@ -563,7 +572,19 @@ impl FileIndexWorker {
         let embedding_texts: Vec<String> =
             new_chunks.iter().map(contextualize_for_embedding).collect();
         let text_refs: Vec<&str> = embedding_texts.iter().map(String::as_str).collect();
-        let vectors = self.provider.embed_batch(&text_refs).await?;
+        let vectors = tokio::time::timeout(
+            Duration::from_secs(self.config.embed_batch_timeout_secs),
+            self.provider.embed_batch(&text_refs),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                embed_batch_timeout_secs = self.config.embed_batch_timeout_secs,
+                chunks = new_chunks.len(),
+                "embed_batch timed out, skipping batch"
+            );
+            IndexError::EmbedTimeout(self.config.embed_batch_timeout_secs)
+        })??;
 
         let batch: Vec<(ChunkInsert<'_>, Vec<f32>)> = new_chunks
             .iter()
@@ -726,6 +747,7 @@ mod tests {
         assert_eq!(config.batch_size, 16);
         assert_eq!(config.embed_concurrency, 1);
         assert_eq!(config.embedding_provider, "");
+        assert_eq!(config.embed_batch_timeout_secs, 60);
     }
 
     #[test]
@@ -956,6 +978,67 @@ mod tests {
         match result {
             Err(crate::error::IndexError::EmbedTimeout(secs)) => {
                 assert_eq!(secs, 15, "timeout value must be the configured 15 s");
+            }
+            other => panic!("expected IndexError::EmbedTimeout, got: {other:?}"),
+        }
+    }
+
+    /// Verify that `index_file` returns `IndexError::EmbedTimeout` when `embed_batch`
+    /// exceeds `embed_batch_timeout_secs`.
+    ///
+    /// Uses a tiny real-wall-clock timeout (1 s) paired with a mock provider that sleeps
+    /// for 3 s, so the test finishes in ~1 s without requiring `tokio::time::pause` (which
+    /// is process-global and causes `PoolTimedOut` in concurrently running `SQLite` tests).
+    #[tokio::test]
+    async fn index_file_embed_batch_timeout_returns_embed_timeout_error() {
+        use std::sync::Arc;
+        use tempfile::TempDir;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::QdrantOps;
+
+        let dir = TempDir::new().unwrap();
+        let rs_path = dir.path().join("slow.rs");
+        std::fs::write(&rs_path, "pub fn slow() -> u32 { 42 }\n").unwrap();
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap();
+
+        // embed_delay_ms (3 000) > embed_batch_timeout_secs (1 s).
+        // The test waits at most ~1 s wall-clock time — acceptable in CI.
+        let slow_provider = Arc::new(AnyProvider::Mock(
+            MockProvider::default()
+                .with_embed_delay(3_000) // 3 s > 1 s timeout
+                .with_embedding(vec![0.0_f32; 384]),
+        ));
+
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let store = crate::store::CodeStore::with_ops(ops, pool);
+        let config = IndexerConfig {
+            embed_batch_timeout_secs: 1,
+            ..IndexerConfig::default()
+        };
+        // Call FileIndexWorker::index_file directly to avoid remove_file_chunks (SQLite)
+        // so the test does not touch the DB after construction.
+        let worker = super::FileIndexWorker {
+            store,
+            provider: Arc::clone(&slow_provider),
+            config,
+            spawner: None,
+        };
+        let result = worker.index_file(&rs_path, "slow.rs").await;
+
+        match result {
+            Err(crate::error::IndexError::EmbedTimeout(secs)) => {
+                assert_eq!(
+                    secs, 1,
+                    "timeout value must match configured embed_batch_timeout_secs"
+                );
             }
             other => panic!("expected IndexError::EmbedTimeout, got: {other:?}"),
         }
