@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
+use tracing::instrument;
 use zeph_common::ToolName;
 use zeph_tools::ToolExecutor;
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
@@ -169,6 +170,7 @@ impl AirlineEnv {
     /// # Errors
     ///
     /// Returns [`BenchError`] if a gold action fails to execute in the env.
+    #[instrument(skip_all, name = "bench.tau2.airline.replay_actions")]
     pub async fn replay_actions(&self, actions: &[Action]) -> Result<(), BenchError> {
         for action in actions {
             if action.requestor != "assistant" {
@@ -199,6 +201,7 @@ impl ToolExecutor for AirlineEnv {
         super::tools::airline_definitions()
     }
 
+    #[instrument(skip_all, name = "bench.tau2.airline.execute_tool_call")]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         {
             let mut t = self.trace.lock().expect("trace mutex poisoned");

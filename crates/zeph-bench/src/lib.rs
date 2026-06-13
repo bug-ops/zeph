@@ -76,6 +76,7 @@ pub mod loaders;
 pub mod results;
 pub mod runner;
 pub mod scenario;
+pub(crate) mod utils;
 
 pub use baseline::{BaselineComparison, ScenarioDelta};
 pub use channel::BenchmarkChannel;

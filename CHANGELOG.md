@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(bench)`: extract shared `write_atomic` helper into `zeph_bench::utils` and remove the
+  byte-for-byte duplicate copies from `baseline.rs` and `results.rs`. Closes #5314.
+
+- `feat(bench)`: add `#[tracing::instrument]` spans to the tau2-bench multi-turn driver
+  (`bench.tau2.drive`, `bench.tau2.generate_user_message`, `bench.tau2.call_simulator`) so
+  per-turn and LLM-call latency are visible in local Chrome JSON / Perfetto traces. Closes #5315.
+
+- `feat(bench)`: add `#[tracing::instrument]` spans to the tau2-bench domain environments
+  (`bench.tau2.airline.replay_actions`, `bench.tau2.airline.execute_tool_call`,
+  `bench.tau2.retail.replay_actions`, `bench.tau2.retail.execute_tool_call`) so tool-dispatch
+  latency is visible in traces. Closes #5316.
+
 ### Fixed
 
 - `fix(tui)`: remove duplicate `last_assistant_content` / `last_assistant_code_blocks`

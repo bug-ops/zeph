@@ -9,11 +9,12 @@
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::BenchError;
+use crate::utils::write_atomic;
 
 /// Status of a benchmark run serialized into `results.json`.
 ///
@@ -428,14 +429,6 @@ impl ResultWriter {
         write_atomic(&self.summary_path(), md.as_bytes())?;
         Ok(())
     }
-}
-
-/// Write `data` to `path` using a temp file + rename for atomicity.
-fn write_atomic(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 #[cfg(test)]

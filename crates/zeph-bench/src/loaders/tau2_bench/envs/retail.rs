@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
+use tracing::instrument;
 use zeph_common::ToolName;
 use zeph_tools::ToolExecutor;
 use zeph_tools::executor::{ToolCall, ToolError, ToolOutput};
@@ -188,6 +189,7 @@ impl RetailEnv {
     /// # Errors
     ///
     /// Returns [`BenchError`] if a gold action fails to execute in the env.
+    #[instrument(skip_all, name = "bench.tau2.retail.replay_actions")]
     pub async fn replay_actions(&self, actions: &[Action]) -> Result<(), BenchError> {
         for action in actions {
             if action.requestor != "assistant" {
@@ -219,6 +221,7 @@ impl ToolExecutor for RetailEnv {
         super::tools::retail_definitions()
     }
 
+    #[instrument(skip_all, name = "bench.tau2.retail.execute_tool_call")]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         // Record before dispatching (lock held only for push, never across .await).
         {

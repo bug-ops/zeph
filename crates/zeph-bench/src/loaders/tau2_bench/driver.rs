@@ -28,6 +28,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::BenchError;
+use tracing::instrument;
 
 use super::data::StructuredUserInstructions;
 
@@ -120,6 +121,7 @@ impl MultiTurnDriver {
     ///
     /// Returns [`BenchError`] if the simulator LLM fails on both the initial attempt
     /// and the single retry, or if `agent_turn` returns an error.
+    #[instrument(skip_all, name = "bench.tau2.drive")]
     pub async fn drive<F, Fut>(&self, mut agent_turn: F) -> Result<MultiTurnResult, BenchError>
     where
         F: FnMut(String) -> Fut,
@@ -162,6 +164,7 @@ impl MultiTurnDriver {
     /// Call the simulator LLM to generate the next user message.
     ///
     /// Retries once on any error before propagating.
+    #[instrument(skip_all, name = "bench.tau2.generate_user_message")]
     async fn generate_user_message(
         &self,
         history: &[Turn],
@@ -180,6 +183,7 @@ impl MultiTurnDriver {
         }
     }
 
+    #[instrument(skip_all, name = "bench.tau2.call_simulator")]
     async fn call_simulator(&self, messages: &[Message]) -> Result<String, BenchError> {
         self.simulator_provider
             .chat(messages)

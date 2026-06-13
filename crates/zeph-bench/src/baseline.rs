@@ -7,6 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::utils::write_atomic;
 use crate::{BenchError, BenchRun};
 
 /// Score delta for a single scenario between memory-on and memory-off runs.
@@ -197,14 +198,6 @@ impl BaselineComparison {
         file.write_all(section.as_bytes())?;
         Ok(())
     }
-}
-
-/// Write `data` to `path` atomically via a `.tmp` sibling + rename.
-fn write_atomic(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 #[cfg(test)]
