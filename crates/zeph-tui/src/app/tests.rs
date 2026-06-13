@@ -3153,3 +3153,123 @@ fn wants_animation_frame_true_while_shimmer_active() {
         "active shimmer must trigger animation frame"
     );
 }
+
+mod poll_pending_theme_tests {
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn poll_pending_theme_ok_installs_theme() {
+        let (mut app, _rx, _tx) = make_app();
+        let gen_before = app.theme_generation();
+
+        // Pre-populate a oneshot with a successful palette load.
+        let (tx, rx) = oneshot::channel();
+        let palette = crate::theme::presets::Preset::ZephyrLight.palette();
+        tx.send(Ok(palette)).unwrap();
+
+        app.pending_theme = Some(rx);
+        app.pending_theme_name = Some("zephyr-light".to_owned());
+
+        // Yield so the oneshot is readable.
+        tokio::task::yield_now().await;
+
+        app.poll_pending_theme();
+
+        assert!(
+            app.pending_theme.is_none(),
+            "pending_theme must be cleared after Ok"
+        );
+        assert!(
+            app.pending_theme_name.is_none(),
+            "pending_theme_name must be cleared after Ok"
+        );
+        assert!(
+            app.theme_generation() > gen_before,
+            "theme_generation must increment on successful load"
+        );
+        assert_eq!(app.active_theme_name(), "zephyr-light");
+        // A system message announcing the switch must have been pushed.
+        assert!(
+            app.messages()
+                .iter()
+                .any(|m| m.content.contains("Theme switched to: zephyr-light")),
+            "system message for theme switch must be present"
+        );
+    }
+
+    #[test]
+    fn poll_pending_theme_empty_leaves_state_unchanged() {
+        let (mut app, _rx, _tx) = make_app();
+        let gen_before = app.theme_generation();
+
+        // Create a oneshot but do NOT send — receiver stays Empty.
+        let (_tx, rx) = oneshot::channel::<
+            Result<crate::theme::SemanticPalette, crate::theme::ThemeLoadError>,
+        >();
+        app.pending_theme = Some(rx);
+        app.pending_theme_name = Some("my-theme".to_owned());
+
+        app.poll_pending_theme();
+
+        // State must be untouched — the load is still in flight.
+        assert!(
+            app.pending_theme.is_some(),
+            "pending_theme must remain Some while Empty"
+        );
+        assert_eq!(app.pending_theme_name.as_deref(), Some("my-theme"));
+        assert_eq!(
+            app.theme_generation(),
+            gen_before,
+            "theme_generation must not change while Empty"
+        );
+    }
+
+    #[test]
+    fn poll_pending_theme_closed_clears_state() {
+        let (mut app, _rx, _tx) = make_app();
+
+        // Sender is dropped immediately, making the channel Closed.
+        let (tx, rx) = oneshot::channel::<
+            Result<crate::theme::SemanticPalette, crate::theme::ThemeLoadError>,
+        >();
+        drop(tx);
+        app.pending_theme = Some(rx);
+        app.pending_theme_name = Some("ghost-theme".to_owned());
+
+        app.poll_pending_theme();
+
+        assert!(
+            app.pending_theme.is_none(),
+            "pending_theme must be cleared after Closed"
+        );
+        assert!(
+            app.pending_theme_name.is_none(),
+            "pending_theme_name must be cleared after Closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_theme_non_preset_returns_false_and_sets_pending() {
+        let (mut app, _rx, _tx) = make_app();
+
+        // Use a name that is valid (passes validate_theme_name_pub) but is not a built-in preset.
+        // The function will dispatch a spawn_blocking task and return Ok(false).
+        let result = app.apply_theme("my-custom-theme");
+
+        assert!(
+            matches!(result, Ok(false)),
+            "non-preset theme must return Ok(false), got: {result:?}"
+        );
+        assert!(
+            app.pending_theme.is_some(),
+            "pending_theme receiver must be set after Ok(false)"
+        );
+        assert_eq!(
+            app.pending_theme_name.as_deref(),
+            Some("my-custom-theme"),
+            "pending_theme_name must record the requested name"
+        );
+    }
+}
