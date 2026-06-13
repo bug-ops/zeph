@@ -12,8 +12,7 @@ use crate::file_picker::{FileIndex, FilePickerState};
 use crate::layout::truncate_to_width;
 
 use super::{
-    AgentViewTarget, App, ChatMessage, InputMode, MessageRole, Panel, PasteState,
-    format_security_report, oneshot,
+    AgentViewTarget, App, ChatMessage, InputMode, MessageRole, Panel, PasteState, oneshot,
 };
 
 impl App {
@@ -124,11 +123,6 @@ impl App {
     #[allow(clippy::too_many_lines)] // large match over all TuiCommand variants
     pub(super) fn execute_command(&mut self, cmd: TuiCommand) {
         match cmd {
-            TuiCommand::SkillList => self.push_system_message(self.format_skill_list()),
-            TuiCommand::McpList => self.push_system_message(self.format_mcp_list()),
-            TuiCommand::MemoryStats => self.push_system_message(self.format_memory_stats()),
-            TuiCommand::ViewCost => self.push_system_message(self.format_cost_stats()),
-            TuiCommand::ViewTools => self.push_system_message(self.format_tool_list()),
             TuiCommand::ViewConfig | TuiCommand::ViewAutonomy => {
                 if let Some(ref tx) = self.command_tx {
                     // try_send: capacity 16, user-triggered one at a time — overflow not possible in practice
@@ -145,21 +139,9 @@ impl App {
             TuiCommand::Help => {
                 self.show_help = true;
             }
-            TuiCommand::NewSession => {
-                self.sessions.current_mut().messages.clear();
-                self.push_system_message("New conversation started.".to_owned());
-            }
             TuiCommand::ToggleTheme => {
                 self.cycle_theme();
                 self.push_system_message(format!("Theme: {}", self.active_theme_name()));
-            }
-            TuiCommand::ListThemes => {
-                self.push_system_message(
-                    "Available themes: zephyr, zephyr-light, high-contrast, classic, \
-                     catppuccin-mocha, gruvbox-dark, solarized-dark\n\
-                     Usage: /theme <name>"
-                        .to_owned(),
-                );
             }
             TuiCommand::SetTheme(name) => {
                 let name = name.clone();
@@ -197,26 +179,6 @@ impl App {
                     );
                 }
             }
-            TuiCommand::DaemonConnect | TuiCommand::DaemonDisconnect | TuiCommand::DaemonStatus => {
-                self.push_system_message(
-                    "Daemon commands are not yet implemented in this mode.".to_owned(),
-                );
-            }
-            TuiCommand::ViewFilters => {
-                self.push_system_message(
-                    "Filter statistics are displayed in the Resources panel.".to_owned(),
-                );
-            }
-            TuiCommand::Ingest => {
-                self.push_system_message(
-                    "Use: zeph ingest <path> [--chunk-size N] [--collection NAME]".to_owned(),
-                );
-            }
-            TuiCommand::GatewayStatus => {
-                self.push_system_message(
-                    "Gateway status is not yet available in TUI mode.".to_owned(),
-                );
-            }
             TuiCommand::AgentList => {
                 let _ = self.user_input_tx.try_send("/agent list".to_owned());
             }
@@ -229,20 +191,6 @@ impl App {
             TuiCommand::AgentsCreate => self.prefill_input("/agents create "),
             TuiCommand::AgentsEdit => self.prefill_input("/agents edit "),
             TuiCommand::AgentsDelete => self.prefill_input("/agents delete "),
-            TuiCommand::SchedulerList => self.push_system_message(self.format_scheduler_list()),
-            TuiCommand::RouterStats => self.push_system_message(self.format_router_stats()),
-            TuiCommand::SecurityEvents => {
-                self.push_system_message(format_security_report(&self.metrics));
-            }
-            TuiCommand::TaskPanel => {
-                self.show_task_panel = !self.show_task_panel;
-            }
-            TuiCommand::FleetPanel => {
-                self.active_panel = Panel::Fleet;
-            }
-            TuiCommand::DurablePanel => {
-                self.active_panel = Panel::Durable;
-            }
             TuiCommand::CocoonStatus => {
                 self.push_system_message("Querying Cocoon sidecar...".to_owned());
                 let _ = self.user_input_tx.try_send("/cocoon status".to_owned());
@@ -287,18 +235,6 @@ impl App {
                     self.push_system_message("No code block found.".to_owned());
                 }
             }
-            TuiCommand::SendClearQueue => {
-                let _ = self.user_input_tx.try_send("/clear-queue".to_owned());
-            }
-            // SubAgent sidebar navigation (routed from decode_normal_key via Action::Dispatch)
-            TuiCommand::SubagentSidebarDown => {
-                let count = self.metrics.sub_agents.len();
-                self.subagent_sidebar.select_next(count);
-            }
-            TuiCommand::SubagentSidebarUp => {
-                let count = self.metrics.sub_agents.len();
-                self.subagent_sidebar.select_prev(count);
-            }
             // Mouse toggle: route through reduce() so SetMouseCapture effect is queued.
             TuiCommand::SetMouse(b) => {
                 use crate::app::reducer::{reduce, run_effects};
@@ -316,16 +252,10 @@ impl App {
     }
 
     fn execute_plan_graph_command(&mut self, cmd: TuiCommand) {
-        if self.handle_plan_command(&cmd) {
-            return;
-        }
         if self.handle_graph_command(&cmd) {
             return;
         }
         if self.handle_experiment_command(&cmd) {
-            return;
-        }
-        if self.handle_memory_command(&cmd) {
             return;
         }
         if self.handle_plugin_command(&cmd) {
@@ -335,29 +265,6 @@ impl App {
             return;
         }
         self.handle_acp_command(cmd);
-    }
-
-    fn handle_plan_command(&mut self, cmd: &TuiCommand) -> bool {
-        match cmd {
-            TuiCommand::PlanStatus => {
-                let _ = self.user_input_tx.try_send("/plan status".to_owned());
-            }
-            TuiCommand::PlanConfirm => {
-                let _ = self.user_input_tx.try_send("/plan confirm".to_owned());
-            }
-            TuiCommand::PlanCancel => {
-                let _ = self.user_input_tx.try_send("/plan cancel".to_owned());
-            }
-            TuiCommand::PlanList => {
-                let _ = self.user_input_tx.try_send("/plan list".to_owned());
-            }
-            TuiCommand::PlanToggleView => {
-                self.sessions.current_mut().plan_view_active =
-                    !self.sessions.current().plan_view_active;
-            }
-            _ => return false,
-        }
-        true
     }
 
     fn handle_graph_command(&mut self, cmd: &TuiCommand) -> bool {
@@ -384,40 +291,6 @@ impl App {
     fn handle_experiment_command(&mut self, cmd: &TuiCommand) -> bool {
         match cmd {
             TuiCommand::ExperimentStart => self.prefill_input("/experiment start "),
-            TuiCommand::ExperimentStop => {
-                let _ = self.user_input_tx.try_send("/experiment stop".to_owned());
-            }
-            TuiCommand::ExperimentStatus => {
-                let _ = self.user_input_tx.try_send("/experiment status".to_owned());
-            }
-            TuiCommand::ExperimentReport => {
-                let _ = self.user_input_tx.try_send("/experiment report".to_owned());
-            }
-            TuiCommand::ExperimentBest => {
-                let _ = self.user_input_tx.try_send("/experiment best".to_owned());
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn handle_memory_command(&mut self, cmd: &TuiCommand) -> bool {
-        match cmd {
-            TuiCommand::ServerCompactionStatus => {
-                let _ = self.user_input_tx.try_send("/server-compaction".to_owned());
-            }
-            TuiCommand::ViewGuidelines => {
-                let _ = self.user_input_tx.try_send("/guidelines".to_owned());
-            }
-            TuiCommand::ForgettingSweep => {
-                let _ = self.user_input_tx.try_send("/forgetting-sweep".to_owned());
-            }
-            TuiCommand::TrajectoryStats => {
-                let _ = self.user_input_tx.try_send("/memory trajectory".to_owned());
-            }
-            TuiCommand::MemoryTreeStats => {
-                let _ = self.user_input_tx.try_send("/memory tree".to_owned());
-            }
             _ => return false,
         }
         true
@@ -452,14 +325,6 @@ impl App {
             TuiCommand::KnowledgeRollbackPrompt => {
                 self.prefill_input("/knowledge rollback ");
             }
-            TuiCommand::KnowledgeIngestPrompt => {
-                self.push_system_message(
-                    "To ingest project artifacts: run \
-                     `zeph knowledge ingest --source <specs|changelog|handoff|coverage|git-log>` \
-                     from the CLI."
-                        .to_owned(),
-                );
-            }
             _ => return false,
         }
         true
@@ -491,22 +356,6 @@ impl App {
             TuiCommand::LspStatus => {
                 self.push_system_message("Checking LSP context injection status...".to_owned());
                 let _ = self.user_input_tx.try_send("/lsp".to_owned());
-            }
-            TuiCommand::ViewLog => {
-                let _ = self.user_input_tx.try_send("/log".to_owned());
-            }
-            TuiCommand::MigrateConfig => {
-                self.push_system_message(
-                    "To preview missing config parameters, run:\n  zeph migrate-config --diff\n\
-                     To apply changes in-place:\n  zeph migrate-config --in-place"
-                        .to_owned(),
-                );
-            }
-            TuiCommand::Undo => {
-                let _ = self.user_input_tx.try_send("/undo".to_owned());
-            }
-            TuiCommand::Redo => {
-                let _ = self.user_input_tx.try_send("/redo".to_owned());
             }
             _ => return false,
         }
@@ -614,7 +463,7 @@ impl App {
         self.sessions.current_mut().cursor_position = self.sessions.current().input.len();
     }
 
-    fn format_skill_list(&self) -> String {
+    pub(crate) fn format_skill_list(&self) -> String {
         if self.metrics.active_skills.is_empty() {
             return "No skills loaded.".to_owned();
         }
@@ -631,7 +480,7 @@ impl App {
         )
     }
 
-    fn format_mcp_list(&self) -> String {
+    pub(crate) fn format_mcp_list(&self) -> String {
         if self.metrics.active_mcp_tools.is_empty() {
             return "No MCP tools available.".to_owned();
         }
@@ -649,7 +498,7 @@ impl App {
         )
     }
 
-    fn format_memory_stats(&self) -> String {
+    pub(crate) fn format_memory_stats(&self) -> String {
         let vector_status = if self.metrics.qdrant_available {
             format!("{} (connected)", self.metrics.vector_backend)
         } else if !self.metrics.vector_backend.is_empty() {
@@ -663,7 +512,7 @@ impl App {
         )
     }
 
-    fn format_cost_stats(&self) -> String {
+    pub(crate) fn format_cost_stats(&self) -> String {
         use std::fmt::Write as _;
         let cps_line = match self.metrics.cost_cps_cents {
             Some(cps) => format!("\n  CPS: ${:.4}", cps / 100.0),
@@ -709,7 +558,7 @@ impl App {
         out
     }
 
-    fn format_tool_list(&self) -> String {
+    pub(crate) fn format_tool_list(&self) -> String {
         if self.metrics.active_mcp_tools.is_empty() {
             return "No tools available.".to_owned();
         }
@@ -726,7 +575,7 @@ impl App {
         )
     }
 
-    fn format_scheduler_list(&self) -> String {
+    pub(crate) fn format_scheduler_list(&self) -> String {
         if self.metrics.scheduled_tasks.is_empty() {
             return "No scheduled tasks.".to_owned();
         }
@@ -754,7 +603,7 @@ impl App {
         )
     }
 
-    fn format_router_stats(&self) -> String {
+    pub(crate) fn format_router_stats(&self) -> String {
         if self.metrics.router_thompson_stats.is_empty() {
             return "Router: no Thompson state available.\n\
                 (Thompson strategy not active, or no LLM calls made yet)"

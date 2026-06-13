@@ -11,7 +11,7 @@
 use zeph_core::channel::ElicitationResponse;
 
 use super::action::{Action, CursorMove, ElicitationEdit, PaletteEdit, ScrollDir, VertDir};
-use super::{App, ChatMessage, InputMode, MessageRole, Panel};
+use super::{App, ChatMessage, InputMode, MessageRole, Panel, format_security_report};
 use crate::command::TuiCommand;
 use crate::file_picker::FilePickerState;
 use crate::widgets::command_palette::CommandPaletteState;
@@ -24,7 +24,7 @@ const MAX_INPUT_HISTORY: usize = 500;
 /// Effects represent work that cannot be done inside the reducer because it
 /// requires I/O, channel sends, or borrowed state from outside `App`
 /// (e.g. terminal backend handles).
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum Effect {
     /// Forward the user's typed text to the agent loop.
     SendUserInput(String),
@@ -665,6 +665,188 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                     let cur = app.mouse_enabled;
                     return reduce(app, Action::SetMouse(!cur));
                 }
+
+                // ── Group A — pure state mutations ──────────────────────────────
+                TuiCommand::NewSession => {
+                    app.sessions.current_mut().messages.clear();
+                    app.push_system_message_pub("New conversation started.".to_owned());
+                    return vec![];
+                }
+                TuiCommand::TaskPanel => {
+                    app.show_task_panel = !app.show_task_panel;
+                    return vec![];
+                }
+                TuiCommand::FleetPanel => {
+                    app.active_panel = Panel::Fleet;
+                    return vec![];
+                }
+                TuiCommand::DurablePanel => {
+                    app.active_panel = Panel::Durable;
+                    return vec![];
+                }
+                TuiCommand::PlanToggleView => {
+                    app.sessions.current_mut().plan_view_active =
+                        !app.sessions.current().plan_view_active;
+                    return vec![];
+                }
+                TuiCommand::SubagentSidebarDown => {
+                    let count = app.metrics.sub_agents.len();
+                    app.subagent_sidebar.select_next(count);
+                    return vec![];
+                }
+                TuiCommand::SubagentSidebarUp => {
+                    let count = app.metrics.sub_agents.len();
+                    app.subagent_sidebar.select_prev(count);
+                    return vec![];
+                }
+                TuiCommand::ListThemes => {
+                    app.push_system_message_pub(
+                        "Available themes: zephyr, zephyr-light, high-contrast, classic, \
+                         catppuccin-mocha, gruvbox-dark, solarized-dark\n\
+                         Usage: /theme <name>"
+                            .to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::ViewFilters => {
+                    app.push_system_message_pub(
+                        "Filter statistics are displayed in the Resources panel.".to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::Ingest => {
+                    app.push_system_message_pub(
+                        "Use: zeph ingest <path> [--chunk-size N] [--collection NAME]".to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::GatewayStatus => {
+                    app.push_system_message_pub(
+                        "Gateway status is not yet available in TUI mode.".to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::DaemonConnect
+                | TuiCommand::DaemonDisconnect
+                | TuiCommand::DaemonStatus => {
+                    app.push_system_message_pub(
+                        "Daemon commands are not yet implemented in this mode.".to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::MigrateConfig => {
+                    app.push_system_message_pub(
+                        "To preview missing config parameters, run:\n  zeph migrate-config --diff\n\
+                         To apply changes in-place:\n  zeph migrate-config --in-place"
+                            .to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::KnowledgeIngestPrompt => {
+                    app.push_system_message_pub(
+                        "To ingest project artifacts: run \
+                         `zeph knowledge ingest --source <specs|changelog|handoff|coverage|git-log>` \
+                         from the CLI."
+                            .to_owned(),
+                    );
+                    return vec![];
+                }
+
+                // ── Group B — pure formatter reads ──────────────────────────────
+                TuiCommand::SkillList => {
+                    let msg = app.format_skill_list();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::McpList => {
+                    let msg = app.format_mcp_list();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::MemoryStats => {
+                    let msg = app.format_memory_stats();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::ViewCost => {
+                    let msg = app.format_cost_stats();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::ViewTools => {
+                    let msg = app.format_tool_list();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::SchedulerList => {
+                    let msg = app.format_scheduler_list();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::RouterStats => {
+                    let msg = app.format_router_stats();
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::SecurityEvents => {
+                    let msg = format_security_report(&app.metrics);
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+
+                // ── Group C — fixed-string agent input sends ────────────────────
+                TuiCommand::PlanStatus => {
+                    return vec![Effect::SendUserInput("/plan status".to_owned())];
+                }
+                TuiCommand::PlanConfirm => {
+                    return vec![Effect::SendUserInput("/plan confirm".to_owned())];
+                }
+                TuiCommand::PlanCancel => {
+                    return vec![Effect::SendUserInput("/plan cancel".to_owned())];
+                }
+                TuiCommand::PlanList => {
+                    return vec![Effect::SendUserInput("/plan list".to_owned())];
+                }
+                TuiCommand::ExperimentStop => {
+                    return vec![Effect::SendUserInput("/experiment stop".to_owned())];
+                }
+                TuiCommand::ExperimentStatus => {
+                    return vec![Effect::SendUserInput("/experiment status".to_owned())];
+                }
+                TuiCommand::ExperimentReport => {
+                    return vec![Effect::SendUserInput("/experiment report".to_owned())];
+                }
+                TuiCommand::ExperimentBest => {
+                    return vec![Effect::SendUserInput("/experiment best".to_owned())];
+                }
+                TuiCommand::ServerCompactionStatus => {
+                    return vec![Effect::SendUserInput("/server-compaction".to_owned())];
+                }
+                TuiCommand::ViewGuidelines => {
+                    return vec![Effect::SendUserInput("/guidelines".to_owned())];
+                }
+                TuiCommand::ForgettingSweep => {
+                    return vec![Effect::SendUserInput("/forgetting-sweep".to_owned())];
+                }
+                TuiCommand::TrajectoryStats => {
+                    return vec![Effect::SendUserInput("/memory trajectory".to_owned())];
+                }
+                TuiCommand::MemoryTreeStats => {
+                    return vec![Effect::SendUserInput("/memory tree".to_owned())];
+                }
+                TuiCommand::ViewLog => {
+                    return vec![Effect::SendUserInput("/log".to_owned())];
+                }
+                TuiCommand::Undo => {
+                    return vec![Effect::SendUserInput("/undo".to_owned())];
+                }
+                TuiCommand::Redo => {
+                    return vec![Effect::SendUserInput("/redo".to_owned())];
+                }
+                TuiCommand::SendClearQueue => {
+                    return vec![Effect::SendUserInput("/clear-queue".to_owned())];
+                }
+
                 _ => {}
             }
             // All other commands are dispatched back to the existing execute_command handler.
@@ -713,15 +895,15 @@ mod tests {
     use super::*;
     use crate::App;
 
-    fn make_app() -> App {
-        let (tx, _rx) = mpsc::channel(1);
+    fn make_app() -> (App, mpsc::Receiver<String>) {
+        let (tx, rx) = mpsc::channel(32);
         let (_atx, arx) = mpsc::channel(1);
-        App::new(tx, arx)
+        (App::new(tx, arx), rx)
     }
 
     #[test]
     fn scroll_lines_down() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 5;
         let effects = reduce(&mut app, Action::ScrollLines(3));
         assert!(effects.is_empty());
@@ -730,7 +912,7 @@ mod tests {
 
     #[test]
     fn scroll_lines_up() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 2;
         let effects = reduce(&mut app, Action::ScrollLines(-3));
         assert!(effects.is_empty());
@@ -739,7 +921,7 @@ mod tests {
 
     #[test]
     fn scroll_lines_clamps_at_zero() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 1;
         let effects = reduce(&mut app, Action::ScrollLines(100));
         assert!(effects.is_empty());
@@ -748,7 +930,7 @@ mod tests {
 
     #[test]
     fn scroll_to_bottom() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 42;
         let effects = reduce(&mut app, Action::ScrollToBottom);
         assert!(effects.is_empty());
@@ -757,7 +939,7 @@ mod tests {
 
     #[test]
     fn scroll_to_top() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         app.sessions
             .current_mut()
             .messages
@@ -772,7 +954,7 @@ mod tests {
 
     #[test]
     fn toggle_tool_expanded() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         assert!(!app.tool_expanded);
         let effects = reduce(&mut app, Action::ToggleToolExpanded);
         assert!(effects.is_empty());
@@ -781,7 +963,7 @@ mod tests {
 
     #[test]
     fn toggle_side_panels() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         assert!(app.show_side_panels);
         reduce(&mut app, Action::ToggleSidePanels);
         assert!(!app.show_side_panels);
@@ -791,7 +973,7 @@ mod tests {
 
     #[test]
     fn toggle_help() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         assert!(!app.show_help);
         reduce(&mut app, Action::ToggleHelp);
         assert!(app.show_help);
@@ -801,7 +983,7 @@ mod tests {
 
     #[test]
     fn set_help_explicit() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         reduce(&mut app, Action::SetHelp(true));
         assert!(app.show_help);
         reduce(&mut app, Action::SetHelp(false));
@@ -810,14 +992,14 @@ mod tests {
 
     #[test]
     fn quit_emits_effect() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Quit);
         assert!(matches!(effects.as_slice(), [Effect::Quit]));
     }
 
     #[test]
     fn set_mouse_emits_capture_effect() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::SetMouse(true));
         assert!(app.mouse_enabled);
         assert!(matches!(
@@ -828,7 +1010,7 @@ mod tests {
 
     #[test]
     fn set_mouse_off_emits_disable() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         app.mouse_enabled = true;
         let effects = reduce(&mut app, Action::SetMouse(false));
         assert!(!app.mouse_enabled);
@@ -840,21 +1022,21 @@ mod tests {
 
     #[test]
     fn run_effects_set_mouse_capture_stores_pending() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         run_effects(&mut app, vec![Effect::SetMouseCapture(true)]);
         assert_eq!(app.pending_mouse_capture, Some(true));
     }
 
     #[test]
     fn run_effects_quit_sets_should_quit() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         run_effects(&mut app, vec![Effect::Quit]);
         assert!(app.should_quit);
     }
 
     #[test]
     fn enter_insert_sets_mode() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::EnterInsert);
         assert!(effects.is_empty());
         assert_eq!(app.sessions.current().input_mode, InputMode::Insert);
@@ -862,7 +1044,7 @@ mod tests {
 
     #[test]
     fn cycle_panel_focus_wraps() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         assert_eq!(app.active_panel, Panel::Chat);
         reduce(&mut app, Action::CyclePanelFocus);
         assert_eq!(app.active_panel, Panel::Skills);
@@ -870,7 +1052,7 @@ mod tests {
 
     #[test]
     fn dispatch_toggle_mouse_flips_flag() {
-        let mut app = make_app();
+        let (mut app, _rx) = make_app();
         assert!(!app.mouse_enabled);
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ToggleMouse));
         assert!(app.mouse_enabled);
@@ -878,5 +1060,408 @@ mod tests {
             effects.as_slice(),
             [Effect::SetMouseCapture(true)]
         ));
+    }
+
+    // ── Group A tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn dispatch_new_session_clears_messages() {
+        let (mut app, _rx) = make_app();
+        app.sessions
+            .current_mut()
+            .messages
+            .push(ChatMessage::new(MessageRole::User, "hello".to_owned()));
+        assert!(!app.sessions.current().messages.is_empty());
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::NewSession));
+        assert!(effects.is_empty());
+        // cleared, then exactly one system message appended
+        assert_eq!(app.sessions.current().messages.len(), 1);
+        assert!(matches!(
+            app.sessions.current().messages[0].role,
+            MessageRole::System
+        ));
+    }
+
+    #[test]
+    fn dispatch_new_session_fires_once() {
+        // double-exec guard: if the arm lacked return, execute_command would also fire
+        let (mut app, _rx) = make_app();
+        reduce(&mut app, Action::Dispatch(TuiCommand::NewSession));
+        // exactly one system message — not two
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_task_panel_toggles() {
+        let (mut app, _rx) = make_app();
+        assert!(!app.show_task_panel);
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
+        assert!(effects.is_empty());
+        assert!(app.show_task_panel);
+        // exactly-once: toggle flipped once, not twice
+        reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
+        assert!(!app.show_task_panel);
+    }
+
+    #[test]
+    fn dispatch_fleet_panel_sets_panel() {
+        let (mut app, _rx) = make_app();
+        assert_eq!(app.active_panel, Panel::Chat);
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::FleetPanel));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Fleet);
+    }
+
+    #[test]
+    fn dispatch_durable_panel_sets_panel() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DurablePanel));
+        assert!(effects.is_empty());
+        assert_eq!(app.active_panel, Panel::Durable);
+    }
+
+    #[test]
+    fn dispatch_plan_toggle_view_flips_flag() {
+        let (mut app, _rx) = make_app();
+        assert!(!app.sessions.current().plan_view_active);
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::PlanToggleView));
+        assert!(effects.is_empty());
+        assert!(app.sessions.current().plan_view_active);
+    }
+
+    #[test]
+    fn dispatch_subagent_sidebar_down_advances_selection() {
+        let (mut app, _rx) = make_app();
+        // populate sub_agents so count > 0
+        app.metrics.sub_agents = vec![
+            zeph_core::metrics::SubAgentMetrics::default(),
+            zeph_core::metrics::SubAgentMetrics::default(),
+        ];
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SubagentSidebarDown));
+        assert!(effects.is_empty());
+        // selection must have advanced — sidebar wraps within count
+        assert!(app.subagent_sidebar.selected().is_some());
+    }
+
+    #[test]
+    fn dispatch_subagent_sidebar_up_decrements_selection() {
+        let (mut app, _rx) = make_app();
+        app.metrics.sub_agents = vec![
+            zeph_core::metrics::SubAgentMetrics::default(),
+            zeph_core::metrics::SubAgentMetrics::default(),
+        ];
+        // prime selection at index 1
+        app.subagent_sidebar.list_state.select(Some(1));
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SubagentSidebarUp));
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn dispatch_list_themes_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ListThemes));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+        assert!(matches!(
+            app.sessions.current().messages[0].role,
+            MessageRole::System
+        ));
+    }
+
+    #[test]
+    fn dispatch_view_filters_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewFilters));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_ingest_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::Ingest));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_gateway_status_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::GatewayStatus));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_daemon_connect_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DaemonConnect));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_migrate_config_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::MigrateConfig));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_knowledge_ingest_prompt_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(
+            &mut app,
+            Action::Dispatch(TuiCommand::KnowledgeIngestPrompt),
+        );
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    // ── Group B tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn dispatch_skill_list_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SkillList));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_mcp_list_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::McpList));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_memory_stats_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::MemoryStats));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_view_cost_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewCost));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_view_tools_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewTools));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_scheduler_list_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SchedulerList));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_router_stats_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::RouterStats));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_security_events_pushes_system_message() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SecurityEvents));
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    // ── Group C tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn dispatch_plan_status_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::PlanStatus));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/plan status".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_plan_confirm_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::PlanConfirm));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/plan confirm".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_plan_cancel_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::PlanCancel));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/plan cancel".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_plan_list_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::PlanList));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/plan list".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_experiment_stop_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ExperimentStop));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/experiment stop".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_experiment_status_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ExperimentStatus));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/experiment status".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_experiment_report_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ExperimentReport));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/experiment report".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_experiment_best_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ExperimentBest));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/experiment best".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_server_compaction_status_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(
+            &mut app,
+            Action::Dispatch(TuiCommand::ServerCompactionStatus),
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/server-compaction".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_view_guidelines_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewGuidelines));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/guidelines".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_forgetting_sweep_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ForgettingSweep));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/forgetting-sweep".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_trajectory_stats_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TrajectoryStats));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/memory trajectory".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_memory_tree_stats_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::MemoryTreeStats));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/memory tree".to_owned())]
+        );
+    }
+
+    #[test]
+    fn dispatch_view_log_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewLog));
+        assert_eq!(effects, vec![Effect::SendUserInput("/log".to_owned())]);
+    }
+
+    #[test]
+    fn dispatch_undo_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::Undo));
+        assert_eq!(effects, vec![Effect::SendUserInput("/undo".to_owned())]);
+    }
+
+    #[test]
+    fn dispatch_redo_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::Redo));
+        assert_eq!(effects, vec![Effect::SendUserInput("/redo".to_owned())]);
+    }
+
+    #[test]
+    fn dispatch_send_clear_queue_sends_slash_command() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SendClearQueue));
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/clear-queue".to_owned())]
+        );
+    }
+
+    #[test]
+    fn run_effects_send_user_input_sends_to_channel() {
+        let (mut app, mut rx) = make_app();
+        run_effects(
+            &mut app,
+            vec![Effect::SendUserInput("/plan status".to_owned())],
+        );
+        // Effect sent exactly one message — channel has the value
+        let msg = rx.try_recv().expect("channel must have one message");
+        assert_eq!(msg, "/plan status");
+        // No second message (exactly-once)
+        assert!(rx.try_recv().is_err());
     }
 }

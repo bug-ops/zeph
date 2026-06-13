@@ -648,7 +648,7 @@ fn load_transcript_file(
     (truncated, total)
 }
 
-fn format_security_report(metrics: &MetricsSnapshot) -> String {
+pub(crate) fn format_security_report(metrics: &MetricsSnapshot) -> String {
     use crate::metrics::SecurityEventCategory;
 
     let n = metrics.security_events.len();

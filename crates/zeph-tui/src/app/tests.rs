@@ -1541,14 +1541,18 @@ mod command_palette_tests {
 
     #[test]
     fn execute_security_events_no_events_shows_history_header() {
+        use crate::app::action::Action;
+        use crate::app::reducer::reduce;
         let (mut app, _rx, _tx) = make_app();
-        app.execute_command(TuiCommand::SecurityEvents);
+        reduce(&mut app, Action::Dispatch(TuiCommand::SecurityEvents));
         assert_eq!(app.messages().len(), 1);
         assert!(app.messages()[0].content.contains("Security event history"));
     }
 
     #[test]
     fn execute_security_events_with_events_shows_all() {
+        use crate::app::action::Action;
+        use crate::app::reducer::reduce;
         use zeph_common::SecurityEventCategory;
         use zeph_core::metrics::SecurityEvent;
 
@@ -1558,7 +1562,7 @@ mod command_palette_tests {
             "web_scrape",
             "Detected pattern: ignore previous",
         ));
-        app.execute_command(TuiCommand::SecurityEvents);
+        reduce(&mut app, Action::Dispatch(TuiCommand::SecurityEvents));
         let content = &app.messages()[0].content;
         assert!(content.contains("web_scrape"));
         assert!(content.contains("INJECTION_FLAG"));
