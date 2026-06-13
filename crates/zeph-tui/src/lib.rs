@@ -113,6 +113,7 @@ pub async fn run_tui(mut app: App, mut event_rx: mpsc::Receiver<AppEvent>) -> Re
             io::stdout(),
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::event::DisableBracketedPaste,
+            crossterm::event::DisableMouseCapture,
         );
         // Disable alternate-scroll mode; write directly to stderr to avoid
         // interfering with the already-corrupted stdout alternate screen.
@@ -159,6 +160,7 @@ async fn tui_loop(
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = DirtyState::Clean;
+    let mut first_draw_done = false;
 
     loop {
         tokio::select! {
@@ -189,6 +191,27 @@ async fn tui_loop(
             }
         }
 
+        // C2: drain pending mouse capture requests in the post-select block,
+        // never inside an event arm, to avoid ordering hazards.
+        if let Some(enable) = app.take_mouse_capture_request() {
+            let stdout = terminal.backend_mut();
+            if enable {
+                // Switching to mouse capture: disable alternate scroll first so
+                // wheel events are forwarded as MouseEvent rather than arrow keys.
+                let _ = crossterm::execute!(
+                    stdout,
+                    DisableAlternateScroll,
+                    crossterm::event::EnableMouseCapture,
+                );
+            } else {
+                let _ = crossterm::execute!(
+                    stdout,
+                    crossterm::event::DisableMouseCapture,
+                    EnableAlternateScroll,
+                );
+            }
+        }
+
         app.poll_metrics();
         app.poll_pending_file_index();
         app.poll_pending_transcript();
@@ -207,6 +230,20 @@ async fn tui_loop(
                 hyperlink::write_osc8(terminal.backend_mut(), &links)?;
             }
             dirty = DirtyState::Clean;
+
+            // C3: enable mouse capture after the first frame so that
+            // `last_layout` is populated before any MouseEvent arrives.
+            if !first_draw_done {
+                first_draw_done = true;
+                if app.mouse_enabled() {
+                    let stdout = terminal.backend_mut();
+                    let _ = crossterm::execute!(
+                        stdout,
+                        DisableAlternateScroll,
+                        crossterm::event::EnableMouseCapture,
+                    );
+                }
+            }
         }
 
         if app.should_quit {
@@ -268,6 +305,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
         crossterm::terminal::LeaveAlternateScreen,
         DisableAlternateScroll,
         crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableMouseCapture,
     )?;
     terminal.show_cursor()?;
     Ok(())

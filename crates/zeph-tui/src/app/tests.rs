@@ -855,7 +855,8 @@ fn submit_input_resets_editing_queued() {
     app.editing_queued = true;
     app.sessions.current_mut().input = "some text".into();
     app.sessions.current_mut().cursor_position = 9;
-    app.submit_input();
+    let effects = crate::app::reducer::reduce(&mut app, crate::app::action::Action::SubmitInput);
+    crate::app::reducer::run_effects(&mut app, effects);
     assert!(!app.editing_queued());
 }
 

@@ -29,6 +29,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pattern consistent with `ollama` and `openai` providers. Closes #5211,
   #5235, #5221.
 
+- `feat(tui)`: reducer/action decomposition — introduce `Action`, `Effect`, and `reduce()`
+  as the sole state-mutation path for keyboard and mouse inputs (#5076):
+  - `crates/zeph-tui/src/app/action.rs`: `Action` enum with 50+ semantic variants covering
+    scroll, panel toggles, session/view, input mode, command palette, file picker, slash
+    autocomplete, reverse search, confirm/elicitation dialogs, mouse mode, clipboard, and
+    command dispatch; supporting `ScrollDir`, `VertDir`, `PaletteEdit`, `ElicitationEdit`,
+    `CursorMove` enums.
+  - `crates/zeph-tui/src/app/reducer.rs`: `reduce(&mut App, Action) -> Vec<Effect>` as the
+    single mutation site; `Effect` enum for deferred side-effects (`SendUserInput`,
+    `SendCommand`, `CopyToClipboard`, `StartFileIndex`, `SetMouseCapture`, `Quit`);
+    `run_effects` executes effects after each reduce call; INV-R1 enforced.
+  - Existing `handle_key` wiring updated to call `reduce` via action-mapped arms.
+
+- `feat(tui)`: opt-in mouse capture (`[tui] mouse = false` default) with `/mouse on|off|toggle`
+  command and `app:mouse` command-palette entry (#5103):
+  - `crates/zeph-tui/src/app/mouse.rs`: `handle_mouse` dispatches decoded mouse events
+    through `reduce`; `decode_mouse` maps crossterm `MouseEvent` to `Action` (`ScrollUp`/
+    `ScrollDown` → `ScrollLines(±3)`, left-click → `SetActivePanel`, right-click →
+    `ScrollPage(Up)`); `Moved`/`Drag` events filtered to `AppEvent::Tick` at event source
+    (C6 invariant).
+  - `EnableAlternateScroll` and `EnableMouseCapture` treated as mutually exclusive — swapped
+    atomically in `tui_loop` post-select drain block (C2); mouse never enabled before first
+    draw (C3); panic hook and `restore_terminal` both call `DisableMouseCapture` (C7).
+  - `App` gains `mouse_enabled: bool`, `last_layout: Option<AppLayout>`, and
+    `pending_mouse_capture: Option<bool>` fields; `AppLayout` derives `Clone, Copy`.
+  - `with_mouse(enabled)` builder on `App`; `TuiConfig.mouse: bool` field; migration step 68
+    injects advisory `# mouse = false` comment under existing `[tui]` sections (idempotent,
+    4 unit-tested cases).
+  - Interactive wizard `--init` includes `step_tui_mouse` Confirm prompt (default: false).
+  - Status bar shows `mouse on (Shift+drag selects)` hint when mouse capture is active.
+  - `AppEvent::Mouse(MouseEvent)` variant added to event enum.
+
 - `feat(tui)`: micro-delights — five opt-in animation enhancements gated by
   `[tui.delights]` config block and master-controlled by `tui.motion` (#5104):
   - **Stream metrics**: tok/s rolling-window estimate (Low priority, status bar,

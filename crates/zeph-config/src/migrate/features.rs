@@ -92,6 +92,72 @@ pub fn migrate_tui_delights(toml_src: &str) -> Result<MigrationResult, MigrateEr
     })
 }
 
+/// Inject `mouse = false` under `[tui]` when absent (#5103).
+///
+/// No-op when `[tui]` is absent, or when `mouse` is already present (active or
+/// commented-out) — idempotent.
+///
+/// # Errors
+///
+/// Returns `MigrateError::TomlParse` if the input is not valid TOML; infallible otherwise.
+pub fn migrate_tui_mouse(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if !toml_src.contains("[tui]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let already_present = toml_src.lines().any(|l| {
+        let t = l.trim().trim_start_matches('#').trim();
+        t.starts_with("mouse")
+    });
+    if already_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let owned;
+    let src = if toml_src.ends_with('\n') {
+        toml_src
+    } else {
+        owned = format!("{toml_src}\n");
+        &owned
+    };
+
+    if !TUI_HEADER_RE.is_match(src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let insert =
+        "# mouse = false  # opt-in mouse capture: wheel scrolls, clicks focus panels (#5103)\n";
+    let output = TUI_HEADER_RE
+        .replacen(src, 1, |caps: &regex::Captures| {
+            format!("{}{insert}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["tui".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
 /// Strip any existing `[memory.compression.predictor]` section from the config (#3251).
 ///
 /// The compression predictor feature was removed. This migration cleans up both active

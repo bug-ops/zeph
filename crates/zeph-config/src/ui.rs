@@ -502,6 +502,12 @@ pub struct TuiConfig {
     /// `motion = off` overrides all toggles regardless of their individual values.
     #[serde(default)]
     pub delights: DelightsConfig,
+    /// Enable opt-in mouse capture at startup.
+    ///
+    /// When `true`, the terminal forwards scroll-wheel, click, and drag events to
+    /// the TUI. Text selection via Shift+drag still works. Default: `false`.
+    #[serde(default)]
+    pub mouse: bool,
 }
 
 /// Configuration for the TUI fleet panel (#3884).

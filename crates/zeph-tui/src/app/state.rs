@@ -108,6 +108,9 @@ impl App {
             stream_rate: crate::delights::StreamRate::new(),
             toasts: crate::delights::ToastQueue::new(),
             splash_shimmer: crate::delights::SplashShimmer::new(),
+            mouse_enabled: false,
+            last_layout: None,
+            pending_mouse_capture: None,
         }
     }
 
@@ -1166,6 +1169,121 @@ impl App {
         if shimmer_enabled && cur_show_splash {
             self.splash_shimmer.activate(now);
         }
+    }
+
+    // ── Mouse mode (#5103) ────────────────────────────────────────────────────
+
+    /// Enable or disable opt-in mouse capture at startup.
+    ///
+    /// Called from the builder chain in `tui_bridge` when `config.tui.mouse` is `true`.
+    /// Actual terminal-level capture is enabled **after** the first frame is drawn
+    /// (C3 — avoid delivering mouse events before `last_layout` is populated).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let app = App::new(tx, rx).with_mouse(true);
+    /// assert!(app.mouse_enabled());
+    /// ```
+    #[must_use]
+    pub fn with_mouse(mut self, enabled: bool) -> Self {
+        self.mouse_enabled = enabled;
+        self
+    }
+
+    /// Return `true` when opt-in mouse capture is currently active.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let app = App::new(tx, rx);
+    /// assert!(!app.mouse_enabled());
+    /// ```
+    #[must_use]
+    pub fn mouse_enabled(&self) -> bool {
+        self.mouse_enabled
+    }
+
+    /// Drain any pending mouse-capture toggle and return it.
+    ///
+    /// Returns `Some(true)` to enable capture, `Some(false)` to disable, or `None`
+    /// if no toggle is pending.
+    ///
+    /// Called by `tui_loop` in the shared post-select block after every event arm
+    /// (C2 — not inside an individual arm to avoid ordering hazards).
+    pub(crate) fn take_mouse_capture_request(&mut self) -> Option<bool> {
+        self.pending_mouse_capture.take()
+    }
+
+    // ── Pub(crate) helpers for the reducer ──────────────────────────────────
+
+    /// Push a system message visible in the chat area (public(crate) forwarding wrapper).
+    pub(crate) fn push_system_message_pub(&mut self, content: String) {
+        self.sessions.current_mut().show_splash = false;
+        self.sessions
+            .current_mut()
+            .messages
+            .push(crate::ChatMessage::new(crate::MessageRole::System, content));
+        self.sessions.current_mut().scroll_offset = 0;
+    }
+
+    /// Return the content of the last assistant message (pub(crate) for reducer).
+    pub(crate) fn last_assistant_content_pub(&self) -> Option<String> {
+        self.sessions
+            .current()
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == crate::MessageRole::Assistant)
+            .map(|m| m.content.clone())
+    }
+
+    /// Extract all fenced code blocks from the last assistant message (pub(crate) for reducer).
+    pub(crate) fn last_assistant_code_blocks_pub(&self) -> Vec<String> {
+        use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+        let Some(content) = self.last_assistant_content_pub() else {
+            return Vec::new();
+        };
+        let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+        let parser = Parser::new_ext(&content, options);
+        let mut blocks: Vec<String> = Vec::new();
+        let mut current: Option<String> = None;
+        for event in parser {
+            match event {
+                Event::Start(Tag::CodeBlock(
+                    CodeBlockKind::Fenced(_) | CodeBlockKind::Indented,
+                )) => {
+                    current = Some(String::new());
+                }
+                Event::Text(text) => {
+                    if let Some(ref mut buf) = current {
+                        buf.push_str(&text);
+                    }
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(buf) = current.take() {
+                        blocks.push(buf);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(buf) = current
+            && !buf.is_empty()
+        {
+            blocks.push(buf);
+        }
+        blocks
     }
 }
 

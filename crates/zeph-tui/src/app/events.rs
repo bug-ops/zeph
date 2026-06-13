@@ -26,6 +26,7 @@ impl App {
             }
             AppEvent::Agent(agent_event) => self.handle_agent_event(agent_event),
             AppEvent::Paste(text) => self.handle_paste(&text),
+            AppEvent::Mouse(m) => self.handle_mouse(m),
         }
     }
 

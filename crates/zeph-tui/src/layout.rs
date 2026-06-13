@@ -67,6 +67,7 @@ pub fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
 /// assert_eq!(layout.status.height, 1);
 /// assert!(layout.chat.width > layout.side_panel.width);
 /// ```
+#[derive(Clone, Copy)]
 pub struct AppLayout {
     /// Single-row header bar (model name, session info).
     pub header: Rect,

@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        67,
-        "MIGRATIONS registry must contain all 67 sequential steps"
+        68,
+        "MIGRATIONS registry must contain all 68 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 67);
+    assert_eq!(MIGRATIONS.len(), 68);
 }
 
 #[test]
@@ -1753,6 +1753,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_tui_theme_config",
         "migrate_tui_theme_defaults",
         "migrate_tui_delights",
+        "migrate_tui_mouse",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2937,5 +2938,48 @@ fn step_67_idempotent_on_commented_delights() {
     assert_eq!(
         result.changed_count, 0,
         "must not inject twice when commented-out delights already present"
+    );
+}
+
+// ── Step 68 — migrate_tui_mouse (#5103) ───────────────────────────────────
+
+#[test]
+fn step_68_injects_mouse_comment_when_tui_present_and_no_mouse() {
+    let src = "[tui]\nmotion = \"full\"\n";
+    let result = migrate_tui_mouse(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.output.contains("mouse"),
+        "advisory mouse comment must be injected"
+    );
+    assert_eq!(result.sections_changed, vec!["tui"]);
+}
+
+#[test]
+fn step_68_noop_when_no_tui_section() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_tui_mouse(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_68_noop_when_mouse_already_present() {
+    let src = "[tui]\nmouse = false\n";
+    let result = migrate_tui_mouse(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_68_idempotent_on_own_output() {
+    let src = "[tui]\nmotion = \"full\"\n";
+    let first = migrate_tui_mouse(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_tui_mouse(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
     );
 }

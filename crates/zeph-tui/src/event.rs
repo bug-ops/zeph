@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEvent, MouseEventKind};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use zeph_core::metrics::MetricsSnapshot;
@@ -76,6 +76,15 @@ impl EventSource for CrosstermEventSource {
                 Ok(CrosstermEvent::Key(key)) => Some(AppEvent::Key(key)),
                 Ok(CrosstermEvent::Resize(w, h)) => Some(AppEvent::Resize(w, h)),
                 Ok(CrosstermEvent::Paste(text)) => Some(AppEvent::Paste(text)),
+                Ok(CrosstermEvent::Mouse(m)) => {
+                    // C6: filter high-frequency motion events to Tick to avoid
+                    // setting dirty=Full on every cursor move, which would
+                    // stall the render loop with unnecessary full redraws.
+                    match m.kind {
+                        MouseEventKind::Moved | MouseEventKind::Drag(_) => Some(AppEvent::Tick),
+                        _ => Some(AppEvent::Mouse(m)),
+                    }
+                }
                 _ => Some(AppEvent::Tick),
             }
         } else {
@@ -115,6 +124,10 @@ pub enum AppEvent {
     /// inserts it verbatim into the input buffer; Enter is still required
     /// to submit (matching vim/neovim behaviour).
     Paste(String),
+    /// A mouse event from crossterm (only produced when mouse capture is enabled via
+    /// `/mouse on`). High-frequency `Moved` and `Drag` events are folded into
+    /// [`AppEvent::Tick`] by [`CrosstermEventSource`] before reaching this variant (C6).
+    Mouse(MouseEvent),
 }
 
 /// Events produced by the agent and forwarded to the TUI via [`crate::TuiChannel`].

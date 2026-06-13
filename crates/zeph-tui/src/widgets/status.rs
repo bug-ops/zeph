@@ -458,6 +458,16 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
         }
     }
 
+    if app.mouse_enabled() {
+        list.push(
+            Priority::Low,
+            vec![Span::styled(
+                " | mouse on (Shift+drag selects)",
+                theme.status_bar,
+            )],
+        );
+    }
+
     if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
         list.push(
             Priority::Low,

@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// TODO(arch-revised-2026-04-26): TUI Reducer/Action decomposition deferred to
-// epic/m49+/tui-reducer. Blocked until /specs/<area>/tui-reducer.md is authored
-// via /sdd. See arch-assessment-revised-2026-04-26T02-04-23.md PR 9.
+// TUI Reducer/Action decomposition implemented in this PR (#5076/#5103).
+// See specs/tui-reducer/spec.md for the full design.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,8 +26,6 @@ pub use crate::types::{ChatMessage, InputMode, MessageRole};
 
 use crate::types::PasteState;
 
-/// Maximum number of input history entries retained in the TUI (#2737).
-const MAX_INPUT_HISTORY: usize = 500;
 const MAX_VISIBLE_INPUT_LINES: u16 = 3;
 
 /// The currently focused side panel in the TUI layout.
@@ -475,11 +472,33 @@ pub struct App {
     pub(crate) toasts: crate::delights::ToastQueue,
     /// One-shot shimmer state for the splash wordmark.
     pub(crate) splash_shimmer: crate::delights::SplashShimmer,
+
+    // --- TUI Reducer / Mouse Mode (#5076, #5103) ---
+    /// Whether opt-in mouse capture is currently enabled.
+    ///
+    /// When `true`, the terminal emits `MouseEvent`s instead of converting
+    /// wheel events to arrow keys. Toggled by `/mouse on|off` or the palette.
+    pub(crate) mouse_enabled: bool,
+
+    /// Last computed layout rects, stored at the end of each `draw()` frame.
+    ///
+    /// Used by `decode_mouse` for hit-testing. `None` until the first frame
+    /// is rendered — `decode_mouse` must guard against this (INV-M1, C3).
+    pub(crate) last_layout: Option<crate::layout::AppLayout>,
+
+    /// Pending mouse capture state change requested by `Effect::SetMouseCapture`.
+    ///
+    /// Drained by `tui_loop` in the shared post-select block (C2 — never
+    /// inside an event arm to avoid ordering hazards).
+    pub(crate) pending_mouse_capture: Option<bool>,
 }
 
+pub(crate) mod action;
 mod draw;
 mod events;
 mod keys;
+pub(crate) mod mouse;
+pub(crate) mod reducer;
 mod state;
 mod transcript;
 

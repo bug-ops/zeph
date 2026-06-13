@@ -6,155 +6,119 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 pub(super) const SCROLL_STEP_PAGE: usize = 10;
 
+use crate::app::action::{Action, CursorMove, ElicitationEdit, PaletteEdit, ScrollDir, VertDir};
+use crate::app::reducer::{reduce, run_effects};
 use crate::command::TuiCommand;
 use crate::file_picker::{FileIndex, FilePickerState};
 use crate::layout::truncate_to_width;
-use crate::widgets::command_palette::CommandPaletteState;
-use crate::widgets::slash_autocomplete::{SlashAutocompleteState, command_id_to_slash_form};
 
 use super::{
-    AgentViewTarget, App, ChatMessage, InputMode, MAX_INPUT_HISTORY, MessageRole, Panel,
-    PasteState, format_security_report, oneshot,
+    AgentViewTarget, App, ChatMessage, InputMode, MessageRole, Panel, PasteState,
+    format_security_report, oneshot,
 };
 
 impl App {
+    /// Main keyboard entry point. Decodes `key` into an `Action` and routes it
+    /// through `reduce → run_effects` (INV-R1). Modal layers and legacy handlers
+    /// that cannot be trivially expressed as a single `Action` are routed through
+    /// `Action::*` variants that the reducer already handles.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
+        if let Some(action) = self.decode_key(key) {
+            let effects = reduce(self, action);
+            run_effects(self, effects);
+        }
+    }
+
+    /// Decode a `KeyEvent` into the corresponding `Action`, or `None` if the event
+    /// has no effect (e.g. an unrecognised key in a modal that ignores it).
+    #[allow(clippy::too_many_lines)]
+    fn decode_key(&self, key: KeyEvent) -> Option<Action> {
+        // Global: Ctrl-C always quits.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return;
+            return Some(Action::Quit);
         }
 
+        // Help overlay: only '?' and Esc close it.
         if self.show_help {
-            match key.code {
-                KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
-                _ => {}
-            }
-            return;
+            return match key.code {
+                KeyCode::Char('?') | KeyCode::Esc => Some(Action::SetHelp(false)),
+                _ => None,
+            };
         }
 
+        // Confirm dialog
         if self.confirm_state.is_some() {
-            self.handle_confirm_key(key);
-            return;
+            return Self::decode_confirm_key(key);
         }
 
+        // Elicitation dialog
         if self.elicitation_state.is_some() {
-            self.handle_elicitation_key(key);
-            return;
+            return Self::decode_elicitation_key(key);
         }
 
+        // Command palette
         if self.command_palette.is_some() {
-            self.handle_palette_key(key);
-            return;
+            return Self::decode_palette_key(key);
         }
 
+        // File picker
         if self.file_picker_state.is_some() {
-            self.handle_file_picker_key(key);
-            return;
+            return Self::decode_file_picker_key(key);
         }
 
         match self.sessions.current().input_mode {
-            InputMode::Normal => self.handle_normal_key(key),
-            InputMode::Insert => self.handle_insert_key(key),
+            InputMode::Normal => self.decode_normal_key(key),
+            InputMode::Insert => self.decode_insert_key(key),
         }
     }
 
-    fn handle_confirm_key(&mut self, key: KeyEvent) {
-        let response = match key.code {
-            KeyCode::Char('y' | 'Y') | KeyCode::Enter => Some(true),
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
+    fn decode_confirm_key(key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => Some(Action::ConfirmRespond(true)),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Action::ConfirmRespond(false)),
             _ => None,
-        };
-        if let Some(answer) = response
-            && let Some(mut state) = self.confirm_state.take()
-            && let Some(tx) = state.response_tx.take()
-        {
-            let _ = tx.send(answer);
         }
     }
 
-    fn handle_elicitation_key(&mut self, key: KeyEvent) {
-        use crossterm::event::KeyModifiers;
-        use zeph_core::channel::ElicitationResponse;
-
-        let Some(state) = self.elicitation_state.as_mut() else {
-            return;
-        };
-
+    fn decode_elicitation_key(key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Esc => {
-                // Cancel — always dismisses regardless of vi-mode
-                if let Some(mut st) = self.elicitation_state.take()
-                    && let Some(tx) = st.response_tx.take()
-                {
-                    let _ = tx.send(ElicitationResponse::Cancelled);
-                }
+            KeyCode::Esc => Some(Action::ElicitationCancel),
+            KeyCode::Enter => Some(Action::ElicitationSubmit),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(Action::ElicitationField(ElicitationEdit::PrevField))
             }
-            KeyCode::Enter => {
-                if let Some(value) = state.dialog.build_submission()
-                    && let Some(mut st) = self.elicitation_state.take()
-                    && let Some(tx) = st.response_tx.take()
-                {
-                    let _ = tx.send(ElicitationResponse::Accepted(value));
-                }
-                // If build_submission returns None (required field empty), stay open
-            }
-            KeyCode::Tab => {
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    state.dialog.prev_field();
-                } else {
-                    state.dialog.next_field();
-                }
-            }
-            KeyCode::BackTab => {
-                state.dialog.prev_field();
-            }
-            KeyCode::Up => {
-                state.dialog.enum_prev();
-            }
-            KeyCode::Down => {
-                state.dialog.enum_next();
-            }
-            KeyCode::Char(' ') => {
-                state.dialog.toggle_bool();
-            }
-            KeyCode::Char(c) => {
-                state.dialog.push_char(c);
-            }
-            KeyCode::Backspace => {
-                state.dialog.pop_char();
-            }
-            _ => {}
+            KeyCode::Tab => Some(Action::ElicitationField(ElicitationEdit::NextField)),
+            KeyCode::BackTab => Some(Action::ElicitationField(ElicitationEdit::PrevField)),
+            KeyCode::Up => Some(Action::ElicitationField(ElicitationEdit::EnumPrev)),
+            KeyCode::Down => Some(Action::ElicitationField(ElicitationEdit::EnumNext)),
+            KeyCode::Char(' ') => Some(Action::ElicitationField(ElicitationEdit::ToggleBool)),
+            KeyCode::Char(c) => Some(Action::ElicitationField(ElicitationEdit::PushChar(c))),
+            KeyCode::Backspace => Some(Action::ElicitationField(ElicitationEdit::PopChar)),
+            _ => None,
         }
     }
 
-    fn handle_palette_key(&mut self, key: KeyEvent) {
-        let Some(palette) = self.command_palette.as_mut() else {
-            return;
-        };
+    fn decode_palette_key(key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Esc => {
-                self.command_palette = None;
-            }
-            KeyCode::Enter => {
-                if let Some(entry) = palette.selected_entry() {
-                    let cmd = entry.command.clone();
-                    self.execute_command(cmd);
-                }
-                self.command_palette = None;
-            }
-            KeyCode::Up => {
-                palette.move_up();
-            }
-            KeyCode::Down => {
-                palette.move_down();
-            }
-            KeyCode::Backspace => {
-                palette.pop_char();
-            }
-            KeyCode::Char(c) => {
-                palette.push_char(c);
-            }
-            _ => {}
+            KeyCode::Esc => Some(Action::CloseCommandPalette),
+            KeyCode::Enter => Some(Action::PaletteAccept),
+            KeyCode::Up => Some(Action::PaletteMove(VertDir::Up)),
+            KeyCode::Down => Some(Action::PaletteMove(VertDir::Down)),
+            KeyCode::Backspace => Some(Action::PaletteInput(PaletteEdit::PopChar)),
+            KeyCode::Char(c) => Some(Action::PaletteInput(PaletteEdit::PushChar(c))),
+            _ => None,
+        }
+    }
+
+    fn decode_file_picker_key(key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Esc => Some(Action::CloseFilePicker),
+            KeyCode::Enter | KeyCode::Tab => Some(Action::FilePickerAccept),
+            KeyCode::Up => Some(Action::FilePickerMove(VertDir::Up)),
+            KeyCode::Down => Some(Action::FilePickerMove(VertDir::Down)),
+            KeyCode::Char(c) => Some(Action::FilePickerInput(PaletteEdit::PushChar(c))),
+            KeyCode::Backspace => Some(Action::FilePickerInput(PaletteEdit::PopChar)),
+            _ => None,
         }
     }
 
@@ -319,6 +283,30 @@ impl App {
                 } else {
                     self.push_system_message("No code block found.".to_owned());
                 }
+            }
+            TuiCommand::SendClearQueue => {
+                let _ = self.user_input_tx.try_send("/clear-queue".to_owned());
+            }
+            // SubAgent sidebar navigation (routed from decode_normal_key via Action::Dispatch)
+            TuiCommand::SubagentSidebarDown => {
+                let count = self.metrics.sub_agents.len();
+                self.subagent_sidebar.select_next(count);
+            }
+            TuiCommand::SubagentSidebarUp => {
+                let count = self.metrics.sub_agents.len();
+                self.subagent_sidebar.select_prev(count);
+            }
+            // Mouse toggle: route through reduce() so SetMouseCapture effect is queued.
+            TuiCommand::SetMouse(b) => {
+                use crate::app::reducer::{reduce, run_effects};
+                let effects = reduce(self, crate::app::action::Action::SetMouse(b));
+                run_effects(self, effects);
+            }
+            TuiCommand::ToggleMouse => {
+                use crate::app::reducer::{reduce, run_effects};
+                let cur = self.mouse_enabled;
+                let effects = reduce(self, crate::app::action::Action::SetMouse(!cur));
+                run_effects(self, effects);
             }
             cmd => self.execute_plan_graph_command(cmd),
         }
@@ -604,8 +592,17 @@ impl App {
                 };
                 Some(TuiCommand::SetMotion(m))
             }
+            // /mouse on|off|toggle — opt-in mouse capture (#5103)
+            [cmd] if cmd.eq_ignore_ascii_case("/mouse") => Some(TuiCommand::ToggleMouse),
+            [cmd, "on"] if cmd.eq_ignore_ascii_case("/mouse") => Some(TuiCommand::SetMouse(true)),
+            [cmd, "off"] if cmd.eq_ignore_ascii_case("/mouse") => Some(TuiCommand::SetMouse(false)),
             _ => None,
         }
+    }
+
+    /// Public(crate) wrapper so the reducer can call `parse_session_slash` across modules.
+    pub(crate) fn parse_session_slash_pub(text: &str) -> Option<TuiCommand> {
+        Self::parse_session_slash(text)
     }
 
     fn prefill_input(&mut self, prefix: &str) {
@@ -863,20 +860,16 @@ impl App {
             .is_some_and(|ev| now.saturating_sub(ev.timestamp) <= 60)
     }
 
-    /// Handle keys specific to the `SubAgents` panel and transcript view.
-    /// Returns `true` if the key was consumed.
-    fn handle_subagent_panel_key(&mut self, key: KeyEvent) -> bool {
+    /// Decode a key event while the `SubAgents` panel has focus or a subagent
+    /// transcript is active. Returns `Some(Action)` when the key is consumed.
+    fn decode_subagent_panel_key(&self, key: KeyEvent) -> Option<Action> {
         if self.active_panel == Panel::SubAgents {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    let count = self.metrics.sub_agents.len();
-                    self.subagent_sidebar.select_next(count);
-                    return true;
+                    return Some(Action::Dispatch(TuiCommand::SubagentSidebarDown));
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    let count = self.metrics.sub_agents.len();
-                    self.subagent_sidebar.select_prev(count);
-                    return true;
+                    return Some(Action::Dispatch(TuiCommand::SubagentSidebarUp));
                 }
                 KeyCode::Enter => {
                     if let Some(idx) = self.subagent_sidebar.selected()
@@ -886,152 +879,76 @@ impl App {
                             id: sa.id.clone(),
                             name: sa.name.clone(),
                         };
-                        self.set_view_target(target);
+                        return Some(Action::SetViewTarget(target));
                     }
-                    return true;
+                    return None;
                 }
                 KeyCode::Esc => {
-                    self.active_panel = Panel::Chat;
-                    return true;
+                    return Some(Action::SetActivePanel(Panel::Chat));
                 }
                 _ => {}
             }
         }
         // Esc while viewing a subagent transcript returns to Main.
         if key.code == KeyCode::Esc && !self.sessions.current().view_target.is_main() {
-            self.set_view_target(AgentViewTarget::Main);
-            return true;
+            return Some(Action::SetViewTarget(AgentViewTarget::Main));
         }
-        false
+        None
     }
 
-    #[allow(clippy::too_many_lines)] // large match over all Normal-mode key bindings
-    fn handle_normal_key(&mut self, key: KeyEvent) {
-        if self.handle_subagent_panel_key(key) {
-            return;
+    #[allow(clippy::too_many_lines)]
+    fn decode_normal_key(&self, key: KeyEvent) -> Option<Action> {
+        if let Some(a) = self.decode_subagent_panel_key(key) {
+            return Some(a);
         }
         match key.code {
-            KeyCode::Esc if self.is_agent_busy() => {
-                if let Some(ref signal) = self.cancel_signal {
-                    signal.notify_waiters();
-                }
-            }
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('H') => self.execute_command(TuiCommand::SessionBrowser),
-            KeyCode::Char('i') => self.sessions.current_mut().input_mode = InputMode::Insert,
-            KeyCode::Char(':') => {
-                self.command_palette = Some(CommandPaletteState::new());
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_add(1);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.sessions.current_mut().scroll_offset =
-                    self.sessions.current().scroll_offset.saturating_sub(1);
-            }
-            KeyCode::PageUp => {
-                let to = self
-                    .sessions
-                    .current()
-                    .scroll_offset
-                    .saturating_add(SCROLL_STEP_PAGE);
-                self.begin_scroll(to);
-            }
-            KeyCode::PageDown => {
-                let to = self
-                    .sessions
-                    .current()
-                    .scroll_offset
-                    .saturating_sub(SCROLL_STEP_PAGE);
-                self.begin_scroll(to);
-            }
-            KeyCode::Home => {
-                self.sessions.current_mut().scroll_offset =
-                    if let Some(cache) = &self.sessions.current().transcript_cache {
-                        cache.entries.len()
-                    } else {
-                        self.sessions.current().messages.len()
-                    };
-            }
-            KeyCode::End => {
-                self.sessions.current_mut().scroll_offset = 0;
-            }
-            KeyCode::Char('d') => {
-                self.show_side_panels = !self.show_side_panels;
-            }
-            KeyCode::Char('e') => {
-                self.tool_expanded = !self.tool_expanded;
-                self.sessions.current_mut().render_cache.clear();
-            }
-            KeyCode::Char('c') => {
-                self.tool_density = self.tool_density.cycle();
-                self.sessions.current_mut().render_cache.clear();
-            }
-            KeyCode::Tab => {
-                self.active_panel = match self.active_panel {
-                    Panel::Chat => Panel::Skills,
-                    Panel::Skills => Panel::Memory,
-                    Panel::Memory => Panel::Resources,
-                    Panel::Resources => Panel::SubAgents,
-                    Panel::SubAgents | Panel::Tasks => Panel::Fleet,
-                    Panel::Fleet => Panel::Durable,
-                    Panel::Durable => Panel::Chat,
-                };
-            }
+            KeyCode::Esc if self.is_agent_busy() => Some(Action::CancelAgent),
+            KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Char('H') => Some(Action::Dispatch(TuiCommand::SessionBrowser)),
+            KeyCode::Char('i') => Some(Action::EnterInsert),
+            KeyCode::Char(':') => Some(Action::OpenCommandPalette),
+            KeyCode::Up | KeyCode::Char('k') => Some(Action::ScrollLines(-1)),
+            KeyCode::Down | KeyCode::Char('j') => Some(Action::ScrollLines(1)),
+            KeyCode::PageUp => Some(Action::ScrollPage(ScrollDir::Up)),
+            KeyCode::PageDown => Some(Action::ScrollPage(ScrollDir::Down)),
+            KeyCode::Home => Some(Action::ScrollToTop),
+            KeyCode::End => Some(Action::ScrollToBottom),
+            KeyCode::Char('d') => Some(Action::ToggleSidePanels),
+            KeyCode::Char('e') => Some(Action::ToggleToolExpanded),
+            KeyCode::Char('c') => Some(Action::CycleToolDensity),
+            KeyCode::Tab => Some(Action::CyclePanelFocus),
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.sessions.current().view_target.is_main() {
-                    self.sessions.current_mut().messages.clear();
-                }
-                self.sessions.current_mut().render_cache.clear();
-                self.sessions.current_mut().scroll_offset = 0;
+                Some(Action::ClearTranscript)
             }
-            KeyCode::Char('?') => {
-                self.show_help = true;
-            }
-            KeyCode::Char('p') => {
-                self.sessions.current_mut().plan_view_active =
-                    !self.sessions.current().plan_view_active;
-            }
-            KeyCode::Char('f') => {
-                self.active_panel = Panel::Fleet;
-            }
-            KeyCode::Char('D') => {
-                self.active_panel = Panel::Durable;
-            }
-            KeyCode::Char('a') => {
-                self.active_panel = Panel::SubAgents;
-                // Auto-select first agent if nothing selected yet.
-                if self.subagent_sidebar.selected().is_none() && !self.metrics.sub_agents.is_empty()
-                {
-                    self.subagent_sidebar.list_state.select(Some(0));
-                }
-            }
+            KeyCode::Char('?') => Some(Action::SetHelp(true)),
+            KeyCode::Char('p') => Some(Action::TogglePlanView),
+            KeyCode::Char('f') => Some(Action::SetActivePanel(Panel::Fleet)),
+            KeyCode::Char('D') => Some(Action::SetActivePanel(Panel::Durable)),
+            KeyCode::Char('a') => Some(Action::SetActivePanel(Panel::SubAgents)),
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.execute_command(TuiCommand::CopyLastAssistant);
+                Some(Action::CopyLastAssistant)
             }
             KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.execute_command(TuiCommand::CopyLastCodeBlock(0));
+                Some(Action::CopyLastCodeBlock(0))
             }
-            // Alt+1..4: toggle per-section sidebar collapse (0=Skills, 1=Memory, 2=Resources, 3=SubAgents).
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(0);
+                Some(Action::TogglePanelCollapse(0))
             }
             KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(1);
+                Some(Action::TogglePanelCollapse(1))
             }
             KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(2);
+                Some(Action::TogglePanelCollapse(2))
             }
             KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(3);
+                Some(Action::TogglePanelCollapse(3))
             }
-            _ => {}
+            _ => None,
         }
     }
 
     /// Returns the byte offset of the char at the given char index.
-    fn byte_offset_of_char(&self, char_idx: usize) -> usize {
+    pub(super) fn byte_offset_of_char(&self, char_idx: usize) -> usize {
         self.sessions
             .current()
             .input
@@ -1093,392 +1010,181 @@ impl App {
         }
     }
 
-    fn handle_insert_key(&mut self, key: KeyEvent) {
+    fn decode_insert_key(&self, key: KeyEvent) -> Option<Action> {
         // Reverse-search dispatch is checked BEFORE slash-autocomplete so that
         // printable chars (including '/') typed into the search query are not
         // stolen by the autocomplete trigger (C4).
         if self.reverse_search.is_some() {
-            self.handle_reverse_search_key(key);
-            return;
+            return Self::decode_reverse_search_key(key);
         }
         if self.slash_autocomplete.is_some() {
-            self.handle_slash_autocomplete_key(key);
-            return;
+            return Self::decode_slash_autocomplete_key(key);
         }
-        if self.handle_insert_text_keys(key) {
-            return;
+        if let Some(a) = Self::decode_insert_text_key(key) {
+            return Some(a);
         }
-        if self.handle_insert_delete_keys(key) {
-            return;
+        if let Some(a) = Self::decode_insert_delete_key(key) {
+            return Some(a);
         }
-        if self.handle_insert_scroll_keys(key) {
-            return;
+        if let Some(a) = Self::decode_insert_scroll_key(key) {
+            return Some(a);
         }
-        if self.handle_insert_history_keys(key) {
-            return;
+        if let Some(a) = Self::decode_insert_history_key(key) {
+            return Some(a);
         }
-        if self.handle_insert_cursor_keys(key) {
-            return;
+        if let Some(a) = Self::decode_insert_cursor_key(key) {
+            return Some(a);
         }
-        self.handle_insert_control_keys(key);
+        self.decode_insert_control_key(key)
     }
 
-    /// Handle transcript scroll keys in Insert mode: `PageUp`, `PageDown`.
-    ///
-    /// Returns `true` when the key was handled.
-    fn handle_insert_scroll_keys(&mut self, key: KeyEvent) -> bool {
+    fn decode_insert_scroll_key(key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::PageUp => {
-                let to = self
-                    .sessions
-                    .current()
-                    .scroll_offset
-                    .saturating_add(SCROLL_STEP_PAGE);
-                self.begin_scroll(to);
-            }
-            KeyCode::PageDown => {
-                let to = self
-                    .sessions
-                    .current()
-                    .scroll_offset
-                    .saturating_sub(SCROLL_STEP_PAGE);
-                self.begin_scroll(to);
-            }
-            _ => return false,
+            KeyCode::PageUp => Some(Action::ScrollPage(ScrollDir::Up)),
+            KeyCode::PageDown => Some(Action::ScrollPage(ScrollDir::Down)),
+            _ => None,
         }
-        true
     }
 
     /// Insert a newline character at the current cursor position.
     ///
     /// Shared body for `Shift+Enter` and `Ctrl+J`.
-    fn insert_newline_at_cursor(&mut self) {
+    pub(super) fn insert_newline_at_cursor(&mut self) {
         self.sessions.current_mut().paste_state = None;
         let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
         self.sessions.current_mut().input.insert(byte_offset, '\n');
         self.sessions.current_mut().cursor_position += 1;
     }
 
-    /// Handle text insertion keys: Enter (submit), Shift+Enter / Ctrl+J (newline), Esc.
-    ///
-    /// Returns `true` when the key was handled.
-    fn handle_insert_text_keys(&mut self, key: KeyEvent) -> bool {
+    fn decode_insert_text_key(key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.insert_newline_at_cursor();
+                Some(Action::InsertNewline)
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.insert_newline_at_cursor();
+                Some(Action::InsertNewline)
             }
-            KeyCode::Enter => self.submit_input(),
-            KeyCode::Esc => self.sessions.current_mut().input_mode = InputMode::Normal,
-            _ => return false,
+            KeyCode::Enter => Some(Action::SubmitInput),
+            KeyCode::Esc => Some(Action::EnterNormal),
+            _ => None,
         }
-        true
     }
 
-    /// Handle delete keys: Backspace (with or without Alt), Delete.
-    ///
-    /// Returns `true` when the key was handled.
-    fn handle_insert_delete_keys(&mut self, key: KeyEvent) -> bool {
+    fn decode_insert_delete_key(key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
-                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.sessions.current_mut().paste_state = None;
-                let boundary = self.prev_word_boundary();
-                if boundary < self.sessions.current().cursor_position {
-                    let start = self.byte_offset_of_char(boundary);
-                    let end = self.byte_offset_of_char(self.sessions.current().cursor_position);
-                    self.sessions.current_mut().input.drain(start..end);
-                    self.sessions.current_mut().cursor_position = boundary;
-                }
+                Some(Action::DeleteWordBackward)
             }
-            KeyCode::Backspace => {
-                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.sessions.current_mut().paste_state = None;
-                if self.sessions.current().cursor_position > 0 {
-                    let byte_offset =
-                        self.byte_offset_of_char(self.sessions.current().cursor_position - 1);
-                    self.sessions.current_mut().input.remove(byte_offset);
-                    self.sessions.current_mut().cursor_position -= 1;
-                }
-            }
-            KeyCode::Delete => {
-                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.sessions.current_mut().paste_state = None;
-                if self.sessions.current().cursor_position < self.char_count() {
-                    let byte_offset =
-                        self.byte_offset_of_char(self.sessions.current().cursor_position);
-                    self.sessions.current_mut().input.remove(byte_offset);
-                }
-            }
-            _ => return false,
+            KeyCode::Backspace => Some(Action::DeleteCharBackward),
+            KeyCode::Delete => Some(Action::DeleteCharForward),
+            _ => None,
         }
-        true
     }
 
-    /// Handle history navigation keys: Up, Down.
-    ///
-    /// Returns `true` when the key was handled.
-    fn handle_insert_history_keys(&mut self, key: KeyEvent) -> bool {
+    fn decode_insert_history_key(key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Up => {
-                self.handle_history_up();
-            }
-            KeyCode::Down => {
-                self.sessions.current_mut().paste_state = None;
-                let Some(i) = self.sessions.current().history_index else {
-                    return true;
-                };
-                let prefix = &self.sessions.current().draft_input;
-                let found = self.sessions.current().input_history[i + 1..]
-                    .iter()
-                    .position(|e| prefix.is_empty() || e.starts_with(prefix))
-                    .map(|offset| i + 1 + offset);
-                if let Some(idx) = found {
-                    self.sessions.current_mut().history_index = Some(idx);
-                    let text = self.sessions.current().input_history[idx].clone();
-                    self.sessions.current_mut().input = text;
-                } else {
-                    self.sessions.current_mut().history_index = None;
-                    self.sessions.current_mut().input =
-                        std::mem::take(&mut self.sessions.current_mut().draft_input);
-                }
-                self.sessions.current_mut().cursor_position = self.char_count();
-            }
-            _ => return false,
+            KeyCode::Up => Some(Action::HistoryPrev),
+            KeyCode::Down => Some(Action::HistoryNext),
+            _ => None,
         }
-        true
     }
 
-    /// Handle cursor movement keys: Left, Right (with optional Alt), Home, End.
-    ///
-    /// Returns `true` when the key was handled.
-    fn handle_insert_cursor_keys(&mut self, key: KeyEvent) -> bool {
+    fn decode_insert_cursor_key(key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().cursor_position = self.prev_word_boundary();
+                Some(Action::MoveCursor(CursorMove::WordLeft))
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().cursor_position = self.next_word_boundary();
+                Some(Action::MoveCursor(CursorMove::WordRight))
             }
-            KeyCode::Left => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().cursor_position =
-                    self.sessions.current().cursor_position.saturating_sub(1);
-            }
-            KeyCode::Right => {
-                self.sessions.current_mut().paste_state = None;
-                if self.sessions.current().cursor_position < self.char_count() {
-                    self.sessions.current_mut().cursor_position += 1;
-                }
-            }
-            KeyCode::Home => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().cursor_position = 0;
-            }
-            KeyCode::End => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().cursor_position = self.char_count();
-            }
-            _ => return false,
+            KeyCode::Left => Some(Action::MoveCursor(CursorMove::Left)),
+            KeyCode::Right => Some(Action::MoveCursor(CursorMove::Right)),
+            KeyCode::Home => Some(Action::MoveCursor(CursorMove::Home)),
+            KeyCode::End => Some(Action::MoveCursor(CursorMove::End)),
+            _ => None,
         }
-        true
     }
 
-    /// Handle Ctrl-key shortcuts and character insertion (including slash autocomplete trigger).
-    ///
-    /// Returns `true` when the key was handled; `false` for unrecognised keys.
-    fn handle_insert_control_keys(&mut self, key: KeyEvent) -> bool {
+    fn decode_insert_control_key(&self, key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().cursor_position = 0;
+                Some(Action::MoveCursor(CursorMove::Home))
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().cursor_position = self.char_count();
+                Some(Action::MoveCursor(CursorMove::End))
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.sessions.current_mut().paste_state = None;
-                self.sessions.current_mut().input.clear();
-                self.sessions.current_mut().cursor_position = 0;
+                Some(Action::ClearInput)
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let _ = self.user_input_tx.try_send("/clear-queue".to_owned());
+                // /clear-queue is a user-input command, not an Action mutation.
+                Some(Action::Dispatch(TuiCommand::SendClearQueue))
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.execute_command(TuiCommand::CopyLastAssistant);
+                Some(Action::CopyLastAssistant)
             }
             KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.execute_command(TuiCommand::CopyLastCodeBlock(0));
+                Some(Action::CopyLastCodeBlock(0))
             }
-            // Alt+1..4 work in Insert mode too so the user need not switch to Normal mode.
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(0);
+                Some(Action::TogglePanelCollapse(0))
             }
             KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(1);
+                Some(Action::TogglePanelCollapse(1))
             }
             KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(2);
+                Some(Action::TogglePanelCollapse(2))
             }
             KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.toggle_panel_collapse(3);
+                Some(Action::TogglePanelCollapse(3))
             }
+            // Ignore Ctrl+R when slash autocomplete is open — mutual exclusion.
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ignore Ctrl+R when slash autocomplete is open — mutual exclusion.
                 if self.slash_autocomplete.is_none() {
-                    let history = self.sessions.current().input_history.clone();
-                    self.reverse_search = Some(
-                        crate::widgets::reverse_search::ReverseSearchState::new(&history),
-                    );
-                }
-            }
-            KeyCode::Char('@') => {
-                self.open_file_picker();
-            }
-            KeyCode::Char(c) => {
-                // First edit keystroke after paste reveals raw text; subsequent keystrokes edit normally.
-                self.sessions.current_mut().paste_state = None;
-                let was_empty = self.sessions.current().input.is_empty();
-                let byte_offset = self.byte_offset_of_char(self.sessions.current().cursor_position);
-                self.sessions.current_mut().input.insert(byte_offset, c);
-                self.sessions.current_mut().cursor_position += 1;
-                if c == '/' && was_empty {
-                    self.slash_autocomplete = Some(SlashAutocompleteState::new());
-                }
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn handle_slash_autocomplete_key(&mut self, key: KeyEvent) {
-        let Some(state) = self.slash_autocomplete.as_mut() else {
-            return;
-        };
-        match key.code {
-            KeyCode::Esc => {
-                self.slash_autocomplete = None;
-            }
-            KeyCode::Tab | KeyCode::Enter => {
-                let entry = state.selected_entry().map(|e| e.id);
-                self.slash_autocomplete = None;
-                if let Some(id) = entry {
-                    let slash_form = command_id_to_slash_form(id);
-                    self.sessions.current_mut().input = slash_form;
-                    self.sessions.current_mut().cursor_position = self.char_count();
-                }
-                if key.code == KeyCode::Enter {
-                    self.submit_input();
-                }
-            }
-            KeyCode::Down => {
-                if let Some(s) = self.slash_autocomplete.as_mut() {
-                    s.move_down();
-                }
-            }
-            KeyCode::Up | KeyCode::BackTab => {
-                if let Some(s) = self.slash_autocomplete.as_mut() {
-                    s.move_up();
-                }
-            }
-            KeyCode::Backspace => {
-                let dismiss = self
-                    .slash_autocomplete
-                    .as_mut()
-                    .is_none_or(SlashAutocompleteState::pop_char);
-                if dismiss {
-                    self.sessions.current_mut().input.clear();
-                    self.sessions.current_mut().cursor_position = 0;
-                    self.slash_autocomplete = None;
+                    Some(Action::OpenReverseSearch)
                 } else {
-                    let query = self
-                        .slash_autocomplete
-                        .as_ref()
-                        .map_or(String::new(), |s| s.query.clone());
-                    self.sessions.current_mut().input = format!("/{query}");
-                    self.sessions.current_mut().cursor_position = self.char_count();
-                    if self
-                        .slash_autocomplete
-                        .as_ref()
-                        .is_none_or(|s| s.filtered.is_empty())
-                    {
-                        self.slash_autocomplete = None;
-                    }
+                    None
                 }
             }
-            KeyCode::Char(c) => {
-                if let Some(s) = self.slash_autocomplete.as_mut() {
-                    s.push_char(c);
-                }
-                let query = self
-                    .slash_autocomplete
-                    .as_ref()
-                    .map_or(String::new(), |s| s.query.clone());
-                self.sessions.current_mut().input = format!("/{query}");
-                self.sessions.current_mut().cursor_position = self.char_count();
-                if self
-                    .slash_autocomplete
-                    .as_ref()
-                    .is_none_or(|s| s.filtered.is_empty())
-                {
-                    self.slash_autocomplete = None;
-                }
-            }
-            _ => {}
+            KeyCode::Char('@') => Some(Action::OpenFilePicker),
+            KeyCode::Char(c) => Some(Action::InsertChar(c)),
+            _ => None,
         }
     }
 
-    fn handle_reverse_search_key(&mut self, key: KeyEvent) {
+    fn decode_slash_autocomplete_key(key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Esc => Some(Action::CloseSlashAutocomplete),
+            KeyCode::Tab => Some(Action::SlashAutocompleteAccept),
+            KeyCode::Enter => {
+                // Accept and immediately submit.
+                Some(Action::SlashAutocompleteAcceptAndSubmit)
+            }
+            KeyCode::Down => Some(Action::SlashAutocompleteMove(VertDir::Down)),
+            KeyCode::Up | KeyCode::BackTab => Some(Action::SlashAutocompleteMove(VertDir::Up)),
+            KeyCode::Backspace => Some(Action::SlashAutocompletePopChar),
+            KeyCode::Char(c) => Some(Action::SlashAutocompletePushChar(c)),
+            _ => None,
+        }
+    }
+
+    fn decode_reverse_search_key(key: KeyEvent) -> Option<Action> {
         let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let is_alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
-            KeyCode::Esc => {
-                self.reverse_search = None;
-            }
-            KeyCode::Enter => {
-                let selected = self.reverse_search.as_ref().and_then(|s| {
-                    let hist = &self.sessions.current().input_history;
-                    s.selected_entry(hist).map(str::to_owned)
-                });
-                self.reverse_search = None;
-                if let Some(text) = selected {
-                    self.sessions.current_mut().input = text;
-                    self.sessions.current_mut().cursor_position = self.char_count();
-                }
-            }
-            KeyCode::Char('r') if is_ctrl => {
-                if let Some(s) = self.reverse_search.as_mut() {
-                    s.select_next();
-                }
-            }
-            // Ctrl+S — move to a newer (previous) match, mirroring bash Ctrl+S.
-            KeyCode::Char('s') if is_ctrl => {
-                if let Some(s) = self.reverse_search.as_mut() {
-                    s.select_previous();
-                }
-            }
-            KeyCode::Backspace => {
-                let history = self.sessions.current().input_history.clone();
-                if let Some(s) = self.reverse_search.as_mut() {
-                    s.pop_char(&history);
-                }
-            }
+            KeyCode::Esc => Some(Action::CloseReverseSearch),
+            KeyCode::Enter => Some(Action::ReverseSearchAccept),
+            KeyCode::Char('r') if is_ctrl => Some(Action::ReverseSearchNext),
+            KeyCode::Char('s') if is_ctrl => Some(Action::ReverseSearchPrev),
+            KeyCode::Backspace => Some(Action::ReverseSearchInput(PaletteEdit::PopChar)),
             KeyCode::Char(c) if !is_ctrl && !is_alt => {
-                let history = self.sessions.current().input_history.clone();
-                if let Some(s) = self.reverse_search.as_mut() {
-                    s.push_char(c, &history);
-                }
+                Some(Action::ReverseSearchInput(PaletteEdit::PushChar(c)))
             }
-            _ => {}
+            _ => None,
         }
     }
 
-    fn handle_history_up(&mut self) {
+    pub(super) fn handle_history_up(&mut self) {
         self.sessions.current_mut().paste_state = None;
         if self.sessions.current().input.is_empty()
             && self.pending_count > 0
@@ -1535,7 +1241,7 @@ impl App {
         self.sessions.current_mut().cursor_position = self.char_count();
     }
 
-    fn open_file_picker(&mut self) {
+    pub(super) fn open_file_picker(&mut self) {
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let needs_rebuild = self.file_index.as_ref().is_none_or(FileIndex::is_stale);
         if needs_rebuild && self.pending_file_index.is_none() {
@@ -1572,83 +1278,6 @@ impl App {
                 self.sessions.current_mut().status_label = None;
             }
         }
-    }
-
-    fn handle_file_picker_key(&mut self, key: KeyEvent) {
-        let Some(state) = self.file_picker_state.as_mut() else {
-            return;
-        };
-        match key.code {
-            KeyCode::Esc => {
-                self.file_picker_state = None;
-            }
-            KeyCode::Enter | KeyCode::Tab => {
-                if let Some(path) = state.selected_path().map(ToOwned::to_owned) {
-                    let byte_offset =
-                        self.byte_offset_of_char(self.sessions.current().cursor_position);
-                    self.sessions
-                        .current_mut()
-                        .input
-                        .insert_str(byte_offset, &path);
-                    self.sessions.current_mut().cursor_position += path.chars().count();
-                }
-                self.file_picker_state = None;
-            }
-            KeyCode::Up => {
-                state.move_selection(-1);
-            }
-            KeyCode::Down => {
-                state.move_selection(1);
-            }
-            KeyCode::Char(c) => {
-                state.push_char(c);
-            }
-            KeyCode::Backspace if !state.pop_char() => {
-                self.file_picker_state = None;
-            }
-            _ => {}
-        }
-    }
-
-    pub(super) fn submit_input(&mut self) {
-        let text = self.sessions.current().input.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        // Intercept /session slash commands before forwarding to the agent.
-        if let Some(cmd) = Self::parse_session_slash(&text) {
-            self.sessions.current_mut().input.clear();
-            self.sessions.current_mut().cursor_position = 0;
-            self.execute_command(cmd);
-            return;
-        }
-        self.sessions.current_mut().show_splash = false;
-        self.sessions.current_mut().input_history.push(text.clone());
-        if self.sessions.current().input_history.len() > MAX_INPUT_HISTORY {
-            let excess = self.sessions.current().input_history.len() - MAX_INPUT_HISTORY;
-            self.sessions.current_mut().input_history.drain(0..excess);
-        }
-        self.sessions.current_mut().history_index = None;
-        self.sessions.current_mut().draft_input.clear();
-        let paste_lines = self
-            .sessions
-            .current_mut()
-            .paste_state
-            .take()
-            .map(|p| p.line_count);
-        let mut msg = ChatMessage::new(MessageRole::User, text.clone());
-        msg.paste_line_count = paste_lines;
-        self.sessions.current_mut().messages.push(msg);
-        self.trim_messages();
-        self.sessions.current_mut().input.clear();
-        self.sessions.current_mut().cursor_position = 0;
-        self.sessions.current_mut().scroll_offset = 0;
-        self.editing_queued = false;
-        self.pending_count += 1;
-
-        // Non-blocking send; capacity 32 — silent drop if agent loop is saturated.
-        // Message is visible in chat but not processed; acceptable for interactive TUI.
-        let _ = self.user_input_tx.try_send(text);
     }
 }
 

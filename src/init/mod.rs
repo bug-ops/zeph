@@ -296,6 +296,8 @@ pub(crate) struct WizardState {
     pub(crate) tui_color_mode: zeph_config::ColorMode,
     /// Whether TUI micro-delights are enabled (tok/s, toasts, flash, scroll, shimmer).
     pub(crate) tui_delights_enabled: bool,
+    /// Whether opt-in mouse capture is enabled at startup.
+    pub(crate) tui_mouse_enabled: bool,
 }
 
 impl Default for WizardState {
@@ -490,6 +492,7 @@ impl Default for WizardState {
             tui_theme_name: "zephyr".to_owned(),
             tui_color_mode: zeph_config::ColorMode::Auto,
             tui_delights_enabled: true,
+            tui_mouse_enabled: false,
         }
     }
 }
@@ -566,6 +569,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_deep_link(&mut state)?;
     step_tui_theme(&mut state)?;
     step_tui_delights(&mut state)?;
+    step_tui_mouse(&mut state)?;
     step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -1230,6 +1234,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         };
     }
 
+    // Apply TUI mouse mode (#5103).
+    config.tui.mouse = state.tui_mouse_enabled;
+
     config
 }
 
@@ -1824,6 +1831,25 @@ fn step_tui_delights(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
 
     state.tui_delights_enabled = enabled;
+    println!();
+    Ok(())
+}
+
+fn step_tui_mouse(state: &mut WizardState) -> anyhow::Result<()> {
+    use dialoguer::Confirm;
+    println!("== TUI Mouse Mode ==\n");
+    println!("Enable opt-in mouse capture in the TUI dashboard?");
+    println!("  • Scroll wheel scrolls the transcript");
+    println!("  • Left click focuses a panel");
+    println!("  • Text selection still works via Shift+drag");
+    println!("  • Enabled/disabled at runtime with /mouse on|off\n");
+
+    let enabled = Confirm::new()
+        .with_prompt("Enable TUI mouse capture at startup?")
+        .default(false)
+        .interact()?;
+
+    state.tui_mouse_enabled = enabled;
     println!();
     Ok(())
 }

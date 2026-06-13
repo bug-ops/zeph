@@ -104,6 +104,8 @@ impl App {
         if self.show_help {
             widgets::help::render(frame, frame.area(), &self.theme);
         }
+
+        self.last_layout = Some(layout);
     }
 
     pub(super) fn draw_header(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {

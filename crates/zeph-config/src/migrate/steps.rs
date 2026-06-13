@@ -57,7 +57,7 @@ use super::{
     migrate_session_recap_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
     migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
-    migrate_tui_theme_config, migrate_tui_theme_defaults, migrate_vigil_config,
+    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults, migrate_vigil_config,
     migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
@@ -797,5 +797,17 @@ impl Migration for MigrateTuiDelights {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_tui_delights(toml_src)
+    }
+}
+
+/// Step 68 — add `mouse = false` advisory comment under `[tui]` (#5103).
+pub(super) struct MigrateTuiMouse;
+impl Migration for MigrateTuiMouse {
+    fn name(&self) -> &'static str {
+        "migrate_tui_mouse"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_tui_mouse(toml_src)
     }
 }

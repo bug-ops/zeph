@@ -147,6 +147,18 @@ pub enum TuiCommand {
     // Motion control (#5096)
     /// Set the TUI animation budget at runtime (`full`, `minimal`, or `off`).
     SetMotion(zeph_config::Motion),
+    // Mouse mode (#5103)
+    /// Enable or disable opt-in mouse capture (`/mouse on|off`).
+    SetMouse(bool),
+    /// Toggle the current mouse capture state.
+    ToggleMouse,
+    // SubAgent sidebar navigation (used by decode_normal_key → Action::Dispatch)
+    /// Move the subagent list selection down by one.
+    SubagentSidebarDown,
+    /// Move the subagent list selection up by one.
+    SubagentSidebarUp,
+    /// Send `/clear-queue` to the agent input channel (Ctrl+K in Insert mode).
+    SendClearQueue,
 }
 
 /// Metadata for a single entry in the command palette.
@@ -357,6 +369,13 @@ fn build_app_commands() -> Vec<CommandEntry> {
             category: "app",
             shortcut: None,
             command: TuiCommand::ListThemes,
+        },
+        CommandEntry {
+            id: "app:mouse",
+            label: "Toggle mouse mode (wheel scroll, click focus)",
+            category: "app",
+            shortcut: None,
+            command: TuiCommand::ToggleMouse,
         },
     ]
 }
@@ -965,7 +984,7 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 25);
+        assert_eq!(command_registry().len(), 26);
     }
 
     #[test]
