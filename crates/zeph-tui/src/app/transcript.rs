@@ -56,6 +56,7 @@ impl App {
             .is_some_and(|sa| matches!(sa.state.as_str(), "working" | "submitted"));
 
         tokio::task::spawn_blocking(move || {
+            // EXEMPT: short one-shot load; result delivered via oneshot and polled every tick
             let result = load_transcript_file(&path, is_active);
             let _ = tx.send(result);
         });

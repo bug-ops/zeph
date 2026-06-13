@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: remove duplicate `last_assistant_content` / `last_assistant_code_blocks`
+  from `keys.rs`; call-sites now use the `pub(crate)` versions in `state.rs`. Closes #5296.
+
+- `fix(tui)`: route `FileIndex::build` through `TaskSupervisor::spawn_blocking` when a
+  supervisor is available, making the file-picker index build visible to TUI task tracking
+  and metrics per spec-039. Falls back to a bare `spawn_blocking` (EXEMPT) when no
+  supervisor is wired. Annotated `transcript.rs` one-shot load as EXEMPT. Closes #5297.
+
 - `fix(tui)`: offload user theme file I/O to `tokio::task::spawn_blocking` in `apply_theme`
   to prevent the `tui_loop` from stalling on `std::fs::symlink_metadata` / `File::open` calls.
   Built-in presets are still applied synchronously (no I/O). User file results arrive via an
