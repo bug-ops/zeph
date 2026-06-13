@@ -690,8 +690,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             use crate::cli::UrlSchemeCommand;
             use crate::url_scheme::register;
             return match url_scheme_cmd {
-                UrlSchemeCommand::Register => register::handle_url_scheme_register(),
-                UrlSchemeCommand::Unregister => register::handle_url_scheme_unregister(),
+                UrlSchemeCommand::Register => {
+                    tokio::task::spawn_blocking(register::handle_url_scheme_register)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("spawn_blocking panicked: {e}"))?
+                }
+                UrlSchemeCommand::Unregister => {
+                    tokio::task::spawn_blocking(register::handle_url_scheme_unregister)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("spawn_blocking panicked: {e}"))?
+                }
                 UrlSchemeCommand::Status { check } => {
                     let stale = register::handle_url_scheme_status();
                     if check && stale {

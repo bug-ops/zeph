@@ -399,13 +399,12 @@ fn register_macos(exe_str: &str) -> anyhow::Result<()> {
     println!("Wrote: {}", bundle.display());
 
     // Register with LaunchServices.
-    let ls_result = std::process::Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
-        .args(["-f", &bundle.to_string_lossy()])
-        .status();
-    match ls_result {
-        Ok(s) if s.success() => println!("lsregister: registered"),
-        Ok(s) => println!("lsregister exited with status {s}; registration may be incomplete"),
-        Err(e) => println!("lsregister not found or failed: {e}; registration may be incomplete"),
+    match lsregister_with_timeout(&["-f", &bundle.to_string_lossy()]) {
+        Ok(true) => println!("lsregister: registered"),
+        Ok(false) => {
+            println!("lsregister exited with non-zero status; registration may be incomplete");
+        }
+        Err(e) => println!("lsregister failed: {e}; registration may be incomplete"),
     }
 
     println!("Registered zeph:// scheme → {exe_str}");
@@ -421,13 +420,10 @@ fn unregister_macos() -> anyhow::Result<()> {
     }
 
     // Unregister from LaunchServices before removing files.
-    let ls_result = std::process::Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
-        .args(["-u", &bundle.to_string_lossy()])
-        .status();
-    match ls_result {
-        Ok(s) if s.success() => println!("lsregister: unregistered"),
-        Ok(s) => println!("lsregister -u exited with status {s}"),
-        Err(e) => println!("lsregister not found or failed: {e}"),
+    match lsregister_with_timeout(&["-u", &bundle.to_string_lossy()]) {
+        Ok(true) => println!("lsregister: unregistered"),
+        Ok(false) => println!("lsregister -u exited with non-zero status"),
+        Err(e) => println!("lsregister failed: {e}"),
     }
 
     std::fs::remove_dir_all(&bundle)?;
@@ -526,6 +522,48 @@ fn scheme_status_macos(current_exe: Option<&std::path::Path>) -> SchemeStatus {
         ));
     }
     SchemeStatus::Ok
+}
+
+/// Invoke `lsregister` with the given arguments and a 30-second wall-clock timeout.
+///
+/// Returns `Ok(true)` when `lsregister` exits with status 0, `Ok(false)` on a non-zero exit
+/// code, and `Err` on spawn failure or timeout. On timeout the child process is killed before
+/// the error is returned so it cannot linger in the background.
+///
+/// # Errors
+///
+/// - `lsregister` could not be spawned (binary not found or permission denied).
+/// - `lsregister` did not exit within 30 seconds. The error message includes the recovery
+///   command to rebuild the `LaunchServices` database.
+#[cfg(target_os = "macos")]
+fn lsregister_with_timeout(args: &[&str]) -> anyhow::Result<bool> {
+    const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+    let mut child = std::process::Command::new(LSREGISTER)
+        .args(args)
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn lsregister: {e}"))?;
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status.success()),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                anyhow::bail!(
+                    "lsregister timed out after 30s — LaunchServices database may be corrupted. \
+                     Run: {LSREGISTER} -kill -r -domain local -domain system -domain user"
+                );
+            }
+            Ok(None) => std::thread::sleep(POLL_INTERVAL),
+            Err(e) => {
+                let _ = child.kill();
+                return Err(anyhow::anyhow!("lsregister wait failed: {e}"));
+            }
+        }
+    }
 }
 
 // ── Windows ──────────────────────────────────────────────────────────────────
