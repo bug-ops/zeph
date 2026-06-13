@@ -26,6 +26,7 @@ fn fail_closed_hook() -> HookDef {
         },
         timeout_secs: 5,
         fail_closed: true,
+        r#if: None,
     }
 }
 
@@ -36,6 +37,7 @@ fn fail_open_hook() -> HookDef {
         },
         timeout_secs: 5,
         fail_closed: false,
+        r#if: None,
     }
 }
 

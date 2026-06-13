@@ -1532,6 +1532,29 @@ impl<C: Channel> Agent<C> {
     /// from the current process cwd at call time (the project root).
     #[must_use]
     pub fn with_hooks_config(mut self, config: &zeph_config::HooksConfig) -> Self {
+        // Warn about `if = "tool:..."` conditions on events that carry no tool context.
+        // These hooks will never fire because ZEPH_TOOL_NAME is absent at those events.
+        let no_tool_hooks: Vec<&zeph_config::HookDef> = config
+            .cwd_changed
+            .iter()
+            .chain(config.turn_complete.iter())
+            .chain(config.file_changed.iter().flat_map(|fc| fc.hooks.iter()))
+            .collect();
+        for hook in no_tool_hooks {
+            if hook
+                .r#if
+                .as_deref()
+                .is_some_and(|cond| cond.starts_with("tool:"))
+            {
+                tracing::warn!(
+                    condition = hook.r#if.as_deref().unwrap_or(""),
+                    "hook `if` uses `tool:` filter on an event with no tool context \
+                     (cwd_changed, file_changed, turn_complete) — \
+                     this hook will never fire"
+                );
+            }
+        }
+
         self.services
             .session
             .hooks_config

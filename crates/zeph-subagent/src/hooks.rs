@@ -67,6 +67,7 @@
 //!         action: HookAction::Command { command: "true".to_owned() },
 //!         timeout_secs: 5,
 //!         fail_closed: false,
+//!         r#if: None,
 //!     }];
 //!     fire_hooks(&hooks, &HashMap::new(), None, None).await.unwrap();
 //! }
@@ -115,6 +116,15 @@ pub struct HookRunResult {
 /// The `tool_output` field is present for success events; `tool_error` is present
 /// for failure events. Both are `Option` with `skip_serializing_if` so only the
 /// relevant field appears in the JSON written to stdin.
+///
+/// # Payload consistency contract
+///
+/// Agent context is delivered **two ways**:
+/// - **All hook events**: `ZEPH_AGENT_TYPE` and (when available) `ZEPH_AGENT_ID` env vars.
+/// - **`PostToolUse` only**: `agent_id` and `agent_type` fields in this stdin JSON object.
+///
+/// `file_changed`, `cwd_changed`, and `turn_complete` hooks receive agent context via env
+/// vars only — no stdin JSON is written for those events.
 #[derive(Debug, Serialize)]
 pub struct PostToolUseHookInput<'a> {
     /// Name of the tool that was invoked.
@@ -132,6 +142,12 @@ pub struct PostToolUseHookInput<'a> {
     /// Tool error text (failure path). Absent for success events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_error: Option<&'a str>,
+    /// The agent's stable identifier: `conversation_id` for the main agent,
+    /// `task_id` for sub-agents. Absent when no conversation has been bound yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<&'a str>,
+    /// Discriminator for the agent that fired this hook: `"main"` or `"subagent"`.
+    pub agent_type: &'a str,
 }
 
 /// Maximum number of bytes read from hook stdout before truncation.
@@ -159,6 +175,67 @@ pub trait McpDispatch: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
     >;
+}
+
+// ── Conditional `if` filter ───────────────────────────────────────────────────
+
+/// Evaluate a `HookDef.r#if` condition string against the triggering tool name.
+///
+/// The condition must be a `key:value` string. Only the `tool` key is supported:
+/// `tool:<token>` matches when `tool_name` is `Some` and **contains** `<token>`.
+///
+/// Returns `false` (fail-closed) in all of these cases:
+/// - The condition has no `:` separator.
+/// - The key is not `tool`.
+/// - The token after `tool:` is empty.
+/// - `tool_name` is `None` (no tool context at this event).
+/// - `tool_name` is `Some("")` (start/stop lifecycle events pass an empty tool name).
+///
+/// A `warn!` is emitted once for unknown keys and malformed conditions so that
+/// misconfigured hooks surface in logs without aborting hook dispatch.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_subagent::hook_if_matches;
+///
+/// assert!(hook_if_matches("tool:shell", Some("shell")));
+/// assert!(hook_if_matches("tool:sh", Some("shell")));  // substring rule
+/// assert!(!hook_if_matches("tool:shell", Some("python")));
+/// assert!(!hook_if_matches("tool:shell", None));       // no tool context
+/// assert!(!hook_if_matches("tool:", Some("shell")));   // empty token → fail-closed
+/// assert!(!hook_if_matches("bad", Some("shell")));     // no colon → fail-closed
+/// ```
+#[must_use]
+pub fn hook_if_matches(condition: &str, tool_name: Option<&str>) -> bool {
+    let Some((key, value)) = condition.split_once(':') else {
+        tracing::warn!(
+            condition,
+            "hook `if` condition has no `:` separator — skipping hook (fail-closed)"
+        );
+        return false;
+    };
+
+    match key {
+        "tool" => {
+            if value.is_empty() {
+                tracing::warn!(
+                    condition,
+                    "hook `if` condition has empty token after `tool:` — skipping hook (fail-closed)"
+                );
+                return false;
+            }
+            tool_name.is_some_and(|t| !t.is_empty() && t.contains(value))
+        }
+        unknown => {
+            tracing::warn!(
+                key = unknown,
+                condition,
+                "hook `if` condition uses unknown key — skipping hook (fail-closed)"
+            );
+            false
+        }
+    }
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────
@@ -212,7 +289,7 @@ pub enum HookError {
 /// ```rust
 /// use zeph_subagent::{HookDef, HookAction, HookMatcher, matching_hooks};
 ///
-/// let hook = HookDef { action: HookAction::Command { command: "echo hi".to_owned() }, timeout_secs: 30, fail_closed: false };
+/// let hook = HookDef { action: HookAction::Command { command: "echo hi".to_owned() }, timeout_secs: 30, fail_closed: false, r#if: None };
 /// let matchers = vec![HookMatcher { matcher: "Edit|Write".to_owned(), hooks: vec![hook] }];
 ///
 /// assert_eq!(matching_hooks(&matchers, "Edit").len(), 1);
@@ -318,8 +395,23 @@ pub async fn fire_hooks<S: BuildHasher>(
     mcp: Option<&dyn McpDispatch>,
     stdin_json: Option<&[u8]>,
 ) -> Result<HookRunResult, HookError> {
+    let tool_name = env.get("ZEPH_TOOL_NAME").map(String::as_str);
     let mut run_result = HookRunResult::default();
     for hook in hooks {
+        // Evaluate the optional `if` condition before dispatching.
+        if hook.r#if.as_ref().is_some_and(|cond| {
+            let matches = hook_if_matches(cond, tool_name);
+            if !matches {
+                tracing::debug!(
+                    condition = cond.as_str(),
+                    "hook `if` condition did not match — skipping"
+                );
+            }
+            !matches
+        }) {
+            continue;
+        }
+
         // For chaining: pass the already-replaced output as the new stdin so each
         // subsequent hook sees the current (potentially substituted) output.
         let effective_stdin = run_result
@@ -536,6 +628,7 @@ mod tests {
             },
             timeout_secs,
             fail_closed,
+            r#if: None,
         }
     }
 
@@ -676,6 +769,7 @@ mod tests {
             },
             timeout_secs: 5,
             fail_closed: false,
+            r#if: None,
         }];
         let env = HashMap::new();
         // fail_open: should succeed even though MCP is unavailable
@@ -692,6 +786,7 @@ mod tests {
             },
             timeout_secs: 5,
             fail_closed: true,
+            r#if: None,
         }];
         let env = HashMap::new();
         let result = fire_hooks(&hooks, &env, None, None).await;
@@ -730,6 +825,7 @@ mod tests {
             },
             timeout_secs: 5,
             fail_closed: true,
+            r#if: None,
         }];
         let env = HashMap::new();
         let result = fire_hooks(&hooks, &env, Some(&dispatch), None).await;
@@ -891,5 +987,146 @@ PreToolUse:
             matches!(result, Err(HookError::Timeout { .. })),
             "expected HookError::Timeout, got: {result:?}"
         );
+    }
+
+    // ── hook_if_matches ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hook_if_matches_tool_positive() {
+        assert!(hook_if_matches("tool:shell", Some("shell")));
+    }
+
+    #[test]
+    fn hook_if_matches_tool_substring() {
+        assert!(hook_if_matches("tool:shell", Some("subshell")));
+    }
+
+    #[test]
+    fn hook_if_matches_tool_negative() {
+        assert!(!hook_if_matches("tool:shell", Some("python")));
+    }
+
+    #[test]
+    fn hook_if_matches_no_tool_name() {
+        assert!(!hook_if_matches("tool:shell", None));
+    }
+
+    #[test]
+    fn hook_if_matches_empty_token_fail_closed() {
+        // M2: empty token after `tool:` must return false (fail-closed), never fire on everything.
+        assert!(!hook_if_matches("tool:", Some("shell")));
+    }
+
+    #[test]
+    fn hook_if_matches_empty_tool_name_fail_closed() {
+        // M1: start/stop sites pass Some("") — must behave like "no tool context", not match.
+        assert!(!hook_if_matches("tool:shell", Some("")));
+    }
+
+    #[test]
+    fn hook_if_matches_empty_token_with_empty_tool_fail_closed() {
+        assert!(!hook_if_matches("tool:", Some("")));
+    }
+
+    #[test]
+    fn hook_if_matches_unknown_key_fail_closed() {
+        assert!(!hook_if_matches("badkey:value", Some("x")));
+    }
+
+    #[test]
+    fn hook_if_matches_no_colon_fail_closed() {
+        assert!(!hook_if_matches("no-colon", Some("x")));
+    }
+
+    // ── `if` filter integration with fire_hooks ───────────────────────────────
+
+    #[tokio::test]
+    async fn fire_hooks_if_condition_matches_fires() {
+        // hook with `if = "tool:shell"` and env ZEPH_TOOL_NAME=shell → must fire
+        let hook = HookDef {
+            action: HookAction::Command {
+                command: "true".to_owned(),
+            },
+            timeout_secs: 5,
+            fail_closed: true,
+            r#if: Some("tool:shell".to_owned()),
+        };
+        let mut env = HashMap::new();
+        env.insert("ZEPH_TOOL_NAME".to_owned(), "shell".to_owned());
+        assert!(fire_hooks(&[hook], &env, None, None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_if_condition_does_not_match_skips() {
+        // hook with `if = "tool:shell"` and env ZEPH_TOOL_NAME=python → must NOT fire
+        // Use fail_closed=true and `false` exit to prove skipping (no error = skipped).
+        let hook = HookDef {
+            action: HookAction::Command {
+                command: "exit 1".to_owned(),
+            },
+            timeout_secs: 5,
+            fail_closed: true,
+            r#if: Some("tool:shell".to_owned()),
+        };
+        let mut env = HashMap::new();
+        env.insert("ZEPH_TOOL_NAME".to_owned(), "python".to_owned());
+        // Would return Err if the hook ran (fail_closed=true, exit 1). Instead it should be Ok.
+        assert!(fire_hooks(&[hook], &env, None, None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fire_hooks_no_if_always_fires() {
+        let hook = cmd_hook("true", false, 5);
+        let env = HashMap::new();
+        assert!(fire_hooks(&[hook], &env, None, None).await.is_ok());
+    }
+
+    // ── PostToolUseHookInput agent fields ────────────────────────────────────
+
+    #[test]
+    fn post_tool_use_input_serializes_agent_fields() {
+        let input = PostToolUseHookInput {
+            tool_name: "Shell",
+            tool_args: &serde_json::Value::Null,
+            session_id: None,
+            duration_ms: 42,
+            tool_output: Some("out"),
+            tool_error: None,
+            agent_id: Some("conv-1"),
+            agent_type: "main",
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["agent_type"], "main");
+        assert_eq!(json["agent_id"], "conv-1");
+    }
+
+    #[test]
+    fn post_tool_use_input_omits_agent_id_when_none() {
+        let input = PostToolUseHookInput {
+            tool_name: "Shell",
+            tool_args: &serde_json::Value::Null,
+            session_id: None,
+            duration_ms: 42,
+            tool_output: None,
+            tool_error: None,
+            agent_id: None,
+            agent_type: "main",
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["agent_type"], "main");
+        assert!(json.get("agent_id").is_none() || json["agent_id"].is_null());
+        let text = serde_json::to_string(&input).unwrap();
+        assert!(
+            !text.contains("agent_id"),
+            "agent_id must not appear when None"
+        );
+    }
+
+    // ── make_base_hook_env agent_type env var (subagent path) ────────────────
+
+    #[test]
+    fn make_base_hook_env_sets_tool_name() {
+        let env = make_base_hook_env("Edit", &serde_json::Value::Null);
+        assert_eq!(env.get("ZEPH_TOOL_NAME").map(String::as_str), Some("Edit"));
     }
 }

@@ -30,6 +30,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `feat(hooks)`: add optional `if` conditional field to `HookDef` with `tool:<token>` DSL — hooks
+  now fire only when `ZEPH_TOOL_NAME` contains the token (case-sensitive substring, fail-closed for
+  all error cases: no colon, unknown key, empty token, empty tool name, `None` tool context).
+  Configured in TOML as `if = "tool:shell"`. Hooks without `if` fire unconditionally. A `warn!`
+  is emitted once at startup when a `tool:` condition is placed on a non-tool event
+  (`cwd_changed`, `file_changed`, `turn_complete`). Closes #3088 (partial).
+
+- `feat(hooks)`: inject `ZEPH_AGENT_TYPE` (`"main"` or `"subagent"`) and `ZEPH_AGENT_ID` into
+  all hook env maps at every lifecycle event. Sub-agent path (`zeph-subagent`) sets
+  `ZEPH_AGENT_TYPE=subagent` and `ZEPH_AGENT_ID=<task_id>` in `make_hook_env`. Main agent path
+  (`zeph-core`) injects both vars via new `insert_main_agent_ctx` helper in `hooks_dispatch.rs`,
+  called from `check_cwd_changed`, `handle_file_changed`, `mod.rs` (turn_complete), and
+  `tier_loop.rs` (pre/post-tool-use, permission_denied). `ZEPH_AGENT_ID` is omitted when no
+  conversation has been bound yet. Closes #3088 (partial).
+
+- `feat(hooks)`: extend `PostToolUseHookInput` stdin JSON with `agent_id` and `agent_type` fields
+  for `PostToolUse` and `PostToolUseFailure` events. `agent_id` is omitted when `None`
+  (`skip_serializing_if`); `agent_type` is always present. Both the main agent and sub-agent
+  populate these fields in their respective `PostToolUseHookInput` construction sites. Closes #3088.
+
 - `fix(channels)`: add `// EXEMPT` annotation and `tracing::warn!` to the raw `tokio::spawn` in
   `spawn_guest_proxy()` (`crates/zeph-channels/src/telegram.rs`), matching the documentation
   pattern used by the three other untracked Telegram spawn sites. The guest proxy is a singleton

@@ -1417,6 +1417,13 @@ impl<C: Channel> Agent<C> {
                 "ZEPH_TURN_LLM_REQUESTS".to_owned(),
                 summary.llm_requests.to_string(),
             );
+            let conv_id_str = self
+                .services
+                .memory
+                .persistence
+                .conversation_id
+                .map(|id| id.0.to_string());
+            crate::agent::hooks_dispatch::insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
             let dispatch = self.mcp_dispatch();
             let _span = tracing::info_span!("core.agent.turn_hooks").entered();
             let _accepted = self.runtime.lifecycle.supervisor.spawn(

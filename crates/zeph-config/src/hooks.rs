@@ -180,6 +180,7 @@ mod tests {
             },
             timeout_secs: 10,
             fail_closed: false,
+            r#if: None,
         }
     }
 
@@ -458,5 +459,56 @@ severity = "high"
             HookAction::McpTool { server, tool, .. } if server == "policy" && tool == "audit"
         ));
         assert!(!cfg.is_empty());
+    }
+
+    // ── HookDef `if` field serde ──────────────────────────────────────────────
+
+    #[test]
+    fn hook_def_if_none_omits_field_in_toml() {
+        let hook = cmd_hook("echo hi");
+        // r#if: None must not serialize the `if` key.
+        let serialized = toml::to_string(&hook).unwrap();
+        assert!(
+            !serialized.contains("if"),
+            "unexpected `if` key: {serialized}"
+        );
+    }
+
+    #[test]
+    fn hook_def_if_some_roundtrips_via_toml() {
+        use crate::subagent::HookAction;
+        use crate::subagent::HookDef;
+        let hook = HookDef {
+            action: HookAction::Command {
+                command: "echo hi".into(),
+            },
+            timeout_secs: 10,
+            fail_closed: false,
+            r#if: Some("tool:shell".to_owned()),
+        };
+        let serialized = toml::to_string(&hook).unwrap();
+        assert!(
+            serialized.contains("if = \"tool:shell\""),
+            "missing `if` key: {serialized}"
+        );
+        let deserialized: HookDef = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.r#if.as_deref(), Some("tool:shell"));
+    }
+
+    #[test]
+    fn hook_def_if_condition_parses_from_toml() {
+        let toml = r#"
+[[post_tool_use]]
+matcher = "Shell"
+[[post_tool_use.hooks]]
+type = "command"
+command = "echo shell"
+timeout_secs = 5
+fail_closed = false
+if = "tool:shell"
+"#;
+        let cfg: HooksConfig = toml::from_str(toml).unwrap();
+        let hook = &cfg.post_tool_use[0].hooks[0];
+        assert_eq!(hook.r#if.as_deref(), Some("tool:shell"));
     }
 }

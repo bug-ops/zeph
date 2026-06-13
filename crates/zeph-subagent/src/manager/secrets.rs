@@ -17,6 +17,7 @@ pub(crate) fn make_hook_env(
     let mut env = HashMap::new();
     env.insert("ZEPH_AGENT_ID".to_owned(), task_id.to_owned());
     env.insert("ZEPH_AGENT_NAME".to_owned(), agent_name.to_owned());
+    env.insert("ZEPH_AGENT_TYPE".to_owned(), "subagent".to_owned());
     env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
     env
 }
@@ -111,5 +112,28 @@ impl SubAgentManager {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_hook_env;
+
+    #[test]
+    fn make_hook_env_sets_agent_type_subagent() {
+        let env = make_hook_env("task-42", "my-agent", "Shell");
+        assert_eq!(
+            env.get("ZEPH_AGENT_TYPE").map(String::as_str),
+            Some("subagent")
+        );
+        assert_eq!(
+            env.get("ZEPH_AGENT_ID").map(String::as_str),
+            Some("task-42")
+        );
+        assert_eq!(
+            env.get("ZEPH_AGENT_NAME").map(String::as_str),
+            Some("my-agent")
+        );
+        assert_eq!(env.get("ZEPH_TOOL_NAME").map(String::as_str), Some("Shell"));
     }
 }

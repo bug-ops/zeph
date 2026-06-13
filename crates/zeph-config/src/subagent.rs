@@ -154,6 +154,14 @@ fn default_hook_timeout() -> u64 {
 /// command = "echo changed to $ZEPH_NEW_CWD"
 /// timeout_secs = 10
 /// fail_closed = false
+///
+/// # Conditional hook — only fires when the triggering tool name contains "shell":
+/// [[hooks.post_tool_use]]
+/// matcher = "Shell"
+/// [[hooks.post_tool_use.hooks]]
+/// type = "command"
+/// command = "echo shell ran"
+/// if = "tool:shell"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookDef {
@@ -172,6 +180,24 @@ pub struct HookDef {
     /// fail-open at the agent level; the tool executes regardless of hook outcomes.
     #[serde(default)]
     pub fail_closed: bool,
+    /// Optional condition that must match for this hook to fire.
+    ///
+    /// When `None` (the default), the hook fires unconditionally at every matching lifecycle
+    /// event. When `Some`, the value is a `key:value` filter string. Supported keys:
+    ///
+    /// - `tool:<token>` — the hook fires only when `ZEPH_TOOL_NAME` **contains** `<token>`
+    ///   (case-sensitive substring, same rule as `HookMatcher`). An empty token
+    ///   (`tool:`) always evaluates to `false` (fail-closed).
+    ///
+    /// Unknown keys and malformed values (no `:`) also evaluate to `false` so that a
+    /// misconfigured condition silently skips the hook rather than firing unconditionally.
+    ///
+    /// **Note:** `tool:` conditions on `file_changed`, `cwd_changed`, and `turn_complete`
+    /// events will never match because those events carry no triggering-tool context.
+    /// The hook will be permanently skipped in those positions (a `warn!` is emitted once
+    /// when the hook config is first evaluated).
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
+    pub r#if: Option<String>,
 }
 
 /// Tool-name matcher with associated hooks.

@@ -12,6 +12,18 @@ use std::sync::Arc;
 use super::Agent;
 use crate::channel::Channel;
 
+/// Inject `ZEPH_AGENT_TYPE = "main"` and (when present) `ZEPH_AGENT_ID` into a hook
+/// environment map. Mirrors how `ZEPH_SESSION_ID` is conditionally inserted at each site.
+pub(crate) fn insert_main_agent_ctx(
+    env: &mut std::collections::HashMap<String, String>,
+    conv_id: Option<&str>,
+) {
+    env.insert("ZEPH_AGENT_TYPE".to_owned(), "main".to_owned());
+    if let Some(id) = conv_id {
+        env.insert("ZEPH_AGENT_ID".to_owned(), id.to_owned());
+    }
+}
+
 impl<C: Channel> Agent<C> {
     /// Return an `McpDispatch` adapter backed by the agent's MCP manager, if present.
     pub(super) fn mcp_dispatch(&self) -> Option<McpManagerDispatch> {
@@ -61,6 +73,13 @@ impl<C: Channel> Agent<C> {
             let mut env = std::collections::HashMap::new();
             env.insert("ZEPH_OLD_CWD".to_owned(), old_cwd.display().to_string());
             env.insert("ZEPH_NEW_CWD".to_owned(), current.display().to_string());
+            let conv_id_str = self
+                .services
+                .memory
+                .persistence
+                .conversation_id
+                .map(|id| id.0.to_string());
+            insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
             let dispatch = self.mcp_dispatch();
             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                 .as_ref()
@@ -102,6 +121,13 @@ impl<C: Channel> Agent<C> {
                 "ZEPH_CHANGED_PATH".to_owned(),
                 event.path.display().to_string(),
             );
+            let conv_id_str = self
+                .services
+                .memory
+                .persistence
+                .conversation_id
+                .map(|id| id.0.to_string());
+            insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
             let dispatch = self.mcp_dispatch();
             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                 .as_ref()
@@ -153,5 +179,39 @@ impl zeph_subagent::McpDispatch for McpManagerDispatch {
                 })
                 .map_err(|e| e.to_string())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::insert_main_agent_ctx;
+
+    #[test]
+    fn insert_main_agent_ctx_always_sets_agent_type() {
+        let mut env = HashMap::new();
+        insert_main_agent_ctx(&mut env, None);
+        assert_eq!(env.get("ZEPH_AGENT_TYPE").map(String::as_str), Some("main"));
+    }
+
+    #[test]
+    fn insert_main_agent_ctx_sets_agent_id_when_some() {
+        let mut env = HashMap::new();
+        insert_main_agent_ctx(&mut env, Some("conv-abc"));
+        assert_eq!(
+            env.get("ZEPH_AGENT_ID").map(String::as_str),
+            Some("conv-abc")
+        );
+    }
+
+    #[test]
+    fn insert_main_agent_ctx_omits_agent_id_when_none() {
+        let mut env = HashMap::new();
+        insert_main_agent_ctx(&mut env, None);
+        assert!(
+            !env.contains_key("ZEPH_AGENT_ID"),
+            "ZEPH_AGENT_ID must be absent when conv_id is None"
+        );
     }
 }

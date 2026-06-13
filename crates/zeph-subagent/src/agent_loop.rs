@@ -36,6 +36,7 @@ fn make_hook_env(
     let mut env = make_base_hook_env(tool_name, tool_input);
     env.insert("ZEPH_AGENT_ID".to_owned(), task_id.to_owned());
     env.insert("ZEPH_AGENT_NAME".to_owned(), agent_name.to_owned());
+    env.insert("ZEPH_AGENT_TYPE".to_owned(), "subagent".to_owned());
     env
 }
 
@@ -579,6 +580,8 @@ async fn handle_tool_step(
                             duration_ms,
                             tool_output: tool_output_text,
                             tool_error: tool_error_text.as_deref(),
+                            agent_id: Some(task_id),
+                            agent_type: "subagent",
                         };
                         let stdin_bytes = serde_json::to_vec(&hook_input).ok();
                         // MCP dispatch is not available in the subagent execution path.
@@ -833,6 +836,10 @@ mod make_hook_env_tests {
         let env = make_hook_env("task-1", "bot", "Edit", &serde_json::Value::Null);
         assert_eq!(env.get("ZEPH_AGENT_ID").map(String::as_str), Some("task-1"));
         assert_eq!(env.get("ZEPH_AGENT_NAME").map(String::as_str), Some("bot"));
+        assert_eq!(
+            env.get("ZEPH_AGENT_TYPE").map(String::as_str),
+            Some("subagent")
+        );
     }
 
     #[test]

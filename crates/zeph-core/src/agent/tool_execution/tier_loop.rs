@@ -26,6 +26,7 @@ fn make_tool_hook_env(
     if let Some(sid) = session_id {
         env.insert("ZEPH_SESSION_ID".to_owned(), sid.to_owned());
     }
+    crate::agent::hooks_dispatch::insert_main_agent_ctx(&mut env, session_id);
     env
 }
 
@@ -1490,6 +1491,14 @@ impl<C: Channel> Agent<C> {
         let mut env = std::collections::HashMap::new();
         env.insert("ZEPH_DENIED_TOOL".to_owned(), tc.name.to_string());
         env.insert("ZEPH_DENY_REASON".to_owned(), reason.to_owned());
+        env.insert("ZEPH_TOOL_NAME".to_owned(), tc.name.to_string());
+        let conv_id_str = self
+            .services
+            .memory
+            .persistence
+            .conversation_id
+            .map(|id| id.0.to_string());
+        crate::agent::hooks_dispatch::insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
         let dispatch = self.mcp_dispatch();
         let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
             .as_ref()
@@ -1876,6 +1885,8 @@ impl<C: Channel> Agent<C> {
                         duration_ms,
                         tool_output: tool_output_text,
                         tool_error: tool_error_text.as_deref(),
+                        agent_id: conv_id_str.as_deref(),
+                        agent_type: "main",
                     };
                     let stdin_bytes = serde_json::to_vec(&hook_input).ok();
 
@@ -2834,6 +2845,7 @@ mod tests {
             },
             timeout_secs: 5,
             fail_closed: false,
+            r#if: None,
         };
         // A wildcard-style matcher that matches any tool name token.
         let matchers = vec![HookMatcher {
