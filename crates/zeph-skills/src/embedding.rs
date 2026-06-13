@@ -24,7 +24,12 @@
 //! assert!(SkillEmbedding::new(vec![1.0, 0.0], 3).is_err());
 //! ```
 
+use std::time::Duration;
+
+use zeph_llm::provider::LlmProvider;
+
 use crate::error::SkillError;
+use crate::loader::SkillMeta;
 
 /// Validated embedding vector for skill matching.
 ///
@@ -92,7 +97,9 @@ impl SkillEmbedding {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
+    /// use zeph_skills::embedding::SkillEmbedding;
+    ///
     /// // At the provider boundary: dimension is whatever the model returns.
     /// let raw = vec![0.1_f32, 0.2, 0.3];
     /// let emb = SkillEmbedding::from_raw(raw);
@@ -107,7 +114,9 @@ impl SkillEmbedding {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
+    /// use zeph_skills::embedding::SkillEmbedding;
+    ///
     /// let emb = SkillEmbedding::from_raw(vec![0.0; 768]);
     /// assert_eq!(emb.dim(), 768);
     /// ```
@@ -120,7 +129,9 @@ impl SkillEmbedding {
     ///
     /// # Examples
     ///
-    /// ```ignore
+    /// ```
+    /// use zeph_skills::embedding::SkillEmbedding;
+    ///
     /// let v = vec![1.0_f32, 2.0, 3.0];
     /// let emb = SkillEmbedding::from_raw(v.clone());
     /// assert_eq!(emb.into_inner(), v);
@@ -135,6 +146,53 @@ impl AsRef<[f32]> for SkillEmbedding {
     fn as_ref(&self) -> &[f32] {
         &self.0
     }
+}
+
+/// Compute embeddings for a skill slice, skipping skills that fail or time out.
+///
+/// Each skill description is embedded independently with a per-call `timeout`. Skills whose
+/// embed call times out or returns an error are skipped with a `tracing::warn!` and are not
+/// included in the returned vector. The caller receives only successfully embedded skills.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::Duration;
+/// use zeph_skills::embedding::{embed_skills_with_timeout, SkillEmbedding};
+/// use zeph_skills::loader::SkillMeta;
+///
+/// # async fn example(skills: &[SkillMeta], provider: &impl zeph_llm::provider::LlmProvider) {
+/// let pairs = embed_skills_with_timeout(skills, provider, Duration::from_secs(5)).await;
+/// assert!(pairs.len() <= skills.len());
+/// # }
+/// ```
+#[tracing::instrument(
+    name = "skills.embed_skills_with_timeout",
+    skip_all,
+    fields(skill_count = skills.len())
+)]
+pub async fn embed_skills_with_timeout(
+    skills: &[SkillMeta],
+    embed_provider: &impl LlmProvider,
+    timeout: Duration,
+) -> Vec<(SkillMeta, SkillEmbedding)> {
+    let mut result = Vec::with_capacity(skills.len());
+    for skill in skills {
+        match tokio::time::timeout(timeout, embed_provider.embed(&skill.description)).await {
+            Ok(Ok(emb)) => result.push((skill.clone(), SkillEmbedding::from_raw(emb))),
+            Ok(Err(e)) => {
+                tracing::warn!(skill = %skill.name, error = %e, "embed failed, skipping skill");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    skill = %skill.name,
+                    timeout_ms = timeout.as_millis(),
+                    "embed timed out, skipping skill"
+                );
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]

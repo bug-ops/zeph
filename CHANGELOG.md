@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(skills)`: extract shared `embed_skills_with_timeout` free function
+  into `crates/zeph-skills/src/embedding.rs`, eliminating the duplicate
+  `embed_existing` body in `miner.rs` and `trace_extractor.rs`. Adds
+  `#[tracing::instrument]` spans to `save_quarantined` and `embed_existing`
+  in `trace_extractor.rs` (always-on); `miner::embed_existing` retains its
+  existing `profiling`-gated span. Closes #5290, #5291.
+
 ### Added
 
 - `feat(tracing)`: add `#[tracing::instrument]` to 13 hot-path async fns across

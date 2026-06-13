@@ -18,7 +18,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use zeph_common::secret::Secret;
 
-use crate::embedding::SkillEmbedding;
+use crate::embedding::{SkillEmbedding, embed_skills_with_timeout};
 use crate::error::SkillError;
 use crate::generator::{
     GeneratedSkill, SkillGenerator, extract_skill_md_pub, parse_and_validate_pub,
@@ -187,29 +187,8 @@ impl SkillMiner {
         tracing::instrument(name = "skills.miner.embed_existing", skip(self, skills), fields(count = skills.len()))
     )]
     async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(SkillMeta, SkillEmbedding)> {
-        let mut embeddings = Vec::with_capacity(skills.len());
         let timeout = Duration::from_millis(self.config.generation_timeout_ms);
-        for skill in skills {
-            let embed_fut = self.embed_provider.embed(&skill.description);
-            match tokio::time::timeout(timeout, embed_fut).await {
-                Ok(Ok(emb)) => embeddings.push((skill.clone(), SkillEmbedding::from_raw(emb))),
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        skill = %skill.name,
-                        error = %e,
-                        "failed to embed existing skill for dedup"
-                    );
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        skill = %skill.name,
-                        timeout_ms = self.config.generation_timeout_ms,
-                        "embed timed out, skipping skill for dedup"
-                    );
-                }
-            }
-        }
-        embeddings
+        embed_skills_with_timeout(skills, &self.embed_provider, timeout).await
     }
 
     /// Process a single repo: generate skill, dedup, write.

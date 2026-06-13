@@ -33,7 +33,7 @@ use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
-use crate::embedding::SkillEmbedding;
+use crate::embedding::{SkillEmbedding, embed_skills_with_timeout};
 use crate::error::SkillError;
 use crate::generator::{
     GeneratedSkill, SkillGenerator, extract_skill_md_pub, parse_and_validate_pub,
@@ -425,6 +425,7 @@ impl TraceExtractor {
     }
 
     /// Write a candidate skill to the quarantine directory. Logs on failure.
+    #[tracing::instrument(name = "skills.trace_extraction.save_quarantined", skip_all, fields(skill = %skill.name, session_id))]
     async fn save_quarantined(&self, skill: &GeneratedSkill, session_id: &str) {
         match self.generator.write_quarantined(skill).await {
             Ok(path) => tracing::info!(
@@ -520,36 +521,12 @@ impl TraceExtractor {
         }
     }
 
-    /// Compute embeddings for existing skills (same as miner, used for callers that assemble
-    /// `existing_embeddings` lazily).
+    /// Compute embeddings for existing skills, used for dedup before skill extraction.
     ///
-    /// # Errors
-    ///
-    /// Returns `SkillError::Other` if the embed provider fails catastrophically.
-    /// Skills that time out are skipped with a warning.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "skills.trace_extractor.embed_existing", skip(self, skills), fields(skill_count = skills.len()))
-    )]
+    /// Skills that time out or fail are skipped with a warning.
+    #[tracing::instrument(name = "skills.trace_extractor.embed_existing", skip_all, fields(skill_count = skills.len()))]
     pub async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(SkillMeta, SkillEmbedding)> {
-        let mut result = Vec::with_capacity(skills.len());
-        for skill in skills {
-            match tokio::time::timeout(
-                self.llm_timeout,
-                self.embed_provider.embed(&skill.description),
-            )
-            .await
-            {
-                Ok(Ok(emb)) => result.push((skill.clone(), SkillEmbedding::from_raw(emb))),
-                Ok(Err(e)) => {
-                    tracing::warn!(skill = %skill.name, error = %e, "trace_extractor: embed failed");
-                }
-                Err(_) => {
-                    tracing::warn!(skill = %skill.name, "trace_extractor: embed timed out");
-                }
-            }
-        }
-        result
+        embed_skills_with_timeout(skills, &self.embed_provider, self.llm_timeout).await
     }
 }
 
