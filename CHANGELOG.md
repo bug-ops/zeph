@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Research
+
+- `docs(cocoon)`: add stable non-positional threat IDs (`T-BIN-SUBST`, `T-COMP-ATTEST`,
+  `T-LOCAL-INTERCEPT`, `T-QDRANT-EXFIL`, `T-BALANCE-SIDE`, `T-CRED-EXFIL`, `T-CRASH-LOOP`,
+  `T-STALE-ATTEST`) to `threat-model.md` §4 table; cross-reference SG-7 (§2) and Challenge 1
+  (§3) to `T-COMP-ATTEST`; correct #4650's positional "row T-4" reference to stable ID (#4650)
+- `docs(cocoon)`: add compound attestation monitoring checklist §15.5 to `spec.md` — defines
+  signals to watch in Cocoon releases (attestation endpoints, release-note keywords, capability
+  fields), trigger→action flow for filing P2 implementation issue, and cross-ref to CI
+  dependency-watch loop; #4650 is the open tracking anchor (#4650)
+- `docs(cocoon)`: qualify E2E Option B for containerised deployments in §16.2 — "no security
+  over RA-TLS" claim qualified to bare-metal/loopback topology; in Docker Compose / Kubernetes
+  topologies where the Zeph→sidecar hop is a real network segment, Option B provides additional
+  protection; Option A remains preferred; add containerised topology open question to §17 (#3677)
+- `docs(cocoon)`: add TaskSupervisor AC requirement and cross-reference in §16.1 — managed
+  sidecar MUST use `TaskSupervisor::spawn_restartable` with circuit breaker (spec-039); designate
+  `cocoon doctor --start` as the managed entry point; add cross-ref: #4650 resolution weakens
+  trust-boundary objection to managed mode (#3676)
+- `docs(cocoon)`: add GA/experimental open questions for E2E encryption maturity and Option A
+  support to §17; annotate §16.2 perf claims as unmeasured; note reserved config stanzas are
+  intentionally commented until supervisor-backed implementations land (#3677)
+
 ### Changed
 
 - `fix(channels)`: add `// EXEMPT` annotation and `tracing::warn!` to the raw `tokio::spawn` in

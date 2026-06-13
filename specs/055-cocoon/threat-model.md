@@ -63,7 +63,7 @@ arXiv:2605.03213 defines nine security goals for confidential AI agents.
 | SG-4 | **Confidentiality of agent memory** | Not met | Qdrant and SQLite run outside TEE; embeddings and retrieved context cross trust boundary in plaintext |
 | SG-5 | **Integrity of tool execution** | Not met | `zeph-tools` and `zeph-mcp` run outside TEE; tool results are plaintext in L4 |
 | SG-6 | **Auditability of agent actions** | Partial | `zeph-agent-feedback`, tool audit log, tracing spans provide auditability; none is TEE-sealed |
-| SG-7 | **Compound attestation (end-to-end)** | Not met | Zeph cannot verify the full Zeph → sidecar → proxy → worker attestation chain; sidecar is trusted implicitly |
+| SG-7 | **Compound attestation (end-to-end)** | Not met | Zeph cannot verify the full Zeph → sidecar → proxy → worker attestation chain; sidecar is trusted implicitly (see threat `T-COMP-ATTEST` in §4, Challenge 1 in §3, and §15.5 of parent spec) |
 | SG-8 | **Side-channel resistance** | Partial | TDX provides L6 hardware isolation; `ton_balance` in TUI is an application-level side-channel; no mitigations for timing or cache side-channels at L1–L5 |
 | SG-9 | **Secure multi-agent coordination** | Partial | Subagents (`zeph-subagent`) each independently connect to the sidecar; no shared TEE session or cross-agent attestation |
 
@@ -75,6 +75,8 @@ arXiv:2605.03213 identifies three open challenges for confidential AI agent
 systems. Below is their applicability to Zeph/Cocoon.
 
 ### Challenge 1: Compound Attestation
+
+**Threat table ID:** `T-COMP-ATTEST` (§4). Cross-ref: SG-7 (§2), #4650, §15.5 of parent spec.
 
 **Paper definition:** Verifying that the entire agent pipeline — from user
 input through every layer to the inference backend — operates within a
@@ -93,15 +95,15 @@ sidecar itself — not independently verifiable attestation evidence.
 **Gap severity:** High for operators with strong confidentiality requirements;
 acceptable for operators who trust their own host environment.
 
-**Recommended action:** File a P2 issue to investigate whether the Cocoon
-sidecar exposes attestation evidence (TDX quote, proxy certificate chain) via
-an API endpoint. If so, implement a `cocoon attestation verify` command that
-fetches and validates this evidence. This is blocked on upstream Cocoon
-protocol support.
+**Recommended action:** File a P2 implementation issue when the Cocoon sidecar
+gains an attestation evidence endpoint exposing TDX quote and proxy certificate
+chain. See §15.5 of the parent spec for the monitoring checklist that defines
+exactly what to watch for in Cocoon releases. This is currently upstream-blocked;
+tracking issue is #4650.
 
-**Status of issue #3692:** Documented as a known limitation. A dedicated P2
-follow-up issue should be filed if the sidecar gains attestation evidence
-exposure in a future Cocoon release.
+**Status:** Known limitation documented in spec §15.2 Limitation #1. Issue #4650
+is the open tracking anchor; it stays open until upstream attestation-evidence
+support lands.
 
 ### Challenge 2: TEE-Backed RAG Isolation
 
@@ -147,16 +149,21 @@ visible to operators.
 
 ## 4. Threat Table
 
-| Threat | Current Mitigation | Gap | Recommended Action |
-|--------|-------------------|-----|-------------------|
-| **Sidecar binary substitution** — attacker replaces the Cocoon C++ binary on the operator's host | Operator is responsible for binary integrity; out of scope for Zeph | No binary hash verification, no TEE attestation of the sidecar itself | Document as operator responsibility; consider adding a `zeph cocoon verify-binary` command once Cocoon publishes signed release hashes |
-| **Compromised proxy (RA-TLS termination attack)** — proxy terminates RA-TLS and inspects/modifies prompts without TEE | RA-TLS attestation verified by sidecar before connecting | Zeph cannot verify this verification occurred | Compound attestation (Challenge 1 above); partial mitigation via E2E encryption (#3677) |
-| **Localhost interception** — process on same host intercepts Zeph ↔ sidecar HTTP | Localhost-only URL validation; OS network isolation | plaintext localhost segment | Document as known limitation; E2E encryption (#3677) is the only mitigation |
-| **Memory exfiltration from Qdrant** — attacker with host access reads Qdrant data | Qdrant access control (API key if configured); network firewall | Qdrant not TEE-protected | Document as known limitation; full mitigation requires TEE-backed vector store |
-| **Side-channel via `ton_balance` TUI display** — shared-screen observer infers usage volume | None | `ton_balance` visible to anyone with TUI access | Recommend opt-in or redactable balance display (see Section 15.2 of parent spec) |
-| **Credential exfiltration via LLM prompt injection** — malicious tool output or web content triggers prompt that leaks `ZEPH_COCOON_ACCESS_HASH` | `zeph-sanitizer` exfiltration guard, PII filtering | Sanitizer is heuristic, not TEE-sealed | Rely on sanitizer; enforce `ZEPH_COCOON_ACCESS_HASH` stays in vault (never in context) |
-| **Sidecar crash loop under `cocoon_managed = true`** (deferred feature) | Feature deferred; not implemented | If implemented without circuit breaker, Zeph could hang retrying indefinitely | Acceptance criteria for #3676 implementation require exponential backoff + circuit breaker |
-| **Stale attestation** — sidecar reconnects to a different proxy after initial health check passes | `proxy_connected` checked once at `cocoon doctor` | No continuous re-attestation | Document; `cocoon doctor` is a point-in-time check, not continuous monitoring |
+Threat IDs are stable and non-positional — they are mnemonic slugs, not row numbers. Reordering rows
+does not change IDs. Cross-references in issues and other documents should use these IDs (e.g.
+`T-COMP-ATTEST`), not row positions. Issue #4650 originally referenced "row T-4 (compound attestation
+gap)"; the correct stable ID is `T-COMP-ATTEST` as defined below.
+
+| ID | Threat | Current Mitigation | Gap | Recommended Action |
+|----|--------|-------------------|-----|-------------------|
+| **T-BIN-SUBST** | **Sidecar binary substitution** — attacker replaces the Cocoon C++ binary on the operator's host | Operator is responsible for binary integrity; out of scope for Zeph | No binary hash verification, no TEE attestation of the sidecar itself | Document as operator responsibility; consider adding a `zeph cocoon verify-binary` command once Cocoon publishes signed release hashes |
+| **T-COMP-ATTEST** | **Compromised proxy / compound attestation** — proxy terminates RA-TLS and inspects/modifies prompts without TEE; or the attestation chain is opaque to Zeph (see SG-7, Challenge 1) | RA-TLS attestation verified by sidecar before connecting | Zeph cannot verify this verification occurred; compound attestation chain is opaque | Compound attestation (Challenge 1 above); partial mitigation via E2E encryption (#3677); see §15.5 for monitoring checklist |
+| **T-LOCAL-INTERCEPT** | **Localhost interception** — process on same host intercepts Zeph ↔ sidecar HTTP | Localhost-only URL validation; OS network isolation | plaintext localhost segment | Document as known limitation; E2E encryption (#3677) is the only mitigation |
+| **T-QDRANT-EXFIL** | **Memory exfiltration from Qdrant** — attacker with host access reads Qdrant data | Qdrant access control (API key if configured); network firewall | Qdrant not TEE-protected | Document as known limitation; full mitigation requires TEE-backed vector store |
+| **T-BALANCE-SIDE** | **Side-channel via `ton_balance` TUI display** — shared-screen observer infers usage volume | None | `ton_balance` visible to anyone with TUI access | Recommend opt-in or redactable balance display (see Section 15.2 of parent spec) |
+| **T-CRED-EXFIL** | **Credential exfiltration via LLM prompt injection** — malicious tool output or web content triggers prompt that leaks `ZEPH_COCOON_ACCESS_HASH` | `zeph-sanitizer` exfiltration guard, PII filtering | Sanitizer is heuristic, not TEE-sealed | Rely on sanitizer; enforce `ZEPH_COCOON_ACCESS_HASH` stays in vault (never in context) |
+| **T-CRASH-LOOP** | **Sidecar crash loop under `cocoon_managed = true`** (deferred feature) | Feature deferred; not implemented | If implemented without circuit breaker, Zeph could hang retrying indefinitely | Acceptance criteria for #3676 implementation require exponential backoff + circuit breaker via `TaskSupervisor::spawn_restartable` |
+| **T-STALE-ATTEST** | **Stale attestation** — sidecar reconnects to a different proxy after initial health check passes | `proxy_connected` checked once at `cocoon doctor` | No continuous re-attestation | Document; `cocoon doctor` is a point-in-time check, not continuous monitoring |
 
 ---
 
@@ -167,14 +174,16 @@ visible to operators.
 | #3692 | P3/research | Open | arXiv:2605.03213 threat model analysis — resolved by this document |
 | #3676 | P3 | Open | Sidecar lifecycle management — DEFERRED (see Section 16.1 of parent spec) |
 | #3677 | P3 | Open | E2E payload encryption — DEFERRED (see Section 16.2 of parent spec) |
+| #4650 | P2/research | Open | Compound attestation monitoring (threat `T-COMP-ATTEST`) — UPSTREAM-BLOCKED; monitoring checklist in §15.5 of parent spec defines the trigger for implementation |
 
 **Recommended follow-up issues:**
 
-1. **Compound attestation investigation (P2)**: File if the Cocoon sidecar
+1. **Compound attestation implementation (P2)**: File when the Cocoon sidecar
    gains an attestation evidence endpoint in a future release. The issue should
    request: fetch TDX quote + proxy certificate chain via sidecar API; validate
    quote signature; surface result in `cocoon doctor` output. Do not file until
-   upstream capability is confirmed.
+   upstream capability is confirmed (see §15.5 of parent spec for monitoring
+   criteria and the T-COMP-ATTEST threat row above).
 
 2. **`ton_balance` opt-in display (P3)**: File a UX improvement issue to make
    the balance display in the TUI sidebar opt-in. This is a low-priority privacy

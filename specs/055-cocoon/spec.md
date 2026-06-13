@@ -605,6 +605,60 @@ Add the following to Section 11 "Key Invariants":
 >   because managing the sidecar lifecycle makes Zeph part of the trusted
 >   compute base and weakens TEE attestation guarantees
 
+### 15.5 Compound Attestation Monitoring Checklist
+
+**Tracking issue:** #4650 (P2, upstream-blocked). This section defines the
+monitoring criteria that determine when #4650 becomes implementable. The issue
+remains open as the canonical tracking anchor — do not close it until all
+criteria below are resolved and an implementation PR is merged.
+
+**Cross-ref:** threat `T-COMP-ATTEST` in [[055-cocoon/threat-model]] §4;
+SG-7 in §2; Challenge 1 in §3. Also tracked in the CI dependency-watch loop
+(`.claude/rules/continuous-improvement.md`, "Dependency Monitoring" section).
+
+#### What to watch in Cocoon releases
+
+Monitor Cocoon sidecar release notes and API documentation for any of the
+following signals:
+
+| Signal | What it means |
+|--------|---------------|
+| New endpoint `GET /attestation` or `GET /attestation/evidence` | Sidecar exposes TDX quote and/or proxy certificate chain directly |
+| `GET /health` or `GET /stats` response gains a `tdx_quote` or `attestation` field | Attestation evidence embedded in existing health endpoint |
+| `GET /stats` response gains a `proxy_cert_chain` or `pcr_values` field | Proxy certificate chain or platform configuration registers exposed |
+| Release note mentions "attestation evidence", "TDX quote", "compound attestation", "PCK cert", "remote attestation API", or "quote forwarding" | Protocol-level capability landing |
+| New sidecar capability negotiation field (version handshake, capability flags) | May indicate E2E or attestation feature availability |
+
+#### Trigger → action
+
+When **any** of the above signals appear in a Cocoon release:
+
+1. Comment on issue #4650 with the Cocoon version, the signal observed, and
+   a link to the release notes or API diff.
+2. File a new P2 implementation issue: `feat(cocoon): implement compound
+   attestation verification (#4650 follow-up)`. Body must include:
+   - The attestation evidence endpoint and response schema
+   - Implementation plan: fetch TDX quote + PCK cert chain; validate quote
+     signature against Intel root CA; surface pass/fail in `cocoon doctor`
+     output; add config flag `cocoon.verify_attestation_chain` (default `false`
+     until validation is battle-tested)
+   - Integration: add `cocoon attestation verify` CLI subcommand; TUI status
+     indicator; tracing span `llm.cocoon.attestation`
+3. Re-read §11 "Never" invariants before implementing — the constraint
+   "NEVER implement compound attestation verification without upstream Cocoon
+   sidecar support" becomes satisfiable once the endpoint exists.
+
+#### What NOT to do
+
+- Do not implement attestation verification by screen-scraping `cocoon doctor`
+  CLI output — require a machine-readable API endpoint.
+- Do not assert `proxy_connected = true` is equivalent to attestation — it is
+  an informational signal from the sidecar itself, not an independently
+  verifiable cryptographic proof (see §15.3).
+- Do not embed this checklist as the recurring trigger mechanism — the CI
+  dependency-watch loop in `.claude/rules/continuous-improvement.md` watches
+  sidecar dependency updates; cross-link #4650 there so automated cycles flag it.
+
 ---
 
 ## 16. Deferred Features — Research Findings
@@ -645,14 +699,34 @@ The current model — user starts the sidecar independently, Zeph connects to it
 # cocoon_args = []                 # extra args passed to sidecar at spawn
 ```
 
+> [!note]
+> The config stanzas above are intentionally kept commented-out. Promoting them
+> to live schema without the supervisor-backed implementation would create a
+> half-wired feature flag that violates the MVP "no half-finished implementations"
+> rule (CLAUDE.md). These keys remain reserved; do not add deserialization or
+> validation until the full #3676 implementation lands.
+
 **Future implementation acceptance criteria (post-v1.0.0):**
 - GIVEN `cocoon_managed = true` and `cocoon_binary_path` set
 - WHEN Zeph starts and `/stats` is unreachable
-- THEN Zeph spawns the binary, waits for health, and registers a SIGTERM hook
-  for clean shutdown; exponential backoff with max 3 retries before giving up
+- THEN Zeph spawns the binary via `TaskSupervisor::spawn_restartable` (per
+  `zeph_common::task_supervisor`, spec-039) with a `RestartPolicy` providing
+  exponential backoff and a circuit breaker (max 3 retries before giving up);
+  registers a SIGTERM hook for clean shutdown
+- Designated managed entry point: `cocoon doctor --start` (explicit operator
+  action; avoids implicit spawn at startup which would weaken the trust-boundary
+  argument; operator-initiated makes the trust decision explicit)
 - Platform: Unix-only initially; Windows deferred
 - MUST document in operator guide that `cocoon_managed = true` weakens TEE
   attestation guarantees
+- MUST NOT use a raw `tokio::spawn` — all lifecycle management MUST go through
+  `TaskSupervisor::spawn_restartable` (spec-039 "NEVER" constraint)
+
+> [!note] Cross-reference with #4650
+> If compound attestation (#4650) lands before this feature is implemented, the
+> trust-boundary objection to `cocoon_managed` weakens: Zeph could cryptographically
+> verify the sidecar's attestation chain even when it spawned the sidecar.
+> Re-evaluate the deferral at that point.
 
 ### 16.2 End-to-End Payload Encryption (Issue #3677)
 
@@ -685,15 +759,42 @@ multi-operator proxy network.
 encryption is performed by the Cocoon sidecar on behalf of the client, or
 by Zeph directly before sending to the sidecar — must be resolved with the
 Cocoon upstream before implementation. Option A (Zeph encrypts, sidecar passes
-opaque ciphertext) is the stronger model; Option B (sidecar encrypts after
-receiving plaintext from Zeph) provides no security improvement over RA-TLS
-alone since localhost plaintext exposure remains.
+opaque ciphertext) is the stronger model and the recommended path.
+
+Option B (sidecar encrypts after receiving plaintext from Zeph) provides no
+security improvement over RA-TLS alone **when Zeph and the sidecar share a
+loopback interface (the supported default for bare-metal deployments)**. However,
+this reasoning does not hold universally: in containerised deployments where
+Zeph and the sidecar run in separate containers on a real container network
+(see §15.2 Limitation #3 — Docker Compose with separate services, or Kubernetes
+with separate pods), the Zeph→sidecar hop is NOT a trusted loopback and Option B
+WOULD provide additional protection for that segment. Option A remains preferred
+because it protects all topologies; Option B is not ruled out for containerised
+threat models where the topology diverges from the bare-metal default.
+
+**Open question:** Is client-side E2E (Option A) supported by the current
+Cocoon sidecar API, or is it experimental/unimplemented? This must be confirmed
+with upstream before implementation begins.
+
+**Performance note:** The latency overhead of asymmetric Ed25519/X25519 per
+request for typical prompt sizes is expected to be negligible; SSE per-chunk
+AEAD streaming is more complex (see deferred challenges below). These claims are
+**not measured** — no live sidecar or benchmarks are available. Performance
+impact MUST be benchmarked at implementation time; do not treat qualitative
+assessments here as measured results.
 
 **Config interface reserved (not implemented):**
 
 ```toml
 # cocoon_e2e_encryption = false    # default; enable Ed25519 E2E encryption if supported by sidecar
 ```
+
+> [!note]
+> `cocoon_e2e_encryption` is intentionally kept commented-out until the upstream
+> Option-A question is resolved and a full implementation is ready. Promoting it
+> to live schema now would create a half-wired flag with no consumer, violating
+> the MVP rule. The vault key slot `ZEPH_COCOON_E2E_PRIVATE_KEY` is also reserved
+> but not wired; do not add vault lookup until #3677 implementation begins.
 
 **Vault key reserved:**
 
@@ -712,8 +813,14 @@ alone since localhost plaintext exposure remains.
 - WHEN Zeph sends a chat or embed request
 - THEN the Ed25519 public key is included in the request header and the
   response is decrypted before deserialisation
-- MUST verify with Cocoon upstream which encryption point (sidecar vs. client)
-  is supported before starting implementation
+- MUST confirm with Cocoon upstream that Option A (client-side encryption) is
+  supported and at GA maturity before starting implementation (see §17 open
+  questions: "E2E encryption point" and "E2E encryption maturity")
+- MUST benchmark Ed25519/X25519 overhead and SSE streaming AEAD per-chunk cost
+  at implementation time; no performance estimates are asserted in this spec
+- MUST address containerised topology interaction (§17 "Containerised topology
+  interaction with E2E") if the deployment topology differs from the
+  bare-metal default
 
 ---
 
@@ -728,10 +835,22 @@ alone since localhost plaintext exposure remains.
 >   mechanism or a way to detect schema drift?
 > - **Attestation evidence endpoint**: Does the Cocoon sidecar expose
 >   attestation chain information (proxy certificate details, TDX quote)? This
->   would enable partial compound attestation verification from Zeph.
-> - **E2E encryption point**: Does the current Cocoon sidecar support E2E
->   encryption at the client level (Zeph encrypts before sending) or only at
->   the sidecar level? This determines which Option (A vs. B) is viable for #3677.
+>   would enable partial compound attestation verification from Zeph. See §15.5
+>   for the monitoring checklist; tracking issue #4650.
+> - **E2E encryption point (Option A vs. B)**: Does the current Cocoon sidecar
+>   support E2E encryption at the client level (Zeph encrypts before sending —
+>   Option A) or only at the sidecar level (Option B)? This determines which
+>   option is viable for #3677. Option A is the security-positive path; Option B
+>   provides no protection in the default bare-metal topology (see §16.2).
+> - **E2E encryption maturity (GA vs. experimental)**: Even if Option A is
+>   supported by the sidecar protocol, is this feature generally available or
+>   experimental/unstable in the current Cocoon release? Must be confirmed with
+>   upstream before starting #3677 implementation.
+> - **Containerised topology interaction with E2E**: In Docker Compose or
+>   Kubernetes deployments where Zeph and the sidecar are in separate network
+>   namespaces (§15.2 Limitation #3), does the Cocoon sidecar support Option A
+>   E2E encryption for the inter-container hop? Does the deployment guide
+>   address this topology?
 > - **Streaming E2E**: If E2E encryption is added, what cipher mode does Cocoon
 >   use for SSE streaming chunks? Per-chunk AEAD, or a session cipher with
 >   stream continuity?
