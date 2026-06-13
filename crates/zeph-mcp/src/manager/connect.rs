@@ -67,6 +67,7 @@ impl McpManager {
         std::time::Duration::from_secs(secs)
     }
 
+    #[tracing::instrument(name = "mcp.manager.handler_cfg_for", skip_all)]
     pub(super) async fn handler_cfg_for(
         &self,
         entry: &ServerEntry,
@@ -528,6 +529,7 @@ impl McpManager {
     /// claimed by a higher-trust tool. When trust levels are equal, the first-registered
     /// tool wins dispatch. Either way the collision is a misconfiguration and must be logged
     /// so the operator can disambiguate (MF-1 / SF-6 fix).
+    #[tracing::instrument(name = "mcp.manager.log_tool_collisions", skip_all)]
     pub(super) async fn log_tool_collisions(&self, tools: &[McpTool]) {
         use crate::tool::detect_collisions;
 
@@ -659,6 +661,7 @@ impl McpManager {
     ///
     /// Returns `Ok(())` if the probe passes or no prober is configured.
     /// Returns `Err` and calls `client.shutdown()` if the probe blocks the server.
+    #[tracing::instrument(name = "mcp.manager.run_probe", skip_all, fields(server_id = %server_id), err)]
     pub(super) async fn run_probe(
         &self,
         server_id: &str,
@@ -691,6 +694,7 @@ impl McpManager {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(name = "mcp.manager.run_oauth_handshake", skip_all, fields(server_id = %server_id))]
 async fn run_oauth_handshake(
     server_id: String,
     url: String,
@@ -776,6 +780,7 @@ async fn run_oauth_handshake(
     (server_id, client_result)
 }
 
+#[tracing::instrument(name = "mcp.manager.drain_connect_results", skip_all)]
 async fn drain_connect_results(
     mut join_set: JoinSet<(String, Result<McpClient, McpError>)>,
 ) -> Vec<(String, Result<McpClient, McpError>)> {
@@ -794,6 +799,7 @@ async fn drain_connect_results(
     raw_results
 }
 
+#[tracing::instrument(name = "mcp.manager.drain_oauth_results", skip_all)]
 async fn drain_oauth_results(
     mut join_set: JoinSet<(String, Result<McpClient, String>)>,
 ) -> Vec<(String, Result<McpClient, String>)> {
@@ -814,6 +820,7 @@ async fn drain_oauth_results(
 /// - Warns if a URI does not use `file://` scheme.
 /// - Warns if the path does not exist on the filesystem.
 /// - Filters out roots with non-`file://` URIs (MCP spec requires filesystem roots).
+#[tracing::instrument(name = "mcp.manager.validate_roots", skip_all, fields(server_id = %server_id))]
 pub(super) async fn validate_roots(
     roots: &[rmcp::model::Root],
     server_id: &str,

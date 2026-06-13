@@ -77,7 +77,7 @@ impl McpManager {
     ///
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.manager.add_server", skip(self, entry), fields(server_id = %entry.id))
+        tracing::instrument(name = "mcp.manager.add_server", skip(self, entry), fields(server_id = %entry.id), err)
     )]
     pub async fn add_server(&self, entry: &ServerEntry) -> Result<Vec<McpTool>, McpError> {
         self.check_not_already_connected(&entry.id).await?;
@@ -142,6 +142,7 @@ impl McpManager {
         Ok(tools)
     }
 
+    #[tracing::instrument(name = "mcp.manager.check_not_already_connected", skip(self), fields(server_id = %server_id), err)]
     async fn check_not_already_connected(&self, server_id: &str) -> Result<(), McpError> {
         let clients = self.clients.read().await;
         if clients.contains_key(server_id) {
@@ -152,6 +153,7 @@ impl McpManager {
         Ok(())
     }
 
+    #[tracing::instrument(name = "mcp.manager.connect_and_list_tools", skip(self), err)]
     async fn connect_and_list_tools(
         &self,
         entry: &ServerEntry,
@@ -190,6 +192,7 @@ impl McpManager {
         Ok((client, raw_tools))
     }
 
+    #[tracing::instrument(name = "mcp.manager.probe_or_cleanup", skip(self), err)]
     async fn probe_or_cleanup(
         &self,
         entry: &ServerEntry,
@@ -202,6 +205,7 @@ impl McpManager {
         Ok(())
     }
 
+    #[tracing::instrument(name = "mcp.manager.store_server_instructions", skip(self))]
     async fn store_server_instructions(&self, entry: &ServerEntry, client: &McpClient) {
         if let Some(ref instructions) = client.server_instructions() {
             let truncated = crate::sanitize::truncate_instructions(
@@ -216,6 +220,7 @@ impl McpManager {
         }
     }
 
+    #[tracing::instrument(name = "mcp.manager.commit_added_server", skip(self), err)]
     pub(super) async fn commit_added_server(
         &self,
         entry: &ServerEntry,
@@ -275,7 +280,12 @@ impl McpManager {
     ///
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "mcp.manager.remove_server", skip(self), fields(server_id))
+        tracing::instrument(
+            name = "mcp.manager.remove_server",
+            skip(self),
+            fields(server_id),
+            err
+        )
     )]
     pub async fn remove_server(&self, server_id: &str) -> Result<(), McpError> {
         // Serialize with commit_added_server to prevent orphaned trust/tools entries.

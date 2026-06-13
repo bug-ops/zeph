@@ -243,7 +243,7 @@ async fn run_chunk_summaries(
             })
     }
     .instrument(tracing::info_span!(
-        "context.summarization.chunk_summaries",
+        "context.summarization.chunk",
         chunk_count,
     ))
     .await
@@ -318,7 +318,7 @@ async fn try_structured_consolidation(deps: &SummarizationDeps, numbered: &str) 
             }
         }
     }
-    .instrument(tracing::info_span!("context.summarization.structured_consolidation"))
+    .instrument(tracing::info_span!("context.summarization.consolidate_structured"))
     .await
 }
 
@@ -347,7 +347,7 @@ async fn prose_consolidation(
             .await
             .map_err(|_| zeph_llm::LlmError::Timeout)?
     }
-    .instrument(tracing::info_span!("context.summarization.prose_consolidation"))
+    .instrument(tracing::info_span!("context.summarization.consolidate_prose"))
     .await
 }
 

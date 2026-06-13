@@ -88,6 +88,7 @@ pub(super) fn is_retryable_connect_error(err: &McpError) -> bool {
 ///
 /// `retry_backoff_base_ms` is the base delay in milliseconds; the actual delay doubles
 /// with each attempt, capped at 8 000 ms. See [`connect_retry_backoff`] for details.
+#[tracing::instrument(name = "mcp.manager.retry_loop", skip_all, fields(server_id = %server_id, max_attempts), err)]
 pub(super) async fn retry_loop<F, Fut>(
     server_id: &str,
     max_attempts: u8,
@@ -164,6 +165,7 @@ where
 /// This is a thin shim over [`retry_loop`] that binds [`connect_entry`] as the attempt
 /// function. `add_server` uses [`connect_entry`] directly (single-attempt, no retry).
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(name = "mcp.manager.connect_with_retry", skip_all, fields(server_id = %entry.id), err)]
 pub(super) async fn connect_with_retry(
     entry: &ServerEntry,
     allowed_commands: &[String],
@@ -201,7 +203,9 @@ pub(super) async fn connect_with_retry(
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[allow(clippy::too_many_arguments)]
+// function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+#[tracing::instrument(name = "mcp.manager.connect_entry", skip_all, fields(server_id = %entry.id), err)]
 pub(super) async fn connect_entry(
     entry: &ServerEntry,
     allowed_commands: &[String],

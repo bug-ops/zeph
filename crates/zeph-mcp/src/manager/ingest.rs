@@ -24,6 +24,7 @@ use super::{
 /// After applying penalties, loads the updated score and demotes the server's runtime
 /// trust level when `recommended_trust_level()` is more restrictive than the current
 /// level (as measured by `restriction_level()`). Auto-promotion never happens.
+#[tracing::instrument(name = "mcp.manager.apply_injection_penalties", skip_all, fields(server_id = %server_id))]
 pub(super) async fn apply_injection_penalties(
     trust_store: Option<&Arc<TrustScoreStore>>,
     server_id: &str,
