@@ -446,6 +446,10 @@ impl ClaudeProvider {
     /// # Panics
     ///
     /// Panics if the hardcoded Anthropic API URL cannot be parsed (impossible in practice).
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.claude.list_models_remote", skip_all)
+    )]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -830,6 +834,10 @@ impl ClaudeProvider {
         req.header("content-type", "application/json").json(&body)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.claude.send_request", skip_all)
+    )]
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         let mut retried = false;
         loop {
@@ -981,6 +989,10 @@ impl ClaudeProvider {
         }
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.claude.send_stream_request", skip_all)
+    )]
     async fn send_stream_request(
         &self,
         messages: &[Message],

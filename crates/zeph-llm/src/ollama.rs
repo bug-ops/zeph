@@ -165,6 +165,10 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the request fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.ollama.fetch_model_info", skip_all)
+    )]
     pub async fn fetch_model_info(&self) -> Result<ModelInfo, LlmError> {
         let info = self
             .client
@@ -195,6 +199,10 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the connection to Ollama fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.ollama.health_check", skip_all)
+    )]
     pub async fn health_check(&self) -> Result<(), LlmError> {
         self.client
             .list_local_models()
@@ -210,6 +218,10 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the Ollama API request fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.ollama.list_models_remote", skip_all)
+    )]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -239,6 +251,10 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the warmup request fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.ollama.warmup", skip_all)
+    )]
     pub async fn warmup(&self) -> Result<(), LlmError> {
         let request =
             ChatMessageRequest::new(self.model.clone(), vec![ChatMessage::user("hi".to_owned())]);

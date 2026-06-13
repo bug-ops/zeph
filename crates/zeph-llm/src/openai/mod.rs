@@ -446,6 +446,10 @@ impl OpenAiProvider {
     /// # Errors
     ///
     /// Returns an error if the API request fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.openai.list_models_remote", skip_all)
+    )]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -519,6 +523,10 @@ impl OpenAiProvider {
         );
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.openai.send_request", skip_all)
+    )]
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         let reasoning = self
             .reasoning_effort
@@ -583,6 +591,10 @@ impl OpenAiProvider {
             })
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "llm.openai.send_stream_request", skip_all)
+    )]
     async fn send_stream_request(
         &self,
         messages: &[Message],
