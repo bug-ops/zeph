@@ -39,6 +39,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `command_tx` arms, clipboard duplicates, `prefill_input` arms, session-switch arms.
   Closes #5298.
 
+- `feat(tracing)`: promote `CommandRegistry::dispatch` in `zeph-commands` from
+  `#[cfg_attr(feature = "profiling", tracing::instrument(...))]` to an unconditional
+  `#[tracing::instrument(name = "commands.dispatch", skip(self, ctx))]` so slash-command
+  dispatch latency is visible in all production traces. Closes #5201.
+
+- `feat(tracing)`: add `#[tracing::instrument]` spans to `Scheduler::init`
+  (`sched.scheduler.init`) and `daemon_status` (`sched.daemon.status`) in `zeph-scheduler`
+  so scheduler startup and status-query paths are visible in local Chrome JSON traces.
+  Closes #5328.
+
+- `feat(tracing)`: add `#[tracing::instrument]` spans to `verify_commitish`,
+  `git_worktree_add`, and `probe_capabilities` in `zeph-worktree` so worktree creation
+  and bootstrap paths are visible in trace analysis. Closes #5313.
+
 ### Fixed
 
 - `fix(tui)`: remove duplicate `last_assistant_content` / `last_assistant_code_blocks`

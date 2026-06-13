@@ -258,6 +258,7 @@ pub fn detach_and_run(cfg: &DaemonConfig, extra_args: &[&str]) -> Result<(), Sch
 /// # Errors
 ///
 /// Returns [`SchedulerError`] if the job store cannot be opened or queried.
+#[tracing::instrument(name = "sched.daemon.status", skip_all, err)]
 pub async fn daemon_status(
     cfg: &DaemonConfig,
     store_url: &str,

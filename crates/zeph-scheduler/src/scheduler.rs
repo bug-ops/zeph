@@ -256,6 +256,7 @@ impl Scheduler {
     ///
     /// Returns an error if DB init, upsert, `next_run` persistence, or job listing fails.
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(name = "sched.scheduler.init", skip_all, err)]
     pub async fn init(&mut self) -> Result<(), SchedulerError> {
         self.store.init().await?;
         let now = Utc::now();
