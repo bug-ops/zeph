@@ -31,7 +31,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tracing::Instrument as _;
 pub use zeph_config::memory::TieredRetrievalConfig;
 use zeph_llm::any::AnyProvider;
 
@@ -188,6 +187,7 @@ pub async fn recall_tiered(
 /// Iterates through tiers starting at `initial_intent`, retrieving candidates and
 /// validating evidence quality. Escalates to heavier tiers when validation indicates
 /// insufficient evidence.
+#[tracing::instrument(name = "memory.tiered.escalation_loop", skip_all, fields(initial_intent = %initial_intent, max_escalations = config.max_escalations))]
 async fn escalation_loop(
     memory: &SemanticMemory,
     query: &str,
@@ -202,13 +202,9 @@ async fn escalation_loop(
     let mut tier_escalated = false;
 
     loop {
-        let raw_candidates = retrieve_tier(memory, query, conversation_id, intent, config)
-            .instrument(tracing::debug_span!("memory.tiered.retrieve_tier", tier = %intent))
-            .await?;
+        let raw_candidates = retrieve_tier(memory, query, conversation_id, intent, config).await?;
 
-        let candidates = score_candidates(memory, query, raw_candidates, config)
-            .instrument(tracing::debug_span!("memory.tiered.score_candidates", tier = %intent))
-            .await?;
+        let candidates = score_candidates(memory, query, raw_candidates, config).await?;
 
         let (messages, tokens_used) = assemble_within_budget(candidates, effective_budget);
 
@@ -225,7 +221,6 @@ async fn escalation_loop(
                 config.validation_threshold,
                 config.validator_timeout_secs,
             )
-            .instrument(tracing::debug_span!("memory.tiered.validate"))
             .await;
             if !sufficient {
                 tracing::debug!(
@@ -254,6 +249,7 @@ async fn escalation_loop(
 ///
 /// For `DeepReasoning` when `config.deep_reasoning_query_conditioned = true`, routes through
 /// query-conditioned graph recall (HELA spreading activation) instead of static-weight BFS (#3994).
+#[tracing::instrument(name = "memory.tiered.retrieve_tier", skip_all, fields(intent = %intent))]
 async fn retrieve_tier(
     memory: &SemanticMemory,
     query: &str,
@@ -576,6 +572,7 @@ fn assemble_within_budget(
 ///
 /// Returns `true` when the validator's confidence is >= `threshold` or when the
 /// call fails (fail-open: prefer serving potentially incomplete evidence over blocking).
+#[tracing::instrument(name = "memory.tiered.validate_evidence", skip_all, fields(threshold, timeout_secs, evidence_count = messages.len()))]
 async fn validate_evidence(
     provider: &Arc<AnyProvider>,
     query: &str,

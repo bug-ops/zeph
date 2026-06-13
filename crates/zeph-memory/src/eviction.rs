@@ -176,6 +176,7 @@ fn parse_sqlite_timestamp_secs(s: &str) -> Option<u64> {
 /// # Errors (non-fatal)
 ///
 /// Database and Qdrant errors are logged but do not stop the loop.
+#[tracing::instrument(name = "memory.eviction.start_loop", skip_all)]
 pub async fn start_eviction_loop(
     store: Arc<SqliteStore>,
     embedding: Option<Arc<EmbeddingStore>>,

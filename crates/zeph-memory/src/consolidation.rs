@@ -79,6 +79,7 @@ pub use zeph_common::config::memory::ConsolidationConfig;
 /// The loop exits immediately if `config.enabled = false`.
 ///
 /// Database and LLM errors are logged but do not stop the loop.
+#[tracing::instrument(name = "memory.consolidation.start_loop", skip_all)]
 pub async fn start_consolidation_loop(
     store: Arc<SqliteStore>,
     provider: AnyProvider,
@@ -165,6 +166,7 @@ pub async fn run_consolidation_sweep(
 ///
 /// Loads candidates, embeds them, clusters by similarity, and applies topology ops.
 /// Returns early (without error) if embeddings are unavailable or too few candidates exist.
+#[tracing::instrument(name = "memory.consolidation.process_conversation", skip_all, fields(conv_id = %conv_id))]
 async fn process_conversation(
     store: &SqliteStore,
     provider: &AnyProvider,
@@ -261,6 +263,7 @@ async fn embed_candidates(
 /// Asks the LLM to produce a `TopologyOp` for the cluster and, if accepted, applies it
 /// via the store. Updates `result` counters in place; individual op failures are logged
 /// and do not propagate.
+#[tracing::instrument(name = "memory.consolidation.apply_topology_op", skip_all, fields(cluster_size = cluster.len()))]
 async fn apply_topology_op(
     store: &SqliteStore,
     provider: &AnyProvider,

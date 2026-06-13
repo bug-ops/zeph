@@ -13,7 +13,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
@@ -183,6 +182,10 @@ impl SkillMiner {
     }
 
     /// Pre-compute embeddings for existing skill descriptions.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.miner.embed_existing", skip(self, skills), fields(count = skills.len()))
+    )]
     async fn embed_existing(&self, skills: &[SkillMeta]) -> Vec<(SkillMeta, SkillEmbedding)> {
         let mut embeddings = Vec::with_capacity(skills.len());
         let timeout = Duration::from_millis(self.config.generation_timeout_ms);
@@ -211,6 +214,10 @@ impl SkillMiner {
 
     /// Process a single repo: generate skill, dedup, write.
     #[allow(clippy::too_many_lines)]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.miner.process_repo", skip(self, repo, existing_embeddings), fields(repo = %repo.full_name, is_dry_run))
+    )]
     async fn process_repo(
         &self,
         repo: &RepoCandidate,
@@ -342,22 +349,19 @@ impl SkillMiner {
     /// # Errors
     ///
     /// Returns `SkillError::Other` on timeout or provider failure.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.miner.embed_candidate", skip(self, skill), fields(candidate = %skill.name))
+    )]
     async fn embed_candidate(&self, skill: &GeneratedSkill) -> Result<SkillEmbedding, SkillError> {
-        async move {
-            tokio::time::timeout(
-                Duration::from_millis(self.config.generation_timeout_ms),
-                self.embed_provider.embed(&skill.meta.description),
-            )
-            .await
-            .map_err(|_| SkillError::Timeout(self.config.generation_timeout_ms))?
-            .map(SkillEmbedding::from_raw)
-            .map_err(|e| SkillError::Other(format!("embed failed: {e}")))
-        }
-        .instrument(tracing::info_span!(
-            "skills.miner.embed",
-            candidate = %skill.name,
-        ))
+        tokio::time::timeout(
+            Duration::from_millis(self.config.generation_timeout_ms),
+            self.embed_provider.embed(&skill.meta.description),
+        )
         .await
+        .map_err(|_| SkillError::Timeout(self.config.generation_timeout_ms))?
+        .map(SkillEmbedding::from_raw)
+        .map_err(|e| SkillError::Other(format!("embed failed: {e}")))
     }
 
     /// Call the LLM merge prompt and write the merged skill to disk.
@@ -366,6 +370,10 @@ impl SkillMiner {
     ///
     /// Returns `SkillError` when the merge LLM call fails, the result fails to parse,
     /// or injection is detected in the merged output.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "skills.miner.merge_candidate", skip(self, candidate, existing_skill_dir), fields(existing = existing_name, next_version = existing_version + 1))
+    )]
     async fn merge_candidate(
         &self,
         candidate: &GeneratedSkill,
@@ -373,54 +381,46 @@ impl SkillMiner {
         existing_version: u32,
         existing_skill_dir: &Path,
     ) -> Result<(), SkillError> {
-        async move {
-            let existing_body = tokio::fs::read_to_string(existing_skill_dir.join("SKILL.md"))
-                .await
-                .unwrap_or_else(|_| {
-                    format!("---\nname: {existing_name}\nversion: {existing_version}\n---\n")
-                });
+        let existing_body = tokio::fs::read_to_string(existing_skill_dir.join("SKILL.md"))
+            .await
+            .unwrap_or_else(|_| {
+                format!("---\nname: {existing_name}\nversion: {existing_version}\n---\n")
+            });
 
-            let messages = build_merge_messages(
-                &existing_body,
-                &candidate.content,
+        let messages = build_merge_messages(
+            &existing_body,
+            &candidate.content,
+            existing_name,
+            existing_version + 1,
+        );
+
+        let timeout = Duration::from_millis(self.config.generation_timeout_ms);
+        let raw = tokio::time::timeout(timeout, self.generator.provider.chat(&messages))
+            .await
+            .map_err(|_| SkillError::Timeout(self.config.generation_timeout_ms))?
+            .map_err(|e| SkillError::Other(format!("merge LLM failed: {e}")))?;
+
+        let content = extract_skill_md_pub(raw.trim());
+
+        let scan = scan_skill_body(&content);
+        if scan.has_matches() {
+            return Err(SkillError::Invalid(format!(
+                "merged skill '{}' failed injection scan: {}",
                 existing_name,
-                existing_version + 1,
-            );
-
-            let timeout = Duration::from_millis(self.config.generation_timeout_ms);
-            let raw = tokio::time::timeout(timeout, self.generator.provider.chat(&messages))
-                .await
-                .map_err(|_| SkillError::Timeout(self.config.generation_timeout_ms))?
-                .map_err(|e| SkillError::Other(format!("merge LLM failed: {e}")))?;
-
-            let content = extract_skill_md_pub(raw.trim());
-
-            let scan = scan_skill_body(&content);
-            if scan.has_matches() {
-                return Err(SkillError::Invalid(format!(
-                    "merged skill '{}' failed injection scan: {}",
-                    existing_name,
-                    scan.matched_patterns.join(", ")
-                )));
-            }
-
-            let merged = parse_and_validate_pub(&content)?;
-            self.generator.approve_and_save(&merged).await?;
-
-            tracing::info!(
-                existing = existing_name,
-                next_version = existing_version + 1,
-                "miner: merged skill written to disk"
-            );
-
-            Ok(())
+                scan.matched_patterns.join(", ")
+            )));
         }
-        .instrument(tracing::info_span!(
-            "skills.miner.merge",
+
+        let merged = parse_and_validate_pub(&content)?;
+        self.generator.approve_and_save(&merged).await?;
+
+        tracing::info!(
             existing = existing_name,
-            skill_dir = %existing_skill_dir.display(),
-        ))
-        .await
+            next_version = existing_version + 1,
+            "miner: merged skill written to disk"
+        );
+
+        Ok(())
     }
 
     /// Search GitHub for repositories matching `query`.
