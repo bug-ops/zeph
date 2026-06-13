@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use crate::PluginError;
 use crate::manifest::PluginManifest;
-use crate::types::PluginName;
 
 use super::{
     AddResult, DisableResult, PluginManager, RemoveResult, check_allowed_commands_overlay_effect,
@@ -50,8 +49,7 @@ impl PluginManager {
         let manifest: PluginManifest = toml::from_str(&manifest_str)
             .map_err(|e| PluginError::InvalidManifest(format!("{e}")))?;
 
-        // Validate plugin name.
-        validate_plugin_name(&manifest.plugin.name)?;
+        // Name validity is enforced by PluginName deserialization; no separate call needed.
 
         // Validate dependency list: enforce count limit and name format.
         if manifest.plugin.dependencies.len() > MAX_DEPENDENCIES {
@@ -96,14 +94,14 @@ impl PluginManager {
         scan_skill_entries(
             source_path.as_path(),
             &manifest.skills,
-            &manifest.plugin.name,
+            manifest.plugin.name.as_str(),
         );
 
         let mut warnings: Vec<String> = Vec::new();
         if let Some(msg) = check_allowed_commands_overlay_effect(
             &manifest.config,
             &self.base_allowed_commands,
-            &manifest.plugin.name,
+            manifest.plugin.name.as_str(),
         ) {
             tracing::warn!(plugin = %manifest.plugin.name, "{msg}");
             warnings.push(msg);
@@ -116,9 +114,9 @@ impl PluginManager {
         let skill_names = collect_skill_names(&source_path, &manifest);
 
         // Check for name conflicts.
-        self.check_skill_conflicts(&skill_names, &manifest.plugin.name)?;
+        self.check_skill_conflicts(&skill_names, manifest.plugin.name.as_str())?;
 
-        let dest = self.plugins_dir.join(&manifest.plugin.name);
+        let dest = self.plugins_dir.join(manifest.plugin.name.as_str());
 
         // Copy source to destination.
         copy_dir_all(&source_path, &dest)?;
@@ -138,7 +136,7 @@ impl PluginManager {
         // plugin with no registry entry — it will load unverified until reinstalled (M4).
         let mut registry = crate::integrity::IntegrityRegistry::load(&self.integrity_registry_path);
         if let Err(e) = registry
-            .record(&manifest.plugin.name, &installed_manifest_path)
+            .record(manifest.plugin.name.as_str(), &installed_manifest_path)
             .and_then(|()| registry.save(&self.integrity_registry_path))
         {
             tracing::warn!(plugin = %manifest.plugin.name, error = %e, "failed to update integrity registry after install");
@@ -155,8 +153,7 @@ impl PluginManager {
         );
 
         Ok(AddResult {
-            // validate_plugin_name already verified the name above; TryFrom is infallible here.
-            name: PluginName::try_from(manifest.plugin.name)?,
+            name: manifest.plugin.name,
             plugin_root: dest,
             installed_skills: skill_names,
             mcp_server_ids,
@@ -431,7 +428,7 @@ impl PluginManager {
                 continue;
             }
             if manifest.plugin.dependencies.iter().any(|d| d == name) {
-                dependents.push(manifest.plugin.name);
+                dependents.push(manifest.plugin.name.to_string());
             }
         }
         dependents.sort();

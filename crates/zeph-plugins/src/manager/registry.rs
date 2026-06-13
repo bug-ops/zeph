@@ -8,7 +8,7 @@ use crate::PluginError;
 use super::{
     AddResult, AutoUpdateResult, AutoUpdateStatus, InstalledPlugin, PluginManager, PluginSource,
     collect_skill_names, extract_archive_safe, scan_skill_entries, strip_bundled_markers,
-    validate_mcp_commands, validate_overlay_keys, validate_plugin_name, validate_url_scheme,
+    validate_mcp_commands, validate_overlay_keys, validate_url_scheme,
     validate_url_scheme_ephemeral,
 };
 
@@ -648,10 +648,7 @@ pub(crate) fn apply_staged_update(
         toml::from_str(&manifest_str).map_err(|e| format!("staged plugin.toml invalid: {e}"))?;
 
     // Reject name changes: an update must not rename the plugin.
-    if let Err(e) = validate_plugin_name(&manifest.plugin.name) {
-        let _ = std::fs::remove_dir_all(staging);
-        return Err(format!("staged manifest has invalid plugin name: {e}"));
-    }
+    // Name validity is enforced by PluginName deserialization above.
     if manifest.plugin.name != installed_plugin_name {
         let _ = std::fs::remove_dir_all(staging);
         return Err(format!(
@@ -690,7 +687,7 @@ pub(crate) fn apply_staged_update(
     }
 
     // Advisory SKILL.md scan (non-blocking — logs warnings only).
-    scan_skill_entries(staging, &manifest.skills, &manifest.plugin.name);
+    scan_skill_entries(staging, &manifest.skills, manifest.plugin.name.as_str());
 
     // Write the normalised .plugin.toml and strip bundled markers.
     let installed_manifest_toml =
@@ -716,7 +713,7 @@ pub(crate) fn apply_staged_update(
     let installed_manifest_path = dest.join(".plugin.toml");
     let mut registry = crate::integrity::IntegrityRegistry::load(integrity_registry_path);
     if let Err(e) = registry
-        .record(&manifest.plugin.name, &installed_manifest_path)
+        .record(manifest.plugin.name.as_str(), &installed_manifest_path)
         .and_then(|()| registry.save(integrity_registry_path))
     {
         tracing::warn!(

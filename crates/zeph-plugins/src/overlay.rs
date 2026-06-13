@@ -21,7 +21,7 @@ use std::path::Path;
 use zeph_config::Config;
 
 use crate::PluginError;
-use crate::manager::{validate_overlay_keys, validate_plugin_name};
+use crate::manager::validate_overlay_keys;
 use crate::manifest::PluginManifest;
 
 /// Summary of the overlay applied to a [`Config`] by [`apply_plugin_config_overlays`].
@@ -210,16 +210,6 @@ fn process_plugin_entry(
         }
     }
 
-    // Security: validate plugin name before using it in logs/data structures to prevent
-    // log injection via a post-install-tampered manifest.
-    if let Err(e) = validate_plugin_name(&manifest.plugin.name) {
-        tracing::warn!(
-            path = %path.display(),
-            "plugin overlay skipped: invalid plugin name ({e})"
-        );
-        return;
-    }
-
     // M2: re-run install-time safelist check as defence-in-depth against post-install tampering.
     if let Err(e) = validate_overlay_keys(&manifest.config) {
         out.skipped_plugins.push(format!(
@@ -231,7 +221,7 @@ fn process_plugin_entry(
 
     let contributed = merge_manifest_overlay(&manifest, out, blocked_set, allowed_accum, threshold);
     if contributed {
-        out.source_plugins.push(manifest.plugin.name);
+        out.source_plugins.push(manifest.plugin.name.to_string());
     }
 }
 

@@ -228,7 +228,6 @@ impl<C: Channel> Agent<C> {
                     );
                     self.update_metrics(|m| m.classifier_tool_suspicious += 1);
                 }
-                zeph_sanitizer::InjectionVerdict::Clean => {}
                 _ => {}
             }
         }

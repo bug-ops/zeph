@@ -10,7 +10,6 @@ use zeph_skills::registry::SkillRegistry;
 
 use crate::PluginError;
 use crate::manifest::PluginManifest;
-use crate::types::PluginName;
 
 use super::{InstalledPlugin, PluginManager};
 
@@ -51,11 +50,8 @@ impl PluginManager {
             };
             let skill_names = collect_skill_names(&path, &manifest);
             let auto_update = manifest.plugin.auto_update;
-            let Ok(name) = PluginName::try_from(manifest.plugin.name) else {
-                continue;
-            };
             plugins.push(InstalledPlugin {
-                name,
+                name: manifest.plugin.name,
                 version: manifest.plugin.version,
                 description: manifest.plugin.description,
                 path,

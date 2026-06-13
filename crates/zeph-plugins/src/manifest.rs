@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::PluginName;
+
 fn default_config_table() -> toml::Value {
     toml::Value::Table(toml::map::Map::new())
 }
@@ -50,7 +52,7 @@ pub struct PluginManifest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PluginMeta {
     /// Canonical plugin name. Must be a valid identifier: `[a-z0-9][a-z0-9-]*`.
-    pub name: String,
+    pub name: PluginName,
     /// Plugin version (informational).
     pub version: String,
     /// Short description shown in `zeph plugin list`.

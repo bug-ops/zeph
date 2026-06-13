@@ -1540,7 +1540,6 @@ impl<C: Channel> Agent<C> {
                 zeph_sanitizer::InjectionVerdict::Suspicious => {
                     tracing::warn!("injection_classifier soft_signal on user input");
                 }
-                zeph_sanitizer::InjectionVerdict::Clean => {}
                 _ => {}
             }
         }

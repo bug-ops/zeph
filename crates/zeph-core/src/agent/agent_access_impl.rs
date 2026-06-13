@@ -1342,7 +1342,7 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
                         .await
                         .ok()
                         .and_then(|s| toml::from_str::<zeph_plugins::PluginManifest>(&s).ok())
-                        .map(|m| m.plugin.name)
+                        .map(|m| m.plugin.name.to_string())
                 });
                 join_all(futs).await.into_iter().flatten().collect()
             };
