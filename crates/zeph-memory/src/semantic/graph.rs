@@ -1142,14 +1142,13 @@ impl SemanticMemory {
             IngestSourceKind,
         };
 
-        let _span = tracing::info_span!(
+        let span = tracing::info_span!(
             "memory.ingest.batch",
             batch_id = %batch_id,
             doc_count = documents.len(),
             concurrency = concurrency,
             dry_run = config.dry_run,
-        )
-        .entered();
+        );
 
         let send_progress = |evt: IngestProgress| {
             if let Some(ref tx) = progress {
@@ -1364,7 +1363,11 @@ impl SemanticMemory {
         });
 
         // Collect outcomes with bounded concurrency.
-        let outcomes: Vec<DocOutcome> = stream.buffer_unordered(concurrency).collect().await;
+        let outcomes: Vec<DocOutcome> = stream
+            .buffer_unordered(concurrency)
+            .collect()
+            .instrument(span)
+            .await;
 
         // Build the report.
         let mut report = IngestReport {
