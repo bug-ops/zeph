@@ -103,6 +103,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
+    #[tracing::instrument(name = "memory.trust.upsert", skip_all, fields(skill = %skill_name))]
     pub async fn upsert_skill_trust(
         &self,
         skill_name: &str,
@@ -133,7 +134,9 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(name = "memory.trust.upsert_with_git_hash", skip_all, fields(skill = %skill_name))]
     pub async fn upsert_skill_trust_with_git_hash(
         &self,
         skill_name: &str,
@@ -174,6 +177,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(name = "memory.trust.load", skip_all, fields(skill = %skill_name))]
     pub async fn load_skill_trust(
         &self,
         skill_name: &str,
@@ -194,6 +198,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the query fails.
+    #[tracing::instrument(name = "memory.trust.load_all", skip_all)]
     pub async fn load_all_skill_trust(&self) -> Result<Vec<SkillTrustRow>, MemoryError> {
         let rows: Vec<TrustTuple> = zeph_db::query_as(sql!(
             "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
@@ -210,6 +215,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the skill does not exist or the update fails.
+    #[tracing::instrument(name = "memory.trust.set_level", skip_all, fields(skill = %skill_name))]
     pub async fn set_skill_trust_level(
         &self,
         skill_name: &str,
@@ -230,6 +236,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the delete fails.
+    #[tracing::instrument(name = "memory.trust.delete", skip_all, fields(skill = %skill_name))]
     pub async fn delete_skill_trust(&self, skill_name: &str) -> Result<bool, MemoryError> {
         let result = zeph_db::query(sql!("DELETE FROM skill_trust WHERE skill_name = ?"))
             .bind(skill_name)
@@ -246,6 +253,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the update fails.
+    #[tracing::instrument(name = "memory.trust.set_check_flag", skip_all, fields(skill = %skill_name))]
     pub async fn set_requires_trust_check(
         &self,
         skill_name: &str,
@@ -267,6 +275,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the update fails.
+    #[tracing::instrument(name = "memory.trust.update_hash", skip_all, fields(skill = %skill_name))]
     pub async fn update_skill_hash(
         &self,
         skill_name: &str,

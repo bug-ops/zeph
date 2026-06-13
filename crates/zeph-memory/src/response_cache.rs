@@ -47,6 +47,7 @@ impl ResponseCache {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.cache.get", skip_all, fields(key = %key))]
     pub async fn get(&self, key: &str) -> Result<Option<String>, MemoryError> {
         let now = unix_now();
         let row: Option<(String,)> = zeph_db::query_as(sql!(
@@ -64,6 +65,7 @@ impl ResponseCache {
     /// # Errors
     ///
     /// Returns an error if the database insert fails.
+    #[tracing::instrument(name = "memory.cache.put", skip_all, fields(key = %key, model = %model))]
     pub async fn put(&self, key: &str, response: &str, model: &str) -> Result<(), MemoryError> {
         let now = unix_now();
         // Cap TTL at 1 year (31_536_000 s) to prevent i64 overflow for extreme values.
@@ -96,6 +98,7 @@ impl ResponseCache {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.cache.get_semantic", skip_all, fields(model = %embedding_model, threshold = %similarity_threshold, max_candidates = %max_candidates))]
     pub async fn get_semantic(
         &self,
         embedding: &[f32],
@@ -160,6 +163,7 @@ impl ResponseCache {
     /// # Errors
     ///
     /// Returns an error if the database insert fails.
+    #[tracing::instrument(name = "memory.cache.put_with_embedding", skip_all, fields(key = %key, model = %model, embedding_model = %embedding_model))]
     pub async fn put_with_embedding(
         &self,
         key: &str,
@@ -202,6 +206,7 @@ impl ResponseCache {
     /// # Errors
     ///
     /// Returns an error if the database update fails.
+    #[tracing::instrument(name = "memory.cache.invalidate_embeddings", skip_all, fields(model = %old_model))]
     pub async fn invalidate_embeddings_for_model(
         &self,
         old_model: &str,
@@ -228,6 +233,7 @@ impl ResponseCache {
     /// # Errors
     ///
     /// Returns an error if either database operation fails.
+    #[tracing::instrument(name = "memory.cache.cleanup", skip_all, fields(current_model = %current_embedding_model))]
     pub async fn cleanup(&self, current_embedding_model: &str) -> Result<u64, MemoryError> {
         let now = unix_now();
         let deleted = zeph_db::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
@@ -254,6 +260,7 @@ impl ResponseCache {
     /// # Errors
     ///
     /// Returns an error if the database delete fails.
+    #[tracing::instrument(name = "memory.cache.cleanup_expired", skip_all)]
     pub async fn cleanup_expired(&self) -> Result<u64, MemoryError> {
         let now = unix_now();
         let result = zeph_db::query(sql!("DELETE FROM response_cache WHERE expires_at <= ?"))
