@@ -139,6 +139,7 @@ impl AnyProvider {
     /// # Errors
     ///
     /// Returns an error if the provider fails or the response cannot be parsed.
+    #[tracing::instrument(name = "llm.any.chat_typed_erased", skip_all)]
     pub async fn chat_typed_erased<T>(&self, messages: &[Message]) -> Result<T, crate::LlmError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
@@ -154,6 +155,7 @@ impl AnyProvider {
     /// # Errors
     ///
     /// Returns an error if the remote request fails.
+    #[tracing::instrument(name = "llm.any.list_models_remote", skip_all)]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, crate::LlmError> {
@@ -210,6 +212,7 @@ impl AnyProvider {
     ///
     /// Saves Thompson, reputation, and bandit state concurrently using
     /// [`tokio::task::spawn_blocking`]. No-op for all other provider variants.
+    #[tracing::instrument(name = "llm.any.save_router_state", skip_all)]
     pub async fn save_router_state(&self) {
         if let Self::Router(p) = self {
             // Run all three saves concurrently — each is independent I/O.
@@ -259,6 +262,7 @@ impl AnyProvider {
     /// # Errors
     ///
     /// Returns an error if the provider does not support tool streaming or the HTTP request fails.
+    #[tracing::instrument(name = "llm.any.chat_with_tools_stream", skip_all)]
     pub async fn chat_with_tools_stream(
         &self,
         messages: &[crate::provider::Message],

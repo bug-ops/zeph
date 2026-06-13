@@ -446,10 +446,7 @@ impl ClaudeProvider {
     /// # Panics
     ///
     /// Panics if the hardcoded Anthropic API URL cannot be parsed (impossible in practice).
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.claude.list_models_remote", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.claude.list_models_remote", skip_all)]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -834,10 +831,7 @@ impl ClaudeProvider {
         req.header("content-type", "application/json").json(&body)
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.claude.send_request", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.claude.send_request", skip_all)]
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         let mut retried = false;
         loop {
@@ -907,13 +901,10 @@ impl ClaudeProvider {
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or the API returns a non-2xx status.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.claude.tools_stream",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.claude.tools_stream",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     pub async fn chat_with_tools_stream(
         &self,
@@ -989,10 +980,7 @@ impl ClaudeProvider {
         }
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.claude.send_stream_request", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.claude.send_stream_request", skip_all)]
     async fn send_stream_request(
         &self,
         messages: &[Message],
@@ -1053,25 +1041,19 @@ impl LlmProvider for ClaudeProvider {
         }
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.send_request(messages).await
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_stream",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_stream",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
@@ -1082,13 +1064,10 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.embed",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.embed",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
         Err(LlmError::EmbedUnsupported {
@@ -1310,13 +1289,10 @@ impl LlmProvider for ClaudeProvider {
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_with_tools",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_with_tools",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
     )]
     async fn chat_with_tools(
         &self,

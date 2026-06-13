@@ -60,7 +60,6 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
-        #[cfg(feature = "profiling")]
         let model = self.model_identifier().to_owned();
         // NOTE: `chat` and `chat_stream` share error-path logic via `record_fallback_error`.
         // Their success paths diverge (quality gate + CoE vs. plain stream-open), so a
@@ -218,12 +217,10 @@ impl LlmProvider for RouterProvider {
 
             Err(LlmError::NoProviders)
         });
-        #[cfg(feature = "profiling")]
-        let fut = {
+        {
             use tracing::Instrument as _;
             fut.instrument(tracing::info_span!("llm.router.chat", model = model))
-        };
-        fut
+        }
     }
 
     fn chat_stream(
@@ -233,7 +230,6 @@ impl LlmProvider for RouterProvider {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
-        #[cfg(feature = "profiling")]
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
             // NOTE: see DRY design decision above `chat()` — error path shared via
@@ -290,12 +286,10 @@ impl LlmProvider for RouterProvider {
             }
             Err(LlmError::NoProviders)
         });
-        #[cfg(feature = "profiling")]
-        let fut = {
+        {
             use tracing::Instrument as _;
             fut.instrument(tracing::info_span!("llm.router.chat_stream", model = model))
-        };
-        fut
+        }
     }
 
     fn supports_streaming(&self) -> bool {
@@ -315,7 +309,6 @@ impl LlmProvider for RouterProvider {
         let text = text.to_owned();
         let router = self.clone();
         let embed_timeout_ms = self.embed_timeout_ms;
-        #[cfg(feature = "profiling")]
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
             for p in &providers {
@@ -410,12 +403,10 @@ impl LlmProvider for RouterProvider {
             }
             Err(LlmError::NoProviders)
         });
-        #[cfg(feature = "profiling")]
-        let fut = {
+        {
             use tracing::Instrument as _;
             fut.instrument(tracing::info_span!("llm.router.embed", model = model))
-        };
-        fut
+        }
     }
 
     fn embed_batch(
@@ -427,7 +418,6 @@ impl LlmProvider for RouterProvider {
         let owned = owned_strs(texts);
         let router = self.clone();
         let semaphore = self.state.embed_semaphore.clone();
-        #[cfg(feature = "profiling")]
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
             // Acquire embed semaphore permit before any HTTP work to cap concurrency.
@@ -513,12 +503,10 @@ impl LlmProvider for RouterProvider {
             }
             Err(LlmError::NoProviders)
         });
-        #[cfg(feature = "profiling")]
-        let fut = {
+        {
             use tracing::Instrument as _;
             fut.instrument(tracing::info_span!("llm.router.embed_batch", model = model))
-        };
-        fut
+        }
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -560,12 +548,10 @@ impl LlmProvider for RouterProvider {
         tools: &[ToolDefinition],
     ) -> impl std::future::Future<Output = Result<ChatResponse, LlmError>> + Send {
         let messages = messages.to_vec();
-        #[cfg(feature = "profiling")]
         let tool_count = tools.len();
         let tools = tools.to_vec();
         let status_tx = self.status_tx.clone();
         let router = self.clone();
-        #[cfg(feature = "profiling")]
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
             // Bandit routing for tool calls: select a single provider, no quality escalation.
@@ -638,16 +624,14 @@ impl LlmProvider for RouterProvider {
             }
             Err(LlmError::NoProviders)
         });
-        #[cfg(feature = "profiling")]
-        let fut = {
+        {
             use tracing::Instrument as _;
             fut.instrument(tracing::info_span!(
                 "llm.router.chat_with_tools",
                 model = model,
                 tool_count = tool_count
             ))
-        };
-        fut
+        }
     }
 
     fn debug_request_json(

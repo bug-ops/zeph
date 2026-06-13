@@ -100,6 +100,7 @@ impl ModelCache {
     /// # Errors
     ///
     /// Returns an error only on JSON parse failure (corrupt file).
+    #[tracing::instrument(name = "llm.model_cache.load_async", skip_all)]
     pub async fn load_async(&self) -> Result<Option<Vec<RemoteModelInfo>>, LlmError> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
@@ -118,6 +119,7 @@ impl ModelCache {
     /// Offloads the blocking file read to `spawn_blocking`. Prefer this over
     /// [`Self::is_stale`] when calling from `async fn`.
     #[must_use]
+    #[tracing::instrument(name = "llm.model_cache.is_stale_async", skip_all)]
     pub async fn is_stale_async(&self) -> bool {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
@@ -145,6 +147,7 @@ impl ModelCache {
     /// # Errors
     ///
     /// Returns an error if the directory cannot be created or the file cannot be written.
+    #[tracing::instrument(name = "llm.model_cache.save", skip_all)]
     pub async fn save(&self, models: &[RemoteModelInfo]) -> Result<(), LlmError> {
         let path = self.path.clone();
         let models = models.to_vec();

@@ -321,6 +321,7 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
 /// # Ok(())
 /// # }
 /// ```
+#[tracing::instrument(name = "llm.provider_dyn.chat_typed_dyn", skip_all)]
 pub async fn chat_typed_dyn<T, P>(provider: &P, messages: &[Message]) -> Result<T, LlmError>
 where
     T: DeserializeOwned + schemars::JsonSchema + 'static,

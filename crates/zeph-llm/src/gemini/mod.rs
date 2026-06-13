@@ -1192,25 +1192,19 @@ impl LlmProvider for GeminiProvider {
         }
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.send_request(messages).await
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_stream",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_stream",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
@@ -1221,13 +1215,10 @@ impl LlmProvider for GeminiProvider {
         true
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_with_tools",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_with_tools",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
     )]
     async fn chat_with_tools(
         &self,
@@ -1237,13 +1228,10 @@ impl LlmProvider for GeminiProvider {
         self.send_tool_request(messages, tools).await
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.embed",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.embed",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         use crate::embed::truncate_for_embed;

@@ -165,10 +165,7 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the request fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.ollama.fetch_model_info", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.ollama.fetch_model_info", skip_all)]
     pub async fn fetch_model_info(&self) -> Result<ModelInfo, LlmError> {
         let info = self
             .client
@@ -199,10 +196,7 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the connection to Ollama fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.ollama.health_check", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.ollama.health_check", skip_all)]
     pub async fn health_check(&self) -> Result<(), LlmError> {
         self.client
             .list_local_models()
@@ -218,10 +212,7 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the Ollama API request fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.ollama.list_models_remote", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.ollama.list_models_remote", skip_all)]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -251,10 +242,7 @@ impl OllamaProvider {
     /// # Errors
     ///
     /// Returns an error if the warmup request fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.ollama.warmup", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.ollama.warmup", skip_all)]
     pub async fn warmup(&self) -> Result<(), LlmError> {
         let request =
             ChatMessageRequest::new(self.model.clone(), vec![ChatMessage::user("hi".to_owned())]);
@@ -275,13 +263,10 @@ impl LlmProvider for OllamaProvider {
         true
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         let has_images = messages
@@ -322,13 +307,10 @@ impl LlmProvider for OllamaProvider {
         Ok((self.chat(messages).await?, ChatExtras::default()))
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_stream",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_stream",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let has_images = messages
@@ -419,13 +401,10 @@ impl LlmProvider for OllamaProvider {
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_with_tools",
-            skip_all,
-            fields(model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_with_tools",
+        skip_all,
+        fields(model = self.model_identifier())
     )]
     async fn chat_with_tools(
         &self,
@@ -495,13 +474,10 @@ impl LlmProvider for OllamaProvider {
         })
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.embed",
-            skip_all,
-            fields(provider = self.name(), model = self.embedding_model)
-        )
+    #[tracing::instrument(
+        name = "llm.embed",
+        skip_all,
+        fields(provider = self.name(), model = self.embedding_model)
     )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         use crate::embed::truncate_for_embed;
@@ -527,13 +503,10 @@ impl LlmProvider for OllamaProvider {
             })
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.embed_batch",
-            skip_all,
-            fields(provider = self.name(), model = self.embedding_model)
-        )
+    #[tracing::instrument(
+        name = "llm.embed_batch",
+        skip_all,
+        fields(provider = self.name(), model = self.embedding_model)
     )]
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
         use crate::embed::truncate_for_embed;

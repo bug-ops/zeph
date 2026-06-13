@@ -90,6 +90,7 @@ impl LlmClassifier {
     /// # Errors
     ///
     /// Returns `LlmError` if the provider call fails or the response cannot be parsed.
+    #[tracing::instrument(name = "llm.classifier.classify_feedback", skip_all)]
     pub async fn classify_feedback(
         &self,
         user_message: &str,

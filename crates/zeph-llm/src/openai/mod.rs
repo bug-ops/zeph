@@ -446,10 +446,7 @@ impl OpenAiProvider {
     /// # Errors
     ///
     /// Returns an error if the API request fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.openai.list_models_remote", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.openai.list_models_remote", skip_all)]
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -523,10 +520,7 @@ impl OpenAiProvider {
         );
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.openai.send_request", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.openai.send_request", skip_all)]
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         let reasoning = self
             .reasoning_effort
@@ -591,10 +585,7 @@ impl OpenAiProvider {
             })
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "llm.openai.send_stream_request", skip_all)
-    )]
+    #[tracing::instrument(name = "llm.openai.send_stream_request", skip_all)]
     async fn send_stream_request(
         &self,
         messages: &[Message],
@@ -672,13 +663,10 @@ impl LlmProvider for OpenAiProvider {
         }
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.send_request(messages).await
@@ -691,13 +679,10 @@ impl LlmProvider for OpenAiProvider {
         Ok((self.send_request(messages).await?, ChatExtras::default()))
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_stream",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_stream",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
@@ -708,13 +693,10 @@ impl LlmProvider for OpenAiProvider {
         true
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.embed",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.embed",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         use crate::embed::truncate_for_embed;
@@ -764,13 +746,10 @@ impl LlmProvider for OpenAiProvider {
             })
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.embed_batch",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier())
-        )
+    #[tracing::instrument(
+        name = "llm.embed_batch",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
         use crate::embed::truncate_for_embed;
@@ -1006,13 +985,10 @@ impl LlmProvider for OpenAiProvider {
         true
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.chat_with_tools",
-            skip_all,
-            fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
-        )
+    #[tracing::instrument(
+        name = "llm.chat_with_tools",
+        skip_all,
+        fields(provider = self.name(), model = self.model_identifier(), tool_count = tools.len())
     )]
     async fn chat_with_tools(
         &self,

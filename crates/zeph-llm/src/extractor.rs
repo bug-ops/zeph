@@ -69,6 +69,7 @@ impl<'a, P: LlmProvider> Extractor<'a, P> {
     /// # Errors
     ///
     /// Returns an error if the provider fails or the response cannot be parsed after the retry.
+    #[tracing::instrument(name = "llm.extractor.extract", skip_all)]
     pub async fn extract<T>(&self, input: &str) -> Result<T, LlmError>
     where
         T: DeserializeOwned + JsonSchema + 'static,
