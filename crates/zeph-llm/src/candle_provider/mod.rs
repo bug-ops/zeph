@@ -227,13 +227,10 @@ impl CandleProvider {
     ///
     /// Applies `inference_timeout` to both the channel send and the oneshot recv.
     /// Maps `RecvError` (worker panic / drop) to `LlmError::Inference`.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.candle.dispatch",
-            skip_all,
-            fields(provider = self.name(), device = self.device_name())
-        )
+    #[tracing::instrument(
+        name = "llm.candle.dispatch",
+        skip_all,
+        fields(provider = self.name(), device = self.device_name())
     )]
     async fn dispatch(&self, messages: Vec<Message>) -> Result<String, LlmError> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -261,13 +258,10 @@ impl CandleProvider {
 }
 
 impl LlmProvider for CandleProvider {
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.candle.chat",
-            skip_all,
-            fields(provider = self.name(), device = self.device_name())
-        )
+    #[tracing::instrument(
+        name = "llm.candle.chat",
+        skip_all,
+        fields(provider = self.name(), device = self.device_name())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         self.dispatch(messages.to_vec()).await
@@ -276,13 +270,10 @@ impl LlmProvider for CandleProvider {
     // NOTE: MVP fake streaming — generates all tokens then chunks into 32-byte slices.
     // No spawn needed: text is fully available before streaming begins, so we yield
     // pre-built chunks via tokio_stream::iter (structured concurrency, no JoinHandle).
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.candle.chat_stream",
-            skip_all,
-            fields(provider = self.name(), device = self.device_name())
-        )
+    #[tracing::instrument(
+        name = "llm.candle.chat_stream",
+        skip_all,
+        fields(provider = self.name(), device = self.device_name())
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let text = self.dispatch(messages.to_vec()).await?;
@@ -303,13 +294,10 @@ impl LlmProvider for CandleProvider {
         true
     }
 
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(
-            name = "llm.candle.embed",
-            skip_all,
-            fields(provider = self.name(), device = self.device_name())
-        )
+    #[tracing::instrument(
+        name = "llm.candle.embed",
+        skip_all,
+        fields(provider = self.name(), device = self.device_name())
     )]
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let Some(ref embed_model) = self.embed_model else {
@@ -319,6 +307,8 @@ impl LlmProvider for CandleProvider {
         };
         let model = embed_model.clone();
         let text = text.to_owned();
+        // One-shot CPU-bound call immediately awaited — direct spawn_blocking is correct
+        // (same pattern as zeph-db/zeph-vault; no dropped JoinHandle, no long-lived service).
         tokio::task::spawn_blocking(move || model.embed_sync(&text))
             .await
             .map_err(|e| LlmError::Inference(format!("candle embedding task failed: {e}")))?
