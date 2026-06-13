@@ -23,6 +23,35 @@ use crate::ema::EmaTracker;
 use crate::provider::LlmProvider;
 
 impl RouterProvider {
+    /// Emit a rate-limited warn (once per 60 s) when a provider's ASI coherence drops below
+    /// threshold. Falls back to a trace-level message while the rate limit is active.
+    fn maybe_warn_asi_coherence(provider: &str, coherence: f32, threshold: f32) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(std::time::Duration::MAX)
+            .as_secs();
+        let last = ASI_WARN_LAST_SECS.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= 60
+            && ASI_WARN_LAST_SECS
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            tracing::warn!(
+                provider,
+                coherence,
+                threshold,
+                "asi: coherence below threshold"
+            );
+        } else {
+            tracing::trace!(
+                provider,
+                coherence,
+                threshold,
+                "asi: coherence below threshold (warn rate-limited)"
+            );
+        }
+    }
+
     /// Hash a query string to a `u64` cache key.
     fn query_hash(query: &str) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
@@ -261,30 +290,11 @@ impl RouterProvider {
                 .map(|(idx, p)| {
                     let coherence = asi.coherence(p.name());
                     if coherence < asi_cfg.coherence_threshold {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or(std::time::Duration::MAX)
-                            .as_secs();
-                        let last = ASI_WARN_LAST_SECS.load(Ordering::Relaxed);
-                        if now.saturating_sub(last) >= 60
-                            && ASI_WARN_LAST_SECS
-                                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-                                .is_ok()
-                        {
-                            tracing::warn!(
-                                provider = p.name(),
-                                coherence,
-                                threshold = asi_cfg.coherence_threshold,
-                                "asi: coherence below threshold"
-                            );
-                        } else {
-                            tracing::trace!(
-                                provider = p.name(),
-                                coherence,
-                                threshold = asi_cfg.coherence_threshold,
-                                "asi: coherence below threshold (warn rate-limited)"
-                            );
-                        }
+                        Self::maybe_warn_asi_coherence(
+                            p.name(),
+                            coherence,
+                            asi_cfg.coherence_threshold,
+                        );
                     }
                     let base_score = snap
                         .as_ref()
@@ -353,35 +363,11 @@ impl RouterProvider {
                     if let (Some(asi), Some(asi_cfg)) = (&asi_guard, &self.asi_config) {
                         let coherence = asi.coherence(name);
                         if coherence < asi_cfg.coherence_threshold {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or(std::time::Duration::MAX)
-                                .as_secs();
-                            let last = ASI_WARN_LAST_SECS.load(Ordering::Relaxed);
-                            if now.saturating_sub(last) >= 60
-                                && ASI_WARN_LAST_SECS
-                                    .compare_exchange(
-                                        last,
-                                        now,
-                                        Ordering::Relaxed,
-                                        Ordering::Relaxed,
-                                    )
-                                    .is_ok()
-                            {
-                                tracing::warn!(
-                                    provider = name.as_str(),
-                                    coherence,
-                                    threshold = asi_cfg.coherence_threshold,
-                                    "asi: coherence below threshold"
-                                );
-                            } else {
-                                tracing::trace!(
-                                    provider = name.as_str(),
-                                    coherence,
-                                    threshold = asi_cfg.coherence_threshold,
-                                    "asi: coherence below threshold (warn rate-limited)"
-                                );
-                            }
+                            Self::maybe_warn_asi_coherence(
+                                name.as_str(),
+                                coherence,
+                                asi_cfg.coherence_threshold,
+                            );
                             let deficit = asi_cfg.coherence_threshold - coherence;
                             let penalty = f64::from(asi_cfg.penalty_weight * deficit);
                             beta += penalty;
