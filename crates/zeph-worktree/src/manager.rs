@@ -442,6 +442,7 @@ impl<R: GitRunner> WorktreeManager<R> {
     }
 
     /// Runs `git rev-parse --verify {commitish}` to confirm it is resolvable.
+    #[instrument(name = "worktree.verify_commitish", skip(self), err)]
     async fn verify_commitish(&self, commitish: &str) -> Result<(), WorktreeError> {
         let out = self
             .runner
@@ -460,6 +461,7 @@ impl<R: GitRunner> WorktreeManager<R> {
     }
 
     /// Runs `git worktree add -b {branch} -- {path} {commitish}`.
+    #[instrument(name = "worktree.git_worktree_add", skip(self), err)]
     async fn git_worktree_add(
         &self,
         branch: &str,
@@ -510,6 +512,7 @@ impl<R: GitRunner> WorktreeManager<R> {
 /// # Ok(())
 /// # }
 /// ```
+#[instrument(name = "worktree.probe_capabilities", skip(runner), err)]
 pub async fn probe_capabilities<R: GitRunner>(
     runner: &R,
     repo_root: &Path,
