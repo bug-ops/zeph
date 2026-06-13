@@ -81,6 +81,7 @@ impl Config {
         self.validate_llm_and_skills()?;
         self.validate_provider_names()?;
         self.validate_mcp_misc()?;
+        self.validate_scheduler()?;
         Ok(())
     }
 
@@ -388,6 +389,28 @@ impl Config {
                  use forward_output_schema = false to disable forwarding",
                 self.mcp.output_schema_hint_bytes
             )));
+        }
+        Ok(())
+    }
+
+    /// Validate that each `[[scheduler.tasks]]` entry has exactly one of `cron` or `run_at` set.
+    fn validate_scheduler(&self) -> Result<(), ConfigError> {
+        for task in &self.scheduler.tasks {
+            match (&task.cron, &task.run_at) {
+                (Some(_), Some(_)) => {
+                    return Err(ConfigError::Validation(format!(
+                        "scheduler task {:?}: only one of `cron` or `run_at` may be set, not both",
+                        task.name
+                    )));
+                }
+                (None, None) => {
+                    return Err(ConfigError::Validation(format!(
+                        "scheduler task {:?}: either `cron` or `run_at` must be set",
+                        task.name
+                    )));
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -1014,5 +1037,55 @@ weight = 0.3
         let mut cfg = Config::default();
         cfg.agent.focus.auto_consolidate_min_window = 1;
         assert!(cfg.validate().is_ok());
+    }
+
+    fn task_with(cron: Option<&str>, run_at: Option<&str>) -> crate::features::ScheduledTaskConfig {
+        crate::features::ScheduledTaskConfig {
+            name: "test-task".into(),
+            cron: cron.map(Into::into),
+            run_at: run_at.map(Into::into),
+            kind: crate::features::ScheduledTaskKind::HealthCheck,
+            config: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn scheduler_task_valid_cron() {
+        let mut cfg = Config::default();
+        cfg.scheduler.tasks.push(task_with(Some("0 9 * * *"), None));
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn scheduler_task_valid_run_at() {
+        let mut cfg = Config::default();
+        cfg.scheduler
+            .tasks
+            .push(task_with(None, Some("2025-01-01T09:00:00Z")));
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn scheduler_task_neither_cron_nor_run_at_rejected() {
+        let mut cfg = Config::default();
+        cfg.scheduler.tasks.push(task_with(None, None));
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("either `cron` or `run_at` must be set"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn scheduler_task_both_cron_and_run_at_rejected() {
+        let mut cfg = Config::default();
+        cfg.scheduler
+            .tasks
+            .push(task_with(Some("0 9 * * *"), Some("2025-01-01T09:00:00Z")));
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("only one of `cron` or `run_at` may be set"),
+            "unexpected error: {err}"
+        );
     }
 }

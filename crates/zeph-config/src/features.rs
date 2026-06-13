@@ -1037,8 +1037,8 @@ impl Default for SchedulerSecurityConfig {
 /// [[scheduler.tasks]]
 /// name = "daily-summary"
 /// cron = "0 9 * * *"
-/// kind = "prompt"
-/// prompt = "Summarize what was accomplished today."
+/// kind = "custom"
+/// config = { prompt = "Summarize what was accomplished today." }
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SchedulerConfig {
