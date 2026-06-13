@@ -49,7 +49,10 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// Creates a new manager, validating the repository root and canonicalising
     /// the worktree root directory.
     ///
-    /// The worktree root directory is created if it does not yet exist.
+    /// The worktree root directory is created if it does not yet exist.  The
+    /// underlying filesystem calls (`create_dir_all`, `canonicalize`) are
+    /// offloaded to `tokio::task::spawn_blocking` so the async executor is
+    /// never stalled.
     ///
     /// # Errors
     ///
@@ -64,24 +67,27 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// use zeph_config::WorktreeConfig;
     /// use zeph_worktree::{DefaultWorktreeManager, git_runner::DefaultGitRunner};
     ///
-    /// # fn main() -> Result<(), zeph_worktree::WorktreeError> {
+    /// # async fn example() -> Result<(), zeph_worktree::WorktreeError> {
     /// let mgr = DefaultWorktreeManager::new(
     ///     PathBuf::from("/path/to/repo"),
     ///     WorktreeConfig::default(),
     ///     DefaultGitRunner::new(),
-    /// )?;
+    /// ).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(
+    pub async fn new(
         repo_root: PathBuf,
         config: WorktreeConfig,
         runner: R,
     ) -> Result<Self, WorktreeError> {
         // Validate the root now so bootstrap fails fast rather than at first spawn.
-        let root = Path::new(&config.root);
-        // canonicalize_root creates the directory if needed.
-        let _ = canonicalize_root(root, &repo_root)?;
+        // Offload blocking I/O (create_dir_all + canonicalize) to a dedicated thread.
+        let root = PathBuf::from(&config.root);
+        let repo = repo_root.clone();
+        tokio::task::spawn_blocking(move || canonicalize_root(&root, &repo))
+            .await
+            .map_err(|e| WorktreeError::Io(std::io::Error::other(e)))??;
 
         Ok(Self {
             repo_root,
@@ -575,11 +581,13 @@ mod tests {
         dir
     }
 
-    fn make_manager(
+    async fn make_manager(
         dir: &tempfile::TempDir,
         runner: FakeGitRunner,
     ) -> WorktreeManager<FakeGitRunner> {
-        WorktreeManager::new(dir.path().to_path_buf(), test_config(), runner).unwrap()
+        WorktreeManager::new(dir.path().to_path_buf(), test_config(), runner)
+            .await
+            .unwrap()
     }
 
     // --- probe_capabilities ---
@@ -630,7 +638,7 @@ mod tests {
         // worktree add → success
         runner.push_ok(b"" as &[u8]);
 
-        let mgr = make_manager(&dir, runner);
+        let mgr = make_manager(&dir, runner).await;
 
         // The path doesn't actually get created since FakeGitRunner doesn't
         // invoke git, so we just verify the call args.
@@ -657,7 +665,7 @@ mod tests {
     async fn create_rejects_invalid_branch_component() {
         let dir = make_repo();
         let runner = FakeGitRunner::new();
-        let mgr = make_manager(&dir, runner);
+        let mgr = make_manager(&dir, runner).await;
         let err = mgr.create("../escape").await.unwrap_err();
         assert!(matches!(err, WorktreeError::InvalidBranchName(_)));
     }
@@ -666,7 +674,7 @@ mod tests {
     async fn create_rejects_leading_dash() {
         let dir = make_repo();
         let runner = FakeGitRunner::new();
-        let mgr = make_manager(&dir, runner);
+        let mgr = make_manager(&dir, runner).await;
         let err = mgr.create("-bad-id").await.unwrap_err();
         assert!(matches!(err, WorktreeError::InvalidBranchName(_)));
     }
@@ -692,7 +700,9 @@ mod tests {
             branch_prefix: "agent/".to_string(),
             ..WorktreeConfig::default()
         };
-        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner).unwrap();
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
 
         let result = mgr.create("agent-fresh").await;
         match result {
@@ -716,7 +726,9 @@ mod tests {
             branch_prefix: "agent/".to_string(),
             ..WorktreeConfig::default()
         };
-        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner).unwrap();
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
         let err = mgr.create("agent-fresh").await.unwrap_err();
         assert!(matches!(err, WorktreeError::GitCommand { .. }));
     }
@@ -736,7 +748,9 @@ mod tests {
             branch_prefix: "agent/".to_string(),
             ..WorktreeConfig::default()
         };
-        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner).unwrap();
+        let mgr = WorktreeManager::new(dir.path().to_path_buf(), config, runner)
+            .await
+            .unwrap();
         let err = mgr.create("agent-fresh").await.unwrap_err();
         assert!(matches!(err, WorktreeError::BaseRefUnresolved { .. }));
     }
@@ -750,7 +764,7 @@ mod tests {
         // worktree remove → success
         runner.push_ok(b"" as &[u8]);
 
-        let mgr = make_manager(&dir, runner);
+        let mgr = make_manager(&dir, runner).await;
         let handle = WorktreeHandle {
             path: dir.path().join("worktrees/agent-99"),
             branch_name: "agent/agent-99".to_string(),
@@ -771,7 +785,7 @@ mod tests {
         // branch -D
         runner.push_ok(b"" as &[u8]);
 
-        let mgr = make_manager(&dir, runner);
+        let mgr = make_manager(&dir, runner).await;
         let handle = WorktreeHandle {
             path: dir.path().join("worktrees/agent-99"),
             branch_name: "agent/agent-99".to_string(),
@@ -795,7 +809,7 @@ mod tests {
         );
         runner.push_ok(porcelain.into_bytes());
 
-        let mgr = make_manager(&dir, runner);
+        let mgr = make_manager(&dir, runner).await;
         let stale = mgr.reconcile().await.unwrap();
         // The main worktree (repo_root) is filtered out; only agent worktrees remain.
         assert_eq!(stale.len(), 1);
@@ -830,6 +844,7 @@ mod tests {
         // Use Arc<FakeGitRunner> as the runner.
         let mgr =
             WorktreeManager::new(dir.path().to_path_buf(), test_config(), Arc::clone(&runner))
+                .await
                 .unwrap();
 
         let handle = WorktreeHandle {
@@ -866,7 +881,7 @@ mod tests {
         // This is fine — we only verify dirty-tree check doesn't abort early.
         runner.push_err(b"fake error\n" as &[u8]);
 
-        let mgr = make_manager(&dir, runner);
+        let mgr = make_manager(&dir, runner).await;
         let result = mgr.create("dirty-agent").await;
         // Result is an error because the fake runner returns an error for `worktree add`,
         // but we reached that point — meaning check_dirty_tree did NOT abort.

@@ -3477,7 +3477,7 @@ mod worktree_cleanup_guard_tests {
 
     use crate::manager::worktree::WorktreeCleanupGuard;
 
-    fn make_dummy_wm() -> (TempDir, Arc<DefaultWorktreeManager>) {
+    async fn make_dummy_wm() -> (TempDir, Arc<DefaultWorktreeManager>) {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let config = WorktreeConfig {
@@ -3487,6 +3487,7 @@ mod worktree_cleanup_guard_tests {
         };
         let wm =
             DefaultWorktreeManager::new(dir.path().to_path_buf(), config, DefaultGitRunner::new())
+                .await
                 .unwrap();
         (dir, Arc::new(wm))
     }
@@ -3505,7 +3506,11 @@ mod worktree_cleanup_guard_tests {
     /// even outside a tokio runtime.
     #[test]
     fn cleanup_skipped_when_disabled() {
-        let (_dir, wm) = make_dummy_wm();
+        // Build manager inside a temporary runtime; then drop the runtime so the
+        // subsequent WorktreeCleanupGuard drop is intentionally outside a runtime.
+        let (_dir, wm) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(make_dummy_wm());
         let dir2 = TempDir::new().unwrap();
         let handle = dummy_handle(&dir2);
         // Drop must not panic even without a tokio runtime.
@@ -3521,7 +3526,9 @@ mod worktree_cleanup_guard_tests {
     /// This covers the `Handle::try_current` → `Err` branch.
     #[test]
     fn cleanup_logs_error_without_runtime() {
-        let (_dir, wm) = make_dummy_wm();
+        let (_dir, wm) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(make_dummy_wm());
         let dir2 = TempDir::new().unwrap();
         let handle = dummy_handle(&dir2);
         // No tokio runtime active — must not panic, must log error instead.
@@ -3538,7 +3545,7 @@ mod worktree_cleanup_guard_tests {
     /// is a no-op or logs a warning — either outcome is acceptable here).
     #[tokio::test]
     async fn cleanup_spawns_remove_with_runtime() {
-        let (_dir, wm) = make_dummy_wm();
+        let (_dir, wm) = make_dummy_wm().await;
         let dir2 = TempDir::new().unwrap();
         let handle = dummy_handle(&dir2);
         drop(WorktreeCleanupGuard {

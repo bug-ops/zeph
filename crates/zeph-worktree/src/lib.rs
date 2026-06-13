@@ -34,7 +34,7 @@
 //! let runner = DefaultGitRunner::new();
 //! probe_capabilities(&runner, &repo).await?;
 //!
-//! let mgr = DefaultWorktreeManager::new(repo, WorktreeConfig::default(), DefaultGitRunner::new())?;
+//! let mgr = DefaultWorktreeManager::new(repo, WorktreeConfig::default(), DefaultGitRunner::new()).await?;
 //! let handle = mgr.create("agent-42").await?;
 //! println!("Worktree at {:?}", handle.path);
 //! mgr.remove(&handle, false).await?;

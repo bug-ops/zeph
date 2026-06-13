@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: offload user theme file I/O to `tokio::task::spawn_blocking` in `apply_theme`
+  to prevent the `tui_loop` from stalling on `std::fs::symlink_metadata` / `File::open` calls.
+  Built-in presets are still applied synchronously (no I/O). User file results arrive via an
+  `oneshot` channel polled on each tick. Cancels any in-flight load when switching to a preset.
+  Closes #5308.
+
+- `fix(worktree)`: make `WorktreeManager::new` async and wrap the `canonicalize_root` call
+  (`create_dir_all` + `canonicalize`) in `tokio::task::spawn_blocking` to prevent blocking
+  the async executor at agent startup. Matches the pattern already used in `WorktreeManager::create`.
+  Closes #5312.
+
 - `fix(index)`: wrap `embed_batch` in `tokio::time::timeout` in `FileIndexWorker::index_file`
   (`indexer.rs:572`). Previously the call had no timeout guard, meaning a slow or hung
   embedding provider could stall the indexer pipeline indefinitely. Adds

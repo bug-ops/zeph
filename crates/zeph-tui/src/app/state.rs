@@ -85,6 +85,8 @@ impl App {
             hyperlinks: Vec::new(),
             cancel_signal: None,
             pending_file_index: None,
+            pending_theme: None,
+            pending_theme_name: None,
             subagent_sidebar: SubAgentSidebarState::new(),
             task_supervisor: None,
             show_task_panel: false,
@@ -200,16 +202,18 @@ impl App {
         self.theme_generation
     }
 
-    /// Apply a named theme preset or user file, updating the active theme and bumping
-    /// the generation counter so that all session render caches are invalidated.
+    /// Apply a named theme preset or user file.
     ///
-    /// On success the new theme name is stored for cycle tracking.
-    /// On error the existing theme is left unchanged.
+    /// Returns `Ok(true)` when the theme was applied immediately (built-in preset).
+    /// Returns `Ok(false)` when the user file load was dispatched asynchronously; the
+    /// result will be installed by `poll_pending_theme` on the next tick.
+    ///
+    /// Cancels any in-flight user-file load when switching to a preset, so the earlier
+    /// async result cannot silently revert the newer choice.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::theme::ThemeLoadError`] if the name fails validation or the
-    /// palette file cannot be parsed.
+    /// Returns [`crate::theme::ThemeLoadError`] for empty or path-unsafe names.
     ///
     /// # Examples
     ///
@@ -224,20 +228,79 @@ impl App {
     /// let _ = app.apply_theme("zephyr-light");
     /// assert!(app.theme_generation() > gen_before);
     /// ```
-    pub fn apply_theme(&mut self, name: &str) -> Result<(), crate::theme::ThemeLoadError> {
-        use crate::theme::{Theme, ThemeLoadError, resolve_palette};
+    pub fn apply_theme(&mut self, name: &str) -> Result<bool, crate::theme::ThemeLoadError> {
+        use crate::theme::{Theme, ThemeLoadError, presets};
         // Reject empty names — always routes to listing, never implicit preset resolution.
         if name.is_empty() {
             return Err(ThemeLoadError::UnsafeName(String::new()));
         }
-        let palette = resolve_palette(name)?;
-        let new_theme = Theme::from_palette_with_mode(&palette, self.effective_color_mode);
-        self.theme = new_theme;
-        name.clone_into(&mut self.theme_name);
-        self.theme_generation += 1;
-        // Invalidate render caches for ALL sessions (theme is global, not per-session).
-        self.clear_all_render_caches();
-        Ok(())
+        // Validate name before any I/O so callers get immediate feedback on bad input.
+        presets::validate_theme_name_pub(name)?;
+
+        // Built-in presets are compile-time constants — no I/O, apply synchronously.
+        if let Some(preset) = presets::Preset::from_name(name) {
+            // Cancel any in-flight user-file load so it cannot revert this newer choice.
+            self.pending_theme = None;
+            self.pending_theme_name = None;
+            let palette = preset.palette();
+            let new_theme = Theme::from_palette_with_mode(&palette, self.effective_color_mode);
+            self.theme = new_theme;
+            name.clone_into(&mut self.theme_name);
+            self.theme_generation += 1;
+            self.clear_all_render_caches();
+            return Ok(true);
+        }
+
+        // User file: offload blocking I/O to a spawn_blocking thread.
+        // The result is installed by `poll_pending_theme` on the next tick.
+        let name_owned = name.to_owned();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(presets::load_user_theme(&name_owned));
+        });
+        self.pending_theme = Some(rx);
+        self.pending_theme_name = Some(name.to_owned());
+        Ok(false)
+    }
+
+    /// Install a pending user-theme load result if the background task has completed.
+    ///
+    /// Must be called once per tick from `tui_loop` (alongside `poll_pending_file_index`).
+    pub fn poll_pending_theme(&mut self) {
+        use crate::theme::Theme;
+
+        let Some(rx) = self.pending_theme.as_mut() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.pending_theme = None;
+                let name = self.pending_theme_name.take().unwrap_or_default();
+                match result {
+                    Ok(palette) => {
+                        let new_theme =
+                            Theme::from_palette_with_mode(&palette, self.effective_color_mode);
+                        self.theme = new_theme;
+                        name.clone_into(&mut self.theme_name);
+                        self.theme_generation += 1;
+                        self.clear_all_render_caches();
+                        self.push_system_message_pub(format!("Theme switched to: {name}"));
+                    }
+                    Err(e) => {
+                        self.push_system_message_pub(format!("Theme error: {e}"));
+                    }
+                }
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                // Not ready yet — keep waiting.
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                // Sender dropped without sending (spawn_blocking panicked).
+                self.pending_theme = None;
+                self.pending_theme_name = None;
+                tracing::warn!("pending theme load task dropped without result");
+            }
+        }
     }
 
     /// Cycle to the next preset in the fixed cycle list `["zephyr", "zephyr-light", "high-contrast"]`.
@@ -265,7 +328,7 @@ impl App {
             .unwrap_or(0);
         let next = CYCLE[(pos + 1) % CYCLE.len()];
         if let Err(e) = self.apply_theme(next) {
-            tracing::warn!("cycle_theme: failed to load '{}': {e}", next);
+            tracing::warn!("cycle_theme: failed to apply '{}': {e}", next);
         }
     }
 

@@ -36,7 +36,7 @@ pub(crate) async fn handle_worktree_command(
     let timeout_secs = config.worktree.git_timeout_secs.max(1);
     let runner = DefaultGitRunner::with_timeout(std::time::Duration::from_secs(timeout_secs));
     probe_capabilities(&runner, &repo_root).await?;
-    let wm = DefaultWorktreeManager::new(repo_root, config.worktree.clone(), runner)?;
+    let wm = DefaultWorktreeManager::new(repo_root, config.worktree.clone(), runner).await?;
 
     match cmd {
         WorktreeCommand::List => {

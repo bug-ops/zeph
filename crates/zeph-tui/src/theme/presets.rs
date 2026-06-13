@@ -150,6 +150,13 @@ pub fn resolve_palette(name: &str) -> Result<SemanticPalette, ThemeLoadError> {
 }
 
 /// Validate a theme name for path safety (M3).
+///
+/// Exposed as `pub(crate)` so callers that split the preset/user-file fast path can
+/// validate the name before dispatching without going through `resolve_palette`.
+pub(crate) fn validate_theme_name_pub(name: &str) -> Result<(), ThemeLoadError> {
+    validate_theme_name(name)
+}
+
 fn validate_theme_name(name: &str) -> Result<(), ThemeLoadError> {
     if name.is_empty() {
         return Ok(()); // empty → zephyr default
@@ -171,11 +178,14 @@ fn validate_theme_name(name: &str) -> Result<(), ThemeLoadError> {
 
 /// Load a user-defined theme from `~/.config/zeph/themes/<name>.toml`.
 ///
+/// This is a synchronous, blocking function — call it only from a
+/// `tokio::task::spawn_blocking` context, never directly on an async executor thread.
+///
 /// # Errors
 ///
 /// Returns [`ThemeLoadError`] if the name is not found, the file is too large, or
 /// the TOML cannot be parsed.
-fn load_user_theme(name: &str) -> Result<SemanticPalette, ThemeLoadError> {
+pub(crate) fn load_user_theme(name: &str) -> Result<SemanticPalette, ThemeLoadError> {
     use std::io::Read;
 
     const MAX_SIZE: u64 = 64 * 1024; // 64 KiB

@@ -400,6 +400,15 @@ pub struct App {
     hyperlinks: Vec<HyperlinkSpan>,
     cancel_signal: Option<Arc<Notify>>,
     pending_file_index: Option<oneshot::Receiver<FileIndex>>,
+    /// Pending user-theme load: fired by `apply_theme` when the name resolves to a
+    /// user file on disk rather than a built-in preset.  The background thread reads
+    /// and parses `~/.config/zeph/themes/<name>.toml`; the result is installed by
+    /// `poll_pending_theme` on the next tick.
+    pending_theme: Option<
+        oneshot::Receiver<Result<super::theme::SemanticPalette, super::theme::ThemeLoadError>>,
+    >,
+    /// Theme name paired with `pending_theme` so the poll handler can update `theme_name`.
+    pending_theme_name: Option<String>,
     /// Interactive selection state for the subagent sidebar (stays global per arch v2 E5).
     pub subagent_sidebar: SubAgentSidebarState,
     /// Optional handle to the `TaskSupervisor` for the task registry panel.

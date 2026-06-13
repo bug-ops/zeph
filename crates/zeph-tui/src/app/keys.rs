@@ -165,11 +165,15 @@ impl App {
             TuiCommand::SetTheme(name) => {
                 let name = name.clone();
                 match self.apply_theme(&name) {
-                    Ok(()) => {
+                    Ok(true) => {
+                        // Preset applied immediately.
                         self.push_system_message(format!(
                             "Theme switched to: {}",
                             self.active_theme_name()
                         ));
+                    }
+                    Ok(false) => {
+                        // User file load dispatched; confirmation arrives via poll_pending_theme.
                     }
                     Err(e) => {
                         self.push_system_message(format!("Theme error: {e}"));

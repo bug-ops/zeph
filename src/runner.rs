@@ -2986,6 +2986,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 agents_config.worktree.clone(),
                 runner,
             )
+            .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
             mgr.set_worktree_manager(std::sync::Arc::new(wm));
             tracing::info!("worktree subsystem initialised");
