@@ -137,7 +137,7 @@ pub fn render_interactive(
 
     if metrics.sub_agents.is_empty() {
         let header = Line::from(vec![
-            Span::styled("⬡ ", theme.highlight),
+            Span::styled("≈ ", theme.highlight),
             Span::styled(
                 "agents · none  [j/k=nav  Esc=close]",
                 theme.highlight.add_modifier(Modifier::BOLD),
@@ -160,7 +160,7 @@ pub fn render_interactive(
         .collect();
 
     let header = Line::from(vec![
-        Span::styled("⬡ ", theme.highlight),
+        Span::styled("≈ ", theme.highlight),
         Span::styled(
             format!(
                 "agents · {}  [j/k=nav  Enter=view  Esc=close]",

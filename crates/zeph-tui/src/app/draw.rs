@@ -143,7 +143,7 @@ impl App {
         );
 
         let line = Line::from(vec![
-            Span::styled("⬡ ", theme.user_message),
+            Span::styled("≈ ", theme.user_message),
             Span::styled("zeph", brand_style),
             Span::styled(meta, meta_style),
         ]);
@@ -328,7 +328,7 @@ impl App {
             } else {
                 let theme = &self.theme;
                 let header = Line::from(vec![
-                    Span::styled("⬡ ", theme.highlight),
+                    Span::styled("≈ ", theme.highlight),
                     Span::styled("tasks  supervisor not available", theme.system_message),
                 ]);
                 frame.render_widget(Paragraph::new(header), area);
@@ -354,7 +354,7 @@ impl App {
         }
         let line = if focused {
             Line::from(vec![
-                Span::styled("⬡ ", self.theme.highlight),
+                Span::styled("≈ ", self.theme.highlight),
                 Span::styled(label, self.theme.highlight),
             ])
         } else {
@@ -380,7 +380,7 @@ impl App {
             return;
         }
         let line = Line::from(vec![
-            Span::styled("⬡ ", self.theme.highlight),
+            Span::styled("≈ ", self.theme.highlight),
             Span::styled(label, self.theme.highlight),
         ]);
         frame.render_widget(Paragraph::new(line), area);
