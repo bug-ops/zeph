@@ -62,15 +62,10 @@ fn push_label_spans<'a>(
 ///
 /// Layout (left → right):
 /// 1. `you ▸ ` prompt glyph (6 columns, always present).
-/// 2. Activity label: `verb · detail  esc to interrupt` — measured via unicode width.
-/// 3. Wave right-fills the remaining columns (`wave_w = width - prompt_w - label_w - 1`).
-///    The `+1` is a space gutter between label and wave. `wave_w = 0` → wave skipped.
-///
-/// The `~N tokens` estimate and mode hint are deliberately omitted while busy+Full to
-/// free width for the wave.
+/// 2. Wave fills the remaining columns — no label text (the busy verb is already
+///    in the status bar §6; duplicating it here clutters the input area).
 fn build_full_busy_sep<'a>(
     area_width: u16,
-    activity_label: Option<&'a str>,
     app: &'a App,
     wave_state: WaveState,
     wave_tick: u64,
@@ -79,38 +74,15 @@ fn build_full_busy_sep<'a>(
 ) -> Vec<Span<'static>> {
     const PROMPT_W: u16 = 6; // "you ▸ " width
 
-    // Build the human-voice label text first so we can measure it.
-    let label_text: String = if let Some(label) = activity_label {
-        let phrase = humanize(label);
-        if phrase.verb.is_empty() {
-            "  esc to interrupt".to_owned()
-        } else if phrase.detail.is_empty() {
-            format!("  {} · esc to interrupt", phrase.verb)
-        } else {
-            format!("  {} · {}  esc to interrupt", phrase.verb, phrase.detail)
-        }
-    } else {
-        "  esc to interrupt".to_owned()
-    };
+    let wave_w = area_width.saturating_sub(PROMPT_W);
 
-    #[allow(clippy::cast_possible_truncation)]
-    let label_w = label_text.width() as u16;
-
-    let wave_w = area_width
-        .saturating_sub(PROMPT_W)
-        .saturating_sub(label_w)
-        .saturating_sub(1); // gutter
-
-    // Build spans — all 'static lifetime via owned Strings.
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(
         format!("{PROMPT_GLYPH} "),
         theme.system_message,
     ));
-    spans.push(Span::styled(label_text, theme.system_message));
 
     if wave_w > 0 {
-        spans.push(Span::raw(" ")); // gutter
         let color_mode = app.effective_color_mode();
         let ascii = app.is_ascii_only();
         glyphs(
@@ -204,7 +176,7 @@ fn build_idle_sep<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
 }
 
 /// Render the editable text area and update the terminal cursor position.
-fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect) {
+fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect, busy: bool) {
     let theme = &app.theme;
     let block = Block::default();
 
@@ -238,7 +210,7 @@ fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect) {
             .style(theme.system_message)
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
-    } else if app.input().is_empty() && matches!(app.input_mode(), InputMode::Insert) {
+    } else if app.input().is_empty() && matches!(app.input_mode(), InputMode::Insert) && !busy {
         Paragraph::new("Type a message, / for commands, @ to mention")
             .block(block)
             .style(theme.system_message)
@@ -289,15 +261,9 @@ pub fn render(
 
     let sep_spans: Vec<Span<'_>> = if busy {
         match motion {
-            Motion::Full => build_full_busy_sep(
-                area.width,
-                activity_label,
-                app,
-                wave_state,
-                wave_tick,
-                theme,
-                wave_buf,
-            ),
+            Motion::Full => {
+                build_full_busy_sep(area.width, app, wave_state, wave_tick, theme, wave_buf)
+            }
             Motion::Minimal => {
                 build_spinner_busy_sep(spinner_idx, activity_label, app, theme, true)
             }
@@ -320,6 +286,7 @@ pub fn render(
             height: area.height.saturating_sub(1),
             ..area
         },
+        busy,
     );
 }
 
@@ -594,16 +561,17 @@ mod tests {
                 zeph_config::Motion::Full,
             );
         });
-        // Separator must have the prompt glyph and label.
+        // In Full mode the wave row shows prompt glyph + wave animation only.
+        // The busy verb is in the status bar (§6), not duplicated here.
         assert!(
             output.contains("you ▸"),
             "prompt glyph must appear in Full+busy; got: {output:?}"
         );
+        // "esc to interrupt" must NOT appear in Full mode — only in Minimal/Off.
         assert!(
-            output.contains("esc to interrupt"),
-            "interrupt hint must appear; got: {output:?}"
+            !output.contains("esc to interrupt"),
+            "Full mode must not show interrupt hint in wave row; got: {output:?}"
         );
-        // Wave glyphs OR the label fills the row — no block-element crash check.
         assert!(
             !output.is_empty(),
             "render must not produce empty output; got: {output:?}"
@@ -611,8 +579,9 @@ mod tests {
     }
 
     #[test]
-    fn input_busy_full_narrow_wave_skipped() {
-        // width=20 is narrow enough that wave_w saturates to 0 after prompt (2) + label (~18).
+    fn input_busy_full_narrow_wave_appears() {
+        // width=20: wave_w = 20 - 6 = 14, wave appears right after the prompt glyph.
+        // No label text competes for space — the whole remaining width is wave.
         let app = make_app();
         let output = render_to_string(20, 5, |frame, area| {
             render_input(
@@ -627,17 +596,14 @@ mod tests {
                 zeph_config::Motion::Full,
             );
         });
-        // No wave block characters when wave_w == 0.
-        for glyph in &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] {
-            assert!(
-                !output.contains(glyph),
-                "no wave glyphs should appear on narrow terminal; got: {output:?}"
-            );
-        }
-        // Label must still be present.
         assert!(
             output.contains("you ▸"),
-            "prompt glyph must appear even on narrow terminal; got: {output:?}"
+            "prompt glyph must appear on narrow terminal; got: {output:?}"
+        );
+        // Text area is blank when busy (no placeholder).
+        assert!(
+            !output.contains("Type a message"),
+            "placeholder must be hidden when busy; got: {output:?}"
         );
     }
 
