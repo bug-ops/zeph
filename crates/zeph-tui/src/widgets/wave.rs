@@ -28,13 +28,18 @@ use crate::theme::{EffectiveColorMode, Theme};
 // Glyph ramps
 // ---------------------------------------------------------------------------
 
-/// Block-element gradient from thin (index 0) to full (index 7).
-/// `[&'static str; 8]` so `Span::styled(WAVE_GLYPHS[b], style)` borrows a `&'static str`
-/// — no per-glyph String allocation.
-const WAVE_GLYPHS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+/// Thin horizontal-line ramp: dim dash → solid thin → solid thick at wave peak.
+///
+/// Each glyph sits in the *middle* of the cell so the wave appears as a single
+/// thin horizontal line whose brightness oscillates with the sine. Color (see
+/// [`bucket_to_rgb`]) fades from near-invisible at the trough to full accent
+/// `#1FB9A8` at the crest — replicating the CSS
+/// `background: linear-gradient(90deg, transparent, accent, transparent)` sweep
+/// from the design mock.
+const WAVE_GLYPHS: [&str; 8] = ["╌", "╌", "─", "─", "─", "━", "━", "━"];
 
-/// ASCII fallback ramp for `TERM=dumb` terminals.
-const ASCII_GLYPHS: [&str; 8] = [".", ".", "-", "-", "~", "~", "=", "="];
+/// ASCII fallback for `TERM=dumb` terminals.
+const ASCII_GLYPHS: [&str; 8] = [".", ".", "-", "-", "-", "=", "=", "="];
 
 // ---------------------------------------------------------------------------
 // WaveState
@@ -282,22 +287,27 @@ pub fn glyphs<'a>(
     buf.as_slice()
 }
 
-/// Map a bucket index `0..=7` to an RGB colour for the Truecolor gradient.
+/// Map a bucket index `0..=7` to an RGB colour for the Truecolor thin-line wave.
 ///
-/// Low buckets use a cool blue; high buckets shift to bright aqua/white.
+/// Trough (bucket 0) → near-invisible on dark bg. Crest (bucket 7) → full
+/// accent `#1FB9A8`, matching the CSS gradient in the design mock.
+/// Quadratic curve keeps low buckets dark so the peak stands out.
 fn bucket_to_rgb(state: WaveState, bucket: usize) -> Color {
     if matches!(state, WaveState::Stalled) {
-        // Error tint: dim red gradient.
+        // Error tint: low-to-mid red gradient along the flat line.
         #[allow(clippy::cast_possible_truncation)]
         let v = (80 + bucket * 22) as u8;
-        return Color::Rgb(v, 20, 20);
+        return Color::Rgb(v, 15, 15);
     }
-    // Aqua gradient: r stays low, g and b ramp up with height.
-    #[allow(clippy::cast_possible_truncation)]
-    let g = (80 + bucket * 22) as u8; // 80..=234
-    #[allow(clippy::cast_possible_truncation)]
-    let b = (120 + bucket * 17) as u8; // 120..=239
-    Color::Rgb(20, g, b)
+    // Quadratic fade: 0 → dark (#0A191E), 7 → accent (#1FB9A8).
+    let t = (bucket as f32 / 7.0).powi(2);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let r = (10.0_f32 + t * 21.0) as u8; // 10..=31
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let g = (25.0_f32 + t * 160.0) as u8; // 25..=185
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let b = (30.0_f32 + t * 138.0) as u8; // 30..=168
+    Color::Rgb(r, g, b)
 }
 
 // ---------------------------------------------------------------------------
