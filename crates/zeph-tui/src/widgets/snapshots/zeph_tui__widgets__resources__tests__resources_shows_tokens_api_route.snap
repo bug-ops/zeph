@@ -1,0 +1,9 @@
+---
+source: crates/zeph-tui/src/widgets/resources.rs
+assertion_line: 188
+expression: output
+---
+resources                          
+  tokens  12.5k                    
+  api     5 calls  · 250ms last    
+  route   claude/opus-4

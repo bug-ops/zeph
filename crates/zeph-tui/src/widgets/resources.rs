@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Resources side-panel widget.
+//!
+//! Shows a compact summary of LLM routing, session token usage, and API calls:
+//! `tokens`, `api`, `route` — matching design spec §4. Extra lines (cache,
+//! MCP, latency, background shell, classifiers) appear only when they carry
+//! non-zero data, so the panel stays quiet during idle sessions.
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -11,147 +18,116 @@ use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
+/// Render the resources panel into `area`.
+///
+/// Layout (spec §4): section title · tokens · api · route, with optional
+/// cache, MCP, background-shell, and turn-latency lines when non-zero.
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
-    let collapsed = area.height < 30;
     let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
         "resources",
         theme.system_message.add_modifier(Modifier::BOLD),
     ))];
-    append_llm_section(&mut lines, metrics);
-    append_session_section(&mut lines, metrics, collapsed);
-    append_infra_section(&mut lines, metrics, collapsed);
+
+    append_tokens_line(&mut lines, metrics, theme);
+    append_api_line(&mut lines, metrics, theme);
+    append_route_line(&mut lines, metrics, theme);
+    append_cache_line(&mut lines, metrics, theme);
+    append_mcp_line(&mut lines, metrics, theme);
     append_shell_background_section(&mut lines, metrics);
     append_turn_latency_section(&mut lines, metrics);
-    append_classifier_section(&mut lines, metrics);
+
     let resources = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(resources, area);
 }
 
-fn append_llm_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
-    lines.push(Line::from("  LLM"));
-    lines.push(Line::from(format!(
-        "    Provider: {}",
-        metrics.provider_name
-    )));
-    lines.push(Line::from(format!("    Model: {}", metrics.model_name)));
+/// `tokens  Nk` (with reasoning suffix when non-zero).
+fn append_tokens_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
+    use zeph_common::format_tokens;
+    let mut detail = format_tokens(metrics.total_tokens);
+    if metrics.reasoning_tokens > 0 {
+        detail.push_str(&format!("  R:{}", format_tokens(metrics.reasoning_tokens)));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("  tokens  ", theme.system_message),
+        Span::styled(detail, theme.status_bar),
+    ]));
+}
+
+/// `api  N calls [· Nms last]`.
+fn append_api_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
+    let mut detail = format!("{} calls", metrics.api_calls);
+    if metrics.last_llm_latency_ms > 0 {
+        detail.push_str(&format!("  · {}ms last", metrics.last_llm_latency_ms));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("  api     ", theme.system_message),
+        Span::styled(detail, theme.status_bar),
+    ]));
+}
+
+/// `route  provider/model` (or just `model` when provider is empty).
+fn append_route_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
+    if metrics.model_name.is_empty() {
+        return;
+    }
+    let route = if metrics.provider_name.is_empty() {
+        metrics.model_name.clone()
+    } else {
+        format!("{}/{}", metrics.provider_name, metrics.model_name)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  route   ", theme.system_message),
+        Span::styled(route, theme.status_bar),
+    ]));
     if !metrics.embedding_model.is_empty() {
-        lines.push(Line::from(format!(
-            "    Embed: {}",
-            metrics.embedding_model
-        )));
-    }
-    lines.push(Line::from(format!(
-        "    Context: {} | Latency: {}ms",
-        metrics.context_tokens, metrics.last_llm_latency_ms
-    )));
-    if metrics.extended_context {
-        lines.push(Line::from("    Max context: 1M"));
+        lines.push(Line::from(vec![
+            Span::styled("  embed   ", theme.system_message),
+            Span::styled(metrics.embedding_model.clone(), theme.status_bar),
+        ]));
     }
 }
 
-fn append_session_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, collapsed: bool) {
-    if collapsed {
-        lines.push(Line::from(format!(
-            "  Session: {} tok | {} calls",
-            metrics.total_tokens, metrics.api_calls
-        )));
+/// `cache  W:N R:N` — only when there is cache activity.
+fn append_cache_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
+    if metrics.cache_creation_tokens == 0 && metrics.cache_read_tokens == 0 {
         return;
     }
-    lines.push(Line::from("  Session"));
-    lines.push(Line::from(format!(
-        "    Tokens: {} | API: {}",
-        metrics.total_tokens, metrics.api_calls
-    )));
-    if let Some(budget) = metrics.token_budget {
-        if let Some(threshold) = metrics.compaction_threshold {
-            lines.push(Line::from(format!(
-                "    Budget: {budget} | Compact: {threshold}"
-            )));
-        } else {
-            lines.push(Line::from(format!("    Budget: {budget}")));
-        }
-    }
-    if metrics.cache_creation_tokens > 0 || metrics.cache_read_tokens > 0 {
-        lines.push(Line::from(format!(
-            "    Cache W:{} R:{}",
-            metrics.cache_creation_tokens, metrics.cache_read_tokens
-        )));
-    }
-    if metrics.filter_applications > 0 {
-        #[allow(clippy::cast_precision_loss)]
-        let hit_pct = if metrics.filter_total_commands > 0 {
-            metrics.filter_filtered_commands as f64 / metrics.filter_total_commands as f64 * 100.0
-        } else {
-            0.0
-        };
-        lines.push(Line::from(format!(
-            "    Filter: {}/{} ({hit_pct:.0}% hit)",
-            metrics.filter_filtered_commands, metrics.filter_total_commands,
-        )));
-        #[allow(clippy::cast_precision_loss)]
-        let pct = if metrics.filter_raw_tokens > 0 {
-            metrics.filter_saved_tokens as f64 / metrics.filter_raw_tokens as f64 * 100.0
-        } else {
-            0.0
-        };
-        lines.push(Line::from(format!(
-            "    Filter saved: {} tok ({pct:.0}%)",
-            metrics.filter_saved_tokens,
-        )));
-    }
+    lines.push(Line::from(vec![
+        Span::styled("  cache   ", theme.system_message),
+        Span::styled(
+            format!(
+                "W:{} R:{}",
+                metrics.cache_creation_tokens, metrics.cache_read_tokens
+            ),
+            theme.status_bar,
+        ),
+    ]));
 }
 
-fn append_infra_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, collapsed: bool) {
-    if collapsed {
-        let mut infra_parts: Vec<String> = Vec::new();
-        if !metrics.vault_backend.is_empty() {
-            infra_parts.push(format!("vault:{}", metrics.vault_backend));
-        }
-        if !metrics.active_channel.is_empty() {
-            infra_parts.push(format!("ch:{}", metrics.active_channel));
-        }
-        if !infra_parts.is_empty() {
-            lines.push(Line::from(format!("  Infra: {}", infra_parts.join(" | "))));
-        }
+/// `mcp  N/N connected, N tools` — only when MCP servers are configured.
+fn append_mcp_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
+    if metrics.mcp_server_count == 0 {
         return;
     }
-    lines.push(Line::from("  Infra"));
-    match (
-        metrics.vault_backend.as_str(),
-        metrics.active_channel.as_str(),
-    ) {
-        ("", "") => {}
-        (v, "") => lines.push(Line::from(format!("    Vault: {v}"))),
-        ("", c) => lines.push(Line::from(format!("    Channel: {c}"))),
-        (v, c) => lines.push(Line::from(format!("    Vault: {v} | Channel: {c}"))),
-    }
-    let mut flags: Vec<&str> = Vec::new();
-    if metrics.self_learning_enabled {
-        flags.push("Learning: ON");
-    }
-    if metrics.cache_enabled {
-        flags.push("Cache: ON");
-    }
-    if metrics.autosave_enabled {
-        flags.push("Autosave: ON");
-    }
-    if !flags.is_empty() {
-        lines.push(Line::from(format!("    {}", flags.join(" | "))));
-    }
-    if metrics.mcp_server_count > 0 {
-        lines.push(Line::from(format!(
-            "    MCP: {}/{} connected, {} tools",
-            metrics.mcp_connected_count, metrics.mcp_server_count, metrics.mcp_tool_count
-        )));
-    }
+    lines.push(Line::from(vec![
+        Span::styled("  mcp     ", theme.system_message),
+        Span::styled(
+            format!(
+                "{}/{} connected, {} tools",
+                metrics.mcp_connected_count, metrics.mcp_server_count, metrics.mcp_tool_count
+            ),
+            theme.status_bar,
+        ),
+    ]));
 }
 
+/// Background shell runs — only when present.
 fn append_shell_background_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
     if metrics.shell_background_runs.is_empty() {
         return;
     }
     lines.push(Line::from(format!(
-        "  Background Shell ({})",
+        "  shell ({} bg)",
         metrics.shell_background_runs.len()
     )));
     for run in &metrics.shell_background_runs {
@@ -166,52 +142,16 @@ fn append_shell_background_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsS
     }
 }
 
+/// Turn latency breakdown — only when timing samples exist.
 fn append_turn_latency_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
     if metrics.timing_sample_count == 0 {
         return;
     }
     let last = &metrics.last_turn_timings;
-    let avg = &metrics.avg_turn_timings;
-    let max = &metrics.max_turn_timings;
-    lines.push(Line::from("  Turn Latency"));
     lines.push(Line::from(format!(
-        "    ctx:{}ms llm:{}ms tool:{}ms persist:{}ms",
-        last.prepare_context_ms, last.llm_chat_ms, last.tool_exec_ms, last.persist_message_ms,
+        "  latency  ctx:{}ms llm:{}ms",
+        last.prepare_context_ms, last.llm_chat_ms,
     )));
-    if metrics.timing_sample_count > 1 {
-        lines.push(Line::from(format!(
-            "    avg ctx:{}ms llm:{}ms (n={})",
-            avg.prepare_context_ms, avg.llm_chat_ms, metrics.timing_sample_count,
-        )));
-        lines.push(Line::from(format!(
-            "    max ctx:{}ms llm:{}ms tool:{}ms",
-            max.prepare_context_ms, max.llm_chat_ms, max.tool_exec_ms,
-        )));
-    }
-}
-
-fn append_classifier_section(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot) {
-    let clf = &metrics.classifier;
-    let has_data =
-        clf.injection.call_count > 0 || clf.pii.call_count > 0 || clf.feedback.call_count > 0;
-    if !has_data {
-        return;
-    }
-    lines.push(Line::from("  Classifiers"));
-    for (name, snap) in [
-        ("injection", &clf.injection),
-        ("pii", &clf.pii),
-        ("feedback", &clf.feedback),
-    ] {
-        if snap.call_count > 0 {
-            lines.push(Line::from(format!(
-                "    [{name}] calls:{} p50:{}ms p95:{}ms",
-                snap.call_count,
-                snap.p50_ms.unwrap_or(0),
-                snap.p95_ms.unwrap_or(0),
-            )));
-        }
-    }
 }
 
 #[cfg(test)]
@@ -221,45 +161,32 @@ mod tests {
     use crate::metrics::MetricsSnapshot;
     use crate::test_utils::render_to_string;
 
+    fn theme() -> crate::theme::Theme {
+        crate::theme::Theme::default()
+    }
+
     #[test]
-    fn resources_with_provider() {
+    fn resources_shows_tokens_api_route() {
         let metrics = MetricsSnapshot {
             provider_name: "claude".into(),
             model_name: "opus-4".into(),
-            context_tokens: 8000,
-            total_tokens: 12000,
+            total_tokens: 12_500,
             api_calls: 5,
             last_llm_latency_ms: 250,
             ..MetricsSnapshot::default()
         };
-
-        let output = render_to_string(35, 12, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
-        });
-        assert_snapshot!(output);
-    }
-
-    #[test]
-    fn resources_with_extended_context() {
-        let metrics = MetricsSnapshot {
-            provider_name: "claude".into(),
-            model_name: "claude-sonnet-4-6".into(),
-            context_tokens: 50000,
-            total_tokens: 75000,
-            api_calls: 3,
-            last_llm_latency_ms: 400,
-            extended_context: true,
-            ..MetricsSnapshot::default()
-        };
-
-        let output = render_to_string(35, 13, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+        let output = render_to_string(35, 8, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
         assert!(
-            output.contains("Max context: 1M"),
-            "resources panel must contain 'Max context: 1M' when extended_context is true; got: {output:?}"
+            output.contains("tokens"),
+            "must show tokens; got: {output:?}"
+        );
+        assert!(output.contains("api"), "must show api; got: {output:?}");
+        assert!(output.contains("route"), "must show route; got: {output:?}");
+        assert!(
+            output.contains("claude/opus-4"),
+            "route must be provider/model; got: {output:?}"
         );
         assert_snapshot!(output);
     }
@@ -267,104 +194,81 @@ mod tests {
     #[test]
     fn resources_shows_embedding_model_when_set() {
         let metrics = MetricsSnapshot {
+            provider_name: "ollama".into(),
+            model_name: "qwen3:8b".into(),
             embedding_model: "nomic-embed-text".into(),
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(35, 30, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+        let output = render_to_string(35, 10, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
         assert!(
-            output.contains("Embed: nomic-embed-text"),
-            "resources panel must contain embedding model; got: {output:?}"
+            output.contains("nomic-embed-text"),
+            "must show embed model; got: {output:?}"
         );
     }
 
     #[test]
     fn resources_omits_embedding_model_when_empty() {
         let metrics = MetricsSnapshot::default();
-        let output = render_to_string(35, 30, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+        let output = render_to_string(35, 8, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
         assert!(
-            !output.contains("Embed:"),
-            "resources panel must not contain Embed: when embedding_model is empty; got: {output:?}"
+            !output.contains("embed"),
+            "must not show embed when empty; got: {output:?}"
         );
     }
 
     #[test]
-    fn resources_shows_token_budget_with_compaction_threshold_none() {
+    fn resources_shows_cache_when_nonzero() {
         let metrics = MetricsSnapshot {
-            token_budget: Some(200_000),
+            cache_creation_tokens: 1000,
+            cache_read_tokens: 500,
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(35, 30, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+        let output = render_to_string(40, 8, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
+        assert!(output.contains("cache"), "must show cache; got: {output:?}");
         assert!(
-            output.contains("Budget: 200000"),
-            "resources panel must show token budget; got: {output:?}"
+            output.contains("W:1000"),
+            "must show write tokens; got: {output:?}"
+        );
+        assert!(
+            output.contains("R:500"),
+            "must show read tokens; got: {output:?}"
         );
     }
 
     #[test]
-    fn resources_shows_self_learning_flag() {
-        let metrics = MetricsSnapshot {
-            self_learning_enabled: true,
-            ..MetricsSnapshot::default()
-        };
-        let output = render_to_string(35, 30, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+    fn resources_omits_cache_when_zero() {
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(35, 8, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
         assert!(
-            output.contains("Learning: ON"),
-            "resources panel must show 'Learning: ON' when self_learning_enabled; got: {output:?}"
+            !output.contains("cache"),
+            "must not show cache when zero; got: {output:?}"
         );
     }
 
     #[test]
-    fn resources_with_full_infra() {
+    fn resources_shows_mcp_when_configured() {
         let metrics = MetricsSnapshot {
-            provider_name: "claude".into(),
-            model_name: "claude-sonnet-4-6".into(),
-            context_tokens: 10000,
-            total_tokens: 15000,
-            api_calls: 7,
-            last_llm_latency_ms: 180,
-            embedding_model: "nomic-embed-text".into(),
-            token_budget: Some(200_000),
-            compaction_threshold: Some(120_000),
-            vault_backend: "age".into(),
-            active_channel: "tui".into(),
-            self_learning_enabled: true,
-            cache_enabled: true,
-            autosave_enabled: true,
             mcp_server_count: 2,
             mcp_connected_count: 2,
             mcp_tool_count: 14,
             ..MetricsSnapshot::default()
         };
-
-        let output = render_to_string(40, 30, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+        let output = render_to_string(40, 8, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
+        assert!(output.contains("mcp"), "must show mcp; got: {output:?}");
         assert!(
-            output.contains("Vault: age"),
-            "expected vault backend; got: {output:?}"
+            output.contains("14 tools"),
+            "must show tool count; got: {output:?}"
         );
-        assert!(
-            output.contains("Channel: tui"),
-            "expected channel; got: {output:?}"
-        );
-        assert!(
-            output.contains("Learning: ON"),
-            "expected learning flag; got: {output:?}"
-        );
-        assert_snapshot!(output);
     }
 
     #[test]
@@ -379,41 +283,36 @@ mod tests {
             }],
             ..MetricsSnapshot::default()
         };
-        let output = render_to_string(50, 30, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+        let output = render_to_string(50, 10, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
         assert!(
-            output.contains("Background Shell"),
-            "resources panel must show Background Shell header; got: {output:?}"
+            output.contains("shell"),
+            "must show shell header; got: {output:?}"
         );
         assert!(
             output.contains("a1b2c3d"),
-            "resources panel must show run_id prefix; got: {output:?}"
+            "must show run_id; got: {output:?}"
         );
         assert!(
             output.contains("01:15"),
-            "resources panel must show elapsed mm:ss; got: {output:?}"
+            "must show elapsed mm:ss; got: {output:?}"
         );
     }
 
     #[test]
-    fn resources_collapsed_when_small_height() {
+    fn resources_shows_reasoning_tokens_when_nonzero() {
         let metrics = MetricsSnapshot {
-            provider_name: "claude".into(),
-            model_name: "claude-sonnet-4-6".into(),
-            vault_backend: "age".into(),
-            active_channel: "tui".into(),
+            total_tokens: 10_000,
+            reasoning_tokens: 2_000,
             ..MetricsSnapshot::default()
         };
-
-        let output = render_to_string(40, 20, |frame, area| {
-            let theme = crate::theme::Theme::default();
-            super::render(&metrics, frame, area, &theme);
+        let output = render_to_string(40, 8, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
         });
         assert!(
-            output.contains("vault:age"),
-            "collapsed mode should show vault inline; got: {output:?}"
+            output.contains("R:"),
+            "must show reasoning label; got: {output:?}"
         );
     }
 }

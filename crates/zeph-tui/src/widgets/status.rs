@@ -515,13 +515,6 @@ fn push_extra_low_segments(
             )],
         );
     }
-
-    if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
-        list.push(
-            Priority::Low,
-            vec![Span::styled(" · [Esc to cancel]", theme.status_bar)],
-        );
-    }
 }
 
 fn build_cocoon_spans(
