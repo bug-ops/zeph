@@ -224,85 +224,140 @@ impl Segment {
     }
 }
 
-/// Shorten token counts to the minimal non-ambiguous abbreviation.
-///
-/// Mirrors `format_tokens` but drops the label prefix, e.g. `12.3k` instead of `Tokens: 12.3k`.
-fn short_tokens(total: u64, reasoning: u64) -> String {
-    use zeph_common::format_tokens;
+/// Compact token display: `4.2k` or `4.2k(R:1.0k)` when reasoning tokens > 0.
+fn compact_tokens(total: u64, reasoning: u64) -> String {
     if reasoning > 0 {
-        format!(" {}(R:{})", format_tokens(total), format_tokens(reasoning))
+        format!("{}(R:{})", format_tokens(total), format_tokens(reasoning))
     } else {
-        format!(" {}", format_tokens(total))
-    }
-}
-
-/// Short form for uptime: minutes only when ≥1 min, seconds otherwise.
-fn short_uptime(secs: u64) -> String {
-    let m = secs / 60;
-    if m > 0 {
-        format!(" {m}m")
-    } else {
-        format!(" {secs}s")
+        format_tokens(total)
     }
 }
 
 pub fn render(app: &App, metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let theme = &app.theme;
-    let list = build_segment_list(app, metrics, theme);
-    let spans = list.layout(area.width);
-    let line = Line::from(spans);
+    let (left_list, right_spans) = build_segment_lists(app, metrics, theme);
+
+    let right_width: u16 = right_spans.iter().fold(0u16, |acc, s| {
+        acc.saturating_add(u16::try_from(s.content.width()).unwrap_or(u16::MAX))
+    });
+
+    let left_budget = area.width.saturating_sub(right_width);
+    let left_spans = left_list.layout(left_budget);
+    let left_width: u16 = left_spans.iter().fold(0u16, |acc, s| {
+        acc.saturating_add(u16::try_from(s.content.width()).unwrap_or(u16::MAX))
+    });
+
+    let padding = area
+        .width
+        .saturating_sub(left_width)
+        .saturating_sub(right_width);
+
+    let mut all_spans = left_spans;
+    if !right_spans.is_empty() {
+        if padding > 0 {
+            all_spans.push(Span::styled(" ".repeat(padding as usize), theme.status_bar));
+        }
+        all_spans.extend(right_spans);
+    }
+
+    let line = Line::from(all_spans);
     let paragraph = Paragraph::new(line).style(theme.status_bar);
     frame.render_widget(paragraph, area);
 }
 
-fn build_segment_list(app: &App, metrics: &MetricsSnapshot, theme: &Theme) -> SegmentList {
-    let mode = match app.input_mode() {
-        InputMode::Normal => "Normal",
-        InputMode::Insert => "Insert",
-    };
-
+/// Build the left segment list and right (uptime) spans separately so the caller
+/// can right-align the uptime by computing the padding between them.
+fn build_segment_lists(
+    app: &App,
+    metrics: &MetricsSnapshot,
+    theme: &Theme,
+) -> (SegmentList, Vec<Span<'static>>) {
+    let mode = app.input_mode();
     let mut list = SegmentList::new();
 
-    push_critical_segments(&mut list, metrics, mode, theme);
-    list.push(
-        Priority::High,
-        vec![Span::styled(" | ? for help", theme.status_bar)],
-    );
-    push_medium_segments(&mut list, app, metrics, theme);
-    push_low_segments(&mut list, app, metrics, theme);
+    push_mode_chip(&mut list, mode, theme);
+    push_model_segment(&mut list, metrics, theme);
 
-    list
-}
+    if app.is_agent_busy() {
+        push_busy_segment(&mut list, app, theme);
+    }
 
-fn push_critical_segments(
-    list: &mut SegmentList,
-    metrics: &MetricsSnapshot,
-    mode: &str,
-    theme: &Theme,
-) {
-    list.push(
-        Priority::Critical,
-        vec![Span::styled(format!(" [{mode}]"), theme.status_bar)],
-    );
-    if !metrics.model_name.is_empty() {
+    push_plan_subagent_segments(&mut list, app, metrics, theme);
+    push_skills_segment(&mut list, metrics, theme);
+    push_tokens_segment(&mut list, metrics, theme);
+
+    if metrics.sanitizer_injection_flags > 0 {
         list.push(
-            Priority::Critical,
+            Priority::Low,
             vec![Span::styled(
-                format!(" | {}", metrics.model_name),
-                theme.status_bar,
+                format!(" · SEC {} ⚑", metrics.sanitizer_injection_flags),
+                theme.highlight,
             )],
         );
     }
-    if metrics.context_max_tokens > 0 {
-        let pct = context_pct(metrics.context_tokens, metrics.context_max_tokens);
+
+    push_api_segment(&mut list, metrics, theme);
+    push_extra_low_segments(&mut list, app, metrics, theme);
+
+    let uptime_spans = build_uptime_spans(metrics, theme);
+    (list, uptime_spans)
+}
+
+fn push_mode_chip(list: &mut SegmentList, mode: InputMode, theme: &Theme) {
+    let surface_bg = theme.status_bar.bg.unwrap_or(Color::Black);
+    let (chip_text, chip_bg) = match mode {
+        InputMode::Insert => (" INSERT ", theme.user_message.fg.unwrap_or(Color::Cyan)),
+        InputMode::Normal => (" NORMAL ", theme.panel_border.fg.unwrap_or(Color::Gray)),
+    };
+    list.push(
+        Priority::Critical,
+        vec![Span::styled(
+            chip_text,
+            Style::default().fg(surface_bg).bg(chip_bg),
+        )],
+    );
+}
+
+fn push_model_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &Theme) {
+    if metrics.model_name.is_empty() {
+        return;
+    }
+    list.push(
+        Priority::Critical,
+        vec![
+            Span::styled(" · ", theme.system_message),
+            Span::styled(metrics.model_name.clone(), theme.status_bar),
+        ],
+    );
+}
+
+fn push_busy_segment(list: &mut SegmentList, app: &App, theme: &Theme) {
+    let verb = app.status_label().unwrap_or("thinking").to_owned();
+    if app.motion == zeph_config::Motion::Off {
         list.push(
-            Priority::Critical,
-            vec![Span::styled(format!(" | ctx:{pct}%"), theme.status_bar)],
+            Priority::High,
+            vec![
+                Span::styled(" · ", theme.system_message),
+                Span::styled("·", theme.system_message),
+                Span::styled(format!(" {verb}"), theme.system_message),
+            ],
+        );
+    } else {
+        const BRAILLE: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+        let idx = app.throbber_state().index().cast_unsigned() as usize % 10;
+        let spinner_char = BRAILLE.chars().nth(idx).unwrap_or('⠋').to_string();
+        list.push(
+            Priority::High,
+            vec![
+                Span::styled(" · ", theme.system_message),
+                Span::styled(spinner_char, theme.highlight),
+                Span::styled(format!(" {verb}"), theme.system_message),
+            ],
         );
     }
 }
 
-fn push_medium_segments(
+fn push_plan_subagent_segments(
     list: &mut SegmentList,
     app: &App,
     metrics: &MetricsSnapshot,
@@ -322,73 +377,80 @@ fn push_medium_segments(
             vec![Span::styled(subagent_seg, theme.status_bar)],
         );
     }
-    if !metrics.active_channel.is_empty() {
-        list.push(
-            Priority::Medium,
-            vec![Span::styled(
-                format!(" | ch:{}", metrics.active_channel),
-                theme.status_bar,
-            )],
-        );
-    }
-    list.push_abbrev_styled(
+}
+
+fn push_skills_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &Theme) {
+    let active = metrics.active_skills.len();
+    let total = metrics.total_skills;
+    list.push_abbrev(
         Priority::Medium,
-        format!(
-            " | Skills: {} active / {} loaded",
-            metrics.active_skills.len(),
-            metrics.total_skills,
-        ),
-        format!(
-            " Sk {}/{}",
-            metrics.active_skills.len(),
-            metrics.total_skills
-        ),
-        theme.status_bar,
+        vec![
+            Span::styled(" · ", theme.system_message),
+            Span::styled("skills ", theme.system_message),
+            Span::styled(format!("{active}/{total}"), theme.status_bar),
+        ],
+        vec![
+            Span::styled(" Sk ", theme.system_message),
+            Span::styled(format!("{active}/{total}"), theme.status_bar),
+        ],
     );
 }
 
-#[allow(clippy::too_many_lines)]
-fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapshot, theme: &Theme) {
-    let token_full = if metrics.reasoning_tokens > 0 {
-        format!(
-            " | Tokens: {} (R: {})",
-            format_tokens(metrics.total_tokens),
-            format_tokens(metrics.reasoning_tokens)
-        )
-    } else {
-        format!(" | Tokens: {}", format_tokens(metrics.total_tokens))
-    };
-    let token_short = format!(
-        " |{}",
-        short_tokens(metrics.total_tokens, metrics.reasoning_tokens)
+fn push_tokens_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &Theme) {
+    let compact = compact_tokens(metrics.total_tokens, metrics.reasoning_tokens);
+    list.push_abbrev(
+        Priority::Low,
+        vec![
+            Span::styled(" · ", theme.system_message),
+            Span::styled("tokens ", theme.system_message),
+            Span::styled(compact.clone(), theme.status_bar),
+        ],
+        vec![Span::styled(format!(" t:{compact}"), theme.status_bar)],
     );
-    list.push_abbrev_styled(Priority::Low, token_full, token_short, theme.status_bar);
+}
 
+fn push_api_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &Theme) {
+    list.push_abbrev(
+        Priority::Low,
+        vec![
+            Span::styled(" · ", theme.system_message),
+            Span::styled("api ", theme.system_message),
+            Span::styled(metrics.api_calls.to_string(), theme.status_bar),
+        ],
+        vec![Span::styled(
+            format!(" A{}", metrics.api_calls),
+            theme.status_bar,
+        )],
+    );
+}
+
+fn build_uptime_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        format!(" ↑ {}", format_uptime(metrics.uptime_seconds)),
+        theme.status_bar,
+    )]
+}
+
+#[allow(clippy::too_many_lines)]
+fn push_extra_low_segments(
+    list: &mut SegmentList,
+    app: &App,
+    metrics: &MetricsSnapshot,
+    theme: &Theme,
+) {
     if metrics.cost_spent_cents > 0.0 {
         list.push_abbrev_styled(
             Priority::Low,
-            format!(" | ${:.4}", metrics.cost_spent_cents / 100.0),
+            format!(" · ${:.4}", metrics.cost_spent_cents / 100.0),
             format!(" ${:.2}", metrics.cost_spent_cents / 100.0),
             theme.status_bar,
         );
     }
-    list.push_abbrev_styled(
-        Priority::Low,
-        format!(" | API: {}", metrics.api_calls),
-        format!(" A{}", metrics.api_calls),
-        theme.status_bar,
-    );
-    list.push_abbrev_styled(
-        Priority::Low,
-        format!(" | {}", format_uptime(metrics.uptime_seconds)),
-        short_uptime(metrics.uptime_seconds),
-        theme.status_bar,
-    );
     if !metrics.shell_background_runs.is_empty() {
         list.push(
             Priority::Low,
             vec![Span::styled(
-                format!(" | sh:{}", metrics.shell_background_runs.len()),
+                format!(" · sh:{}", metrics.shell_background_runs.len()),
                 theme.status_bar,
             )],
         );
@@ -401,7 +463,7 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
             Priority::Low,
             vec![Span::styled(
                 format!(
-                    " | bg: {} enrich, {} telem",
+                    " · bg: {} enrich, {} telem",
                     metrics.bg_enrichment_inflight, metrics.bg_telemetry_inflight,
                 ),
                 theme.status_bar,
@@ -412,7 +474,7 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
         list.push(
             Priority::Low,
             vec![
-                Span::styled(" | ", theme.status_bar),
+                Span::styled(" · ", theme.system_message),
                 Span::styled(
                     format!("[SC: {}]", metrics.server_compaction_events),
                     Style::default().fg(Color::Cyan),
@@ -429,7 +491,7 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
             vec![Span::styled(build_filter_text(metrics), theme.status_bar)],
         );
     }
-    let security_spans = build_security_spans(metrics, theme);
+    let security_spans = build_exfil_guardrail_spans(metrics, theme);
     if !security_spans.is_empty() {
         list.push(Priority::Low, security_spans);
     }
@@ -443,7 +505,7 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
             let rate_int = rate as u32;
             list.push_abbrev_styled(
                 Priority::Low,
-                format!(" | {}", crate::delights::format_toks(rate)),
+                format!(" · {}", crate::delights::format_toks(rate)),
                 format!(" {rate_int}t/s"),
                 theme.status_bar,
             );
@@ -451,7 +513,7 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
         if let Some(ttft_ms) = app.stream_rate.ttft_ms() {
             list.push_abbrev_styled(
                 Priority::Low,
-                format!(" | {}", crate::delights::format_ttft(ttft_ms)),
+                format!(" · {}", crate::delights::format_ttft(ttft_ms)),
                 format!(" {ttft_ms}ms"),
                 theme.status_bar,
             );
@@ -462,7 +524,7 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
         list.push(
             Priority::Low,
             vec![Span::styled(
-                " | mouse on (Shift+drag selects)",
+                " · mouse on (Shift+drag selects)",
                 theme.status_bar,
             )],
         );
@@ -471,17 +533,9 @@ fn push_low_segments(list: &mut SegmentList, app: &App, metrics: &MetricsSnapsho
     if app.is_agent_busy() && app.input_mode() == InputMode::Normal {
         list.push(
             Priority::Low,
-            vec![Span::styled(" | [Esc to cancel]", theme.status_bar)],
+            vec![Span::styled(" · [Esc to cancel]", theme.status_bar)],
         );
     }
-}
-
-fn context_pct(context_tokens: u64, context_max_tokens: u64) -> u64 {
-    #[allow(clippy::cast_precision_loss)]
-    let ratio = (context_tokens as f64 / context_max_tokens as f64 * 100.0).clamp(0.0, 100.0);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let pct = ratio as u64;
-    pct
 }
 
 fn build_cocoon_spans(
@@ -493,7 +547,7 @@ fn build_cocoon_spans(
         None => None,
         Some(true) => {
             let mut text = format!(
-                " | Cocoon: healthy ({} models, {} workers)",
+                " · Cocoon: healthy ({} models, {} workers)",
                 metrics.cocoon_model_count, metrics.cocoon_worker_count,
             );
             if let Some(balance) = metrics.cocoon_ton_balance {
@@ -506,7 +560,7 @@ fn build_cocoon_spans(
             Some(vec![Span::styled(text, theme.status_bar)])
         }
         Some(false) => Some(vec![Span::styled(
-            " | Cocoon: sidecar unreachable".to_owned(),
+            " · Cocoon: sidecar unreachable".to_owned(),
             theme.status_bar,
         )]),
     }
@@ -528,39 +582,29 @@ fn build_goal_spans(snap: &crate::metrics::GoalSnapshot, theme: &Theme) -> Vec<S
         format!(" {icon} {truncated}")
     };
     vec![
-        Span::styled(" | ", theme.status_bar),
+        Span::styled(" · ", theme.system_message),
         Span::styled(label, Style::default().fg(color)),
     ]
 }
 
-fn build_security_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Span<'static>> {
-    let injection_flags = metrics.sanitizer_injection_flags;
+/// Spans for exfiltration blocked count and guardrail status.
+/// Injection flags are handled separately as `SEC N ⚑` in the main field list.
+fn build_exfil_guardrail_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Span<'static>> {
     let exfil_total = metrics.exfiltration_images_blocked
         + metrics.exfiltration_tool_urls_flagged
         + metrics.exfiltration_memory_guards;
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    if injection_flags > 0 || exfil_total > 0 {
-        spans.push(Span::styled(" | ", theme.status_bar));
-        if injection_flags > 0 {
-            spans.push(Span::styled(
-                format!("SEC: {injection_flags} flags"),
-                Style::default().fg(Color::Yellow),
-            ));
-        }
-        if exfil_total > 0 {
-            if injection_flags > 0 {
-                spans.push(Span::styled(" ", theme.status_bar));
-            }
-            spans.push(Span::styled(
-                format!("{exfil_total} blocked"),
-                Style::default().fg(Color::Red),
-            ));
-        }
+    if exfil_total > 0 {
+        spans.push(Span::styled(" · ", theme.system_message));
+        spans.push(Span::styled(
+            format!("{exfil_total} blocked"),
+            Style::default().fg(Color::Red),
+        ));
     }
     if metrics.guardrail_enabled {
-        spans.push(Span::styled(" | ", theme.status_bar));
+        spans.push(Span::styled(" · ", theme.system_message));
         let (label, color) = if metrics.guardrail_warn_mode {
             ("GRD:warn", Color::Yellow)
         } else {
@@ -574,7 +618,7 @@ fn build_security_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Span<'s
 
 fn subagent_view_segment(app: &App) -> String {
     if let Some(name) = app.view_target().subagent_name() {
-        format!(" | Viewing: {name}")
+        format!(" · Viewing: {name}")
     } else {
         String::new()
     }
@@ -587,9 +631,9 @@ fn plan_mode_segment<'a>(app: &App, metrics: &MetricsSnapshot) -> &'a str {
         .is_some_and(|s| !s.is_stale())
     {
         if app.plan_view_active() {
-            " | [Agents]"
+            " · [Agents]"
         } else {
-            " | [Plan]"
+            " · [Plan]"
         }
     } else {
         ""
@@ -604,7 +648,7 @@ fn build_filter_text(metrics: &MetricsSnapshot) -> String {
         0.0
     };
     format!(
-        " | Filters: {}/{} ({savings:.0}% saved)",
+        " · Filters: {}/{} ({savings:.0}% saved)",
         metrics.filter_filtered_commands, metrics.filter_total_commands,
     )
 }
@@ -622,6 +666,15 @@ fn format_uptime(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn short_uptime(secs: u64) -> String {
+        let m = secs / 60;
+        if m > 0 {
+            format!(" {m}m")
+        } else {
+            format!(" {secs}s")
+        }
+    }
 
     #[test]
     fn format_tokens_small() {
@@ -774,8 +827,8 @@ mod tests {
             super::render(&app, &metrics, frame, area);
         });
         assert!(
-            output.contains("SEC: 2 flags"),
-            "expected SEC indicator with flag count"
+            output.contains("SEC 2 ⚑"),
+            "expected SEC indicator with flag count; got: {output:?}"
         );
     }
 
@@ -805,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_shows_channel_when_active_channel_set() {
+    fn status_bar_omits_channel() {
         use tokio::sync::mpsc;
 
         use crate::app::App;
@@ -824,8 +877,8 @@ mod tests {
             super::render(&app, &metrics, frame, area);
         });
         assert!(
-            output.contains("ch:tui"),
-            "expected ch:tui in status bar; got: {output:?}"
+            !output.contains("ch:tui"),
+            "channel must not appear in redesigned status bar; got: {output:?}"
         );
     }
 
@@ -930,7 +983,7 @@ mod tests {
             super::render(&app, &metrics, frame, area);
         });
         assert!(
-            !output.contains("SEC:"),
+            !output.contains("SEC"),
             "SEC indicator must be hidden when all counters are zero"
         );
     }
@@ -1105,17 +1158,6 @@ mod tests {
     }
 
     #[test]
-    fn short_tokens_no_reasoning() {
-        // Just checks the helper function used to build abbreviations.
-        assert_eq!(short_tokens(4200, 0), " 4.2k");
-    }
-
-    #[test]
-    fn short_tokens_with_reasoning() {
-        assert_eq!(short_tokens(4200, 1000), " 4.2k(R:1.0k)");
-    }
-
-    #[test]
     fn short_uptime_seconds() {
         assert_eq!(short_uptime(45), " 45s");
     }
@@ -1123,6 +1165,38 @@ mod tests {
     #[test]
     fn short_uptime_minutes() {
         assert_eq!(short_uptime(135), " 2m");
+    }
+
+    #[test]
+    fn motion_off_shows_static_busy_not_braille() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.motion = zeph_config::Motion::Off;
+        app.sessions.current_mut().status_label = Some("thinking".to_owned());
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        let contains_braille = output
+            .chars()
+            .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+        assert!(
+            !contains_braille,
+            "motion=Off must not show braille spinner; got: {output:?}"
+        );
+        assert!(
+            output.contains("thinking"),
+            "motion=Off must still show verb; got: {output:?}"
+        );
     }
 
     /// Off-state byte-identity: motion=Off must suppress tok/s and TTFT segments

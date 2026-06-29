@@ -2,6 +2,6 @@
 source: crates/zeph-tui/src/widgets/input.rs
 expression: output
 ---
-› esc to cancel                         
+you ▸ esc to cancel                     
 Type a message, / for commands, @ to    
 mention

@@ -2,4 +2,4 @@
 source: crates/zeph-tui/src/widgets/input.rs
 expression: output
 ---
-› press 'i' to type
+you ▸ press 'i' to type

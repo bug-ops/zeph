@@ -16,7 +16,7 @@ use crate::widgets::wave::{WaveState, glyphs};
 use zeph_common::text::format_tokens;
 
 /// Prompt glyph shown at the beginning of the separator line.
-const PROMPT_GLYPH: &str = "›";
+const PROMPT_GLYPH: &str = "you ▸";
 
 /// Append human-voice label spans to the separator line (no animated glyph).
 ///
@@ -61,7 +61,7 @@ fn push_label_spans<'a>(
 /// Build the busy separator row for `Motion::Full`.
 ///
 /// Layout (left → right):
-/// 1. `› ` prompt glyph (2 columns, always present).
+/// 1. `you ▸ ` prompt glyph (6 columns, always present).
 /// 2. Activity label: `verb · detail  esc to interrupt` — measured via unicode width.
 /// 3. Wave right-fills the remaining columns (`wave_w = width - prompt_w - label_w - 1`).
 ///    The `+1` is a space gutter between label and wave. `wave_w = 0` → wave skipped.
@@ -77,7 +77,7 @@ fn build_full_busy_sep<'a>(
     theme: &'a Theme,
     wave_buf: &mut Vec<Span<'static>>,
 ) -> Vec<Span<'static>> {
-    const PROMPT_W: u16 = 2; // "› " width
+    const PROMPT_W: u16 = 6; // "you ▸ " width
 
     // Build the human-voice label text first so we can measure it.
     let label_text: String = if let Some(label) = activity_label {
@@ -103,7 +103,10 @@ fn build_full_busy_sep<'a>(
 
     // Build spans — all 'static lifetime via owned Strings.
     let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::styled(format!("{PROMPT_GLYPH} "), theme.highlight));
+    spans.push(Span::styled(
+        format!("{PROMPT_GLYPH} "),
+        theme.system_message,
+    ));
     spans.push(Span::styled(label_text, theme.system_message));
 
     if wave_w > 0 {
@@ -147,7 +150,7 @@ fn build_spinner_busy_sep<'a>(
         String::new()
     };
     let mut spans: Vec<Span<'_>> = vec![
-        Span::styled(format!("{PROMPT_GLYPH} "), theme.highlight),
+        Span::styled(format!("{PROMPT_GLYPH} "), theme.system_message),
         Span::styled(mode_hint, theme.system_message),
         Span::styled(meta, theme.system_message),
     ];
@@ -184,7 +187,7 @@ fn build_idle_sep<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
         String::new()
     };
     let mut spans: Vec<Span<'_>> = vec![
-        Span::styled(format!("{PROMPT_GLYPH} "), theme.highlight),
+        Span::styled(format!("{PROMPT_GLYPH} "), theme.system_message),
         Span::styled(mode_hint, theme.system_message),
         Span::styled(meta, theme.system_message),
     ];
@@ -593,7 +596,7 @@ mod tests {
         });
         // Separator must have the prompt glyph and label.
         assert!(
-            output.contains('›'),
+            output.contains("you ▸"),
             "prompt glyph must appear in Full+busy; got: {output:?}"
         );
         assert!(
@@ -633,7 +636,7 @@ mod tests {
         }
         // Label must still be present.
         assert!(
-            output.contains('›'),
+            output.contains("you ▸"),
             "prompt glyph must appear even on narrow terminal; got: {output:?}"
         );
     }
