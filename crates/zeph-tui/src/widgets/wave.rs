@@ -28,18 +28,18 @@ use crate::theme::{EffectiveColorMode, Theme};
 // Glyph ramps
 // ---------------------------------------------------------------------------
 
-/// Thin horizontal-line ramp: dim dash → solid thin → solid thick at wave peak.
+/// Uniform thin horizontal line — all buckets use the same glyph `─`.
 ///
-/// Each glyph sits in the *middle* of the cell so the wave appears as a single
-/// thin horizontal line whose brightness oscillates with the sine. Color (see
-/// [`bucket_to_rgb`]) fades from near-invisible at the trough to full accent
-/// `#1FB9A8` at the crest — replicating the CSS
-/// `background: linear-gradient(90deg, transparent, accent, transparent)` sweep
-/// from the design mock.
-const WAVE_GLYPHS: [&str; 8] = ["╌", "╌", "─", "─", "─", "━", "━", "━"];
+/// The wave effect is produced entirely by color: [`bucket_to_rgb`] fades from
+/// near-invisible at the trough to full accent `#1FB9A8` at the crest.
+/// Using one glyph avoids per-bucket character-width variation and produces a
+/// smooth gradient sweep, matching the CSS
+/// `background: linear-gradient(90deg, transparent, #1FB9A8, transparent)`
+/// animation in the design mock.
+const WAVE_GLYPHS: [&str; 8] = ["─", "─", "─", "─", "─", "─", "─", "─"];
 
 /// ASCII fallback for `TERM=dumb` terminals.
-const ASCII_GLYPHS: [&str; 8] = [".", ".", "-", "-", "-", "=", "=", "="];
+const ASCII_GLYPHS: [&str; 8] = ["-", "-", "-", "-", "-", "-", "-", "-"];
 
 // ---------------------------------------------------------------------------
 // WaveState
