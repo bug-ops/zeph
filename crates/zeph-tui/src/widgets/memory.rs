@@ -86,16 +86,24 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         )),
         Line::from(format!("  sqlite: {} msgs", metrics.sqlite_message_count)),
     ];
-    if metrics.qdrant_available {
-        mem_lines.push(Line::from(format!(
-            "  vector: {} (connected)",
-            metrics.vector_backend
-        )));
-    } else if !metrics.vector_backend.is_empty() {
-        mem_lines.push(Line::from(format!(
-            "  vector: {} (offline)",
-            metrics.vector_backend
-        )));
+    if !metrics.vector_backend.is_empty() {
+        if metrics.qdrant_available {
+            mem_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", metrics.vector_backend),
+                    theme.system_message,
+                ),
+                Span::styled("connected", theme.tool_success),
+            ]));
+        } else {
+            mem_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", metrics.vector_backend),
+                    theme.system_message,
+                ),
+                Span::styled("offline", theme.error),
+            ]));
+        }
     }
     mem_lines.push(Line::from(format!(
         "  conv id: {}",

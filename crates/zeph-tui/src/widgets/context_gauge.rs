@@ -3,24 +3,26 @@
 
 //! Context fill gauge for the TUI side panel.
 //!
-//! Renders a [`ratatui::widgets::Gauge`] showing the fraction of the provider's context window
-//! currently in use. Color changes from green to yellow to red as the window fills.
-//! When `context_max_tokens == 0` (pre-init or unknown provider window), the gauge label
-//! renders `"—"` and the bar stays at 0 — no divide-by-zero.
+//! Renders a single-line inline bar `context  [████████░░]  Nk / Nk · N%`
+//! using block characters in the `info` palette color (via `theme.code_inline`).
+//! When `context_max_tokens == 0` (pre-init or unknown provider window), the label
+//! renders `Nk / —` and the bar stays empty — no divide-by-zero.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Gauge};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 
 use crate::metrics::MetricsSnapshot;
+use crate::theme::Theme;
 
 /// Render the context fill gauge into `area`.
 ///
-/// Color thresholds: green below 70%, yellow 70–90%, red above 90%.
-/// Hidden (renders an empty block) when `area` has zero height.
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
+/// Shows a single row: `context  [████████░░]  Nk / Nk · N%`.
+/// Bar color: `theme.code_inline` fg (maps to palette `info` = `#6FDCD2`).
+/// Hidden when `area` has zero height.
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
     if area.height == 0 {
         return;
     }
@@ -29,35 +31,35 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
     let used = metrics.context_tokens;
 
     let (ratio, label) = if max == 0 {
-        // Unknown provider window — display placeholder rather than divide-by-zero.
-        (0.0_f64, format!("Context: {}k / —", used / 1000))
+        (0.0_f64, format!("{}k / —", used / 1000))
     } else {
         let clamped = used.min(max);
         #[allow(clippy::cast_precision_loss)]
         let r = clamped as f64 / max as f64;
-        // r is in [0.0, 1.0], so r * 100.0 is in [0.0, 100.0] — no truncation or sign loss.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let pct = (r * 100.0) as u64;
-        let label = format!("Context: {}k / {}k ({pct}%)", used / 1000, max / 1000);
-        (r, label)
+        (r, format!("{}k / {}k · {pct}%", used / 1000, max / 1000))
     };
 
+    let bar = build_bar(ratio, 10);
+    let bar_style =
+        Style::default().fg(theme.code_inline.fg.unwrap_or(ratatui::style::Color::Cyan));
+
+    let line = Line::from(vec![
+        Span::styled("context  ", theme.system_message),
+        Span::styled(bar, bar_style),
+        Span::styled(format!("  {label}"), theme.status_bar),
+    ]);
+
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Build a block-character bar string of the given `width` (number of cells).
+fn build_bar(ratio: f64, width: usize) -> String {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let pct_u16 = (ratio * 100.0).clamp(0.0, 100.0) as u16;
-
-    let color = match pct_u16 {
-        0..=69 => Color::Green,
-        70..=89 => Color::Yellow,
-        _ => Color::Red,
-    };
-
-    let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("Context"))
-        .gauge_style(Style::default().fg(color))
-        .ratio(ratio)
-        .label(Span::raw(label));
-
-    frame.render_widget(gauge, area);
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
 }
 
 #[cfg(test)]
@@ -65,7 +67,6 @@ mod tests {
     use super::*;
     use crate::metrics::MetricsSnapshot;
 
-    /// Returns a zero-sized rect so render is a no-op — we are only testing the label logic.
     fn make_metrics(context_tokens: u64, context_max_tokens: u64) -> MetricsSnapshot {
         MetricsSnapshot {
             context_tokens,
@@ -77,7 +78,6 @@ mod tests {
     #[test]
     fn ratio_zero_when_max_is_zero() {
         let m = make_metrics(1000, 0);
-        // When max is 0 ratio must be 0.0 — no divide-by-zero.
         let max = m.context_max_tokens;
         let used = m.context_tokens;
         let ratio: f64 = if max == 0 {
@@ -104,35 +104,17 @@ mod tests {
     }
 
     #[test]
-    fn color_green_below_70_percent() {
-        let pct: u16 = 50;
-        let color = match pct {
-            0..=69 => Color::Green,
-            70..=89 => Color::Yellow,
-            _ => Color::Red,
-        };
-        assert_eq!(color, Color::Green);
+    fn build_bar_empty_at_zero() {
+        assert_eq!(build_bar(0.0, 10), "[░░░░░░░░░░]");
     }
 
     #[test]
-    fn color_yellow_70_to_89_percent() {
-        let pct: u16 = 80;
-        let color = match pct {
-            0..=69 => Color::Green,
-            70..=89 => Color::Yellow,
-            _ => Color::Red,
-        };
-        assert_eq!(color, Color::Yellow);
+    fn build_bar_full_at_one() {
+        assert_eq!(build_bar(1.0, 10), "[██████████]");
     }
 
     #[test]
-    fn color_red_above_90_percent() {
-        let pct: u16 = 95;
-        let color = match pct {
-            0..=69 => Color::Green,
-            70..=89 => Color::Yellow,
-            _ => Color::Red,
-        };
-        assert_eq!(color, Color::Red);
+    fn build_bar_half() {
+        assert_eq!(build_bar(0.5, 10), "[█████░░░░░]");
     }
 }

@@ -4,7 +4,7 @@ expression: output
 ---
 memory                        
   sqlite: 42 msgs             
-  vector: qdrant (connected)  
+  qdrant connected            
   conv id: ---                
   embeddings: 10              
   graph: 0 entities, 0 edges, 

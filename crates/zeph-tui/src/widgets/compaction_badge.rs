@@ -11,51 +11,39 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::metrics::MetricsSnapshot;
+use crate::theme::Theme;
 
 /// Render the compaction badge into `area`.
 ///
-/// Shows `"Last: {before}k→{after}k ({saved}k freed) {elapsed}"`.
-/// Hidden (renders an empty block) when no compaction has occurred or `area` has zero height.
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect) {
-    if area.height == 0 {
+/// Shows `compaction  {before}k→{after}k (-{saved}k)  {elapsed}` on a single line.
+/// Renders nothing when no compaction has occurred or `area` has zero height.
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
+    if area.height == 0 || metrics.compaction_last_at_ms == 0 {
         return;
     }
 
-    let at_ms = metrics.compaction_last_at_ms;
     let before = metrics.compaction_last_before;
     let after = metrics.compaction_last_after;
-
-    let block = Block::default().borders(Borders::ALL).title("Compaction");
-
-    if at_ms == 0 {
-        // No compaction yet — render empty block.
-        frame.render_widget(block, area);
-        return;
-    }
-
     let saved = before.saturating_sub(after);
-    let elapsed = format_elapsed(at_ms);
+    let elapsed = format_elapsed(metrics.compaction_last_at_ms);
 
-    let text = format!(
-        "{}k→{}k (-{}k) {}",
+    let detail = format!(
+        "{}k→{}k (-{}k)  {elapsed}",
         before / 1000,
         after / 1000,
         saved / 1000,
-        elapsed,
     );
 
-    let paragraph = Paragraph::new(Line::from(vec![Span::styled(
-        text,
-        Style::default().fg(Color::Cyan),
-    )]))
-    .block(block);
+    let line = Line::from(vec![
+        Span::styled("compaction  ", theme.system_message),
+        Span::styled(detail, theme.status_bar),
+    ]);
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Format elapsed time since `at_ms` (Unix epoch ms) as a human-readable string.

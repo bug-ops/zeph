@@ -223,13 +223,13 @@ impl App {
             let splits = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),
-                    Constraint::Length(3),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
                     Constraint::Min(0),
                 ])
                 .split(resources_area);
-            widgets::context_gauge::render(&self.metrics, frame, splits[0]);
-            widgets::compaction_badge::render(&self.metrics, frame, splits[1]);
+            widgets::context_gauge::render(&self.metrics, frame, splits[0], &self.theme);
+            widgets::compaction_badge::render(&self.metrics, frame, splits[1], &self.theme);
             widgets::resources::render(&self.metrics, frame, splits[2], &self.theme);
         }
 
