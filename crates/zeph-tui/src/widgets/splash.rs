@@ -15,7 +15,8 @@ use ratatui::widgets::Paragraph;
 use crate::delights::shimmer_brightness;
 use crate::theme::{EffectiveColorMode, map_color};
 
-// Aqua (#22d3ee) and ice (#e0f2fe) — gradient endpoints for the `zeph` letters.
+// Aqua (#22d3ee) and ice (#e0f2fe) — splash wordmark gradient only; intentionally
+// distinct from palette.accent (#1FB9A8) used everywhere else in chrome.
 const AQUA: (u8, u8, u8) = (0x22, 0xd3, 0xee);
 const ICE: (u8, u8, u8) = (0xe0, 0xf2, 0xfe);
 

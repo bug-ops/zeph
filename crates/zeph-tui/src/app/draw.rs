@@ -143,7 +143,8 @@ impl App {
         );
 
         let line = Line::from(vec![
-            Span::styled("⬡ zeph", brand_style),
+            Span::styled("⬡ ", theme.user_message),
+            Span::styled("zeph", brand_style),
             Span::styled(meta, meta_style),
         ]);
 
