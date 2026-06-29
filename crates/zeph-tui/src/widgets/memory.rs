@@ -79,54 +79,58 @@ fn render_probe_last_line<'a>(metrics: &'a MetricsSnapshot, lines: &mut Vec<Line
 }
 
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
-    let mut mem_lines = vec![
-        Line::from(Span::styled(
-            "memory",
-            theme.system_message.add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("  sqlite: {} msgs", metrics.sqlite_message_count)),
-    ];
+    let mut mem_lines = vec![Line::from(Span::styled(
+        "memory",
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ))];
+
+    // sqlite: message count · conv #N
+    {
+        let conv_id = metrics
+            .sqlite_conversation_id
+            .map_or_else(|| "—".to_string(), |id| format!("#{id}"));
+        mem_lines.push(Line::from(vec![
+            Span::styled("  sqlite  ", theme.system_message),
+            Span::styled(
+                format!("{} msgs · conv {conv_id}", metrics.sqlite_message_count),
+                theme.status_bar,
+            ),
+        ]));
+    }
+
+    // vector backend: connected / offline
     if !metrics.vector_backend.is_empty() {
         if metrics.qdrant_available {
             mem_lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ", metrics.vector_backend),
+                    format!("  {}  ", metrics.vector_backend),
                     theme.system_message,
                 ),
                 Span::styled("connected", theme.tool_success),
+                Span::styled(
+                    format!(" · {} vec", metrics.embeddings_generated),
+                    theme.status_bar,
+                ),
             ]));
         } else {
             mem_lines.push(Line::from(vec![
                 Span::styled(
-                    format!("  {} ", metrics.vector_backend),
+                    format!("  {}  ", metrics.vector_backend),
                     theme.system_message,
                 ),
                 Span::styled("offline", theme.error),
             ]));
         }
     }
-    mem_lines.push(Line::from(format!(
-        "  conv id: {}",
-        metrics
-            .sqlite_conversation_id
-            .map_or_else(|| "---".to_string(), |id| id.to_string())
-    )));
-    mem_lines.push(Line::from(format!(
-        "  embeddings: {}",
-        metrics.embeddings_generated
-    )));
-    {
-        mem_lines.push(Line::from(format!(
-            "  graph: {} entities, {} edges, {} communities",
-            metrics.graph_entities_total,
-            metrics.graph_edges_total,
-            metrics.graph_communities_total,
-        )));
-        mem_lines.push(Line::from(format!(
-            "  graph extractions: {} ok, {} failed",
-            metrics.graph_extraction_count, metrics.graph_extraction_failures,
-        )));
+
+    // summaries (only when non-zero)
+    if metrics.embeddings_generated > 0 && metrics.vector_backend.is_empty() {
+        mem_lines.push(Line::from(vec![
+            Span::styled("  embeds  ", theme.system_message),
+            Span::styled(metrics.embeddings_generated.to_string(), theme.status_bar),
+        ]));
     }
+
     let total_probes = metrics.compaction_probe_passes
         + metrics.compaction_probe_soft_failures
         + metrics.compaction_probe_failures

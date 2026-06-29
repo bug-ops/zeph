@@ -1,11 +1,8 @@
 ---
 source: crates/zeph-tui/src/widgets/memory.rs
+assertion_line: 192
 expression: output
 ---
 memory                        
-  sqlite: 42 msgs             
-  qdrant connected            
-  conv id: ---                
-  embeddings: 10              
-  graph: 0 entities, 0 edges, 
-  graph extractions: 0 ok, 0 f
+  sqlite  42 msgs · conv —    
+  qdrant  connected · 10 vec

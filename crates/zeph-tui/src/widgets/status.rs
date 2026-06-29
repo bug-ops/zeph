@@ -276,7 +276,6 @@ fn build_segment_lists(
     let mut list = SegmentList::new();
 
     push_mode_chip(&mut list, mode, theme);
-    push_model_segment(&mut list, metrics, theme);
 
     if app.is_agent_busy() {
         push_busy_segment(&mut list, app, theme);
@@ -315,19 +314,6 @@ fn push_mode_chip(list: &mut SegmentList, mode: InputMode, theme: &Theme) {
             chip_text,
             Style::default().fg(surface_bg).bg(chip_bg),
         )],
-    );
-}
-
-fn push_model_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &Theme) {
-    if metrics.model_name.is_empty() {
-        return;
-    }
-    list.push(
-        Priority::Critical,
-        vec![
-            Span::styled(" · ", theme.system_message),
-            Span::styled(metrics.model_name.clone(), theme.status_bar),
-        ],
     );
 }
 
@@ -879,31 +865,6 @@ mod tests {
         assert!(
             !output.contains("ch:tui"),
             "channel must not appear in redesigned status bar; got: {output:?}"
-        );
-    }
-
-    #[test]
-    fn status_bar_shows_model_name_when_set() {
-        use tokio::sync::mpsc;
-
-        use crate::app::App;
-        use crate::metrics::MetricsSnapshot;
-        use crate::test_utils::render_to_string;
-
-        let (user_tx, _) = mpsc::channel(1);
-        let (_, agent_rx) = mpsc::channel(1);
-        let app = App::new(user_tx, agent_rx);
-        let metrics = MetricsSnapshot {
-            model_name: "claude-sonnet-4-6".into(),
-            ..MetricsSnapshot::default()
-        };
-
-        let output = render_to_string(180, 1, |frame, area| {
-            super::render(&app, &metrics, frame, area);
-        });
-        assert!(
-            output.contains("claude-sonnet-4-6"),
-            "expected model name in status bar; got: {output:?}"
         );
     }
 

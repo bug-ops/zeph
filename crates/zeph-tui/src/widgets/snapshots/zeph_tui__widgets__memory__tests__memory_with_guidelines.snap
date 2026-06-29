@@ -1,11 +1,8 @@
 ---
 source: crates/zeph-tui/src/widgets/memory.rs
+assertion_line: 209
 expression: output
 ---
 memory                                            
-  sqlite: 10 msgs                                 
-  conv id: ---                                    
-  embeddings: 0                                   
-  graph: 0 entities, 0 edges, 0 communities       
-  graph extractions: 0 ok, 0 failed               
+  sqlite  10 msgs · conv —                        
   guidelines: v3 (2026-03-15T17:00:00.000Z)
