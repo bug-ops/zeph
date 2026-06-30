@@ -12,6 +12,8 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
+use std::fmt::Write as _;
+
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::layout::truncate_to_width;
@@ -45,7 +47,7 @@ fn append_tokens_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, them
     use zeph_common::format_tokens;
     let mut detail = format_tokens(metrics.total_tokens);
     if metrics.reasoning_tokens > 0 {
-        detail.push_str(&format!("  R:{}", format_tokens(metrics.reasoning_tokens)));
+        let _ = write!(detail, "  R:{}", format_tokens(metrics.reasoning_tokens));
     }
     lines.push(Line::from(vec![
         Span::styled("  tokens  ", theme.system_message),
@@ -57,7 +59,7 @@ fn append_tokens_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, them
 fn append_api_line(lines: &mut Vec<Line<'_>>, metrics: &MetricsSnapshot, theme: &Theme) {
     let mut detail = format!("{} calls", metrics.api_calls);
     if metrics.last_llm_latency_ms > 0 {
-        detail.push_str(&format!("  · {}ms last", metrics.last_llm_latency_ms));
+        let _ = write!(detail, "  · {}ms last", metrics.last_llm_latency_ms);
     }
     lines.push(Line::from(vec![
         Span::styled("  api     ", theme.system_message),

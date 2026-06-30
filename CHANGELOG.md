@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(ci)`: unblock the workspace lint/build/doc gates. Pin `ollama-rs` back to 0.3.4 (an
+  accidental 0.3.5 bump deprecated `Ollama::new_with_client`, failing `zeph-llm` under
+  `-D warnings` and cascading to every downstream job) and resolve two pedantic clippy findings
+  surfaced once `zeph-llm` compiled again: `cast_precision_loss` in `context_gauge::build_bar`
+  and `format_push_string` in `resources.rs` (now `write!` into the buffer).
+
 - `fix(tui)`: keep the equalizer animating during LLM streaming and background activity.
   The render loop now drains at most `AGENT_DRAIN_BATCH` (64) agent events per iteration instead
   of the whole backlog, so a fast token stream repaints smoothly (was: frozen until the backlog
