@@ -4,7 +4,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.96"
 version = "0.21.4"
 authors = ["bug-ops"]
 license = "MIT"

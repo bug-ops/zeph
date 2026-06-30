@@ -157,7 +157,7 @@ jobs:
         run: cargo clippy --profile ci --workspace --all-targets --features ${{ matrix.features }} -- -D warnings
 
   msrv:
-    name: MSRV check (1.95, ${{ matrix.label }})
+    name: MSRV check (1.96, ${{ matrix.label }})
     needs: detect-changes
     if: needs.detect-changes.outputs.run-full-ci == 'true'
     runs-on: ubuntu-latest
