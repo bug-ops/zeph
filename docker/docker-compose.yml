@@ -1,6 +1,6 @@
 services:
   ollama:
-    image: ollama/ollama:latest@sha256:a6149234667efc71d37766d61c1a16f24c33e4cd7a0bf4125c44a7e47e2419c4
+    image: ollama/ollama:latest@sha256:c484b703176aa19dfc0a54cbfb60ab8094b38faa04283fb77eba1d33319e5eca
     ports:
       - "11434:11434"
     volumes:
@@ -10,7 +10,7 @@ services:
       - cpu
 
   qdrant:
-    image: qdrant/qdrant:v1.18.1@sha256:45f8e3ddc2570a4d029877e1b5ec1045c19b3852b4e22a55c7f43b05aea0ca89
+    image: qdrant/qdrant:v1.18.2@sha256:75eab8c4ba42096724fdcfde8b4de0b5713d529dde32f285a1f86fdcb2c9e50c
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -23,7 +23,7 @@ services:
       - cpu
 
   zeph:
-    image: ${ZEPH_IMAGE:-ghcr.io/bug-ops/zeph:latest@sha256:013be9396fb760b5b6b2f5864aaadbed796cedd6324aa4f9c14ef3510d7e8575}
+    image: ${ZEPH_IMAGE:-ghcr.io/bug-ops/zeph:latest@sha256:aaea3b97f1b87f3465cdf3cfd08910ba739b0fa466c616b59bbe0b8c1d389d91}
     pull_policy: always
     depends_on:
       ollama:

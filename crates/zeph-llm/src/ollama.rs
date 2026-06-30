@@ -125,7 +125,11 @@ impl OllamaProvider {
     pub fn new(base_url: &str, model: String, embedding_model: String) -> Self {
         let (host, port) = parse_host_port(base_url);
         Self {
-            client: Ollama::new_with_client(host, port, ollama_reqwest_client()),
+            client: Ollama::builder()
+                .host(host)
+                .port(port)
+                .reqwest_client(ollama_reqwest_client())
+                .build(),
             model,
             embedding_model,
             context_window_size: None,
