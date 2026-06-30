@@ -125,7 +125,7 @@ tokio-util = "0.7.18"
 toml = "1.1.2"
 toml_edit = "0.25.12"
 tower = "0.5.3"
-tower-http = { version = "0.6.11", default-features = false }
+tower-http = { version = "0.7.0", default-features = false }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-chrome = "0.7.2"
