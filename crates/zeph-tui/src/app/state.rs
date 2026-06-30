@@ -1042,6 +1042,17 @@ impl App {
         self.wave_tick
     }
 
+    /// Advance the wave animation clock by one tick.
+    ///
+    /// Called from the render loop's internal interval as an animation heartbeat
+    /// that is independent of the `EventReader`'s `AppEvent::Tick`s, so the
+    /// equalizer keeps moving even when the event channel is briefly starved by a
+    /// streaming burst. Only the wave counter is advanced here — the throbber and
+    /// micro-delights stay driven by `AppEvent::Tick`.
+    pub fn advance_wave_tick(&mut self) {
+        self.wave_tick = self.wave_tick.saturating_add(1);
+    }
+
     /// Apply micro-delight configuration (#5104).
     ///
     /// Called at construction time from `tui_bridge` to propagate `[tui.delights]` config.

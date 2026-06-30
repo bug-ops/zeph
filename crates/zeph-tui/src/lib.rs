@@ -148,6 +148,13 @@ enum DirtyState {
     Full,
 }
 
+/// Maximum agent events drained per render-loop iteration.
+///
+/// Bounds how long a streaming burst can run before the loop repaints and
+/// services the animation/input arms again. Sized well above a typical
+/// per-frame chunk count so normal streaming drains fully in one pass.
+const AGENT_DRAIN_BATCH: u16 = 64;
+
 #[cfg_attr(
     feature = "profiling",
     tracing::instrument(name = "tui.lib.tui_loop", skip_all)
@@ -157,7 +164,8 @@ async fn tui_loop(
     event_rx: &mut mpsc::Receiver<AppEvent>,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<(), TuiError> {
-    let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
+    // 100 ms ≈ 10 fps animation heartbeat, matching the EventReader tick rate.
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = DirtyState::Clean;
     let mut first_draw_done = false;
@@ -172,8 +180,21 @@ async fn tui_loop(
             agent_poll = app.poll_agent_event() => {
                 if let Some(agent_event) = agent_poll {
                     app.handle_agent_event(agent_event);
-                    while let Ok(ev) = app.try_recv_agent_event() {
-                        app.handle_agent_event(ev);
+                    // Drain a bounded batch per iteration. An unbounded drain lets a
+                    // fast LLM stream monopolise the loop: tokens only repaint once the
+                    // whole backlog is consumed (looks frozen, then jumps) and the wave
+                    // tick (event_rx arm) is starved meanwhile. Capping returns control
+                    // to `select!` regularly so streaming repaints smoothly and the
+                    // animation clock keeps ticking.
+                    let mut drained = 0u16;
+                    while drained < AGENT_DRAIN_BATCH {
+                        match app.try_recv_agent_event() {
+                            Ok(ev) => {
+                                app.handle_agent_event(ev);
+                                drained += 1;
+                            }
+                            Err(_) => break,
+                        }
                     }
                 } else {
                     // Agent channel closed: agent exited. Quit the TUI.
@@ -182,9 +203,10 @@ async fn tui_loop(
                 dirty = DirtyState::Full;
             }
             _ = tick.tick() => {
-                // Tick: only upgrade to AnimationOnly if no full redraw is
-                // already scheduled, so a burst of agent events is not
-                // downgraded.
+                // The internal interval is an animation heartbeat independent of the
+                // EventReader's `AppEvent::Tick`s, so the wave keeps moving even when
+                // the event channel is briefly starved by a streaming burst.
+                app.advance_wave_tick();
                 if dirty == DirtyState::Clean {
                     dirty = DirtyState::AnimationOnly;
                 }
@@ -220,7 +242,10 @@ async fn tui_loop(
 
         let should_draw = match dirty {
             DirtyState::Clean => false,
-            DirtyState::AnimationOnly => app.is_agent_busy(),
+            // Animate while the agent is busy OR background/external requests are
+            // inflight, so the violet Network wave keeps moving even when the agent
+            // itself is idle.
+            DirtyState::AnimationOnly => app.is_agent_busy() || app.background_inflight() > 0,
             DirtyState::Full => true,
         };
 

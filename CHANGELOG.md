@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(tui)`: keep the equalizer animating during LLM streaming and background activity.
+  The render loop now drains at most `AGENT_DRAIN_BATCH` (64) agent events per iteration instead
+  of the whole backlog, so a fast token stream repaints smoothly (was: frozen until the backlog
+  fully drained, then a jump) and the animation/input arms are serviced between batches. The
+  internal 100 ms interval now advances the wave clock as a heartbeat independent of the
+  `EventReader`, and the `AnimationOnly` redraw gate also fires while background/external requests
+  are inflight (`background_inflight() > 0`) — previously gated on `is_agent_busy()` alone, which
+  left the violet `Network` wave frozen when the agent itself was idle. See `crates/zeph-tui/src/lib.rs`.
+
 ### Changed
 
 - `feat(tui)`: give background/external requests a visually distinct equalizer wave. The
