@@ -17,8 +17,8 @@ publish = true
 
 [workspace.dependencies]
 age = { version = "0.11.3", default-features = false }
-agent-client-protocol = "0.15.1"
-agent-client-protocol-schema = "=0.14.0"
+agent-client-protocol = "0.14.0"
+agent-client-protocol-schema = "=0.13.6"
 anyhow = "1.0.103"
 arboard = "3.6.1"
 arc-swap = "1.9.1"
@@ -63,7 +63,7 @@ indoc = "2.0.7"
 insta = "1.48.0"
 k256 = { version = "0.13.4", default-features = false }
 landlock = "0.4.5"
-libsqlite3-sys = "0.38.1"
+libsqlite3-sys = "0.37.0"
 lru = "0.18.0"
 metrics = "0.24.6"
 metrics-util = "0.20.4"
@@ -105,7 +105,7 @@ serial_test = "3.5.0"
 sha2 = "0.11"
 shell-words = "1.1.1"
 similar = "3.1.1"
-sqlx = { version = "0.9.0", default-features = false }
+sqlx = { version = "0.8.6", default-features = false }
 subtle = "2.6"
 symphonia = { version = "0.6.0", default-features = false }
 sysinfo = { version = "0.39.5", default-features = false }
