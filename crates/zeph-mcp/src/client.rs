@@ -1860,4 +1860,189 @@ mod tests {
             "receiver must drain exactly {CAPACITY} items"
         );
     }
+
+    // --- Duplex-transport integration test ---
+    //
+    // Unlike the unit tests above (which construct `CallToolResult`/`ContentBlock` values
+    // directly in-process), this exercises a real `initialize -> tools/list -> tools/call`
+    // round-trip through rmcp's actual wire serialization/deserialization path, over an
+    // in-memory `tokio::io::duplex` pipe, plus the `tools/list_changed` notification path
+    // handled by `ToolListChangedHandler::on_tool_list_changed`. CI-safe regression coverage
+    // for `rmcp` upgrades that change wire-format behavior, without spawning a real subprocess.
+
+    /// Server-side handle to the negotiated `Peer`, captured during `tools/list` so the test
+    /// can later trigger a `tools/list_changed` notification from outside any request handler.
+    type CapturedServerPeer = Arc<std::sync::Mutex<Option<rmcp::Peer<rmcp::RoleServer>>>>;
+
+    /// Minimal in-process MCP server backing the duplex round-trip test below. Returns one
+    /// block of every `ContentBlock` variant on `tools/call`, echoing back the received
+    /// arguments to prove the client -> server leg is actually deserialized (not just
+    /// constructed in-process) — mirrors the manual verification script used during the
+    /// rmcp 2.0 migration.
+    struct DuplexTestServer {
+        captured_peer: CapturedServerPeer,
+    }
+
+    const DUPLEX_TEST_TOOL_NAME: &str = "multi_content_tool";
+
+    impl rmcp::ServerHandler for DuplexTestServer {
+        fn get_info(&self) -> rmcp::model::ServerInfo {
+            rmcp::model::ServerInfo::new(
+                rmcp::model::ServerCapabilities::builder()
+                    .enable_tools()
+                    .enable_tool_list_changed()
+                    .build(),
+            )
+        }
+
+        async fn list_tools(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        ) -> Result<rmcp::model::ListToolsResult, rmcp::model::ErrorData> {
+            *self.captured_peer.lock().unwrap() = Some(context.peer.clone());
+            Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                rmcp::model::Tool::new(
+                    DUPLEX_TEST_TOOL_NAME,
+                    "Returns one block of every ContentBlock variant, echoing the received args",
+                    serde_json::Map::new(),
+                ),
+            ]))
+        }
+
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        ) -> Result<CallToolResult, rmcp::model::ErrorData> {
+            if request.name.as_ref() != DUPLEX_TEST_TOOL_NAME {
+                return Err(rmcp::model::ErrorData::invalid_params(
+                    format!("unknown tool: {}", request.name),
+                    None,
+                ));
+            }
+            let echo = request
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("echo"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Ok(CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text(format!("hello from duplex test, echo={echo}")),
+                rmcp::model::ContentBlock::image("c2VjcmV0Ynl0ZXM=", "image/png"),
+                rmcp::model::ContentBlock::embedded_text(
+                    "file:///notes.txt",
+                    "embedded text resource content",
+                ),
+                rmcp::model::ContentBlock::resource(rmcp::model::ResourceContents::blob(
+                    "Ymxvb2I=",
+                    "file:///x.bin",
+                )),
+                rmcp::model::ContentBlock::resource_link(rmcp::model::Resource::new(
+                    "file:///report.pdf",
+                    "report.pdf",
+                )),
+            ]))
+        }
+    }
+
+    #[tokio::test]
+    async fn duplex_round_trip_covers_all_content_block_variants() {
+        let (server_io, client_io) = tokio::io::duplex(8192);
+
+        let captured_peer: CapturedServerPeer = Arc::new(std::sync::Mutex::new(None));
+        let server_handle = {
+            let captured_peer = Arc::clone(&captured_peer);
+            tokio::spawn(async move { DuplexTestServer { captured_peer }.serve(server_io).await })
+        };
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(16);
+        let handler = ToolListChangedHandler::new(
+            "duplex-test",
+            tx,
+            Arc::new(DashMap::new()),
+            Arc::new(Vec::new()),
+            crate::sanitize::DEFAULT_MAX_TOOL_DESCRIPTION_BYTES,
+            None,
+            Duration::from_secs(5),
+        );
+        let client_service = handler
+            .serve(client_io)
+            .await
+            .expect("client handshake over duplex transport must succeed");
+        let server_service = server_handle
+            .await
+            .expect("server task must not panic")
+            .expect("server-side handshake must succeed");
+
+        let client = McpClient {
+            server_id: "duplex-test".into(),
+            service: Arc::new(client_service),
+            timeout: Duration::from_secs(5),
+        };
+
+        let tools = client.list_tools().await.expect("tools/list must succeed");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, DUPLEX_TEST_TOOL_NAME);
+
+        // tools/call round-trip with non-empty arguments — the server echoes them back,
+        // proving the client -> server leg is actually deserialized off the wire, not just
+        // the server -> client response direction.
+        let result = client
+            .call_tool(
+                DUPLEX_TEST_TOOL_NAME,
+                serde_json::json!({"echo": "ping-9f3a"}),
+            )
+            .await
+            .expect("tools/call must succeed");
+        assert_eq!(result.content.len(), 5);
+
+        let rendered = crate::content::render_content_blocks(&result.content);
+        assert!(
+            rendered.contains("echo=ping-9f3a"),
+            "server must echo back the received arguments: {rendered}"
+        );
+        assert!(rendered.contains("[image: image/png,"));
+        assert!(rendered.contains("file:///notes.txt"));
+        assert!(rendered.contains("embedded text resource content"));
+        assert!(rendered.contains("file:///x.bin"));
+        assert!(rendered.contains("[resource_link: file:///report.pdf (report.pdf)]"));
+        // Binary payloads must never be inlined into the rendered string.
+        assert!(!rendered.contains("c2VjcmV0Ynl0ZXM="));
+        assert!(!rendered.contains("Ymxvb2I="));
+
+        // A mismatched tool name is rejected server-side — proves the `name` field itself
+        // (not just `arguments`) reaches the server intact.
+        let unknown_tool_result = client
+            .call_tool("not-a-real-tool", serde_json::json!({}))
+            .await;
+        assert!(
+            unknown_tool_result.is_err(),
+            "unknown tool name must be rejected by the server"
+        );
+
+        // Exercise `ToolListChangedHandler::on_tool_list_changed`: trigger a real
+        // `tools/list_changed` notification from the server and confirm the handler
+        // refreshes the tool list and emits a `ToolRefreshEvent` on the retained channel.
+        let server_peer = captured_peer
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("server must have captured its peer handle during tools/list");
+        server_peer
+            .notify_tool_list_changed()
+            .await
+            .expect("tools/list_changed notification must send successfully");
+
+        let refresh_event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("ToolRefreshEvent must arrive within timeout")
+            .expect("refresh channel must not be closed before the event arrives");
+        assert_eq!(refresh_event.server_id, "duplex-test");
+        assert_eq!(refresh_event.tools.len(), 1);
+        assert_eq!(refresh_event.tools[0].name, DUPLEX_TEST_TOOL_NAME);
+
+        client.shutdown().await;
+        let _ = server_service.cancel().await;
+    }
 }

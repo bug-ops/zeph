@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `test(mcp)`: add an in-process duplex-transport integration test for `McpClient` /
+  `ToolListChangedHandler`, covering a full `initialize -> tools/list -> tools/call`
+  round-trip through the real rmcp wire serialization path over `tokio::io::duplex`
+  (text, image, embedded text resource, embedded blob resource, and resource-link
+  `ContentBlock` variants, with the server echoing received tool-call arguments and
+  rejecting an unknown tool name to verify the client -> server leg), plus a
+  `tools/list_changed` notification asserting `ToolListChangedHandler::on_tool_list_changed`
+  emits a `ToolRefreshEvent`. See `crates/zeph-mcp/src/client.rs`.
+
 ### Changed
 
 - `feat(mcp)!`: upgrade `rmcp` from 1.8.0 to 2.0.0. **Breaking dependency change**:

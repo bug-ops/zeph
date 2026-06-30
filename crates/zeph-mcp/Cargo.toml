@@ -51,6 +51,7 @@ zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 
 [dev-dependencies]
+rmcp = { workspace = true, features = ["server"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 zeph-llm = { workspace = true, features = ["testing"] }
 
