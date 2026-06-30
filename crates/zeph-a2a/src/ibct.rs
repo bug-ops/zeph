@@ -332,6 +332,7 @@ mod base64_compat {
 mod tests {
     #[cfg(feature = "ibct")]
     use super::*;
+    #[cfg(feature = "ibct")]
     use std::assert_matches;
 
     #[cfg(feature = "ibct")]
