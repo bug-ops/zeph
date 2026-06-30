@@ -51,7 +51,7 @@ jobs:
     # secrets context is not available in `if:` expressions; use an env-var
     # sentinel written in a preceding step instead (see "Check secrets" step).
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Check secrets
         id: secrets-check
@@ -75,7 +75,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         if: steps.secrets-check.outputs.skip == 'false'
 
       # Cache cargo registry/git sources only (no target dir — sccache handles compilation).
@@ -94,9 +94,9 @@ jobs:
 
       - name: Set up Python
         if: steps.secrets-check.outputs.skip == 'false'
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.14.5"
+          python-version: "3.14.6"
           cache: pip
 
       - name: Install Telethon
