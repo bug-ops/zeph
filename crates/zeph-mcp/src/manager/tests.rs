@@ -862,12 +862,12 @@ async fn validate_roots_empty_returns_empty() {
 }
 
 #[tokio::test]
+#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
 async fn validate_roots_file_uri_is_kept() {
-    use rmcp::model::Root;
     // Use temp_dir which exists on all platforms (Unix, macOS, Windows).
     let tmp = std::env::temp_dir();
     let uri = format!("file://{}", tmp.display());
-    let root = Root::new(uri);
+    let root = crate::roots::make_root(uri, None::<&str>);
     let result = validate_roots(&[root], "srv").await;
     assert_eq!(result.len(), 1);
     // URI is canonicalized — on macOS /tmp resolves to /private/tmp.
@@ -878,28 +878,26 @@ async fn validate_roots_file_uri_is_kept() {
 
 #[tokio::test]
 async fn validate_roots_non_file_uri_is_filtered_out() {
-    use rmcp::model::Root;
-    let root = Root::new("https://example.com/workspace");
+    let root = crate::roots::make_root("https://example.com/workspace", None::<&str>);
     let result = validate_roots(&[root], "srv").await;
     assert!(result.is_empty(), "non-file:// URI must be filtered");
 }
 
 #[tokio::test]
 async fn validate_roots_http_uri_is_filtered_out() {
-    use rmcp::model::Root;
-    let root = Root::new("http://localhost:8080/project");
+    let root = crate::roots::make_root("http://localhost:8080/project", None::<&str>);
     let result = validate_roots(&[root], "srv").await;
     assert!(result.is_empty(), "http:// URI must be filtered");
 }
 
 #[tokio::test]
+#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
 async fn validate_roots_mixed_uris_keeps_only_file() {
-    use rmcp::model::Root;
     let tmp = std::env::temp_dir();
     let roots = vec![
-        Root::new(format!("file://{}", tmp.display())),
-        Root::new("https://evil.example.com"),
-        Root::new("file:///nonexistent-path-xyz"),
+        crate::roots::make_root(format!("file://{}", tmp.display()), None::<&str>),
+        crate::roots::make_root("https://evil.example.com", None::<&str>),
+        crate::roots::make_root("file:///nonexistent-path-xyz", None::<&str>),
     ];
     let result = validate_roots(&roots, "srv").await;
     // Only file:// URIs are kept (path existence only emits a warn, not a filter)
@@ -909,9 +907,8 @@ async fn validate_roots_mixed_uris_keeps_only_file() {
 
 #[tokio::test]
 async fn validate_roots_missing_path_is_kept_with_warning() {
-    use rmcp::model::Root;
     // Non-existent path: warn but still pass through (server decides)
-    let root = Root::new("file:///nonexistent-zeph-test-path-xyz-abc");
+    let root = crate::roots::make_root("file:///nonexistent-zeph-test-path-xyz-abc", None::<&str>);
     let result = validate_roots(&[root], "srv").await;
     assert_eq!(
         result.len(),
@@ -922,9 +919,8 @@ async fn validate_roots_missing_path_is_kept_with_warning() {
 
 #[tokio::test]
 async fn validate_roots_path_traversal_in_uri_is_filtered_as_non_file() {
-    use rmcp::model::Root;
     // A URI with path traversal but not file:// scheme is filtered
-    let root = Root::new("ftp:///../../etc/passwd");
+    let root = crate::roots::make_root("ftp:///../../etc/passwd", None::<&str>);
     let result = validate_roots(&[root], "srv").await;
     assert!(
         result.is_empty(),
@@ -933,8 +929,8 @@ async fn validate_roots_path_traversal_in_uri_is_filtered_as_non_file() {
 }
 
 #[tokio::test]
+#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
 async fn validate_roots_file_uri_traversal_is_canonicalized() {
-    use rmcp::model::Root;
     // Build a traversal path using temp_dir, which exists on all platforms.
     let tmp = std::env::temp_dir();
     let parent = tmp.parent().unwrap_or(&tmp);
@@ -942,7 +938,7 @@ async fn validate_roots_file_uri_traversal_is_canonicalized() {
     // Construct: <parent>/<dir_name>/../<dir_name>  →  canonicalizes to <tmp>
     let traversal = parent.join(dir_name).join("..").join(dir_name);
     let uri = format!("file://{}", traversal.display());
-    let root = Root::new(uri);
+    let root = crate::roots::make_root(uri, None::<&str>);
     let result = validate_roots(&[root], "srv").await;
     assert_eq!(result.len(), 1);
     // After canonicalize, the traversal component must be gone.
@@ -1013,7 +1009,7 @@ fn elicitation_channel_is_bounded_by_capacity() {
         let (response_tx, _) = tokio::sync::oneshot::channel();
         let event = crate::elicitation::ElicitationEvent {
             server_id: "bounded-srv".to_owned(),
-            request: rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+            request: rmcp::model::ElicitRequestParams::FormElicitationParams {
                 meta: None,
                 message: "test".to_owned(),
                 requested_schema: rmcp::model::ElicitationSchema::new(
@@ -1032,7 +1028,7 @@ fn elicitation_channel_is_bounded_by_capacity() {
     let (response_tx, _) = tokio::sync::oneshot::channel();
     let overflow = crate::elicitation::ElicitationEvent {
         server_id: "bounded-srv".to_owned(),
-        request: rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+        request: rmcp::model::ElicitRequestParams::FormElicitationParams {
             meta: None,
             message: "overflow".to_owned(),
             requested_schema: rmcp::model::ElicitationSchema::new(std::collections::BTreeMap::new()),
@@ -1046,10 +1042,10 @@ fn elicitation_channel_is_bounded_by_capacity() {
 }
 
 #[tokio::test]
+#[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
 async fn validate_roots_preserves_name() {
-    use rmcp::model::Root;
     let tmp = std::env::temp_dir();
-    let root = Root::new(format!("file://{}", tmp.display())).with_name("workspace");
+    let root = crate::roots::make_root(format!("file://{}", tmp.display()), Some("workspace"));
     let result = validate_roots(&[root], "srv").await;
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].name.as_deref(), Some("workspace"));

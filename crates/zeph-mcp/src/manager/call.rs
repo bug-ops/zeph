@@ -57,19 +57,7 @@ impl McpManager {
     }
 }
 
-/// Sanitize, attest, then filter tools based on trust level and allowlist.
-///
+/// Render a tool result's content blocks to text for the embedding anomaly guard.
 fn extract_text_content(result: &CallToolResult) -> String {
-    result
-        .content
-        .iter()
-        .filter_map(|c| {
-            if let rmcp::model::RawContent::Text(t) = &c.raw {
-                Some(t.text.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::content::render_content_blocks(&result.content)
 }

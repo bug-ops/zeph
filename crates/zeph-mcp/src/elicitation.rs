@@ -11,7 +11,7 @@
 
 use tokio::sync::oneshot;
 
-use rmcp::model::{CreateElicitationRequestParams, CreateElicitationResult};
+use rmcp::model::{ElicitRequestParams, ElicitResult};
 
 /// Event forwarded from an MCP server's elicitation request to the agent loop.
 ///
@@ -29,9 +29,9 @@ pub struct ElicitationEvent {
     /// The MCP server that sent this elicitation request.
     pub server_id: String,
     /// Raw rmcp parameters. Converted to `zeph_core::ElicitationRequest` by the agent loop.
-    pub request: CreateElicitationRequestParams,
+    pub request: ElicitRequestParams,
     /// Send the user's response back to the handler waiting in `create_elicitation()`.
-    pub response_tx: oneshot::Sender<CreateElicitationResult>,
+    pub response_tx: oneshot::Sender<ElicitResult>,
 }
 
 impl std::fmt::Debug for ElicitationEvent {
@@ -45,14 +45,14 @@ impl std::fmt::Debug for ElicitationEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::{CreateElicitationResult, ElicitationAction};
+    use rmcp::model::ElicitationAction;
 
     #[test]
     fn elicitation_event_debug_does_not_expose_request_content() {
         let (response_tx, _rx) = oneshot::channel();
         let event = ElicitationEvent {
             server_id: "test-server".to_owned(),
-            request: CreateElicitationRequestParams::FormElicitationParams {
+            request: ElicitRequestParams::FormElicitationParams {
                 meta: None,
                 message: "enter password".to_owned(),
                 requested_schema: rmcp::model::ElicitationSchema::new(
@@ -71,10 +71,10 @@ mod tests {
 
     #[tokio::test]
     async fn elicitation_event_response_tx_delivers_result() {
-        let (response_tx, response_rx) = oneshot::channel::<CreateElicitationResult>();
+        let (response_tx, response_rx) = oneshot::channel::<ElicitResult>();
         let event = ElicitationEvent {
             server_id: "srv".to_owned(),
-            request: CreateElicitationRequestParams::FormElicitationParams {
+            request: ElicitRequestParams::FormElicitationParams {
                 meta: None,
                 message: "test".to_owned(),
                 requested_schema: rmcp::model::ElicitationSchema::new(
@@ -83,11 +83,7 @@ mod tests {
             },
             response_tx,
         };
-        let result = CreateElicitationResult {
-            action: ElicitationAction::Decline,
-            content: None,
-            meta: None,
-        };
+        let result = ElicitResult::new(ElicitationAction::Decline);
         event.response_tx.send(result).unwrap();
         let received = response_rx.await.unwrap();
         assert_eq!(received.action, ElicitationAction::Decline);

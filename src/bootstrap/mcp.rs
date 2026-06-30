@@ -33,17 +33,11 @@ pub fn create_mcp_manager_with_vault(
         .iter()
         .map(|s| {
             let transport = build_transport(s, vault);
-            let roots: Vec<rmcp::model::Root> = s
+            let roots = s
                 .roots
                 .iter()
-                .map(|r| {
-                    let root = rmcp::model::Root::new(&r.uri);
-                    match &r.name {
-                        Some(n) => root.with_name(n),
-                        None => root,
-                    }
-                })
-                .collect();
+                .map(|r| zeph_mcp::roots::make_root(&r.uri, r.name.as_deref()))
+                .collect::<Vec<_>>();
             let elicitation_enabled = s
                 .elicitation_enabled
                 .unwrap_or(config.mcp.elicitation_enabled);

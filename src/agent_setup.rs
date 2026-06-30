@@ -294,10 +294,7 @@ async fn mcp_text_json(
     let text = result
         .content
         .iter()
-        .find_map(|content| match &content.raw {
-            rmcp::model::RawContent::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
+        .find_map(|content| content.as_text().map(|t| t.text.as_str()))
         .ok_or_else(|| {
             zeph_tools::ToolError::Execution(std::io::Error::other(
                 "mcpls returned no text content",

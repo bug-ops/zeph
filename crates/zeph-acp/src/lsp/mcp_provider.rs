@@ -8,7 +8,6 @@
 //!
 use std::sync::Arc;
 
-use rmcp::model::RawContent;
 use zeph_mcp::McpManager;
 
 use crate::error::AcpError;
@@ -68,13 +67,7 @@ impl McpLspProvider {
         let text: String = result
             .content
             .iter()
-            .find_map(|c| {
-                if let RawContent::Text(t) = &c.raw {
-                    Some(t.text.clone())
-                } else {
-                    None
-                }
-            })
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
             .ok_or_else(|| AcpError::ClientError("mcpls returned no text content".to_owned()))?;
 
         // Check is_error before JSON parsing to surface the actual mcpls error message

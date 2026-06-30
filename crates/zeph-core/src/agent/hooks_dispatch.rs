@@ -163,19 +163,14 @@ impl zeph_subagent::McpDispatch for McpManagerDispatch {
                 .call_tool(server, tool, args)
                 .await
                 .map(|result| {
-                    // Extract text content from the MCP response as a JSON value.
-                    let texts: Vec<serde_json::Value> = result
+                    // Render every content block (text, image, audio, resource, ...) to a
+                    // JSON value — non-text blocks no longer silently dropped.
+                    let blocks: Vec<serde_json::Value> = result
                         .content
                         .iter()
-                        .filter_map(|c| {
-                            if let rmcp::model::RawContent::Text(t) = &c.raw {
-                                Some(serde_json::Value::String(t.text.clone()))
-                            } else {
-                                None
-                            }
-                        })
+                        .map(|c| serde_json::Value::String(zeph_mcp::render_content_block(c)))
                         .collect();
-                    serde_json::Value::Array(texts)
+                    serde_json::Value::Array(blocks)
                 })
                 .map_err(|e| e.to_string())
         })

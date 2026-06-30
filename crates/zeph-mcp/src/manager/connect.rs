@@ -820,6 +820,11 @@ async fn drain_oauth_results(
 /// - Warns if a URI does not use `file://` scheme.
 /// - Warns if the path does not exist on the filesystem.
 /// - Filters out roots with non-`file://` URIs (MCP spec requires filesystem roots).
+// `rmcp::model::Root` is deprecated by SEP-2577 but still functional — this function reads
+// and constructs `Root` values directly, so the whole signature+body carries the allow.
+// See `crate::roots` for the construction-helper boundary used by callers that only need
+// to build a fresh `Root` without inspecting an existing one.
+#[allow(deprecated)]
 #[tracing::instrument(name = "mcp.manager.validate_roots", skip_all, fields(server_id = %server_id))]
 pub(super) async fn validate_roots(
     roots: &[rmcp::model::Root],
@@ -839,10 +844,7 @@ pub(super) async fn validate_roots(
         let raw_path = r.uri.trim_start_matches("file://");
         if let Ok(canonical) = tokio::fs::canonicalize(raw_path).await {
             let canonical_uri = format!("file://{}", canonical.display());
-            let mut root = rmcp::model::Root::new(canonical_uri);
-            if let Some(ref name) = r.name {
-                root = root.with_name(name.clone());
-            }
+            let root = crate::roots::make_root(canonical_uri, r.name.clone());
             result.push(root);
         } else {
             tracing::warn!(

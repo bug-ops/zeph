@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 
 use crate::caller::McpCaller;
 use crate::error::McpError;
@@ -66,7 +66,7 @@ impl MockMcpCaller {
     /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn with_text_response(self, text: impl Into<String>) -> Self {
-        let result = CallToolResult::success(vec![Content::text(text.into())]);
+        let result = CallToolResult::success(vec![ContentBlock::text(text.into())]);
         self.pending_responses.lock().unwrap().push_back(Ok(result));
         self
     }

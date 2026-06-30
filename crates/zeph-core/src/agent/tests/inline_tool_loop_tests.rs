@@ -253,7 +253,7 @@ async fn elicitation_event_during_tool_execution_is_handled() {
                 let (response_tx, _response_rx) = oneshot::channel();
                 let event = ElicitationEvent {
                     server_id: "test-server".to_owned(),
-                    request: rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+                    request: rmcp::model::ElicitRequestParams::FormElicitationParams {
                         meta: None,
                         message: "please fill in".to_owned(),
                         requested_schema: rmcp::model::ElicitationSchema::new(

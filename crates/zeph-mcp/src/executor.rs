@@ -117,18 +117,7 @@ impl ToolExecutor for McpToolExecutor {
             .await
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
-        let raw_text = result
-            .content
-            .iter()
-            .filter_map(|c| {
-                if let rmcp::model::RawContent::Text(t) = &c.raw {
-                    Some(t.text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let raw_text = crate::content::render_content_blocks(&result.content);
 
         let text = crate::sanitize::intent_anchor_wrap(&tool.server_id, &tool.name, &raw_text);
 

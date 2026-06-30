@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use rmcp::model::{CreateElicitationResult, ElicitationAction};
+use rmcp::model::{ElicitResult, ElicitationAction};
 
 use super::{Agent, Channel, LlmProvider};
 
@@ -400,14 +400,10 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn handle_elicitation_event(&mut self, event: zeph_mcp::ElicitationEvent) {
         use crate::channel::{ElicitationRequest, ElicitationResponse};
 
-        let decline = CreateElicitationResult {
-            action: ElicitationAction::Decline,
-            content: None,
-            meta: None,
-        };
+        let decline = ElicitResult::new(ElicitationAction::Decline);
 
         let channel_request = match &event.request {
-            rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+            rmcp::model::ElicitRequestParams::FormElicitationParams {
                 message,
                 requested_schema,
                 ..
@@ -419,11 +415,20 @@ impl<C: Channel> Agent<C> {
                     fields,
                 }
             }
-            rmcp::model::CreateElicitationRequestParams::UrlElicitationParams { .. } => {
+            rmcp::model::ElicitRequestParams::UrlElicitationParams { .. } => {
                 // URL elicitation not supported in phase 1 — decline.
                 tracing::debug!(
                     server_id = event.server_id,
                     "URL elicitation not supported, declining"
+                );
+                let _ = event.response_tx.send(decline);
+                return;
+            }
+            // ElicitRequestParams is #[non_exhaustive] — decline unknown future variants.
+            _ => {
+                tracing::debug!(
+                    server_id = event.server_id,
+                    "unknown elicitation request variant, declining"
                 );
                 let _ = event.response_tx.send(decline);
                 return;
@@ -472,21 +477,11 @@ impl<C: Channel> Agent<C> {
         let _ = self.channel.send_status("").await;
 
         let result = match response {
-            ElicitationResponse::Accepted(value) => CreateElicitationResult {
-                action: ElicitationAction::Accept,
-                content: Some(value),
-                meta: None,
-            },
-            ElicitationResponse::Declined => CreateElicitationResult {
-                action: ElicitationAction::Decline,
-                content: None,
-                meta: None,
-            },
-            ElicitationResponse::Cancelled => CreateElicitationResult {
-                action: ElicitationAction::Cancel,
-                content: None,
-                meta: None,
-            },
+            ElicitationResponse::Accepted(value) => {
+                ElicitResult::new(ElicitationAction::Accept).with_content(value)
+            }
+            ElicitationResponse::Declined => ElicitResult::new(ElicitationAction::Decline),
+            ElicitationResponse::Cancelled => ElicitResult::new(ElicitationAction::Cancel),
         };
 
         if event.response_tx.send(result).is_err() {
@@ -647,15 +642,16 @@ fn build_elicitation_fields(
     schema: &rmcp::model::ElicitationSchema,
 ) -> Vec<crate::channel::ElicitationField> {
     use crate::channel::{ElicitationField, ElicitationFieldType};
-    use rmcp::model::PrimitiveSchema;
+    use rmcp::model::PrimitiveSchemaDefinition;
 
     schema
         .properties
         .iter()
         .map(|(name, prop)| {
-            // Extract field type and description by serializing the PrimitiveSchema to JSON
-            // and reading the discriminator field.  This avoids deep-matching the nested
-            // EnumSchema / StringSchema / … variants of rmcp's type-safe schema hierarchy.
+            // Extract field type and description by serializing the PrimitiveSchemaDefinition
+            // to JSON and reading the discriminator field.  This avoids deep-matching the
+            // nested EnumSchema / StringSchema / … variants of rmcp's type-safe schema
+            // hierarchy.
             let json = serde_json::to_value(prop).unwrap_or_default();
             let description = json
                 .get("description")
@@ -663,11 +659,10 @@ fn build_elicitation_fields(
                 .map(sanitize_elicitation_message);
 
             let field_type = match prop {
-                PrimitiveSchema::Boolean(_) => ElicitationFieldType::Boolean,
-                PrimitiveSchema::Integer(_) => ElicitationFieldType::Integer,
-                PrimitiveSchema::Number(_) => ElicitationFieldType::Number,
-                PrimitiveSchema::String(_) => ElicitationFieldType::String,
-                PrimitiveSchema::Enum(_) => {
+                PrimitiveSchemaDefinition::Boolean(_) => ElicitationFieldType::Boolean,
+                PrimitiveSchemaDefinition::Integer(_) => ElicitationFieldType::Integer,
+                PrimitiveSchemaDefinition::Number(_) => ElicitationFieldType::Number,
+                PrimitiveSchemaDefinition::Enum(_) => {
                     // Extract enum values from the serialized form.  All EnumSchema variants
                     // serialise their allowed values under "enum" or inside "items.enum".
                     let vals = json
@@ -681,6 +676,15 @@ fn build_elicitation_fields(
                         })
                         .unwrap_or_default();
                     ElicitationFieldType::Enum(vals)
+                }
+                PrimitiveSchemaDefinition::String(_) => ElicitationFieldType::String,
+                // Any future `#[non_exhaustive]` variant falls back to
+                // `ElicitationFieldType::String` rather than panicking.
+                _ => {
+                    tracing::debug!(
+                        "unknown PrimitiveSchemaDefinition variant, defaulting to String"
+                    );
+                    ElicitationFieldType::String
                 }
             };
             let required = schema.required.as_deref().is_some_and(|r| r.contains(name));
@@ -976,27 +980,27 @@ mod tests {
     fn build_elicitation_fields_maps_primitive_types() {
         use crate::channel::ElicitationFieldType;
         use rmcp::model::{
-            BooleanSchema, ElicitationSchema, IntegerSchema, NumberSchema, PrimitiveSchema,
-            StringSchema,
+            BooleanSchema, ElicitationSchema, IntegerSchema, NumberSchema,
+            PrimitiveSchemaDefinition, StringSchema,
         };
         use std::collections::BTreeMap;
 
         let mut props = BTreeMap::new();
         props.insert(
             "flag".to_owned(),
-            PrimitiveSchema::Boolean(BooleanSchema::new()),
+            PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
         );
         props.insert(
             "count".to_owned(),
-            PrimitiveSchema::Integer(IntegerSchema::new()),
+            PrimitiveSchemaDefinition::Integer(IntegerSchema::new()),
         );
         props.insert(
             "ratio".to_owned(),
-            PrimitiveSchema::Number(NumberSchema::new()),
+            PrimitiveSchemaDefinition::Number(NumberSchema::new()),
         );
         props.insert(
             "name".to_owned(),
-            PrimitiveSchema::String(StringSchema::new()),
+            PrimitiveSchemaDefinition::String(StringSchema::new()),
         );
 
         let schema = ElicitationSchema::new(props);
@@ -1011,17 +1015,17 @@ mod tests {
 
     #[test]
     fn build_elicitation_fields_required_flag() {
-        use rmcp::model::{ElicitationSchema, PrimitiveSchema, StringSchema};
+        use rmcp::model::{ElicitationSchema, PrimitiveSchemaDefinition, StringSchema};
         use std::collections::BTreeMap;
 
         let mut props = BTreeMap::new();
         props.insert(
             "req".to_owned(),
-            PrimitiveSchema::String(StringSchema::new()),
+            PrimitiveSchemaDefinition::String(StringSchema::new()),
         );
         props.insert(
             "opt".to_owned(),
-            PrimitiveSchema::String(StringSchema::new()),
+            PrimitiveSchemaDefinition::String(StringSchema::new()),
         );
 
         let mut schema = ElicitationSchema::new(props);

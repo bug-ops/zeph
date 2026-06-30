@@ -84,6 +84,11 @@ pub enum McpTransport {
 /// - `Untrusted` + no allowlist — all tools exposed with a warning.
 /// - `Untrusted` + allowlist — only listed tools are exposed.
 /// - `Sandboxed` + allowlist — only listed tools; empty allowlist = no tools.
+// `roots: Vec<rmcp::model::Root>` names a type deprecated by SEP-2577 (still functional —
+// see `crate::roots`); the derive(Serialize, Deserialize) expansion below also references
+// it, which a field-level `#[allow(deprecated)]` does not silence, hence the struct-level
+// attribute.
+#[allow(deprecated)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerEntry {
     pub id: String,
@@ -102,6 +107,9 @@ pub struct ServerEntry {
     #[serde(default)]
     pub expected_tools: Vec<String>,
     /// Filesystem roots to advertise to the server via `roots/list`.
+    ///
+    /// `rmcp::model::Root` is deprecated by SEP-2577 but still functional — see
+    /// [`crate::roots`] for the construction-helper boundary that isolates this.
     #[serde(default)]
     pub roots: Vec<rmcp::model::Root>,
     /// Per-tool security metadata overrides. Keys are tool names.

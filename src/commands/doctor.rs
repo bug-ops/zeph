@@ -644,17 +644,11 @@ async fn check_mcp_server(
     let start = Instant::now();
 
     let transport = build_doctor_transport(server);
-    let roots: Vec<rmcp::model::Root> = server
+    let roots = server
         .roots
         .iter()
-        .map(|r| {
-            let root = rmcp::model::Root::new(&r.uri);
-            match &r.name {
-                Some(n) => root.with_name(n),
-                None => root,
-            }
-        })
-        .collect();
+        .map(|r| zeph_mcp::roots::make_root(&r.uri, r.name.as_deref()))
+        .collect::<Vec<_>>();
 
     let elicitation_enabled = server
         .elicitation_enabled

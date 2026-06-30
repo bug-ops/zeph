@@ -6,7 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `feat(mcp)!`: upgrade `rmcp` from 1.8.0 to 2.0.0. **Breaking dependency change**:
+  `RawContent`/`Content`/`Annotated<RawContent>` are removed in favor of a unified
+  `ContentBlock` enum (`Text`/`Image`/`Audio`/`Resource`/`ResourceLink`); elicitation types
+  are renamed (`CreateElicitationRequestParams` → `ElicitRequestParams`,
+  `CreateElicitationResult` → `ElicitResult`, `PrimitiveSchema` → `PrimitiveSchemaDefinition`);
+  and the MCP Roots capability (`Root`, `ListRootsResult`) is now `#[deprecated]` per
+  [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577) but
+  remains fully functional — construction is now isolated behind
+  `zeph_mcp::roots::{make_root, make_list_roots}` (see `crates/zeph-mcp/src/roots.rs`).
+  Added `zeph_mcp::render_content_blocks` / `render_content_block`
+  (`crates/zeph-mcp/src/content.rs`) as the single shared renderer for the full `ContentBlock`
+  union, replacing the previous text-only extraction at every MCP tool-result call site
+  (`zeph-mcp` executor/manager, `zeph-core` hooks dispatch, `zeph-acp` LSP provider,
+  `src/agent_setup.rs`). MCP Tasks API support is explicitly out of scope (zero existing usage).
+
 ### Fixed
+
+- `fix(mcp)`: stop silently dropping non-text MCP tool-result content. Image, audio, and
+  embedded-resource content blocks returned by an MCP server are now rendered as descriptive
+  placeholders (`[image: <mime>, <N> bytes]`, `[resource: <uri>]\n<text>`, etc.) instead of
+  being filtered out — binary payloads are never inlined, only byte counts. See
+  `zeph_mcp::render_content_blocks`.
 
 - `fix(ci)`: unblock the workspace lint/build/doc gates. Pin `ollama-rs` back to 0.3.4 (an
   accidental 0.3.5 bump deprecated `Ollama::new_with_client`, failing `zeph-llm` under

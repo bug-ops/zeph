@@ -65,6 +65,11 @@ pub struct ToolRefreshEvent {
 /// Handler configuration: roots and description-length cap passed to `ToolListChangedHandler`.
 #[derive(Clone)]
 pub struct HandlerConfig {
+    /// Filesystem roots advertised to the server via `roots/list`.
+    ///
+    /// `rmcp::model::Root` is deprecated by SEP-2577 but still functional — see
+    /// [`crate::roots`] for the construction-helper boundary that isolates this.
+    #[allow(deprecated)]
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
     /// When `Some`, elicitation requests are forwarded to the agent loop.
@@ -90,6 +95,7 @@ pub struct ToolListChangedHandler {
     /// Shared across all handler instances; tracks last successful refresh per server.
     last_refresh: Arc<DashMap<String, Instant>>,
     /// Configured roots to expose to the MCP server via `roots/list`.
+    #[allow(deprecated)]
     roots: Arc<Vec<rmcp::model::Root>>,
     /// Configurable cap for tool description length (bytes). Retained for forward-compatibility;
     /// active sanitization is performed by `McpManager::ingest_tools`.
@@ -103,6 +109,7 @@ pub struct ToolListChangedHandler {
 }
 
 impl ToolListChangedHandler {
+    #[allow(deprecated)] // `roots: Arc<Vec<rmcp::model::Root>>` — see `crate::roots`.
     pub(crate) fn new(
         server_id: impl Into<String>,
         tx: Sender<ToolRefreshEvent>,
@@ -127,16 +134,13 @@ impl ToolListChangedHandler {
 impl rmcp::ClientHandler for ToolListChangedHandler {
     fn get_info(&self) -> rmcp::model::ClientInfo {
         let mut caps = rmcp::model::ClientCapabilities::default();
-        caps.roots = Some(rmcp::model::RootsCapabilities {
-            list_changed: Some(false),
-        });
+        let mut roots_caps = rmcp::model::RootsCapabilities::default();
+        roots_caps.list_changed = Some(false);
+        caps.roots = Some(roots_caps);
         if self.elicitation_tx.is_some() {
-            caps.elicitation = Some(rmcp::model::ElicitationCapability {
-                form: Some(rmcp::model::FormElicitationCapability {
-                    schema_validation: Some(true),
-                }),
-                url: None, // URL elicitation deferred to phase 2
-            });
+            caps.elicitation = Some(rmcp::model::ElicitationCapability::new().with_form(
+                rmcp::model::FormElicitationCapability::new().with_schema_validation(true),
+            ));
         }
         let mut info = rmcp::model::ClientInfo::default();
         info.capabilities = caps;
@@ -145,17 +149,12 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
 
     fn create_elicitation(
         &self,
-        request: rmcp::model::CreateElicitationRequestParams,
+        request: rmcp::model::ElicitRequestParams,
         _context: rmcp::service::RequestContext<RoleClient>,
-    ) -> impl std::future::Future<
-        Output = Result<rmcp::model::CreateElicitationResult, rmcp::model::ErrorData>,
-    > + rmcp::service::MaybeSendFuture
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ElicitResult, rmcp::model::ErrorData>>
+    + rmcp::service::MaybeSendFuture
     + '_ {
-        let decline = rmcp::model::CreateElicitationResult {
-            action: rmcp::model::ElicitationAction::Decline,
-            content: None,
-            meta: None,
-        };
+        let decline = rmcp::model::ElicitResult::new(rmcp::model::ElicitationAction::Decline);
 
         async move {
             let Some(ref tx) = self.elicitation_tx else {
@@ -210,6 +209,9 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
         }
     }
 
+    // `ListRootsResult` is deprecated (SEP-2577) but required by the unchanged
+    // `ClientHandler::list_roots` trait signature — unavoidable trait-impl boundary.
+    #[allow(deprecated)]
     fn list_roots(
         &self,
         _context: rmcp::service::RequestContext<RoleClient>,
@@ -218,7 +220,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
     > + rmcp::service::MaybeSendFuture
     + '_ {
         let roots = Arc::clone(&self.roots);
-        async move { Ok(rmcp::model::ListRootsResult::new((*roots).clone())) }
+        async move { Ok(crate::roots::make_list_roots((*roots).clone())) }
     }
 
     #[cfg_attr(
@@ -350,6 +352,7 @@ pub struct OAuthPending {
     pub timeout: Duration,
     pub tx: Sender<ToolRefreshEvent>,
     pub last_refresh: Arc<DashMap<String, Instant>>,
+    #[allow(deprecated)] // see `crate::roots`
     pub roots: Arc<Vec<rmcp::model::Root>>,
     pub max_description_bytes: usize,
     pub elicitation_tx: Option<Sender<ElicitationEvent>>,
@@ -1451,9 +1454,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)] // asserts on `rmcp::model::Root` fields — see `crate::roots`
     async fn list_roots_returns_configured_roots() {
-        use rmcp::model::Root;
-        let root = Root::new("file:///workspace").with_name("workspace");
+        let root = crate::roots::make_root("file:///workspace", Some("workspace"));
         let roots = Arc::new(vec![root]);
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let last_refresh = Arc::new(DashMap::new());

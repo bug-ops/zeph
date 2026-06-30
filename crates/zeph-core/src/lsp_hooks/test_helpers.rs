@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use zeph_mcp::McpCaller;
 use zeph_mcp::error::McpError;
 
@@ -32,7 +32,7 @@ impl RecordingCaller {
         self.responses
             .lock()
             .unwrap()
-            .push(Ok(CallToolResult::success(vec![Content::text(text)])));
+            .push(Ok(CallToolResult::success(vec![ContentBlock::text(text)])));
         self
     }
 }
