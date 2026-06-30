@@ -665,6 +665,10 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                     let cur = app.mouse_enabled;
                     return reduce(app, Action::SetMouse(!cur));
                 }
+                TuiCommand::ToggleEqualizer => {
+                    app.show_equalizer = !app.show_equalizer;
+                    return vec![];
+                }
 
                 // ── Group A — pure state mutations ──────────────────────────────
                 TuiCommand::NewSession => {

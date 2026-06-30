@@ -12,7 +12,7 @@ use crate::app::{App, InputMode};
 use crate::theme::Theme;
 use crate::widgets::spinner::breeze_frame;
 use crate::widgets::status_verbs::humanize;
-use crate::widgets::wave::{WaveState, glyphs};
+use crate::widgets::wave::{EQ_ROWS, EQ_W_MAX, EqualizerWidget, WaveState};
 use zeph_common::text::format_tokens;
 
 /// Prompt glyph shown at the beginning of the separator line.
@@ -56,48 +56,6 @@ fn push_label_spans<'a>(
         spans.push(Span::styled(format!("  {symbol}"), theme.highlight));
     }
     spans.push(Span::styled("  esc to interrupt", theme.system_message));
-}
-
-/// Build the busy separator row for `Motion::Full`.
-///
-/// Layout (left → right):
-/// 1. `you ▸ ` prompt glyph (6 columns, always present).
-/// 2. Wave fills the remaining columns — no label text (the busy verb is already
-///    in the status bar §6; duplicating it here clutters the input area).
-fn build_full_busy_sep<'a>(
-    area_width: u16,
-    app: &'a App,
-    wave_state: WaveState,
-    wave_tick: u64,
-    theme: &'a Theme,
-    wave_buf: &mut Vec<Span<'static>>,
-) -> Vec<Span<'static>> {
-    const PROMPT_W: u16 = 6; // "you ▸ " width
-
-    let wave_w = area_width.saturating_sub(PROMPT_W);
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::styled(
-        format!("{PROMPT_GLYPH} "),
-        theme.system_message,
-    ));
-
-    if wave_w > 0 {
-        let color_mode = app.effective_color_mode();
-        let ascii = app.is_ascii_only();
-        glyphs(
-            wave_state,
-            u32::from(wave_w),
-            wave_tick,
-            color_mode,
-            ascii,
-            wave_buf,
-            theme,
-        );
-        spans.extend_from_slice(wave_buf);
-    }
-
-    spans
 }
 
 /// Build the busy separator row for `Motion::Minimal` (animated) and `Motion::Off` (static).
@@ -251,7 +209,6 @@ pub fn render(
     wave_state: WaveState,
     wave_tick: u64,
     motion: Motion,
-    wave_buf: &mut Vec<Span<'static>>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -259,35 +216,84 @@ pub fn render(
 
     let theme = &app.theme;
 
-    let sep_spans: Vec<Span<'_>> = if busy {
-        match motion {
-            Motion::Full => {
-                build_full_busy_sep(area.width, app, wave_state, wave_tick, theme, wave_buf)
+    if busy && matches!(motion, Motion::Full) && app.show_equalizer {
+        // Compact 2-row equalizer: prompt glyph on row 0, then EqualizerWidget.
+        const PROMPT_W: u16 = 6; // "you ▸ " width
+        let sep_height = EQ_ROWS.min(area.height.saturating_sub(1));
+        if sep_height > 0 {
+            // Prompt glyph on the first row only.
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("{PROMPT_GLYPH} "),
+                    theme.system_message,
+                ))),
+                Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: PROMPT_W,
+                    height: 1,
+                },
+            );
+            // Bounded equalizer to the right of the prompt.
+            let eq_x = area.x.saturating_add(PROMPT_W);
+            let eq_avail = area.width.saturating_sub(PROMPT_W);
+            #[allow(clippy::cast_possible_truncation)]
+            let eq_w = eq_avail.min(EQ_W_MAX as u16);
+            if eq_w > 0 {
+                frame.render_widget(
+                    EqualizerWidget {
+                        state: wave_state,
+                        tick: wave_tick,
+                        theme,
+                        color_mode: app.effective_color_mode(),
+                        ascii_only: app.is_ascii_only(),
+                    },
+                    Rect {
+                        x: eq_x,
+                        y: area.y,
+                        width: eq_w,
+                        height: sep_height,
+                    },
+                );
             }
-            Motion::Minimal => {
-                build_spinner_busy_sep(spinner_idx, activity_label, app, theme, true)
-            }
-            Motion::Off => build_spinner_busy_sep(spinner_idx, activity_label, app, theme, false),
         }
+        render_text_area(
+            app,
+            frame,
+            Rect {
+                y: area.y.saturating_add(sep_height),
+                height: area.height.saturating_sub(sep_height),
+                ..area
+            },
+            busy,
+        );
     } else {
-        build_idle_sep(app, theme)
-    };
+        let sep_spans: Vec<Span<'_>> = if busy {
+            match motion {
+                Motion::Minimal => {
+                    build_spinner_busy_sep(spinner_idx, activity_label, app, theme, true)
+                }
+                _ => build_spinner_busy_sep(spinner_idx, activity_label, app, theme, false),
+            }
+        } else {
+            build_idle_sep(app, theme)
+        };
 
-    frame.render_widget(
-        Paragraph::new(Line::from(sep_spans)),
-        Rect { height: 1, ..area },
-    );
-
-    render_text_area(
-        app,
-        frame,
-        Rect {
-            y: area.y.saturating_add(1),
-            height: area.height.saturating_sub(1),
-            ..area
-        },
-        busy,
-    );
+        frame.render_widget(
+            Paragraph::new(Line::from(sep_spans)),
+            Rect { height: 1, ..area },
+        );
+        render_text_area(
+            app,
+            frame,
+            Rect {
+                y: area.y.saturating_add(1),
+                height: area.height.saturating_sub(1),
+                ..area
+            },
+            busy,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -304,7 +310,6 @@ mod tests {
         App::new(user_tx, agent_rx)
     }
 
-    /// Thin wrapper so existing tests don't need to manage `wave_buf` themselves.
     #[allow(clippy::too_many_arguments)]
     fn render_input(
         app: &App,
@@ -317,7 +322,6 @@ mod tests {
         wave_tick: u64,
         motion: zeph_config::Motion,
     ) {
-        let mut buf = Vec::new();
         super::render(
             app,
             frame,
@@ -328,7 +332,6 @@ mod tests {
             wave_state,
             wave_tick,
             motion,
-            &mut buf,
         );
     }
 
@@ -628,12 +631,11 @@ mod tests {
             output.contains("esc to interrupt"),
             "interrupt hint must appear in Off mode; got: {output:?}"
         );
-        // No block-element wave glyphs.
-        for glyph in &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] {
-            assert!(
-                !output.contains(glyph),
-                "no wave glyphs should appear under Motion::Off; got: {output:?}"
-            );
-        }
+        // No lit dot-matrix bullet — Off mode uses the spinner/label path only.
+        // Note: `·` (middle-dot) is the static spinner symbol and may appear legitimately.
+        assert!(
+            !output.contains('•'),
+            "no dot-matrix bullet should appear under Motion::Off; got: {output:?}"
+        );
     }
 }

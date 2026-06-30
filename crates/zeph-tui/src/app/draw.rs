@@ -53,9 +53,6 @@ impl App {
         let wave_state = self.wave_state();
         let wave_tick = self.wave_tick();
         let motion = self.motion();
-        // Take the reuse buffer out of self before the shared &App borrow starts so that
-        // build_full_busy_sep can write into it without conflicting with &self below.
-        let mut wave_buf = std::mem::take(&mut self.wave_buf);
         widgets::input::render(
             self,
             frame,
@@ -66,9 +63,7 @@ impl App {
             wave_state,
             wave_tick,
             motion,
-            &mut wave_buf,
         );
-        self.wave_buf = wave_buf;
         widgets::status::render(self, &self.metrics, frame, layout.status);
 
         if let Some(state) = &self.file_picker_state {

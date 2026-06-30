@@ -480,9 +480,11 @@ pub struct App {
     /// — otherwise the first frame after a long idle gap would falsely read as `Stalled`.
     pub(crate) last_progress_at: Instant,
 
-    /// Reusable buffer for wave glyph spans, allocated once and passed into
-    /// [`crate::widgets::wave::glyphs`] each busy frame to avoid per-frame `Vec` allocation.
-    pub(crate) wave_buf: Vec<ratatui::text::Span<'static>>,
+    /// Whether the compact equalizer widget is visible in the busy separator row.
+    ///
+    /// Toggled via [`crate::command::TuiCommand::ToggleEqualizer`].
+    /// Defaults to `true`. Ignored when `Motion` is not `Full`.
+    pub(crate) show_equalizer: bool,
 
     // --- Micro-delights (#5104) ---
     /// Individual feature toggles sourced from `[tui.delights]` in config.

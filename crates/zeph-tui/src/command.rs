@@ -152,6 +152,8 @@ pub enum TuiCommand {
     SetMouse(bool),
     /// Toggle the current mouse capture state.
     ToggleMouse,
+    /// Toggle the compact equalizer widget in the busy separator row.
+    ToggleEqualizer,
     // SubAgent sidebar navigation (used by decode_normal_key → Action::Dispatch)
     /// Move the subagent list selection down by one.
     SubagentSidebarDown,
@@ -376,6 +378,13 @@ fn build_app_commands() -> Vec<CommandEntry> {
             category: "app",
             shortcut: None,
             command: TuiCommand::ToggleMouse,
+        },
+        CommandEntry {
+            id: "app:equalizer",
+            label: "Toggle equalizer (compact VU-meter in busy separator)",
+            category: "app",
+            shortcut: None,
+            command: TuiCommand::ToggleEqualizer,
         },
     ]
 }
@@ -984,7 +993,7 @@ mod tests {
 
     #[test]
     fn registry_has_correct_count() {
-        assert_eq!(command_registry().len(), 26);
+        assert_eq!(command_registry().len(), 27);
     }
 
     #[test]

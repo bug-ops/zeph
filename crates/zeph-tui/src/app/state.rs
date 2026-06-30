@@ -105,7 +105,7 @@ impl App {
             motion: zeph_config::Motion::Full,
             wave_tick: 0,
             last_progress_at: Instant::now(),
-            wave_buf: Vec::new(),
+            show_equalizer: true,
             delights: zeph_config::DelightsConfig::default(),
             stream_rate: crate::delights::StreamRate::new(),
             toasts: crate::delights::ToastQueue::new(),
