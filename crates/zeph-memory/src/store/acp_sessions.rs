@@ -34,7 +34,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
-        zeph_db::query(&sql)
+        zeph_db::query(sqlx::AssertSqlSafe(sql))
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -273,7 +273,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
-        zeph_db::query(&sql)
+        zeph_db::query(sqlx::AssertSqlSafe(sql))
             .bind(session_id)
             .bind(conversation_id)
             .execute(&self.pool)

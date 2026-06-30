@@ -68,7 +68,7 @@ impl AccessFrequencyCache {
              GROUP BY fact_id"
         );
 
-        let mut q = sqlx::query(&sql).bind(session_id);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(session_id);
         for id in &ids {
             q = q.bind(id);
         }

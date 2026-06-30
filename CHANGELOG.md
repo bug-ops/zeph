@@ -25,6 +25,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into
+  `runtime-tokio` + `tls-rustls` in `zeph-db`, `zeph-memory`, `zeph-index`, and `zeph-scheduler`.
+  The new `SqlSafeStr` bound on `query`/`query_as`/`query_scalar` requires runtime-built SQL
+  strings to be wrapped in `sqlx::AssertSqlSafe`; all 67 dynamic-SQL call sites (assembled only
+  from machine-generated placeholders, boolean-selected static clause fragments, and dialect
+  constants — never unvalidated input) were audited and wrapped. `zeph-db`'s `FullDriver` bound
+  updated for the now-lifetime-free `Database::Arguments` associated type
+  (`crates/zeph-db/src/bounds.rs`). `zeph-durable` gained `#![recursion_limit = "256"]`
+  (`crates/zeph-durable/src/lib.rs`) — sqlx 0.9's larger generated future types pushed the
+  generic `step` wrapper past the default depth limit, matching the existing precedent in
+  `zeph-core`/`zeph-acp`/`zeph-bench`/`zeph-scheduler`/`src/main.rs`.
+
 - `refactor(tests)`: migrate 772 `assert!(matches!(...))` calls to the stabilized
   `assert_matches!` macro (MSRV 1.96). The new macro prints the actual value on failure,
   making test output more informative. Added `#[derive(Debug)]` to 12 types that lacked it.

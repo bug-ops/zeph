@@ -6,14 +6,13 @@
 use crate::DatabaseDriver;
 
 /// Marker trait automatically implemented for all [`DatabaseDriver`] types
-/// whose `Database` supports standard Rust types in queries (sqlx 0.8 bounds).
+/// whose `Database` supports standard Rust types in queries (sqlx 0.9 bounds).
 ///
 /// This trait exists solely to reduce bound repetition on generic impl blocks.
 /// It is sealed: all impls are inside this crate.
 pub trait FullDriver: DatabaseDriver
 where
-    for<'q> <Self::Database as sqlx::Database>::Arguments<'q>:
-        sqlx::IntoArguments<'q, Self::Database>,
+    <Self::Database as sqlx::Database>::Arguments: sqlx::IntoArguments<Self::Database>,
     for<'c> &'c mut <Self::Database as sqlx::Database>::Connection:
         sqlx::Executor<'c, Database = Self::Database>,
     i64: for<'q> sqlx::Encode<'q, Self::Database> + sqlx::Type<Self::Database>,

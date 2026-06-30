@@ -1094,7 +1094,7 @@ postgres = ["sqlx/postgres"]
 [dependencies]
 # NOTE: "macros" deliberately excluded — zeph-db uses query() not query!().
 # This saves ~5-15s on cold builds by avoiding sqlx-macros proc-macro compilation.
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "migrate"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls", "migrate"] }
 regex = { workspace = true }  # for redact_url()
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
@@ -1108,7 +1108,7 @@ Each crate that currently depends on `sqlx` directly changes to depend on `zeph-
 ```toml
 # crates/zeph-memory/Cargo.toml
 [dependencies]
-# REMOVE: sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite", "migrate"] }
+# REMOVE: sqlx = { workspace = true, features = ["macros", "runtime-tokio", "tls-rustls", "sqlite", "migrate"] }
 # ADD:
 zeph-db.workspace = true
 ```

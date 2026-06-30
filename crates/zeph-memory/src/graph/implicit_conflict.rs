@@ -233,7 +233,7 @@ pub async fn annotate_conflicts(
                AND (edge_a_id IN ({placeholders}) OR edge_b_id IN ({placeholders}))",
         );
 
-        let mut q = sqlx::query(&query_str);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query_str));
         for id in chunk {
             q = q.bind(id);
         }

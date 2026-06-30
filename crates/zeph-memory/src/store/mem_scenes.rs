@@ -80,7 +80,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
         for &msg_id in member_ids {
-            zeph_db::query(&member_sql)
+            zeph_db::query(sqlx::AssertSqlSafe(member_sql.as_str()))
                 .bind(scene_id)
                 .bind(msg_id.0)
                 .execute(&mut *tx)

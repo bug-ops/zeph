@@ -680,7 +680,7 @@ impl EmbeddingStore {
              JOIN vector_points vp ON vp.id = em.qdrant_point_id \
              WHERE em.message_id IN ({placeholders}) AND em.chunk_index = 0"
         );
-        let mut q = zeph_db::query_as::<_, (MessageId, Vec<u8>)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, Vec<u8>)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -733,7 +733,7 @@ impl EmbeddingStore {
              FROM embeddings_metadata \
              WHERE message_id IN ({placeholders}) AND chunk_index = 0"
         );
-        let mut q = zeph_db::query_as::<_, (MessageId, String)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, String)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -796,7 +796,7 @@ impl EmbeddingStore {
         let query = format!(
             "SELECT qdrant_point_id FROM embeddings_metadata WHERE message_id IN ({placeholders})"
         );
-        let mut q = zeph_db::query_as::<_, (String,)>(&query);
+        let mut q = zeph_db::query_as::<_, (String,)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }

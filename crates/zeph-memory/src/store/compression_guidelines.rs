@@ -381,7 +381,7 @@ impl SqliteStore {
         let query = format!(
             "UPDATE compression_failure_pairs SET used_in_update = 1 WHERE id IN ({placeholders})"
         );
-        let mut q = zeph_db::query(&query);
+        let mut q = zeph_db::query(sqlx::AssertSqlSafe(query));
         for id in ids {
             q = q.bind(id);
         }

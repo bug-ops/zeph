@@ -338,7 +338,7 @@ pub async fn store_events(
              RETURNING id"
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
-        let id = sqlx::query_scalar::<_, i64>(&sql)
+        let id = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(event.session_id.as_str())
             .bind(event.message_id.0)
             .bind(&event.event_type)
@@ -375,7 +375,7 @@ pub async fn store_links(store: &SqliteStore, links: &[CausalLink]) -> Result<()
              ON CONFLICT (cause_event_id, effect_event_id) DO NOTHING"
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(link.cause_event_id)
             .bind(link.effect_event_id)
             .bind(link.strength)
@@ -471,7 +471,7 @@ pub async fn recall_episodic_causal(
                    AND effect_event_id NOT IN ({visited_ph})"
             );
 
-            let mut q = sqlx::query_scalar::<_, i64>(&query);
+            let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(query));
             for &id in &frontier {
                 q = q.bind(id);
             }
@@ -500,7 +500,9 @@ pub async fn recall_episodic_causal(
              ORDER BY created_at ASC"
         );
 
-        let mut q = sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(&query);
+        let mut q = sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(
+            sqlx::AssertSqlSafe(query),
+        );
         for &id in &visited {
             q = q.bind(id);
         }

@@ -256,7 +256,7 @@ impl GraphStore {
              LIMIT ?",
             <ActiveDialect as zeph_db::dialect::Dialect>::COLLATE_NOCASE,
         );
-        let rows: Vec<EntityRow> = zeph_db::query_as(&search_sql)
+        let rows: Vec<EntityRow> = zeph_db::query_as(sqlx::AssertSqlSafe(search_sql))
             .bind(&fts_query)
             .bind(format!(
                 "%{}%",
@@ -331,7 +331,7 @@ impl GraphStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
-        zeph_db::query(&insert_alias_sql)
+        zeph_db::query(sqlx::AssertSqlSafe(insert_alias_sql))
             .bind(entity_id)
             .bind(alias_name)
             .execute(&self.pool)
@@ -364,7 +364,7 @@ impl GraphStore {
              LIMIT 1",
             <ActiveDialect as zeph_db::dialect::Dialect>::COLLATE_NOCASE,
         );
-        let row: Option<EntityRow> = zeph_db::query_as(&alias_typed_sql)
+        let row: Option<EntityRow> = zeph_db::query_as(sqlx::AssertSqlSafe(alias_typed_sql))
             .bind(alias_name)
             .bind(type_str)
             .fetch_optional(&self.pool)
@@ -709,7 +709,7 @@ impl GraphStore {
         };
 
         // Bind entity IDs twice (source IN and target IN clauses) then edge types.
-        let mut query = zeph_db::query_as::<_, EdgeRow>(&sql);
+        let mut query = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(sql));
         for id in entity_ids {
             query = query.bind(*id);
         }
@@ -754,7 +754,7 @@ impl GraphStore {
              WHERE valid_to IS NULL{origin_filter}
                AND (source_entity_id = ? OR target_entity_id = ?)"
         );
-        let rows: Vec<EdgeRow> = zeph_db::query_as::<_, EdgeRow>(&sql)
+        let rows: Vec<EdgeRow> = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(sql))
             .bind(entity_id)
             .bind(entity_id)
             .fetch_all(&self.pool)
@@ -1227,7 +1227,7 @@ impl GraphStore {
 
         let limit_i64 = i64::try_from(limit)?;
         let ranked_fts_sql = build_ranked_fts_sql();
-        let rows: Vec<EntityFtsRow> = zeph_db::query_as(&ranked_fts_sql)
+        let rows: Vec<EntityFtsRow> = zeph_db::query_as(sqlx::AssertSqlSafe(ranked_fts_sql))
             .bind(&fts_query)
             .bind(format!(
                 "%{}%",
@@ -1296,7 +1296,7 @@ impl GraphStore {
                  GROUP BY entity_id"
             );
 
-            let mut query = zeph_db::query_as::<_, (i64, i64, i64)>(&sql);
+            let mut query = zeph_db::query_as::<_, (i64, i64, i64)>(sqlx::AssertSqlSafe(sql));
             // Bind chunk three times (three IN clauses)
             for id in chunk {
                 query = query.bind(*id);
@@ -1361,7 +1361,7 @@ impl GraphStore {
             let placeholders = placeholder_list(1, chunk.len());
 
             let community_sql = community_ids_sql(&placeholders);
-            let mut query = zeph_db::query_as::<_, (i64, i64)>(&community_sql);
+            let mut query = zeph_db::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(community_sql));
             for id in chunk {
                 query = query.bind(*id);
             }
@@ -1393,7 +1393,7 @@ impl GraphStore {
                      last_retrieved_at = {epoch_now} \
                  WHERE id IN ({edge_placeholders})"
             );
-            let mut q = zeph_db::query(&retrieval_sql);
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(retrieval_sql));
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -1437,7 +1437,7 @@ impl GraphStore {
                  WHERE id IN ({edge_placeholders}) \
                    AND valid_to IS NULL"
             );
-            let mut q = zeph_db::query(&sql);
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(sql));
             q = q.bind(f64::from(delta));
             for id in chunk {
                 q = q.bind(*id);
@@ -1466,7 +1466,7 @@ impl GraphStore {
         for chunk in ids.chunks(MAX_BATCH) {
             let placeholders = zeph_db::placeholder_list(1, chunk.len());
             let sql = format!("SELECT id FROM graph_entities WHERE id IN ({placeholders})");
-            let mut q = zeph_db::query_as::<_, (i64,)>(&sql);
+            let mut q = zeph_db::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -1504,7 +1504,7 @@ impl GraphStore {
                  WHERE id IN ({placeholders}) \
                    AND qdrant_point_id IS NOT NULL"
             );
-            let mut q = zeph_db::query_as::<_, (i64, String)>(&sql);
+            let mut q = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -1539,7 +1539,7 @@ impl GraphStore {
                AND (last_retrieved_at IS NULL OR last_retrieved_at < {epoch_now_decay} - ?)"
         );
         let decay_sql = zeph_db::rewrite_placeholders(&decay_raw);
-        let result = zeph_db::query(&decay_sql)
+        let result = zeph_db::query(sqlx::AssertSqlSafe(decay_sql))
             .bind(decay_lambda)
             .bind(i64::try_from(interval_secs).unwrap_or(i64::MAX))
             .execute(&self.pool)
@@ -1973,7 +1973,7 @@ impl GraphStore {
                  WHERE {edge_filter}
                    AND (source_entity_id IN ({ph2}) OR target_entity_id IN ({ph3}))"
             );
-            let mut q = zeph_db::query_scalar::<_, i64>(&neighbour_sql);
+            let mut q = zeph_db::query_scalar::<_, i64>(sqlx::AssertSqlSafe(neighbour_sql));
             for id in &frontier {
                 q = q.bind(*id);
             }
@@ -2064,7 +2064,7 @@ impl GraphStore {
                    AND (source_entity_id IN ({fp2}) OR target_entity_id IN ({fp3}))"
             );
 
-            let mut q = zeph_db::query_scalar::<_, i64>(&neighbour_sql);
+            let mut q = zeph_db::query_scalar::<_, i64>(sqlx::AssertSqlSafe(neighbour_sql));
             // Bind types first
             for t in &type_strs {
                 q = q.bind(*t);
@@ -2155,7 +2155,7 @@ impl GraphStore {
                AND source_entity_id IN ({ph_ids1})
                AND target_entity_id IN ({ph_ids2})"
         );
-        let mut edge_query = zeph_db::query_as::<_, EdgeRow>(&edge_sql);
+        let mut edge_query = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(edge_sql));
         for t in type_strs {
             edge_query = edge_query.bind(*t);
         }
@@ -2176,7 +2176,7 @@ impl GraphStore {
              FROM graph_entities WHERE id IN ({ph})",
             ph = placeholder_list(1, visited_ids.len()),
         );
-        let mut entity_query = zeph_db::query_as::<_, EntityRow>(&entity_sql2);
+        let mut entity_query = zeph_db::query_as::<_, EntityRow>(sqlx::AssertSqlSafe(entity_sql2));
         for id in &visited_ids {
             entity_query = entity_query.bind(*id);
         }
@@ -2235,7 +2235,7 @@ impl GraphStore {
                AND source_entity_id IN ({ph_ids1})
                AND target_entity_id IN ({ph_ids2})"
         );
-        let mut edge_query = zeph_db::query_as::<_, EdgeRow>(&edge_sql);
+        let mut edge_query = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(edge_sql));
         for id in &visited_ids {
             edge_query = edge_query.bind(*id);
         }
@@ -2252,7 +2252,7 @@ impl GraphStore {
              FROM graph_entities WHERE id IN ({ph})",
             ph = placeholder_list(1, n),
         );
-        let mut entity_query = zeph_db::query_as::<_, EntityRow>(&entity_sql);
+        let mut entity_query = zeph_db::query_as::<_, EntityRow>(sqlx::AssertSqlSafe(entity_sql));
         for id in &visited_ids {
             entity_query = entity_query.bind(*id);
         }
@@ -2291,7 +2291,7 @@ impl GraphStore {
              LIMIT 5",
             cn = <ActiveDialect as zeph_db::dialect::Dialect>::COLLATE_NOCASE,
         );
-        let rows: Vec<EntityRow> = zeph_db::query_as(&find_by_name_sql)
+        let rows: Vec<EntityRow> = zeph_db::query_as(sqlx::AssertSqlSafe(find_by_name_sql))
             .bind(name)
             .bind(name)
             .fetch_all(&self.pool)
@@ -2368,7 +2368,7 @@ impl GraphStore {
             let placeholders = placeholder_list(1, chunk.len());
             let sql =
                 format!("UPDATE messages SET graph_processed = 1 WHERE id IN ({placeholders})");
-            let mut query = zeph_db::query(&sql);
+            let mut query = zeph_db::query(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 query = query.bind(id.0);
             }
@@ -3018,7 +3018,8 @@ impl GraphStore {
             "SELECT id, episode_id FROM graph_edges \
              WHERE id IN ({placeholders}) AND episode_id IS NOT NULL"
         );
-        let mut q = zeph_db::query_as::<_, (i64, crate::types::MessageId)>(&sql);
+        let mut q =
+            zeph_db::query_as::<_, (i64, crate::types::MessageId)>(sqlx::AssertSqlSafe(sql));
         for &eid in edge_ids {
             q = q.bind(eid);
         }
@@ -3087,7 +3088,7 @@ impl GraphStore {
              LIMIT 200"
         );
 
-        let mut q = zeph_db::query_as::<_, EdgeRow>(&sql);
+        let mut q = zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(sql));
         for t in &type_strs {
             q = q.bind(*t);
         }
@@ -3108,7 +3109,7 @@ impl GraphStore {
             let ph2 = placeholder_list(1, chunk.len());
             let name_sql =
                 format!("SELECT id, canonical_name FROM graph_entities WHERE id IN ({ph2})");
-            let mut nq = zeph_db::query_as::<_, (i64, String)>(&name_sql);
+            let mut nq = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(name_sql));
             for &id in chunk {
                 nq = nq.bind(id);
             }

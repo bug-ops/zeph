@@ -377,7 +377,7 @@ impl CodeStore {
             let sql = format!(
                 "SELECT content_hash FROM chunk_metadata WHERE content_hash IN ({placeholders})"
             );
-            let mut query = zeph_db::query_scalar::<_, String>(&sql);
+            let mut query = zeph_db::query_scalar::<_, String>(zeph_db::sqlx::AssertSqlSafe(sql));
             for hash in chunk {
                 query = query.bind(*hash);
             }

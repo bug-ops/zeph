@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// sqlx 0.9 increases the generated Future type depth in generic async step
+// wrappers (handle.rs) beyond the default limit of 128.
+#![recursion_limit = "256"]
+
 //! Native durable execution layer for Zeph.
 //!
 //! `zeph-durable` is a Layer-0 infrastructure crate — analogous to `zeph-db` and `zeph-common` —

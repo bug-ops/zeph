@@ -3366,7 +3366,7 @@ async fn decay_edge_retrieval_counts_respects_interval() {
          VALUES (?, ?, 'knows', 'A knows B', 0.9, CURRENT_TIMESTAMP, 5, {epoch_now})"
     );
     let insert_sql = zeph_db::rewrite_placeholders(&insert_raw);
-    sqlx::query(&insert_sql)
+    sqlx::query(sqlx::AssertSqlSafe(insert_sql))
         .bind(a)
         .bind(b)
         .execute(store.pool())

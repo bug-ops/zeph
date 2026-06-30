@@ -422,7 +422,7 @@ impl SqliteStore {
             let sql = format!(
                 "UPDATE messages SET fidelity_tag = CASE id {case_arms} END WHERE id IN ({in_list})"
             );
-            let mut q = zeph_db::query(&sql);
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(sql));
             for &(id, tag) in chunk {
                 q = q.bind(id.0).bind(i32::from(tag));
             }
@@ -641,7 +641,8 @@ impl SqliteStore {
             "SELECT id, role, content, parts FROM messages \
              WHERE id IN ({placeholders}) AND visibility != 'user_only' AND deleted_at IS NULL"
         );
-        let mut q = zeph_db::query_as::<_, (MessageId, String, String, String)>(&query);
+        let mut q =
+            zeph_db::query_as::<_, (MessageId, String, String, String)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -882,7 +883,8 @@ impl SqliteStore {
              LIMIT ?"
         );
 
-        let mut q = zeph_db::query_as::<_, (MessageId, f64)>(&sql).bind(&safe_query);
+        let mut q =
+            zeph_db::query_as::<_, (MessageId, f64)>(sqlx::AssertSqlSafe(sql)).bind(&safe_query);
         if let Some(a) = after {
             q = q.bind(a);
         }
@@ -919,7 +921,7 @@ impl SqliteStore {
         let query = format!(
             "SELECT id, {epoch_expr} FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let mut q = zeph_db::query_as::<_, (MessageId, i64)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, i64)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -1065,7 +1067,7 @@ impl SqliteStore {
                              AND m.id <= s.last_message_id \
                         )"
             );
-            let mut q = zeph_db::query_as::<_, (MessageId,)>(&sql);
+            let mut q = zeph_db::query_as::<_, (MessageId,)>(sqlx::AssertSqlSafe(sql));
             for &id in chunk {
                 q = q.bind(id);
             }
@@ -1111,7 +1113,7 @@ impl SqliteStore {
         let query = format!(
             "SELECT id, importance_score FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let mut q = zeph_db::query_as::<_, (MessageId, f64)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, f64)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -1135,7 +1137,7 @@ impl SqliteStore {
             "UPDATE messages SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP \
              WHERE id IN ({placeholders})"
         );
-        let mut q = zeph_db::query(&query);
+        let mut q = zeph_db::query(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -1165,7 +1167,7 @@ impl SqliteStore {
         let query = format!(
             "SELECT id, access_count FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let mut q = zeph_db::query_as::<_, (MessageId, i64)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, i64)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -1296,7 +1298,7 @@ impl SqliteStore {
              RETURNING id"
         );
         let promote_insert_sql = zeph_db::rewrite_placeholders(&promote_insert_raw);
-        let row: (MessageId,) = zeph_db::query_as(&promote_insert_sql)
+        let row: (MessageId,) = zeph_db::query_as(sqlx::AssertSqlSafe(promote_insert_sql))
             .bind(conversation_id)
             .bind(merged_content)
             .fetch_one(&mut *tx)
@@ -1341,7 +1343,7 @@ impl SqliteStore {
         let manual_promote_sql = zeph_db::rewrite_placeholders(&manual_promote_raw);
         let mut count = 0usize;
         for &id in ids {
-            let result = zeph_db::query(&manual_promote_sql)
+            let result = zeph_db::query(sqlx::AssertSqlSafe(manual_promote_sql.as_str()))
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
@@ -1391,7 +1393,7 @@ impl SqliteStore {
         let query = format!(
             "SELECT id, tier FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
-        let mut q = zeph_db::query_as::<_, (MessageId, String)>(&query);
+        let mut q = zeph_db::query_as::<_, (MessageId, String)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
             q = q.bind(id);
         }
@@ -1524,7 +1526,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
         for &source_id in source_ids {
-            zeph_db::query(&consol_sql)
+            zeph_db::query(sqlx::AssertSqlSafe(consol_sql.as_str()))
                 .bind(consolidated_id)
                 .bind(source_id)
                 .execute(&mut *tx)
@@ -1582,7 +1584,7 @@ impl SqliteStore {
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
         );
         for &source_id in additional_source_ids {
-            zeph_db::query(&consol_sql)
+            zeph_db::query(sqlx::AssertSqlSafe(consol_sql.as_str()))
                 .bind(target_id)
                 .bind(source_id)
                 .execute(&mut *tx)
@@ -1717,7 +1719,7 @@ impl SqliteStore {
                 "UPDATE messages SET importance_score = importance_score * (1.0 - {decay}) \
                  WHERE id IN ({placeholders})"
             );
-            let mut q = zeph_db::query(&downscale_sql);
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(downscale_sql));
             for &(id,) in &candidate_ids {
                 q = q.bind(id);
             }
@@ -1745,7 +1747,7 @@ impl SqliteStore {
                      OR access_count >= ?\
                  )"
             );
-            let mut rq = zeph_db::query(&replay_sql);
+            let mut rq = zeph_db::query(sqlx::AssertSqlSafe(replay_sql));
             for &(id,) in &candidate_ids {
                 rq = rq.bind(id);
             }
@@ -1773,7 +1775,7 @@ impl SqliteStore {
              ) \
              AND access_count < ?"
         );
-        let prune_result = zeph_db::query(&prune_sql)
+        let prune_result = zeph_db::query(sqlx::AssertSqlSafe(prune_sql))
             .bind(protect_hours)
             .bind(protect_min_access)
             .execute(&mut *tx)

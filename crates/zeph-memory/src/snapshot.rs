@@ -110,10 +110,11 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
             "SELECT id, role, content, parts, {epoch_expr} \
             FROM messages WHERE conversation_id = ? ORDER BY id ASC"
         ));
-        let msg_rows: Vec<(i64, String, String, String, i64)> = zeph_db::query_as(&msg_sql)
-            .bind(cid)
-            .fetch_all(sqlite.pool())
-            .await?;
+        let msg_rows: Vec<(i64, String, String, String, i64)> =
+            zeph_db::query_as(sqlx::AssertSqlSafe(msg_sql))
+                .bind(cid)
+                .fetch_all(sqlite.pool())
+                .await?;
 
         let messages = msg_rows
             .into_iter()
@@ -209,7 +210,7 @@ pub async fn import_snapshot(
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
             );
-            let result = zeph_db::query(&msg_sql)
+            let result = zeph_db::query(sqlx::AssertSqlSafe(msg_sql))
                 .bind(msg.id)
                 .bind(msg.conversation_id)
                 .bind(&msg.role)
@@ -231,7 +232,7 @@ pub async fn import_snapshot(
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
             );
-            let result = zeph_db::query(&sum_sql)
+            let result = zeph_db::query(sqlx::AssertSqlSafe(sum_sql))
                 .bind(sum.id)
                 .bind(sum.conversation_id)
                 .bind(&sum.content)

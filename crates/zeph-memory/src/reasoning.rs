@@ -224,7 +224,7 @@ impl ReasoningMemory {
                embedded_at = EXCLUDED.embedded_at"
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
-        zeph_db::query(&sql)
+        zeph_db::query(sqlx::AssertSqlSafe(sql))
             .bind(&strategy.id)
             .bind(&strategy.summary)
             .bind(strategy.outcome.as_str())
@@ -255,7 +255,7 @@ impl ReasoningMemory {
                 let update_sql = zeph_db::rewrite_placeholders(&format!(
                     "UPDATE reasoning_strategies SET embedded_at = {epoch_now} WHERE id = ?"
                 ));
-                if let Err(e) = zeph_db::query(&update_sql)
+                if let Err(e) = zeph_db::query(sqlx::AssertSqlSafe(update_sql))
                     .bind(&strategy.id)
                     .execute(&self.pool)
                     .await
@@ -331,7 +331,7 @@ impl ReasoningMemory {
                  SET use_count = use_count + 1, last_used_at = {epoch_now} \
                  WHERE id IN ({ph})"
             );
-            let mut q = zeph_db::query(&sql);
+            let mut q = zeph_db::query(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(id.as_str());
             }
@@ -433,7 +433,7 @@ impl ReasoningMemory {
             let mut q = zeph_db::query_as::<
                 _,
                 (String, String, String, String, i64, i64, i64, Option<i64>),
-            >(&sql);
+            >(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(id.as_str());
             }
@@ -481,7 +481,10 @@ impl ReasoningMemory {
              )"
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
-        let result = zeph_db::query(&sql).bind(limit).execute(&self.pool).await?;
+        let result = zeph_db::query(sqlx::AssertSqlSafe(sql))
+            .bind(limit)
+            .execute(&self.pool)
+            .await?;
         Ok(usize::try_from(result.rows_affected()).unwrap_or(0))
     }
 
@@ -496,7 +499,10 @@ impl ReasoningMemory {
                      ORDER BY last_used_at ASC LIMIT ? \
                    )";
         let sql = zeph_db::rewrite_placeholders(raw);
-        let result = zeph_db::query(&sql).bind(limit).execute(&self.pool).await?;
+        let result = zeph_db::query(sqlx::AssertSqlSafe(sql))
+            .bind(limit)
+            .execute(&self.pool)
+            .await?;
         Ok(usize::try_from(result.rows_affected()).unwrap_or(0))
     }
 }

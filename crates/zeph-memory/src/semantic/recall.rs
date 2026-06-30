@@ -1121,7 +1121,7 @@ impl SemanticMemory {
             let sql = format!(
                 "SELECT id, created_at FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
             );
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
             for id in &id_vals {
                 q = q.bind(id);
             }

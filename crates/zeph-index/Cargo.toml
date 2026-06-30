@@ -44,7 +44,7 @@ zeph-tools.workspace = true
 
 [dev-dependencies]
 serial_test.workspace = true
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls", "sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 zeph-llm = { workspace = true, features = ["testing"] }

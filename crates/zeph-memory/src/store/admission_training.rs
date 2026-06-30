@@ -120,7 +120,7 @@ impl SqliteStore {
              SET was_recalled = 1, updated_at = datetime('now') \
              WHERE message_id IN ({placeholders})"
         );
-        let mut q = zeph_db::query(&query);
+        let mut q = zeph_db::query(sqlx::AssertSqlSafe(query));
         for id in message_ids {
             q = q.bind(id.0);
         }

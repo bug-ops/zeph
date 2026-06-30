@@ -29,7 +29,7 @@ schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
-sqlx = { workspace = true, features = ["macros", "runtime-tokio-rustls", "sqlite", "migrate"] } # TODO(#2385-phase3): audit and remove direct sqlx dep once #[derive(sqlx::Type)] is resolved
+sqlx = { workspace = true, features = ["macros", "runtime-tokio", "tls-rustls", "sqlite", "migrate"] } # TODO(#2385-phase3): audit and remove direct sqlx dep once #[derive(sqlx::Type)] is resolved
 thiserror.workspace = true
 tiktoken-rs.workspace = true
 tokio = { workspace = true, features = ["rt"] }

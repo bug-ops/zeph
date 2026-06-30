@@ -105,7 +105,7 @@ serial_test = "3.5.0"
 sha2 = "0.11"
 shell-words = "1.1.1"
 similar = "3.1.1"
-sqlx = { version = "0.8.6", default-features = false }
+sqlx = { version = "0.9.0", default-features = false }
 subtle = "2.6"
 symphonia = { version = "0.6.0", default-features = false }
 sysinfo = { version = "0.39.5", default-features = false }
