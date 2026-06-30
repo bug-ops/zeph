@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use agent_client_protocol::{
     ActiveSession, Agent, ConnectionTo, SessionMessage,
-    schema::{
-        CancelNotification, ContentBlock, ContentChunk, InitializeRequest, ProtocolVersion,
-        SessionId, SessionNotification, SessionUpdate,
+    schema::ProtocolVersion,
+    schema::v1::{
+        CancelNotification, ContentBlock, ContentChunk, InitializeRequest, SessionId,
+        SessionNotification, SessionUpdate,
     },
 };
 use futures::StreamExt;

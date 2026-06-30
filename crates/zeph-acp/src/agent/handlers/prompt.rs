@@ -11,8 +11,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `prompt` request.
 pub(crate) async fn handle_prompt(
-    req: acp::schema::PromptRequest,
-    responder: acp::Responder<acp::schema::PromptResponse>,
+    req: acp::schema::v1::PromptRequest,
+    responder: acp::Responder<acp::schema::v1::PromptResponse>,
     _cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {

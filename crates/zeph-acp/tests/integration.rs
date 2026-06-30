@@ -95,7 +95,7 @@ async fn initialize_handshake() {
             let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 let resp = cx
-                    .send_request(acp::schema::InitializeRequest::new(
+                    .send_request(acp::schema::v1::InitializeRequest::new(
                         acp::schema::ProtocolVersion::LATEST,
                     ))
                     .block_task()
@@ -125,14 +125,14 @@ async fn new_session_returns_session_id() {
             let (sw, sr, cw, cr) = duplex_pair();
             let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let resp = cx
-                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?;
 
@@ -161,18 +161,18 @@ async fn cancel_notification_does_not_panic() {
             let (sw, sr, cw, cr) = duplex_pair();
             let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let session_resp = cx
-                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?;
 
-                cx.send_notification(acp::schema::CancelNotification::new(
+                cx.send_notification(acp::schema::v1::CancelNotification::new(
                     session_resp.session_id,
                 ))?;
                 Ok(())
@@ -195,7 +195,7 @@ async fn unknown_ext_method_returns_null() {
             let (sw, sr, cw, cr) = duplex_pair();
             let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
@@ -204,8 +204,8 @@ async fn unknown_ext_method_returns_null() {
                 let raw_params =
                     Arc::from(serde_json::value::RawValue::from_string("{}".to_owned()).unwrap());
                 let resp = cx
-                    .send_request(acp::ClientRequest::ExtMethodRequest(
-                        acp::schema::ExtRequest::new("_unknown_method", raw_params),
+                    .send_request(acp::schema::v1::ClientRequest::ExtMethodRequest(
+                        acp::schema::v1::ExtRequest::new("_unknown_method", raw_params),
                     ))
                     .block_task()
                     .await?;
@@ -236,14 +236,14 @@ async fn load_session_unknown_id_returns_error() {
             let (sw, sr, cw, cr) = duplex_pair();
             let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let err = cx
-                    .send_request(acp::schema::LoadSessionRequest::new(
+                    .send_request(acp::schema::v1::LoadSessionRequest::new(
                         "non-existent-session-id",
                         workdir.path(),
                     ))
@@ -275,7 +275,7 @@ async fn session_list_contains_created_sessions() {
             let (sw, sr, cw, cr) = duplex_pair();
             let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
@@ -283,22 +283,22 @@ async fn session_list_contains_created_sessions() {
 
                 // Create two sessions so the list is non-trivially non-empty.
                 let id_a = cx
-                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?
                     .session_id;
                 let id_b = cx
-                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?
                     .session_id;
 
                 let resp = cx
-                    .send_request(acp::schema::ListSessionsRequest::new())
+                    .send_request(acp::schema::v1::ListSessionsRequest::new())
                     .block_task()
                     .await?;
 
-                let ids: Vec<&acp::schema::SessionId> =
+                let ids: Vec<&acp::schema::v1::SessionId> =
                     resp.sessions.iter().map(|s| &s.session_id).collect();
                 assert!(ids.contains(&&id_a), "session A not in list: {ids:?}");
                 assert!(ids.contains(&&id_b), "session B not in list: {ids:?}");
@@ -324,29 +324,29 @@ async fn prompt_round_trip_returns_end_turn() {
             // echo_spawner reads the message and signals Flush so drain_agent_events exits.
             let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let session_id = cx
-                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?
                     .session_id;
 
-                let content = vec![acp::schema::ContentBlock::Text(
-                    acp::schema::TextContent::new("hello"),
+                let content = vec![acp::schema::v1::ContentBlock::Text(
+                    acp::schema::v1::TextContent::new("hello"),
                 )];
                 let resp = cx
-                    .send_request(acp::schema::PromptRequest::new(session_id, content))
+                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
                     .block_task()
                     .await?;
 
                 assert_eq!(
                     resp.stop_reason,
-                    acp::schema::StopReason::EndTurn,
+                    acp::schema::v1::StopReason::EndTurn,
                     "expected EndTurn, got {:?}",
                     resp.stop_reason,
                 );
@@ -377,27 +377,27 @@ async fn drain_until_stop_collects_text_chunks() {
                 sr,
             );
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let session_id = cx
-                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?
                     .session_id;
 
-                let content = vec![acp::schema::ContentBlock::Text(
-                    acp::schema::TextContent::new("go"),
+                let content = vec![acp::schema::v1::ContentBlock::Text(
+                    acp::schema::v1::TextContent::new("go"),
                 )];
                 let resp = cx
-                    .send_request(acp::schema::PromptRequest::new(session_id, content))
+                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
                     .block_task()
                     .await?;
 
-                assert_eq!(resp.stop_reason, acp::schema::StopReason::EndTurn);
+                assert_eq!(resp.stop_reason, acp::schema::v1::StopReason::EndTurn);
                 // The PromptResponse carries the assembled text from all chunks.
                 // Verify the stop_reason and that the round-trip succeeded — the per-chunk
                 // assembly logic is exercised by driver::drain_until_stop in client tests.
@@ -435,32 +435,32 @@ async fn cancel_before_prompt_returns_cancelled() {
             // cancel_signal is already notified (biased select fires the cancel arm first).
             let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
-                cx.send_request(acp::schema::InitializeRequest::new(
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
                     acp::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
 
                 let session_id = cx
-                    .send_request(acp::schema::NewSessionRequest::new(workdir.path()))
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
                     .block_task()
                     .await?
                     .session_id;
 
                 // Send cancel BEFORE the prompt so the signal is armed when drain starts.
-                cx.send_notification(acp::schema::CancelNotification::new(session_id.clone()))?;
+                cx.send_notification(acp::schema::v1::CancelNotification::new(session_id.clone()))?;
 
-                let content = vec![acp::schema::ContentBlock::Text(
-                    acp::schema::TextContent::new("go"),
+                let content = vec![acp::schema::v1::ContentBlock::Text(
+                    acp::schema::v1::TextContent::new("go"),
                 )];
                 let resp = cx
-                    .send_request(acp::schema::PromptRequest::new(session_id, content))
+                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
                     .block_task()
                     .await?;
 
                 assert_eq!(
                     resp.stop_reason,
-                    acp::schema::StopReason::Cancelled,
+                    acp::schema::v1::StopReason::Cancelled,
                     "expected Cancelled when cancel is sent before prompt, got {:?}",
                     resp.stop_reason,
                 );

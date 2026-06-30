@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol as acp;
-use agent_client_protocol_schema as schema;
+use agent_client_protocol_schema::v1 as schema;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::AcpError;

@@ -11,8 +11,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/set_config_option` request.
 pub(crate) async fn handle_set_session_config_option(
-    req: acp::schema::SetSessionConfigOptionRequest,
-    responder: acp::Responder<acp::schema::SetSessionConfigOptionResponse>,
+    req: acp::schema::v1::SetSessionConfigOptionRequest,
+    responder: acp::Responder<acp::schema::v1::SetSessionConfigOptionResponse>,
     _cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {

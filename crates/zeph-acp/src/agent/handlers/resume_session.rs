@@ -11,8 +11,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/resume` request.
 pub(crate) async fn handle_resume_session(
-    req: acp::schema::ResumeSessionRequest,
-    responder: acp::Responder<acp::schema::ResumeSessionResponse>,
+    req: acp::schema::v1::ResumeSessionRequest,
+    responder: acp::Responder<acp::schema::v1::ResumeSessionResponse>,
     cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {

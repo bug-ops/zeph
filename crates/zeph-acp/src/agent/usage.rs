@@ -98,7 +98,7 @@ mod tests {
             cache_read_tokens: 10,
             cache_write_tokens: 0,
         };
-        let resp = build_prompt_response(acp::schema::StopReason::EndTurn, turn_usage);
+        let resp = build_prompt_response(acp::schema::v1::StopReason::EndTurn, turn_usage);
         let u = resp.usage.expect("usage should be set");
         assert_eq!(u.total_tokens, 150);
         assert_eq!(u.input_tokens, 100);
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn build_prompt_response_zero_usage_still_attaches() {
         let turn_usage = TurnUsage::default();
-        let resp = build_prompt_response(acp::schema::StopReason::EndTurn, turn_usage);
+        let resp = build_prompt_response(acp::schema::v1::StopReason::EndTurn, turn_usage);
         let u = resp
             .usage
             .expect("usage should be set even for zero tokens");

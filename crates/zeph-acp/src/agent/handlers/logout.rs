@@ -11,8 +11,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `logout` request.
 pub(crate) async fn handle_logout(
-    req: acp::schema::LogoutRequest,
-    responder: acp::Responder<acp::schema::LogoutResponse>,
+    req: acp::schema::v1::LogoutRequest,
+    responder: acp::Responder<acp::schema::v1::LogoutResponse>,
     _cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {

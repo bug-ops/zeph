@@ -56,7 +56,7 @@ use std::time::Duration;
 
 use agent_client_protocol::{
     Agent, Client, SessionMessage, on_receive_request,
-    schema::{
+    schema::v1::{
         RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
         SelectedPermissionOutcome, SessionId, StopReason,
     },

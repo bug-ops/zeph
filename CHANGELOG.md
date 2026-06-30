@@ -37,6 +37,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   generic `step` wrapper past the default depth limit, matching the existing precedent in
   `zeph-core`/`zeph-acp`/`zeph-bench`/`zeph-scheduler`/`src/main.rs`.
 
+- `refactor(acp)!`: bump `agent-client-protocol` 0.14.0 → 1.0.1 and
+  `agent-client-protocol-schema` 0.13.6 → 1.1.0. Schema 1.1.0 removed the flat `pub use v1::*`
+  root re-export, so every `acp::schema::X` reference in `zeph-acp` moved to `acp::schema::v1::X`
+  (`ProtocolVersion`, `MaybeUndefined`, `IntoOption`, `IntoMaybeUndefined` stay flat at the crate
+  root — unaffected). The ACP crate root also dropped its `cookbook`/`handler`/`jsonrpcmsg`
+  modules and the six root message-enum re-exports; the one internal use site
+  (`ClientRequest::ExtMethodRequest` in `tests/integration.rs`) was repointed to
+  `acp::schema::v1::ClientRequest`. No handler, transport, or builder-chain logic changed — the
+  `Agent.builder()`/`ConnectionTo`/`Dispatch`/`Responder` SACP API is unchanged between 0.14.0 and
+  1.0.1. Also deleted 5 long-dead `#[cfg(any())]` test modules in `zeph-acp` (`terminal.rs`,
+  `custom.rs`, `fs.rs`, `mcp_bridge.rs`, `agent/mod.rs`/`agent/tests.rs`) that predated ACP 0.11
+  and were unreachable by any feature toggle.
+
+  `BREAKING CHANGE:` `zeph-acp` is a published crate whose public functions (e.g.
+  `acp_mcp_servers_to_entries`) take `agent-client-protocol`/`agent-client-protocol-schema` types
+  directly. Those upstream crates crossed a SemVer-major boundary (0.x → 1.0) with a public-API
+  path change (`schema::X` → `schema::v1::X`), so this is breaking for any *external* consumer of
+  `zeph-acp`'s public API by the dependency's own SemVer nature — independent of in-workspace
+  impact, which happens to be zero right now (no other workspace crate references
+  `agent_client_protocol::schema::*` directly). No public `zeph-acp` function signatures changed
+  shape — only the import path of the types those signatures already used.
+
 - `refactor(tests)`: migrate 772 `assert!(matches!(...))` calls to the stabilized
   `assert_matches!` macro (MSRV 1.96). The new macro prints the actual value on failure,
   making test output more informative. Added `#[derive(Debug)]` to 12 types that lacked it.

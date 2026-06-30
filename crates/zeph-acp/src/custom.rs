@@ -122,9 +122,13 @@ pub(crate) struct WorkingDirUpdateResponse {
 /// Returns `None` if the method name is not recognized.
 pub(crate) fn dispatch<'a>(
     agent: &'a ZephAcpAgent,
-    req: &'a acp::schema::ExtRequest,
+    req: &'a acp::schema::v1::ExtRequest,
 ) -> Option<
-    Pin<Box<dyn std::future::Future<Output = acp::Result<acp::schema::ExtResponse>> + Send + 'a>>,
+    Pin<
+        Box<
+            dyn std::future::Future<Output = acp::Result<acp::schema::v1::ExtResponse>> + Send + 'a,
+        >,
+    >,
 > {
     match req.method.as_ref() {
         "_session/list" => Some(Box::pin(handle_session_list(agent, &req.params))),
@@ -146,12 +150,12 @@ fn parse_params<T: serde::de::DeserializeOwned>(raw: &Arc<RawValue>) -> acp::Res
     serde_json::from_str(raw.get()).map_err(|e| acp::Error::invalid_request().data(e.to_string()))
 }
 
-fn to_ext_response<T: Serialize>(value: &T) -> acp::Result<acp::schema::ExtResponse> {
+fn to_ext_response<T: Serialize>(value: &T) -> acp::Result<acp::schema::v1::ExtResponse> {
     let json = serde_json::to_string(value)
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
     let raw = RawValue::from_string(json)
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-    Ok(acp::schema::ExtResponse::new(Arc::from(raw)))
+    Ok(acp::schema::v1::ExtResponse::new(Arc::from(raw)))
 }
 
 fn session_not_found() -> acp::Error {
@@ -181,7 +185,7 @@ fn validate_session_id(id: &str) -> acp::Result<()> {
 async fn handle_session_list(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::ExtResponse> {
+) -> acp::Result<acp::schema::v1::ExtResponse> {
     // Deprecated: use the native `list_sessions` ACP method instead.
     // This extension method returns a reduced `SessionListEntry` schema and will be removed
     // in a future release.
@@ -249,14 +253,14 @@ async fn handle_session_list(
 async fn handle_session_get(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::ExtResponse> {
+) -> acp::Result<acp::schema::v1::ExtResponse> {
     let params: SessionGetParams = parse_params(raw)?;
     let sid = params.session_id.as_str();
     validate_session_id(sid)?;
 
     let (in_memory, created_at, busy) = {
         let sessions = agent.sessions.lock();
-        if let Some(entry) = sessions.get(&acp::schema::SessionId::new(sid)) {
+        if let Some(entry) = sessions.get(&acp::schema::v1::SessionId::new(sid)) {
             let busy = entry.output_rx.lock().is_none();
             let created_at = entry.created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
             (true, created_at, busy)
@@ -310,12 +314,12 @@ async fn handle_session_get(
 async fn handle_session_delete(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::ExtResponse> {
+) -> acp::Result<acp::schema::v1::ExtResponse> {
     tracing::warn!("_session/delete is deprecated, use session/delete instead");
     let params: SessionDeleteParams = parse_params(raw)?;
     validate_session_id(&params.session_id)?;
 
-    let acp_id = acp::schema::SessionId::new(params.session_id.as_str());
+    let acp_id = acp::schema::v1::SessionId::new(params.session_id.as_str());
     let removed_memory = agent.sessions.lock().remove(&acp_id).is_some();
     if removed_memory {
         // cancel_signal already dropped with the entry; nothing extra needed.
@@ -342,7 +346,7 @@ async fn handle_session_delete(
 async fn handle_session_export(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::ExtResponse> {
+) -> acp::Result<acp::schema::v1::ExtResponse> {
     let params: SessionExportParams = parse_params(raw)?;
     validate_session_id(&params.session_id)?;
 
@@ -370,7 +374,7 @@ async fn handle_session_export(
 async fn handle_session_import(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::ExtResponse> {
+) -> acp::Result<acp::schema::v1::ExtResponse> {
     let params: SessionImportParams = parse_params(raw)?;
 
     if params.events.len() > MAX_IMPORT_EVENTS {
@@ -405,7 +409,7 @@ async fn handle_session_import(
 async fn handle_agent_tools(
     _agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::ExtResponse> {
+) -> acp::Result<acp::schema::v1::ExtResponse> {
     let _params: AgentToolsParams = parse_params(raw)?;
 
     let tools = vec![
@@ -438,7 +442,7 @@ async fn handle_agent_tools(
 async fn handle_working_dir_update(
     agent: &ZephAcpAgent,
     raw: &Arc<RawValue>,
-) -> acp::Result<acp::schema::ExtResponse> {
+) -> acp::Result<acp::schema::v1::ExtResponse> {
     let params: WorkingDirUpdateParams = parse_params(raw)?;
     validate_session_id(&params.session_id)?;
 
@@ -450,7 +454,7 @@ async fn handle_working_dir_update(
         return Err(acp::Error::invalid_request().data("path traversal not allowed"));
     }
 
-    let acp_id = acp::schema::SessionId::new(params.session_id.as_str());
+    let acp_id = acp::schema::v1::SessionId::new(params.session_id.as_str());
     let updated = {
         let sessions = agent.sessions.lock();
         if let Some(entry) = sessions.get(&acp_id) {
@@ -462,508 +466,4 @@ async fn handle_working_dir_update(
     };
 
     to_ext_response(&WorkingDirUpdateResponse { updated })
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
-mod tests {
-    #![allow(clippy::items_after_statements)]
-
-    use std::sync::Arc;
-
-    use acp::Agent as _;
-    use agent_client_protocol as acp;
-    use serde_json::value::RawValue;
-    use tokio::sync::{mpsc, oneshot};
-
-    use crate::agent::ZephAcpAgent;
-    use crate::transport::ConnSlot;
-
-    fn make_spawner() -> crate::agent::AgentSpawner {
-        Arc::new(|_channel, _ctx, _session_ctx| Box::pin(async {}))
-    }
-
-    fn make_agent() -> (
-        ZephAcpAgent,
-        mpsc::UnboundedReceiver<(acp::schema::SessionNotification, oneshot::Sender<()>)>,
-    ) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let conn_slot: ConnSlot = std::rc::Rc::new(std::cell::RefCell::new(None));
-        (
-            ZephAcpAgent::new(make_spawner(), tx, conn_slot, 4, 1800, None),
-            rx,
-        )
-    }
-
-    fn null_params() -> Arc<RawValue> {
-        Arc::from(RawValue::from_string("{}".to_owned()).unwrap())
-    }
-
-    fn params_json(json: &str) -> Arc<RawValue> {
-        Arc::from(RawValue::from_string(json.to_owned()).unwrap())
-    }
-
-    #[tokio::test]
-    async fn dispatch_returns_none_for_unknown_method() {
-        let (agent, _rx) = make_agent();
-        let req = acp::schema::ExtRequest::new("unknown/method", null_params());
-        assert!(super::dispatch(&agent, &req).is_none());
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_list_returns_empty() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let req = acp::schema::ExtRequest::new("_session/list", null_params());
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let resp = fut.await.unwrap();
-                let parsed: super::SessionListResponse =
-                    serde_json::from_str(resp.0.get()).unwrap();
-                assert!(parsed.sessions.is_empty());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_list_includes_in_memory_session() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let resp = agent
-                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                    .await
-                    .unwrap();
-                let sid = resp.session_id.to_string();
-
-                let req = acp::schema::ExtRequest::new("_session/list", null_params());
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let list_resp: super::SessionListResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(list_resp.sessions.iter().any(|s| s.session_id == sid));
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_delete_removes_session() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let resp = agent
-                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                    .await
-                    .unwrap();
-                let sid = resp.session_id.to_string();
-
-                let json = format!(r#"{{"session_id":"{sid}"}}"#);
-                let req = acp::schema::ExtRequest::new("_session/delete", params_json(&json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let del_resp: super::SessionDeleteResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(del_resp.deleted);
-                assert!(
-                    !agent
-                        .sessions
-                        .borrow()
-                        .contains_key(&acp::schema::SessionId::new(sid.as_str()))
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_delete_returns_false_for_unknown() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"session_id":"no-such-session"}"#;
-                let req = acp::schema::ExtRequest::new("_session/delete", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let del_resp: super::SessionDeleteResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(!del_resp.deleted);
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_agent_tools_returns_list() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"session_id":"any-session"}"#;
-                let req = acp::schema::ExtRequest::new("_agent/tools", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let tools_resp: super::AgentToolsResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(!tools_resp.tools.is_empty());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_working_dir_update_returns_false_for_unknown() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"session_id":"no-such-session","path":"/tmp"}"#;
-                let req =
-                    acp::schema::ExtRequest::new("_agent/working_dir/update", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let wd_resp: super::WorkingDirUpdateResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(!wd_resp.updated);
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_working_dir_update_stores_path() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let resp = agent
-                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                    .await
-                    .unwrap();
-                let sid = resp.session_id.to_string();
-
-                let json = format!(r#"{{"session_id":"{sid}","path":"/workspace"}}"#);
-                let req =
-                    acp::schema::ExtRequest::new("_agent/working_dir/update", params_json(&json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let wd_resp: super::WorkingDirUpdateResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(wd_resp.updated);
-
-                let sessions = agent.sessions.lock();
-                let entry = sessions
-                    .get(&acp::schema::SessionId::new(sid.as_str()))
-                    .unwrap();
-                assert_eq!(
-                    entry.working_dir.lock().as_deref(),
-                    Some(std::path::Path::new("/workspace"))
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn working_dir_update_rejects_path_traversal() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let resp = agent
-                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                    .await
-                    .unwrap();
-                let sid = resp.session_id.to_string();
-
-                let json = format!(r#"{{"session_id":"{sid}","path":"../../etc/passwd"}}"#);
-                let req =
-                    acp::schema::ExtRequest::new("_agent/working_dir/update", params_json(&json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn session_import_rejects_oversized() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                // Build a payload with MAX_IMPORT_EVENTS + 1 events.
-                let events: Vec<_> = (0..=super::MAX_IMPORT_EVENTS)
-                    .map(|i| {
-                        serde_json::json!({"event_type": "user_message", "payload": i.to_string()})
-                    })
-                    .collect();
-                let json = serde_json::to_string(&serde_json::json!({ "events": events })).unwrap();
-                let req = acp::schema::ExtRequest::new("_session/import", params_json(&json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn session_import_no_store_returns_new_id() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"events":[]}"#;
-                let req = acp::schema::ExtRequest::new("_session/import", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let import_resp: super::SessionImportResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(!import_resp.session_id.is_empty());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn session_export_no_store_returns_empty_events() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"session_id":"any-session-id"}"#;
-                let req = acp::schema::ExtRequest::new("_session/export", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let export_resp: super::SessionExportResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert!(export_resp.events.is_empty());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn session_get_returns_error_for_unknown_no_store() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"session_id":"no-such-session"}"#;
-                let req = acp::schema::ExtRequest::new("_session/get", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn session_get_returns_data_for_in_memory_session() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let resp = agent
-                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                    .await
-                    .unwrap();
-                let sid = resp.session_id.to_string();
-
-                let json = format!(r#"{{"session_id":"{sid}"}}"#);
-                let req = acp::schema::ExtRequest::new("_session/get", params_json(&json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let get_resp: super::SessionGetResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                assert_eq!(get_resp.session_id, sid);
-                assert!(!get_resp.busy);
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn validate_session_id_rejects_long() {
-        let id = "a".repeat(super::MAX_SESSION_ID_LEN + 1);
-        assert!(super::validate_session_id(&id).is_err());
-    }
-
-    #[tokio::test]
-    async fn validate_session_id_rejects_control_chars() {
-        assert!(super::validate_session_id("abc\x00def").is_err());
-        assert!(super::validate_session_id("abc def").is_err());
-        assert!(super::validate_session_id("abc/def").is_err());
-    }
-
-    #[tokio::test]
-    async fn validate_session_id_accepts_valid() {
-        assert!(super::validate_session_id("abc-123_XYZ").is_ok());
-        assert!(super::validate_session_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
-    }
-
-    // ── Error path: malformed params ──────────────────────────────────────────
-
-    #[tokio::test]
-    async fn dispatch_session_get_rejects_malformed_params() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                // Missing required `session_id` field.
-                let req = acp::schema::ExtRequest::new("_session/get", null_params());
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_delete_rejects_malformed_params() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let req = acp::schema::ExtRequest::new("_session/delete", null_params());
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_session_export_rejects_malformed_params() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let req = acp::schema::ExtRequest::new("_session/export", null_params());
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn dispatch_working_dir_update_rejects_malformed_params() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let req = acp::schema::ExtRequest::new("_agent/working_dir/update", null_params());
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    // ── Error path: invalid session_id in handlers ────────────────────────────
-
-    #[tokio::test]
-    async fn session_get_rejects_invalid_session_id() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                // session_id with slash — invalid character.
-                let json = r#"{"session_id":"invalid/id"}"#;
-                let req = acp::schema::ExtRequest::new("_session/get", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn session_export_rejects_invalid_session_id() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"session_id":"bad id with space"}"#;
-                let req = acp::schema::ExtRequest::new("_session/export", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn session_delete_rejects_invalid_session_id() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                // session_id with slash — not in allowed charset.
-                let json = r#"{"session_id":"bad/session/id"}"#;
-                let req = acp::schema::ExtRequest::new("_session/delete", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                assert!(fut.await.is_err());
-            })
-            .await;
-    }
-
-    // ── Edge case: import with zero events ────────────────────────────────────
-
-    #[tokio::test]
-    async fn session_import_zero_events_returns_new_id() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let json = r#"{"events":[]}"#;
-                let req = acp::schema::ExtRequest::new("_session/import", params_json(json));
-                let fut = super::dispatch(&agent, &req).unwrap();
-                let resp: super::SessionImportResponse =
-                    serde_json::from_str(fut.await.unwrap().0.get()).unwrap();
-                // New UUID must be non-empty and a valid UUID.
-                assert_eq!(resp.session_id.len(), 36);
-                assert!(resp.session_id.contains('-'));
-            })
-            .await;
-    }
-
-    // ── Integration: ext_method through Agent trait ───────────────────────────
-
-    #[tokio::test]
-    async fn ext_method_unknown_returns_null_response() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let req = acp::schema::ExtRequest::new("unknown/custom/method", null_params());
-                let resp = agent.ext_method(req).await.unwrap();
-                // Default response for unknown method is JSON null.
-                assert_eq!(resp.0.get(), "null");
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn ext_method_session_list_via_agent_trait() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                // Create a session first.
-                let new_resp = agent
-                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                    .await
-                    .unwrap();
-                let sid = new_resp.session_id.to_string();
-
-                // Call _session/list through the Agent trait (not dispatch directly).
-                let req = acp::schema::ExtRequest::new("_session/list", null_params());
-                let ext_resp = agent.ext_method(req).await.unwrap();
-                let list: super::SessionListResponse =
-                    serde_json::from_str(ext_resp.0.get()).unwrap();
-                assert!(list.sessions.iter().any(|s| s.session_id == sid));
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn ext_method_working_dir_path_traversal_via_agent_trait() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (agent, _rx) = make_agent();
-                let resp = agent
-                    .new_session(acp::NewSessionRequest::new(std::path::PathBuf::from(".")))
-                    .await
-                    .unwrap();
-                let sid = resp.session_id.to_string();
-
-                let json = format!(r#"{{"session_id":"{sid}","path":"../../../etc"}}"#);
-                let req =
-                    acp::schema::ExtRequest::new("_agent/working_dir/update", params_json(&json));
-                // Must return an error through the full Agent trait path.
-                assert!(agent.ext_method(req).await.is_err());
-            })
-            .await;
-    }
 }

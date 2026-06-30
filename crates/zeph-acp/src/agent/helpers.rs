@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[allow(clippy::wildcard_imports)]
-use acp::schema::*;
+use acp::schema::v1::*;
 use agent_client_protocol as acp;
 use zeph_common::text::xml_escape;
 

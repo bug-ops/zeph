@@ -11,8 +11,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `authenticate` request.
 pub(crate) async fn handle_authenticate(
-    req: acp::schema::AuthenticateRequest,
-    responder: acp::Responder<acp::schema::AuthenticateResponse>,
+    req: acp::schema::v1::AuthenticateRequest,
+    responder: acp::Responder<acp::schema::v1::AuthenticateResponse>,
     _cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {

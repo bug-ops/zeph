@@ -11,8 +11,8 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `session/close` request.
 pub(crate) async fn handle_close_session(
-    req: acp::schema::CloseSessionRequest,
-    responder: acp::Responder<acp::schema::CloseSessionResponse>,
+    req: acp::schema::v1::CloseSessionRequest,
+    responder: acp::Responder<acp::schema::v1::CloseSessionResponse>,
     _cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {

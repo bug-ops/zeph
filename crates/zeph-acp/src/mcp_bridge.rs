@@ -44,7 +44,7 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// # Examples
 ///
 /// ```
-/// use agent_client_protocol::schema::{McpServer, McpServerStdio};
+/// use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
 /// use zeph_acp::acp_mcp_servers_to_entries;
 ///
 /// let servers = vec![
@@ -56,13 +56,13 @@ const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// ```
 #[must_use]
 pub fn acp_mcp_servers_to_entries(
-    servers: &[acp::schema::McpServer],
+    servers: &[acp::schema::v1::McpServer],
     elicitation_default_timeout_secs: u64,
 ) -> Vec<ServerEntry> {
     servers
         .iter()
         .filter_map(|s| match s {
-            acp::schema::McpServer::Stdio(stdio) => {
+            acp::schema::v1::McpServer::Stdio(stdio) => {
                 let env: HashMap<String, String> = stdio
                     .env
                     .iter()
@@ -90,7 +90,7 @@ pub fn acp_mcp_servers_to_entries(
                     env_isolation: false,
                 })
             }
-            acp::schema::McpServer::Http(http) => Some(ServerEntry {
+            acp::schema::v1::McpServer::Http(http) => Some(ServerEntry {
                 id: http.name.clone(),
                 transport: McpTransport::Http {
                     url: http.url.clone(),
@@ -109,7 +109,7 @@ pub fn acp_mcp_servers_to_entries(
                 ),
                 env_isolation: false,
             }),
-            acp::schema::McpServer::Sse(sse) => {
+            acp::schema::v1::McpServer::Sse(sse) => {
                 // SSE is a legacy MCP transport; map to Streamable HTTP which is
                 // backward-compatible. rmcp's StreamableHttpClientTransport handles both.
                 Some(ServerEntry {
@@ -288,198 +288,5 @@ mod elicitation_timeout_tests {
     #[test]
     fn custom_default_is_used_when_meta_absent() {
         assert_eq!(elicitation_timeout_from_meta(None, 300), 300);
-    }
-}
-
-#[cfg(any())] // ACP 0.10 tests disabled — rewrite for 0.11 tracked in #3267
-mod tests {
-    use super::*;
-    use acp::schema::{EnvVariable, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
-
-    #[test]
-    fn converts_stdio_server() {
-        let servers = vec![McpServer::Stdio(McpServerStdio::new(
-            "my-mcp",
-            "/usr/bin/my-mcp",
-        ))];
-        let entries = acp_mcp_servers_to_entries(&servers, 120);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "my-mcp");
-        assert_matches!(entries[0].transport, McpTransport::Stdio { .. });
-    }
-
-    #[test]
-    fn converts_http_server() {
-        let servers = vec![McpServer::Http(McpServerHttp::new(
-            "http-mcp",
-            "http://localhost",
-        ))];
-        let entries = acp_mcp_servers_to_entries(&servers, 120);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "http-mcp");
-        assert_matches!(entries[0].transport, McpTransport::Http { .. });
-    }
-
-    #[test]
-    fn converts_http_server_url() {
-        let servers = vec![McpServer::Http(McpServerHttp::new(
-            "http-mcp",
-            "http://example.com:8080/mcp",
-        ))];
-        let entries = acp_mcp_servers_to_entries(&servers, 120);
-        if let McpTransport::Http { url, .. } = &entries[0].transport {
-            assert_eq!(url, "http://example.com:8080/mcp");
-        } else {
-            panic!("expected Http transport");
-        }
-    }
-
-    #[test]
-    fn converts_env_variables() {
-        let stdio = McpServerStdio::new("env-mcp", "/bin/mcp").env(vec![
-            EnvVariable::new("FOO", "bar"),
-            EnvVariable::new("BAZ", "qux"),
-        ]);
-        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)], 120);
-        if let McpTransport::Stdio { env, .. } = &entries[0].transport {
-            assert_eq!(env.get("FOO"), Some(&"bar".to_owned()));
-            assert_eq!(env.get("BAZ"), Some(&"qux".to_owned()));
-        } else {
-            panic!("expected Stdio transport");
-        }
-    }
-
-    #[test]
-    fn empty_input_returns_empty() {
-        assert!(acp_mcp_servers_to_entries(&[], 120).is_empty());
-    }
-
-    #[test]
-    fn converts_sse_server() {
-        let servers = vec![McpServer::Sse(McpServerSse::new(
-            "sse-mcp",
-            "http://localhost/sse",
-        ))];
-        let entries = acp_mcp_servers_to_entries(&servers, 120);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "sse-mcp");
-        assert_matches!(entries[0].transport, McpTransport::Http { .. });
-    }
-
-    #[test]
-    fn converts_sse_server_url() {
-        let servers = vec![McpServer::Sse(McpServerSse::new(
-            "sse-mcp",
-            "http://example.com/sse",
-        ))];
-        let entries = acp_mcp_servers_to_entries(&servers, 120);
-        if let McpTransport::Http { url, .. } = &entries[0].transport {
-            assert_eq!(url, "http://example.com/sse");
-        } else {
-            panic!("expected Http transport");
-        }
-    }
-
-    #[test]
-    fn mixed_list_returns_all() {
-        let servers = vec![
-            McpServer::Stdio(McpServerStdio::new("stdio-1", "/bin/mcp1")),
-            McpServer::Http(McpServerHttp::new("http-1", "http://localhost")),
-            McpServer::Stdio(McpServerStdio::new("stdio-2", "/bin/mcp2")),
-            McpServer::Sse(McpServerSse::new("sse-1", "http://localhost/sse")),
-        ];
-        let entries = acp_mcp_servers_to_entries(&servers, 120);
-        assert_eq!(entries.len(), 4);
-        assert_eq!(entries[0].id, "stdio-1");
-        assert_eq!(entries[1].id, "http-1");
-        assert_eq!(entries[2].id, "stdio-2");
-        assert_eq!(entries[3].id, "sse-1");
-    }
-
-    #[test]
-    fn dangerous_env_vars_stripped() {
-        let stdio = McpServerStdio::new("env-mcp", "/bin/mcp").env(vec![
-            EnvVariable::new("SAFE_VAR", "ok"),
-            EnvVariable::new("LD_PRELOAD", "/tmp/evil.so"),
-            EnvVariable::new("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
-            EnvVariable::new("LD_LIBRARY_PATH", "/tmp"),
-            EnvVariable::new("PATH", "/tmp/evil/bin:/bin"),
-            EnvVariable::new("HTTP_PROXY", "http://evil.proxy:8080"),
-            EnvVariable::new("HTTPS_PROXY", "http://evil.proxy:8080"),
-            EnvVariable::new("ALL_PROXY", "http://evil.proxy:8080"),
-            EnvVariable::new("NO_PROXY", ""),
-            EnvVariable::new("BASH_ENV", "/tmp/evil.sh"),
-            EnvVariable::new("ENV", "/tmp/evil.sh"),
-            EnvVariable::new("PYTHONPATH", "/tmp/evil"),
-            EnvVariable::new("NODE_PATH", "/tmp/evil"),
-            EnvVariable::new("RUBYLIB", "/tmp/evil"),
-        ]);
-        let entries = acp_mcp_servers_to_entries(&[McpServer::Stdio(stdio)], 120);
-        if let McpTransport::Stdio { env, .. } = &entries[0].transport {
-            assert_eq!(env.get("SAFE_VAR"), Some(&"ok".to_owned()));
-            assert!(env.get("LD_PRELOAD").is_none());
-            assert!(env.get("DYLD_INSERT_LIBRARIES").is_none());
-            assert!(env.get("LD_LIBRARY_PATH").is_none());
-            assert!(env.get("PATH").is_none());
-            assert!(env.get("HTTP_PROXY").is_none());
-            assert!(env.get("HTTPS_PROXY").is_none());
-            assert!(env.get("ALL_PROXY").is_none());
-            assert!(env.get("NO_PROXY").is_none());
-            assert!(env.get("BASH_ENV").is_none());
-            assert!(env.get("ENV").is_none());
-            assert!(env.get("PYTHONPATH").is_none());
-            assert!(env.get("NODE_PATH").is_none());
-            assert!(env.get("RUBYLIB").is_none());
-        } else {
-            panic!("expected Stdio transport");
-        }
-    }
-
-    #[test]
-    fn acp_servers_have_none_allowlist() {
-        let servers = vec![
-            McpServer::Stdio(McpServerStdio::new("s", "/bin/s")),
-            McpServer::Http(McpServerHttp::new("h", "http://localhost")),
-            McpServer::Sse(McpServerSse::new("e", "http://localhost/sse")),
-        ];
-        let entries = acp_mcp_servers_to_entries(&servers, 120);
-        for entry in &entries {
-            assert!(
-                entry.tool_allowlist.is_none(),
-                "ACP-requested server '{}' must have tool_allowlist=None",
-                entry.id
-            );
-        }
-    }
-
-    #[test]
-    fn is_dangerous_env_var_cases() {
-        // Library injection
-        assert!(super::is_dangerous_env_var("LD_PRELOAD"));
-        assert!(super::is_dangerous_env_var("ld_preload"));
-        assert!(super::is_dangerous_env_var("DYLD_INSERT_LIBRARIES"));
-        assert!(super::is_dangerous_env_var("DYLD_LIBRARY_PATH"));
-        assert!(super::is_dangerous_env_var("DYLD_FRAMEWORK_PATH"));
-        assert!(super::is_dangerous_env_var("DYLD_FALLBACK_LIBRARY_PATH"));
-        // Path hijacking
-        assert!(super::is_dangerous_env_var("PATH"));
-        assert!(super::is_dangerous_env_var("path"));
-        // Network proxy interception
-        assert!(super::is_dangerous_env_var("HTTP_PROXY"));
-        assert!(super::is_dangerous_env_var("HTTPS_PROXY"));
-        assert!(super::is_dangerous_env_var("ALL_PROXY"));
-        assert!(super::is_dangerous_env_var("NO_PROXY"));
-        assert!(super::is_dangerous_env_var("http_proxy"));
-        // Shell startup injection
-        assert!(super::is_dangerous_env_var("BASH_ENV"));
-        assert!(super::is_dangerous_env_var("ENV"));
-        // Runtime module injection
-        assert!(super::is_dangerous_env_var("PYTHONPATH"));
-        assert!(super::is_dangerous_env_var("NODE_PATH"));
-        assert!(super::is_dangerous_env_var("RUBYLIB"));
-        // Safe vars
-        assert!(!super::is_dangerous_env_var("HOME"));
-        assert!(!super::is_dangerous_env_var("MY_VAR"));
-        assert!(!super::is_dangerous_env_var("LANG"));
     }
 }

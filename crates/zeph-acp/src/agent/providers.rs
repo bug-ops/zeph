@@ -19,7 +19,7 @@ use super::ZephAcpAgentState;
 /// Vault-resolved API keys are never stored here — only the public routing fields.
 pub(crate) struct ProviderSetOverride {
     /// Protocol type for this provider override.
-    pub api_type: agent_client_protocol_schema::LlmProtocol,
+    pub api_type: agent_client_protocol_schema::v1::LlmProtocol,
     /// Base URL for requests sent through this provider.
     pub base_url: String,
     /// Additional headers (e.g. routing headers, not auth secrets).
@@ -37,7 +37,7 @@ impl ZephAcpAgentState {
     #[must_use]
     pub fn with_provider_names(
         mut self,
-        names: Vec<(String, agent_client_protocol_schema::LlmProtocol)>,
+        names: Vec<(String, agent_client_protocol_schema::v1::LlmProtocol)>,
     ) -> Self {
         self.provider_names = names;
         self
@@ -49,9 +49,9 @@ impl ZephAcpAgentState {
     /// fall through to `ext_method_mcp`.
     pub(crate) fn ext_method_providers(
         &self,
-        args: &acp::schema::ExtRequest,
-    ) -> acp::Result<Option<acp::schema::ExtResponse>> {
-        use agent_client_protocol_schema as schema;
+        args: &acp::schema::v1::ExtRequest,
+    ) -> acp::Result<Option<acp::schema::v1::ExtResponse>> {
+        use agent_client_protocol_schema::v1 as schema;
         let method = args.method.as_ref();
         match method {
             "providers/list" => {
@@ -62,7 +62,7 @@ impl ZephAcpAgentState {
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
                 let raw = serde_json::value::RawValue::from_string(json)
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
+                Ok(Some(acp::schema::v1::ExtResponse::new(raw.into())))
             }
             "providers/set" => {
                 let req: schema::SetProviderRequest = serde_json::from_str(args.params.get())
@@ -72,7 +72,7 @@ impl ZephAcpAgentState {
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
                 let raw = serde_json::value::RawValue::from_string(json)
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
+                Ok(Some(acp::schema::v1::ExtResponse::new(raw.into())))
             }
             "providers/disable" => {
                 let req: schema::DisableProviderRequest =
@@ -83,7 +83,7 @@ impl ZephAcpAgentState {
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
                 let raw = serde_json::value::RawValue::from_string(json)
                     .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-                Ok(Some(acp::schema::ExtResponse::new(raw.into())))
+                Ok(Some(acp::schema::v1::ExtResponse::new(raw.into())))
             }
             _ => Ok(None),
         }
@@ -97,11 +97,11 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.list_providers")]
     pub(crate) fn do_list_providers(
         &self,
-        _req: agent_client_protocol_schema::ListProvidersRequest,
-    ) -> acp::Result<agent_client_protocol_schema::ListProvidersResponse> {
+        _req: agent_client_protocol_schema::v1::ListProvidersRequest,
+    ) -> acp::Result<agent_client_protocol_schema::v1::ListProvidersResponse> {
         let disabled = self.global_disabled_providers.lock();
         let overrides = self.global_provider_overrides.lock();
-        let providers: Vec<agent_client_protocol_schema::ProviderInfo> = self
+        let providers: Vec<agent_client_protocol_schema::v1::ProviderInfo> = self
             .provider_names
             .iter()
             .map(|(name, protocol)| {
@@ -109,18 +109,22 @@ impl ZephAcpAgentState {
                 let current = if is_disabled {
                     None
                 } else if let Some(ov) = overrides.get(name.as_str()) {
-                    Some(agent_client_protocol_schema::ProviderCurrentConfig::new(
-                        ov.api_type.clone(),
-                        ov.base_url.clone(),
-                    ))
+                    Some(
+                        agent_client_protocol_schema::v1::ProviderCurrentConfig::new(
+                            ov.api_type.clone(),
+                            ov.base_url.clone(),
+                        ),
+                    )
                 } else {
                     // Default — no base_url exposed; provider is available via global config.
-                    Some(agent_client_protocol_schema::ProviderCurrentConfig::new(
-                        protocol.clone(),
-                        String::new(),
-                    ))
+                    Some(
+                        agent_client_protocol_schema::v1::ProviderCurrentConfig::new(
+                            protocol.clone(),
+                            String::new(),
+                        ),
+                    )
                 };
-                agent_client_protocol_schema::ProviderInfo::new(
+                agent_client_protocol_schema::v1::ProviderInfo::new(
                     name.clone(),
                     vec![protocol.clone()],
                     false,
@@ -128,9 +132,7 @@ impl ZephAcpAgentState {
                 )
             })
             .collect();
-        Ok(agent_client_protocol_schema::ListProvidersResponse::new(
-            providers,
-        ))
+        Ok(agent_client_protocol_schema::v1::ListProvidersResponse::new(providers))
     }
 
     /// Handle `providers/set` — store a connection-scoped provider override.
@@ -144,8 +146,8 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.set_providers")]
     pub(crate) fn do_set_providers(
         &self,
-        req: agent_client_protocol_schema::SetProviderRequest,
-    ) -> acp::Result<agent_client_protocol_schema::SetProviderResponse> {
+        req: agent_client_protocol_schema::v1::SetProviderRequest,
+    ) -> acp::Result<agent_client_protocol_schema::v1::SetProviderResponse> {
         if !self.provider_names.iter().any(|(name, _)| name == &req.id) {
             return Err(
                 acp::Error::invalid_params().data(format!("unknown provider id: {}", req.id))
@@ -160,7 +162,7 @@ impl ZephAcpAgentState {
             },
         );
         tracing::debug!(provider_id = %req.id, "provider override set");
-        Ok(agent_client_protocol_schema::SetProviderResponse::new())
+        Ok(agent_client_protocol_schema::v1::SetProviderResponse::new())
     }
 
     /// Handle `providers/disable` — mark a provider as disabled for this connection.
@@ -173,12 +175,12 @@ impl ZephAcpAgentState {
     #[tracing::instrument(skip_all, name = "acp.handler.disable_providers")]
     pub(crate) fn do_disable_providers(
         &self,
-        req: agent_client_protocol_schema::DisableProviderRequest,
-    ) -> acp::Result<agent_client_protocol_schema::DisableProviderResponse> {
+        req: agent_client_protocol_schema::v1::DisableProviderRequest,
+    ) -> acp::Result<agent_client_protocol_schema::v1::DisableProviderResponse> {
         let id = req.id;
         tracing::debug!(provider_id = %id, "provider disabled");
         self.global_disabled_providers.lock().insert(id);
-        Ok(agent_client_protocol_schema::DisableProviderResponse::new())
+        Ok(agent_client_protocol_schema::v1::DisableProviderResponse::new())
     }
 }
 
@@ -186,7 +188,7 @@ impl ZephAcpAgentState {
 mod tests {
     use std::sync::Arc;
 
-    use agent_client_protocol_schema as schema;
+    use agent_client_protocol_schema::v1 as schema;
 
     use crate::agent::{AgentSpawner, ZephAcpAgentState};
 

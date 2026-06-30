@@ -99,7 +99,7 @@ struct ShellResult {
 }
 
 struct TerminalRequest {
-    session_id: acp::schema::SessionId,
+    session_id: acp::schema::v1::SessionId,
     command: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
@@ -108,17 +108,17 @@ struct TerminalRequest {
     /// When `Some`, intermediate terminal output chunks are sent as `ToolCallUpdate`
     /// notifications on this channel so the IDE can stream output live.
     /// The `tool_call_id` is the ACP tool call ID to update.
-    stream_tx: Option<(mpsc::Sender<acp::schema::SessionNotification>, String)>,
+    stream_tx: Option<(mpsc::Sender<acp::schema::v1::SessionNotification>, String)>,
 }
 
 struct TerminalReleaseRequest {
-    session_id: acp::schema::SessionId,
+    session_id: acp::schema::v1::SessionId,
     terminal_id: String,
 }
 
 struct StdinWriteRequest {
-    session_id: acp::schema::SessionId,
-    terminal_id: acp::schema::TerminalId,
+    session_id: acp::schema::v1::SessionId,
+    terminal_id: acp::schema::v1::TerminalId,
     data: Vec<u8>,
     reply: oneshot::Sender<Result<(), AcpError>>,
 }
@@ -135,7 +135,7 @@ enum TerminalMessage {
 /// Only constructed when the IDE advertises `terminal` capability.
 #[derive(Clone)]
 pub struct AcpShellExecutor {
-    session_id: acp::schema::SessionId,
+    session_id: acp::schema::v1::SessionId,
     request_tx: mpsc::Sender<TerminalMessage>,
     permission_gate: Option<AcpPermissionGate>,
     timeout: Duration,
@@ -149,7 +149,7 @@ impl AcpShellExecutor {
     /// `bash_stdin` tools.
     pub fn new(
         conn: Arc<acp::ConnectionTo<acp::Client>>,
-        session_id: acp::schema::SessionId,
+        session_id: acp::schema::v1::SessionId,
         permission_gate: Option<AcpPermissionGate>,
         timeout_secs: u64,
     ) -> (Self, impl std::future::Future<Output = ()>) {
@@ -164,7 +164,7 @@ impl AcpShellExecutor {
     /// Create the executor with a configurable command timeout.
     pub fn with_timeout(
         conn: Arc<acp::ConnectionTo<acp::Client>>,
-        session_id: acp::schema::SessionId,
+        session_id: acp::schema::v1::SessionId,
         permission_gate: Option<AcpPermissionGate>,
         timeout: Duration,
     ) -> (Self, impl std::future::Future<Output = ()>) {
@@ -231,13 +231,13 @@ impl AcpShellExecutor {
         } else {
             "bash_stdin".to_owned()
         };
-        let fields = acp::schema::ToolCallUpdateFields::new()
+        let fields = acp::schema::v1::ToolCallUpdateFields::new()
             .title(title)
             .raw_input(serde_json::json!({
                 "terminal_id": params.terminal_id,
                 "data_length": params.data.len(),
             }));
-        let tool_call = acp::schema::ToolCallUpdate::new("bash_stdin".to_owned(), fields);
+        let tool_call = acp::schema::v1::ToolCallUpdate::new("bash_stdin".to_owned(), fields);
         let allowed = gate
             .check_permission(self.session_id.clone(), tool_call)
             .await
@@ -250,7 +250,7 @@ impl AcpShellExecutor {
             });
         }
 
-        let terminal_id: acp::schema::TerminalId = params.terminal_id.clone().into();
+        let terminal_id: acp::schema::v1::TerminalId = params.terminal_id.clone().into();
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(TerminalMessage::WriteStdin(StdinWriteRequest {
@@ -295,7 +295,7 @@ impl AcpShellExecutor {
         command: String,
         args: Vec<String>,
         cwd: Option<PathBuf>,
-        stream_tx: Option<(mpsc::Sender<acp::schema::SessionNotification>, String)>,
+        stream_tx: Option<(mpsc::Sender<acp::schema::v1::SessionNotification>, String)>,
     ) -> Result<ShellResult, AcpError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
@@ -394,10 +394,10 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
             // Use the command binary as the cache key, not the tool_id ("bash").
             // This makes "Allow always" apply per binary (git, cargo, etc.).
             let cmd_binary = extract_command_binary(&params.command);
-            let fields = acp::schema::ToolCallUpdateFields::new()
+            let fields = acp::schema::v1::ToolCallUpdateFields::new()
                 .title(cmd_binary.to_owned())
                 .raw_input(serde_json::json!({ "command": params.command }));
-            let tool_call = acp::schema::ToolCallUpdate::new(cmd_binary.to_owned(), fields);
+            let tool_call = acp::schema::v1::ToolCallUpdate::new(cmd_binary.to_owned(), fields);
             let allowed = gate
                 .check_permission(self.session_id.clone(), tool_call)
                 .await
@@ -453,8 +453,8 @@ impl zeph_tools::ToolExecutor for AcpShellExecutor {
 
 async fn forward_stdin_via_ext(
     conn: &Arc<acp::ConnectionTo<acp::Client>>,
-    session_id: &acp::schema::SessionId,
-    terminal_id: &acp::schema::TerminalId,
+    session_id: &acp::schema::v1::SessionId,
+    terminal_id: &acp::schema::v1::TerminalId,
     data: Vec<u8>,
 ) -> Result<(), AcpError> {
     use base64::Engine as _;
@@ -478,8 +478,8 @@ async fn forward_stdin_via_ext(
 /// REQ-P23-3: on any error from `ext_method`, cancels the token and exits.
 async fn run_stdin_pump(
     conn: Arc<acp::ConnectionTo<acp::Client>>,
-    session_id: acp::schema::SessionId,
-    terminal_id: acp::schema::TerminalId,
+    session_id: acp::schema::v1::SessionId,
+    terminal_id: acp::schema::v1::TerminalId,
     mut data_rx: mpsc::Receiver<Vec<u8>>,
     cancel: CancellationToken,
 ) {
@@ -545,7 +545,7 @@ async fn run_terminal_handler(
                 }
                 let tid = req.terminal_id.clone();
                 let release_req =
-                    acp::schema::ReleaseTerminalRequest::new(req.session_id, req.terminal_id);
+                    acp::schema::v1::ReleaseTerminalRequest::new(req.session_id, req.terminal_id);
                 if let Err(e) = conn.send_request(release_req).block_task().await {
                     tracing::warn!(
                         terminal_id = %tid,
@@ -592,17 +592,18 @@ const STREAM_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Kill a terminal, then wait up to [`KILL_GRACE_TIMEOUT`] for it to exit.
 async fn kill_terminal(
     conn: &Arc<acp::ConnectionTo<acp::Client>>,
-    session_id: &acp::schema::SessionId,
-    terminal_id: &acp::schema::TerminalId,
+    session_id: &acp::schema::v1::SessionId,
+    terminal_id: &acp::schema::v1::TerminalId,
 ) -> Result<(), AcpError> {
     tracing::warn!(%terminal_id, "terminal command timed out — sending kill");
-    let kill_req = acp::schema::KillTerminalRequest::new(session_id.clone(), terminal_id.clone());
+    let kill_req =
+        acp::schema::v1::KillTerminalRequest::new(session_id.clone(), terminal_id.clone());
     conn.send_request(kill_req)
         .block_task()
         .await
         .map_err(|e| AcpError::ClientError(e.to_string()))?;
     let wait_again =
-        acp::schema::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
+        acp::schema::v1::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
     let _ = tokio::time::timeout(
         KILL_GRACE_TIMEOUT,
         conn.send_request(wait_again).block_task(),
@@ -616,14 +617,14 @@ async fn kill_terminal(
 /// Returns the exit code once the process terminates or the timeout is reached.
 async fn stream_until_exit(
     conn: &Arc<acp::ConnectionTo<acp::Client>>,
-    session_id: &acp::schema::SessionId,
-    terminal_id: &acp::schema::TerminalId,
+    session_id: &acp::schema::v1::SessionId,
+    terminal_id: &acp::schema::v1::TerminalId,
     timeout: Duration,
-    notify_tx: &mpsc::Sender<acp::schema::SessionNotification>,
+    notify_tx: &mpsc::Sender<acp::schema::v1::SessionNotification>,
     tool_call_id: &str,
 ) -> Result<Option<u32>, AcpError> {
     let wait_req =
-        acp::schema::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
+        acp::schema::v1::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
     let exit_future = conn.send_request(wait_req).block_task();
     tokio::pin!(exit_future);
     let deadline = tokio::time::Instant::now() + timeout;
@@ -643,7 +644,7 @@ async fn stream_until_exit(
                     return Ok(Some(124u32));
                 }
                 let output_req =
-                    acp::schema::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
+                    acp::schema::v1::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
                 if let Ok(resp) = conn.send_request(output_req).block_task().await {
                     let new_data = resp.output.get(last_output_len..).unwrap_or("");
                     if !new_data.is_empty() {
@@ -656,14 +657,14 @@ async fn stream_until_exit(
                                 "data": new_data,
                             }),
                         );
-                        let update = acp::schema::ToolCallUpdate::new(
+                        let update = acp::schema::v1::ToolCallUpdate::new(
                             tool_call_id.to_owned(),
-                            acp::schema::ToolCallUpdateFields::new(),
+                            acp::schema::v1::ToolCallUpdateFields::new(),
                         )
                         .meta(meta);
-                        let notif = acp::schema::SessionNotification::new(
+                        let notif = acp::schema::v1::SessionNotification::new(
                             session_id.clone(),
-                            acp::schema::SessionUpdate::ToolCallUpdate(update),
+                            acp::schema::v1::SessionUpdate::ToolCallUpdate(update),
                         );
                         let _ = notify_tx.try_send(notif);
                     }
@@ -675,15 +676,15 @@ async fn stream_until_exit(
 
 async fn execute_in_terminal(
     conn: &Arc<acp::ConnectionTo<acp::Client>>,
-    session_id: acp::schema::SessionId,
+    session_id: acp::schema::v1::SessionId,
     command: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
     timeout: Duration,
-    stream_tx: Option<(mpsc::Sender<acp::schema::SessionNotification>, String)>,
+    stream_tx: Option<(mpsc::Sender<acp::schema::v1::SessionNotification>, String)>,
 ) -> Result<ShellResult, AcpError> {
     // 1. Create terminal.
-    let create_req = acp::schema::CreateTerminalRequest::new(session_id.clone(), command)
+    let create_req = acp::schema::v1::CreateTerminalRequest::new(session_id.clone(), command)
         .args(args)
         .cwd(cwd);
     let create_resp = conn
@@ -705,8 +706,10 @@ async fn execute_in_terminal(
         )
         .await?
     } else {
-        let wait_req =
-            acp::schema::WaitForTerminalExitRequest::new(session_id.clone(), terminal_id.clone());
+        let wait_req = acp::schema::v1::WaitForTerminalExitRequest::new(
+            session_id.clone(),
+            terminal_id.clone(),
+        );
         match tokio::time::timeout(timeout, conn.send_request(wait_req).block_task()).await {
             Ok(Ok(resp)) => resp.exit_status.exit_code,
             Ok(Err(e)) => return Err(AcpError::ClientError(e.to_string())),
@@ -721,7 +724,7 @@ async fn execute_in_terminal(
     //    after the ACP `tool_call_update` notification carrying `ToolCallContent::Terminal`
     //    has been sent, so the IDE can still display the terminal output.
     let output_req =
-        acp::schema::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
+        acp::schema::v1::TerminalOutputRequest::new(session_id.clone(), terminal_id.clone());
     let output_resp = conn
         .send_request(output_req)
         .block_task()
@@ -735,14 +738,14 @@ async fn execute_in_terminal(
             "terminal_exit".to_owned(),
             serde_json::json!({ "terminal_id": terminal_id.to_string(), "exit_code": exit_code }),
         );
-        let update = acp::schema::ToolCallUpdate::new(
+        let update = acp::schema::v1::ToolCallUpdate::new(
             tool_call_id.clone(),
-            acp::schema::ToolCallUpdateFields::new(),
+            acp::schema::v1::ToolCallUpdateFields::new(),
         )
         .meta(meta);
-        let notif = acp::schema::SessionNotification::new(
+        let notif = acp::schema::v1::SessionNotification::new(
             session_id.clone(),
-            acp::schema::SessionUpdate::ToolCallUpdate(update),
+            acp::schema::v1::SessionUpdate::ToolCallUpdate(update),
         );
         let _ = notify_tx.try_send(notif);
     }
@@ -753,776 +756,4 @@ async fn execute_in_terminal(
         exit_code,
         terminal_id: terminal_id.to_string(),
     })
-}
-
-// Tests disabled pending ACP 0.11 test infrastructure update (issue #3267 PR3)
-#[cfg(any())] // ACP 0.10 tests disabled — pending PR3 test infrastructure
-mod tests {
-    use std::rc::Rc;
-
-    use zeph_tools::ToolExecutor as _;
-
-    use super::*;
-
-    struct FakeTerminalClient;
-
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for FakeTerminalClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Err(acp::Error::method_not_found())
-        }
-
-        async fn create_terminal(
-            &self,
-            _args: acp::schema::CreateTerminalRequest,
-        ) -> acp::Result<acp::schema::CreateTerminalResponse> {
-            Ok(acp::schema::CreateTerminalResponse::new("term-1"))
-        }
-
-        async fn wait_for_terminal_exit(
-            &self,
-            _args: acp::schema::WaitForTerminalExitRequest,
-        ) -> acp::Result<acp::WaitForTerminalExitResponse> {
-            Ok(acp::WaitForTerminalExitResponse::new(
-                acp::TerminalExitStatus::new().exit_code(0u32),
-            ))
-        }
-
-        async fn terminal_output(
-            &self,
-            _args: acp::schema::TerminalOutputRequest,
-        ) -> acp::Result<acp::TerminalOutputResponse> {
-            Ok(acp::TerminalOutputResponse::new("hello\n", false))
-        }
-
-        async fn release_terminal(
-            &self,
-            _args: acp::schema::ReleaseTerminalRequest,
-        ) -> acp::Result<acp::ReleaseTerminalResponse> {
-            Ok(acp::ReleaseTerminalResponse::new())
-        }
-
-        async fn kill_terminal(
-            &self,
-            _args: acp::schema::KillTerminalRequest,
-        ) -> acp::Result<acp::KillTerminalResponse> {
-            Ok(acp::KillTerminalResponse::new())
-        }
-
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn bash_tool_call_returns_output() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("command".to_owned(), serde_json::json!("echo"));
-                params.insert("args".to_owned(), serde_json::json!(["hello"]));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash"),
-                    params,
-                    caller_id: None,
-                };
-
-                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
-                assert_eq!(result.summary, "hello\n");
-                assert_eq!(result.tool_name, "bash");
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn unknown_tool_returns_none() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("unknown"),
-                    params: serde_json::Map::new(),
-                    caller_id: None,
-                };
-                let result = exec.execute_tool_call(&call).await.unwrap();
-                assert!(result.is_none());
-            })
-            .await;
-    }
-
-    #[test]
-    fn tool_definitions_registers_bash() {
-        let (tx, _rx) = mpsc::unbounded_channel::<TerminalMessage>();
-        let exec = AcpShellExecutor {
-            session_id: acp::schema::SessionId::new("s"),
-            request_tx: tx,
-            permission_gate: None,
-            timeout: Duration::from_mins(2),
-        };
-        let defs = exec.tool_definitions();
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].id, "bash");
-    }
-
-    struct NonZeroExitClient;
-
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for NonZeroExitClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Err(acp::Error::method_not_found())
-        }
-
-        async fn create_terminal(
-            &self,
-            _args: acp::schema::CreateTerminalRequest,
-        ) -> acp::Result<acp::schema::CreateTerminalResponse> {
-            Ok(acp::schema::CreateTerminalResponse::new("term-fail"))
-        }
-
-        async fn wait_for_terminal_exit(
-            &self,
-            _args: acp::schema::WaitForTerminalExitRequest,
-        ) -> acp::Result<acp::WaitForTerminalExitResponse> {
-            Ok(acp::WaitForTerminalExitResponse::new(
-                acp::TerminalExitStatus::new().exit_code(1u32),
-            ))
-        }
-
-        async fn terminal_output(
-            &self,
-            _args: acp::schema::TerminalOutputRequest,
-        ) -> acp::Result<acp::TerminalOutputResponse> {
-            Ok(acp::TerminalOutputResponse::new("error output\n", false))
-        }
-
-        async fn release_terminal(
-            &self,
-            _args: acp::schema::ReleaseTerminalRequest,
-        ) -> acp::Result<acp::ReleaseTerminalResponse> {
-            Ok(acp::ReleaseTerminalResponse::new())
-        }
-
-        async fn kill_terminal(
-            &self,
-            _args: acp::schema::KillTerminalRequest,
-        ) -> acp::Result<acp::KillTerminalResponse> {
-            Ok(acp::KillTerminalResponse::new())
-        }
-
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn nonzero_exit_code_prefixes_output() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(NonZeroExitClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("command".to_owned(), serde_json::json!("false"));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash"),
-                    params,
-                    caller_id: None,
-                };
-
-                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
-                assert!(
-                    result.summary.starts_with("[exit 1]"),
-                    "got: {}",
-                    result.summary
-                );
-                assert!(result.summary.contains("error output\n"));
-            })
-            .await;
-    }
-
-    struct RejectPermissionClient;
-
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for RejectPermissionClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Ok(acp::RequestPermissionResponse::new(
-                acp::schema::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new("reject_once"),
-                ),
-            ))
-        }
-
-        async fn create_terminal(
-            &self,
-            _args: acp::schema::CreateTerminalRequest,
-        ) -> acp::Result<acp::schema::CreateTerminalResponse> {
-            panic!("should not be called when permission denied")
-        }
-
-        async fn wait_for_terminal_exit(
-            &self,
-            _args: acp::schema::WaitForTerminalExitRequest,
-        ) -> acp::Result<acp::WaitForTerminalExitResponse> {
-            panic!("should not be called when permission denied")
-        }
-
-        async fn terminal_output(
-            &self,
-            _args: acp::schema::TerminalOutputRequest,
-        ) -> acp::Result<acp::TerminalOutputResponse> {
-            panic!("should not be called when permission denied")
-        }
-
-        async fn release_terminal(
-            &self,
-            _args: acp::schema::ReleaseTerminalRequest,
-        ) -> acp::Result<acp::ReleaseTerminalResponse> {
-            panic!("should not be called when permission denied")
-        }
-
-        async fn kill_terminal(
-            &self,
-            _args: acp::schema::KillTerminalRequest,
-        ) -> acp::Result<acp::KillTerminalResponse> {
-            panic!("should not be called when permission denied")
-        }
-
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn permission_denied_returns_blocked_error() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let perm_conn = Rc::new(RejectPermissionClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let tmp_dir = tempfile::tempdir().unwrap();
-                let perm_file = tmp_dir.path().join("perms.toml");
-                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
-                tokio::task::spawn_local(perm_handler);
-
-                let term_conn = Rc::new(FakeTerminalClient);
-                let (exec, term_handler) = AcpShellExecutor::new(term_conn, sid, Some(gate), 120);
-                tokio::task::spawn_local(term_handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("command".to_owned(), serde_json::json!("rm"));
-                params.insert("args".to_owned(), serde_json::json!(["-rf", "/important"]));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash"),
-                    params,
-                    caller_id: None,
-                };
-
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert_matches!(err, ToolError::Blocked { .. });
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn streaming_mode_emits_terminal_exit_notification() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (tx, rx) = mpsc::unbounded_channel::<TerminalMessage>();
-                let handler = async move { run_terminal_handler(conn, rx).await };
-                tokio::task::spawn_local(handler);
-
-                let (stream_tx, mut stream_rx) = mpsc::channel(8);
-                let (reply_tx, reply_rx) = oneshot::channel();
-                tx.send(TerminalMessage::Execute(TerminalRequest {
-                    session_id: sid,
-                    command: "echo".to_owned(),
-                    args: vec!["hi".to_owned()],
-                    cwd: None,
-                    timeout: Duration::from_secs(5),
-                    reply: reply_tx,
-                    stream_tx: Some((stream_tx, "tool-1".to_owned())),
-                }))
-                .unwrap();
-
-                let result = reply_rx.await.unwrap().unwrap();
-                assert_eq!(result.output, "hello\n");
-
-                // At least a terminal_exit notification must arrive.
-                let mut got_exit = false;
-                while let Ok(notif) = stream_rx.try_recv() {
-                    if let acp::schema::SessionUpdate::ToolCallUpdate(update) = notif.update
-                        && let Some(meta) = update.meta
-                        && meta.contains_key("terminal_exit")
-                    {
-                        got_exit = true;
-                    }
-                }
-                assert!(got_exit, "expected terminal_exit notification");
-            })
-            .await;
-    }
-
-    #[test]
-    fn extract_command_binary_bare() {
-        assert_eq!(extract_command_binary("git status"), "git");
-        assert_eq!(extract_command_binary("cargo build --release"), "cargo");
-        assert_eq!(extract_command_binary("  cat file.txt  "), "cat");
-    }
-
-    #[test]
-    fn extract_command_binary_env_prefix() {
-        assert_eq!(extract_command_binary("env FOO=bar git status"), "git");
-        assert_eq!(extract_command_binary("command git push"), "git");
-        assert_eq!(extract_command_binary("exec cargo test"), "cargo");
-    }
-
-    #[test]
-    fn extract_command_binary_env_var_assignments() {
-        assert_eq!(extract_command_binary("FOO=bar BAZ=qux git log"), "git");
-    }
-
-    #[test]
-    fn extract_command_binary_path() {
-        assert_eq!(extract_command_binary("/usr/bin/git status"), "git");
-        assert_eq!(
-            extract_command_binary("/usr/local/bin/cargo build"),
-            "cargo"
-        );
-    }
-
-    #[test]
-    fn extract_command_binary_empty_fallback() {
-        assert_eq!(extract_command_binary(""), "bash");
-        assert_eq!(extract_command_binary("   "), "bash");
-    }
-
-    #[tokio::test]
-    async fn blocklist_blocked_before_permission_gate() {
-        // rm -rf / must be blocked before the permission gate is consulted.
-        // FakeTerminalClient panics if create_terminal is called — so if
-        // we reach the terminal, the test fails.
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                // No permission gate — blocklist runs independently.
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("command".to_owned(), serde_json::json!("rm -rf /"));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash"),
-                    params,
-                    caller_id: None,
-                };
-
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert_matches!(err, ToolError::Blocked { .. });
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn blocklist_sudo_blocked() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert(
-                    "command".to_owned(),
-                    serde_json::json!("sudo apt install vim"),
-                );
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash"),
-                    params,
-                    caller_id: None,
-                };
-
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert_matches!(err, ToolError::Blocked { .. });
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn args_field_bypass_blocked_for_shell_interpreter() {
-        // SEC-ACP-C2: { command: "bash", args: ["-c", "rm -rf /"] } must be blocked.
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("command".to_owned(), serde_json::json!("bash"));
-                params.insert(
-                    "args".to_owned(),
-                    serde_json::json!(["-c", "sudo rm -rf /"]),
-                );
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash"),
-                    params,
-                    caller_id: None,
-                };
-
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert_matches!(err, ToolError::Blocked { .. });
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn args_field_bypass_sh_minus_c_blocked() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("command".to_owned(), serde_json::json!("sh"));
-                params.insert(
-                    "args".to_owned(),
-                    serde_json::json!(["-c", "shutdown -h now"]),
-                );
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash"),
-                    params,
-                    caller_id: None,
-                };
-
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert_matches!(err, ToolError::Blocked { .. });
-            })
-            .await;
-    }
-
-    #[test]
-    fn extract_command_binary_chained_transparent_prefixes() {
-        // SEC-ACP-I1: "env command exec sudo rm" -> "sudo", not "command"
-        assert_eq!(
-            extract_command_binary("env command exec sudo rm -rf /"),
-            "sudo"
-        );
-        assert_eq!(extract_command_binary("nice nohup time git status"), "git");
-    }
-
-    #[test]
-    fn extract_command_binary_env_var_then_prefix_then_binary() {
-        assert_eq!(extract_command_binary("FOO=bar env BAZ=qux git log"), "git");
-    }
-
-    #[tokio::test]
-    async fn bash_stdin_blocked_without_permission_gate() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let conn = Rc::new(FakeTerminalClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let (exec, handler) = AcpShellExecutor::new(conn, sid, None, 120);
-                tokio::task::spawn_local(handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
-                params.insert("data".to_owned(), serde_json::json!("hello\n"));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
-                    params,
-                    caller_id: None,
-                };
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert_matches!(err, ToolError::Blocked { .. });
-            })
-            .await;
-    }
-
-    #[test]
-    fn bash_stdin_not_in_tool_definitions_without_gate() {
-        let (tx, _rx) = mpsc::unbounded_channel::<TerminalMessage>();
-        let exec = AcpShellExecutor {
-            session_id: acp::schema::SessionId::new("s"),
-            request_tx: tx,
-            permission_gate: None,
-            timeout: Duration::from_mins(2),
-        };
-        let defs = exec.tool_definitions();
-        assert!(!defs.iter().any(|d| d.id == "bash_stdin"));
-    }
-
-    #[tokio::test]
-    async fn bash_stdin_size_limit_rejected() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let perm_conn = Rc::new(RejectPermissionClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let tmp_dir = tempfile::tempdir().unwrap();
-                let perm_file = tmp_dir.path().join("perms.toml");
-                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
-                tokio::task::spawn_local(perm_handler);
-
-                let term_conn = Rc::new(FakeTerminalClient);
-                let (exec, term_handler) = AcpShellExecutor::new(term_conn, sid, Some(gate), 120);
-                tokio::task::spawn_local(term_handler);
-
-                let oversized = "x".repeat(MAX_STDIN_BYTES + 1);
-                let mut params = serde_json::Map::new();
-                params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
-                params.insert("data".to_owned(), serde_json::json!(oversized));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
-                    params,
-                    caller_id: None,
-                };
-                let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert_matches!(err, ToolError::InvalidParams { .. });
-            })
-            .await;
-    }
-
-    struct AllowPermissionClient;
-
-    #[async_trait::async_trait(?Send)]
-    impl acp::Client for AllowPermissionClient {
-        async fn request_permission(
-            &self,
-            _args: acp::schema::RequestPermissionRequest,
-        ) -> acp::Result<acp::RequestPermissionResponse> {
-            Ok(acp::RequestPermissionResponse::new(
-                acp::schema::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new("allow_once"),
-                ),
-            ))
-        }
-
-        async fn session_notification(
-            &self,
-            _args: acp::schema::SessionNotification,
-        ) -> acp::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn bash_stdin_with_permission_gate_succeeds() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let perm_conn = Rc::new(AllowPermissionClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let tmp_dir = tempfile::tempdir().unwrap();
-                let perm_file = tmp_dir.path().join("perms.toml");
-                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
-                tokio::task::spawn_local(perm_handler);
-
-                let term_conn = Rc::new(FakeTerminalClient);
-                let (exec, term_handler) = AcpShellExecutor::new(term_conn, sid, Some(gate), 120);
-                tokio::task::spawn_local(term_handler);
-
-                let mut params = serde_json::Map::new();
-                params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
-                params.insert("data".to_owned(), serde_json::json!("echo hello\n"));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
-                    params,
-                    caller_id: None,
-                };
-                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
-                assert_eq!(result.tool_name, "bash_stdin");
-                assert!(result.summary.contains("term-1"));
-            })
-            .await;
-    }
-
-    #[test]
-    fn bash_stdin_in_tool_definitions_with_gate() {
-        let (tx, _rx) = mpsc::unbounded_channel::<TerminalMessage>();
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let perm_file = tmp_dir.path().join("perms.toml");
-        let perm_conn = Rc::new(AllowPermissionClient);
-        let (gate, _handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
-        let exec = AcpShellExecutor {
-            session_id: acp::schema::SessionId::new("s"),
-            request_tx: tx,
-            permission_gate: Some(gate),
-            timeout: Duration::from_mins(2),
-        };
-        let defs = exec.tool_definitions();
-        assert!(defs.iter().any(|d| d.id == "bash_stdin"));
-        assert!(defs.iter().any(|d| d.id == "bash"));
-    }
-
-    #[tokio::test]
-    async fn bash_stdin_exactly_64kib_boundary_accepted() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let perm_conn = Rc::new(AllowPermissionClient);
-                let sid = acp::schema::SessionId::new("s1");
-                let tmp_dir = tempfile::tempdir().unwrap();
-                let perm_file = tmp_dir.path().join("perms.toml");
-                let (gate, perm_handler) = AcpPermissionGate::new(perm_conn, Some(perm_file));
-                tokio::task::spawn_local(perm_handler);
-
-                let term_conn = Rc::new(FakeTerminalClient);
-                let (exec, term_handler) = AcpShellExecutor::new(term_conn, sid, Some(gate), 120);
-                tokio::task::spawn_local(term_handler);
-
-                // Exactly at the limit must succeed.
-                let at_limit = "x".repeat(MAX_STDIN_BYTES);
-                let mut params = serde_json::Map::new();
-                params.insert("terminal_id".to_owned(), serde_json::json!("term-1"));
-                params.insert("data".to_owned(), serde_json::json!(at_limit));
-                let call = ToolCall {
-                    tool_id: zeph_tools::ToolName::new("bash_stdin"),
-                    params,
-                    caller_id: None,
-                };
-                let result = exec.execute_tool_call(&call).await.unwrap().unwrap();
-                assert_eq!(result.tool_name, "bash_stdin");
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn bash_stdin_broken_pipe_fast_fail() {
-        // After the CancellationToken is cancelled, WriteStdin must return BrokenPipe immediately.
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (tx, rx) = mpsc::unbounded_channel::<TerminalMessage>();
-                let conn = Rc::new(FakeTerminalClient);
-                let handler = async move { run_terminal_handler(conn, rx).await };
-                tokio::task::spawn_local(handler);
-
-                let sid = acp::schema::SessionId::new("s1");
-                let tid: acp::schema::TerminalId = "term-bp".to_owned().into();
-
-                // First WriteStdin: establishes the pump and cancels via a pre-cancelled token.
-                // We simulate a broken pump by sending two WriteStdin messages to the same
-                // terminal: the first establishes the pump, then we fill the channel beyond
-                // capacity so the next try_send returns Err (BrokenPipe).
-                let mut replies = Vec::new();
-                for _ in 0..=STDIN_CHANNEL_CAPACITY {
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    tx.send(TerminalMessage::WriteStdin(StdinWriteRequest {
-                        session_id: sid.clone(),
-                        terminal_id: tid.clone(),
-                        data: b"x".to_vec(),
-                        reply: reply_tx,
-                    }))
-                    .unwrap();
-                    replies.push(reply_rx);
-                }
-                // Collect results: at least one must be BrokenPipe (channel overflow).
-                let mut got_broken_pipe = false;
-                for reply_rx in replies {
-                    if let Ok(Err(AcpError::BrokenPipe)) = reply_rx.await {
-                        got_broken_pipe = true;
-                    }
-                }
-                assert!(
-                    got_broken_pipe,
-                    "expected at least one BrokenPipe from overflow"
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn bash_stdin_pump_cancelled_on_release() {
-        // After Release, the pump's CancellationToken must be cancelled.
-        // Subsequent WriteStdin to the same terminal_id starts a fresh pump (no persistent state).
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let (tx, rx) = mpsc::unbounded_channel::<TerminalMessage>();
-                let conn = Rc::new(FakeTerminalClient);
-                let handler = async move { run_terminal_handler(conn, rx).await };
-                tokio::task::spawn_local(handler);
-
-                let sid = acp::schema::SessionId::new("s1");
-                let tid: acp::schema::TerminalId = "term-rel".to_owned().into();
-
-                // Establish a pump by writing stdin.
-                let (reply_tx, reply_rx) = oneshot::channel();
-                tx.send(TerminalMessage::WriteStdin(StdinWriteRequest {
-                    session_id: sid.clone(),
-                    terminal_id: tid.clone(),
-                    data: b"hello\n".to_vec(),
-                    reply: reply_tx,
-                }))
-                .unwrap();
-                reply_rx.await.unwrap().unwrap(); // pump established, write queued
-
-                // Release the terminal — must cancel the pump.
-                tx.send(TerminalMessage::Release(TerminalReleaseRequest {
-                    session_id: sid.clone(),
-                    terminal_id: tid.to_string(),
-                }))
-                .unwrap();
-
-                // Allow the handler to process the Release.
-                tokio::task::yield_now().await;
-
-                // Writing again after release starts a fresh pump — should succeed.
-                let (fresh_reply, write_result) = oneshot::channel();
-                tx.send(TerminalMessage::WriteStdin(StdinWriteRequest {
-                    session_id: sid.clone(),
-                    terminal_id: tid.clone(),
-                    data: b"after release\n".to_vec(),
-                    reply: fresh_reply,
-                }))
-                .unwrap();
-                // Fresh pump: send must succeed (Ok).
-                write_result.await.unwrap().unwrap();
-            })
-            .await;
-    }
 }

@@ -46,10 +46,10 @@ pub(crate) async fn handle_dispatch(
 fn build_ext_request(
     method: &str,
     params: &serde_json::Value,
-) -> acp::Result<acp::schema::ExtRequest> {
+) -> acp::Result<acp::schema::v1::ExtRequest> {
     let raw = serde_json::value::to_raw_value(params)
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-    Ok(acp::schema::ExtRequest::new(
+    Ok(acp::schema::v1::ExtRequest::new(
         method,
         std::sync::Arc::from(raw),
     ))
@@ -58,10 +58,10 @@ fn build_ext_request(
 fn build_ext_notification(
     method: &str,
     params: &serde_json::Value,
-) -> acp::Result<acp::schema::ExtNotification> {
+) -> acp::Result<acp::schema::v1::ExtNotification> {
     let raw = serde_json::value::to_raw_value(params)
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
-    Ok(acp::schema::ExtNotification::new(
+    Ok(acp::schema::v1::ExtNotification::new(
         method,
         std::sync::Arc::from(raw),
     ))

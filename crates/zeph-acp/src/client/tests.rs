@@ -178,11 +178,11 @@ fn subagent_spawn_nonexistent_binary_error() {
 fn subagent_run_outcome_is_clone() {
     let outcome = super::RunOutcome {
         text: "hello".to_owned(),
-        stop_reason: agent_client_protocol::schema::StopReason::EndTurn,
+        stop_reason: agent_client_protocol::schema::v1::StopReason::EndTurn,
     };
     let cloned = outcome.clone();
     assert_eq!(cloned.text, "hello");
-    assert_eq!(cloned.stop_reason, agent_client_protocol::schema::StopReason::EndTurn);
+    assert_eq!(cloned.stop_reason, agent_client_protocol::schema::v1::StopReason::EndTurn);
 }
 
 // ─── Cancel preemption test (mock-driver level) ───────────────────────────
@@ -205,7 +205,7 @@ async fn subagent_channel_delivers_cancel_while_read_parked() {
 
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded::<SubagentCommand>();
     let join_handle = tokio::spawn(futures::future::pending::<()>());
-    let session_id = agent_client_protocol::schema::SessionId::new("test-cancel");
+    let session_id = agent_client_protocol::schema::v1::SessionId::new("test-cancel");
 
     // Split cmd_tx so the handle and the cancel injector each have a sender.
     let cmd_tx_cancel = cmd_tx.clone();
@@ -245,13 +245,13 @@ async fn subagent_channel_delivers_cancel_while_read_parked() {
 
     // Now resolve the parked ReadUpdate with StopReason::Cancelled.
     let _ = read_reply.send(Ok(agent_client_protocol::SessionMessage::StopReason(
-        agent_client_protocol::schema::StopReason::Cancelled,
+        agent_client_protocol::schema::v1::StopReason::Cancelled,
     )));
 
     let result = read_task.await.expect("read_task panicked");
     match result {
         Ok(agent_client_protocol::SessionMessage::StopReason(
-            agent_client_protocol::schema::StopReason::Cancelled,
+            agent_client_protocol::schema::v1::StopReason::Cancelled,
         )) => {}
         other => panic!("expected StopReason::Cancelled, got {other:?}"),
     }
@@ -273,7 +273,7 @@ async fn subagent_drain_filter_ignores_non_text() {
 
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded::<SubagentCommand>();
     let join_handle = tokio::spawn(futures::future::pending::<()>());
-    let session_id = agent_client_protocol::schema::SessionId::new("test-session-2");
+    let session_id = agent_client_protocol::schema::v1::SessionId::new("test-session-2");
     let mut handle = SubagentHandle::new_for_test(cmd_tx, join_handle, session_id);
 
     // Spawn read_to_string — it enqueues ReadToString and blocks.
@@ -294,7 +294,7 @@ async fn subagent_drain_filter_ignores_non_text() {
         SubagentCommand::ReadToString { reply } => {
             let _ = reply.send(Ok(RunOutcome {
                 text: "text only".to_owned(),
-                stop_reason: agent_client_protocol::schema::StopReason::EndTurn,
+                stop_reason: agent_client_protocol::schema::v1::StopReason::EndTurn,
             }));
         }
         _other => panic!("expected ReadToString, got a different command"),
@@ -302,5 +302,5 @@ async fn subagent_drain_filter_ignores_non_text() {
 
     let outcome = read_task.await.expect("read_task panicked").expect("RunOutcome error");
     assert_eq!(outcome.text, "text only");
-    assert_eq!(outcome.stop_reason, agent_client_protocol::schema::StopReason::EndTurn);
+    assert_eq!(outcome.stop_reason, agent_client_protocol::schema::v1::StopReason::EndTurn);
 }

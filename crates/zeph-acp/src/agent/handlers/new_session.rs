@@ -13,8 +13,8 @@ use crate::agent::ZephAcpAgentState;
 ///
 /// Creates a new agent session, spawns the agent loop, and returns the session ID.
 pub(crate) async fn handle_new_session(
-    req: acp::schema::NewSessionRequest,
-    responder: acp::Responder<acp::schema::NewSessionResponse>,
+    req: acp::schema::v1::NewSessionRequest,
+    responder: acp::Responder<acp::schema::v1::NewSessionResponse>,
     cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
