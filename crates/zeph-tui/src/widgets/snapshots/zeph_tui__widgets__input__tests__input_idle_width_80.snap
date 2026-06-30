@@ -1,6 +1,7 @@
 ---
 source: crates/zeph-tui/src/widgets/input.rs
+assertion_line: 284
 expression: output
 ---
-you ▸ esc to cancel                                                             
+you ▸ esc for normal mode                                                       
 Type a message, / for commands, @ to mention

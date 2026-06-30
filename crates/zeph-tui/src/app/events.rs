@@ -236,6 +236,8 @@ impl App {
             AgentEvent::ForegroundSubagentStarted { id, name } => {
                 self.sessions.current_mut().status_label =
                     Some(format!("Sub-agent '{name}' running..."));
+                // Status change counts as progress so the wave animates (never reads Stalled).
+                self.last_progress_at = Instant::now();
                 self.set_view_target(super::AgentViewTarget::SubAgent { id, name });
             }
             AgentEvent::ForegroundSubagentCompleted { id, name, success } => {
@@ -250,6 +252,8 @@ impl App {
                     format!("Sub-agent '{name}' failed")
                 };
                 self.sessions.current_mut().status_label = Some(label.clone());
+                // Status change counts as progress so the wave animates (never reads Stalled).
+                self.last_progress_at = Instant::now();
                 self.sessions
                     .current_mut()
                     .messages

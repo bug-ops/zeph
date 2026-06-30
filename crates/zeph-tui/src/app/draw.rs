@@ -11,6 +11,9 @@ use super::{App, Panel};
 
 impl App {
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
+        // Height of the equalizer slot carved from the bottom of the subagents panel.
+        const EQ_PANEL_H: u16 = 4;
+
         let collapsed = self.effective_collapsed();
         let mut layout = AppLayout::compute(
             frame.area(),
@@ -50,7 +53,6 @@ impl App {
 
         // Carve the equalizer slot from the bottom of the subagents area.
         // The slot only appears while the agent is busy and the user hasn't hidden it.
-        const EQ_PANEL_H: u16 = 4;
         let wave_state = self.wave_state();
         let wave_tick = self.wave_tick();
         let eq_area = if self.show_equalizer
@@ -89,19 +91,8 @@ impl App {
 
         let spinner_idx = self.throbber_state().index().cast_unsigned();
         let busy = self.is_agent_busy();
-        let activity_label = self.status_label().map(str::to_owned);
-        let supervisor_label = self.supervisor_activity_label();
-        let effective_label = activity_label.or(supervisor_label);
         let motion = self.motion();
-        widgets::input::render(
-            self,
-            frame,
-            layout.input,
-            busy,
-            effective_label.as_deref(),
-            spinner_idx,
-            motion,
-        );
+        widgets::input::render(self, frame, layout.input, busy, spinner_idx, motion);
         widgets::status::render(self, &self.metrics, frame, layout.status);
 
         if let Some(state) = &self.file_picker_state {

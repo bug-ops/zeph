@@ -1046,6 +1046,8 @@ impl App {
         let needs_rebuild = self.file_index.as_ref().is_none_or(FileIndex::is_stale);
         if needs_rebuild && self.pending_file_index.is_none() {
             self.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+            // Status change counts as progress so the wave animates (never reads Stalled).
+            self.last_progress_at = std::time::Instant::now();
             let pending = if let Some(sup) = &self.task_supervisor {
                 let handle = sup.spawn_blocking(Arc::from("tui.file_index.build"), move || {
                     FileIndex::build(&root)

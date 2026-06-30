@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `fix(tui)`: correct and de-clutter the input separator row. The Insert-mode hint now reads
+  `esc for normal mode` (Esc switches Insert→Normal; it does not cancel input). The busy verb is
+  no longer duplicated on this row — it already appears in the bottom status bar and the side-panel
+  wave — so the separator shows only the prompt glyph, mode hint, token estimate, spinner, and the
+  interrupt hint. A status change (sub-agent start/complete, file indexing) now refreshes the
+  progress clock so the wave animates instead of reading as `Stalled` (a flat line). See
+  `crates/zeph-tui/src/widgets/input.rs`, `app/events.rs`, `app/keys.rs`.
+
 ### Added
 
 - `feat(tui)`: move the inference visualiser from the input separator to the right-panel
