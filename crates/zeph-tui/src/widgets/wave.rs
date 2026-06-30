@@ -14,15 +14,14 @@
 //! - [`band_value`] — pure math: maps `(state, band, t)` to a normalised `[0.0, 1.0]` amplitude.
 //! - [`sample`] — maps `(state, x, t)` to a glyph bucket `0..=7` (delegates to [`band_value`]).
 //! - [`glyphs`] — single-row span builder used in compact-motion paths.
-//! - [`EqualizerWidget`] — full ratatui [`Widget`] for the busy separator; writes `▄` blocks
-//!   directly into the [`Buffer`] with a per-row teal gradient.
+//! - [`EqualizerWidget`] — full ratatui [`Widget`] for the side-panel slot; writes braille
+//!   characters directly into the [`Buffer`] with 4× sub-pixel resolution and a teal gradient.
 
 use std::f32::consts::TAU;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::symbols;
 use ratatui::text::Span;
 use ratatui::widgets::Widget;
 
@@ -148,11 +147,8 @@ impl WaveState {
     }
 }
 
-/// Number of terminal columns per equalizer bar (band width).
-///
-/// Columns within one band share the same phase so they act as a single
-/// bar — visually distinct bars oscillate independently.
-const BAND_W: u32 = 3;
+/// Terminal columns per equalizer band. One column = one independent bar.
+const BAND_W: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Core math
@@ -313,14 +309,16 @@ pub fn glyphs<'a>(
 
 /// VU-meter equalizer widget rendered in the dashboard side panel during active inference.
 ///
-/// Renders animated frequency bands directly into a ratatui [`Buffer`] using `▄`
-/// (U+2584, lower half block) characters with a teal gradient that runs from near-black
-/// at the bottom row to the full Zeph accent colour (`#1FB9A8`) at the top.
+/// Each terminal column is one independent bar. Bars are rendered with braille characters
+/// (U+2800 range), giving 4× sub-pixel vertical resolution compared to half-block chars:
+/// each terminal row can represent 4 fill levels (`⣀` → `⣤` → `⣶` → `⣿`).
 ///
-/// Band phases are distributed via the golden ratio so adjacent bars oscillate
-/// independently, producing the classic audio equalizer aesthetic where each bar
-/// moves up and down on its own schedule. The number of lit rows per band is
-/// proportional to `area.height`, so the widget scales naturally to any allocated rect.
+/// A teal gradient runs from near-black (`#0A191E`) at the bottom to the full Zeph accent
+/// colour (`#1FB9A8`) at the top. Band phases are distributed via the golden ratio so
+/// adjacent bars oscillate independently — the classic audio equalizer look.
+///
+/// Scales to any rect: `area.width` columns = that many bands; `area.height` rows ×4 =
+/// total sub-pixel resolution.
 ///
 /// Inspired by the [`tui-equalizer`](https://github.com/ratatui/tui-widgets/tree/main/tui-equalizer)
 /// reference widget, adapted for the Zeph teal design language.
@@ -390,10 +388,17 @@ impl Widget for EqualizerWidget<'_> {
     }
 }
 
-/// Render one equalizer band into the buffer.
+/// Render one equalizer band into the buffer using braille sub-pixel filling.
 ///
-/// Fills from the bottom up: lit rows receive `▄` in the gradient colour;
-/// unlit rows are left untouched (transparent background).
+/// Each terminal row contains one braille character whose dots are filled from
+/// the bottom row up, giving 4× the vertical resolution of half-block characters:
+///
+/// | Dots lit (bottom → top) | Char |
+/// |-------------------------|------|
+/// | 1/4 (dots 7, 8)         | ⣀    |
+/// | 2/4 (+ dots 3, 6)       | ⣤    |
+/// | 3/4 (+ dots 2, 5)       | ⣶    |
+/// | 4/4 (+ dots 1, 4)       | ⣿    |
 fn render_eq_band(
     area: Rect,
     value: f32,
@@ -403,13 +408,39 @@ fn render_eq_band(
     ascii_only: bool,
     buf: &mut Buffer,
 ) {
+    // Total sub-pixels = terminal rows × 4 braille dot rows per character.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let lit_rows = (value.clamp(0.0, 1.0) * area.height as f32) as u16;
-    let symbol = if ascii_only { "|" } else { symbols::bar::HALF };
+    let total_sub = area.height as f32 * 4.0;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let lit_sub = (value.clamp(0.0, 1.0) * total_sub).round() as u16;
 
-    for row in 0..lit_rows {
-        let y = area.bottom().saturating_sub(row + 1);
-        let color = eq_row_color(row, area.height, state, color_mode, theme);
+    for row_from_bottom in 0..area.height {
+        let y = area.bottom().saturating_sub(row_from_bottom + 1);
+        let sub_base = row_from_bottom * 4;
+        let lit_in_cell = lit_sub.saturating_sub(sub_base).min(4) as u8;
+
+        if lit_in_cell == 0 {
+            continue;
+        }
+
+        let color = eq_row_color(row_from_bottom, area.height, state, color_mode, theme);
+        let symbol = if ascii_only {
+            "|"
+        } else {
+            // Braille dot layout (Unicode):
+            //   row 1 top  → bits 0 (left), 3 (right) = 0x01 | 0x08 = 0x09
+            //   row 2      → bits 1, 4 = 0x12
+            //   row 3      → bits 2, 5 = 0x24
+            //   row 4 bot  → bits 6, 7 = 0xC0
+            // Fill bottom-up: 0xC0 → 0xC0|0x24 → 0xC0|0x24|0x12 → 0xFF
+            match lit_in_cell {
+                1 => "⣀", // U+28C0
+                2 => "⣤", // U+28E4
+                3 => "⣶", // U+28F6
+                _ => "⣿", // U+28FF
+            }
+        };
+
         for x in area.left()..area.right() {
             buf[(x, y)].set_fg(color).set_symbol(symbol);
         }
