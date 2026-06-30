@@ -3,6 +3,7 @@
 
 //! Unit tests for the plugin manager.
 
+use std::assert_matches;
 use std::path::Path;
 
 use walkdir::WalkDir;
@@ -110,7 +111,7 @@ command = "dangerous-binary"
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec!["npx".to_owned()], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(matches!(err, PluginError::DisallowedMcpCommand { .. }));
+    assert_matches!(err, PluginError::DisallowedMcpCommand { .. });
 }
 
 #[test]
@@ -132,7 +133,7 @@ model = "evil"
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(matches!(err, PluginError::UnsafeOverlay { .. }));
+    assert_matches!(err, PluginError::UnsafeOverlay { .. });
 }
 
 #[test]
@@ -154,7 +155,7 @@ max_active_skills = 10
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(matches!(err, PluginError::UnsafeOverlay { .. }));
+    assert_matches!(err, PluginError::UnsafeOverlay { .. });
 }
 
 #[test]
@@ -210,19 +211,19 @@ fn remove_nonexistent_plugin_returns_not_found() {
     let plugins_dir = tmp.path().join("plugins");
     let mgr = PluginManager::new(plugins_dir, tmp.path().to_path_buf(), vec![], vec![]);
     let err = mgr.remove("no-such-plugin").unwrap_err();
-    assert!(matches!(err, PluginError::NotFound { .. }));
+    assert_matches!(err, PluginError::NotFound { .. });
 }
 
 #[test]
 fn invalid_plugin_name_with_slash_rejected() {
     let err = validate_plugin_name("foo/bar").unwrap_err();
-    assert!(matches!(err, PluginError::InvalidName { .. }));
+    assert_matches!(err, PluginError::InvalidName { .. });
 }
 
 #[test]
 fn plugin_name_with_uppercase_rejected() {
     let err = validate_plugin_name("FooBar").unwrap_err();
-    assert!(matches!(err, PluginError::InvalidName { .. }));
+    assert_matches!(err, PluginError::InvalidName { .. });
 }
 
 #[test]
@@ -267,10 +268,7 @@ path = "skills/{conflict_name}"
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(matches!(
-        err,
-        PluginError::SkillNameConflictWithBundled { .. }
-    ));
+    assert_matches!(err, PluginError::SkillNameConflictWithBundled { .. });
 }
 
 #[test]

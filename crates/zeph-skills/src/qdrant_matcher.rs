@@ -165,6 +165,7 @@ impl QdrantSkillMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn make_meta(name: &str, description: &str) -> SkillMeta {
         SkillMeta {
@@ -252,6 +253,6 @@ mod tests {
             Box::pin(async { Err(zeph_llm::LlmError::Other("embed failed".into())) })
         };
         let results = matcher.match_skills(&refs, "query", 5, embed_fn).await;
-        assert!(matches!(results, crate::matcher::MatchResult::InfraError));
+        assert_matches!(results, crate::matcher::MatchResult::InfraError);
     }
 }

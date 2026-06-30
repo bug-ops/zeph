@@ -258,6 +258,8 @@ mod tests {
         clippy::type_complexity
     )]
 
+    use std::assert_matches;
+
     use super::*;
     use ordered_float::OrderedFloat;
 
@@ -413,7 +415,7 @@ mod tests {
         b.retrieval_top_k = 10.0;
         let variation = a.diff(&b).expect("should have one diff");
         assert_eq!(variation.parameter, ParameterKind::RetrievalTopK);
-        assert!(matches!(variation.value, VariationValue::Int(10)));
+        assert_matches!(variation.value, VariationValue::Int(10));
     }
 
     #[test]

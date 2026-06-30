@@ -181,6 +181,7 @@ pub async fn try_commit_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn drainer_new_has_empty_parsers() {
@@ -279,7 +280,7 @@ mod tests {
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.0);
         let result = drainer.drive().await.unwrap();
         // Drainer assembled a ToolUse response.
-        assert!(matches!(result, ChatResponse::ToolUse { .. }));
+        assert_matches!(result, ChatResponse::ToolUse { .. });
         // SpyExec.is_tool_speculatable was called at least once (dispatch was attempted).
         assert!(
             dispatch_count.load(Ordering::Relaxed) > 0,
@@ -314,7 +315,7 @@ mod tests {
         ));
         let drainer = SpeculativeStreamDrainer::new(Box::pin(tokio_stream::empty()), engine, 0.8);
         let result = drainer.drive().await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(s) if s.is_empty()));
+        assert_matches!(result, ChatResponse::Text(s) if s.is_empty());
     }
 
     #[tokio::test]
@@ -346,7 +347,7 @@ mod tests {
         let drainer =
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
         let result = drainer.drive().await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(s) if s == "Hello world"));
+        assert_matches!(result, ChatResponse::Text(s) if s == "Hello world");
     }
 
     #[tokio::test]

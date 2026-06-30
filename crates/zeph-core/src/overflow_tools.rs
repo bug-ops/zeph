@@ -106,6 +106,7 @@ impl ToolExecutor for OverflowToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_memory::store::SqliteStore;
 
     async fn make_store_with_conv() -> (Arc<SqliteStore>, i64) {
@@ -173,7 +174,7 @@ mod tests {
         let exec = OverflowToolExecutor::new(store).with_conversation(cid);
         let call = make_call("not-a-uuid");
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]
@@ -212,7 +213,7 @@ mod tests {
         let exec = OverflowToolExecutor::new(store).with_conversation(cid);
         let call = make_call("overflow:not-a-uuid");
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]
@@ -221,7 +222,7 @@ mod tests {
         let exec = OverflowToolExecutor::new(store).with_conversation(cid);
         let call = make_call("00000000-0000-0000-0000-000000000000");
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::Execution(_)));
+        assert_matches!(err, ToolError::Execution(_));
     }
 
     #[tokio::test]
@@ -232,7 +233,7 @@ mod tests {
         let exec = OverflowToolExecutor::new(store);
         let call = make_call(&uuid);
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::Execution(_)));
+        assert_matches!(err, ToolError::Execution(_));
     }
 
     #[tokio::test]

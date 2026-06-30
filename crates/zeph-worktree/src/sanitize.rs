@@ -103,6 +103,7 @@ pub fn canonicalize_root(root: &Path, repo_root: &Path) -> Result<PathBuf, Workt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     // --- validate_branch_component ---
 
@@ -167,7 +168,7 @@ mod tests {
         // Absolute path pointing to the parent of repo_root escapes confinement.
         let parent = dir.path().to_path_buf();
         let err = canonicalize_root(&parent, &repo).unwrap_err();
-        assert!(matches!(err, WorktreeError::RootOutsideRepo(_)));
+        assert_matches!(err, WorktreeError::RootOutsideRepo(_));
     }
 
     #[test]

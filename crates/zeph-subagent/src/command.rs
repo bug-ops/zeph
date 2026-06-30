@@ -340,6 +340,7 @@ impl AgentCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn parse_list() {
@@ -417,55 +418,55 @@ mod tests {
     #[test]
     fn parse_wrong_prefix_returns_error() {
         let err = AgentCommand::parse("/foo list", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
     fn parse_empty_after_prefix_returns_usage() {
         let err = AgentCommand::parse("/agent", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn parse_whitespace_only_after_prefix_returns_usage() {
         let err = AgentCommand::parse("/agent   ", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn parse_unknown_subcommand_returns_error() {
         let err = AgentCommand::parse("/agent frobnicate", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("frobnicate")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("frobnicate"));
     }
 
     #[test]
     fn parse_spawn_missing_prompt_returns_error() {
         let err = AgentCommand::parse("/agent spawn helper", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn parse_spawn_missing_name_and_prompt_returns_error() {
         let err = AgentCommand::parse("/agent spawn", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
     fn parse_cancel_missing_id_returns_error() {
         let err = AgentCommand::parse("/agent cancel", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn parse_approve_missing_id_returns_error() {
         let err = AgentCommand::parse("/agent approve", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
     fn parse_deny_missing_id_returns_error() {
         let err = AgentCommand::parse("/agent deny", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
@@ -529,31 +530,31 @@ mod tests {
     #[test]
     fn mention_unknown_agent_returns_error() {
         let err = AgentCommand::parse_mention("@unknown-thing do work", &known()).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("unknown-thing")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("unknown-thing"));
     }
 
     #[test]
     fn mention_bare_at_returns_error() {
         let err = AgentCommand::parse_mention("@", &known()).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
     fn mention_at_with_space_returns_error() {
         let err = AgentCommand::parse_mention("@ something", &known()).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
     fn mention_wrong_prefix_returns_error() {
         let err = AgentCommand::parse_mention("reviewer do work", &known()).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
     fn mention_empty_known_agents_always_fails() {
         let err = AgentCommand::parse_mention("@reviewer do work", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     // ── parse() unified entry point with @ ──────────────────────────────────
@@ -573,13 +574,13 @@ mod tests {
     #[test]
     fn parse_at_unknown_agent_returns_error() {
         let err = AgentCommand::parse("@unknown test", &known()).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
     fn parse_at_with_empty_known_returns_error() {
         let err = AgentCommand::parse("@reviewer test", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     // ── parse resume ─────────────────────────────────────────────────────────
@@ -599,13 +600,13 @@ mod tests {
     #[test]
     fn parse_resume_missing_prompt_returns_error() {
         let err = AgentCommand::parse("/agent resume deadbeef", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn parse_resume_missing_id_and_prompt_returns_error() {
         let err = AgentCommand::parse("/agent resume", &[]).unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     #[test]
@@ -661,7 +662,7 @@ mod tests {
         // After split_once, prompt is "   " which trims to "".
         let err = AgentCommand::parse("/agent resume deadbeef    ", &[]).unwrap_err();
         // Either split_once returns None (no space after id) or prompt trims to empty.
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 
     // ── AgentsCommand (definition CRUD) ────────────────────────────────────
@@ -721,24 +722,24 @@ mod tests {
     #[test]
     fn agents_parse_missing_subcommand_returns_usage() {
         let err = AgentsCommand::parse("/agents").unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn agents_parse_show_missing_name_returns_usage() {
         let err = AgentsCommand::parse("/agents show").unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn agents_parse_unknown_subcommand_returns_error() {
         let err = AgentsCommand::parse("/agents frobnicate").unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("frobnicate")));
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("frobnicate"));
     }
 
     #[test]
     fn agents_parse_wrong_prefix_returns_error() {
         let err = AgentsCommand::parse("/agent list").unwrap_err();
-        assert!(matches!(err, SubAgentError::InvalidCommand(_)));
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
     }
 }

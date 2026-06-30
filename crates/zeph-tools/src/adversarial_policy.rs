@@ -225,6 +225,7 @@ pub fn parse_policy_lines(content: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -296,7 +297,7 @@ mod tests {
         };
         let params = serde_json::Map::new();
         let decision = v.validate("shell", &params, &client).await;
-        assert!(matches!(decision, PolicyDecision::Allow));
+        assert_matches!(decision, PolicyDecision::Allow);
     }
 
     #[tokio::test]
@@ -307,7 +308,7 @@ mod tests {
         };
         let params = serde_json::Map::new();
         let decision = v.validate("shell", &params, &client).await;
-        assert!(matches!(decision, PolicyDecision::Deny { reason } if reason == "unsafe command"));
+        assert_matches!(decision, PolicyDecision::Deny { reason } if reason == "unsafe command");
     }
 
     #[tokio::test]
@@ -319,7 +320,7 @@ mod tests {
         };
         let params = serde_json::Map::new();
         let decision = v.validate("shell", &params, &client).await;
-        assert!(matches!(decision, PolicyDecision::Deny { .. }));
+        assert_matches!(decision, PolicyDecision::Deny { .. });
     }
 
     #[tokio::test]
@@ -328,7 +329,7 @@ mod tests {
         let client = FailingLlmClient;
         let params = serde_json::Map::new();
         let decision = v.validate("shell", &params, &client).await;
-        assert!(matches!(decision, PolicyDecision::Error { .. }));
+        assert_matches!(decision, PolicyDecision::Error { .. });
     }
 
     #[tokio::test]
@@ -342,7 +343,7 @@ mod tests {
         let client = TimeoutLlmClient { delay_ms: 200 };
         let params = serde_json::Map::new();
         let decision = v.validate("shell", &params, &client).await;
-        assert!(matches!(decision, PolicyDecision::Error { .. }));
+        assert_matches!(decision, PolicyDecision::Error { .. });
     }
 
     #[test]
@@ -416,29 +417,29 @@ mod tests {
 
     #[test]
     fn parse_response_allow_variants() {
-        assert!(matches!(parse_response("ALLOW"), PolicyDecision::Allow));
-        assert!(matches!(parse_response("allow"), PolicyDecision::Allow));
-        assert!(matches!(parse_response("  ALLOW  "), PolicyDecision::Allow));
+        assert_matches!(parse_response("ALLOW"), PolicyDecision::Allow);
+        assert_matches!(parse_response("allow"), PolicyDecision::Allow);
+        assert_matches!(parse_response("  ALLOW  "), PolicyDecision::Allow);
     }
 
     #[test]
     fn parse_response_deny_with_reason() {
         let d = parse_response("DENY: system file access");
-        assert!(matches!(d, PolicyDecision::Deny { ref reason } if reason == "system file access"));
+        assert_matches!(d, PolicyDecision::Deny { ref reason } if reason == "system file access");
     }
 
     #[test]
     fn parse_response_deny_without_colon() {
         let d = parse_response("DENY unsafe operation");
-        assert!(matches!(d, PolicyDecision::Deny { .. }));
+        assert_matches!(d, PolicyDecision::Deny { .. });
     }
 
     #[test]
     fn parse_response_injection_attempt_becomes_deny() {
         let d = parse_response("maybe");
-        assert!(matches!(d, PolicyDecision::Deny { .. }));
+        assert_matches!(d, PolicyDecision::Deny { .. });
         let d2 = parse_response("I think ALLOW is the right answer here");
-        assert!(matches!(d2, PolicyDecision::Deny { .. }));
+        assert_matches!(d2, PolicyDecision::Deny { .. });
     }
 
     #[test]

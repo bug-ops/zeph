@@ -246,6 +246,7 @@ fn params_summary(params: &serde_json::Map<String, serde_json::Value>) -> String
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -373,7 +374,7 @@ mod tests {
         let (inner_count, inner) = MockInner::new();
         let gate = AdversarialPolicyGateExecutor::new(inner, make_validator(false), Arc::new(llm));
         let result = gate.execute_tool_call(&make_call("shell")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
         assert_eq!(llm_count.load(Ordering::SeqCst), 1);
         assert_eq!(
             inner_count.load(Ordering::SeqCst),

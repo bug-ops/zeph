@@ -306,6 +306,7 @@ impl Default for DiscoveryParams {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use zeph_llm::provider::EmbedFn;
 
     use super::*;
@@ -351,10 +352,7 @@ mod tests {
         let tools = vec![make_tool("a", "desc")];
         let embed = failing_embed();
         let err = SemanticToolIndex::build(&tools, &embed).await.unwrap_err();
-        assert!(matches!(
-            err,
-            SemanticIndexError::AllEmbeddingsFailed { count: 1 }
-        ));
+        assert_matches!(err, SemanticIndexError::AllEmbeddingsFailed { count: 1 });
     }
 
     #[tokio::test]

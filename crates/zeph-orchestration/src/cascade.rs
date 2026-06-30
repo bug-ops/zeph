@@ -375,6 +375,7 @@ fn ancestor_roots(task_id: TaskId, graph: &TaskGraph) -> Vec<TaskId> {
 mod tests {
     use super::*;
     use crate::graph::{TaskGraph, TaskId, TaskNode};
+    use std::assert_matches;
 
     fn make_node(id: u32, deps: &[u32]) -> TaskNode {
         let mut n = TaskNode::new(id, format!("t{id}"), "desc");
@@ -606,30 +607,21 @@ mod tests {
         // rate_threshold > 0 but region_health is empty — the `if let Some` arm returns None.
         let g = graph_from(vec![make_node(0, &[]), make_node(1, &[0])]);
         let mut det = CascadeDetector::new(cfg(0.5));
-        assert!(matches!(
-            det.evaluate_abort(&g, TaskId(1), 0.5),
-            AbortDecision::None
-        ));
+        assert_matches!(det.evaluate_abort(&g, TaskId(1), 0.5), AbortDecision::None);
     }
 
     #[test]
     fn evaluate_abort_none_when_threshold_zero() {
         let g = graph_from(vec![make_node(0, &[])]);
         let mut det = CascadeDetector::new(cfg(0.5));
-        assert!(matches!(
-            det.evaluate_abort(&g, TaskId(0), 0.0),
-            AbortDecision::None
-        ));
+        assert_matches!(det.evaluate_abort(&g, TaskId(0), 0.0), AbortDecision::None);
         // Negative threshold also short-circuits.
-        assert!(matches!(
-            det.evaluate_abort(&g, TaskId(0), -1.0),
-            AbortDecision::None
-        ));
+        assert_matches!(det.evaluate_abort(&g, TaskId(0), -1.0), AbortDecision::None);
         // Exact EPSILON boundary — rate_threshold <= EPSILON is true.
-        assert!(matches!(
+        assert_matches!(
             det.evaluate_abort(&g, TaskId(0), f32::EPSILON),
             AbortDecision::None
-        ));
+        );
     }
 
     #[test]
@@ -670,10 +662,7 @@ mod tests {
         let mut det = CascadeDetector::new(cfg(0.5));
         det.record_outcome(TaskId(1), false, &g);
         det.record_outcome(TaskId(2), false, &g);
-        assert!(matches!(
-            det.evaluate_abort(&g, TaskId(1), 0.5),
-            AbortDecision::None
-        ));
+        assert_matches!(det.evaluate_abort(&g, TaskId(1), 0.5), AbortDecision::None);
     }
 
     #[test]

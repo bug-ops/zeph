@@ -3,6 +3,8 @@
 
 use super::cache::cache_min_tokens;
 use super::request::split_messages_structured;
+use std::assert_matches;
+
 use super::types::{
     ApiMessage, ApiResponse, ApiUsage, CACHE_MARKER_STABLE, CACHE_MARKER_TOOLS,
     CACHE_MARKER_VOLATILE, CacheControl, CacheType, ContentBlock, ImageSource, StructuredContent,
@@ -642,7 +644,7 @@ fn parse_tool_response_text_only() {
         usage: None,
     };
     let (result, compaction) = parse_tool_response(resp);
-    assert!(matches!(result, ChatResponse::Text(s) if s == "Hello"));
+    assert_matches!(result, ChatResponse::Text(s) if s == "Hello");
     assert!(compaction.is_none());
 }
 
@@ -707,7 +709,7 @@ fn parse_tool_response_json_deserialization() {
     let json = r#"{"content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"toolu_abc","name":"bash","input":{"command":"ls"}}]}"#;
     let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
     let (result, _) = parse_tool_response(resp);
-    assert!(matches!(result, ChatResponse::ToolUse { .. }));
+    assert_matches!(result, ChatResponse::ToolUse { .. });
 }
 
 #[test]
@@ -720,7 +722,7 @@ fn parse_tool_response_with_compaction() {
         usage: None,
     };
     let (result, compaction) = parse_tool_response(resp);
-    assert!(matches!(result, ChatResponse::Text(ref s) if s.is_empty()));
+    assert_matches!(result, ChatResponse::Text(ref s) if s.is_empty());
     assert_eq!(
         compaction.as_deref(),
         Some("Context was summarized for efficiency.")
@@ -1974,7 +1976,7 @@ fn parse_tool_response_with_redacted_thinking() {
     };
     let (result, _) = parse_tool_response(resp);
     // No tool calls, so returns Text; thinking is dropped for text-only responses
-    assert!(matches!(result, ChatResponse::Text(_)));
+    assert_matches!(result, ChatResponse::Text(_));
 }
 
 #[test]

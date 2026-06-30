@@ -141,6 +141,7 @@ impl BenchmarkSet {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::redundant_closure_for_method_calls)]
+    use std::assert_matches;
 
     use super::*;
 
@@ -182,13 +183,13 @@ tags = ["rust", "concepts"]
     #[test]
     fn benchmark_empty_cases_rejected() {
         let set = BenchmarkSet { cases: vec![] };
-        assert!(matches!(set.validate(), Err(EvalError::EmptyBenchmarkSet)));
+        assert_matches!(set.validate(), Err(EvalError::EmptyBenchmarkSet));
     }
 
     #[test]
     fn benchmark_from_file_missing_file() {
         let result = BenchmarkSet::from_file(Path::new("/nonexistent/path/benchmark.toml"));
-        assert!(matches!(result, Err(EvalError::BenchmarkLoad(_, _))));
+        assert_matches!(result, Err(EvalError::BenchmarkLoad(_, _)));
     }
 
     #[test]
@@ -204,7 +205,7 @@ tags = ["rust", "concepts"]
         let mut f = tempfile::NamedTempFile::new().unwrap();
         writeln!(f, "not valid toml ][[]").unwrap();
         let result = BenchmarkSet::from_file(f.path());
-        assert!(matches!(result, Err(EvalError::BenchmarkParse(_, _))));
+        assert_matches!(result, Err(EvalError::BenchmarkParse(_, _)));
     }
 
     #[test]

@@ -774,6 +774,7 @@ impl<C: Channel> zeph_commands::ChannelSink for ChannelSinkAdapter<'_, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn channel_message_creation() {
@@ -975,7 +976,7 @@ mod tests {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel.send("world").await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(event, LoopbackEvent::FullMessage(t) if t == "world"));
+        assert_matches!(event, LoopbackEvent::FullMessage(t) if t == "world");
     }
 
     #[tokio::test]
@@ -985,8 +986,8 @@ mod tests {
         channel.flush_chunks().await.unwrap();
         let ev1 = handle.output_rx.recv().await.unwrap();
         let ev2 = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(ev1, LoopbackEvent::Chunk(t) if t == "part1"));
-        assert!(matches!(ev2, LoopbackEvent::Flush));
+        assert_matches!(ev1, LoopbackEvent::Chunk(t) if t == "part1");
+        assert_matches!(ev2, LoopbackEvent::Flush);
     }
 
     #[tokio::test]
@@ -1041,7 +1042,7 @@ mod tests {
         // Drop only the output_rx side by dropping the handle
         drop(handle);
         let result = channel.send("too late").await;
-        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+        assert_matches!(result, Err(ChannelError::ChannelClosed));
     }
 
     #[tokio::test]
@@ -1049,7 +1050,7 @@ mod tests {
         let (mut channel, handle) = LoopbackChannel::pair(8);
         drop(handle);
         let result = channel.send_chunk("chunk").await;
-        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+        assert_matches!(result, Err(ChannelError::ChannelClosed));
     }
 
     #[tokio::test]
@@ -1057,7 +1058,7 @@ mod tests {
         let (mut channel, handle) = LoopbackChannel::pair(8);
         drop(handle);
         let result = channel.flush_chunks().await;
-        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+        assert_matches!(result, Err(ChannelError::ChannelClosed));
     }
 
     #[tokio::test]
@@ -1065,7 +1066,7 @@ mod tests {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
         channel.send_status("working...").await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(event, LoopbackEvent::Status(s) if s == "working..."));
+        assert_matches!(event, LoopbackEvent::Status(s) if s == "working...");
     }
 
     #[tokio::test]
@@ -1101,7 +1102,7 @@ mod tests {
         let (mut channel, handle) = LoopbackChannel::pair(8);
         drop(handle);
         let result = channel.send_usage(1, 2, 3, 0, 0, 0.0).await;
-        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+        assert_matches!(result, Err(ChannelError::ChannelClosed));
     }
 
     #[test]
@@ -1123,7 +1124,7 @@ mod tests {
     #[test]
     fn loopback_event_session_title_carries_string() {
         let event = LoopbackEvent::SessionTitle("hello".to_owned());
-        assert!(matches!(event, LoopbackEvent::SessionTitle(s) if s == "hello"));
+        assert_matches!(event, LoopbackEvent::SessionTitle(s) if s == "hello");
     }
 
     #[test]
@@ -1136,8 +1137,8 @@ mod tests {
         match event {
             LoopbackEvent::Plan(e) => {
                 assert_eq!(e.len(), 2);
-                assert!(matches!(e[0].1, PlanItemStatus::Pending));
-                assert!(matches!(e[1].1, PlanItemStatus::InProgress));
+                assert_matches!(e[0].1, PlanItemStatus::Pending);
+                assert_matches!(e[1].1, PlanItemStatus::InProgress);
             }
             _ => panic!("expected Plan event"),
         }
@@ -1186,10 +1187,10 @@ mod tests {
             .await
             .unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(
+        assert_matches!(
             event,
             LoopbackEvent::ToolStart(ref data) if data.parent_tool_use_id.as_deref() == Some("parent-123")
-        ));
+        );
     }
 
     #[tokio::test]
@@ -1207,7 +1208,7 @@ mod tests {
                 sandbox_profile: None,
             })
             .await;
-        assert!(matches!(result, Err(ChannelError::ChannelClosed)));
+        assert_matches!(result, Err(ChannelError::ChannelClosed));
     }
 
     #[tokio::test]

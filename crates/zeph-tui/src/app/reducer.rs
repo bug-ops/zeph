@@ -894,6 +894,7 @@ pub(crate) fn run_effects(app: &mut App, effects: Vec<Effect>) {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -998,7 +999,7 @@ mod tests {
     fn quit_emits_effect() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Quit);
-        assert!(matches!(effects.as_slice(), [Effect::Quit]));
+        assert_matches!(effects.as_slice(), [Effect::Quit]);
     }
 
     #[test]
@@ -1006,10 +1007,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::SetMouse(true));
         assert!(app.mouse_enabled);
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::SetMouseCapture(true)]
-        ));
+        assert_matches!(effects.as_slice(), [Effect::SetMouseCapture(true)]);
     }
 
     #[test]
@@ -1018,10 +1016,7 @@ mod tests {
         app.mouse_enabled = true;
         let effects = reduce(&mut app, Action::SetMouse(false));
         assert!(!app.mouse_enabled);
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::SetMouseCapture(false)]
-        ));
+        assert_matches!(effects.as_slice(), [Effect::SetMouseCapture(false)]);
     }
 
     #[test]
@@ -1060,10 +1055,7 @@ mod tests {
         assert!(!app.mouse_enabled);
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ToggleMouse));
         assert!(app.mouse_enabled);
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::SetMouseCapture(true)]
-        ));
+        assert_matches!(effects.as_slice(), [Effect::SetMouseCapture(true)]);
     }
 
     // ── Group A tests ───────────────────────────────────────────────────────────
@@ -1080,10 +1072,7 @@ mod tests {
         assert!(effects.is_empty());
         // cleared, then exactly one system message appended
         assert_eq!(app.sessions.current().messages.len(), 1);
-        assert!(matches!(
-            app.sessions.current().messages[0].role,
-            MessageRole::System
-        ));
+        assert_matches!(app.sessions.current().messages[0].role, MessageRole::System);
     }
 
     #[test]
@@ -1166,10 +1155,7 @@ mod tests {
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ListThemes));
         assert!(effects.is_empty());
         assert_eq!(app.sessions.current().messages.len(), 1);
-        assert!(matches!(
-            app.sessions.current().messages[0].role,
-            MessageRole::System
-        ));
+        assert_matches!(app.sessions.current().messages[0].role, MessageRole::System);
     }
 
     #[test]

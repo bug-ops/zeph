@@ -209,6 +209,7 @@ fn build_user_prompt(message: &str, context_messages: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn make_entity(name: &str, entity_type: &str, summary: Option<&str>) -> ExtractedEntity {
         ExtractedEntity {
@@ -432,7 +433,7 @@ mod tests {
             let extractor = GraphExtractor::new(zeph_llm::any::AnyProvider::Mock(mock), 10, 10, 30);
             let result = extractor.extract("test message", &[]).await;
             assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), MemoryError::Llm(_)));
+            assert_matches!(result.unwrap_err(), MemoryError::Llm(_));
         }
 
         #[test]

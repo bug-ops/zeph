@@ -884,6 +884,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::fs;
 
     fn temp_dir() -> tempfile::TempDir {
@@ -1002,7 +1003,7 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/etc/passwd"))]);
         let result = exec.execute_file_tool("read", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     #[tokio::test]
@@ -1064,7 +1065,7 @@ mod tests {
             ("content", serde_json::json!("pwned")),
         ]);
         let result = exec.execute_file_tool("write", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
         assert!(!Path::new("/tmp/evil/escape.txt").exists());
     }
 
@@ -1133,7 +1134,7 @@ mod tests {
             ("path", serde_json::json!("../../etc")),
         ]);
         let result = exec.execute_file_tool("grep", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     #[tokio::test]
@@ -1185,7 +1186,7 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = serde_json::Map::new();
         let result = exec.execute_file_tool("read", &params).await;
-        assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
+        assert_matches!(result, Err(ToolError::InvalidParams { .. }));
     }
 
     // --- list_directory tests ---
@@ -1233,7 +1234,7 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/etc"))]);
         let result = exec.execute_file_tool("list_directory", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     #[tokio::test]
@@ -1281,7 +1282,7 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/tmp/evil_dir"))]);
         let result = exec.execute_file_tool("create_directory", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     // --- delete_path tests ---
@@ -1354,7 +1355,7 @@ mod tests {
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]);
         let params = make_params(&[("path", serde_json::json!("/etc/hosts"))]);
         let result = exec.execute_file_tool("delete_path", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     #[tokio::test]
@@ -1366,7 +1367,7 @@ mod tests {
             ("recursive", serde_json::json!(true)),
         ]);
         let result = exec.execute_file_tool("delete_path", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     // --- move_path tests ---
@@ -1405,7 +1406,7 @@ mod tests {
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
         let result = exec.execute_file_tool("move_path", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     // --- copy_path tests ---
@@ -1465,7 +1466,7 @@ mod tests {
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
         let result = exec.execute_file_tool("copy_path", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     // CR-11: invalid glob pattern returns error
@@ -1507,7 +1508,7 @@ mod tests {
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
         let result = exec.execute_file_tool("move_path", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     // CR-13: copy_path source sandbox violation
@@ -1525,7 +1526,7 @@ mod tests {
             ("destination", serde_json::json!(dst.to_str().unwrap())),
         ]);
         let result = exec.execute_file_tool("copy_path", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     // CR-01: copy_dir_recursive skips symlinks
@@ -1692,7 +1693,7 @@ mod tests {
         let escape = format!("{}/a/b/../../../etc/shadow", dir.path().display());
         let params = make_params(&[("path", serde_json::json!(escape))]);
         let result = exec.execute_file_tool("read", &params).await;
-        assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+        assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
     }
 
     #[tokio::test]

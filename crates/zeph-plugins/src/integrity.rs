@@ -207,6 +207,7 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use tempfile::TempDir;
 
     use super::*;
@@ -227,10 +228,10 @@ mod tests {
         reg.save(&reg_path).unwrap();
 
         let reg2 = IntegrityRegistry::load(&reg_path);
-        assert!(matches!(
+        assert_matches!(
             reg2.verify("test-plugin", &toml_path).unwrap(),
             VerifyResult::Match
-        ));
+        );
     }
 
     #[test]
@@ -248,10 +249,10 @@ mod tests {
         std::fs::write(&toml_path, b"[plugin]\nname = \"tampered\"\n").unwrap();
 
         let reg2 = IntegrityRegistry::load(&reg_path);
-        assert!(matches!(
+        assert_matches!(
             reg2.verify("test-plugin", &toml_path).unwrap(),
             VerifyResult::Mismatch { .. }
-        ));
+        );
     }
 
     #[test]
@@ -263,10 +264,10 @@ mod tests {
 
         let reg = IntegrityRegistry::load(&reg_path);
         // No entry recorded — should be allowed.
-        assert!(matches!(
+        assert_matches!(
             reg.verify("unknown-plugin", &toml_path).unwrap(),
             VerifyResult::Missing
-        ));
+        );
     }
 
     #[test]

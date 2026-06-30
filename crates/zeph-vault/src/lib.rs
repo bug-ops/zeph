@@ -290,6 +290,7 @@ mod tests {
 
 #[cfg(test)]
 mod age_tests {
+    use std::assert_matches;
     use std::io::Write as _;
 
     // NOTE: use `::age` (not bare `age`) to reference the external crate — the local
@@ -358,7 +359,7 @@ mod age_tests {
             Path::new("/nonexistent/vault.age"),
         )
         .unwrap_err();
-        assert!(matches!(err, AgeVaultError::KeyRead(_)));
+        assert_matches!(err, AgeVaultError::KeyRead(_));
     }
 
     #[test]
@@ -371,7 +372,7 @@ mod age_tests {
         std::fs::write(&vault_path, b"dummy").unwrap();
 
         let err = AgeVaultProvider::new(&key_path, &vault_path).unwrap_err();
-        assert!(matches!(err, AgeVaultError::KeyParse(_)));
+        assert_matches!(err, AgeVaultError::KeyParse(_));
     }
 
     #[test]
@@ -384,7 +385,7 @@ mod age_tests {
 
         let err =
             AgeVaultProvider::new(&key_path, Path::new("/nonexistent/vault.age")).unwrap_err();
-        assert!(matches!(err, AgeVaultError::VaultRead(_)));
+        assert_matches!(err, AgeVaultError::VaultRead(_));
     }
 
     #[test]
@@ -400,7 +401,7 @@ mod age_tests {
         std::fs::write(&wrong_key_path, wrong_identity.to_string().expose_secret()).unwrap();
 
         let err = AgeVaultProvider::new(&wrong_key_path, &vault_path).unwrap_err();
-        assert!(matches!(err, AgeVaultError::Decrypt(_)));
+        assert_matches!(err, AgeVaultError::Decrypt(_));
     }
 
     #[test]
@@ -417,7 +418,7 @@ mod age_tests {
 
         let (_dir, key_path, vault_path) = write_temp_files(&identity, &encrypted);
         let err = AgeVaultProvider::new(&key_path, &vault_path).unwrap_err();
-        assert!(matches!(err, AgeVaultError::Json(_)));
+        assert_matches!(err, AgeVaultError::Json(_));
     }
 
     #[test]
@@ -462,7 +463,7 @@ mod age_tests {
         std::fs::write(&vault_path, b"dummy").unwrap();
 
         let err = AgeVaultProvider::new(&key_path, &vault_path).unwrap_err();
-        assert!(matches!(err, AgeVaultError::KeyParse(_)));
+        assert_matches!(err, AgeVaultError::KeyParse(_));
     }
 
     #[test]
@@ -673,7 +674,7 @@ mod age_tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, AgeVaultError::KeyRead(_)));
+        assert_matches!(err, AgeVaultError::KeyRead(_));
     }
 
     /// `save_async` leaves no `.tmp` file after a successful write.

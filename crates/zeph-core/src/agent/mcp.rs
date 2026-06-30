@@ -738,6 +738,7 @@ mod tests {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn handle_mcp_command_unknown_subcommand_shows_usage() {
@@ -1002,22 +1003,10 @@ mod tests {
         let fields = build_elicitation_fields(&schema);
 
         let get = |n: &str| fields.iter().find(|f| f.name == n).unwrap();
-        assert!(matches!(
-            get("flag").field_type,
-            ElicitationFieldType::Boolean
-        ));
-        assert!(matches!(
-            get("count").field_type,
-            ElicitationFieldType::Integer
-        ));
-        assert!(matches!(
-            get("ratio").field_type,
-            ElicitationFieldType::Number
-        ));
-        assert!(matches!(
-            get("name").field_type,
-            ElicitationFieldType::String
-        ));
+        assert_matches!(get("flag").field_type, ElicitationFieldType::Boolean);
+        assert_matches!(get("count").field_type, ElicitationFieldType::Integer);
+        assert_matches!(get("ratio").field_type, ElicitationFieldType::Number);
+        assert_matches!(get("name").field_type, ElicitationFieldType::String);
     }
 
     #[test]

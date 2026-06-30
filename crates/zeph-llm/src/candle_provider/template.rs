@@ -130,6 +130,7 @@ fn format_raw(messages: &[Message]) -> String {
 mod tests {
     use super::*;
     use crate::provider::MessageMetadata;
+    use std::assert_matches;
 
     fn sample_messages() -> Vec<Message> {
         vec![
@@ -189,34 +190,13 @@ mod tests {
 
     #[test]
     fn from_str_parses_variants() {
-        assert!(matches!(
-            ChatTemplate::parse_str("llama3"),
-            ChatTemplate::Llama3
-        ));
-        assert!(matches!(
-            ChatTemplate::parse_str("chatml"),
-            ChatTemplate::ChatML
-        ));
-        assert!(matches!(
-            ChatTemplate::parse_str("qwen3"),
-            ChatTemplate::ChatML
-        ));
-        assert!(matches!(
-            ChatTemplate::parse_str("qwen"),
-            ChatTemplate::ChatML
-        ));
-        assert!(matches!(
-            ChatTemplate::parse_str("mistral"),
-            ChatTemplate::Mistral
-        ));
-        assert!(matches!(
-            ChatTemplate::parse_str("phi3"),
-            ChatTemplate::Phi3
-        ));
-        assert!(matches!(
-            ChatTemplate::parse_str("unknown"),
-            ChatTemplate::Raw
-        ));
+        assert_matches!(ChatTemplate::parse_str("llama3"), ChatTemplate::Llama3);
+        assert_matches!(ChatTemplate::parse_str("chatml"), ChatTemplate::ChatML);
+        assert_matches!(ChatTemplate::parse_str("qwen3"), ChatTemplate::ChatML);
+        assert_matches!(ChatTemplate::parse_str("qwen"), ChatTemplate::ChatML);
+        assert_matches!(ChatTemplate::parse_str("mistral"), ChatTemplate::Mistral);
+        assert_matches!(ChatTemplate::parse_str("phi3"), ChatTemplate::Phi3);
+        assert_matches!(ChatTemplate::parse_str("unknown"), ChatTemplate::Raw);
     }
 
     #[test]

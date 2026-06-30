@@ -290,6 +290,7 @@ impl std::fmt::Display for ExperimentSource {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::approx_constant)]
+    use std::assert_matches;
 
     use super::*;
 
@@ -340,14 +341,14 @@ mod tests {
     #[test]
     fn variation_value_from_f64() {
         let v = VariationValue::from(0.7_f64);
-        assert!(matches!(v, VariationValue::Float(_)));
+        assert_matches!(v, VariationValue::Float(_));
         assert!((v.as_f64() - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]
     fn variation_value_from_i64() {
         let v = VariationValue::from(40_i64);
-        assert!(matches!(v, VariationValue::Int(40)));
+        assert_matches!(v, VariationValue::Int(40));
         assert!((v.as_f64() - 40.0).abs() < f64::EPSILON);
     }
 

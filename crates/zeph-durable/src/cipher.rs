@@ -356,6 +356,7 @@ pub fn ensure_payload_within_limit(len: usize, max_bytes: u64) -> Result<(), Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn sample_key(exec: ExecutionId) -> IdempotencyKey {
         IdempotencyKey::derive(exec, StepId::new(0), b"op")
@@ -450,18 +451,18 @@ mod tests {
 
     #[test]
     fn cipher_error_maps_to_durable_error_fail_closed() {
-        assert!(matches!(
+        assert_matches!(
             DurableError::from(CipherError::Authentication),
             DurableError::ReplayIntegrity
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             DurableError::from(CipherError::Malformed { context: "x" }),
             DurableError::Decode { context: "x" }
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             DurableError::from(CipherError::UnknownKeyId { key_id: 9 }),
             DurableError::Decode { .. }
-        ));
+        );
     }
 
     #[test]
@@ -487,9 +488,9 @@ mod tests {
             "exactly at the limit is ok"
         );
         let err = ensure_payload_within_limit(1_048_577, max).unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             DurableError::PayloadTooLarge { size, max: m } if size == 1_048_577 && m == max
-        ));
+        );
     }
 }

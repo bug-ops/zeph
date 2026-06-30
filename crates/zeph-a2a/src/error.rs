@@ -69,6 +69,7 @@ impl From<JsonRpcError> for A2aError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn from_jsonrpc_error() {
@@ -115,6 +116,6 @@ mod tests {
     fn from_serde_json_error() {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let err: A2aError = json_err.into();
-        assert!(matches!(err, A2aError::Json(_)));
+        assert_matches!(err, A2aError::Json(_));
     }
 }

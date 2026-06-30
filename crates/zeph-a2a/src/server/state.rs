@@ -311,6 +311,7 @@ pub(super) fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn test_message(text: &str) -> Message {
         Message::user_text(text)
@@ -458,7 +459,7 @@ mod tests {
     async fn cancel_nonexistent_returns_not_found() {
         let tm = TaskManager::new();
         let result = tm.cancel_task("no-such-id").await;
-        assert!(matches!(result, Err(CancelError::NotFound)));
+        assert_matches!(result, Err(CancelError::NotFound));
     }
 
     #[test]

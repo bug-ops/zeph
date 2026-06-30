@@ -1185,14 +1185,14 @@ impl OpenAiProvider {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum OpenAiContentPart {
     Text { text: String },
     ImageUrl { image_url: ImageUrlDetail },
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct ImageUrlDetail {
     url: String,
 }

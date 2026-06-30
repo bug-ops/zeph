@@ -212,6 +212,7 @@ impl PolicyEnforcer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_config::RateLimit;
 
     fn enforcer_with_policy(server_id: &str, policy: McpPolicy) -> PolicyEnforcer {
@@ -232,7 +233,7 @@ mod tests {
         };
         let enforcer = enforcer_with_policy("srv", policy);
         let err = enforcer.check("srv", "rm").unwrap_err();
-        assert!(matches!(err, PolicyViolation::ToolDenied { .. }));
+        assert_matches!(err, PolicyViolation::ToolDenied { .. });
     }
 
     #[test]
@@ -244,7 +245,7 @@ mod tests {
         };
         let enforcer = enforcer_with_policy("srv", policy);
         let err = enforcer.check("srv", "rm").unwrap_err();
-        assert!(matches!(err, PolicyViolation::ToolDenied { .. }));
+        assert_matches!(err, PolicyViolation::ToolDenied { .. });
     }
 
     #[test]
@@ -255,7 +256,7 @@ mod tests {
         };
         let enforcer = enforcer_with_policy("srv", policy);
         let err = enforcer.check("srv", "write_file").unwrap_err();
-        assert!(matches!(err, PolicyViolation::ToolNotAllowed { .. }));
+        assert_matches!(err, PolicyViolation::ToolNotAllowed { .. });
     }
 
     #[test]
@@ -280,7 +281,7 @@ mod tests {
         assert!(enforcer.check("srv", "tool").is_ok());
         assert!(enforcer.check("srv", "tool").is_ok());
         let err = enforcer.check("srv", "tool").unwrap_err();
-        assert!(matches!(err, PolicyViolation::RateLimitExceeded { .. }));
+        assert_matches!(err, PolicyViolation::RateLimitExceeded { .. });
     }
 
     #[test]
@@ -319,20 +320,20 @@ mod tests {
     fn data_flow_high_sensitivity_untrusted_blocked() {
         let tool = make_tool_with_meta("exec_shell", crate::tool::DataSensitivity::High);
         let result = check_data_flow(&tool, McpTrustLevel::Untrusted);
-        assert!(matches!(
+        assert_matches!(
             result,
             Err(DataFlowViolation::SensitivityTrustMismatch { .. })
-        ));
+        );
     }
 
     #[test]
     fn data_flow_high_sensitivity_sandboxed_blocked() {
         let tool = make_tool_with_meta("exec_shell", crate::tool::DataSensitivity::High);
         let result = check_data_flow(&tool, McpTrustLevel::Sandboxed);
-        assert!(matches!(
+        assert_matches!(
             result,
             Err(DataFlowViolation::SensitivityTrustMismatch { .. })
-        ));
+        );
     }
 
     #[test]

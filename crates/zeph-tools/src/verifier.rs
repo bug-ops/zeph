@@ -877,6 +877,7 @@ impl PreExecutionVerifier for FirewallVerifier {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use std::assert_matches;
 
     use super::*;
 
@@ -899,21 +900,21 @@ mod tests {
     fn block_rm_rf_root() {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": "rm -rf /"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn block_dd_dev_zero() {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": "dd if=/dev/zero of=/dev/sda"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn block_mkfs() {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": "mkfs.ext4 /dev/sda1"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -937,7 +938,7 @@ mod tests {
         };
         let v = DestructiveCommandVerifier::new(&config);
         let result = v.verify("bash", &json!({"command": "rm -rf /home/user"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -957,28 +958,28 @@ mod tests {
         };
         let v = DestructiveCommandVerifier::new(&config);
         let result = v.verify("bash", &json!({"command": "format c:"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn array_args_normalization() {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": ["rm", "-rf", "/"]}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn sh_c_wrapping_normalization() {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": "bash -c 'rm -rf /'"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn fork_bomb_blocked() {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": ":(){ :|:& };:"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -989,14 +990,14 @@ mod tests {
         };
         let v = DestructiveCommandVerifier::new(&config);
         let result = v.verify("execute", &json!({"command": "rm -rf /"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn terminal_tool_name_blocked_by_default() {
         let v = dcv();
         let result = v.verify("terminal", &json!({"command": "rm -rf /"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1054,21 +1055,21 @@ mod tests {
     fn block_sql_injection_in_non_query_field() {
         let v = ipv();
         let result = v.verify("db_query", &json!({"sql": "' OR '1'='1"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn block_drop_table() {
         let v = ipv();
         let result = v.verify("db_query", &json!({"input": "name'; DROP TABLE users"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn block_path_traversal() {
         let v = ipv();
         let result = v.verify("read_file", &json!({"path": "../../../etc/passwd"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1076,7 +1077,7 @@ mod tests {
         // S2: SSRF warn only fires on URL-like fields.
         let v = ipv();
         let result = v.verify("http_get", &json!({"url": "http://localhost:8080/api"}));
-        assert!(matches!(result, VerificationResult::Warn { .. }));
+        assert_matches!(result, VerificationResult::Warn { .. });
     }
 
     #[test]
@@ -1096,7 +1097,7 @@ mod tests {
     fn warn_on_private_ip_url_field() {
         let v = ipv();
         let result = v.verify("fetch", &json!({"url": "http://192.168.1.1/admin"}));
-        assert!(matches!(result, VerificationResult::Warn { .. }));
+        assert_matches!(result, VerificationResult::Warn { .. });
     }
 
     #[test]
@@ -1119,7 +1120,7 @@ mod tests {
             "db_query",
             &json!({"input": "id=1 UNION SELECT password FROM users"}),
         );
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1143,7 +1144,7 @@ mod tests {
         let v = dcv();
         // "rm -rf ／" where ／ is U+FF0F
         let result = v.verify("bash", &json!({"command": "rm -rf \u{FF0F}"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     // --- FIX-2: Path traversal in is_allowed_path ---
@@ -1158,7 +1159,7 @@ mod tests {
         let v = DestructiveCommandVerifier::new(&config);
         // Should be BLOCKED: resolved path is /etc, not under /tmp/build.
         let result = v.verify("bash", &json!({"command": "rm -rf /tmp/build/../../etc"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1187,7 +1188,7 @@ mod tests {
             "bash",
             &json!({"command": "bash -c \"bash -c 'rm -rf /'\""}),
         );
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1197,14 +1198,14 @@ mod tests {
             "bash",
             &json!({"command": "env FOO=bar bash -c 'rm -rf /'"}),
         );
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
     fn exec_prefix_stripping_blocked() {
         let v = dcv();
         let result = v.verify("bash", &json!({"command": "exec bash -c 'rm -rf /'"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     // --- FIX-4: SSRF host extraction (not substring match) ---
@@ -1226,14 +1227,14 @@ mod tests {
         // FIX-7: `http://localhost` with no trailing slash or port must warn.
         let v = ipv();
         let result = v.verify("http_get", &json!({"url": "http://localhost"}));
-        assert!(matches!(result, VerificationResult::Warn { .. }));
+        assert_matches!(result, VerificationResult::Warn { .. });
     }
 
     #[test]
     fn ssrf_triggered_for_localhost_with_path() {
         let v = ipv();
         let result = v.verify("http_get", &json!({"url": "http://localhost/api/v1"}));
-        assert!(matches!(result, VerificationResult::Warn { .. }));
+        assert_matches!(result, VerificationResult::Warn { .. });
     }
 
     // --- Verifier chain: first Block wins, Warn continues ---
@@ -1252,7 +1253,7 @@ mod tests {
                 break;
             }
         }
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1310,7 +1311,7 @@ mod tests {
             "fetch",
             &json!({"url": "https://api.anthropic.ai/v1/models"}),
         );
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1320,7 +1321,7 @@ mod tests {
             "fetch",
             &json!({"url": "https://api.anthropic.ai/v1/models"}),
         );
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1336,7 +1337,7 @@ mod tests {
     fn url_grounding_guards_fetch_suffix_tool() {
         let v = ugv(&[]);
         let result = v.verify("http_fetch", &json!({"url": "https://evil.com/"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]
@@ -1425,7 +1426,7 @@ mod tests {
             "fetch",
             &json!({"url": "https://docs.anthropic.com/something"}),
         );
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     /// REG-2191-5: URL matching is case-insensitive — user pastes mixed-case URL.
@@ -1645,7 +1646,7 @@ mod tests {
         let v = FirewallVerifier::new(&cfg);
         // Valid pattern still works
         let result = v.verify("read", &json!({"path": "/valid/path/file.txt"}));
-        assert!(matches!(result, VerificationResult::Block { .. }));
+        assert_matches!(result, VerificationResult::Block { .. });
     }
 
     #[test]

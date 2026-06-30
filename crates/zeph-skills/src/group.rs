@@ -142,6 +142,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
 
     use super::*;
     use crate::loader::{Skill, SkillMeta};
@@ -177,14 +178,14 @@ mod tests {
     #[test]
     fn empty_skills_returns_flat() {
         let result = group_skills(&[], &[], embedding_for_index, 0.5);
-        assert!(matches!(result, GroupResult::Flat(v) if v.is_empty()));
+        assert_matches!(result, GroupResult::Flat(v) if v.is_empty());
     }
 
     #[test]
     fn single_skill_returns_flat() {
         let skills = vec![make_skill("a")];
         let result = group_skills(&skills, &[0], embedding_for_index, 0.5);
-        assert!(matches!(result, GroupResult::Flat(v) if v.len() == 1));
+        assert_matches!(result, GroupResult::Flat(v) if v.len() == 1);
     }
 
     #[test]
@@ -192,7 +193,7 @@ mod tests {
         // EMBED_A vs EMBED_C: cosine = 0.0
         let skills = vec![make_skill("a"), make_skill("c")];
         let result = group_skills(&skills, &[0, 2], embedding_for_index, 0.5);
-        assert!(matches!(result, GroupResult::Flat(_)));
+        assert_matches!(result, GroupResult::Flat(_));
     }
 
     #[test]
@@ -235,7 +236,7 @@ mod tests {
         let skills = vec![make_skill("x"), make_skill("y")];
         // index 99 → no embedding
         let result = group_skills(&skills, &[99, 1], embedding_for_index, 0.5);
-        assert!(matches!(result, GroupResult::Flat(_)));
+        assert_matches!(result, GroupResult::Flat(_));
     }
 
     #[test]
@@ -243,7 +244,7 @@ mod tests {
         // EMBED_A vs EMBED_E: cosine = 0.0 — NOT > 0.0, so flat
         let skills = vec![make_skill("a"), make_skill("e")];
         let result = group_skills(&skills, &[0, 4], embedding_for_index, 0.0);
-        assert!(matches!(result, GroupResult::Flat(_)));
+        assert_matches!(result, GroupResult::Flat(_));
     }
 
     #[test]
@@ -251,7 +252,7 @@ mod tests {
         // EMBED_A vs EMBED_B: cosine ≈ 0.994 > 0.0 → grouped
         let skills = vec![make_skill("a"), make_skill("b")];
         let result = group_skills(&skills, &[0, 1], embedding_for_index, 0.0);
-        assert!(matches!(result, GroupResult::Grouped(_)));
+        assert_matches!(result, GroupResult::Grouped(_));
     }
 
     #[test]
@@ -281,6 +282,6 @@ mod tests {
     #[test]
     fn context_role_variant_exists() {
         // Ensure Context variant is present for forward-compat (not assigned by MVP)
-        assert!(matches!(SkillRole::Context, SkillRole::Context));
+        assert_matches!(SkillRole::Context, SkillRole::Context);
     }
 }

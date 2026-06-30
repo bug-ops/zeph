@@ -644,12 +644,14 @@ mod tests {
     use super::select_device;
     #[cfg(feature = "candle")]
     use crate::config::CandleDevice;
+    #[cfg(feature = "candle")]
+    use std::assert_matches;
 
     #[cfg(feature = "candle")]
     #[test]
     fn select_device_cpu_default() {
         let device = select_device(CandleDevice::Cpu).unwrap();
-        assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
+        assert_matches!(device, zeph_llm::candle_provider::Device::Cpu);
     }
 
     #[cfg(all(feature = "candle", not(feature = "metal")))]

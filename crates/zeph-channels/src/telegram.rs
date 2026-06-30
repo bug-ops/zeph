@@ -1542,6 +1542,7 @@ fn coerce_telegram_field(text: &str, kind: &ElicitationFieldType) -> Option<serd
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use wiremock::matchers::any;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1706,7 +1707,7 @@ mod tests {
     fn start_rejects_empty_allowed_users() {
         let result = TelegramChannel::new("test_token".to_string(), Vec::new()).start();
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ChannelError::Other(_)));
+        assert_matches!(result.unwrap_err(), ChannelError::Other(_));
     }
 
     // ---------------------------------------------------------------------------

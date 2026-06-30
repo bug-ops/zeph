@@ -5,6 +5,7 @@ use super::*;
 use crate::event::{AgentEvent, AppEvent};
 use crate::session::MAX_TUI_MESSAGES;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::assert_matches;
 
 fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
     let (user_tx, user_rx) = mpsc::channel(16);
@@ -1325,7 +1326,7 @@ mod try_recv_tests {
     fn try_recv_returns_empty_when_no_events() {
         let (mut app, _rx, _tx) = make_app();
         let result = app.try_recv_agent_event();
-        assert!(matches!(result, Err(mpsc::error::TryRecvError::Empty)));
+        assert_matches!(result, Err(mpsc::error::TryRecvError::Empty));
     }
 
     #[test]
@@ -1334,7 +1335,7 @@ mod try_recv_tests {
         tx.try_send(AgentEvent::Typing).unwrap();
         let result = app.try_recv_agent_event();
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), AgentEvent::Typing));
+        assert_matches!(result.unwrap(), AgentEvent::Typing);
     }
 
     #[test]
@@ -1342,10 +1343,7 @@ mod try_recv_tests {
         let (mut app, _rx, tx) = make_app();
         drop(tx);
         let result = app.try_recv_agent_event();
-        assert!(matches!(
-            result,
-            Err(mpsc::error::TryRecvError::Disconnected)
-        ));
+        assert_matches!(result, Err(mpsc::error::TryRecvError::Disconnected));
     }
 }
 

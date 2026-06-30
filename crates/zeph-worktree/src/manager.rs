@@ -565,6 +565,7 @@ fn parse_git_version(output: &str) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
     use crate::git_runner::FakeGitRunner;
+    use std::assert_matches;
     use std::sync::Arc;
     use zeph_config::WorktreeConfig;
 
@@ -617,7 +618,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         runner.push_ok(b"git version 2.4.0\n" as &[u8]);
         let err = probe_capabilities(&runner, dir.path()).await.unwrap_err();
-        assert!(matches!(err, WorktreeError::GitCommand { .. }));
+        assert_matches!(err, WorktreeError::GitCommand { .. });
     }
 
     #[tokio::test]
@@ -627,7 +628,7 @@ mod tests {
         runner.push_ok(b"git version 2.44.0\n" as &[u8]);
         runner.push_err(b"not a git repo\n" as &[u8]);
         let err = probe_capabilities(&runner, dir.path()).await.unwrap_err();
-        assert!(matches!(err, WorktreeError::NotAGitRepo));
+        assert_matches!(err, WorktreeError::NotAGitRepo);
     }
 
     // --- create (Head mode) ---
@@ -670,7 +671,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let mgr = make_manager(&dir, runner).await;
         let err = mgr.create("../escape").await.unwrap_err();
-        assert!(matches!(err, WorktreeError::InvalidBranchName(_)));
+        assert_matches!(err, WorktreeError::InvalidBranchName(_));
     }
 
     #[tokio::test]
@@ -679,7 +680,7 @@ mod tests {
         let runner = FakeGitRunner::new();
         let mgr = make_manager(&dir, runner).await;
         let err = mgr.create("-bad-id").await.unwrap_err();
-        assert!(matches!(err, WorktreeError::InvalidBranchName(_)));
+        assert_matches!(err, WorktreeError::InvalidBranchName(_));
     }
 
     // --- create (Fresh mode) ---
@@ -733,7 +734,7 @@ mod tests {
             .await
             .unwrap();
         let err = mgr.create("agent-fresh").await.unwrap_err();
-        assert!(matches!(err, WorktreeError::GitCommand { .. }));
+        assert_matches!(err, WorktreeError::GitCommand { .. });
     }
 
     #[tokio::test]
@@ -755,7 +756,7 @@ mod tests {
             .await
             .unwrap();
         let err = mgr.create("agent-fresh").await.unwrap_err();
-        assert!(matches!(err, WorktreeError::BaseRefUnresolved { .. }));
+        assert_matches!(err, WorktreeError::BaseRefUnresolved { .. });
     }
 
     // --- remove ---

@@ -322,6 +322,7 @@ impl EventReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn agent_event_debug() {
@@ -333,10 +334,10 @@ mod tests {
     #[test]
     fn app_event_variants() {
         let tick = AppEvent::Tick;
-        assert!(matches!(tick, AppEvent::Tick));
+        assert_matches!(tick, AppEvent::Tick);
 
         let resize = AppEvent::Resize(80, 24);
-        assert!(matches!(resize, AppEvent::Resize(80, 24)));
+        assert_matches!(resize, AppEvent::Resize(80, 24));
     }
 
     #[test]
@@ -360,6 +361,6 @@ mod tests {
 
     #[test]
     fn app_event_paste_variant() {
-        assert!(matches!(AppEvent::Paste("x".into()), AppEvent::Paste(_)));
+        assert_matches!(AppEvent::Paste("x".into()), AppEvent::Paste(_));
     }
 }

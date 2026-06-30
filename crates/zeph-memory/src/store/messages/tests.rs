@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use std::assert_matches;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -1490,8 +1491,8 @@ fn legacy_compat_mixed_array() {
     let json = r#"[{"Text":{"text":"hello"}},{"Summary":{"text":"world"}}]"#;
     let parts = try_parse_legacy_parts(json).expect("compat path must succeed for mixed array");
     assert_eq!(parts.len(), 2);
-    assert!(matches!(&parts[0], MessagePart::Text { text } if text == "hello"));
-    assert!(matches!(&parts[1], MessagePart::Summary { text } if text == "world"));
+    assert_matches!(&parts[0], MessagePart::Text { text } if text == "hello");
+    assert_matches!(&parts[1], MessagePart::Summary { text } if text == "world");
 }
 
 #[test]

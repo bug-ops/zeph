@@ -10,6 +10,7 @@ use super::config::{QualityConfig, TriggerPolicy};
 use super::parser::{chat_json, parse_json};
 use super::pipeline::{RetrievedContext, SelfCheckPipeline};
 use super::proposer::run_proposer;
+use std::assert_matches;
 
 fn mock_provider(responses: Vec<&str>) -> AnyProvider {
     AnyProvider::Mock(MockProvider::with_responses(
@@ -97,10 +98,10 @@ async fn pipeline_skips_when_no_retrieved_context_has_retrieval_trigger() {
     let report = pipeline
         .run("response text", RetrievedContext::default(), "query", 1)
         .await;
-    assert!(matches!(
+    assert_matches!(
         report.proposer_outcome,
         super::types::StageOutcome::Skipped(super::types::SkipReason::NoRetrievedContext)
-    ));
+    );
 }
 
 #[tokio::test]
@@ -123,10 +124,7 @@ async fn pipeline_runs_without_retrieval_when_trigger_always() {
         !report.assertions.is_empty(),
         "expected at least one assertion"
     );
-    assert!(matches!(
-        report.proposer_outcome,
-        super::types::StageOutcome::Ok
-    ));
+    assert_matches!(report.proposer_outcome, super::types::StageOutcome::Ok);
 }
 
 #[tokio::test]
@@ -154,10 +152,10 @@ async fn pipeline_respects_outer_budget() {
         "expected timeout < 700ms, got {}ms",
         elapsed.as_millis()
     );
-    assert!(matches!(
+    assert_matches!(
         report.proposer_outcome,
         super::types::StageOutcome::Timeout { .. }
-    ));
+    );
 }
 
 #[tokio::test]

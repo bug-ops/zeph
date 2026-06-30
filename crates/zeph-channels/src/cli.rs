@@ -626,6 +626,7 @@ fn coerce_field_value(raw: &str, field_type: &ElicitationFieldType) -> Option<se
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn cli_channel_default() {
@@ -810,7 +811,7 @@ mod tests {
             &mut pending,
         )
         .await;
-        assert!(matches!(result, Ok(None)));
+        assert_matches!(result, Ok(None));
         assert!(pending.is_empty());
     }
 
@@ -825,7 +826,7 @@ mod tests {
             &mut pending,
         )
         .await;
-        assert!(matches!(result, Ok(None)));
+        assert_matches!(result, Ok(None));
         assert!(pending.is_empty());
     }
 }

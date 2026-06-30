@@ -126,6 +126,7 @@ pub fn sanitize_paths(text: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn redacts_openai_key() {
@@ -192,7 +193,7 @@ mod tests {
         let text = "This is a normal response with no secrets";
         let result = redact_secrets(text);
         assert_eq!(result, text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
     }
 
     #[test]
@@ -238,7 +239,7 @@ mod tests {
     fn no_allocation_without_secrets() {
         let text = "safe text without any secrets";
         let result = redact_secrets(text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
     }
 
     #[test]
@@ -338,7 +339,7 @@ mod tests {
     fn sanitize_no_paths() {
         let text = "normal error message";
         let result = sanitize_paths(text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
     }
 
     #[test]
@@ -371,7 +372,7 @@ mod tests {
     fn scrub_no_match_passthrough() {
         let text = "hello world, nothing sensitive here";
         let result = scrub_content(text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
         assert_eq!(result.as_ref(), text);
     }
 

@@ -360,6 +360,7 @@ fn ascii_fold_digit(c: char) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn token_f1_identical() {
@@ -433,7 +434,7 @@ mod tests {
     fn single_constructs_one_user_turn() {
         let s = Scenario::single("id1", "hello", "world", serde_json::Value::Null);
         assert_eq!(s.turns.len(), 1);
-        assert!(matches!(s.turns[0].role, Role::User));
+        assert_matches!(s.turns[0].role, Role::User);
         assert_eq!(s.turns[0].content, "hello");
         assert_eq!(s.expected, "world");
     }

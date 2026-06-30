@@ -358,6 +358,7 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use zeph_core::channel::{
         Channel, ElicitationField, ElicitationFieldType, ElicitationRequest, ElicitationResponse,
         ToolOutputEvent,
@@ -406,7 +407,7 @@ mod tests {
             }],
         };
         let result = ch.elicit(req).await.unwrap();
-        assert!(matches!(result, ElicitationResponse::Declined));
+        assert_matches!(result, ElicitationResponse::Declined);
     }
 
     #[tokio::test]

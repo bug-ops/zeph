@@ -212,6 +212,7 @@ pub async fn validate_oauth_metadata_urls(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn urlencoding_decode_basic() {
@@ -230,13 +231,13 @@ mod tests {
     #[test]
     fn parse_callback_params_missing_code() {
         let err = parse_callback_params("state=xyz", "srv").unwrap_err();
-        assert!(matches!(err, McpError::OAuthError { .. }));
+        assert_matches!(err, McpError::OAuthError { .. });
     }
 
     #[test]
     fn parse_callback_params_missing_state() {
         let err = parse_callback_params("code=abc", "srv").unwrap_err();
-        assert!(matches!(err, McpError::OAuthError { .. }));
+        assert_matches!(err, McpError::OAuthError { .. });
     }
 
     #[test]
@@ -267,7 +268,7 @@ mod tests {
         let err = validate_oauth_metadata_urls("srv", &metadata)
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::OAuthError { .. }));
+        assert_matches!(err, McpError::OAuthError { .. });
         assert!(err.to_string().contains("token_endpoint"));
     }
 
@@ -281,7 +282,7 @@ mod tests {
         let err = validate_oauth_metadata_urls("srv", &metadata)
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::OAuthError { .. }));
+        assert_matches!(err, McpError::OAuthError { .. });
         assert!(err.to_string().contains("authorization_endpoint"));
     }
 
@@ -296,7 +297,7 @@ mod tests {
         let err = validate_oauth_metadata_urls("srv", &metadata)
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::OAuthError { .. }));
+        assert_matches!(err, McpError::OAuthError { .. });
         assert!(err.to_string().contains("jwks_uri"));
     }
 }

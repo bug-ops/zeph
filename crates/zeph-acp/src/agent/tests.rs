@@ -7,6 +7,8 @@
     clippy::items_after_statements
 )]
 
+use std::assert_matches;
+
 use super::helpers::*;
 use super::*;
 use agent_client_protocol::{self as acp, Agent as _};
@@ -437,10 +439,7 @@ fn loopback_flush_returns_none() {
 fn loopback_chunk_maps_to_agent_message() {
     let updates = loopback_event_to_updates(LoopbackEvent::Chunk("hi".into()));
     assert_eq!(updates.len(), 1);
-    assert!(matches!(
-        updates[0],
-        acp::schema::SessionUpdate::AgentMessageChunk(_)
-    ));
+    assert_matches!(updates[0], acp::schema::SessionUpdate::AgentMessageChunk(_));
 }
 
 #[test]
@@ -448,14 +447,8 @@ fn loopback_status_maps_to_thought() {
     let updates = loopback_event_to_updates(LoopbackEvent::Status("thinking".into()));
     // Two chunks: a newline separator followed by the status text.
     assert_eq!(updates.len(), 2);
-    assert!(matches!(
-        updates[0],
-        acp::schema::SessionUpdate::AgentThoughtChunk(_)
-    ));
-    assert!(matches!(
-        updates[1],
-        acp::schema::SessionUpdate::AgentThoughtChunk(_)
-    ));
+    assert_matches!(updates[0], acp::schema::SessionUpdate::AgentThoughtChunk(_));
+    assert_matches!(updates[1], acp::schema::SessionUpdate::AgentThoughtChunk(_));
 }
 
 #[test]
@@ -1794,10 +1787,10 @@ async fn set_session_mode_emits_notification() {
 
             assert!(result.0.is_ok());
             let notif = result.1.expect("notification should be received");
-            assert!(matches!(
+            assert_matches!(
                 notif.update,
                 acp::schema::SessionUpdate::CurrentModeUpdate(_)
-            ));
+            );
         })
         .await;
 }
@@ -2102,7 +2095,7 @@ async fn slash_help_returns_end_turn() {
                 }
             );
             let resp = result.0.unwrap();
-            assert!(matches!(resp.stop_reason, acp::schema::StopReason::EndTurn));
+            assert_matches!(resp.stop_reason, acp::schema::StopReason::EndTurn);
         })
         .await;
 }
@@ -2138,7 +2131,7 @@ async fn slash_help_with_args_returns_end_turn() {
                 }
             );
             let resp = result.0.unwrap();
-            assert!(matches!(resp.stop_reason, acp::schema::StopReason::EndTurn));
+            assert_matches!(resp.stop_reason, acp::schema::StopReason::EndTurn);
         })
         .await;
 }
@@ -2199,10 +2192,7 @@ fn loopback_usage_maps_to_usage_update() {
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
     #[cfg(feature = "unstable-session-usage")]
-    assert!(matches!(
-        updates[0],
-        acp::schema::SessionUpdate::UsageUpdate(_)
-    ));
+    assert_matches!(updates[0], acp::schema::SessionUpdate::UsageUpdate(_));
     #[cfg(not(feature = "unstable-session-usage"))]
     assert!(updates.is_empty());
 }
@@ -2214,10 +2204,7 @@ fn loopback_session_title_maps_to_session_info_update() {
     let event = LoopbackEvent::SessionTitle("My Session".to_owned());
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
-    assert!(matches!(
-        updates[0],
-        acp::schema::SessionUpdate::SessionInfoUpdate(_)
-    ));
+    assert_matches!(updates[0], acp::schema::SessionUpdate::SessionInfoUpdate(_));
 }
 
 // --- #960 Plan ---
@@ -2235,18 +2222,18 @@ fn loopback_plan_maps_to_plan_update() {
     match &updates[0] {
         acp::schema::SessionUpdate::Plan(plan) => {
             assert_eq!(plan.entries.len(), 3);
-            assert!(matches!(
+            assert_matches!(
                 plan.entries[0].status,
                 acp::schema::PlanEntryStatus::Pending
-            ));
-            assert!(matches!(
+            );
+            assert_matches!(
                 plan.entries[1].status,
                 acp::schema::PlanEntryStatus::InProgress
-            ));
-            assert!(matches!(
+            );
+            assert_matches!(
                 plan.entries[2].status,
                 acp::schema::PlanEntryStatus::Completed
-            ));
+            );
         }
         _ => panic!("expected Plan update"),
     }
@@ -2257,10 +2244,10 @@ fn loopback_plan_empty_entries() {
     let event = LoopbackEvent::Plan(vec![]);
     let updates = loopback_event_to_updates(event);
     assert_eq!(updates.len(), 1);
-    assert!(matches!(
+    assert_matches!(
         &updates[0],
         acp::schema::SessionUpdate::Plan(p) if p.entries.is_empty()
-    ));
+    );
 }
 
 // Regression test for #1033: multiline tool output must preserve newlines in
@@ -2822,10 +2809,7 @@ async fn slash_review_returns_end_turn() {
                 ))
                 .await
                 .unwrap();
-            assert!(matches!(
-                result.stop_reason,
-                acp::schema::StopReason::EndTurn
-            ));
+            assert_matches!(result.stop_reason, acp::schema::StopReason::EndTurn);
         })
         .await;
 }
@@ -2850,10 +2834,7 @@ async fn slash_review_with_path_returns_end_turn() {
                 ))
                 .await
                 .unwrap();
-            assert!(matches!(
-                result.stop_reason,
-                acp::schema::StopReason::EndTurn
-            ));
+            assert_matches!(result.stop_reason, acp::schema::StopReason::EndTurn);
         })
         .await;
 }
@@ -3665,7 +3646,7 @@ async fn non_llm_slash_command_prompt_completes_with_flush() {
             .expect("prompt() hung: drain loop did not break on flush_chunks()");
 
             let resp = result.0.expect("prompt() returned error");
-            assert!(matches!(resp.stop_reason, acp::schema::StopReason::EndTurn));
+            assert_matches!(resp.stop_reason, acp::schema::StopReason::EndTurn);
         })
         .await;
 }

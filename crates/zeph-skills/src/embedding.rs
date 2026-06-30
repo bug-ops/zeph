@@ -198,6 +198,7 @@ pub async fn embed_skills_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn new_valid_dimension() {
@@ -208,13 +209,13 @@ mod tests {
     #[test]
     fn new_dimension_mismatch() {
         let err = SkillEmbedding::new(vec![1.0, 0.0], 3).unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             SkillError::EmbeddingDimMismatch {
                 expected: 3,
                 actual: 2
             }
-        ));
+        );
     }
 
     #[test]

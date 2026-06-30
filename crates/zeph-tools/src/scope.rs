@@ -684,6 +684,7 @@ mod tests {
     use super::*;
     use crate::executor::ToolCall;
     use crate::registry::{InvocationHint, ToolDef};
+    use std::assert_matches;
     use zeph_common::ToolName;
     use zeph_config::{CapabilityScopesConfig, PatternStrictness, ScopeConfig};
 
@@ -852,7 +853,7 @@ mod tests {
         let executor = ScopedToolExecutor::new(inner, scope);
         let call = make_call("builtin:shell");
         let result = executor.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::OutOfScope { .. })));
+        assert_matches!(result, Err(ToolError::OutOfScope { .. }));
     }
 
     #[tokio::test]

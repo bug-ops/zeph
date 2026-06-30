@@ -245,6 +245,7 @@ impl MemoryWriteValidator {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use zeph_memory::graph::extractor::{ExtractedEdge, ExtractedEntity};
 
     use super::*;
@@ -295,7 +296,7 @@ mod tests {
     fn oversized_content_rejected() {
         let big = "x".repeat(5000);
         let err = validator().validate_memory_save(&big).unwrap_err();
-        assert!(matches!(err, MemoryValidationError::ContentTooLarge { .. }));
+        assert_matches!(err, MemoryValidationError::ContentTooLarge { .. });
     }
 
     #[test]
@@ -307,10 +308,7 @@ mod tests {
         let err = v
             .validate_memory_save("text <script>alert(1)</script>")
             .unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryValidationError::ForbiddenPattern { .. }
-        ));
+        assert_matches!(err, MemoryValidationError::ForbiddenPattern { .. });
     }
 
     #[test]
@@ -335,7 +333,7 @@ mod tests {
         });
         let r = result_with(vec![entity("Abc"), entity("Def"), entity("Ghi")], vec![]);
         let err = v.validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(err, MemoryValidationError::TooManyEntities { .. }));
+        assert_matches!(err, MemoryValidationError::TooManyEntities { .. });
     }
 
     #[test]
@@ -346,7 +344,7 @@ mod tests {
         });
         let r = result_with(vec![], vec![edge("a"), edge("b")]);
         let err = v.validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(err, MemoryValidationError::TooManyEdges { .. }));
+        assert_matches!(err, MemoryValidationError::TooManyEdges { .. });
     }
 
     #[test]
@@ -357,10 +355,7 @@ mod tests {
         });
         let r = result_with(vec![entity("TooLongName")], vec![]);
         let err = v.validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryValidationError::EntityNameTooLong { .. }
-        ));
+        assert_matches!(err, MemoryValidationError::EntityNameTooLong { .. });
     }
 
     #[test]
@@ -371,27 +366,21 @@ mod tests {
         });
         let r = result_with(vec![], vec![edge("this fact is longer than ten chars")]);
         let err = v.validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(err, MemoryValidationError::FactTooLong { .. }));
+        assert_matches!(err, MemoryValidationError::FactTooLong { .. });
     }
 
     #[test]
     fn email_in_entity_name_rejected() {
         let r = result_with(vec![entity("user@example.com")], vec![]);
         let err = validator().validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryValidationError::SuspiciousPiiInEntityName { .. }
-        ));
+        assert_matches!(err, MemoryValidationError::SuspiciousPiiInEntityName { .. });
     }
 
     #[test]
     fn ssn_in_entity_name_rejected() {
         let r = result_with(vec![entity("123-45-6789")], vec![]);
         let err = validator().validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryValidationError::SuspiciousPiiInEntityName { .. }
-        ));
+        assert_matches!(err, MemoryValidationError::SuspiciousPiiInEntityName { .. });
     }
 
     #[test]
@@ -422,7 +411,7 @@ mod tests {
         });
         // 11 bytes — must fail.
         let err = v.validate_memory_save("12345678901").unwrap_err();
-        assert!(matches!(err, MemoryValidationError::ContentTooLarge { .. }));
+        assert_matches!(err, MemoryValidationError::ContentTooLarge { .. });
     }
 
     // --- multiple forbidden patterns: first match blocks ---
@@ -434,10 +423,7 @@ mod tests {
             ..MemoryWriteValidationConfig::default()
         });
         let err = v.validate_memory_save("javascript:alert(1)").unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryValidationError::ForbiddenPattern { .. }
-        ));
+        assert_matches!(err, MemoryValidationError::ForbiddenPattern { .. });
     }
 
     #[test]
@@ -489,10 +475,7 @@ mod tests {
         });
         let r = result_with(vec![entity("AliceX")], vec![]); // 6 bytes
         let err = v.validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryValidationError::EntityNameTooLong { .. }
-        ));
+        assert_matches!(err, MemoryValidationError::EntityNameTooLong { .. });
     }
 
     // --- min entity name length (FIX-3) ---
@@ -501,10 +484,7 @@ mod tests {
     fn entity_name_below_min_rejected() {
         let r = result_with(vec![entity("go")], vec![]);
         let err = validator().validate_graph_extraction(&r).unwrap_err();
-        assert!(matches!(
-            err,
-            MemoryValidationError::EntityNameTooShort { .. }
-        ));
+        assert_matches!(err, MemoryValidationError::EntityNameTooShort { .. });
     }
 
     #[test]
@@ -545,10 +525,10 @@ mod tests {
             ..MemoryWriteValidationConfig::default()
         });
         let r = result_with(vec![entity("internal-hostname.corp")], vec![]);
-        assert!(matches!(
+        assert_matches!(
             v.validate_graph_extraction(&r),
             Err(MemoryValidationError::ForbiddenPattern { .. })
-        ));
+        );
     }
 
     #[test]
@@ -561,10 +541,10 @@ mod tests {
             vec![entity("Alice")],
             vec![edge("Alice has BEGIN PRIVATE KEY material")],
         );
-        assert!(matches!(
+        assert_matches!(
             v.validate_graph_extraction(&r),
             Err(MemoryValidationError::ForbiddenPattern { .. })
-        ));
+        );
     }
 
     #[test]

@@ -140,6 +140,7 @@ impl ReactionModerationBackend for TelegramModerationBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -298,7 +299,7 @@ mod tests {
         let client = TelegramApiClient::with_base_url(server.uri());
         let backend = TelegramModerationBackend::new(client, BOT_ID);
         let err = backend.delete_all_reactions(1, 2, 3).await.unwrap_err();
-        assert!(matches!(err, ModerationError::Api(_)));
+        assert_matches!(err, ModerationError::Api(_));
     }
 
     // ── bot_is_admin ──────────────────────────────────────────────────────────

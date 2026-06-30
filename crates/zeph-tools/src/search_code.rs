@@ -661,6 +661,7 @@ fn extract_snippet(source: &str, line_number: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     struct EmptySemantic;
 
@@ -693,7 +694,7 @@ mod tests {
             skill_name: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]

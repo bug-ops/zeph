@@ -609,6 +609,7 @@ struct GeminiStreamPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_config::StreamLimits;
 
     #[test]
@@ -623,7 +624,7 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
-        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello"));
+        assert_matches!(chunk, StreamChunk::Content(s) if s == "Hello");
     }
 
     #[test]
@@ -663,7 +664,7 @@ mod tests {
         let data = r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#;
         let result = parse_openai_sse_event(data);
         let chunk = result.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Content(s) if s == "hi"));
+        assert_matches!(chunk, StreamChunk::Content(s) if s == "hi");
     }
 
     #[test]
@@ -698,7 +699,7 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
-        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "I need to think about this"));
+        assert_matches!(chunk, StreamChunk::Thinking(s) if s == "I need to think about this");
     }
 
     #[test]
@@ -720,7 +721,7 @@ mod tests {
             r#"{"choices":[{"delta":{"reasoning_content":"Let me reason"},"finish_reason":null}]}"#;
         let result = parse_openai_sse_event(data);
         let chunk = result.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "Let me reason"));
+        assert_matches!(chunk, StreamChunk::Thinking(s) if s == "Let me reason");
     }
 
     #[test]
@@ -887,7 +888,7 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
-        assert!(matches!(chunk, StreamChunk::Compaction(s) if s == "Summarized context"));
+        assert_matches!(chunk, StreamChunk::Compaction(s) if s == "Summarized context");
     }
 
     #[test]
@@ -958,7 +959,7 @@ mod tests {
         let data = r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}"#;
         let result = parse_gemini_sse_event(data);
         let chunk = result.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello"));
+        assert_matches!(chunk, StreamChunk::Content(s) if s == "Hello");
     }
 
     #[test]
@@ -967,7 +968,7 @@ mod tests {
             r#"{"candidates":[{"content":{"parts":[{"text":"Let me think","thought":true}]}}]}"#;
         let result = parse_gemini_sse_event(data);
         let chunk = result.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "Let me think"));
+        assert_matches!(chunk, StreamChunk::Thinking(s) if s == "Let me think");
     }
 
     #[test]
@@ -996,7 +997,7 @@ mod tests {
         let data = r#"{"candidates":[{"content":{"parts":[{"text":"Regular","thought":false}]}}]}"#;
         let result = parse_gemini_sse_event(data);
         let chunk = result.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Regular"));
+        assert_matches!(chunk, StreamChunk::Content(s) if s == "Regular");
     }
 
     #[test]
@@ -1005,7 +1006,7 @@ mod tests {
         let data = r#"{"candidates":[{"content":{"parts":[{"text":"reasoning","thought":true},{"text":"answer"}]}}]}"#;
         let result = parse_gemini_sse_event(data);
         let chunk = result.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Thinking(s) if s == "reasoning"));
+        assert_matches!(chunk, StreamChunk::Thinking(s) if s == "reasoning");
     }
 
     #[test]
@@ -1124,7 +1125,7 @@ mod tests {
         let data = r#"{"candidates":[{"content":{"parts":[{"text":"Hello world"}]}}]}"#;
         let result = parse_gemini_sse_event(data);
         let chunk = result.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Content(s) if s == "Hello world"));
+        assert_matches!(chunk, StreamChunk::Content(s) if s == "Hello world");
     }
 
     // --- #4727: SSE buffer cap tests ---

@@ -11,6 +11,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::cocoon::client::CocoonClient;
 use crate::cocoon::provider::CocoonProvider;
 use crate::provider::{LlmProvider, Message, MessageMetadata, Role, StreamChunk};
+use std::assert_matches;
 
 fn make_client(base_url: &str, access_hash: Option<String>) -> Arc<CocoonClient> {
     Arc::new(CocoonClient::new(
@@ -248,10 +249,7 @@ async fn cocoon_embed_unsupported_without_model() {
         make_client(&server.uri(), None),
     );
     let err = provider.embed("test").await.unwrap_err();
-    assert!(matches!(
-        err,
-        crate::error::LlmError::EmbedUnsupported { .. }
-    ));
+    assert_matches!(err, crate::error::LlmError::EmbedUnsupported { .. });
 }
 
 /// Test 12: `embed_batch` happy path — sorts by index and returns correct vectors.

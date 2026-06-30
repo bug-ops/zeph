@@ -92,6 +92,7 @@ pub async fn inter_divergence(
 
 /// `CoE` decision result for a single turn.
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum CoeDecision {
     /// Keep the primary response.
     KeepPrimary,
@@ -194,6 +195,7 @@ pub async fn run_coe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn should_shadow_returns_true_when_above_threshold() {
@@ -220,28 +222,22 @@ mod tests {
     #[test]
     fn decide_escalates_intra() {
         let config = CoeConfig::default();
-        assert!(matches!(
-            decide(Some(1.0), None, &config),
-            CoeDecision::EscalateIntra
-        ));
+        assert_matches!(decide(Some(1.0), None, &config), CoeDecision::EscalateIntra);
     }
 
     #[test]
     fn decide_escalates_inter() {
         let config = CoeConfig::default();
-        assert!(matches!(
-            decide(None, Some(0.5), &config),
-            CoeDecision::EscalateInter
-        ));
+        assert_matches!(decide(None, Some(0.5), &config), CoeDecision::EscalateInter);
     }
 
     #[test]
     fn decide_keeps_primary_when_below_thresholds() {
         let config = CoeConfig::default();
-        assert!(matches!(
+        assert_matches!(
             decide(Some(0.1), Some(0.05), &config),
             CoeDecision::KeepPrimary
-        ));
+        );
     }
 
     fn make_coe_router(
@@ -283,7 +279,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(text, "primary response");
-        assert!(matches!(decision, CoeDecision::KeepPrimary));
+        assert_matches!(decision, CoeDecision::KeepPrimary);
         assert_eq!(coe.metrics.kept_primary.load(Ordering::Relaxed), 1);
     }
 
@@ -311,7 +307,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(text, "primary response");
-        assert!(matches!(decision, CoeDecision::KeepPrimary));
+        assert_matches!(decision, CoeDecision::KeepPrimary);
         assert_eq!(coe.metrics.embed_failures.load(Ordering::Relaxed), 1);
     }
 
@@ -337,7 +333,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(text, "secondary response");
-        assert!(matches!(decision, CoeDecision::EscalateIntra));
+        assert_matches!(decision, CoeDecision::EscalateIntra);
         assert_eq!(coe.metrics.intra_escalations.load(Ordering::Relaxed), 1);
     }
 }

@@ -286,6 +286,7 @@ fn map_verdict(result: ScanResult, truncated: bool) -> ScanVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn sample_short_content_unchanged() {
@@ -326,7 +327,7 @@ mod tests {
             verdict: "allow".into(),
             reason: "ok".into(),
         };
-        assert!(matches!(map_verdict(r, true), ScanVerdict::Warn(_)));
+        assert_matches!(map_verdict(r, true), ScanVerdict::Warn(_));
     }
 
     #[test]
@@ -335,7 +336,7 @@ mod tests {
             verdict: "block".into(),
             reason: "exfiltration".into(),
         };
-        assert!(matches!(map_verdict(r, false), ScanVerdict::Block(_)));
+        assert_matches!(map_verdict(r, false), ScanVerdict::Block(_));
     }
 
     #[test]
@@ -344,7 +345,7 @@ mod tests {
             verdict: "maybe".into(),
             reason: "??".into(),
         };
-        assert!(matches!(map_verdict(r, false), ScanVerdict::Block(_)));
+        assert_matches!(map_verdict(r, false), ScanVerdict::Block(_));
     }
 
     #[test]

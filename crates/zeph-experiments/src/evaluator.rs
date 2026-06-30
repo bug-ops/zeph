@@ -713,6 +713,7 @@ fn compute_percentiles(scores: &[CaseScore]) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::doc_markdown)]
+    use std::assert_matches;
 
     use super::*;
 
@@ -878,8 +879,8 @@ mod tests {
         };
         let messages = build_subject_messages(&case);
         assert_eq!(messages.len(), 2);
-        assert!(matches!(messages[0].role, Role::System));
-        assert!(matches!(messages[1].role, Role::User));
+        assert_matches!(messages[0].role, Role::System);
+        assert_matches!(messages[1].role, Role::User);
     }
 
     #[test]
@@ -892,7 +893,7 @@ mod tests {
         };
         let messages = build_subject_messages(&case);
         assert_eq!(messages.len(), 1);
-        assert!(matches!(messages[0].role, Role::User));
+        assert_matches!(messages[0].role, Role::User);
     }
 
     #[test]

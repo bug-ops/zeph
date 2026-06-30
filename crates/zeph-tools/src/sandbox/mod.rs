@@ -294,12 +294,14 @@ pub fn build_sandbox_with_policy(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
+    use std::assert_matches;
     #[test]
     #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "sandbox"))))]
     fn build_sandbox_strict_fails_when_unsupported() {
         use super::{SandboxError, build_sandbox};
         let err = build_sandbox(true).expect_err("strict must fail on unsupported platform");
-        assert!(matches!(err, SandboxError::Unavailable { .. }));
+        assert_matches!(err, SandboxError::Unavailable { .. });
     }
 
     #[test]

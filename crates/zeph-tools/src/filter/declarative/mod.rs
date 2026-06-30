@@ -46,7 +46,7 @@ pub(crate) struct MatchConfig {
     pub regex: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct NormalizeEntry {
     pub pattern: String,
     pub replacement: String,
@@ -109,7 +109,7 @@ fn default_normalize_patterns() -> Vec<NormalizeEntry> {
     ]
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum StrategyConfig {
     StripNoise {
@@ -163,6 +163,7 @@ pub(crate) enum StrategyConfig {
 // Compiled runtime types
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub(crate) enum CompiledStrategy {
     StripNoise {
         patterns: Vec<Regex>,

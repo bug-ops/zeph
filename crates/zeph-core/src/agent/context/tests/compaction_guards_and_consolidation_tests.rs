@@ -11,6 +11,7 @@ use crate::agent::agent_tests::{
 use crate::agent::context::CompactionOutcome;
 use crate::agent::context_manager::CompactionState;
 use crate::context::ContextBudget;
+use std::assert_matches;
 
 // Helper: add a tool pair with ToolOutput parts (so pruning can clear the body).
 fn make_tool_pair_with_output(agent: &mut Agent<MockChannel>, tool_name: &str) {
@@ -239,22 +240,22 @@ async fn exhaustion_guard_warned_flag_set_once() {
     }
 
     // First call: warning not yet sent → warned flipped to true.
-    assert!(matches!(
+    assert_matches!(
         agent.context_manager.compaction_state(),
         CompactionState::Exhausted { warned: false }
-    ));
+    );
     agent.maybe_compact().await.unwrap();
-    assert!(matches!(
+    assert_matches!(
         agent.context_manager.compaction_state(),
         CompactionState::Exhausted { warned: true }
-    ));
+    );
 
     // Second call: warned already set, no state change.
     agent.maybe_compact().await.unwrap();
-    assert!(matches!(
+    assert_matches!(
         agent.context_manager.compaction_state(),
         CompactionState::Exhausted { warned: true }
-    ));
+    );
 }
 
 // Exhaustion guard fires before cooldown guard.

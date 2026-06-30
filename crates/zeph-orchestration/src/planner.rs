@@ -436,6 +436,7 @@ fn convert_response(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::needless_pass_by_value)]
+    use std::assert_matches;
 
     use super::*;
     use zeph_subagent::{SubAgentDef, ToolPolicy};
@@ -523,7 +524,7 @@ mod tests {
     fn test_convert_empty_tasks_rejected() {
         let response = PlannerResponse { tasks: vec![] };
         let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::PlanningFailed(_)));
+        assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
     #[test]
@@ -533,7 +534,7 @@ mod tests {
             .collect();
         let response = PlannerResponse { tasks };
         let err = convert_response(response, "goal", &agents(), 3).unwrap_err();
-        assert!(matches!(err, OrchestrationError::PlanningFailed(_)));
+        assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
     #[test]
@@ -547,7 +548,7 @@ mod tests {
             ],
         };
         let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::PlanningFailed(_)));
+        assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
     #[test]
@@ -556,7 +557,7 @@ mod tests {
             tasks: vec![make_planned("task-a", "A", &["nonexistent"], None)],
         };
         let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::PlanningFailed(_)));
+        assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
     #[test]
@@ -882,7 +883,7 @@ mod tests {
             let provider = MockProvider::with_responses(vec![cyclic_json_response()]);
             let planner = LlmPlanner::new(provider, &make_config());
             let err = planner.plan("cyclic", &agents()).await.unwrap_err();
-            assert!(matches!(err, OrchestrationError::CycleDetected));
+            assert_matches!(err, OrchestrationError::CycleDetected);
         }
 
         #[tokio::test]
@@ -890,7 +891,7 @@ mod tests {
             let provider = MockProvider::default();
             let planner = LlmPlanner::new(provider, &make_config());
             let err = planner.plan("   ", &agents()).await.unwrap_err();
-            assert!(matches!(err, OrchestrationError::PlanningFailed(_)));
+            assert_matches!(err, OrchestrationError::PlanningFailed(_));
         }
 
         #[tokio::test]
@@ -898,7 +899,7 @@ mod tests {
             let provider = MockProvider::failing();
             let planner = LlmPlanner::new(provider, &make_config());
             let err = planner.plan("valid goal", &agents()).await.unwrap_err();
-            assert!(matches!(err, OrchestrationError::PlanningFailed(_)));
+            assert_matches!(err, OrchestrationError::PlanningFailed(_));
         }
 
         #[tokio::test]

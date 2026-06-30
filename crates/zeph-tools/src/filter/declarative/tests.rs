@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use super::*;
+use std::assert_matches;
 
 fn strip_noise_filter(patterns: &[&str]) -> DeclarativeFilter {
     DeclarativeFilter {
@@ -129,7 +130,7 @@ fn compile_match_exact() {
         regex: None,
     };
     let matcher = compile_match(&m).unwrap();
-    assert!(matches!(matcher, CommandMatcher::Exact(_)));
+    assert_matches!(matcher, CommandMatcher::Exact(_));
 }
 
 #[test]
@@ -140,7 +141,7 @@ fn compile_match_prefix() {
         regex: None,
     };
     let matcher = compile_match(&m).unwrap();
-    assert!(matches!(matcher, CommandMatcher::Prefix(_)));
+    assert_matches!(matcher, CommandMatcher::Prefix(_));
     assert!(matcher.matches("docker build ."));
 }
 
@@ -184,7 +185,7 @@ fn compile_strategy_strip_noise_valid() {
         patterns: vec![r"^\s*$".into(), r"^noise".into()],
     };
     let compiled = compile_strategy(s).unwrap();
-    assert!(matches!(compiled, CompiledStrategy::StripNoise { .. }));
+    assert_matches!(compiled, CompiledStrategy::StripNoise { .. });
 }
 
 #[test]
@@ -203,14 +204,14 @@ fn compile_strategy_truncate_valid() {
         tail: 10,
     };
     let compiled = compile_strategy(s).unwrap();
-    assert!(matches!(
+    assert_matches!(
         compiled,
         CompiledStrategy::Truncate {
             max_lines: 50,
             head: 10,
             tail: 10
         }
-    ));
+    );
 }
 
 #[test]
@@ -780,10 +781,7 @@ strategy = { type = "strip_noise", patterns = ["^Step \\d+", "^\\s*$"] }
     assert_eq!(f.rules.len(), 1);
     assert_eq!(f.rules[0].name, "docker-build");
     assert!(f.rules[0].enabled);
-    assert!(matches!(
-        f.rules[0].strategy,
-        StrategyConfig::StripNoise { .. }
-    ));
+    assert_matches!(f.rules[0].strategy, StrategyConfig::StripNoise { .. });
 }
 
 #[test]
@@ -857,7 +855,7 @@ match = { regex = "^git\\s+status" }
 strategy = { type = "git_status" }
 "#;
     let f: DeclarativeFilterFile = toml::from_str(toml).unwrap();
-    assert!(matches!(f.rules[0].strategy, StrategyConfig::GitStatus {}));
+    assert_matches!(f.rules[0].strategy, StrategyConfig::GitStatus {});
 }
 
 #[test]

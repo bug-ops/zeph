@@ -168,6 +168,7 @@ pub async fn chat_json<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn strips_json_markdown_fences() {
@@ -193,7 +194,7 @@ mod tests {
     #[test]
     fn returns_error_on_no_brace() {
         let result = parse_json::<serde_json::Value>("no json here");
-        assert!(matches!(result, Err(ParseError::NoBraceSpan)));
+        assert_matches!(result, Err(ParseError::NoBraceSpan));
     }
 
     #[test]

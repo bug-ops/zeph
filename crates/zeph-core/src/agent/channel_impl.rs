@@ -137,6 +137,7 @@ impl<C: Channel + Send> AgentChannel for AgentChannelView<'_, C> {
 mod tests {
     use super::*;
     use crate::channel::{ChannelMessage, LoopbackChannel, LoopbackEvent};
+    use std::assert_matches;
 
     #[tokio::test]
     async fn agent_channel_view_forwards_send() {
@@ -144,7 +145,7 @@ mod tests {
         let mut view = AgentChannelView::new(&mut ch);
         view.send("hi").await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(event, LoopbackEvent::FullMessage(m) if m == "hi"));
+        assert_matches!(event, LoopbackEvent::FullMessage(m) if m == "hi");
     }
 
     #[tokio::test]
@@ -153,7 +154,7 @@ mod tests {
         let mut view = AgentChannelView::new(&mut ch);
         view.send_status("working...").await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(event, LoopbackEvent::Status(s) if s == "working..."));
+        assert_matches!(event, LoopbackEvent::Status(s) if s == "working...");
     }
 
     #[tokio::test]
@@ -162,7 +163,7 @@ mod tests {
         let mut view = AgentChannelView::new(&mut ch);
         view.flush_chunks().await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(event, LoopbackEvent::Flush));
+        assert_matches!(event, LoopbackEvent::Flush);
     }
 
     #[tokio::test]
@@ -179,7 +180,7 @@ mod tests {
         let mut view = AgentChannelView::new(&mut ch);
         view.send_stop_hint(StopHint::MaxTokens).await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert!(matches!(event, LoopbackEvent::Stop(StopHint::MaxTokens)));
+        assert_matches!(event, LoopbackEvent::Stop(StopHint::MaxTokens));
     }
 
     #[tokio::test]

@@ -152,6 +152,7 @@ pub fn validate_env<S: std::hash::BuildHasher>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn allows_default_commands() {
@@ -168,13 +169,13 @@ mod tests {
     #[test]
     fn rejects_unknown_command() {
         let err = validate_command("bash", &[]).unwrap_err();
-        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+        assert_matches!(err, McpError::CommandNotAllowed { .. });
     }
 
     #[test]
     fn rejects_commands_with_forward_slash() {
         let err = validate_command("/usr/bin/npx", &[]).unwrap_err();
-        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+        assert_matches!(err, McpError::CommandNotAllowed { .. });
     }
 
     #[test]
@@ -185,7 +186,7 @@ mod tests {
     #[test]
     fn rejects_absolute_path_not_in_extra_allowed() {
         let err = validate_command("/usr/local/bin/mcpls", &["mcpls".into()]).unwrap_err();
-        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+        assert_matches!(err, McpError::CommandNotAllowed { .. });
     }
 
     #[test]
@@ -196,7 +197,7 @@ mod tests {
     #[test]
     fn rejects_glob_outside_allowed_directory() {
         let err = validate_command("/usr/bin/mcpls", &["/usr/local/bin/*".into()]).unwrap_err();
-        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+        assert_matches!(err, McpError::CommandNotAllowed { .. });
     }
 
     #[test]
@@ -228,19 +229,19 @@ mod tests {
     #[test]
     fn rejects_commands_with_backslash() {
         let err = validate_command("..\\npx", &[]).unwrap_err();
-        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+        assert_matches!(err, McpError::CommandNotAllowed { .. });
     }
 
     #[test]
     fn rejects_relative_path() {
         let err = validate_command("../../npx", &[]).unwrap_err();
-        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+        assert_matches!(err, McpError::CommandNotAllowed { .. });
     }
 
     #[test]
     fn rejects_empty_command() {
         let err = validate_command("", &[]).unwrap_err();
-        assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+        assert_matches!(err, McpError::CommandNotAllowed { .. });
     }
 
     #[test]
@@ -271,28 +272,28 @@ mod tests {
     fn blocks_dyld_insert_libraries() {
         let env = HashMap::from([("DYLD_INSERT_LIBRARIES".into(), "/evil.dylib".into())]);
         let err = validate_env(&env).unwrap_err();
-        assert!(matches!(err, McpError::EnvVarBlocked { .. }));
+        assert_matches!(err, McpError::EnvVarBlocked { .. });
     }
 
     #[test]
     fn blocks_node_options() {
         let env = HashMap::from([("NODE_OPTIONS".into(), "--require /evil.js".into())]);
         let err = validate_env(&env).unwrap_err();
-        assert!(matches!(err, McpError::EnvVarBlocked { .. }));
+        assert_matches!(err, McpError::EnvVarBlocked { .. });
     }
 
     #[test]
     fn blocks_pythonpath() {
         let env = HashMap::from([("PYTHONPATH".into(), "/evil".into())]);
         let err = validate_env(&env).unwrap_err();
-        assert!(matches!(err, McpError::EnvVarBlocked { .. }));
+        assert_matches!(err, McpError::EnvVarBlocked { .. });
     }
 
     #[test]
     fn blocks_java_tool_options() {
         let env = HashMap::from([("JAVA_TOOL_OPTIONS".into(), "-javaagent:/evil.jar".into())]);
         let err = validate_env(&env).unwrap_err();
-        assert!(matches!(err, McpError::EnvVarBlocked { .. }));
+        assert_matches!(err, McpError::EnvVarBlocked { .. });
     }
 
     #[test]

@@ -44,6 +44,7 @@ pub enum ToolDispatchError {
 mod tests {
     use super::*;
     use crate::channel::ChannelSinkError;
+    use std::assert_matches;
 
     #[test]
     fn cancelled_display() {
@@ -82,20 +83,20 @@ mod tests {
     fn from_channel_sink_error() {
         let sink_err = ChannelSinkError::new("test");
         let err: ToolDispatchError = sink_err.into();
-        assert!(matches!(err, ToolDispatchError::Channel(_)));
+        assert_matches!(err, ToolDispatchError::Channel(_));
     }
 
     #[test]
     fn from_llm_error() {
         let llm_err = zeph_llm::LlmError::RateLimited;
         let err: ToolDispatchError = llm_err.into();
-        assert!(matches!(err, ToolDispatchError::Llm(_)));
+        assert_matches!(err, ToolDispatchError::Llm(_));
     }
 
     #[test]
     fn from_tool_error() {
         let tool_err = zeph_tools::ToolError::Cancelled;
         let err: ToolDispatchError = tool_err.into();
-        assert!(matches!(err, ToolDispatchError::Tool(_)));
+        assert_matches!(err, ToolDispatchError::Tool(_));
     }
 }

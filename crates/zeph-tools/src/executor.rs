@@ -1093,6 +1093,7 @@ pub fn extract_fenced_blocks<'a>(text: &'a str, lang: &str) -> Vec<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn tool_output_display() {
@@ -1184,7 +1185,7 @@ mod tests {
         }
         let map = serde_json::Map::new();
         let err = deserialize_params::<P>(&map).unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[test]
@@ -1197,7 +1198,7 @@ mod tests {
         let mut map = serde_json::Map::new();
         map.insert("count".to_owned(), serde_json::json!("not a number"));
         let err = deserialize_params::<P>(&map).unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[test]

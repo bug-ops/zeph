@@ -398,6 +398,7 @@ fn glob_match(pattern: &GlobPattern, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::default_trait_access)]
+    use std::assert_matches;
 
     use super::*;
     use crate::def::ToolPolicy;
@@ -1023,7 +1024,7 @@ mod tests {
             exclude: vec![],
         };
         let err = filter_skills(&registry, &filter).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     mod proptest_glob {

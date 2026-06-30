@@ -9,6 +9,7 @@
     clippy::too_many_lines
 )]
 
+use std::assert_matches;
 use std::pin::Pin;
 
 use indoc::indoc;
@@ -134,7 +135,7 @@ async fn spawn_not_found_error() {
     let err = do_spawn(&mut mgr, "nonexistent", "prompt")
         .await
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::NotFound(_)));
+    assert_matches!(err, SubAgentError::NotFound(_));
 }
 
 #[tokio::test]
@@ -153,7 +154,7 @@ async fn spawn_and_cancel() {
 fn cancel_unknown_task_id_returns_not_found() {
     let mut mgr = make_manager();
     let err = mgr.cancel("unknown-id").unwrap_err();
-    assert!(matches!(err, SubAgentError::NotFound(_)));
+    assert_matches!(err, SubAgentError::NotFound(_));
 }
 
 #[tokio::test]
@@ -177,7 +178,7 @@ async fn collect_removes_agent() {
 async fn collect_unknown_task_id_returns_not_found() {
     let mut mgr = make_manager();
     let err = mgr.collect("unknown-id").await.unwrap_err();
-    assert!(matches!(err, SubAgentError::NotFound(_)));
+    assert_matches!(err, SubAgentError::NotFound(_));
 }
 
 #[tokio::test]
@@ -206,7 +207,7 @@ async fn approve_secret_denied_for_unlisted_key() {
     let err = mgr
         .approve_secret(&task_id, "not-allowed", std::time::Duration::from_mins(1))
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::Invalid(_)));
+    assert_matches!(err, SubAgentError::Invalid(_));
 }
 
 #[test]
@@ -215,7 +216,7 @@ fn approve_secret_unknown_task_id_returns_not_found() {
     let err = mgr
         .approve_secret("unknown", "key", std::time::Duration::from_mins(1))
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::NotFound(_)));
+    assert_matches!(err, SubAgentError::NotFound(_));
 }
 
 #[tokio::test]
@@ -236,7 +237,7 @@ async fn concurrency_limit_enforced() {
 
     let _first = do_spawn(&mut mgr, "bot", "first").await.unwrap();
     let err = do_spawn(&mut mgr, "bot", "second").await.unwrap_err();
-    assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
+    assert_matches!(err, SubAgentError::ConcurrencyLimit { .. });
 }
 
 // --- #1619 regression tests: reserved_slots ---
@@ -271,7 +272,7 @@ async fn test_release_reservation_allows_spawn() {
     let _first = do_spawn(&mut mgr, "bot", "first").await.unwrap();
     // Now active(1) + reserved(1) >= max_concurrent(2) → blocked.
     let err = do_spawn(&mut mgr, "bot", "second").await.unwrap_err();
-    assert!(matches!(err, SubAgentError::ConcurrencyLimit { .. }));
+    assert_matches!(err, SubAgentError::ConcurrencyLimit { .. });
 
     // Release the reservation — active(1) + reserved(0) < max_concurrent(2).
     mgr.release_reservation(1);
@@ -960,7 +961,7 @@ async fn spawn_bypass_permissions_without_config_gate_is_error() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::Invalid(_)));
+    assert_matches!(err, SubAgentError::Invalid(_));
 }
 
 #[tokio::test]
@@ -1058,7 +1059,7 @@ fn resume_not_found_returns_not_found_error() {
             None,
         ))
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::NotFound(_)));
+    assert_matches!(err, SubAgentError::NotFound(_));
 }
 
 #[test]
@@ -1084,7 +1085,7 @@ fn resume_ambiguous_id_returns_ambiguous_error() {
             None,
         ))
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::AmbiguousId(_, 2)));
+    assert_matches!(err, SubAgentError::AmbiguousId(_, 2));
 }
 
 #[test]
@@ -1141,7 +1142,7 @@ fn resume_still_running_via_active_agents_returns_error() {
             None,
         ))
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::StillRunning(_)));
+    assert_matches!(err, SubAgentError::StillRunning(_));
 }
 
 #[test]
@@ -1168,7 +1169,7 @@ fn resume_def_not_found_returns_not_found_error() {
             None,
         ))
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::NotFound(_)));
+    assert_matches!(err, SubAgentError::NotFound(_));
 }
 
 #[tokio::test]
@@ -1443,7 +1444,7 @@ fn def_name_for_resume_not_found_returns_error() {
     let err = rt
         .block_on(mgr.def_name_for_resume("notexist", &cfg))
         .unwrap_err();
-    assert!(matches!(err, SubAgentError::NotFound(_)));
+    assert_matches!(err, SubAgentError::NotFound(_));
 }
 
 // ── Memory scope tests ────────────────────────────────────────────────────
@@ -3289,7 +3290,7 @@ fn constraint_propagation_no_constraints_is_noop() {
     let mut def = def_with_allow_list(&["shell", "web"]);
     let ctx = SpawnContext::default();
     apply_constraint_propagation(&mut def, &ctx);
-    assert!(matches!(&def.tools, ToolPolicy::AllowList(v) if v.len() == 2));
+    assert_matches!(&def.tools, ToolPolicy::AllowList(v) if v.len() == 2);
 }
 
 #[test]
@@ -3376,7 +3377,7 @@ fn constraint_propagation_trust_level_cap_none_is_noop() {
     };
     apply_constraint_propagation(&mut def, &ctx);
     // No panic, no structural change.
-    assert!(matches!(&def.tools, ToolPolicy::AllowList(_)));
+    assert_matches!(&def.tools, ToolPolicy::AllowList(_));
 }
 
 #[test]

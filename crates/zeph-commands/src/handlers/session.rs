@@ -199,6 +199,7 @@ mod tests {
     use crate::sink::ChannelSink;
     use crate::traits::messages::MessageAccess;
     use crate::traits::session::SessionAccess;
+    use std::assert_matches;
     use std::future::Future;
     use std::pin::Pin;
 
@@ -305,7 +306,7 @@ mod tests {
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = ExitCommand.handle(&mut ctx, "").await.unwrap();
-        assert!(matches!(out, CommandOutput::Exit));
+        assert_matches!(out, CommandOutput::Exit);
     }
 
     #[tokio::test]
@@ -322,7 +323,7 @@ mod tests {
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = ExitCommand.handle(&mut ctx, "").await.unwrap();
-        assert!(matches!(out, CommandOutput::Continue));
+        assert_matches!(out, CommandOutput::Continue);
         assert!(!sink.sent.is_empty());
     }
 
@@ -342,7 +343,7 @@ mod tests {
             let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
             ClearCommand.handle(&mut ctx, "").await.unwrap()
         };
-        assert!(matches!(out, CommandOutput::Silent));
+        assert_matches!(out, CommandOutput::Silent);
         assert!(messages.cleared);
     }
 

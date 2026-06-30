@@ -337,6 +337,7 @@ pub(crate) fn fold_prefix_len(payload_lens: &[usize], budget: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn folded(step: u32, payload: &[u8]) -> FoldedStep {
         FoldedStep {
@@ -364,20 +365,20 @@ mod tests {
         let steps = vec![folded(0, b"data")];
         let mut encoded = encode_checkpoint(&steps);
         encoded.truncate(encoded.len() - 2);
-        assert!(matches!(
+        assert_matches!(
             decode_checkpoint(&encoded),
             Err(DurableError::Decode { .. })
-        ));
+        );
     }
 
     #[test]
     fn decode_rejects_unknown_version() {
         let mut encoded = encode_checkpoint(&[folded(0, b"x")]);
         encoded[0] = 99;
-        assert!(matches!(
+        assert_matches!(
             decode_checkpoint(&encoded),
             Err(DurableError::Decode { .. })
-        ));
+        );
     }
 
     #[test]

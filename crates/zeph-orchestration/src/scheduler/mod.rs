@@ -755,6 +755,7 @@ impl Drop for DagScheduler {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::default_trait_access)]
+    use std::assert_matches;
 
     use super::*;
     use crate::graph::{GraphStatus, TaskGraph, TaskNode, TaskStatus};
@@ -869,7 +870,7 @@ mod tests {
         let result = DagScheduler::new(graph, &config, Box::new(FirstRouter), vec![], None);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]

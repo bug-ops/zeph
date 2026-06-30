@@ -164,12 +164,13 @@ pub enum BgIsolation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn worktree_config_default_values() {
         let cfg = WorktreeConfig::default();
         assert!(!cfg.enabled);
-        assert!(matches!(cfg.base_ref, WorktreeBaseRef::Head));
+        assert_matches!(cfg.base_ref, WorktreeBaseRef::Head);
         assert_eq!(cfg.default_branch, "main");
         assert_eq!(cfg.root, ".claude/worktrees");
         assert_eq!(cfg.branch_prefix, "agent/");
@@ -203,7 +204,7 @@ mod tests {
         let s = toml::to_string(&head).expect("serialize Head");
         assert!(s.contains("head"), "expected 'head' in: {s}");
         let rt: Wrapper = toml::from_str(&s).expect("deserialize Head");
-        assert!(matches!(rt.base_ref, WorktreeBaseRef::Head));
+        assert_matches!(rt.base_ref, WorktreeBaseRef::Head);
 
         let fresh = Wrapper {
             base_ref: WorktreeBaseRef::Fresh,
@@ -211,7 +212,7 @@ mod tests {
         let s = toml::to_string(&fresh).expect("serialize Fresh");
         assert!(s.contains("fresh"), "expected 'fresh' in: {s}");
         let rt: Wrapper = toml::from_str(&s).expect("deserialize Fresh");
-        assert!(matches!(rt.base_ref, WorktreeBaseRef::Fresh));
+        assert_matches!(rt.base_ref, WorktreeBaseRef::Fresh);
     }
 
     #[test]
@@ -251,7 +252,7 @@ bg_isolation = "none"
 "#;
         let cfg: WorktreeConfig = toml::from_str(toml_src).expect("deserialize custom");
         assert!(cfg.enabled);
-        assert!(matches!(cfg.base_ref, WorktreeBaseRef::Fresh));
+        assert_matches!(cfg.base_ref, WorktreeBaseRef::Fresh);
         assert_eq!(cfg.default_branch, "develop");
         assert_eq!(cfg.root, ".worktrees");
         assert_eq!(cfg.branch_prefix, "bot/");

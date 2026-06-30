@@ -499,6 +499,7 @@ fn rebuild_persisted(guard: &HashMap<String, PermissionDecision>) -> PersistedPe
 mod tests {
     use super::*;
     use agent_client_protocol::{self as acp_proto, ByteStreams, Responder};
+    use std::assert_matches;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
     /// Build an in-memory ACP agent↔client connection.
@@ -724,14 +725,14 @@ mod tests {
         save_persisted(&file, &perms);
 
         let loaded = load_persisted(&file);
-        assert!(matches!(
+        assert_matches!(
             loaded.tools.get("shell_execute"),
             Some(ToolPermission::Simple(s)) if s == "allow"
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             loaded.tools.get("web_scrape"),
             Some(ToolPermission::Simple(s)) if s == "reject"
-        ));
+        );
     }
 
     #[test]

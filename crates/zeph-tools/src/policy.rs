@@ -389,6 +389,7 @@ fn extract_paths(params: &serde_json::Map<String, serde_json::Value>) -> Vec<Str
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashMap;
 
     use zeph_config::ProviderName;
@@ -464,10 +465,10 @@ mod tests {
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/./shadow");
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(matches!(
+        assert_matches!(
             enforcer.evaluate("shell", &params, &ctx),
             PolicyDecision::Deny { .. }
-        ));
+        );
     }
 
     // ── CRIT-02: tool name normalization ──────────────────────────────────────
@@ -492,15 +493,15 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(matches!(
+        assert_matches!(
             enforcer.evaluate("shell", &empty_params(), &ctx),
             PolicyDecision::Deny { .. }
-        ));
+        );
         // Also uppercase call -> normalized tool name -> Deny
-        assert!(matches!(
+        assert_matches!(
             enforcer.evaluate("SHELL", &empty_params(), &ctx),
             PolicyDecision::Deny { .. }
-        ));
+        );
     }
 
     // ── Deny-wins semantics ───────────────────────────────────────────────────
@@ -642,10 +643,10 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(matches!(
+        assert_matches!(
             enforcer.evaluate("bash", &empty_params(), &ctx),
             PolicyDecision::Deny { .. }
-        ));
+        );
     }
 
     #[test]
@@ -659,10 +660,10 @@ mod tests {
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(matches!(
+        assert_matches!(
             enforcer.evaluate("bash", &empty_params(), &ctx),
             PolicyDecision::Allow { .. }
-        ));
+        );
     }
 
     // ── Trust level condition ─────────────────────────────────────────────────
@@ -729,10 +730,10 @@ mod tests {
             policy_file: None,
             policy_provider: ProviderName::default(),
         };
-        assert!(matches!(
+        assert_matches!(
             PolicyEnforcer::compile(&config),
             Err(PolicyCompileError::TooManyRules { .. })
-        ));
+        );
     }
 
     #[test]
@@ -788,16 +789,16 @@ mod tests {
         let ctx = make_context(SkillTrustLevel::Trusted);
 
         let params = make_params("command", "sudo rm -rf /");
-        assert!(matches!(
+        assert_matches!(
             enforcer.evaluate("bash", &params, &ctx),
             PolicyDecision::Deny { .. }
-        ));
+        );
 
         let safe_params = make_params("command", "echo hello");
-        assert!(matches!(
+        assert_matches!(
             enforcer.evaluate("bash", &safe_params, &ctx),
             PolicyDecision::Allow { .. }
-        ));
+        );
     }
 
     // ── TOML round-trip ───────────────────────────────────────────────────────

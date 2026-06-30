@@ -11,6 +11,7 @@ use super::*;
 use crate::any::AnyProvider;
 use crate::error::LlmError;
 use crate::provider::{LlmProvider, Message, Role};
+use std::assert_matches;
 
 #[test]
 fn empty_router_name() {
@@ -37,7 +38,7 @@ async fn empty_router_chat_returns_no_providers() {
     let r = RouterProvider::new(vec![]);
     let msgs = vec![Message::from_legacy(Role::User, "hello")];
     let err = r.chat(&msgs).await.unwrap_err();
-    assert!(matches!(err, LlmError::NoProviders));
+    assert_matches!(err, LlmError::NoProviders);
 }
 
 #[tokio::test]
@@ -52,7 +53,7 @@ async fn empty_router_chat_stream_returns_no_providers() {
 async fn empty_router_embed_returns_no_providers() {
     let r = RouterProvider::new(vec![]);
     let err = r.embed("test").await.unwrap_err();
-    assert!(matches!(err, LlmError::NoProviders));
+    assert_matches!(err, LlmError::NoProviders);
 }
 
 #[tokio::test]
@@ -60,7 +61,7 @@ async fn empty_router_chat_with_tools_returns_no_providers() {
     let r = RouterProvider::new(vec![]);
     let msgs = vec![Message::from_legacy(Role::User, "hello")];
     let err = r.chat_with_tools(&msgs, &[]).await.unwrap_err();
-    assert!(matches!(err, LlmError::NoProviders));
+    assert_matches!(err, LlmError::NoProviders);
 }
 
 #[tokio::test]
@@ -80,7 +81,7 @@ async fn router_falls_back_on_unreachable() {
     let r = RouterProvider::new(vec![p1, p2]);
     let msgs = vec![Message::from_legacy(Role::User, "hello")];
     let err = r.chat(&msgs).await.unwrap_err();
-    assert!(matches!(err, LlmError::NoProviders));
+    assert_matches!(err, LlmError::NoProviders);
 }
 
 #[test]
@@ -191,7 +192,7 @@ async fn cascade_empty_router_returns_no_providers() {
     let r = RouterProvider::new(vec![]).with_cascade(CascadeRouterConfig::default());
     let msgs = vec![Message::from_legacy(Role::User, "hello")];
     let err = r.chat(&msgs).await.unwrap_err();
-    assert!(matches!(err, LlmError::NoProviders));
+    assert_matches!(err, LlmError::NoProviders);
 }
 
 #[tokio::test]
@@ -392,7 +393,7 @@ async fn cascade_all_providers_fail_returns_no_providers() {
     let r = RouterProvider::new(vec![p1, p2]).with_cascade(CascadeRouterConfig::default());
     let msgs = vec![Message::from_legacy(Role::User, "test")];
     let err = r.chat(&msgs).await.unwrap_err();
-    assert!(matches!(err, LlmError::NoProviders));
+    assert_matches!(err, LlmError::NoProviders);
 }
 
 #[tokio::test]
@@ -793,7 +794,7 @@ async fn cascade_chat_with_tools_unaffected_by_cost_tiers() {
     let msgs = vec![Message::from_legacy(Role::User, "hi")];
     // Both providers fail → NoProviders, not a cascade-specific error.
     let err = r.chat_with_tools(&msgs, &[]).await.unwrap_err();
-    assert!(matches!(err, LlmError::NoProviders));
+    assert_matches!(err, LlmError::NoProviders);
 }
 
 // ── Embed retry / rate-limit tests ────────────────────────────────────────

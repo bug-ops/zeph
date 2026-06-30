@@ -1050,7 +1050,7 @@ mod tests {
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }
@@ -1154,7 +1154,7 @@ mod tests {
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }
@@ -1181,7 +1181,7 @@ mod tests {
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }
@@ -1210,7 +1210,7 @@ mod tests {
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }
@@ -1238,7 +1238,7 @@ mod tests {
                 };
 
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }
@@ -1277,7 +1277,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }
@@ -1321,7 +1321,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::InvalidParams { .. }));
+                assert_matches!(err, ToolError::InvalidParams { .. });
             })
             .await;
     }

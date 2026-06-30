@@ -381,6 +381,7 @@ fn parse_name_array(response: &str) -> Result<Vec<String>, PruningError> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use zeph_llm::mock::MockProvider;
 
     use super::*;
@@ -544,7 +545,7 @@ mod tests {
         let tools: Vec<McpTool> = (0..3).map(|i| make_tool(&format!("t{i}"), "d")).collect();
         let provider = MockProvider::failing();
         let result = prune_tools(&tools, "task", &params_with_max(0), &provider).await;
-        assert!(matches!(result, Err(PruningError::LlmError(_))));
+        assert_matches!(result, Err(PruningError::LlmError(_)));
     }
 
     #[tokio::test]
@@ -552,7 +553,7 @@ mod tests {
         let tools: Vec<McpTool> = (0..3).map(|i| make_tool(&format!("t{i}"), "d")).collect();
         let provider = MockProvider::with_responses(vec!["not valid json at all".into()]);
         let result = prune_tools(&tools, "task", &params_with_max(0), &provider).await;
-        assert!(matches!(result, Err(PruningError::ParseError)));
+        assert_matches!(result, Err(PruningError::ParseError));
     }
 
     #[tokio::test]

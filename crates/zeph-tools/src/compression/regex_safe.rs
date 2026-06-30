@@ -70,6 +70,7 @@ pub async fn safe_compile(pat: &str, timeout_ms: u64) -> Result<regex::Regex, Co
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn compiles_simple_pattern() {
@@ -80,6 +81,6 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_pattern() {
         let err = safe_compile(r"[invalid", 500).await.unwrap_err();
-        assert!(matches!(err, CompressionError::BadPattern(_)));
+        assert_matches!(err, CompressionError::BadPattern(_));
     }
 }

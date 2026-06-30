@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::*;
 use crate::in_memory_store::InMemoryVectorStore;
 use crate::store::SqliteStore;
+use std::assert_matches;
 
 async fn setup() -> GraphStore {
     let store = SqliteStore::new(":memory:").await.unwrap();
@@ -90,10 +91,7 @@ async fn resolve_empty_name_returns_error() {
 
     let result_empty = resolver.resolve("", "concept", None, None).await;
     assert!(result_empty.is_err());
-    assert!(matches!(
-        result_empty.unwrap_err(),
-        MemoryError::GraphStore(_)
-    ));
+    assert_matches!(result_empty.unwrap_err(), MemoryError::GraphStore(_));
 
     let result_whitespace = resolver.resolve("   ", "concept", None, None).await;
     assert!(result_whitespace.is_err());
@@ -705,7 +703,7 @@ async fn merge_combines_summaries() {
         .unwrap();
 
     assert_eq!(id, existing_id);
-    assert!(matches!(outcome, ResolutionOutcome::EmbeddingMatch { .. }));
+    assert_matches!(outcome, ResolutionOutcome::EmbeddingMatch { .. });
 
     // Verify the merged summary was updated on the existing entity
     let entity = gs

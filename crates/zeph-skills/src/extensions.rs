@@ -204,6 +204,7 @@ fn extract_extensions_block(yaml_str: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn parse_full_extensions_block() {
@@ -224,11 +225,11 @@ extensions:
 ";
         let ext = parse_extensions(yaml).expect("should parse extensions");
         assert_eq!(ext.ui.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             &ext.ui[0],
             SkillUiElement::ToolbarButton { label, icon }
             if label == "Run" && icon.as_deref() == Some("play")
-        ));
+        );
         assert_eq!(ext.keybindings.len(), 1);
         assert_eq!(ext.keybindings[0].chord, "ctrl+r");
         assert_eq!(ext.keybindings[0].action, "run");
@@ -272,11 +273,11 @@ extensions:
 ";
         let ext = parse_extensions(yaml).expect("should parse");
         assert_eq!(ext.ui.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             &ext.ui[0],
             SkillUiElement::MenuItem { label, action }
             if label == "Open" && action == "open-skill"
-        ));
+        );
         assert!(ext.keybindings.is_empty());
         assert!(ext.monitors.is_empty());
     }
@@ -290,11 +291,11 @@ extensions:
       label: Run
 ";
         let ext = parse_extensions(yaml).expect("should parse");
-        assert!(matches!(
+        assert_matches!(
             &ext.ui[0],
             SkillUiElement::ToolbarButton { label, icon }
             if label == "Run" && icon.is_none()
-        ));
+        );
     }
 
     #[test]

@@ -264,6 +264,7 @@ fn extract_wrapper_inner<'a>(body: &'a str, open_tag: &str, close_tag: &str) -> 
 mod tests {
     use super::*;
     use crate::{ContentIsolationConfig, ContentSource, ContentSourceKind};
+    use std::assert_matches;
 
     fn default_sanitizer() -> ContentSanitizer {
         ContentSanitizer::new(&ContentIsolationConfig::default())
@@ -421,7 +422,7 @@ spotlight_untrusted = true
             .extract_facts(&sanitized_content, &content_sanitizer)
             .await
             .unwrap_err();
-        assert!(matches!(err, QuarantineError::EmptyResponse));
+        assert_matches!(err, QuarantineError::EmptyResponse);
     }
 
     #[tokio::test]
@@ -437,7 +438,7 @@ spotlight_untrusted = true
             .extract_facts(&sanitized_content, &content_sanitizer)
             .await
             .unwrap_err();
-        assert!(matches!(err, QuarantineError::LlmError(_)));
+        assert_matches!(err, QuarantineError::LlmError(_));
     }
 
     #[tokio::test]

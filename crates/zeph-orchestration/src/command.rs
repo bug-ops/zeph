@@ -104,6 +104,7 @@ impl PlanCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn parse_goal_simple() {
@@ -199,13 +200,13 @@ mod tests {
     #[test]
     fn parse_whitespace_only_after_prefix_returns_error() {
         let err = PlanCommand::parse("/plan   ").unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("usage")));
+        assert_matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("usage"));
     }
 
     #[test]
     fn parse_wrong_prefix_returns_error() {
         let err = PlanCommand::parse("/foo bar").unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("/plan")));
+        assert_matches!(err, OrchestrationError::InvalidCommand(ref m) if m.contains("/plan"));
     }
 
     #[test]

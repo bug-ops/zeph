@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
+use std::assert_matches;
 use zeph_tools::executor::{ToolCall, ToolExecutor, ToolOutput};
 
 struct DelayExecutor {
@@ -186,7 +187,7 @@ fn maybe_redact_disabled_returns_original() {
 
     let text = "AWS_SECRET_ACCESS_KEY=abc123";
     let result = agent.maybe_redact(text);
-    assert!(matches!(result, Cow::Borrowed(_)));
+    assert_matches!(result, Cow::Borrowed(_));
     assert_eq!(result.as_ref(), text);
 }
 

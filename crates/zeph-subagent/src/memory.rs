@@ -281,6 +281,7 @@ async fn check_gitignore_for_local(memory_dir: &Path) {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::format_collect)]
+    use std::assert_matches;
 
     use super::*;
 
@@ -311,25 +312,25 @@ mod tests {
     #[test]
     fn resolve_rejects_path_traversal_name() {
         let err = resolve_memory_dir(MemoryScope::Project, "../etc/passwd").unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn resolve_rejects_slash_in_name() {
         let err = resolve_memory_dir(MemoryScope::Project, "a/b").unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn resolve_rejects_empty_name() {
         let err = resolve_memory_dir(MemoryScope::Project, "").unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn resolve_rejects_whitespace_only_name() {
         let err = resolve_memory_dir(MemoryScope::Project, "   ").unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
@@ -347,21 +348,21 @@ mod tests {
     fn resolve_rejects_65_char_name() {
         let name = "a".repeat(65);
         let err = resolve_memory_dir(MemoryScope::Project, &name).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn resolve_rejects_unicode_cyrillic() {
         // Cyrillic 'а' (U+0430) looks like Latin 'a' but is not ASCII.
         let err = resolve_memory_dir(MemoryScope::Project, "аgent").unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn resolve_rejects_fullwidth_slash() {
         // Full-width solidus U+FF0F.
         let err = resolve_memory_dir(MemoryScope::Project, "a\u{FF0F}b").unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     // ── ensure_memory_dir ────────────────────────────────────────────────────

@@ -834,6 +834,8 @@ fn idem_key_hex8(key: IdempotencyKey) -> String {
 
 #[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
     use crate::backend::local::LocalBackend;
     use crate::config::DurableConfig;
@@ -933,7 +935,7 @@ mod tests {
 
         let entries = h.backend.read_execution(exec).await.unwrap();
         assert_eq!(entries.len(), 1);
-        assert!(matches!(entries[0].entry, EntryKind::StepResult { .. }));
+        assert_matches!(entries[0].entry, EntryKind::StepResult { .. });
         h.shutdown().await;
     }
 
@@ -1021,7 +1023,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, DurableError::ReplayDivergence { .. }));
+        assert_matches!(err, DurableError::ReplayDivergence { .. });
 
         let (status,): (String,) = zeph_db::query_as(zeph_db::sql!(
             "SELECT status FROM durable_executions WHERE execution_id = ?"
@@ -1091,7 +1093,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, DurableError::AmbiguousEffect { .. }));
+        assert_matches!(err, DurableError::AmbiguousEffect { .. });
         assert_eq!(
             ran.load(Ordering::SeqCst),
             0,
@@ -1232,7 +1234,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, DurableError::StepFailed { step: "boom", .. }));
+        assert_matches!(err, DurableError::StepFailed { step: "boom", .. });
         h.handle.flush().await.unwrap();
         assert!(
             h.backend.read_execution(exec).await.unwrap().is_empty(),
@@ -1300,10 +1302,10 @@ mod tests {
         // promise pending.
         let mut wrong = token;
         wrong[0] ^= 0xFF;
-        assert!(matches!(
+        assert_matches!(
             resolver.resolve(id, &wrong, "forged".to_string()).await,
             Err(DurableError::PromiseRejected)
-        ));
+        );
         assert!(
             !h.backend.promise_state(id).await.unwrap().unwrap().resolved,
             "a rejected resolution must not resolve the promise"
@@ -1317,12 +1319,12 @@ mod tests {
         assert!(h.backend.promise_state(id).await.unwrap().unwrap().resolved);
 
         // Resolving an unknown promise fails closed.
-        assert!(matches!(
+        assert_matches!(
             resolver
                 .resolve(PromiseId::new(), &token, "x".to_string())
                 .await,
             Err(DurableError::UnknownPromise)
-        ));
+        );
         h.shutdown().await;
     }
 
@@ -1513,7 +1515,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, DurableError::StepCapExceeded { cap: 1 }));
+        assert_matches!(err, DurableError::StepCapExceeded { cap: 1 });
         drop(ctx);
         drop(handle);
         task.await.unwrap();

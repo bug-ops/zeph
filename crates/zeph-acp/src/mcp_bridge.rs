@@ -305,7 +305,7 @@ mod tests {
         let entries = acp_mcp_servers_to_entries(&servers, 120);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "my-mcp");
-        assert!(matches!(entries[0].transport, McpTransport::Stdio { .. }));
+        assert_matches!(entries[0].transport, McpTransport::Stdio { .. });
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
         let entries = acp_mcp_servers_to_entries(&servers, 120);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "http-mcp");
-        assert!(matches!(entries[0].transport, McpTransport::Http { .. }));
+        assert_matches!(entries[0].transport, McpTransport::Http { .. });
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
         let entries = acp_mcp_servers_to_entries(&servers, 120);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "sse-mcp");
-        assert!(matches!(entries[0].transport, McpTransport::Http { .. }));
+        assert_matches!(entries[0].transport, McpTransport::Http { .. });
     }
 
     #[test]

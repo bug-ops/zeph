@@ -305,6 +305,7 @@ impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for Moderation
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -514,7 +515,7 @@ mod tests {
             }),
         );
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]
@@ -530,7 +531,7 @@ mod tests {
             }),
         );
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     // ── requires_confirmation ─────────────────────────────────────────────
@@ -588,7 +589,7 @@ mod tests {
     fn moderation_error_http_maps_to_tool_error_http_502() {
         let err = ModerationError::Http("connection refused".into());
         let te = moderation_error_to_tool_error(err);
-        assert!(matches!(te, ToolError::Http { status: 502, .. }));
+        assert_matches!(te, ToolError::Http { status: 502, .. });
     }
 
     // ── reaction validation ────────────────────────────────────────────────

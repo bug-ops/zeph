@@ -263,6 +263,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[derive(Debug)]
     struct MockExecutor;
@@ -331,7 +332,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("bash")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -340,7 +341,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("write")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -349,7 +350,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("edit")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -358,7 +359,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("delete_path")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -367,7 +368,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("fetch")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -376,7 +377,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("memory_save")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -407,7 +408,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Blocked);
 
         let result = gate.execute_tool_call(&make_call("file_read")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -419,7 +420,7 @@ mod tests {
         let result = gate
             .execute_tool_call(&make_call_with_cmd("bash", "sudo rm"))
             .await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -428,7 +429,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Blocked);
 
         let result = gate.execute("some response").await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -437,7 +438,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Blocked);
 
         let result = gate.execute_confirmed("some response").await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -468,7 +469,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("web_scrape")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[derive(Debug)]
@@ -689,7 +690,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("filesystem_write")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -710,7 +711,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("shell_bash")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -721,7 +722,7 @@ mod tests {
         let result = gate
             .execute_tool_call(&make_call("server_memory_save"))
             .await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -733,7 +734,7 @@ mod tests {
         let result = gate
             .execute_tool_call_confirmed(&make_call("filesystem_write"))
             .await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     // mcp_tool_ids registry tests
@@ -755,7 +756,7 @@ mod tests {
         let result = gate
             .execute_tool_call(&make_call("github_run_command"))
             .await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -765,7 +766,7 @@ mod tests {
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("shell_execute")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -799,7 +800,7 @@ mod tests {
         let result = gate
             .execute_tool_call_confirmed(&make_call("docker_container_exec"))
             .await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[test]

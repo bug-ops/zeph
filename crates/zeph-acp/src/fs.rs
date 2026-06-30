@@ -1044,7 +1044,7 @@ mod tests {
             caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]
@@ -1124,7 +1124,7 @@ mod tests {
             caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]
@@ -1200,7 +1200,7 @@ mod tests {
             caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::SandboxViolation { .. }));
+        assert_matches!(err, ToolError::SandboxViolation { .. });
     }
 
     #[tokio::test]
@@ -1223,7 +1223,7 @@ mod tests {
             caller_id: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[test]
@@ -1234,7 +1234,7 @@ mod tests {
             "/tmp/../etc/passwd"
         };
         let err = validate_path(traversal).unwrap_err();
-        assert!(matches!(err, ToolError::SandboxViolation { .. }));
+        assert_matches!(err, ToolError::SandboxViolation { .. });
     }
 
     #[test]
@@ -1321,7 +1321,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::SandboxViolation { .. }));
+                assert_matches!(err, ToolError::SandboxViolation { .. });
             })
             .await;
     }
@@ -1424,7 +1424,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }
@@ -1642,7 +1642,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::SandboxViolation { .. }));
+                assert_matches!(err, ToolError::SandboxViolation { .. });
             })
             .await;
     }
@@ -1683,7 +1683,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::SandboxViolation { .. }));
+                assert_matches!(err, ToolError::SandboxViolation { .. });
             })
             .await;
     }
@@ -1734,7 +1734,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::InvalidParams { .. }));
+                assert_matches!(err, ToolError::InvalidParams { .. });
             })
             .await;
     }
@@ -1765,7 +1765,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::InvalidParams { .. }));
+                assert_matches!(err, ToolError::InvalidParams { .. });
             })
             .await;
     }
@@ -1909,7 +1909,7 @@ mod tests {
                     caller_id: None,
                 };
                 let err = exec.execute_tool_call(&call).await.unwrap_err();
-                assert!(matches!(err, ToolError::Blocked { .. }));
+                assert_matches!(err, ToolError::Blocked { .. });
             })
             .await;
     }

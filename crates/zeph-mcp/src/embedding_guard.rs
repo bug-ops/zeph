@@ -301,6 +301,7 @@ fn check_regex(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn cosine_distance_identical_vectors() {
@@ -377,10 +378,7 @@ mod tests {
             .try_recv()
             .expect("cold-start should send result immediately");
         assert_eq!(event.server_id, "srv");
-        assert!(matches!(
-            event.result,
-            EmbeddingGuardResult::RegexFallback { .. }
-        ));
+        assert_matches!(event.result, EmbeddingGuardResult::RegexFallback { .. });
     }
 
     #[tokio::test]

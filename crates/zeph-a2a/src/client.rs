@@ -297,6 +297,7 @@ impl A2aClient {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::net::IpAddr;
 
     use super::*;
@@ -321,7 +322,7 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         let parsed: TaskEvent = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, TaskEvent::StatusUpdate(_)));
+        assert_matches!(parsed, TaskEvent::StatusUpdate(_));
     }
 
     #[test]
@@ -340,7 +341,7 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         let parsed: TaskEvent = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, TaskEvent::ArtifactUpdate(_)));
+        assert_matches!(parsed, TaskEvent::ArtifactUpdate(_));
     }
 
     #[test]
@@ -430,7 +431,7 @@ mod tests {
         let result = client.validate_endpoint("http://example.com/rpc").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, A2aError::Security(_)));
+        assert_matches!(err, A2aError::Security(_));
         assert!(err.to_string().contains("TLS required"));
     }
 
@@ -516,7 +517,7 @@ mod tests {
             .send_message("http://127.0.0.1:1/rpc", params, None)
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Http(_)));
+        assert_matches!(result.unwrap_err(), A2aError::Http(_));
     }
 
     #[tokio::test]
@@ -530,7 +531,7 @@ mod tests {
             .get_task("http://127.0.0.1:1/rpc", params, None)
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Http(_)));
+        assert_matches!(result.unwrap_err(), A2aError::Http(_));
     }
 
     #[tokio::test]
@@ -544,7 +545,7 @@ mod tests {
             .cancel_task("http://127.0.0.1:1/rpc", params, None)
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Http(_)));
+        assert_matches!(result.unwrap_err(), A2aError::Http(_));
     }
 
     #[tokio::test]
@@ -587,7 +588,7 @@ mod tests {
             .send_message("http://example.com/rpc", params, None)
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+        assert_matches!(result.unwrap_err(), A2aError::Security(_));
     }
 
     #[tokio::test]
@@ -601,7 +602,7 @@ mod tests {
             .get_task("http://example.com/rpc", params, None)
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+        assert_matches!(result.unwrap_err(), A2aError::Security(_));
     }
 
     #[tokio::test]
@@ -615,7 +616,7 @@ mod tests {
             .cancel_task("http://example.com/rpc", params, None)
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+        assert_matches!(result.unwrap_err(), A2aError::Security(_));
     }
 
     #[tokio::test]
@@ -623,7 +624,7 @@ mod tests {
         let client = A2aClient::new(reqwest::Client::new()).with_security(false, true);
         let result = client.validate_endpoint("not-a-url").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Security(_)));
+        assert_matches!(result.unwrap_err(), A2aError::Security(_));
     }
 
     #[test]
@@ -741,12 +742,13 @@ mod tests {
         });
         let json = serde_json::to_string(&event).unwrap();
         let back: TaskEvent = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, TaskEvent::StatusUpdate(_)));
+        assert_matches!(back, TaskEvent::StatusUpdate(_));
     }
 }
 
 #[cfg(test)]
 mod wiremock_tests {
+    use std::assert_matches;
     use tokio_stream::StreamExt;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -796,10 +798,7 @@ mod wiremock_tests {
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(
-            err,
-            crate::error::A2aError::JsonRpc { code: -32001, .. }
-        ));
+        assert_matches!(err, crate::error::A2aError::JsonRpc { code: -32001, .. });
     }
 
     #[tokio::test]
@@ -910,7 +909,7 @@ mod wiremock_tests {
             .stream_message(&format!("{}/rpc", server.uri()), params, None)
             .await;
         let err = result.err().expect("expected error");
-        assert!(matches!(err, crate::error::A2aError::Stream(_)));
+        assert_matches!(err, crate::error::A2aError::Stream(_));
     }
 
     #[tokio::test]

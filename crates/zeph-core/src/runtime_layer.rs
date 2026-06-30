@@ -121,6 +121,7 @@ impl RuntimeLayer for NoopLayer {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_llm::provider::Role;
 
     struct CountingLayer {
@@ -247,7 +248,7 @@ mod tests {
             turn_number: 0,
         };
         let result = layer.before_chat(&ctx, &[], &[]).await;
-        assert!(matches!(result, Some(ChatResponse::Text(ref s)) if s == "short-circuited"));
+        assert_matches!(result, Some(ChatResponse::Text(ref s)) if s == "short-circuited");
     }
 
     // Verify that Role is accessible from zeph_llm imports (ensures crate boundary is correct).

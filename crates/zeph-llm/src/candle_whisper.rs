@@ -340,15 +340,13 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Llm
 mod tests {
     use super::*;
     use crate::device::detect_device;
+    use std::assert_matches;
 
     #[test]
     fn device_detection_returns_cpu_by_default() {
         let d = detect_device();
         // On CI without GPU, should be CPU
-        assert!(matches!(
-            d,
-            Device::Cpu | Device::Metal(_) | Device::Cuda(_)
-        ));
+        assert_matches!(d, Device::Cpu | Device::Metal(_) | Device::Cuda(_));
     }
 
     #[test]

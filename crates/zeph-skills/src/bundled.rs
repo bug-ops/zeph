@@ -259,6 +259,7 @@ fn write_dir_contents(dir: &include_dir::Dir<'_>, dest: &Path) -> Result<(), std
     Ok(())
 }
 
+#[derive(Debug)]
 enum MarkerState {
     /// `.bundled` file does not exist.
     NoMarker,
@@ -364,6 +365,7 @@ fn parse_frontmatter_version(content: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use tempfile::TempDir;
 
     fn make_skill_md(version: &str) -> String {
@@ -388,7 +390,7 @@ mod tests {
     fn marker_no_file_returns_no_marker() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(".bundled");
-        assert!(matches!(read_marker_version(&path), MarkerState::NoMarker));
+        assert_matches!(read_marker_version(&path), MarkerState::NoMarker);
     }
 
     #[test]
@@ -396,10 +398,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(".bundled");
         fs::write(&path, "").unwrap();
-        assert!(matches!(
-            read_marker_version(&path),
-            MarkerState::CorruptMarker
-        ));
+        assert_matches!(read_marker_version(&path), MarkerState::CorruptMarker);
     }
 
     #[test]
@@ -407,10 +406,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(".bundled");
         fs::write(&path, "1.5\n").unwrap();
-        assert!(matches!(
+        assert_matches!(
             read_marker_version(&path),
             MarkerState::Version(v) if v == "1.5"
-        ));
+        );
     }
 
     /// `is_legacy_bundled` returns true when on-disk SKILL.md matches embedded content (trimmed).

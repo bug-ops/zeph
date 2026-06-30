@@ -582,6 +582,7 @@ mod tests {
     use super::*;
     use crate::graph::{FailureStrategy, GraphStatus, TaskGraph, TaskNode, TaskStatus};
     use crate::topology::build_rev_adj;
+    use std::assert_matches;
 
     fn make_node(id: u32, deps: &[u32]) -> TaskNode {
         let mut n = TaskNode::new(id, format!("task-{id}"), "desc");
@@ -604,14 +605,14 @@ mod tests {
     #[test]
     fn test_validate_empty_graph() {
         let err = validate(&[], 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]
     fn test_validate_exceeds_max_tasks() {
         let tasks: Vec<TaskNode> = (0..5).map(|i| make_node(i, &[])).collect();
         let err = validate(&tasks, 3).unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]
@@ -625,7 +626,7 @@ mod tests {
         let mut tasks = vec![make_node(0, &[])];
         tasks[0].depends_on = vec![TaskId(0)];
         let err = validate(&tasks, 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]
@@ -633,7 +634,7 @@ mod tests {
         let mut tasks = vec![make_node(0, &[])];
         tasks[0].depends_on = vec![TaskId(99)];
         let err = validate(&tasks, 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]
@@ -660,7 +661,7 @@ mod tests {
         // A(0) depends on B(1), B(1) depends on A(0)
         let tasks = vec![make_node(0, &[1]), make_node(1, &[0])];
         let err = validate(&tasks, 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::CycleDetected));
+        assert_matches!(err, OrchestrationError::CycleDetected);
     }
 
     #[test]
@@ -668,7 +669,7 @@ mod tests {
         // A(0)->B(1)->C(2)->A(0)
         let tasks = vec![make_node(0, &[2]), make_node(1, &[0]), make_node(2, &[1])];
         let err = validate(&tasks, 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::CycleDetected));
+        assert_matches!(err, OrchestrationError::CycleDetected);
     }
 
     #[test]
@@ -677,7 +678,7 @@ mod tests {
         // Break invariant: tasks[1] should have id TaskId(1) but we set TaskId(5)
         tasks[1].id = TaskId(5);
         let err = validate(&tasks, 20).unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     // --- toposort tests ---
@@ -1085,7 +1086,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
 
         let err = reset_for_retry(&mut graph, &__ra).unwrap_err();
-        assert!(matches!(err, OrchestrationError::InvalidGraph(_)));
+        assert_matches!(err, OrchestrationError::InvalidGraph(_));
     }
 
     #[test]

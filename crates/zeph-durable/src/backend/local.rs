@@ -1511,6 +1511,8 @@ fn static_entry_tag(tag: &str) -> &'static str {
 // by the `#[ignore]`d integration test below.
 #[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
     use crate::cipher::CipherError;
     use crate::effect::EffectClass;
@@ -1786,12 +1788,12 @@ mod tests {
             },
             created_at_ms: 0,
         };
-        assert!(matches!(
+        assert_matches!(
             backend.append(timer).await,
             Err(DurableError::UnsupportedEntryKind {
                 kind: "timer_armed"
             })
-        ));
+        );
     }
 
     #[tokio::test]
@@ -1803,10 +1805,10 @@ mod tests {
             .await
             .unwrap();
         let big = vec![0u8; 64];
-        assert!(matches!(
+        assert_matches!(
             backend.append(step_result(exec, 0, &big)).await,
             Err(DurableError::PayloadTooLarge { .. })
-        ));
+        );
     }
 
     #[tokio::test]

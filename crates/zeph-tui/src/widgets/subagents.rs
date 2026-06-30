@@ -325,6 +325,7 @@ impl AgentFormState {
 
 /// States of the agent definition manager panel.
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum AgentManagerState {
     /// Shows a scrollable list of all definitions.
     List {
@@ -1020,6 +1021,7 @@ fn truncate_str(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use zeph_core::metrics::SubAgentMetrics;
 
     use crate::metrics::MetricsSnapshot;
@@ -1206,7 +1208,7 @@ mod tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let closed = state.handle_key(enter);
         assert!(!closed);
-        assert!(matches!(state, AgentManagerState::Detail { index: 0, .. }));
+        assert_matches!(state, AgentManagerState::Detail { index: 0, .. });
     }
 
     #[test]
@@ -1220,7 +1222,7 @@ mod tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let closed = state.handle_key(esc);
         assert!(!closed);
-        assert!(matches!(state, AgentManagerState::List { .. }));
+        assert_matches!(state, AgentManagerState::List { .. });
     }
 
     #[test]
@@ -1239,7 +1241,7 @@ mod tests {
         let mut state = AgentManagerState::from_definitions(defs);
         let c_key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
         state.handle_key(c_key);
-        assert!(matches!(state, AgentManagerState::Create { .. }));
+        assert_matches!(state, AgentManagerState::Create { .. });
     }
 
     #[test]
@@ -1322,7 +1324,7 @@ mod tests {
         let e_key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE);
         let closed = state.handle_key(e_key);
         assert!(!closed);
-        assert!(matches!(state, AgentManagerState::Edit { index: 0, .. }));
+        assert_matches!(state, AgentManagerState::Edit { index: 0, .. });
     }
 
     #[test]
@@ -1338,7 +1340,7 @@ mod tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let closed = state.handle_key(esc);
         assert!(!closed);
-        assert!(matches!(state, AgentManagerState::Detail { index: 0, .. }));
+        assert_matches!(state, AgentManagerState::Detail { index: 0, .. });
     }
 
     #[test]
@@ -1352,7 +1354,7 @@ mod tests {
         let d_key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
         let closed = state.handle_key(d_key);
         assert!(!closed);
-        assert!(matches!(state, AgentManagerState::ConfirmDelete { .. }));
+        assert_matches!(state, AgentManagerState::ConfirmDelete { .. });
     }
 
     #[test]
@@ -1368,7 +1370,7 @@ mod tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let closed = state.handle_key(esc);
         assert!(!closed);
-        assert!(matches!(state, AgentManagerState::Detail { index: 0, .. }));
+        assert_matches!(state, AgentManagerState::Detail { index: 0, .. });
     }
 
     #[test]
@@ -1384,13 +1386,13 @@ mod tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         // First Enter: sets awaiting_second = true, does NOT delete.
         state.handle_key(enter);
-        assert!(matches!(
+        assert_matches!(
             state,
             AgentManagerState::ConfirmDelete {
                 awaiting_second: true,
                 ..
             }
-        ));
+        );
     }
 
     #[test]
@@ -1404,7 +1406,7 @@ mod tests {
         // Press 'c' to enter Create, then Esc to cancel.
         let c_key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
         state.handle_key(c_key);
-        assert!(matches!(state, AgentManagerState::Create { .. }));
+        assert_matches!(state, AgentManagerState::Create { .. });
 
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         state.handle_key(esc);

@@ -489,6 +489,7 @@ fn values_equal_canonical(a: &serde_json::Value, b: &serde_json::Value) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
@@ -611,7 +612,7 @@ mod tests {
         let trace = make_trace(vec![]);
         let err = TauBenchEvaluator::from_scenario(&scenario, trace);
         assert!(err.is_err());
-        assert!(matches!(err.unwrap_err(), BenchError::InvalidFormat(_)));
+        assert_matches!(err.unwrap_err(), BenchError::InvalidFormat(_));
     }
 
     #[test]
@@ -868,10 +869,7 @@ mod tests {
             super::super::data::Domain::Retail,
         );
         assert!(result.is_err());
-        assert!(matches!(
-            result.err().unwrap(),
-            BenchError::InvalidFormat(_)
-        ));
+        assert_matches!(result.err().unwrap(), BenchError::InvalidFormat(_));
     }
 
     #[test]

@@ -418,6 +418,7 @@ fn epoch_to_parts(epoch: u64) -> (u32, u32, u32, u32, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use zeph_llm::provider::{Message, MessageMetadata, Role};
 
     use super::*;
@@ -479,7 +480,7 @@ mod tests {
         std::fs::write(&meta_path, "{}").unwrap();
         let jsonl_path = dir.path().join("ghost.jsonl");
         let err = TranscriptReader::load(&jsonl_path).unwrap_err();
-        assert!(matches!(err, SubAgentError::Transcript(_)));
+        assert_matches!(err, SubAgentError::Transcript(_));
     }
 
     #[test]
@@ -515,7 +516,7 @@ mod tests {
     fn meta_not_found_returns_not_found_error() {
         let dir = tempfile::tempdir().unwrap();
         let err = TranscriptReader::load_meta(dir.path(), "ghost").unwrap_err();
-        assert!(matches!(err, SubAgentError::NotFound(_)));
+        assert_matches!(err, SubAgentError::NotFound(_));
     }
 
     #[test]
@@ -544,7 +545,7 @@ mod tests {
     fn find_by_prefix_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let err = TranscriptReader::find_by_prefix(dir.path(), "xxxxxxxx").unwrap_err();
-        assert!(matches!(err, SubAgentError::NotFound(_)));
+        assert_matches!(err, SubAgentError::NotFound(_));
     }
 
     #[test]
@@ -553,7 +554,7 @@ mod tests {
         TranscriptWriter::write_meta(dir.path(), "aabb0001-x", &test_meta("aabb0001-x")).unwrap();
         TranscriptWriter::write_meta(dir.path(), "aabb0002-y", &test_meta("aabb0002-y")).unwrap();
         let err = TranscriptReader::find_by_prefix(dir.path(), "aabb").unwrap_err();
-        assert!(matches!(err, SubAgentError::AmbiguousId(_, 2)));
+        assert_matches!(err, SubAgentError::AmbiguousId(_, 2));
     }
 
     #[test]
@@ -619,7 +620,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("bad.meta.json"), b"not json at all {{{{").unwrap();
         let err = TranscriptReader::load_meta(dir.path(), "bad").unwrap_err();
-        assert!(matches!(err, SubAgentError::Transcript(_)));
+        assert_matches!(err, SubAgentError::Transcript(_));
     }
 
     #[test]
@@ -655,7 +656,7 @@ mod tests {
         std::fs::write(dir.path().join(format!("{agent_id}.meta.json")), b"{}").unwrap();
         let jsonl_path = dir.path().join(format!("{agent_id}.jsonl"));
         let err = TranscriptReader::load(&jsonl_path).unwrap_err();
-        assert!(matches!(err, SubAgentError::Transcript(ref m) if m.contains("missing")));
+        assert_matches!(err, SubAgentError::Transcript(ref m) if m.contains("missing"));
     }
 
     #[test]

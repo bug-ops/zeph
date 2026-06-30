@@ -207,6 +207,7 @@ mod tests {
     use super::*;
     use crate::graph::{GraphStatus, TaskId, TaskResult, TaskStatus};
     use crate::scheduler::tests::*;
+    use std::assert_matches;
 
     // --- inject_tasks replan cap tests ---
 
@@ -868,10 +869,7 @@ mod tests {
         let err =
             DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
                 .unwrap_err();
-        assert!(matches!(
-            err,
-            crate::error::OrchestrationError::InvalidGraph(_)
-        ));
+        assert_matches!(err, crate::error::OrchestrationError::InvalidGraph(_));
     }
 
     #[test]
@@ -882,10 +880,7 @@ mod tests {
         let err =
             DagScheduler::resume_from(graph, &make_config(), Box::new(FirstRouter), vec![], None)
                 .unwrap_err();
-        assert!(matches!(
-            err,
-            crate::error::OrchestrationError::InvalidGraph(_)
-        ));
+        assert_matches!(err, crate::error::OrchestrationError::InvalidGraph(_));
     }
 
     #[test]

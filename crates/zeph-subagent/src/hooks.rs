@@ -620,6 +620,7 @@ fn parse_hook_stdout(command: &str, bytes: &[u8]) -> HookOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn cmd_hook(command: &str, fail_closed: bool, timeout_secs: u64) -> HookDef {
         HookDef {
@@ -732,7 +733,7 @@ mod tests {
         let result = fire_hooks(&hooks, &env, None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, HookError::NonZeroExit { .. }));
+        assert_matches!(err, HookError::NonZeroExit { .. });
     }
 
     #[tokio::test]
@@ -742,7 +743,7 @@ mod tests {
         let result = fire_hooks(&hooks, &env, None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, HookError::Timeout { .. }));
+        assert_matches!(err, HookError::Timeout { .. });
     }
 
     #[tokio::test]
@@ -790,7 +791,7 @@ mod tests {
         }];
         let env = HashMap::new();
         let result = fire_hooks(&hooks, &env, None, None).await;
-        assert!(matches!(result, Err(HookError::McpUnavailable { .. })));
+        assert_matches!(result, Err(HookError::McpUnavailable { .. }));
     }
 
     // ── MCP dispatch tests (#3773) ────────────────────────────────────────────

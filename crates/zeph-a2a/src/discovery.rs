@@ -285,6 +285,7 @@ mod tests {
 
 #[cfg(test)]
 mod wiremock_tests {
+    use std::assert_matches;
     use std::time::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -320,7 +321,7 @@ mod wiremock_tests {
         let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
         let result = registry.discover(&server.uri()).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Discovery { .. }));
+        assert_matches!(result.unwrap_err(), A2aError::Discovery { .. });
     }
 
     #[tokio::test]
@@ -335,7 +336,7 @@ mod wiremock_tests {
         let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
         let result = registry.discover(&server.uri()).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), A2aError::Discovery { .. }));
+        assert_matches!(result.unwrap_err(), A2aError::Discovery { .. });
     }
 
     #[tokio::test]

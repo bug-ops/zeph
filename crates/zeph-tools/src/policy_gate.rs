@@ -394,6 +394,7 @@ fn truncate_params(params: &serde_json::Map<String, serde_json::Value>) -> Strin
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -491,7 +492,7 @@ mod tests {
         };
         let gate = make_gate(&config);
         let result = gate.execute_tool_call(&make_call("bash")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -515,7 +516,7 @@ mod tests {
         let result = gate
             .execute_tool_call(&make_call_with_path("shell", "/etc/passwd"))
             .await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -577,7 +578,7 @@ mod tests {
         };
         let gate = make_gate(&config);
         let result = gate.execute_tool_call_confirmed(&make_call("bash")).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     // GAP-05: execute_tool_call_confirmed allow path must delegate to inner executor.
@@ -619,9 +620,9 @@ mod tests {
         };
         let gate = make_gate(&config);
         let result = gate.execute("```bash\necho hi\n```").await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
         let result_confirmed = gate.execute_confirmed("```bash\necho hi\n```").await;
-        assert!(matches!(result_confirmed, Err(ToolError::Blocked { .. })));
+        assert_matches!(result_confirmed, Err(ToolError::Blocked { .. }));
     }
 
     // GAP-06: set_effective_trust must update PolicyContext.trust_level so trust_level rules

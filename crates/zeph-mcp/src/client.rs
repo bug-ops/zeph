@@ -1193,19 +1193,20 @@ mod tests {
     use super::*;
     use rmcp::ClientHandler as _;
     use rmcp::transport::DynamicTransportError;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn ssrf_blocks_localhost() {
         let err = validate_url_ssrf("http://127.0.0.1:8080/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     #[tokio::test]
     async fn ssrf_blocks_private_10() {
         let err = validate_url_ssrf("http://10.0.0.1/mcp").await.unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     #[tokio::test]
@@ -1213,7 +1214,7 @@ mod tests {
         let err = validate_url_ssrf("http://172.16.0.1/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     #[tokio::test]
@@ -1221,7 +1222,7 @@ mod tests {
         let err = validate_url_ssrf("http://192.168.1.1/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     #[tokio::test]
@@ -1229,13 +1230,13 @@ mod tests {
         let err = validate_url_ssrf("http://169.254.1.1/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     #[tokio::test]
     async fn ssrf_blocks_zero() {
         let err = validate_url_ssrf("http://0.0.0.0/mcp").await.unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     #[tokio::test]
@@ -1243,13 +1244,13 @@ mod tests {
         let err = validate_url_ssrf("http://[::1]:8080/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     #[tokio::test]
     async fn ssrf_rejects_invalid_url() {
         let err = validate_url_ssrf("not-a-url").await.unwrap_err();
-        assert!(matches!(err, McpError::InvalidUrl { .. }));
+        assert_matches!(err, McpError::InvalidUrl { .. });
     }
 
     #[test]
@@ -1267,7 +1268,7 @@ mod tests {
         let err = validate_url_ssrf("http://localhost:3001/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     /// Verify that `validate_url_ssrf` blocks 127.0.0.1 explicitly.
@@ -1276,7 +1277,7 @@ mod tests {
         let err = validate_url_ssrf("http://127.0.0.1:3001/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     /// Verify that `validate_url_ssrf` blocks private 192.168.x.x range.
@@ -1285,7 +1286,7 @@ mod tests {
         let err = validate_url_ssrf("http://192.168.1.1/mcp")
             .await
             .unwrap_err();
-        assert!(matches!(err, McpError::SsrfBlocked { .. }));
+        assert_matches!(err, McpError::SsrfBlocked { .. });
     }
 
     // ToolListChangedHandler unit tests

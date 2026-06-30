@@ -70,11 +70,12 @@ pub(crate) fn truncate_for_embed(text: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn empty_string_is_borrowed() {
         let result = truncate_for_embed("");
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
         assert_eq!(result, "");
     }
 
@@ -82,7 +83,7 @@ mod tests {
     fn short_string_is_borrowed() {
         let input = "hello world";
         let result = truncate_for_embed(input);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
         assert_eq!(result, input);
     }
 
@@ -90,7 +91,7 @@ mod tests {
     fn exactly_at_limit_is_borrowed() {
         let input = "a".repeat(EMBED_MAX_CHARS);
         let result = truncate_for_embed(&input);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
         assert_eq!(result.len(), EMBED_MAX_CHARS);
     }
 
@@ -99,7 +100,7 @@ mod tests {
         // Make a string well above the limit so head+tail don't overlap.
         let input = "a".repeat(EMBED_MAX_CHARS + 10_000);
         let result = truncate_for_embed(&input);
-        assert!(matches!(result, Cow::Owned(_)));
+        assert_matches!(result, Cow::Owned(_));
         let s = result.as_ref();
         assert!(s.contains("...[truncated]..."), "marker must be present");
         // Result must be shorter than the original.
@@ -136,7 +137,7 @@ mod tests {
         let input = "b".repeat(EMBED_MAX_CHARS + 1);
         let result = truncate_for_embed(&input);
         // Overlap guard kicks in — the text is returned borrowed unchanged.
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
     }
 
     #[test]
@@ -174,7 +175,7 @@ mod tests {
         let input = format!("{head}{middle}{tail}");
 
         let result = truncate_for_embed(&input);
-        assert!(matches!(result, Cow::Owned(_)));
+        assert_matches!(result, Cow::Owned(_));
         let s = result.as_ref();
 
         // Head section is present.

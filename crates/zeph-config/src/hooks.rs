@@ -172,6 +172,7 @@ impl HooksConfig {
 mod tests {
     use super::*;
     use crate::subagent::HookAction;
+    use std::assert_matches;
 
     fn cmd_hook(command: &str) -> HookDef {
         HookDef {
@@ -249,10 +250,10 @@ severity = "high"
 "#;
         let cfg: HooksConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.permission_denied.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             &cfg.permission_denied[0].action,
             HookAction::McpTool { server, tool, .. } if server == "policy" && tool == "audit"
-        ));
+        );
     }
 
     #[test]
@@ -454,10 +455,10 @@ severity = "high"
         assert_eq!(cfg.pre_tool_use.len(), 1);
         assert_eq!(cfg.pre_tool_use[0].matcher, "Shell");
         assert_eq!(cfg.pre_tool_use[0].hooks.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             &cfg.pre_tool_use[0].hooks[0].action,
             HookAction::McpTool { server, tool, .. } if server == "policy" && tool == "audit"
-        ));
+        );
         assert!(!cfg.is_empty());
     }
 

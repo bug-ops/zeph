@@ -4,6 +4,7 @@
 use super::*;
 use crate::provider::ImageData;
 use crate::provider::MessageMetadata;
+use std::assert_matches;
 use tokio_stream::StreamExt;
 
 #[test]
@@ -1107,10 +1108,7 @@ fn convert_messages_vision_image_only_no_text_part() {
     let converted = convert_messages_vision(&[msg]);
     // No text parts collected → only image_url
     assert_eq!(converted[0].content.len(), 1);
-    assert!(matches!(
-        &converted[0].content[0],
-        OpenAiContentPart::ImageUrl { .. }
-    ));
+    assert_matches!(&converted[0].content[0], OpenAiContentPart::ImageUrl { .. });
 }
 
 #[test]

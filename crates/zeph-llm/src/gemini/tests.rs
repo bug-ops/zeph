@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::provider::{MessageMetadata, Role};
+use std::assert_matches;
 
 fn msg(role: Role, content: &str) -> Message {
     Message {
@@ -193,7 +194,7 @@ fn gemini_clone_resets_usage() {
 async fn gemini_embed_returns_unsupported() {
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
     let result = p.embed("test").await;
-    assert!(matches!(result, Err(LlmError::EmbedUnsupported { .. })));
+    assert_matches!(result, Err(LlmError::EmbedUnsupported { .. }));
 }
 
 #[tokio::test]
@@ -877,7 +878,7 @@ fn test_parse_single_function_call() {
         usage_metadata: None,
     };
     let result = parse_tool_response(resp).unwrap();
-    assert!(matches!(result, ChatResponse::ToolUse { .. }));
+    assert_matches!(result, ChatResponse::ToolUse { .. });
     if let ChatResponse::ToolUse {
         tool_calls, text, ..
     } = result
@@ -988,7 +989,7 @@ fn test_parse_text_only_response() {
         usage_metadata: None,
     };
     let result = parse_tool_response(resp).unwrap();
-    assert!(matches!(result, ChatResponse::Text(s) if s == "Hello, world!"));
+    assert_matches!(result, ChatResponse::Text(s) if s == "Hello, world!");
 }
 
 #[test]
@@ -1201,7 +1202,7 @@ async fn test_chat_with_tools_returns_tool_use() {
     }];
 
     let result = p.chat_with_tools(&messages, &tools).await.unwrap();
-    assert!(matches!(result, ChatResponse::ToolUse { .. }));
+    assert_matches!(result, ChatResponse::ToolUse { .. });
     if let ChatResponse::ToolUse { tool_calls, .. } = result {
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].name, "get_weather");
@@ -1342,7 +1343,7 @@ async fn test_chat_with_tools_empty_tools_falls_back_to_chat() {
 
     // Empty tools — should fall back to chat()
     let result = p.chat_with_tools(&messages, &[]).await.unwrap();
-    assert!(matches!(result, ChatResponse::Text(s) if s == "Hello!"));
+    assert_matches!(result, ChatResponse::Text(s) if s == "Hello!");
 }
 
 // ---------------------------------------------------------------------------

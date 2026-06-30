@@ -30,6 +30,7 @@ use crossterm::{
 /// Both [`read_line`] (TTY) and [`read_line_piped`] (non-TTY) return this type
 /// so the caller can handle all three cases uniformly.
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum ReadLineResult {
     /// A complete line was read.  The trailing newline is stripped.
     Line(String),
@@ -298,6 +299,7 @@ fn unicode_display_width(s: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::io::Cursor;
 
     use super::*;
@@ -306,39 +308,39 @@ mod tests {
     fn read_line_piped_returns_line() {
         let mut reader = Cursor::new(b"hello world\n");
         let result = read_line_piped(&mut reader).unwrap();
-        assert!(matches!(result, ReadLineResult::Line(l) if l == "hello world"));
+        assert_matches!(result, ReadLineResult::Line(l) if l == "hello world");
     }
 
     #[test]
     fn read_line_piped_strips_crlf() {
         let mut reader = Cursor::new(b"hello\r\n");
         let result = read_line_piped(&mut reader).unwrap();
-        assert!(matches!(result, ReadLineResult::Line(l) if l == "hello"));
+        assert_matches!(result, ReadLineResult::Line(l) if l == "hello");
     }
 
     #[test]
     fn read_line_piped_returns_eof_on_empty() {
         let mut reader = Cursor::new(b"");
         let result = read_line_piped(&mut reader).unwrap();
-        assert!(matches!(result, ReadLineResult::Eof));
+        assert_matches!(result, ReadLineResult::Eof);
     }
 
     #[test]
     fn read_line_piped_no_newline_at_eof() {
         let mut reader = Cursor::new(b"no newline");
         let result = read_line_piped(&mut reader).unwrap();
-        assert!(matches!(result, ReadLineResult::Line(l) if l == "no newline"));
+        assert_matches!(result, ReadLineResult::Line(l) if l == "no newline");
     }
 
     #[test]
     fn read_line_piped_multi_line_sequence() {
         let mut reader = Cursor::new(b"line1\nline2\n");
         let r1 = read_line_piped(&mut reader).unwrap();
-        assert!(matches!(r1, ReadLineResult::Line(l) if l == "line1"));
+        assert_matches!(r1, ReadLineResult::Line(l) if l == "line1");
         let r2 = read_line_piped(&mut reader).unwrap();
-        assert!(matches!(r2, ReadLineResult::Line(l) if l == "line2"));
+        assert_matches!(r2, ReadLineResult::Line(l) if l == "line2");
         let r3 = read_line_piped(&mut reader).unwrap();
-        assert!(matches!(r3, ReadLineResult::Eof));
+        assert_matches!(r3, ReadLineResult::Eof);
     }
 
     #[test]

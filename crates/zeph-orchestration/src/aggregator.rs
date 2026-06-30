@@ -217,6 +217,7 @@ fn build_fallback(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::Arc;
 
     use super::*;
@@ -348,7 +349,7 @@ mod tests {
             let agg = LlmAggregator::new(provider, &make_config());
             let graph = TaskGraph::new("empty goal");
             let err = agg.aggregate(&graph).await.unwrap_err();
-            assert!(matches!(err, OrchestrationError::AggregationFailed(_)));
+            assert_matches!(err, OrchestrationError::AggregationFailed(_));
         }
 
         #[tokio::test]

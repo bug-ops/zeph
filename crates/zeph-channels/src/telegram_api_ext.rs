@@ -606,6 +606,7 @@ impl TelegramApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -788,7 +789,7 @@ mod tests {
 
         let client = TelegramApiClient::with_base_url(server.uri());
         let err = client.get_managed_bot_access_settings().await.unwrap_err();
-        assert!(matches!(err, TelegramApiError::Api(_)));
+        assert_matches!(err, TelegramApiError::Api(_));
     }
 
     // ── set_managed_bot_access_settings ──────────────────────────────────────
@@ -834,7 +835,7 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(err, TelegramApiError::Api(_)));
+        assert_matches!(err, TelegramApiError::Api(_));
     }
 
     // ── delete_message_reaction ───────────────────────────────────────────────
@@ -875,7 +876,7 @@ mod tests {
             .delete_message_reaction(1, 2, 3, "👎")
             .await
             .unwrap_err();
-        assert!(matches!(err, TelegramApiError::Api(_)));
+        assert_matches!(err, TelegramApiError::Api(_));
     }
 
     // ── delete_all_message_reactions ─────────────────────────────────────────
@@ -915,7 +916,7 @@ mod tests {
             .delete_all_message_reactions(1, 2, 3)
             .await
             .unwrap_err();
-        assert!(matches!(err, TelegramApiError::Api(_)));
+        assert_matches!(err, TelegramApiError::Api(_));
     }
 
     // ── get_chat_member ───────────────────────────────────────────────────────
@@ -1004,7 +1005,7 @@ mod tests {
 
         let client = TelegramApiClient::with_base_url(server.uri());
         let err = client.get_chat_member(1, 2).await.unwrap_err();
-        assert!(matches!(err, TelegramApiError::Api(_)));
+        assert_matches!(err, TelegramApiError::Api(_));
     }
 
     // ── get_me ────────────────────────────────────────────────────────────────

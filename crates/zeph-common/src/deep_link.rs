@@ -350,6 +350,7 @@ pub fn build_cwd_denylist() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn valid_new_session_with_prompt_and_cwd() {
@@ -362,13 +363,13 @@ mod tests {
     #[test]
     fn invalid_scheme_returns_malformed() {
         let err = parse_deep_link("http://example.com").unwrap_err();
-        assert!(matches!(err, DeepLinkError::Malformed(_)));
+        assert_matches!(err, DeepLinkError::Malformed(_));
     }
 
     #[test]
     fn unknown_host_returns_error() {
         let err = parse_deep_link("zeph://unknown-action").unwrap_err();
-        assert!(matches!(err, DeepLinkError::UnknownHost(_)));
+        assert_matches!(err, DeepLinkError::UnknownHost(_));
     }
 
     #[test]
@@ -376,7 +377,7 @@ mod tests {
         let big = "x".repeat(PROMPT_MAX_BYTES + 1);
         let uri = format!("zeph://new-session?prompt={big}");
         let err = parse_deep_link(&uri).unwrap_err();
-        assert!(matches!(err, DeepLinkError::PromptTooLong(n) if n == PROMPT_MAX_BYTES + 1));
+        assert_matches!(err, DeepLinkError::PromptTooLong(n) if n == PROMPT_MAX_BYTES + 1);
     }
 
     #[test]
@@ -396,7 +397,7 @@ mod tests {
     #[test]
     fn relative_cwd_returns_error() {
         let err = parse_deep_link("zeph://new-session?cwd=relative/path").unwrap_err();
-        assert!(matches!(err, DeepLinkError::CwdNotAbsolute));
+        assert_matches!(err, DeepLinkError::CwdNotAbsolute);
     }
 
     #[test]

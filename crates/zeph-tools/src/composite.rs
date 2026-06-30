@@ -140,6 +140,7 @@ impl<A: ToolExecutor, B: ToolExecutor> ToolExecutor for CompositeExecutor<A, B> 
 mod tests {
     use super::*;
     use crate::ToolName;
+    use std::assert_matches;
 
     #[derive(Debug)]
     struct MatchingExecutor;
@@ -222,14 +223,14 @@ mod tests {
     async fn first_error_propagates_without_trying_second() {
         let composite = CompositeExecutor::new(ErrorExecutor, SecondExecutor);
         let result = composite.execute("anything").await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
     async fn second_error_propagates_when_first_none() {
         let composite = CompositeExecutor::new(NoMatchExecutor, ErrorExecutor);
         let result = composite.execute("anything").await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]

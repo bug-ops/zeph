@@ -114,6 +114,7 @@ impl FileChangeWatcher {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use tokio_util::sync::CancellationToken;
     use zeph_common::TaskSupervisor;
 
@@ -129,10 +130,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let result = FileChangeWatcher::start(&[], 500, tx, &sup);
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            FileWatcherError::NoWatchPaths
-        ));
+        assert_matches!(result.unwrap_err(), FileWatcherError::NoWatchPaths);
     }
 
     #[tokio::test]

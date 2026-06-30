@@ -471,6 +471,7 @@ const GROUP_INLINE_CAP: usize = 8;
 
 /// A contiguous run of groupable tool messages folded into one visual cell,
 /// or a single message rendered individually.
+#[derive(Debug)]
 enum MessageGroup<'a> {
     /// A single message rendered normally.
     Single {
@@ -1340,6 +1341,7 @@ fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Line<'static>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     /// Extract only the spans from tagged `render_md` output, dropping `LineKind`.
     fn spans_only(tagged: Vec<(LineKind, Vec<Span<'static>>)>) -> Vec<Vec<Span<'static>>> {
@@ -2053,8 +2055,8 @@ mod tests {
             }
             MessageGroup::Single { .. } => panic!("expected Grouped at index 0"),
         }
-        assert!(matches!(groups[1], MessageGroup::Single { .. }));
-        assert!(matches!(groups[2], MessageGroup::Single { .. }));
+        assert_matches!(groups[1], MessageGroup::Single { .. });
+        assert_matches!(groups[2], MessageGroup::Single { .. });
     }
 
     #[test]
@@ -2079,7 +2081,7 @@ mod tests {
         let msgs = vec![make_read_msg("only.rs")];
         let groups = group_messages(&msgs);
         assert_eq!(groups.len(), 1);
-        assert!(matches!(groups[0], MessageGroup::Single { .. }));
+        assert_matches!(groups[0], MessageGroup::Single { .. });
     }
 
     #[test]
@@ -2091,7 +2093,7 @@ mod tests {
         ];
         let groups = group_messages(&msgs);
         assert_eq!(groups.len(), 1, "write_file is Edit — now groupable");
-        assert!(matches!(groups[0], MessageGroup::Grouped { .. }));
+        assert_matches!(groups[0], MessageGroup::Grouped { .. });
     }
 
     #[test]
@@ -2126,7 +2128,7 @@ mod tests {
         ];
         let groups = group_messages(&msgs);
         assert_eq!(groups.len(), 2);
-        assert!(matches!(groups[0], MessageGroup::Single { .. }));
+        assert_matches!(groups[0], MessageGroup::Single { .. });
         match &groups[1] {
             MessageGroup::Grouped { kind, members, .. } => {
                 assert_eq!(*kind, ToolKind::Explore);

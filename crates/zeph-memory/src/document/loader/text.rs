@@ -65,6 +65,7 @@ impl DocumentLoader for TextLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn load_text_file() {
@@ -155,6 +156,6 @@ mod tests {
 
         let loader = TextLoader { max_file_size: 0 };
         let result = loader.load(&file).await;
-        assert!(matches!(result, Err(DocumentError::FileTooLarge(_))));
+        assert_matches!(result, Err(DocumentError::FileTooLarge(_)));
     }
 }

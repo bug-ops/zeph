@@ -250,7 +250,7 @@ pub enum VigilRiskLevel {
 /// {"type":"timeout"}
 /// {"type":"rollback","restored":3,"deleted":1}
 /// ```
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum AuditResult {

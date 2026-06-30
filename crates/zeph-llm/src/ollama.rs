@@ -658,6 +658,7 @@ mod tests {
     use super::*;
     use crate::provider::ImageData;
     use crate::provider::MessageMetadata;
+    use std::assert_matches;
 
     fn ollama_chat_model() -> String {
         std::env::var("OLLAMA_CHAT_MODEL").unwrap_or_else(|_| "qwen3:8b".into())
@@ -1038,7 +1039,7 @@ mod tests {
         let provider =
             OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
         let result = provider.health_check().await;
-        assert!(matches!(result, Err(crate::LlmError::Unavailable)));
+        assert_matches!(result, Err(crate::LlmError::Unavailable));
     }
 
     #[test]

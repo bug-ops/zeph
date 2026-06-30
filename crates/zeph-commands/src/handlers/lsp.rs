@@ -59,6 +59,7 @@ mod tests {
     use super::*;
     use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
     use crate::sink::NullSink;
+    use std::assert_matches;
 
     #[test]
     fn lsp_name_and_description() {
@@ -76,6 +77,6 @@ mod tests {
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = LspCommand.handle(&mut ctx, "").await.unwrap();
-        assert!(matches!(out, CommandOutput::Silent));
+        assert_matches!(out, CommandOutput::Silent);
     }
 }

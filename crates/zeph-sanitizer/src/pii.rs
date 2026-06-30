@@ -353,6 +353,7 @@ impl PiiFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn filter_all() -> PiiFilter {
         PiiFilter::new(PiiFilterConfig {
@@ -372,7 +373,7 @@ mod tests {
         let f = filter_disabled();
         let text = "email: user@example.com";
         let result = f.scrub(text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
         assert_eq!(result, text);
     }
 
@@ -488,7 +489,7 @@ mod tests {
         let f = filter_all();
         let text = "no sensitive data here";
         let result = f.scrub(text);
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
     }
 
     // --- has_pii ---
@@ -543,7 +544,7 @@ mod tests {
     fn empty_input_returns_borrowed() {
         let f = filter_all();
         let result = f.scrub("");
-        assert!(matches!(result, Cow::Borrowed(_)));
+        assert_matches!(result, Cow::Borrowed(_));
         assert_eq!(result, "");
     }
 

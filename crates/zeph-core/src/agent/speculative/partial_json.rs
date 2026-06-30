@@ -401,6 +401,7 @@ fn read_nested(bytes: &[u8], start: usize) -> ReadValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn push_all(p: &mut PartialJsonParser, parts: &[&str]) -> PrefixState {
         let mut state = PrefixState::Incomplete;
@@ -494,7 +495,7 @@ mod tests {
             other @ PrefixState::Malformed => panic!("unexpected: {other:?}"),
         }
         let done = p.push("}");
-        assert!(matches!(done, PrefixState::ValidPrefix { .. }));
+        assert_matches!(done, PrefixState::ValidPrefix { .. });
     }
 
     /// Fixture 5: malformed input returns Malformed.
@@ -502,7 +503,7 @@ mod tests {
     fn fixture_malformed_input() {
         let mut p = PartialJsonParser::new();
         let state = p.push("not-json");
-        assert!(matches!(state, PrefixState::Malformed));
+        assert_matches!(state, PrefixState::Malformed);
     }
 
     /// Fixture 6: mid-array value at top level is opaque (depth > 1 skipped).

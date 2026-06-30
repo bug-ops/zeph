@@ -9,6 +9,7 @@ use super::retry::{connect_retry_backoff, is_retryable_connect_error, retry_loop
 use super::*;
 use crate::error::McpError;
 use crate::sanitize::SanitizeResult;
+use std::assert_matches;
 
 fn make_entry(id: &str) -> ServerEntry {
     ServerEntry {
@@ -74,7 +75,7 @@ async fn add_server_nonexistent_binary_returns_command_not_allowed() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let entry = make_entry("test-server");
     let err = mgr.add_server(&entry).await.unwrap_err();
-    assert!(matches!(err, McpError::CommandNotAllowed { .. }));
+    assert_matches!(err, McpError::CommandNotAllowed { .. });
 }
 
 #[tokio::test]
@@ -122,7 +123,7 @@ async fn call_tool_server_not_found() {
         .call_tool("missing", "some_tool", serde_json::json!({}))
         .await
         .unwrap_err();
-    assert!(matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "missing"));
+    assert_matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "missing");
 }
 
 #[test]
@@ -260,10 +261,10 @@ async fn add_server_http_nonexistent_returns_connection_error() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let entry = make_http_entry("http-test");
     let err = mgr.add_server(&entry).await.unwrap_err();
-    assert!(matches!(
+    assert_matches!(
         err,
         McpError::SsrfBlocked { .. } | McpError::Connection { .. } | McpError::HttpAuth { .. }
-    ));
+    );
 }
 
 #[test]
@@ -552,7 +553,7 @@ async fn remove_server_cleans_up_server_tools() {
     // remove_server on a non-connected server returns ServerNotFound — that's fine.
     // But we can verify the server_tools map was not affected by the failed remove.
     let err = mgr.remove_server("srv1").await.unwrap_err();
-    assert!(matches!(err, McpError::ServerNotFound { .. }));
+    assert_matches!(err, McpError::ServerNotFound { .. });
 }
 
 #[test]
@@ -1327,10 +1328,10 @@ async fn commit_added_server_returns_already_connected_on_duplicate() {
     let err = McpError::ServerAlreadyConnected {
         server_id: "dup-srv".into(),
     };
-    assert!(matches!(
+    assert_matches!(
         err,
         McpError::ServerAlreadyConnected { ref server_id } if server_id == "dup-srv"
-    ));
+    );
     assert!(
         err.to_string().contains("dup-srv"),
         "error message must contain server id"

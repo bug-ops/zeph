@@ -688,6 +688,7 @@ fn eval_expr(expr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     const RETAIL_DB_MIN: &str = r##"{
         "products": {
@@ -839,7 +840,7 @@ mod tests {
             serde_json::json!({"order_id": "#W0002", "reason": "no_longer_needed"}),
         );
         let err = env.execute_tool_call(&c).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]

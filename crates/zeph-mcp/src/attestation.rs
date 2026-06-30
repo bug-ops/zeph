@@ -128,6 +128,7 @@ pub fn attest_tools<S: std::hash::BuildHasher>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn make_tool(server: &str, name: &str) -> McpTool {
         McpTool {
@@ -144,7 +145,7 @@ mod tests {
     fn empty_expected_tools_returns_unconfigured() {
         let tools = vec![make_tool("srv", "read_file")];
         let result = attest_tools::<std::collections::hash_map::RandomState>(&tools, &[], None);
-        assert!(matches!(result, AttestationResult::Unconfigured));
+        assert_matches!(result, AttestationResult::Unconfigured);
     }
 
     #[test]
@@ -153,7 +154,7 @@ mod tests {
         let expected = vec!["read_file".to_owned(), "list_dir".to_owned()];
         let result =
             attest_tools::<std::collections::hash_map::RandomState>(&tools, &expected, None);
-        assert!(matches!(result, AttestationResult::Verified { .. }));
+        assert_matches!(result, AttestationResult::Verified { .. });
     }
 
     #[test]
@@ -163,7 +164,7 @@ mod tests {
         let expected = vec!["read_file".to_owned(), "list_dir".to_owned()];
         let result =
             attest_tools::<std::collections::hash_map::RandomState>(&tools, &expected, None);
-        assert!(matches!(result, AttestationResult::Verified { .. }));
+        assert_matches!(result, AttestationResult::Verified { .. });
     }
 
     #[test]
@@ -212,7 +213,7 @@ mod tests {
         let expected = vec!["read_file".to_owned()];
         // This should log a warning internally; we just verify it doesn't panic.
         let result = attest_tools(&[tool_v2], &expected, Some(&prev));
-        assert!(matches!(result, AttestationResult::Verified { .. }));
+        assert_matches!(result, AttestationResult::Verified { .. });
     }
 
     #[test]

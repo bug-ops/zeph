@@ -416,6 +416,7 @@ impl Channel for TuiChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn make_channel() -> (TuiChannel, mpsc::Sender<String>, mpsc::Receiver<AgentEvent>) {
         let (user_tx, user_rx) = mpsc::channel(16);
@@ -445,7 +446,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send("response text").await.unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(matches!(evt, AgentEvent::FullMessage(t) if t == "response text"));
+        assert_matches!(evt, AgentEvent::FullMessage(t) if t == "response text");
     }
 
     #[tokio::test]
@@ -456,9 +457,9 @@ mod tests {
         assert_eq!(ch.accumulated, "hello");
 
         let e1 = agent_rx.recv().await.unwrap();
-        assert!(matches!(e1, AgentEvent::Chunk(t) if t == "hel"));
+        assert_matches!(e1, AgentEvent::Chunk(t) if t == "hel");
         let e2 = agent_rx.recv().await.unwrap();
-        assert!(matches!(e2, AgentEvent::Chunk(t) if t == "lo"));
+        assert_matches!(e2, AgentEvent::Chunk(t) if t == "lo");
     }
 
     #[tokio::test]
@@ -466,7 +467,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.flush_chunks().await.unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(matches!(evt, AgentEvent::Flush));
+        assert_matches!(evt, AgentEvent::Flush);
     }
 
     #[tokio::test]
@@ -474,7 +475,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_typing().await.unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(matches!(evt, AgentEvent::Typing));
+        assert_matches!(evt, AgentEvent::Typing);
     }
 
     #[tokio::test]
@@ -542,7 +543,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_status("summarizing...").await.unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(matches!(evt, AgentEvent::Status(t) if t == "summarizing..."));
+        assert_matches!(evt, AgentEvent::Status(t) if t == "summarizing...");
     }
 
     #[test]
@@ -565,7 +566,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_queue_count(3).await.unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(matches!(evt, AgentEvent::QueueCount(3)));
+        assert_matches!(evt, AgentEvent::QueueCount(3));
     }
 
     #[test]

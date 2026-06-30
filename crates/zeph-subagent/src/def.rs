@@ -960,6 +960,7 @@ impl SubAgentDef {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::cloned_ref_to_slice_refs)]
+    use std::assert_matches;
 
     use indoc::indoc;
 
@@ -1052,7 +1053,7 @@ mod tests {
             def.model,
             Some(ModelSpec::Named("claude-sonnet-4-20250514".to_owned()))
         );
-        assert!(matches!(def.tools, ToolPolicy::AllowList(ref v) if v == &["shell", "web_scrape"]));
+        assert_matches!(def.tools, ToolPolicy::AllowList(ref v) if v == &["shell", "web_scrape"]);
         assert_eq!(def.permissions.max_turns, 10);
         assert_eq!(def.permissions.secrets, ["github-token"]);
         assert_eq!(def.skills.include, ["git-*", "rust-*"]);
@@ -1066,7 +1067,7 @@ mod tests {
         assert_eq!(def.name, "bot");
         assert_eq!(def.description, "A bot");
         assert!(def.model.is_none());
-        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+        assert_matches!(def.tools, ToolPolicy::InheritAll);
         assert_eq!(def.permissions.max_turns, 20);
         assert_eq!(def.permissions.timeout_secs, 600);
         assert_eq!(def.permissions.ttl_secs, 300);
@@ -1088,7 +1089,7 @@ mod tests {
     fn parse_yaml_tool_deny_list() {
         let content = "---\nname: a\ndescription: b\ntools:\n  deny:\n    - shell\n---\n\nbody\n";
         let def = SubAgentDef::parse(content).unwrap();
-        assert!(matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["shell"]));
+        assert_matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["shell"]);
     }
 
     #[test]
@@ -1096,20 +1097,20 @@ mod tests {
         // Explicit tools section with neither allow nor deny also yields InheritAll.
         let content = "---\nname: a\ndescription: b\ntools: {}\n---\n\nbody\n";
         let def = SubAgentDef::parse(content).unwrap();
-        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+        assert_matches!(def.tools, ToolPolicy::InheritAll);
     }
 
     #[test]
     fn parse_yaml_tool_both_specified_is_error() {
         let content = "---\nname: a\ndescription: b\ntools:\n  allow:\n    - x\n  deny:\n    - y\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn parse_yaml_missing_closing_delimiter() {
         let err = SubAgentDef::parse("---\nname: a\ndescription: b\n").unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
@@ -1125,28 +1126,28 @@ mod tests {
     fn parse_yaml_missing_required_field_name() {
         let content = "---\ndescription: b\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
     fn parse_yaml_missing_required_field_description() {
         let content = "---\nname: a\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
     fn parse_yaml_empty_name_is_invalid() {
         let content = "---\nname: \"\"\ndescription: b\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn parse_yaml_whitespace_only_description_is_invalid() {
         let content = "---\nname: a\ndescription: \"   \"\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
@@ -1178,7 +1179,7 @@ mod tests {
             def.model,
             Some(ModelSpec::Named("claude-sonnet-4-20250514".to_owned()))
         );
-        assert!(matches!(def.tools, ToolPolicy::AllowList(ref v) if v == &["shell", "web_scrape"]));
+        assert_matches!(def.tools, ToolPolicy::AllowList(ref v) if v == &["shell", "web_scrape"]);
         assert_eq!(def.permissions.max_turns, 10);
         assert_eq!(def.permissions.secrets, ["github-token"]);
         assert_eq!(def.skills.include, ["git-*", "rust-*"]);
@@ -1192,7 +1193,7 @@ mod tests {
         assert_eq!(def.name, "bot");
         assert_eq!(def.description, "A bot");
         assert!(def.model.is_none());
-        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+        assert_matches!(def.tools, ToolPolicy::InheritAll);
         assert_eq!(def.permissions.max_turns, 20);
         assert_eq!(def.permissions.timeout_secs, 600);
         assert_eq!(def.permissions.ttl_secs, 300);
@@ -1205,53 +1206,53 @@ mod tests {
         let content =
             "+++\nname = \"a\"\ndescription = \"b\"\n[tools]\ndeny = [\"shell\"]\n+++\n\nbody\n";
         let def = SubAgentDef::parse(content).unwrap();
-        assert!(matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["shell"]));
+        assert_matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["shell"]);
     }
 
     #[test]
     fn tool_policy_inherit_all() {
         let def = SubAgentDef::parse(MINIMAL_DEF_TOML).unwrap();
-        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+        assert_matches!(def.tools, ToolPolicy::InheritAll);
     }
 
     #[test]
     fn tool_policy_both_specified_is_error() {
         let content = "+++\nname = \"a\"\ndescription = \"b\"\n[tools]\nallow = [\"x\"]\ndeny = [\"y\"]\n+++\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn missing_opening_delimiter() {
         let err = SubAgentDef::parse("name = \"a\"\n+++\nbody\n").unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
     fn missing_closing_delimiter() {
         let err = SubAgentDef::parse("+++\nname = \"a\"\ndescription = \"b\"\n").unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
     fn missing_required_field_name() {
         let content = "+++\ndescription = \"b\"\n+++\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
     fn missing_required_field_description() {
         let content = "+++\nname = \"a\"\n+++\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
     fn empty_name_is_invalid() {
         let content = "+++\nname = \"\"\ndescription = \"b\"\n+++\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
@@ -1290,14 +1291,14 @@ mod tests {
     fn whitespace_only_description_is_invalid() {
         let content = "+++\nname = \"a\"\ndescription = \"   \"\n+++\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn load_nonexistent_file_returns_parse_error() {
         let err =
             SubAgentDef::load(std::path::Path::new("/tmp/does-not-exist-zeph.md")).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
@@ -1355,7 +1356,7 @@ mod tests {
             &[],
         )
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
@@ -1568,7 +1569,7 @@ mod tests {
         // Unknown variant (e.g. "banana_mode") must fail with a parse error.
         let content = "---\nname: a\ndescription: b\npermissions:\n  permission_mode: banana_mode\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
@@ -1577,7 +1578,7 @@ mod tests {
         let content =
             "---\nname: a\ndescription: b\npermissions:\n  permission_mode: DontAsk\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
@@ -1594,7 +1595,7 @@ mod tests {
         let content = "---\nname: a\ndescription: b\ntools:\n  deny:\n    - dangerous\n  except:\n    - web\n---\n\nbody\n";
         let def = SubAgentDef::parse(content).unwrap();
         // base policy: DenyList blocks "dangerous", allows everything else
-        assert!(matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["dangerous"]));
+        assert_matches!(def.tools, ToolPolicy::DenyList(ref v) if v == &["dangerous"]);
         // disallowed_tools: "web" is additionally blocked by except
         assert!(def.disallowed_tools.contains(&"web".to_owned()));
     }
@@ -1613,7 +1614,7 @@ mod tests {
         // deny_unknown_fields on RawSubAgentDef: typos like "permisions:" must be rejected.
         let content = "---\nname: a\ndescription: b\npermisions:\n  max_turns: 5\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     // ── MemoryScope / memory field tests ────────────────────────────────────
@@ -1652,7 +1653,7 @@ mod tests {
         let content =
             "---\nname: reviewer\ndescription: A reviewer\nmemory: global\n---\n\nBody.\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Parse { .. }));
+        assert_matches!(err, SubAgentError::Parse { .. });
     }
 
     #[test]
@@ -1671,21 +1672,21 @@ mod tests {
         // Cyrillic 'а' (U+0430) looks like Latin 'a' but is rejected.
         let content = "---\nname: аgent\ndescription: b\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn parse_yaml_name_with_space_is_invalid() {
         let content = "---\nname: my agent\ndescription: b\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
     fn parse_yaml_name_with_dot_is_invalid() {
         let content = "---\nname: my.agent\ndescription: b\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
-        assert!(matches!(err, SubAgentError::Invalid(_)));
+        assert_matches!(err, SubAgentError::Invalid(_));
     }
 
     #[test]
@@ -1710,7 +1711,7 @@ mod tests {
         assert_eq!(def.name, "tester");
         assert_eq!(def.description, "Runs tests");
         assert!(def.model.is_none());
-        assert!(matches!(def.tools, ToolPolicy::InheritAll));
+        assert_matches!(def.tools, ToolPolicy::InheritAll);
         assert!(def.system_prompt.is_empty());
     }
 
@@ -1804,7 +1805,7 @@ mod tests {
         let reparsed = SubAgentDef::parse(&serialized).unwrap();
         assert_eq!(reparsed.disallowed_tools, def.disallowed_tools);
         assert_eq!(reparsed.disallowed_tools, ["shell_sudo", "shell_rm"]);
-        assert!(matches!(&reparsed.tools, ToolPolicy::AllowList(v) if v == &["shell"]));
+        assert_matches!(&reparsed.tools, ToolPolicy::AllowList(v) if v == &["shell"]);
     }
 
     #[test]
@@ -1889,7 +1890,7 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/does-not-exist-zeph-test.md");
         let result = SubAgentDef::delete_file(&path);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), SubAgentError::Io { .. }));
+        assert_matches!(result.unwrap_err(), SubAgentError::Io { .. });
     }
 
     #[test]
@@ -1900,7 +1901,7 @@ mod tests {
         def.name = "../../etc/cron.d/agent".to_owned();
         let result = def.save_atomic(dir.path());
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), SubAgentError::Invalid(_)));
+        assert_matches!(result.unwrap_err(), SubAgentError::Invalid(_));
     }
 
     #[test]

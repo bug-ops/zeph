@@ -480,6 +480,7 @@ fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn guard() -> ExfiltrationGuard {
         ExfiltrationGuard::new(ExfiltrationGuardConfig::default())
@@ -944,10 +945,7 @@ mod tests {
     fn guards_when_injection_flags_set() {
         let event = guard().should_guard_memory_write(true);
         assert!(event.is_some());
-        assert!(matches!(
-            event.unwrap(),
-            ExfiltrationEvent::MemoryWriteGuarded { .. }
-        ));
+        assert_matches!(event.unwrap(), ExfiltrationEvent::MemoryWriteGuarded { .. });
     }
 
     #[test]

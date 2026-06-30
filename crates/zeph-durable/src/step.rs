@@ -442,6 +442,7 @@ pub(crate) fn deserialize_result<T: DeserializeOwned>(bytes: &[u8]) -> Result<T,
 mod tests {
     use super::*;
     use crate::ids::ExecutionId;
+    use std::assert_matches;
 
     #[test]
     fn guarded_destructive_requires_explicit_policy() {
@@ -452,10 +453,10 @@ mod tests {
             b"op".to_vec(),
         )
         .unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             DurableError::AmbiguityPolicyRequired { step: "delete" }
-        ));
+        );
     }
 
     #[test]
@@ -535,12 +536,12 @@ mod tests {
         assert_eq!(live.idempotency_key(), key);
         assert!(!live.was_replayed());
         assert_eq!(*live.value(), 41);
-        assert!(matches!(live.outcome(), StepOutcome::Live(41)));
+        assert_matches!(live.outcome(), StepOutcome::Live(41));
         assert_eq!(live.into_value(), 41);
 
         let replayed = DurableStep::replayed(StepId::new(3), key, 7_u32);
         assert!(replayed.was_replayed());
-        assert!(matches!(replayed.into_outcome(), StepOutcome::Replayed(7)));
+        assert_matches!(replayed.into_outcome(), StepOutcome::Replayed(7));
     }
 
     #[test]
@@ -553,7 +554,7 @@ mod tests {
     #[test]
     fn deserialize_fails_closed_on_garbage() {
         let err = deserialize_result::<u32>(b"not json").unwrap_err();
-        assert!(matches!(err, DurableError::Decode { .. }));
+        assert_matches!(err, DurableError::Decode { .. });
     }
 
     #[test]

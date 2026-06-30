@@ -79,6 +79,7 @@ pub struct ScoredMatch {
 ///   respected.
 #[non_exhaustive]
 #[must_use]
+#[derive(Debug)]
 pub enum MatchResult {
     /// Infrastructure failure — embedding call timed out or backend returned an error.
     /// Score information is unavailable; apply degraded-mode fallback.
@@ -697,6 +698,7 @@ pub use zeph_common::math::cosine_similarity;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn make_meta(name: &str, description: &str) -> SkillMeta {
         SkillMeta {
@@ -910,7 +912,7 @@ mod tests {
             .match_skills(refs.len(), "query", 5, false, embed_fn_fail)
             .await;
 
-        assert!(matches!(result, MatchResult::InfraError));
+        assert_matches!(result, MatchResult::InfraError);
     }
 
     #[test]

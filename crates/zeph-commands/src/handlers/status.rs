@@ -174,6 +174,7 @@ mod tests {
     use super::*;
     use crate::handlers::test_helpers::{MockDebug, MockMessages, MockSession, make_ctx};
     use crate::sink::NullSink;
+    use std::assert_matches;
 
     #[test]
     fn status_name_and_description() {
@@ -208,7 +209,7 @@ mod tests {
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = StatusCommand.handle(&mut ctx, "").await.unwrap();
-        assert!(matches!(out, CommandOutput::Message(_)));
+        assert_matches!(out, CommandOutput::Message(_));
     }
 
     #[tokio::test]
@@ -220,7 +221,7 @@ mod tests {
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = GuardrailCommand.handle(&mut ctx, "").await.unwrap();
-        assert!(matches!(out, CommandOutput::Message(_)));
+        assert_matches!(out, CommandOutput::Message(_));
     }
 
     #[tokio::test]
@@ -232,7 +233,7 @@ mod tests {
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = FocusCommand.handle(&mut ctx, "").await.unwrap();
-        assert!(matches!(out, CommandOutput::Message(_)));
+        assert_matches!(out, CommandOutput::Message(_));
     }
 
     #[tokio::test]
@@ -244,6 +245,6 @@ mod tests {
         let mut agent = crate::NullAgent;
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = SideQuestCommand.handle(&mut ctx, "").await.unwrap();
-        assert!(matches!(out, CommandOutput::Message(_)));
+        assert_matches!(out, CommandOutput::Message(_));
     }
 }

@@ -288,6 +288,7 @@ mod tests {
     use crate::ids::{ExecutionId, ExecutionKind, IdempotencyKey, StepId};
     use crate::journal::EntryKind;
     use bytes::Bytes;
+    use std::assert_matches;
 
     fn step_result(exec: ExecutionId, step: u32, payload: &[u8]) -> JournalEntry {
         let step_id = StepId::new(step);
@@ -318,7 +319,7 @@ mod tests {
         let result = handle
             .append_acked(step_result(ExecutionId::new(), 0, b"x"))
             .await;
-        assert!(matches!(result, Err(DurableError::JournalUnavailable)));
+        assert_matches!(result, Err(DurableError::JournalUnavailable));
     }
 
     #[tokio::test]
@@ -333,7 +334,7 @@ mod tests {
         let result = handle
             .append_acked(step_result(ExecutionId::new(), 0, b"x"))
             .await;
-        assert!(matches!(result, Err(DurableError::JournalUnavailable)));
+        assert_matches!(result, Err(DurableError::JournalUnavailable));
     }
 
     #[tokio::test]

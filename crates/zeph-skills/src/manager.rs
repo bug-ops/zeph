@@ -393,6 +393,7 @@ fn strip_bundled_markers_recursive(dir: &Path) -> std::io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn make_skill_dir(dir: &Path, name: &str) {
         let skill_dir = dir.join(name);
@@ -409,7 +410,7 @@ mod tests {
         let managed = tempfile::tempdir().unwrap();
         let mgr = SkillManager::new(managed.path().to_path_buf());
         let err = mgr.install_from_url("ftp://example.com/skill").unwrap_err();
-        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+        assert_matches!(err, SkillError::GitCloneFailed(_));
         assert!(format!("{err}").contains("unsupported URL scheme"));
     }
 
@@ -420,7 +421,7 @@ mod tests {
         let err = mgr
             .install_from_url("https://example.com/skill name")
             .unwrap_err();
-        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+        assert_matches!(err, SkillError::GitCloneFailed(_));
         assert!(format!("{err}").contains("whitespace"));
     }
 
@@ -435,7 +436,7 @@ mod tests {
 
         assert_eq!(result.name, "my-skill");
         assert_eq!(result.blake3_hash.len(), 64);
-        assert!(matches!(result.source, SkillSource::File { .. }));
+        assert_matches!(result.source, SkillSource::File { .. });
         assert!(managed.path().join("my-skill").join("SKILL.md").exists());
     }
 
@@ -450,7 +451,7 @@ mod tests {
         let err = mgr
             .install_from_path(&src.path().join("dup-skill"))
             .unwrap_err();
-        assert!(matches!(err, SkillError::AlreadyExists(_)));
+        assert_matches!(err, SkillError::AlreadyExists(_));
     }
 
     #[test]
@@ -484,7 +485,7 @@ mod tests {
         let managed = tempfile::tempdir().unwrap();
         let mgr = SkillManager::new(managed.path().to_path_buf());
         let err = mgr.remove("nonexistent").unwrap_err();
-        assert!(matches!(err, SkillError::NotFound(_)));
+        assert_matches!(err, SkillError::NotFound(_));
     }
 
     #[test]
@@ -531,7 +532,7 @@ mod tests {
         let managed = tempfile::tempdir().unwrap();
         let mgr = SkillManager::new(managed.path().to_path_buf());
         let err = mgr.verify("nope").unwrap_err();
-        assert!(matches!(err, SkillError::NotFound(_)));
+        assert_matches!(err, SkillError::NotFound(_));
     }
 
     #[test]
@@ -590,7 +591,7 @@ mod tests {
             !msg.contains("unsupported URL scheme"),
             "git@ scheme should pass URL check: {msg}"
         );
-        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+        assert_matches!(err, SkillError::GitCloneFailed(_));
     }
 
     #[test]
@@ -598,7 +599,7 @@ mod tests {
         let managed = tempfile::tempdir().unwrap();
         let mgr = SkillManager::new(managed.path().to_path_buf());
         let err = mgr.install_from_url("").unwrap_err();
-        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+        assert_matches!(err, SkillError::GitCloneFailed(_));
         assert!(format!("{err}").contains("unsupported URL scheme"));
     }
 
@@ -707,7 +708,7 @@ mod tests {
         let err = mgr
             .install_from_url("https://example.com/skill\ttab")
             .unwrap_err();
-        assert!(matches!(err, SkillError::GitCloneFailed(_)));
+        assert_matches!(err, SkillError::GitCloneFailed(_));
         assert!(format!("{err}").contains("whitespace"));
     }
 

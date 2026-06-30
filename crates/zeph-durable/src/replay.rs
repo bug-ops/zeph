@@ -273,6 +273,8 @@ fn insert_entry(state: &mut CursorState, entry: JournalEntry) {
 
 #[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
     use crate::backend::local::LocalBackend;
     use crate::effect::EffectClass;
@@ -363,30 +365,30 @@ mod tests {
         let (backend, exec) = backend_with(&[(0, false), (1, true)]).await;
         let cursor = ReplayCursor::new(backend, exec, DEFAULT_SEGMENT_STEPS);
 
-        assert!(matches!(
+        assert_matches!(
             cursor.lookup(StepId::new(0)).await.unwrap(),
             StepReplay::Result(_)
-        ));
+        );
         // Step 1 has both an intent and a result → the result wins.
-        assert!(matches!(
+        assert_matches!(
             cursor.lookup(StepId::new(1)).await.unwrap(),
             StepReplay::Result(_)
-        ));
+        );
         // Step 2 was never journaled → fresh.
-        assert!(matches!(
+        assert_matches!(
             cursor.lookup(StepId::new(2)).await.unwrap(),
             StepReplay::Fresh
-        ));
+        );
     }
 
     #[tokio::test]
     async fn lookup_reports_ambiguous_window_intent_only() {
         let (backend, exec) = intent_only(0).await;
         let cursor = ReplayCursor::new(backend, exec, DEFAULT_SEGMENT_STEPS);
-        assert!(matches!(
+        assert_matches!(
             cursor.lookup(StepId::new(0)).await.unwrap(),
             StepReplay::IntentOnly(_)
-        ));
+        );
     }
 
     #[tokio::test]
@@ -405,10 +407,10 @@ mod tests {
                 "step {step} should replay from the journal"
             );
         }
-        assert!(matches!(
+        assert_matches!(
             cursor.lookup(StepId::new(25)).await.unwrap(),
             StepReplay::Fresh
-        ));
+        );
     }
 
     #[tokio::test]
@@ -417,13 +419,13 @@ mod tests {
         let (backend, exec) = backend_with(&steps).await;
         let cursor = ReplayCursor::new(backend, exec, DEFAULT_SEGMENT_STEPS);
         // Look up a higher step first, then a lower one — both must still resolve.
-        assert!(matches!(
+        assert_matches!(
             cursor.lookup(StepId::new(5)).await.unwrap(),
             StepReplay::Result(_)
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             cursor.lookup(StepId::new(2)).await.unwrap(),
             StepReplay::Result(_)
-        ));
+        );
     }
 }

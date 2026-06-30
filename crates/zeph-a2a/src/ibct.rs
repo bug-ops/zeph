@@ -332,6 +332,7 @@ mod base64_compat {
 mod tests {
     #[cfg(feature = "ibct")]
     use super::*;
+    use std::assert_matches;
 
     #[cfg(feature = "ibct")]
     fn test_key() -> IbctKey {
@@ -373,7 +374,7 @@ mod tests {
         let err = token
             .verify(&[key], "https://evil.example.com", "task-123")
             .unwrap_err();
-        assert!(matches!(err, IbctError::EndpointMismatch { .. }));
+        assert_matches!(err, IbctError::EndpointMismatch { .. });
     }
 
     #[cfg(feature = "ibct")]
@@ -390,7 +391,7 @@ mod tests {
         let err = token
             .verify(&[key], "https://agent.example.com", "task-999")
             .unwrap_err();
-        assert!(matches!(err, IbctError::TaskMismatch { .. }));
+        assert_matches!(err, IbctError::TaskMismatch { .. });
     }
 
     #[cfg(feature = "ibct")]
@@ -408,7 +409,7 @@ mod tests {
         let err = token
             .verify(&[key], "https://agent.example.com", "task-123")
             .unwrap_err();
-        assert!(matches!(err, IbctError::InvalidSignature));
+        assert_matches!(err, IbctError::InvalidSignature);
     }
 
     #[cfg(feature = "ibct")]
@@ -429,7 +430,7 @@ mod tests {
         let err = token
             .verify(&[other_key], "https://agent.example.com", "task-123")
             .unwrap_err();
-        assert!(matches!(err, IbctError::UnknownKeyId { .. }));
+        assert_matches!(err, IbctError::UnknownKeyId { .. });
     }
 
     #[cfg(feature = "ibct")]

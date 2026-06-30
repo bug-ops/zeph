@@ -191,6 +191,7 @@ fn build_judge_messages(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::Arc;
 
     use super::*;
@@ -200,8 +201,8 @@ mod tests {
     fn build_judge_messages_returns_two_messages() {
         let msgs = build_judge_messages("no that's wrong", "The answer is 42.");
         assert_eq!(msgs.len(), 2);
-        assert!(matches!(msgs[0].role, crate::provider::Role::System));
-        assert!(matches!(msgs[1].role, crate::provider::Role::User));
+        assert_matches!(msgs[0].role, crate::provider::Role::System);
+        assert_matches!(msgs[1].role, crate::provider::Role::User);
     }
 
     #[test]

@@ -984,6 +984,7 @@ fn strip_json_fences(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use tokio_stream::StreamExt;
 
     use super::*;
@@ -1051,7 +1052,7 @@ mod tests {
 
         let mut stream = provider.chat_stream(&messages).await.unwrap();
         let chunk = stream.next().await.unwrap().unwrap();
-        assert!(matches!(chunk, StreamChunk::Content(s) if s == "hello world"));
+        assert_matches!(chunk, StreamChunk::Content(s) if s == "hello world");
         assert!(stream.next().await.is_none());
     }
 
@@ -1411,7 +1412,7 @@ mod tests {
     #[test]
     fn chat_response_construction() {
         let text = ChatResponse::Text("hello".into());
-        assert!(matches!(text, ChatResponse::Text(s) if s == "hello"));
+        assert_matches!(text, ChatResponse::Text(s) if s == "hello");
 
         let tool_use = ChatResponse::ToolUse {
             text: Some("I'll run that".into()),
@@ -1422,7 +1423,7 @@ mod tests {
             }],
             thinking_blocks: vec![],
         };
-        assert!(matches!(tool_use, ChatResponse::ToolUse { .. }));
+        assert_matches!(tool_use, ChatResponse::ToolUse { .. });
     }
 
     #[test]
@@ -1473,7 +1474,7 @@ mod tests {
         };
         let messages = vec![Message::from_legacy(Role::User, "test")];
         let result = provider.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(s) if s == "hello"));
+        assert_matches!(result, ChatResponse::Text(s) if s == "hello");
     }
 
     #[test]
@@ -1621,7 +1622,7 @@ mod tests {
         let provider = SequentialStub::new(vec![Err(LlmError::Unavailable)]);
         let messages = vec![Message::from_legacy(Role::User, "test")];
         let result = provider.chat_typed::<TestOutput>(&messages).await;
-        assert!(matches!(result, Err(LlmError::Unavailable)));
+        assert_matches!(result, Err(LlmError::Unavailable));
     }
 
     #[tokio::test]
@@ -1780,7 +1781,7 @@ mod tests {
     #[test]
     fn stream_chunk_compaction_variant() {
         let chunk = StreamChunk::Compaction("A summary".to_owned());
-        assert!(matches!(chunk, StreamChunk::Compaction(s) if s == "A summary"));
+        assert_matches!(chunk, StreamChunk::Compaction(s) if s == "A summary");
     }
 
     #[test]

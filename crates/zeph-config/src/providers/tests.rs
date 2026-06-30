@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use std::assert_matches;
 
 fn ollama_entry() -> ProviderEntry {
     ProviderEntry {
@@ -324,7 +325,7 @@ complex = "large"
 expert = "opus"
 "#,
     );
-    assert!(matches!(cfg.routing, LlmRoutingStrategy::Triage));
+    assert_matches!(cfg.routing, LlmRoutingStrategy::Triage);
     let cr = cfg
         .complexity_routing
         .expect("complexity_routing must be present");
@@ -374,7 +375,7 @@ fn routing_strategy_triage_deserialized() {
 routing = "triage"
 "#,
     );
-    assert!(matches!(cfg.routing, LlmRoutingStrategy::Triage));
+    assert_matches!(cfg.routing, LlmRoutingStrategy::Triage);
 }
 
 // ─── stt_provider_entry ───────────────────────────────────────────────────

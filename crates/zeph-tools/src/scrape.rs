@@ -1196,6 +1196,7 @@ fn parse_and_extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     // --- extract_scrape_blocks ---
 
@@ -1283,23 +1284,23 @@ mod tests {
 
     #[test]
     fn extract_mode_text() {
-        assert!(matches!(ExtractMode::parse("text"), ExtractMode::Text));
+        assert_matches!(ExtractMode::parse("text"), ExtractMode::Text);
     }
 
     #[test]
     fn extract_mode_html() {
-        assert!(matches!(ExtractMode::parse("html"), ExtractMode::Html));
+        assert_matches!(ExtractMode::parse("html"), ExtractMode::Html);
     }
 
     #[test]
     fn extract_mode_attr() {
         let mode = ExtractMode::parse("attr:href");
-        assert!(matches!(mode, ExtractMode::Attr(ref s) if s == "href"));
+        assert_matches!(mode, ExtractMode::Attr(ref s) if s == "href");
     }
 
     #[test]
     fn extract_mode_unknown_defaults_to_text() {
-        assert!(matches!(ExtractMode::parse("unknown"), ExtractMode::Text));
+        assert_matches!(ExtractMode::parse("unknown"), ExtractMode::Text);
     }
 
     // --- validate_url ---
@@ -1312,61 +1313,61 @@ mod tests {
     #[test]
     fn http_rejected() {
         let err = validate_url("http://example.com").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn ftp_rejected() {
         let err = validate_url("ftp://files.example.com").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn file_rejected() {
         let err = validate_url("file:///etc/passwd").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn invalid_url_rejected() {
         let err = validate_url("not a url").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn localhost_blocked() {
         let err = validate_url("https://localhost/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn loopback_ip_blocked() {
         let err = validate_url("https://127.0.0.1/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn private_10_blocked() {
         let err = validate_url("https://10.0.0.1/api").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn private_172_blocked() {
         let err = validate_url("https://172.16.0.1/api").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn private_192_blocked() {
         let err = validate_url("https://192.168.1.1/api").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn ipv6_loopback_blocked() {
         let err = validate_url("https://[::1]/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
@@ -1478,49 +1479,49 @@ mod tests {
     #[test]
     fn link_local_ip_blocked() {
         let err = validate_url("https://169.254.1.1/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn url_no_scheme_rejected() {
         let err = validate_url("example.com/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn unspecified_ipv4_blocked() {
         let err = validate_url("https://0.0.0.0/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn broadcast_ipv4_blocked() {
         let err = validate_url("https://255.255.255.255/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn ipv6_link_local_blocked() {
         let err = validate_url("https://[fe80::1]/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn ipv6_unique_local_blocked() {
         let err = validate_url("https://[fd12::1]/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn ipv4_mapped_ipv6_loopback_blocked() {
         let err = validate_url("https://[::ffff:127.0.0.1]/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn ipv4_mapped_ipv6_private_blocked() {
         let err = validate_url("https://[::ffff:10.0.0.1]/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     // --- WebScrapeExecutor (no-network) ---
@@ -1539,7 +1540,7 @@ mod tests {
         let executor = WebScrapeExecutor::new(&config);
         let response = "```scrape\nnot json\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(result, Err(ToolError::Execution(_))));
+        assert_matches!(result, Err(ToolError::Execution(_)));
     }
 
     #[tokio::test]
@@ -1548,7 +1549,7 @@ mod tests {
         let executor = WebScrapeExecutor::new(&config);
         let response = "```scrape\n{\"url\":\"http://example.com\",\"select\":\"h1\"}\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -1557,7 +1558,7 @@ mod tests {
         let executor = WebScrapeExecutor::new(&config);
         let response = "```scrape\n{\"url\":\"https://192.168.1.1/api\",\"select\":\"h1\"}\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -1570,7 +1571,7 @@ mod tests {
         let executor = WebScrapeExecutor::new(&config);
         let response = "```scrape\n{\"url\":\"https://192.0.2.1:1/page\",\"select\":\"h1\"}\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(result, Err(ToolError::Execution(_))));
+        assert_matches!(result, Err(ToolError::Execution(_)));
     }
 
     #[tokio::test]
@@ -1579,7 +1580,7 @@ mod tests {
         let executor = WebScrapeExecutor::new(&config);
         let response = "```scrape\n{\"url\":\"https://localhost:9999/api\",\"select\":\"h1\"}\n```";
         let result = executor.execute(response).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -1603,19 +1604,19 @@ mod tests {
     #[test]
     fn validate_url_empty_string() {
         let err = validate_url("").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn validate_url_javascript_scheme_blocked() {
         let err = validate_url("javascript:alert(1)").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn validate_url_data_scheme_blocked() {
         let err = validate_url("data:text/html,<h1>hi</h1>").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
@@ -2031,7 +2032,7 @@ mod tests {
     #[test]
     fn extract_mode_attr_empty_name() {
         let mode = ExtractMode::parse("attr:");
-        assert!(matches!(mode, ExtractMode::Attr(ref s) if s.is_empty()));
+        assert_matches!(mode, ExtractMode::Attr(ref s) if s.is_empty());
     }
 
     #[test]
@@ -2129,7 +2130,7 @@ mod tests {
         let base = Url::parse("https://example.com/start").unwrap();
         let next = base.join(location).unwrap();
         let err = validate_url(next.as_str()).unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     /// Verifies that a redirect to a private IP literal is blocked.
@@ -2139,7 +2140,7 @@ mod tests {
         let base = Url::parse("https://example.com/start").unwrap();
         let next = base.join(location).unwrap();
         let err = validate_url(next.as_str()).unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
         let ToolError::Blocked { command: cmd } = err else {
             panic!("expected Blocked");
         };
@@ -2156,7 +2157,7 @@ mod tests {
         let base = Url::parse("https://example.com/start").unwrap();
         let next = base.join(location).unwrap();
         let err = validate_url(next.as_str()).unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     /// Verifies that a chain of 3 valid public redirects passes `validate_url` at every hop.
@@ -2212,13 +2213,13 @@ mod tests {
     #[test]
     fn redirect_to_http_rejected() {
         let err = validate_url("http://example.com/page").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn ipv4_mapped_ipv6_link_local_blocked() {
         let err = validate_url("https://[::ffff:169.254.0.1]/path").unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
@@ -2246,7 +2247,7 @@ mod tests {
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -2270,7 +2271,7 @@ mod tests {
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -2294,7 +2295,7 @@ mod tests {
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     #[tokio::test]
@@ -2409,7 +2410,7 @@ mod tests {
             "loopback IP must be rejected by resolve_and_validate"
         );
         let err = result.unwrap_err();
-        assert!(matches!(err, crate::executor::ToolError::Blocked { .. }));
+        assert_matches!(err, crate::executor::ToolError::Blocked { .. });
     }
 
     #[tokio::test]
@@ -2417,10 +2418,10 @@ mod tests {
         let url = url::Url::parse("https://10.0.0.1/path").unwrap();
         let result = resolve_and_validate(&url).await;
         assert!(result.is_err());
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             crate::executor::ToolError::Blocked { .. }
-        ));
+        );
     }
 
     #[tokio::test]
@@ -2428,10 +2429,10 @@ mod tests {
         let url = url::Url::parse("https://192.168.1.1/path").unwrap();
         let result = resolve_and_validate(&url).await;
         assert!(result.is_err());
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             crate::executor::ToolError::Blocked { .. }
-        ));
+        );
     }
 
     #[tokio::test]
@@ -2439,10 +2440,10 @@ mod tests {
         let url = url::Url::parse("https://[::1]/path").unwrap();
         let result = resolve_and_validate(&url).await;
         assert!(result.is_err());
-        assert!(matches!(
+        assert_matches!(
             result.unwrap_err(),
             crate::executor::ToolError::Blocked { .. }
-        ));
+        );
     }
 
     #[tokio::test]
@@ -2509,7 +2510,7 @@ mod tests {
     fn tool_error_to_audit_result_timeout_maps_correctly() {
         let err = ToolError::Timeout { timeout_secs: 15 };
         let result = tool_error_to_audit_result(&err);
-        assert!(matches!(result, AuditResult::Timeout));
+        assert_matches!(result, AuditResult::Timeout);
     }
 
     #[test]
@@ -2543,7 +2544,7 @@ mod tests {
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
 
         let content = tokio::fs::read_to_string(&log_path).await.unwrap();
         assert!(
@@ -2661,7 +2662,7 @@ mod tests {
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
 
         let content = tokio::fs::read_to_string(&log_path).await.unwrap();
         assert!(
@@ -2695,7 +2696,7 @@ mod tests {
         };
         // Must not panic even without an audit logger
         let result = executor.execute_tool_call(&call).await;
-        assert!(matches!(result, Err(ToolError::Blocked { .. })));
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
     // CR-10: fetch end-to-end via execute_tool_call -> handle_fetch -> fetch_html
@@ -2768,7 +2769,7 @@ mod tests {
     fn check_domain_policy_denylist_blocks() {
         let denied = vec!["evil.com".to_string()];
         let err = check_domain_policy("evil.com", &[], &denied).unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
@@ -2788,7 +2789,7 @@ mod tests {
     fn check_domain_policy_allowlist_blocks_unknown() {
         let allowed = vec!["docs.rs".to_string()];
         let err = check_domain_policy("other.com", &allowed, &[]).unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
@@ -2796,14 +2797,14 @@ mod tests {
         let allowed = vec!["example.com".to_string()];
         let denied = vec!["example.com".to_string()];
         let err = check_domain_policy("example.com", &allowed, &denied).unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
     fn check_domain_policy_wildcard_in_denylist() {
         let denied = vec!["*.evil.com".to_string()];
         let err = check_domain_policy("sub.evil.com", &[], &denied).unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
         // parent domain not blocked
         assert!(check_domain_policy("evil.com", &[], &denied).is_ok());
     }

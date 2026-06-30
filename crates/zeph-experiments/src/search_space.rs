@@ -321,6 +321,7 @@ impl SearchSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn make_range(
         kind: ParameterKind,
@@ -344,39 +345,39 @@ mod tests {
 
     #[test]
     fn new_invalid_range_min_ge_max() {
-        assert!(matches!(
+        assert_matches!(
             ParameterRange::new(ParameterKind::Temperature, 1.0, 0.0, None, 0.5),
             Err(EvalError::InvalidRange { .. })
-        ));
+        );
         // equal bounds also invalid
-        assert!(matches!(
+        assert_matches!(
             ParameterRange::new(ParameterKind::Temperature, 0.5, 0.5, None, 0.5),
             Err(EvalError::InvalidRange { .. })
-        ));
+        );
     }
 
     #[test]
     fn new_invalid_range_nonfinite_bounds() {
-        assert!(matches!(
+        assert_matches!(
             ParameterRange::new(ParameterKind::Temperature, f64::NAN, 1.0, None, 0.5),
             Err(EvalError::InvalidRange { .. })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             ParameterRange::new(ParameterKind::Temperature, 0.0, f64::INFINITY, None, 0.5),
             Err(EvalError::InvalidRange { .. })
-        ));
+        );
     }
 
     #[test]
     fn new_invalid_default_out_of_range() {
-        assert!(matches!(
+        assert_matches!(
             ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, 2.0),
             Err(EvalError::DefaultOutOfRange { .. })
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             ParameterRange::new(ParameterKind::Temperature, 0.0, 1.0, None, -0.1),
             Err(EvalError::DefaultOutOfRange { .. })
-        ));
+        );
     }
 
     #[test]

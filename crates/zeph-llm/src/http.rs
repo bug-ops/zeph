@@ -91,6 +91,7 @@ pub(crate) fn map_error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn bad_request_with_context_length_body_returns_exceeded() {
@@ -99,7 +100,7 @@ mod tests {
             "context length exceeded",
             "p",
         );
-        assert!(matches!(err, LlmError::ContextLengthExceeded));
+        assert_matches!(err, LlmError::ContextLengthExceeded);
     }
 
     #[test]
@@ -109,36 +110,36 @@ mod tests {
             "invalid parameter",
             "myprovider",
         );
-        assert!(matches!(
+        assert_matches!(
             err,
             LlmError::ApiError { ref provider, status: 400 } if provider == "myprovider"
-        ));
+        );
     }
 
     #[test]
     fn server_error_returns_api_error() {
         let err = map_error_response(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "", "svc");
-        assert!(matches!(
+        assert_matches!(
             err,
             LlmError::ApiError { ref provider, status: 500 } if provider == "svc"
-        ));
+        );
     }
 
     #[test]
     fn unauthorized_returns_api_error() {
         let err = map_error_response(reqwest::StatusCode::UNAUTHORIZED, "", "claude");
-        assert!(matches!(
+        assert_matches!(
             err,
             LlmError::ApiError { ref provider, status: 401 } if provider == "claude"
-        ));
+        );
     }
 
     #[test]
     fn too_many_requests_returns_api_error() {
         let err = map_error_response(reqwest::StatusCode::TOO_MANY_REQUESTS, "", "openai");
-        assert!(matches!(
+        assert_matches!(
             err,
             LlmError::ApiError { ref provider, status: 429 } if provider == "openai"
-        ));
+        );
     }
 }

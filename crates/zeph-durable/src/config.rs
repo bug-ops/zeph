@@ -82,6 +82,7 @@ pub fn encryption_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn encryption_gate_passes_when_aead_enabled() {
@@ -125,21 +126,21 @@ mod tests {
             backend: DurableBackend::Local,
             ..DurableConfig::default()
         };
-        assert!(matches!(
+        assert_matches!(
             encryption_gate(&local_shared, true),
             Err(DurableError::EncryptionRequired {
                 context: "shared-database"
             })
-        ));
+        );
 
         let restate = DurableConfig {
             encrypt_payload: false,
             backend: DurableBackend::Restate,
             ..DurableConfig::default()
         };
-        assert!(matches!(
+        assert_matches!(
             encryption_gate(&restate, false),
             Err(DurableError::EncryptionRequired { context: "restate" })
-        ));
+        );
     }
 }

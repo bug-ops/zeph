@@ -261,6 +261,7 @@ impl PayloadCipher for XChaCha20Poly1305Cipher {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashSet;
 
     use zeph_durable::cipher::EntryKindTag;
@@ -331,11 +332,8 @@ mod tests {
         let sealed = cipher.seal(b"result", &aad_for(exec, 7)).unwrap();
 
         let err = cipher.open(&sealed, &aad_for(exec, 8)).unwrap_err();
-        assert!(matches!(err, CipherError::Authentication));
-        assert!(matches!(
-            DurableError::from(err),
-            DurableError::ReplayIntegrity
-        ));
+        assert_matches!(err, CipherError::Authentication);
+        assert_matches!(DurableError::from(err), DurableError::ReplayIntegrity);
     }
 
     #[test]
@@ -348,10 +346,7 @@ mod tests {
         let err = cipher
             .open(&sealed, &aad_for(ExecutionId::new(), 0))
             .unwrap_err();
-        assert!(matches!(
-            DurableError::from(err),
-            DurableError::ReplayIntegrity
-        ));
+        assert_matches!(DurableError::from(err), DurableError::ReplayIntegrity);
     }
 
     #[test]
@@ -361,10 +356,10 @@ mod tests {
         let mut sealed = cipher.seal(b"result", &aad).unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 0xFF;
-        assert!(matches!(
+        assert_matches!(
             cipher.open(&sealed, &aad).unwrap_err(),
             CipherError::Authentication
-        ));
+        );
     }
 
     #[test]
@@ -372,11 +367,8 @@ mod tests {
         let cipher = XChaCha20Poly1305Cipher::new(0, [0u8; 32]);
         let aad = aad_for(ExecutionId::new(), 0);
         let err = cipher.open(&[0u8; MIN_SEALED_LEN - 1], &aad).unwrap_err();
-        assert!(matches!(err, CipherError::Malformed { .. }));
-        assert!(matches!(
-            DurableError::from(err),
-            DurableError::Decode { .. }
-        ));
+        assert_matches!(err, CipherError::Malformed { .. });
+        assert_matches!(DurableError::from(err), DurableError::Decode { .. });
     }
 
     #[test]
@@ -385,10 +377,10 @@ mod tests {
         let aad = aad_for(ExecutionId::new(), 0);
         let mut sealed = cipher.seal(b"x", &aad).unwrap();
         sealed[0] = 200; // no key registered under id 200
-        assert!(matches!(
+        assert_matches!(
             cipher.open(&sealed, &aad).unwrap_err(),
             CipherError::UnknownKeyId { key_id: 200 }
-        ));
+        );
     }
 
     #[test]

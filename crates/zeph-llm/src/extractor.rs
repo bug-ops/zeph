@@ -87,6 +87,7 @@ impl<'a, P: LlmProvider> Extractor<'a, P> {
 mod tests {
     use super::*;
     use crate::provider::{ChatStream, LlmProvider, Message};
+    use std::assert_matches;
 
     struct StubProvider {
         response: String,
@@ -191,6 +192,6 @@ mod tests {
         let provider = FailProvider;
         let extractor = Extractor::new(&provider);
         let result = extractor.extract::<TestOutput>("test").await;
-        assert!(matches!(result, Err(LlmError::Unavailable)));
+        assert_matches!(result, Err(LlmError::Unavailable));
     }
 }

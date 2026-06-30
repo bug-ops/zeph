@@ -474,6 +474,7 @@ fn parse_and_validate(content: &str) -> Result<GeneratedSkill, SkillError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn mock_skill_md(name: &str) -> String {
         format!(
@@ -622,7 +623,7 @@ mod tests {
             has_injection_patterns: false,
         };
         let err = generator.approve_and_save(&skill).await.unwrap_err();
-        assert!(matches!(err, SkillError::AlreadyExists(_)));
+        assert_matches!(err, SkillError::AlreadyExists(_));
     }
 
     #[test]

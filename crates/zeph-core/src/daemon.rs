@@ -222,6 +222,7 @@ fn expand_tilde(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
+    use std::assert_matches;
 
     use super::*;
 
@@ -286,7 +287,7 @@ mod tests {
 
         let statuses = supervisor.component_statuses();
         assert_eq!(statuses.len(), 1);
-        assert!(matches!(statuses[0].1, ComponentStatus::Failed(_)));
+        assert_matches!(statuses[0].1, ComponentStatus::Failed(_));
     }
 
     #[tokio::test]

@@ -29,6 +29,7 @@ pub enum PipelineError {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::ignored_unit_patterns, clippy::manual_string_new)]
+    use std::assert_matches;
 
     use std::sync::Arc;
 
@@ -228,7 +229,7 @@ mod tests {
 
         let step = RetrievalStep::new(store, provider, "col", 5);
         let result = Pipeline::start(step).run("query".into()).await;
-        assert!(matches!(result.unwrap_err(), PipelineError::Llm(_)));
+        assert_matches!(result.unwrap_err(), PipelineError::Llm(_));
     }
 
     // --- ExtractStep failure tests ---
@@ -239,7 +240,7 @@ mod tests {
             .step(ExtractStep::<serde_json::Value>::new())
             .run(())
             .await;
-        assert!(matches!(result.unwrap_err(), PipelineError::Extract(_)));
+        assert_matches!(result.unwrap_err(), PipelineError::Extract(_));
     }
 
     #[tokio::test]
@@ -254,7 +255,7 @@ mod tests {
             .step(ExtractStep::<Strict>::new())
             .run(())
             .await;
-        assert!(matches!(result.unwrap_err(), PipelineError::Extract(_)));
+        assert_matches!(result.unwrap_err(), PipelineError::Extract(_));
     }
 
     // --- ParallelStep error tests ---

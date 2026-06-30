@@ -73,6 +73,7 @@ pub fn apply_deterministic_overrides(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn deterministic_overrides_returns_temperature_zero() {
@@ -98,7 +99,7 @@ mod tests {
         // We can't introspect the override directly, but we verify the call doesn't panic
         // and returns an AnyProvider (the mock variant).
         let result = apply_deterministic_overrides(provider, true);
-        assert!(matches!(result, zeph_llm::any::AnyProvider::Mock(_)));
+        assert_matches!(result, zeph_llm::any::AnyProvider::Mock(_));
     }
 
     #[test]
@@ -107,6 +108,6 @@ mod tests {
             zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::with_responses(vec![]));
         // Mock provider's with_generation_overrides is a no-op but still returns Mock variant.
         let result = apply_deterministic_overrides(provider, false);
-        assert!(matches!(result, zeph_llm::any::AnyProvider::Mock(_)));
+        assert_matches!(result, zeph_llm::any::AnyProvider::Mock(_));
     }
 }
