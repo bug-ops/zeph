@@ -45,21 +45,6 @@ const WAVE_GLYPHS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇",
 const ASCII_GLYPHS: [&str; 8] = [".", ".", "-", "-", "~", "~", "=", "="];
 
 // ---------------------------------------------------------------------------
-// Equalizer constants
-// ---------------------------------------------------------------------------
-
-/// Maximum width (terminal columns) of the compact equalizer area.
-///
-/// Bands beyond this width are not rendered — keeps the equalizer visually
-/// compact even on ultra-wide terminals.
-pub const EQ_W_MAX: u32 = 48;
-
-/// Number of rows occupied by the compact [`EqualizerWidget`] in the input area.
-///
-/// Two rows give a readable VU-meter look while consuming minimal screen space.
-pub const EQ_ROWS: u16 = 2;
-
-// ---------------------------------------------------------------------------
 // WaveState
 // ---------------------------------------------------------------------------
 
@@ -326,7 +311,7 @@ pub fn glyphs<'a>(
     buf.as_slice()
 }
 
-/// Compact VU-meter equalizer widget for the TUI input separator.
+/// VU-meter equalizer widget rendered in the dashboard side panel during active inference.
 ///
 /// Renders animated frequency bands directly into a ratatui [`Buffer`] using `▄`
 /// (U+2584, lower half block) characters with a teal gradient that runs from near-black
@@ -334,7 +319,8 @@ pub fn glyphs<'a>(
 ///
 /// Band phases are distributed via the golden ratio so adjacent bars oscillate
 /// independently, producing the classic audio equalizer aesthetic where each bar
-/// moves up and down on its own schedule.
+/// moves up and down on its own schedule. The number of lit rows per band is
+/// proportional to `area.height`, so the widget scales naturally to any allocated rect.
 ///
 /// Inspired by the [`tui-equalizer`](https://github.com/ratatui/tui-widgets/tree/main/tui-equalizer)
 /// reference widget, adapted for the Zeph teal design language.

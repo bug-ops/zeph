@@ -1,15 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use ratatui::layout::Rect;
+
 use crate::layout::AppLayout;
 use crate::widgets;
+use crate::widgets::wave::EqualizerWidget;
 
 use super::{App, Panel};
 
 impl App {
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let collapsed = self.effective_collapsed();
-        let layout = AppLayout::compute(
+        let mut layout = AppLayout::compute(
             frame.area(),
             self.show_side_panels,
             self.desired_input_height(),
@@ -44,14 +47,51 @@ impl App {
                 self.sessions.current().scroll_offset.min(max_scroll);
         }
         self.draw_separator(frame, layout.separator);
+
+        // Carve the equalizer slot from the bottom of the subagents area.
+        // The slot only appears while the agent is busy and the user hasn't hidden it.
+        const EQ_PANEL_H: u16 = 4;
+        let wave_state = self.wave_state();
+        let wave_tick = self.wave_tick();
+        let eq_area = if self.show_equalizer
+            && self.is_agent_busy()
+            && layout.subagents.height > EQ_PANEL_H + 2
+        {
+            let sub_h = layout.subagents.height - EQ_PANEL_H;
+            let eq = Rect {
+                y: layout.subagents.y + sub_h,
+                height: EQ_PANEL_H,
+                ..layout.subagents
+            };
+            layout.subagents = Rect {
+                height: sub_h,
+                ..layout.subagents
+            };
+            eq
+        } else {
+            Rect::default()
+        };
+
         self.draw_side_panel(frame, &layout, collapsed);
+
+        if eq_area.height > 0 {
+            frame.render_widget(
+                EqualizerWidget {
+                    state: wave_state,
+                    tick: wave_tick,
+                    theme: &self.theme,
+                    color_mode: self.effective_color_mode(),
+                    ascii_only: self.is_ascii_only(),
+                },
+                eq_area,
+            );
+        }
+
         let spinner_idx = self.throbber_state().index().cast_unsigned();
         let busy = self.is_agent_busy();
         let activity_label = self.status_label().map(str::to_owned);
         let supervisor_label = self.supervisor_activity_label();
         let effective_label = activity_label.or(supervisor_label);
-        let wave_state = self.wave_state();
-        let wave_tick = self.wave_tick();
         let motion = self.motion();
         widgets::input::render(
             self,
@@ -60,8 +100,6 @@ impl App {
             busy,
             effective_label.as_deref(),
             spinner_idx,
-            wave_state,
-            wave_tick,
             motion,
         );
         widgets::status::render(self, &self.metrics, frame, layout.status);

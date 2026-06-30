@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `feat(tui)`: move equalizer widget from input separator to the right-panel dashboard —
+  a 4-row animated VU-meter slot is carved from the bottom of the subagents panel while the
+  agent is busy; the slot collapses when idle. `Motion::Full` busy mode now shows an animated
+  spinner in the input row (same as `Minimal`). `TuiCommand::ToggleEqualizer` / `app:equalizer`
+  command hides or shows the panel slot. Removes `EQ_ROWS`/`EQ_W_MAX` constants (relocated).
+  See `crates/zeph-tui/src/widgets/wave.rs` and `crates/zeph-tui/src/app/draw.rs`.
+
 ### Research
 
 - `docs(cocoon)`: add stable non-positional threat IDs (`T-BIN-SUBST`, `T-COMP-ATTEST`,
