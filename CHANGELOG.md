@@ -25,6 +25,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(tests)`: migrate 772 `assert!(matches!(...))` calls to the stabilized
+  `assert_matches!` macro (MSRV 1.96). The new macro prints the actual value on failure,
+  making test output more informative. Added `#[derive(Debug)]` to 12 types that lacked it.
+  Two assertions that cannot use `assert_matches!` (key-material cipher type and
+  `dyn Stream` trait object) were left as `assert!(matches!(...))` with comments.
+
 - `feat(tui)`: give background/external requests a visually distinct equalizer wave. The
   `WaveState::Parallel` variant is replaced by `WaveState::Network`, which now triggers on any
   in-flight task-supervisor work (`bg_inflight >= 1` plus background shell runs) instead of only
