@@ -3,7 +3,7 @@
 
 use anyhow::Context as _;
 
-use crate::cli::{AcpCommand, AcpSubagentCommand};
+use crate::cli::{AcpCommand, AcpModelConfigCommand, AcpSubagentCommand};
 
 /// Handle `zeph acp <subcommand>`.
 ///
@@ -57,6 +57,27 @@ pub(crate) async fn handle_acp_command(cmd: AcpCommand) -> anyhow::Result<()> {
             // Config is not loaded at this point; report that presets must be configured.
             println!("Sub-agent presets are configured under [acp.subagents] in config.toml.");
             println!("Use `zeph acp run-agent --command <CMD> --prompt <TEXT>` for one-shot runs.");
+            Ok(())
+        }
+        AcpCommand::ModelConfig {
+            command: AcpModelConfigCommand::Show,
+        } => {
+            // Config is not loaded at this point; report the static preset table and pointer.
+            println!(
+                "ACP model_config presets (session/set_config_option, config_id=\"temperature\"):"
+            );
+            for preset in [
+                zeph_config::AcpTemperaturePreset::Precise,
+                zeph_config::AcpTemperaturePreset::Balanced,
+                zeph_config::AcpTemperaturePreset::Creative,
+            ] {
+                println!(
+                    "  {:<10} temperature = {}",
+                    preset.as_str(),
+                    preset.temperature()
+                );
+            }
+            println!("Default preset is configured under [acp.model_config] in config.toml.");
             Ok(())
         }
     }

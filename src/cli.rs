@@ -614,6 +614,11 @@ pub(crate) enum AcpCommand {
         #[command(subcommand)]
         command: AcpSubagentCommand,
     },
+    /// Model-related configuration parameters (`[acp.model_config]`)
+    ModelConfig {
+        #[command(subcommand)]
+        command: AcpModelConfigCommand,
+    },
 }
 
 /// Sub-agent preset subcommands.
@@ -622,6 +627,14 @@ pub(crate) enum AcpCommand {
 pub(crate) enum AcpSubagentCommand {
     /// List configured sub-agent presets
     List,
+}
+
+/// Model-config subcommands.
+#[cfg(feature = "acp")]
+#[derive(Subcommand)]
+pub(crate) enum AcpModelConfigCommand {
+    /// Show available sampling-temperature presets and the configured default
+    Show,
 }
 
 /// Database subcommands.

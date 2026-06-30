@@ -53,6 +53,10 @@ pub struct MockProvider {
     peak_concurrent: Arc<std::sync::atomic::AtomicUsize>,
     /// Per-call delay sequence. Each `chat()` call pops from the front; when empty, falls back to `delay_ms`.
     per_call_delays: Arc<Mutex<VecDeque<u64>>>,
+    /// Captures the most recent [`GenerationOverrides`] applied via
+    /// [`MockProvider::with_generation_overrides`]. Shared with the test via
+    /// [`MockProvider::with_overrides_capture`] — the mock otherwise ignores overrides entirely.
+    captured_overrides: Arc<Mutex<Option<GenerationOverrides>>>,
 }
 
 impl Default for MockProvider {
@@ -79,6 +83,7 @@ impl Default for MockProvider {
             in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             peak_concurrent: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             per_call_delays: Arc::new(Mutex::new(VecDeque::new())),
+            captured_overrides: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -173,8 +178,40 @@ impl MockProvider {
     }
 
     #[must_use]
-    pub fn with_generation_overrides(self, _overrides: GenerationOverrides) -> Self {
-        // No-op: mock provider ignores generation overrides.
+    pub fn with_generation_overrides(self, overrides: GenerationOverrides) -> Self {
+        // Functionally a no-op (the mock never applies overrides to a response), but records
+        // the value into `captured_overrides` so tests can assert what was applied — see
+        // `with_overrides_capture`.
+        if let Ok(mut guard) = self.captured_overrides.lock() {
+            *guard = Some(overrides);
+        }
+        self
+    }
+
+    /// Share `slot` as this provider's `captured_overrides` sink, so a test can read back the
+    /// [`GenerationOverrides`] most recently applied via [`MockProvider::with_generation_overrides`]
+    /// — including overrides applied by production code *after* the provider left the test's
+    /// hands (e.g. by a `ProviderFactory` closure that rebuilds providers internally).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use zeph_llm::mock::MockProvider;
+    /// use zeph_llm::provider::GenerationOverrides;
+    ///
+    /// let slot = Arc::new(Mutex::new(None));
+    /// let provider = MockProvider::default()
+    ///     .with_overrides_capture(Arc::clone(&slot))
+    ///     .with_generation_overrides(GenerationOverrides {
+    ///         temperature: Some(0.2),
+    ///         ..Default::default()
+    ///     });
+    /// assert_eq!(slot.lock().unwrap().as_ref().unwrap().temperature, Some(0.2));
+    /// ```
+    #[must_use]
+    pub fn with_overrides_capture(mut self, slot: Arc<Mutex<Option<GenerationOverrides>>>) -> Self {
+        self.captured_overrides = slot;
         self
     }
 

@@ -40,6 +40,9 @@ unstable-llm-providers = ["dep:agent-client-protocol-schema", "agent-client-prot
 unstable-logout = []
 unstable-auth-methods = ["agent-client-protocol/unstable_auth_methods"]
 unstable-boolean-config = ["agent-client-protocol/unstable_boolean_config"]
+# Wires the real $/cancel_request protocol notification (agent-client-protocol crate level,
+# available since SDK 0.15.1) onto the existing internal cancel_signal. Not in `default` — see #5362.
+unstable-cancel-request = ["agent-client-protocol/unstable_cancel_request"]
 # message-id stabilized in acp 0.14.0; no upstream feature gate needed
 unstable-message-id = []
 # session-add-dirs stabilized in acp 0.14.0; no upstream feature gate needed
@@ -87,6 +90,7 @@ axum = { workspace = true, features = ["ws"] }
 tempfile.workspace = true
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 tower = { workspace = true, features = ["util"] }
+zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

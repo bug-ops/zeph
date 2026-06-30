@@ -8,7 +8,7 @@ tags:
   - protocol
   - acp
 created: 2026-04-08
-updated: 2026-06-30
+updated: 2026-07-01
 status: approved
 related:
   - "[[MOC-specs]]"
@@ -30,6 +30,8 @@ related:
 | 1.2 | 2026-05-29 | sdd | Mark Providers API, Elicitation protocol, Session Usage, and session/delete as implemented; update SDK to 0.12.1; wire IDE-provided MCP servers into do_new_session; add blocking-await timeout note |
 | 1.3 | 2026-06-06 | sdd | ACP 0.14.0 protocol bump: bumped core 0.12.1→0.14.0, schema pinned =0.13.6; removed session/set_model RPC (model switching preserved via set_config_option); removed inbound message-id echo feature; renamed provider ext-method types to singular; stabilized delete/logout/resume/add-dirs feature flags; renamed session-usage upstream gate; added elicitation core passthrough; documented MessageId newtype change |
 | 1.4 | 2026-06-30 | developer | ACP 1.0.1 schema-path migration: bumped core 0.14.0→1.0.1, schema pinned =1.1.0; mechanical `schema::X` → `schema::v1::X` reorg (root re-export removed upstream), `ProtocolVersion`/`MaybeUndefined`/`IntoOption`/`IntoMaybeUndefined` stay flat; removed root re-exports `cookbook`/`handler`/`jsonrpcmsg`/six message enums; deleted 5 long-dead `#[cfg(any())]` test modules (153 unverifiable sites); no handler/transport/builder logic changed; `unstable_cancel_request` and `model_config` evaluated and deferred to follow-up issues |
+| 1.5 | 2026-07-01 | developer | Adopt `model_config` option category (#5361): new `config_id="temperature"` `session/set_config_option`, presets precise/balanced/creative, `[acp.model_config]` config section, CLI + wizard integration. Wire `unstable_cancel_request` (#5362): new `unstable-cancel-request` Cargo feature (not in `default`), `$/cancel_request` bridged onto `cancel_signal: Arc<Notify>` via `Responder::cancellation()` in `session/prompt`, plus a low-level tracing-only `CancelRequestNotification` handler in the `Agent.builder()` chain. Added test coverage for the 8 previously-untested handler files (#5367). |
+| 1.6 | 2026-07-01 | developer | Review fix pass on #5361/#5362: (S-C1) `default_temperature_preset` is now primed into the effective `provider_override` at session creation (`do_new_session`/`do_load_session`/`do_fork_session`/`do_resume_session`), not just advertised in the IDE dropdown; (S-C2) the `$/cancel_request` watcher select is now `biased` with prompt completion checked first, and `drain_agent_events` drains a stale `cancel_signal` permit before its main loop, so a cancellation resolving at/after prompt completion can no longer leak into the next, unrelated prompt (also hardens the pre-existing `session/cancel` no-active-prompt race — `cancel_before_prompt_returns_cancelled` renamed to `cancel_before_prompt_is_a_no_op` to reflect the corrected semantics). Documented fork/resume reset behavior for `temperature_preset` (#5373 tracking issue filed); filed #5374 for the untested `resume_session` store-backed path. |
 
 ---
 
@@ -300,7 +302,7 @@ exposing tools over ACP.
 | `unstable-logout` | **tombstone** `= []` | Stabilized — logout handler is unconditional in core 1.0.1 (since the 0.14.0 bump). Flag retained as no-op. |
 | `unstable-session-add-dirs` | **tombstone** `= []` | Stabilized — `additional_directories` field is plain `Vec<PathBuf>`, unconditional since schema 0.13.6 (now schema 1.1.0). Flag retained as no-op. |
 | `unstable-message-id` | **tombstone** `= []` | Removed — `PromptRequest.message_id` and `PromptResponse.user_message_id` deleted upstream. Entire inbound echo feature removed. Flag retained as no-op for workspace forwarding. |
-| `unstable_cancel_request` | **not adopted** | Available at the ACP-crate level since SDK 0.15.1 (predates Zeph's 0.14.0 baseline; not "new in 1.0.1" relative to upstream, only relative to Zeph's prior pin). Exposes `RequestCancellation` + `is_cancel_request_notification`. Zeph does **not** define an `unstable-cancel-request` Cargo feature and does **not** wire a `$/cancel_request` handler — deferred to a follow-up issue; today cancellation is handled entirely via the internal `cancel_signal: Arc<Notify>` in `agent/handlers/cancel.rs` (`session/cancel`). |
+| `unstable-cancel-request` | **active** | Implemented (#5362). Maps to upstream `agent-client-protocol/unstable_cancel_request` (available at the ACP-crate level since SDK 0.15.1). Not in `default` — opt-in only. The `session/prompt` handler (`agent/handlers/prompt.rs`) bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the session's existing `cancel_signal: Arc<Notify>` (the same signal `session/cancel` notifies in `agent/handlers/cancel.rs`) via a short-lived watcher task that races cancellation against prompt completion. A low-level `CancelRequestNotification` handler is also registered in the `Agent.builder()` chain (`agent/mod.rs`) for tracing-only observability — the SDK updates per-request cancellation markers automatically regardless of whether a handler is registered. |
 | `unstable-session-model` | **DELETED** | Removed entirely — `session/set_model` RPC deleted upstream. Feature name removed from Cargo.toml and root `Cargo.toml`. Model switching survives via `set_config_option`. |
 
 > **Tombstone flags** are `= []` no-ops retained solely so root `Cargo.toml` feature forwarding
@@ -329,6 +331,33 @@ concept, NOT a replacement for model switching. Mode and model are independent.
 
 > **NEVER** describe the removal of `session/set_model` as a capability loss. Model switching
 > survives unconditionally via `session/set_config_option`.
+
+### Model Parameters (`model_config` category)
+
+**Status: implemented** (#5361)
+
+Distinct from the `model` selector above, `session/set_config_option` with `config_id="temperature"`
+(category `SessionConfigOptionCategory::ModelConfig`, stabilized unconditionally in schema 1.1.0)
+adjusts a parameter of the *currently selected* model rather than switching models. Zeph exposes
+one preset-based parameter today:
+
+- **Sampling temperature** — discrete presets `precise` (0.2) / `balanced` (0.7, default) /
+  `creative` (1.0), since the ACP `SessionConfigOption` select type only supports discrete values,
+  not free-form numeric input. Applied via `zeph_llm::provider::GenerationOverrides` on top of the
+  provider returned by `provider_factory(model_key)` — the same rebuild-on-switch mechanism the
+  `model` option already used, so switching either option preserves the other's current setting.
+
+Configured via `[acp.model_config].default_temperature_preset` (applies to new sessions); shown
+to IDE clients alongside the `model` option (only when `available_models` is non-empty, since
+both require the provider-factory machinery); changeable per-session via `set_config_option`.
+Applied to the session's *effective* provider (not just the advertised dropdown value) from the
+session's very first prompt, via the same `provider_with_temperature` rebuild mechanism used for
+explicit switches.
+
+`session/fork` and `session/resume` reset `temperature_preset` to the configured default rather
+than inheriting the source session's current value, consistent with the pre-existing
+`thinking_enabled`/`auto_approve_level` reset behavior — see #5373 for a tracking issue covering
+inheritance/persistence of all four session-config fields on fork/resume.
 
 ---
 
@@ -551,7 +580,7 @@ without `_` prefix are rejected).
 | Schema crate `1.1.0` removed the flat `pub use v1::*` root re-export (schema types now live only under `schema::v1::`); ACP crate `1.0.1` mirrors this in `schema/mod.rs` | Mechanical `acp::schema::X` → `acp::schema::v1::X` reorg across `crates/zeph-acp/src/**` and `crates/zeph-acp/tests/**` (~506 live sites); `ProtocolVersion`, `MaybeUndefined`, `IntoOption`, `IntoMaybeUndefined` stay flat at crate root — explicitly excluded from the reorg | **Resolved** |
 | Root re-exports `cookbook`, `handler`, `jsonrpcmsg`, and the six root enum re-exports (`AgentRequest`/`AgentResponse`/`AgentNotification`/`ClientRequest`/`ClientResponse`/`ClientNotification`) removed from the ACP crate root | Zeph used none of `cookbook`/`handler`/`jsonrpcmsg`; the only root-enum use site (`tests/integration.rs` `acp::ClientRequest::ExtMethodRequest`) repointed to `acp::schema::v1::ClientRequest::ExtMethodRequest` | **Resolved** |
 | `Builder`/`ConnectionTo`/`Dispatch`/`Responder`/`ByteStreams`/`on_receive_request!`/`on_receive_dispatch!` builder API | Byte-identical between 0.14.0 and 1.0.1 for the methods Zeph uses — no handler, transport, or builder-chain code changed shape | **Resolved — no action** |
-| Feature flags: ACP crate `[features]` add only `unstable_cancel_request`; schema `[features]` unchanged | No renames affecting Zeph's existing `unstable-*` feature mappings; `unstable_cancel_request` evaluated and deferred (#5362), not adopted in this PR | **Resolved — no action** |
+| Feature flags: ACP crate `[features]` add only `unstable_cancel_request`; schema `[features]` unchanged | No renames affecting Zeph's existing `unstable-*` feature mappings; `unstable_cancel_request` evaluated and deferred in this PR, since adopted via the `unstable-cancel-request` Zeph feature (#5362) | **Resolved** |
 | `model_config` option category stabilized in schema 1.1.0 (reachable, schema 1.2.0 stabilizes `unstable_cancel_request` but is **not** reachable — ACP 1.0.1 pins schema `=1.1.0` exactly) | Evaluated and deferred to a follow-up issue (#5361) to keep this PR a clean mechanical bump | **Deferred — not capability loss** |
 | 5 long-dead `#[cfg(any())]` test modules (153 of 616 `acp::schema::` src sites, pre-dating ACP 0.11) were unreachable by any feature toggle and contained stale pre-0.14.0 root-path references that didn't even compile | Deleted entirely: `terminal.rs`, `custom.rs`, `fs.rs`, `mcp_bridge.rs` (inline dead `mod tests`), `agent/mod.rs` + external `agent/tests.rs` (dead `mod tests;` declaration) — removes false-green risk where a sed-rewritten but type-unchecked block would silently mask path errors | **Resolved** |
 
@@ -581,8 +610,8 @@ without `_` prefix are rejected).
 | I18 | Re-point `unstable-session-usage` gate | **Implemented** | ✓ Done | — |
 | I19 | Add elicitation core passthrough | **Implemented** | ✓ Done | — |
 | I20 | SDK upgrade 0.14.0 → 1.0.1 (schema-path reorg) | **Implemented** (this PR) | ✓ Done | — |
-| I21 | Adopt `model_config` option category | Deferred — schema 1.1.0 stabilizes it but Zeph does not expose it | Follow-up issue #5361 | P3 |
-| I22 | Wire `unstable_cancel_request` ($/cancel_request handler) | Deferred — feature flag not added, no handler wired | Follow-up issue #5362 | P3 |
+| I21 | Adopt `model_config` option category | **Implemented** (#5361) | ✓ Done | — |
+| I22 | Wire `unstable_cancel_request` ($/cancel_request handler) | **Implemented** (#5362) | ✓ Done | — |
 
 ---
 
@@ -684,8 +713,8 @@ require Zeph adaptation when stabilized:
 - Meta-propagation
 
 `unstable_cancel_request` has graduated out of this list — it is implemented (not just RFD) at
-the ACP-crate level since SDK 0.15.1, see "Feature Flags" above; Zeph has evaluated and deferred
-adoption (#5362), it is not blocked on upstream availability.
+the ACP-crate level since SDK 0.15.1, and Zeph adopted it via the `unstable-cancel-request`
+feature (#5362); see "Feature Flags" above.
 
 No action needed now. Monitor upstream v2 progress at https://github.com/agentclientprotocol/rust-sdk.
 

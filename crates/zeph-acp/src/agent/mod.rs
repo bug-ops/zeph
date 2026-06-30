@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use parking_lot::{Mutex, RwLock};
 
 use agent_client_protocol as acp;
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "unstable-elicitation")]
 use tokio::task::JoinHandle;
@@ -34,7 +34,7 @@ use zeph_core::{
     StopHint,
 };
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::LlmProvider as _;
+use zeph_llm::provider::{GenerationOverrides, LlmProvider as _};
 use zeph_mcp::McpManager;
 use zeph_mcp::manager::ServerEntry;
 use zeph_memory::ConversationId;
@@ -401,6 +401,9 @@ pub(crate) struct SessionEntry {
     thinking_enabled: AtomicBool,
     /// Auto-approve level for this session ("suggest" | "auto-edit" | "full-auto").
     auto_approve_level: Mutex<String>,
+    /// Sampling-temperature preset for this session, advertised under the `model_config`
+    /// `session/set_config_option` category (`config_id = "temperature"`).
+    temperature_preset: Mutex<zeph_config::AcpTemperaturePreset>,
     /// Shell executor for this session, retained so the event loop can release terminals
     /// after `tool_call_update` notifications are sent (ACP requires the terminal to
     /// remain alive until after the notification that embeds it).
@@ -497,6 +500,8 @@ pub struct ZephAcpAgentState {
     auth_methods_config: Vec<zeph_core::config::AcpAuthMethod>,
     /// Timeout configuration for ACP operations (terminal, elicitation, MCP bridge).
     pub(crate) timeouts: zeph_config::AcpTimeoutsConfig,
+    /// Model-related configuration parameters (from `[acp.model_config]`).
+    pub(crate) model_config: zeph_config::AcpModelConfigConfig,
     /// Injection-detection-only sanitizer for advisory scanning of inbound ACP prompts.
     ///
     /// Spotlight wrapping is explicitly disabled: operator-typed prompts must not be
@@ -557,6 +562,7 @@ impl ZephAcpAgentState {
             additional_directories_allow: Vec::new(),
             auth_methods_config: vec![zeph_core::config::AcpAuthMethod::Agent],
             timeouts: zeph_config::AcpTimeoutsConfig::default(),
+            model_config: zeph_config::AcpModelConfigConfig::default(),
             prompt_injection_detector: ContentSanitizer::new(&ContentIsolationConfig {
                 spotlight_untrusted: false,
                 ..ContentIsolationConfig::default()
@@ -596,6 +602,13 @@ impl ZephAcpAgentState {
     #[must_use]
     pub fn with_timeouts(mut self, timeouts: zeph_config::AcpTimeoutsConfig) -> Self {
         self.timeouts = timeouts;
+        self
+    }
+
+    /// Configure model-related configuration parameters (`[acp.model_config]`).
+    #[must_use]
+    pub fn with_model_config(mut self, model_config: zeph_config::AcpModelConfigConfig) -> Self {
+        self.model_config = model_config;
         self
     }
 
@@ -641,6 +654,21 @@ impl ZephAcpAgentState {
             .into_iter()
             .next()
             .unwrap_or_default()
+    }
+
+    /// Returns the `cancel_signal` for `session_id`, if the session is currently in memory.
+    ///
+    /// Used to bridge the real ACP `$/cancel_request` protocol notification onto the same
+    /// internal signal `session/cancel` already notifies (see `handlers/prompt.rs`).
+    #[cfg(feature = "unstable-cancel-request")]
+    pub(crate) fn session_cancel_signal(
+        &self,
+        session_id: &acp::schema::v1::SessionId,
+    ) -> Option<Arc<tokio::sync::Notify>> {
+        self.sessions
+            .lock()
+            .get(session_id)
+            .map(|entry| Arc::clone(&entry.cancel_signal))
     }
 
     #[must_use]
@@ -1248,8 +1276,13 @@ impl ZephAcpAgentState {
         initial_model: &str,
     ) -> acp::schema::v1::NewSessionResponse {
         let available_models = self.available_models_snapshot();
-        let config_options =
-            build_config_options(&available_models, initial_model, false, "suggest");
+        let config_options = build_config_options(
+            &available_models,
+            initial_model,
+            false,
+            "suggest",
+            self.model_config.default_temperature_preset,
+        );
         let default_mode_id = acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID);
         let mut resp = acp::schema::v1::NewSessionResponse::new(session_id)
             .modes(build_mode_state(&default_mode_id));
@@ -1320,6 +1353,7 @@ impl ZephAcpAgentState {
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
+        self.prime_provider_override(&provider_override, &initial_model);
         #[cfg_attr(not(feature = "unstable-elicitation"), allow(unused_mut))]
         let mut entry = Self::make_session_entry(
             handle,
@@ -1327,6 +1361,7 @@ impl ZephAcpAgentState {
             session_cwd.clone(),
             shell_executor,
             provider_override,
+            self.model_config.default_temperature_preset,
         );
         #[cfg(feature = "unstable-elicitation")]
         {
@@ -1611,12 +1646,14 @@ impl ZephAcpAgentState {
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
+        self.prime_provider_override(&provider_override, &initial_model);
         let entry = Self::make_session_entry(
             handle,
             initial_model,
             session_cwd.clone(),
             shell_executor,
             provider_override,
+            self.model_config.default_temperature_preset,
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -1779,12 +1816,14 @@ impl ZephAcpAgentState {
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
+        self.prime_provider_override(&provider_override, &initial_model);
         let entry = Self::make_session_entry(
             handle,
             initial_model.clone(),
             args.cwd.clone(),
             shell_executor,
             provider_override,
+            self.model_config.default_temperature_preset,
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -1807,8 +1846,13 @@ impl ZephAcpAgentState {
         );
 
         let available_models = self.available_models_snapshot();
-        let config_options =
-            build_config_options(&available_models, &initial_model, false, "suggest");
+        let config_options = build_config_options(
+            &available_models,
+            &initial_model,
+            false,
+            "suggest",
+            self.model_config.default_temperature_preset,
+        );
         let default_mode_id = acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID);
         let mut resp = acp::schema::v1::ForkSessionResponse::new(new_id)
             .modes(build_mode_state(&default_mode_id));
@@ -1887,12 +1931,14 @@ impl ZephAcpAgentState {
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
+        self.prime_provider_override(&provider_override, &initial_model);
         let entry = Self::make_session_entry(
             handle,
             initial_model,
             args.cwd.clone(),
             shell_executor,
             provider_override,
+            self.model_config.default_temperature_preset,
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -1936,7 +1982,7 @@ impl ZephAcpAgentState {
         };
         let value: &str = &value_str;
 
-        let (current_model, thinking, auto_approve) = {
+        let (current_model, thinking, auto_approve, temperature_preset) = {
             let sessions = self.sessions.lock();
             let entry = sessions
                 .get(&args.session_id)
@@ -1948,6 +1994,7 @@ impl ZephAcpAgentState {
                 entry.current_model.lock().clone(),
                 entry.thinking_enabled.load(Ordering::Relaxed),
                 entry.auto_approve_level.lock().clone(),
+                *entry.temperature_preset.lock(),
             )
         };
 
@@ -1956,6 +2003,7 @@ impl ZephAcpAgentState {
             &current_model,
             thinking,
             &auto_approve,
+            temperature_preset,
         );
 
         let changed_option = config_options.iter().find(|o| o.id.0 == config_id).cloned();
@@ -2066,19 +2114,36 @@ impl ZephAcpAgentState {
     ) -> acp::Result<()> {
         match config_id {
             "model" => {
-                let Some(ref factory) = self.provider_factory else {
-                    return Err(acp::Error::internal_error().data("model switching not configured"));
-                };
                 let available_models = self.available_models_snapshot();
                 if !available_models.iter().any(|m| m == value) {
                     return Err(acp::Error::invalid_request().data("model not in allowed list"));
                 }
-                let Some(new_provider) = factory(value) else {
-                    return Err(acp::Error::invalid_request().data("unknown model"));
-                };
+                let temperature_preset = *entry.temperature_preset.lock();
+                let new_provider = self.provider_with_temperature(value, temperature_preset)?;
                 *entry.provider_override.write() = Some(new_provider);
                 value.clone_into(&mut *entry.current_model.lock());
                 tracing::debug!(session_id = %session_id, model = %value, "ACP model switched");
+            }
+            "temperature" => {
+                let preset: zeph_config::AcpTemperaturePreset = value.parse().map_err(|()| {
+                    acp::Error::invalid_request()
+                        .data("temperature must be precise, balanced, or creative")
+                })?;
+                let model_key = {
+                    let current = entry.current_model.lock().clone();
+                    if current.is_empty() {
+                        self.initial_model()
+                    } else {
+                        current
+                    }
+                };
+                if model_key.is_empty() {
+                    return Err(acp::Error::internal_error().data("model switching not configured"));
+                }
+                let new_provider = self.provider_with_temperature(&model_key, preset)?;
+                *entry.provider_override.write() = Some(new_provider);
+                *entry.temperature_preset.lock() = preset;
+                tracing::debug!(session_id = %session_id, temperature = %preset.as_str(), "ACP temperature preset changed");
             }
             "thinking" => {
                 let enabled = match value {
@@ -2106,6 +2171,49 @@ impl ZephAcpAgentState {
             }
         }
         Ok(())
+    }
+
+    /// Build a provider for `model_key` with `preset`'s sampling temperature applied.
+    ///
+    /// Shared by the `model` and `temperature` `model_config` config options so switching
+    /// either one preserves the other's current setting.
+    fn provider_with_temperature(
+        &self,
+        model_key: &str,
+        preset: zeph_config::AcpTemperaturePreset,
+    ) -> acp::Result<AnyProvider> {
+        let Some(ref factory) = self.provider_factory else {
+            return Err(acp::Error::internal_error().data("model switching not configured"));
+        };
+        let Some(provider) = factory(model_key) else {
+            return Err(acp::Error::invalid_request().data("unknown model"));
+        };
+        Ok(provider.with_generation_overrides(GenerationOverrides {
+            temperature: Some(preset.temperature()),
+            ..Default::default()
+        }))
+    }
+
+    /// Prime a freshly created session's `provider_override` with the configured default
+    /// `[acp.model_config].default_temperature_preset`, so that preset is the *effective*
+    /// sampling temperature from the session's very first prompt — not just the value
+    /// advertised in the IDE dropdown until an explicit `session/set_config_option` call.
+    ///
+    /// No-op (leaves `provider_override` as `None`, falling back to the spawner's own
+    /// provider) when model switching isn't configured (`provider_factory` unset) or
+    /// `initial_model` doesn't resolve to a known provider — mirrors
+    /// `provider_with_temperature`'s error cases, which are expected outside model-switching
+    /// setups.
+    fn prime_provider_override(
+        &self,
+        provider_override: &Arc<RwLock<Option<AnyProvider>>>,
+        initial_model: &str,
+    ) {
+        if let Ok(provider) = self
+            .provider_with_temperature(initial_model, self.model_config.default_temperature_preset)
+        {
+            *provider_override.write() = Some(provider);
+        }
     }
 
     /// Dispatch a slash command, returning a short-circuit `PromptResponse`.
@@ -2437,6 +2545,15 @@ impl ZephAcpAgentState {
         // Per-turn token totals for PromptResponse.usage (separate from session accumulator).
         #[cfg(feature = "unstable-session-usage")]
         let mut turn_usage = TurnUsage::default();
+        if let Some(ref signal) = cancel_signal {
+            // Drain a stale permit left on the shared per-session `Notify` by a cancellation
+            // that resolved after the *previous* prompt on this session had already finished
+            // (`do_cancel`'s `notify_one()`, or the `$/cancel_request` bridge in
+            // `handlers/prompt.rs`) — without this, that leftover permit would be consumed by
+            // this prompt's very first `signal.notified()` check below and silently cancel an
+            // unrelated, brand-new prompt.
+            signal.notified().now_or_never();
+        }
         loop {
             let event = if let Some(ref signal) = cancel_signal {
                 tokio::select! {
@@ -2702,6 +2819,7 @@ impl ZephAcpAgentState {
         cwd: PathBuf,
         shell_executor: Option<AcpShellExecutor>,
         provider_override: Arc<RwLock<Option<AnyProvider>>>,
+        temperature_preset: zeph_config::AcpTemperaturePreset,
     ) -> SessionEntry {
         // Bounded: prevents a misbehaving IDE from buffering notifications without limit.
         // 256 slots cover any realistic burst between drainer loop iterations.
@@ -2729,6 +2847,7 @@ impl ZephAcpAgentState {
             title: Mutex::new(None),
             thinking_enabled: AtomicBool::new(false),
             auto_approve_level: Mutex::new("suggest".to_owned()),
+            temperature_preset: Mutex::new(temperature_preset),
             shell_executor,
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge_handle: None,
@@ -3088,6 +3207,11 @@ pub async fn run_agent(
         req_handler!(state, logout::handle_logout),
         acp::on_receive_request!(),
     );
+    #[cfg(feature = "unstable-cancel-request")]
+    let builder = builder.on_receive_notification(
+        notif_handler!(state, handlers::cancel_request::handle_cancel_request),
+        acp::on_receive_notification!(),
+    );
 
     builder
         .on_receive_dispatch(
@@ -3151,6 +3275,7 @@ mod notify_timeout_tests {
             std::path::PathBuf::from("."),
             None,
             provider_override,
+            zeph_config::AcpTemperaturePreset::default(),
         );
         // Insert without starting the drainer — no ack will ever be sent.
         agent.sessions.lock().insert(session_id.clone(), entry);

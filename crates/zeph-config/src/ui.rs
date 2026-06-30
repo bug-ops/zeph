@@ -683,6 +683,10 @@ pub struct AcpConfig {
     /// Timeout configuration for ACP operations (`[acp.timeouts]`).
     #[serde(default)]
     pub timeouts: AcpTimeoutsConfig,
+    /// Model-related configuration parameters (`[acp.model_config]`), advertised to IDE
+    /// clients via the `model_config` `session/set_config_option` category (schema 1.1.0+).
+    #[serde(default)]
+    pub model_config: AcpModelConfigConfig,
 }
 
 impl Default for AcpConfig {
@@ -706,6 +710,7 @@ impl Default for AcpConfig {
             message_ids_enabled: true,
             subagents: AcpSubagentsConfig::default(),
             timeouts: AcpTimeoutsConfig::default(),
+            model_config: AcpModelConfigConfig::default(),
         }
     }
 }
@@ -734,8 +739,80 @@ impl std::fmt::Debug for AcpConfig {
             .field("message_ids_enabled", &self.message_ids_enabled)
             .field("subagents", &self.subagents)
             .field("timeouts", &self.timeouts)
+            .field("model_config", &self.model_config)
             .finish()
     }
+}
+
+/// Sampling-temperature preset for ACP `model_config` session options.
+///
+/// Maps a discrete, IDE-friendly selector (`"precise"` | `"balanced"` | `"creative"`) onto a
+/// concrete sampling temperature, since the ACP `SessionConfigOption` select type only
+/// supports discrete values, not a free-form numeric input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpTemperaturePreset {
+    /// Low temperature (0.2) — more deterministic, focused completions.
+    Precise,
+    /// Moderate temperature (0.7) — balanced determinism and variety. Default.
+    #[default]
+    Balanced,
+    /// High temperature (1.0) — more varied, exploratory completions.
+    Creative,
+}
+
+impl AcpTemperaturePreset {
+    /// Returns the concrete sampling temperature for this preset.
+    #[must_use]
+    pub fn temperature(self) -> f64 {
+        match self {
+            Self::Precise => 0.2,
+            Self::Balanced => 0.7,
+            Self::Creative => 1.0,
+        }
+    }
+
+    /// Returns the ACP wire identifier for this preset (`"precise"` | `"balanced"` | `"creative"`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Precise => "precise",
+            Self::Balanced => "balanced",
+            Self::Creative => "creative",
+        }
+    }
+}
+
+impl std::str::FromStr for AcpTemperaturePreset {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "precise" => Ok(Self::Precise),
+            "balanced" => Ok(Self::Balanced),
+            "creative" => Ok(Self::Creative),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Model-related configuration parameters configuration, nested under `[acp.model_config]`.
+///
+/// Backs the ACP `model_config` `session/set_config_option` category (schema 1.1.0+), which is
+/// distinct from the `model` category: `model` selects which model is active, `model_config`
+/// adjusts a parameter (e.g. sampling temperature) of the currently selected model.
+///
+/// # Example (TOML)
+///
+/// ```toml
+/// [acp.model_config]
+/// default_temperature_preset = "balanced"
+/// ```
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AcpModelConfigConfig {
+    /// Default sampling-temperature preset applied to new ACP sessions. Default: `"balanced"`.
+    #[serde(default)]
+    pub default_temperature_preset: AcpTemperaturePreset,
 }
 
 /// Timeout configuration for ACP operations.

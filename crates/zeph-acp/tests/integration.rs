@@ -36,6 +36,20 @@ fn echo_spawner() -> AgentSpawner {
     })
 }
 
+/// Like `echo_spawner`, but loops to handle multiple sequential `session/prompt` turns on the
+/// same session instead of returning (and dropping the channel) after the first one.
+fn multi_turn_echo_spawner() -> AgentSpawner {
+    Arc::new(|mut channel, _ctx, _session| {
+        Box::pin(async move {
+            while let Ok(Some(_)) = channel.recv().await {
+                if channel.flush_chunks().await.is_err() {
+                    break;
+                }
+            }
+        })
+    })
+}
+
 /// Spawner that sends N text chunks then flushes.
 fn text_chunks_spawner(chunks: Vec<&'static str>) -> AgentSpawner {
     Arc::new(move |mut channel, _ctx, _session| {
@@ -56,6 +70,27 @@ fn test_config(name: &str) -> AcpServerConfig {
         agent_name: name.to_owned(),
         agent_version: "0.0.1".to_owned(),
         max_sessions: 8,
+        ..AcpServerConfig::default()
+    }
+}
+
+/// Server config with a provider factory and `available_models`, required for `model` /
+/// `temperature` `session/set_config_option` coverage. Every model key resolves to a fresh
+/// `MockProvider`.
+fn test_config_with_models(name: &str, models: Vec<&str>) -> AcpServerConfig {
+    let factory: zeph_acp::ProviderFactory = Arc::new(|_key: &str| {
+        Some(zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default(),
+        ))
+    });
+    AcpServerConfig {
+        agent_name: name.to_owned(),
+        agent_version: "0.0.1".to_owned(),
+        max_sessions: 8,
+        provider_factory: Some(factory),
+        available_models: Arc::new(parking_lot::RwLock::new(
+            models.into_iter().map(str::to_owned).collect(),
+        )),
         ..AcpServerConfig::default()
     }
 }
@@ -84,6 +119,16 @@ fn duplex_pair() -> (
 /// Creates a temporary working directory for tests that need a real filesystem path.
 fn temp_workdir() -> TempDir {
     tempfile::tempdir().expect("failed to create temp dir")
+}
+
+/// Extracts the current selected value from a `model` / `temperature` (`Select`-kind)
+/// `SessionConfigOption`. Panics if the option is not a `Select`.
+fn select_current_value(option: &acp::schema::v1::SessionConfigOption) -> &str {
+    match &option.kind {
+        acp::schema::v1::SessionConfigKind::Select(select) => select.current_value.0.as_ref(),
+        #[allow(unreachable_patterns)]
+        other => panic!("expected a Select config option, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -416,23 +461,25 @@ async fn drain_until_stop_collects_text_chunks() {
 /// AC #10: `session/cancel` prior to prompt causes the prompt to complete with
 /// `StopReason::Cancelled`.
 ///
-/// `do_cancel` stores its signal via `cancel_signal.notify_one()`. The `drain_agent_events`
-/// biased select checks `signal.notified()` before reading events, so a cancel sent
-/// immediately before (or during) the prompt causes `cancelled = true` and the
-/// `PromptResponse` carries `StopReason::Cancelled`.
+/// `do_cancel` stores its signal via `cancel_signal.notify_one()`. `drain_agent_events` now
+/// drains any stale permit on this shared per-session `Notify` *before* its main loop starts
+/// (hardening against the same leftover-permit race fixed for the `$/cancel_request` bridge —
+/// see `late_cancel_after_prompt_completion_does_not_affect_next_prompt`), so a cancel that
+/// arrives while no prompt is in flight on this session is a no-op rather than retroactively
+/// cancelling whichever prompt happens to be sent next. `session/cancel` has no request id to
+/// scope it to a specific turn, so there is no well-defined "current turn" for it to cancel
+/// when none is running.
 ///
-/// This test sends `CancelNotification` before `PromptRequest` so that the signal
-/// is already armed when the server's drain loop starts. The biased select inside
-/// `drain_agent_events` picks it up on the first poll.
+/// This test sends `CancelNotification` before any `PromptRequest` on a brand-new session and
+/// asserts the upcoming prompt completes normally — i.e. the early cancel notification is
+/// dropped, not retroactively applied.
 #[tokio::test(flavor = "current_thread")]
-async fn cancel_before_prompt_returns_cancelled() {
+async fn cancel_before_prompt_is_a_no_op() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let workdir = temp_workdir();
             let (sw, sr, cw, cr) = duplex_pair();
-            // echo_spawner reads the message and flushes, but drain exits immediately because
-            // cancel_signal is already notified (biased select fires the cancel arm first).
             let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
             let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
                 cx.send_request(acp::schema::v1::InitializeRequest::new(
@@ -447,7 +494,7 @@ async fn cancel_before_prompt_returns_cancelled() {
                     .await?
                     .session_id;
 
-                // Send cancel BEFORE the prompt so the signal is armed when drain starts.
+                // Cancel notification arrives with no prompt in flight on this session.
                 cx.send_notification(acp::schema::v1::CancelNotification::new(session_id.clone()))?;
 
                 let content = vec![acp::schema::v1::ContentBlock::Text(
@@ -460,8 +507,9 @@ async fn cancel_before_prompt_returns_cancelled() {
 
                 assert_eq!(
                     resp.stop_reason,
-                    acp::schema::v1::StopReason::Cancelled,
-                    "expected Cancelled when cancel is sent before prompt, got {:?}",
+                    acp::schema::v1::StopReason::EndTurn,
+                    "a cancel notification sent before any prompt is in flight must not \
+                     retroactively cancel the next prompt, got {:?}",
                     resp.stop_reason,
                 );
                 Ok(())
@@ -470,6 +518,687 @@ async fn cancel_before_prompt_returns_cancelled() {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
                     assert!(result.is_ok(), "cancel_before_prompt test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// Regression test for the fixed `drain_agent_events` stale-permit race (review S-C2): a
+/// cancellation that resolves once a prompt has *already finished* — e.g. a `session/cancel`
+/// notification, or a late `$/cancel_request` racing the bridge in `handlers/prompt.rs` —
+/// must not silently cancel the next, unrelated prompt on the same session via a leftover
+/// permit on the shared `cancel_signal: Arc<Notify>`.
+///
+/// Simulated deterministically via the public `CancelNotification` protocol message (which
+/// notifies the very same `cancel_signal` `do_cancel` and the `$/cancel_request` bridge both
+/// use) sent strictly *after* the first prompt's response has already been received.
+#[tokio::test(flavor = "current_thread")]
+async fn late_cancel_after_prompt_completion_does_not_affect_next_prompt() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut =
+                serve_connection(multi_turn_echo_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let first_content = vec![acp::schema::v1::ContentBlock::Text(
+                    acp::schema::v1::TextContent::new("first"),
+                )];
+                let first = cx
+                    .send_request(acp::schema::v1::PromptRequest::new(
+                        session_id.clone(),
+                        first_content,
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(
+                    first.stop_reason,
+                    acp::schema::v1::StopReason::EndTurn,
+                    "first prompt must complete normally before the late cancel arrives"
+                );
+
+                // No prompt is in flight at this point — this notify leaves a permit on the
+                // shared `cancel_signal` that must be drained before the next prompt's
+                // `drain_agent_events` loop starts.
+                cx.send_notification(acp::schema::v1::CancelNotification::new(session_id.clone()))?;
+
+                let second_content = vec![acp::schema::v1::ContentBlock::Text(
+                    acp::schema::v1::TextContent::new("second"),
+                )];
+                let second = cx
+                    .send_request(acp::schema::v1::PromptRequest::new(
+                        session_id,
+                        second_content,
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(
+                    second.stop_reason,
+                    acp::schema::v1::StopReason::EndTurn,
+                    "a cancel notification that arrives between two prompts must not cancel \
+                     the next, unrelated prompt, got {:?}",
+                    second.stop_reason,
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "late cancel regression test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `authenticate` is a no-op (vault-based auth) but must round-trip successfully (#5367).
+#[tokio::test(flavor = "current_thread")]
+async fn authenticate_returns_default_response() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                cx.send_request(acp::schema::v1::AuthenticateRequest::new("agent"))
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "authenticate failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `logout` is a no-op (vault-based auth) but must round-trip successfully (#5367).
+#[tokio::test(flavor = "current_thread")]
+async fn logout_returns_default_response() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                cx.send_request(acp::schema::v1::LogoutRequest::new())
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "logout failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/close` flushes and removes the session: a subsequent `session/load` for the same
+/// id must fail since no store is configured and the in-memory entry is gone (#5367).
+#[tokio::test(flavor = "current_thread")]
+async fn close_session_removes_session_from_memory() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                cx.send_request(acp::schema::v1::CloseSessionRequest::new(
+                    session_id.clone(),
+                ))
+                .block_task()
+                .await?;
+
+                let load_err = cx
+                    .send_request(acp::schema::v1::LoadSessionRequest::new(
+                        session_id,
+                        workdir.path(),
+                    ))
+                    .block_task()
+                    .await;
+                assert!(
+                    load_err.is_err(),
+                    "loading a closed session must fail when no store is configured"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "close_session test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/delete` removes the session from `session/list` (#5367).
+#[tokio::test(flavor = "current_thread")]
+async fn delete_session_removes_session_from_list() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                cx.send_request(acp::schema::v1::DeleteSessionRequest::new(
+                    session_id.clone(),
+                ))
+                .block_task()
+                .await?;
+
+                let resp = cx
+                    .send_request(acp::schema::v1::ListSessionsRequest::new())
+                    .block_task()
+                    .await?;
+                let ids: Vec<&acp::schema::v1::SessionId> =
+                    resp.sessions.iter().map(|s| &s.session_id).collect();
+                assert!(
+                    !ids.contains(&&session_id),
+                    "deleted session must not appear in session/list: {ids:?}"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "delete_session test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/fork` creates a new session with a distinct id from the source (#5367).
+#[cfg(feature = "unstable-session-fork")]
+#[tokio::test(flavor = "current_thread")]
+async fn fork_session_creates_distinct_session_id() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let source_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let forked = cx
+                    .send_request(acp::schema::v1::ForkSessionRequest::new(
+                        source_id.clone(),
+                        workdir.path(),
+                    ))
+                    .block_task()
+                    .await?;
+
+                assert_ne!(
+                    forked.session_id, source_id,
+                    "forked session must have a distinct id from the source"
+                );
+                assert!(!forked.session_id.0.is_empty());
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "fork_session test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/resume` reconnects to an in-memory session by id (#5367).
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_reconnects_to_existing_session() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
+                    session_id,
+                    workdir.path(),
+                ))
+                .block_task()
+                .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "resume_session test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/set_mode` switches the active mode and is reflected in subsequent requests (#5367).
+#[tokio::test(flavor = "current_thread")]
+async fn set_session_mode_switches_mode() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                cx.send_request(acp::schema::v1::SetSessionModeRequest::new(
+                    session_id,
+                    "architect",
+                ))
+                .block_task()
+                .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "set_session_mode test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/set_config_option` with `config_id="model"` switches the active model and echoes
+/// it back in `config_options` (#5367 coverage; pre-existing handler, previously untested).
+#[tokio::test(flavor = "current_thread")]
+async fn set_session_config_option_model_switches_active_model() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config_with_models("test-agent", vec!["claude:sonnet", "ollama:llama3"]),
+                sw,
+                sr,
+            );
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let resp = cx
+                    .send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                        session_id,
+                        "model",
+                        "ollama:llama3",
+                    ))
+                    .block_task()
+                    .await?;
+
+                let model_option = resp
+                    .config_options
+                    .iter()
+                    .find(|o| o.id.0.as_ref() == "model")
+                    .expect("model option must be present");
+                assert_eq!(
+                    select_current_value(model_option),
+                    "ollama:llama3",
+                    "model option must reflect the switched model"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "set_config_option model test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/set_config_option` with `config_id="temperature"` (`model_config` category, #5361)
+/// switches the sampling-temperature preset and echoes it back in `config_options`.
+#[tokio::test(flavor = "current_thread")]
+async fn set_session_config_option_temperature_preset_changes() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config_with_models("test-agent", vec!["claude:sonnet"]),
+                sw,
+                sr,
+            );
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_resp = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?;
+                let session_id = session_resp.session_id;
+
+                // The default preset ("balanced") must already be advertised on session creation.
+                let initial_temperature = session_resp
+                    .config_options
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|o| o.id.0.as_ref() == "temperature")
+                    .expect("temperature option must be advertised in new_session response");
+                assert_eq!(select_current_value(&initial_temperature), "balanced");
+
+                let resp = cx
+                    .send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                        session_id,
+                        "temperature",
+                        "creative",
+                    ))
+                    .block_task()
+                    .await?;
+
+                let temperature_option = resp
+                    .config_options
+                    .iter()
+                    .find(|o| o.id.0.as_ref() == "temperature")
+                    .expect("temperature option must be present");
+                assert_eq!(
+                    select_current_value(temperature_option),
+                    "creative",
+                    "temperature option must reflect the switched preset"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "set_config_option temperature test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// Regression test for review finding S-C1: `[acp.model_config].default_temperature_preset`
+/// must be primed into the session's *effective* provider at session creation
+/// (`prime_provider_override` in `agent/mod.rs`) — not just advertised as the `temperature`
+/// config option's current value in the IDE dropdown — even when no
+/// `session/set_config_option` call is ever made.
+///
+/// Verified via `MockProvider::with_overrides_capture`: the test-only `ProviderFactory` shares
+/// one capture slot across every provider it builds, so it observes whatever
+/// `GenerationOverrides` production code applied internally during `new_session`.
+#[tokio::test(flavor = "current_thread")]
+async fn default_temperature_preset_is_primed_at_session_creation() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+
+            let captured: Arc<std::sync::Mutex<Option<zeph_llm::provider::GenerationOverrides>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let captured_for_factory = Arc::clone(&captured);
+            let factory: zeph_acp::ProviderFactory = Arc::new(move |_key: &str| {
+                Some(zeph_llm::any::AnyProvider::Mock(
+                    zeph_llm::mock::MockProvider::default()
+                        .with_overrides_capture(Arc::clone(&captured_for_factory)),
+                ))
+            });
+
+            let mut config = test_config_with_models("test-agent", vec!["claude:sonnet"]);
+            config.provider_factory = Some(factory);
+            config.model_config = zeph_config::AcpModelConfigConfig {
+                default_temperature_preset: zeph_config::AcpTemperaturePreset::Creative,
+            };
+
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                // No session/set_config_option call is made — the default preset must already
+                // be effective from session creation alone.
+                cx.send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "client connection failed: {result:?}");
+                }
+            }
+
+            let applied_temperature = captured
+                .lock()
+                .expect("capture mutex poisoned")
+                .as_ref()
+                .and_then(|o| o.temperature);
+            assert_eq!(
+                applied_temperature,
+                Some(zeph_config::AcpTemperaturePreset::Creative.temperature()),
+                "default_temperature_preset must be primed into the effective provider at \
+                 session creation, with no session/set_config_option call made"
+            );
+        })
+        .await;
+}
+
+/// `session/set_config_option` with an unrecognized `config_id` must error, not silently
+/// succeed (#5367 coverage).
+#[tokio::test(flavor = "current_thread")]
+async fn set_session_config_option_unknown_config_id_errors() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(noop_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let err = cx
+                    .send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                        session_id,
+                        "nonexistent_option",
+                        "whatever",
+                    ))
+                    .block_task()
+                    .await;
+                assert!(err.is_err(), "unknown config_id must return an error");
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "client connection failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// The real `$/cancel_request` protocol notification (#5362), sent for the in-flight
+/// `session/prompt` JSON-RPC request, cancels the prompt the same way `session/cancel` does.
+#[cfg(feature = "unstable-cancel-request")]
+#[tokio::test(flavor = "current_thread")]
+async fn cancel_request_during_prompt_cancels() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            // echo_spawner reads the message and flushes; the $/cancel_request watcher in
+            // handle_prompt notifies the same cancel_signal session/cancel uses.
+            let server_fut = serve_connection(echo_spawner(), test_config("test-agent"), sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                let content = vec![acp::schema::v1::ContentBlock::Text(
+                    acp::schema::v1::TextContent::new("go"),
+                )];
+                let request =
+                    cx.send_request(acp::schema::v1::PromptRequest::new(session_id, content));
+                // Cancel the specific in-flight session/prompt JSON-RPC request via the real
+                // protocol-level $/cancel_request notification (distinct from session/cancel).
+                request.cancel()?;
+
+                let resp = request.block_task().await;
+                // Cooperative cancellation: the handler may still finish with EndTurn if the
+                // watcher loses the race, or return the standard cancellation error, or
+                // (when the cancel_signal wins inside drain_agent_events) complete with
+                // StopReason::Cancelled. All three are valid SDK-documented outcomes; the
+                // assertion only rules out a hang or panic.
+                match resp {
+                    Ok(r) => {
+                        assert!(matches!(
+                            r.stop_reason,
+                            acp::schema::v1::StopReason::EndTurn
+                                | acp::schema::v1::StopReason::Cancelled
+                        ));
+                    }
+                    Err(e) => {
+                        assert_eq!(
+                            i32::from(e.code),
+                            -32800,
+                            "expected request_cancelled error"
+                        );
+                    }
+                }
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "cancel_request test failed: {result:?}");
                 }
             }
         })

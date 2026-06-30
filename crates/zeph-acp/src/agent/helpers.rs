@@ -5,6 +5,7 @@
 use acp::schema::v1::*;
 use agent_client_protocol as acp;
 use zeph_common::text::xml_escape;
+use zeph_config::AcpTemperaturePreset;
 
 use zeph_core::LoopbackEvent;
 
@@ -173,15 +174,19 @@ pub(super) fn build_mode_state(current_mode_id: &SessionModeId) -> SessionModeSt
     SessionModeState::new(current_mode_id.clone(), available_session_modes())
 }
 
-/// Build all session config options: model selector, thinking toggle, and auto-approve level.
+/// Build all session config options: model selector, model parameters, thinking toggle, and
+/// auto-approve level.
 ///
 /// `current_model` is the currently selected model key; empty string means use the first.
-/// `thinking_enabled` and `auto_approve` reflect the current per-session values.
+/// `thinking_enabled`, `auto_approve`, and `temperature_preset` reflect the current per-session
+/// values. The `temperature` option (category `model_config`) is only advertised alongside the
+/// `model` selector since both require the provider factory / `available_models` machinery.
 pub(super) fn build_config_options(
     available_models: &[String],
     current_model: &str,
     thinking_enabled: bool,
     auto_approve: &str,
+    temperature_preset: AcpTemperaturePreset,
 ) -> Vec<SessionConfigOption> {
     let mut opts = Vec::new();
 
@@ -198,6 +203,19 @@ pub(super) fn build_config_options(
         opts.push(
             SessionConfigOption::select("model", "Model", current_value, model_options)
                 .category(SessionConfigOptionCategory::Model),
+        );
+        opts.push(
+            SessionConfigOption::select(
+                "temperature",
+                "Temperature",
+                temperature_preset.as_str().to_owned(),
+                vec![
+                    SessionConfigSelectOption::new("precise".to_owned(), "Precise".to_owned()),
+                    SessionConfigSelectOption::new("balanced".to_owned(), "Balanced".to_owned()),
+                    SessionConfigSelectOption::new("creative".to_owned(), "Creative".to_owned()),
+                ],
+            )
+            .category(SessionConfigOptionCategory::ModelConfig),
         );
     }
 

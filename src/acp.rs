@@ -184,6 +184,8 @@ struct SharedAgentDeps {
     acp_message_ids_enabled: bool,
     /// ACP timeout configuration (elicitation, terminal, MCP).
     acp_timeouts: zeph_config::AcpTimeoutsConfig,
+    /// ACP model-related configuration parameters (`[acp.model_config]`).
+    acp_model_config: zeph_config::AcpModelConfigConfig,
     /// Resolves current per-plugin skill dirs at hot-reload time.
     plugin_dirs_supplier: std::sync::Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>,
 
@@ -673,6 +675,7 @@ async fn build_acp_deps(
         acp_auth_methods: config.acp.auth_methods.clone(),
         acp_message_ids_enabled: config.acp.message_ids_enabled,
         acp_timeouts: config.acp.timeouts.clone(),
+        acp_model_config: config.acp.model_config.clone(),
         plugin_dirs_supplier: std::sync::Arc::new(plugin_dirs_supplier),
         #[cfg(feature = "scheduler")]
         scheduler_executor,
@@ -1443,6 +1446,7 @@ pub(crate) async fn run_acp_server(
         auth_methods: effective_auth_methods,
         message_ids_enabled: effective_message_ids,
         timeouts: deps.acp_timeouts.clone(),
+        model_config: deps.acp_model_config.clone(),
     };
 
     let shared = Arc::new(deps);
@@ -1512,6 +1516,7 @@ pub(crate) async fn run_acp_http_server(
         auth_methods: app.config().acp.auth_methods.clone(),
         message_ids_enabled: app.config().acp.message_ids_enabled,
         timeouts: app.config().acp.timeouts.clone(),
+        model_config: app.config().acp.model_config.clone(),
     };
     let shared_deps: Arc<RwLock<Option<Arc<SharedAgentDeps>>>> = Arc::new(RwLock::new(None));
     let shared_deps_for_spawner = Arc::clone(&shared_deps);

@@ -3,6 +3,8 @@
 
 pub(crate) mod authenticate;
 pub(crate) mod cancel;
+#[cfg(feature = "unstable-cancel-request")]
+pub(crate) mod cancel_request;
 pub(crate) mod close_session;
 pub(crate) mod delete_session;
 pub(crate) mod dispatch;

@@ -989,6 +989,12 @@ max_workspace_symbols = 50
 # Timeout in seconds for LSP extension method calls
 request_timeout_secs = 10
 
+[acp.model_config]
+# Default sampling-temperature preset advertised to IDE clients via the model_config
+# session/set_config_option category (config_id = "temperature"): "precise" (0.2),
+# "balanced" (0.7), or "creative" (1.0)
+default_temperature_preset = "balanced"
+
 [acp.subagents]
 # Enable ACP sub-agent delegation (allows `zeph acp run-agent` to spawn child ACP agents)
 enabled = false

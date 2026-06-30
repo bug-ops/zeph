@@ -16,6 +16,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejecting an unknown tool name to verify the client -> server leg), plus a
   `tools/list_changed` notification asserting `ToolListChangedHandler::on_tool_list_changed`
   emits a `ToolRefreshEvent`. See `crates/zeph-mcp/src/client.rs`.
+- `feat(acp)`: adopt the `model_config` `session/set_config_option` category (schema 1.1.0) for
+  per-session sampling-temperature control, independent of the `model` selector. New
+  `config_id="temperature"` option (presets `precise` 0.2 / `balanced` 0.7 / `creative` 1.0,
+  applied via `zeph_llm::GenerationOverrides`); new `[acp.model_config]` config section
+  (`default_temperature_preset`); new `zeph acp model-config show` CLI subcommand; new `--init`
+  wizard prompt. `default_temperature_preset` is now primed into the session's effective
+  provider at session creation (`do_new_session`/`do_load_session`/`do_fork_session`/
+  `do_resume_session`), not just advertised in the IDE dropdown, so the configured default is
+  effective from the very first prompt without an explicit `session/set_config_option` call.
+  Closes #5361.
+- `feat(acp)`: wire the real ACP `$/cancel_request` protocol notification onto the existing
+  `cancel_signal: Arc<Notify>`. New `unstable-cancel-request` Cargo feature on `zeph-acp` (not in
+  `default`) mapping to `agent-client-protocol/unstable_cancel_request`; `session/prompt` now
+  bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the same
+  signal `session/cancel` already notifies. The bridge's watcher select is `biased` with prompt
+  completion checked first, and `drain_agent_events` drains a stale `cancel_signal` permit before
+  its main loop, so a cancellation resolving at/after prompt completion can no longer leak into
+  the next, unrelated prompt on the same session (also hardens the equivalent pre-existing
+  `session/cancel` race when no prompt is in flight). Closes #5362.
+- `test(acp)`: add live JSON-RPC round-trip coverage for the 8 previously-untested
+  `zeph-acp` handler files (`authenticate`, `close_session`, `delete_session`, `fork_session`,
+  `logout`, `resume_session`, `set_session_config_option`, `set_session_mode`), plus coverage for
+  the new `model_config`/temperature option and the `$/cancel_request` bridge, plus regression
+  tests for the two fixes above. Note: `resume_session` coverage exercises only the in-memory
+  early-return path; the store-backed reconstruction path remains untested (tracked in #5374).
+  Closes #5367.
 
 ### Changed
 

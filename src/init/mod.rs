@@ -74,6 +74,7 @@ pub(crate) struct WizardState {
     pub(crate) acp_auth_methods: Vec<zeph_config::AcpAuthMethod>,
     pub(crate) acp_message_ids_enabled: bool,
     pub(crate) acp_subagents_enabled: bool,
+    pub(crate) acp_default_temperature_preset: zeph_config::AcpTemperaturePreset,
     pub(crate) thinking: Option<ThinkingConfig>,
     pub(crate) enable_extended_context: bool,
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
@@ -341,6 +342,7 @@ impl Default for WizardState {
             acp_auth_methods: vec![zeph_config::AcpAuthMethod::Agent],
             acp_message_ids_enabled: true,
             acp_subagents_enabled: false,
+            acp_default_temperature_preset: zeph_config::AcpTemperaturePreset::default(),
             thinking: None,
             enable_extended_context: false,
             agents_default_permission_mode: None,
@@ -1276,6 +1278,9 @@ fn apply_acp_config(config: &mut Config, state: &WizardState) {
                 enabled: state.acp_subagents_enabled,
                 ..zeph_config::AcpSubagentsConfig::default()
             },
+            model_config: zeph_config::AcpModelConfigConfig {
+                default_temperature_preset: state.acp_default_temperature_preset,
+            },
             ..AcpConfig::default()
         };
     }
@@ -1402,6 +1407,28 @@ fn step_acp(state: &mut WizardState) -> anyhow::Result<()> {
             )
             .default(false)
             .interact()?;
+
+        let temperature_presets = [
+            zeph_config::AcpTemperaturePreset::Precise,
+            zeph_config::AcpTemperaturePreset::Balanced,
+            zeph_config::AcpTemperaturePreset::Creative,
+        ];
+        let labels: Vec<String> = temperature_presets
+            .iter()
+            .map(|p| format!("{} (temperature {})", p.as_str(), p.temperature()))
+            .collect();
+        let default_idx = temperature_presets
+            .iter()
+            .position(|p| *p == state.acp_default_temperature_preset)
+            .unwrap_or(1);
+        let idx = Select::new()
+            .with_prompt(
+                "Default model_config sampling-temperature preset advertised to IDE clients",
+            )
+            .items(&labels)
+            .default(default_idx)
+            .interact()?;
+        state.acp_default_temperature_preset = temperature_presets[idx];
     }
 
     println!();
