@@ -51,28 +51,28 @@ impl App {
         }
         self.draw_separator(frame, layout.separator);
 
-        // Carve the equalizer slot from the bottom of the subagents area.
-        // The slot only appears while the agent is busy and the user hasn't hidden it.
+        // Carve the equalizer slot from the bottom of the subagents area. The slot
+        // appears while the agent is busy OR background/external requests are inflight
+        // (so concurrent background work is visible), unless the user has hidden it.
         let wave_state = self.wave_state();
         let wave_tick = self.wave_tick();
-        let eq_area = if self.show_equalizer
-            && self.is_agent_busy()
-            && layout.subagents.height > EQ_PANEL_H + 2
-        {
-            let sub_h = layout.subagents.height - EQ_PANEL_H;
-            let eq = Rect {
-                y: layout.subagents.y + sub_h,
-                height: EQ_PANEL_H,
-                ..layout.subagents
+        let wave_active = self.is_agent_busy() || self.background_inflight() > 0;
+        let eq_area =
+            if self.show_equalizer && wave_active && layout.subagents.height > EQ_PANEL_H + 2 {
+                let sub_h = layout.subagents.height - EQ_PANEL_H;
+                let eq = Rect {
+                    y: layout.subagents.y + sub_h,
+                    height: EQ_PANEL_H,
+                    ..layout.subagents
+                };
+                layout.subagents = Rect {
+                    height: sub_h,
+                    ..layout.subagents
+                };
+                eq
+            } else {
+                Rect::default()
             };
-            layout.subagents = Rect {
-                height: sub_h,
-                ..layout.subagents
-            };
-            eq
-        } else {
-            Rect::default()
-        };
 
         self.draw_side_panel(frame, &layout, collapsed);
 

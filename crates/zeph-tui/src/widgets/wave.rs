@@ -36,8 +36,8 @@ use crate::theme::{EffectiveColorMode, Theme};
 /// Each column's bar height is determined by [`sample`] (sine math per `WaveState`).
 /// Different states produce visually distinct patterns:
 /// Swell → slow tall columns; Streaming → medium ripple; Tool → choppy spikes;
-/// Parallel → complex superposed pattern. Color is a vertical gradient from dim
-/// accent at the base to full `#1FB9A8` at the peak (see [`bucket_to_rgb`]).
+/// Network → complex superposed pattern. Colour is a vertical gradient (see
+/// [`bucket_to_rgb`]): teal for foreground work, violet for `Network`.
 const WAVE_GLYPHS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
 /// ASCII fallback for `TERM=dumb` terminals.
@@ -55,14 +55,20 @@ const ASCII_GLYPHS: [&str; 8] = [".", ".", "-", "-", "~", "~", "=", "="];
 ///
 /// # Variants
 ///
-/// | Variant | When shown |
-/// |---------|-----------|
-/// | `Idle` | Agent is not busy — flat `▁` baseline |
-/// | `Swell` | Busy, awaiting first token — high amplitude, slow roll |
-/// | `Streaming` | Token stream active — medium amplitude, medium ω |
-/// | `Tool` | Tool execution in progress — choppy short-λ wave |
-/// | `Parallel` | ≥2 background tasks inflight — superposed sines |
-/// | `Stalled` | No progress for >`stall_threshold` — flat + error tint |
+/// | Variant | When shown | Colour |
+/// |---------|-----------|--------|
+/// | `Idle` | Agent is not busy — flat `▁` baseline | teal |
+/// | `Swell` | Busy, awaiting first token — high amplitude, slow roll | teal |
+/// | `Streaming` | Token stream active — medium amplitude, medium ω | teal |
+/// | `Tool` | Tool execution in progress — choppy short-λ wave | teal |
+/// | `Network` | External/background requests inflight — superposed sines | violet |
+/// | `Stalled` | No progress for >`stall_threshold` — flat + error tint | red |
+///
+/// Foreground agent work (`Swell`/`Streaming`/`Tool`) renders in the teal accent;
+/// [`WaveState::Network`] — background/external requests run by the task supervisor
+/// (memory enrichment, telemetry, MCP, egress, background shell) — renders in a distinct
+/// **violet** gradient so concurrent background activity is visually separable from the
+/// agent's own turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveState {
     /// Agent idle — renders a static thin baseline.
@@ -75,9 +81,11 @@ pub enum WaveState {
     Streaming,
     /// Tool execution in progress.
     Tool,
-    /// ≥2 background tasks inflight; `sines` is clamped to `2..=3`.
-    Parallel {
-        /// Number of superposed sine waves; clamped to `2..=3`.
+    /// External/background requests inflight (task-supervisor work: enrichment,
+    /// telemetry, MCP, egress, background shell). Rendered in violet to set it
+    /// apart from foreground agent work. `sines` is clamped to `1..=3`.
+    Network {
+        /// Number of superposed sine waves; clamped to `1..=3` by concurrency.
         sines: u8,
     },
     /// No progress for longer than the stall threshold.
@@ -100,7 +108,7 @@ struct WaveParams {
     omega: f32,
     /// Whether to superpose a secondary component for erratic spikes (Tool state).
     choppy: bool,
-    /// Number of superposed sines (only for `Parallel`).
+    /// Number of superposed sines (only for `Network`).
     sines: u8,
 }
 
@@ -136,12 +144,13 @@ impl WaveState {
                 choppy: true,
                 sines: 1,
             },
-            // Mixed pace: superposed sines create complex pattern.
-            WaveState::Parallel { sines } => WaveParams {
-                amplitude: 0.7,
-                omega: 0.85,
+            // Background/external requests: superposed sines create a complex pattern,
+            // distinct violet colour applied in `wave_color` / `bucket_to_rgb`.
+            WaveState::Network { sines } => WaveParams {
+                amplitude: 0.75,
+                omega: 0.95,
                 choppy: false,
-                sines: sines.clamp(2, 3),
+                sines: sines.clamp(1, 3),
             },
         }
     }
@@ -196,7 +205,7 @@ pub fn band_value(state: WaveState, band_idx: u32, t: u64) -> f32 {
         }
         v
     } else {
-        // Parallel: superpose sines at golden-ratio omega multiples.
+        // Network: superpose sines at golden-ratio omega multiples.
         let omegas: [f32; 3] = [1.0, 1.618_034, 2.414_214];
         let count = p.sines as usize;
         let mut sum = 0.0_f32;
@@ -488,8 +497,9 @@ fn ascii_density(bits: u8) -> char {
 ///
 /// `intensity` (`0.0..=1.0`) is the cell's distance from the centre axis: peaks
 /// (`1.0`) get the full accent, the quiet centre (`0.0`) stays dim. In Truecolor
-/// mode a smooth teal gradient is applied; ANSI modes fall back to the theme
-/// highlight (or error colour for `Stalled`).
+/// mode a smooth gradient is applied — teal for foreground agent work, **violet**
+/// for [`WaveState::Network`] (background/external requests), red for `Stalled`.
+/// ANSI modes fall back to theme colours (magenta for `Network`).
 fn wave_color(
     intensity: f32,
     state: WaveState,
@@ -504,6 +514,15 @@ fn wave_color(
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 return Color::Rgb((80.0 + v * 175.0) as u8, 10, 10);
             }
+            if matches!(state, WaveState::Network { .. }) {
+                // Violet gradient: #14102C (centre) → #8B5CF6 (peaks).
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                return Color::Rgb(
+                    (20.0 + v * 119.0) as u8, // 20 → 139
+                    (16.0 + v * 76.0) as u8,  // 16 → 92
+                    (44.0 + v * 202.0) as u8, // 44 → 246
+                );
+            }
             // Teal gradient: #0A191E (centre) → #1FB9A8 (peaks / accent).
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             Color::Rgb(
@@ -512,13 +531,11 @@ fn wave_color(
                 (30.0 + v * 138.0) as u8, // 30 → 168
             )
         }
-        EffectiveColorMode::Ansi256 | EffectiveColorMode::Ansi16 => {
-            if matches!(state, WaveState::Stalled) {
-                theme.error.fg.unwrap_or(Color::Red)
-            } else {
-                theme.highlight.fg.unwrap_or(Color::Yellow)
-            }
-        }
+        EffectiveColorMode::Ansi256 | EffectiveColorMode::Ansi16 => match state {
+            WaveState::Stalled => theme.error.fg.unwrap_or(Color::Red),
+            WaveState::Network { .. } => Color::Magenta,
+            _ => theme.highlight.fg.unwrap_or(Color::Yellow),
+        },
         EffectiveColorMode::Never => Color::Reset,
     }
 }
@@ -535,9 +552,19 @@ fn bucket_to_rgb(state: WaveState, bucket: usize) -> Color {
         let v = (80 + bucket * 22) as u8;
         return Color::Rgb(v, 15, 15);
     }
-    // Quadratic fade: 0 → dark (#0A191E), 7 → accent (#1FB9A8).
+    // Quadratic fade keeps low buckets dark so the peak stands out.
     #[allow(clippy::cast_precision_loss)]
     let t = (bucket as f32 / 7.0).powi(2);
+    if matches!(state, WaveState::Network { .. }) {
+        // Violet fade: 0 → dark (#14102C), 7 → #8B5CF6.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        return Color::Rgb(
+            (20.0_f32 + t * 119.0) as u8,
+            (16.0_f32 + t * 76.0) as u8,
+            (44.0_f32 + t * 202.0) as u8,
+        );
+    }
+    // Teal fade: 0 → dark (#0A191E), 7 → accent (#1FB9A8).
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let r = (10.0_f32 + t * 21.0) as u8; // 10..=31
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -565,8 +592,8 @@ mod tests {
                     WaveState::Swell,
                     WaveState::Streaming,
                     WaveState::Tool,
-                    WaveState::Parallel { sines: 2 },
-                    WaveState::Parallel { sines: 3 },
+                    WaveState::Network { sines: 2 },
+                    WaveState::Network { sines: 3 },
                     WaveState::Stalled,
                 ] {
                     let b = sample(state, x, t);
@@ -594,7 +621,7 @@ mod tests {
             WaveState::Swell,
             WaveState::Streaming,
             WaveState::Tool,
-            WaveState::Parallel { sines: 2 },
+            WaveState::Network { sines: 2 },
         ];
         for state in states {
             for x in [0u32, 7, 13, 40] {
@@ -882,5 +909,49 @@ mod tests {
         assert_eq!(ascii_density(0x0F), ':'); // 4 dots
         assert_eq!(ascii_density(0x3F), '+'); // 6 dots
         assert_eq!(ascii_density(0xFF), '#'); // 8 dots
+    }
+
+    /// Network peaks are violet (blue-dominant) while foreground work is teal
+    /// (green-dominant) — the two activity classes must be colour-separable.
+    #[test]
+    fn network_wave_color_is_violet_distinct_from_teal() {
+        let theme = Theme::default();
+        let net = wave_color(
+            1.0,
+            WaveState::Network { sines: 2 },
+            EffectiveColorMode::Truecolor,
+            &theme,
+        );
+        let teal = wave_color(
+            1.0,
+            WaveState::Streaming,
+            EffectiveColorMode::Truecolor,
+            &theme,
+        );
+        let Color::Rgb(nr, ng, nb) = net else {
+            panic!("expected Rgb for Network peak, got {net:?}");
+        };
+        let Color::Rgb(_tr, tg, tb) = teal else {
+            panic!("expected Rgb for Streaming peak, got {teal:?}");
+        };
+        assert!(
+            nb > ng && nb > nr,
+            "Network peak must be blue-dominant (violet); got r={nr} g={ng} b={nb}"
+        );
+        assert!(tg > tb, "Streaming (teal) peak must be green-dominant");
+        assert_ne!(net, teal, "Network and foreground colours must differ");
+    }
+
+    /// ANSI mode maps `Network` to magenta, distinct from the foreground highlight.
+    #[test]
+    fn network_wave_color_ansi_is_magenta() {
+        let theme = Theme::default();
+        let net = wave_color(
+            1.0,
+            WaveState::Network { sines: 1 },
+            EffectiveColorMode::Ansi16,
+            &theme,
+        );
+        assert_eq!(net, Color::Magenta);
     }
 }

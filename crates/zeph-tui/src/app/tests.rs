@@ -2601,6 +2601,36 @@ fn supervisor_activity_label_no_supervisor_returns_none() {
     assert!(app.supervisor_activity_label().is_none());
 }
 
+#[test]
+fn wave_state_idle_when_nothing_running() {
+    use crate::widgets::wave::WaveState;
+    let (app, _rx, _tx) = make_app();
+    assert_eq!(app.wave_state(), WaveState::Idle);
+    assert_eq!(app.background_inflight(), 0);
+}
+
+#[test]
+fn wave_state_network_when_background_inflight_without_foreground() {
+    use crate::widgets::wave::WaveState;
+    let (mut app, _rx, _tx) = make_app();
+    // No status label and no streaming message → not foreground-busy.
+    assert!(!app.is_agent_busy());
+    app.metrics.bg_inflight = 1;
+    assert_eq!(app.background_inflight(), 1);
+    assert!(
+        matches!(app.wave_state(), WaveState::Network { .. }),
+        "background request must drive the Network wave even when the agent is idle"
+    );
+}
+
+#[test]
+fn wave_state_network_sines_scale_with_concurrency() {
+    use crate::widgets::wave::WaveState;
+    let (mut app, _rx, _tx) = make_app();
+    app.metrics.bg_inflight = 5; // clamps to 3
+    assert_eq!(app.wave_state(), WaveState::Network { sines: 3 });
+}
+
 #[tokio::test]
 async fn supervisor_activity_label_single_active_task() {
     use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};

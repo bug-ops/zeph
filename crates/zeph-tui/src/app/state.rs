@@ -1156,28 +1156,32 @@ impl App {
     pub fn wave_state(&self) -> crate::widgets::wave::WaveState {
         use crate::widgets::wave::WaveState;
 
-        if !self.is_agent_busy() {
+        let foreground = self.is_agent_busy();
+        let bg = self.background_inflight();
+
+        // Nothing running at all → flat baseline.
+        if !foreground && bg == 0 {
             return WaveState::Idle;
         }
 
-        // Stalled: no progress for longer than the threshold.
-        if self.last_progress_at.elapsed() > STALL_THRESHOLD {
+        // Stalled: a foreground turn with no progress past the threshold. Checked
+        // before background so a genuinely hung turn still surfaces the warning.
+        if foreground && self.last_progress_at.elapsed() > STALL_THRESHOLD {
             return WaveState::Stalled;
         }
 
-        // Tool execution.
-        if self.has_running_tool() {
+        // Foreground tool execution takes priority over background requests.
+        if foreground && self.has_running_tool() {
             return WaveState::Tool;
         }
 
-        // Parallel background tasks.
-        // Use bg_inflight (all-classes total) — avoids double-counting since
-        // bg_enrichment_inflight and bg_telemetry_inflight are already included in bg_inflight.
-        let bg = self.metrics.bg_inflight;
-        if bg >= 2 {
+        // External/background requests (task-supervisor work: enrichment, telemetry,
+        // MCP, egress, background shell). Rendered in violet so concurrent background
+        // activity is visually distinct from the agent's own foreground turn.
+        if bg >= 1 {
             #[allow(clippy::cast_possible_truncation)]
-            return WaveState::Parallel {
-                sines: (bg as u8).clamp(2, 3),
+            return WaveState::Network {
+                sines: (bg as u8).clamp(1, 3),
             };
         }
 
@@ -1194,6 +1198,18 @@ impl App {
 
         // Swell: busy but awaiting first token.
         WaveState::Swell
+    }
+
+    /// Count in-flight background/external requests for the wave equalizer.
+    ///
+    /// Combines the task-supervisor inflight gauge (`bg_inflight` — all classes,
+    /// already includes enrichment + telemetry) with in-flight background shell
+    /// runs. Used by [`Self::wave_state`] to drive the violet `Network` wave and
+    /// by the draw loop to keep the equalizer visible while background work runs
+    /// even when the agent itself is idle.
+    #[must_use]
+    pub fn background_inflight(&self) -> u64 {
+        self.metrics.bg_inflight + self.metrics.shell_background_runs.len() as u64
     }
 
     /// Advance all micro-delight animations by one tick.

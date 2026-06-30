@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `feat(tui)`: give background/external requests a visually distinct equalizer wave. The
+  `WaveState::Parallel` variant is replaced by `WaveState::Network`, which now triggers on any
+  in-flight task-supervisor work (`bg_inflight >= 1` plus background shell runs) instead of only
+  `>= 2`. It renders in a **violet** gradient (vs the teal of foreground `Swell`/`Streaming`/`Tool`)
+  so concurrent background activity is separable at a glance, and the equalizer slot stays visible
+  while background requests run even when the agent itself is idle. See
+  `crates/zeph-tui/src/widgets/wave.rs` and `app/state.rs` (`wave_state`, `background_inflight`).
+
 - `fix(tui)`: correct and de-clutter the input separator row. The Insert-mode hint now reads
   `esc for normal mode` (Esc switches Insert→Normal; it does not cancel input). The busy verb is
   no longer duplicated on this row — it already appears in the bottom status bar and the side-panel
