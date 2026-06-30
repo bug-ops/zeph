@@ -8,12 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `feat(tui)`: move equalizer widget from input separator to the right-panel dashboard —
-  a 4-row animated VU-meter slot is carved from the bottom of the subagents panel while the
-  agent is busy; the slot collapses when idle. `Motion::Full` busy mode now shows an animated
-  spinner in the input row (same as `Minimal`). `TuiCommand::ToggleEqualizer` / `app:equalizer`
-  command hides or shows the panel slot. Removes `EQ_ROWS`/`EQ_W_MAX` constants (relocated).
-  See `crates/zeph-tui/src/widgets/wave.rs` and `crates/zeph-tui/src/app/draw.rs`.
+- `feat(tui)`: move the inference visualiser from the input separator to the right-panel
+  dashboard and redesign it as an animated braille waveform — a continuous wave mirrored about
+  the centre axis (rendered with `U+2800` braille for 2×4 sub-pixel resolution) that jerks up
+  and down in time to a sharp beat envelope, with a teal gradient brightening toward the peaks.
+  A 4-row slot is carved from the bottom of the subagents panel while the agent is busy and
+  collapses when idle. `Motion::Full` busy mode now shows an animated spinner in the input row
+  (same as `Minimal`). `TuiCommand::ToggleEqualizer` / `app:equalizer` hides or shows the slot.
+  Removes `EQ_ROWS`/`EQ_W_MAX` constants. See `crates/zeph-tui/src/widgets/wave.rs` and
+  `crates/zeph-tui/src/app/draw.rs`.
 
 ### Research
 

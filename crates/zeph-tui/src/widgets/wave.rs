@@ -14,13 +14,13 @@
 //! - [`band_value`] — pure math: maps `(state, band, t)` to a normalised `[0.0, 1.0]` amplitude.
 //! - [`sample`] — maps `(state, x, t)` to a glyph bucket `0..=7` (delegates to [`band_value`]).
 //! - [`glyphs`] — single-row span builder used in compact-motion paths.
-//! - [`EqualizerWidget`] — full ratatui [`Widget`] for the side-panel slot; writes braille
-//!   characters directly into the [`Buffer`] with 4× sub-pixel resolution and a teal gradient.
+//! - [`EqualizerWidget`] — full ratatui [`Widget`] for the side-panel slot; draws a braille
+//!   waveform (mirrored about the centre axis) that jerks in time to a sharp beat envelope.
 
 use std::f32::consts::TAU;
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::Widget;
@@ -212,7 +212,7 @@ pub fn band_value(state: WaveState, band_idx: u32, t: u64) -> f32 {
     };
 
     // Normalise to [0, 1] then square: bars mostly low, spiking sharply to peak.
-    let y_norm = (y.clamp(-p.amplitude, p.amplitude) / p.amplitude + 1.0) / 2.0;
+    let y_norm = f32::midpoint(y.clamp(-p.amplitude, p.amplitude) / p.amplitude, 1.0);
     y_norm.powi(2)
 }
 
@@ -307,18 +307,18 @@ pub fn glyphs<'a>(
     buf.as_slice()
 }
 
-/// VU-meter equalizer widget rendered in the dashboard side panel during active inference.
+/// Animated braille waveform rendered in the dashboard side panel during active inference.
 ///
-/// Each terminal column is one independent bar. Bars are rendered with braille characters
-/// (U+2800 range), giving 4× sub-pixel vertical resolution compared to half-block chars:
-/// each terminal row can represent 4 fill levels (`⣀` → `⣤` → `⣶` → `⣿`).
+/// Instead of discrete bars, the widget draws a single continuous waveform mirrored about
+/// the horizontal centre axis — like an audio waveform display. It is rendered with braille
+/// characters (U+2800 range), giving 2× horizontal and 4× vertical sub-pixel resolution.
 ///
-/// A teal gradient runs from near-black (`#0A191E`) at the bottom to the full Zeph accent
-/// colour (`#1FB9A8`) at the top. Band phases are distributed via the golden ratio so
-/// adjacent bars oscillate independently — the classic audio equalizer look.
+/// The outline is a travelling superposition of sines (so it ripples across the width),
+/// multiplied by a sharp beat envelope (instant attack, cubic decay) so the whole wave
+/// jerks up and down "in time to the music". A teal gradient brightens toward the wave
+/// peaks (`#1FB9A8`), staying dim near the quiet centre axis.
 ///
-/// Scales to any rect: `area.width` columns = that many bands; `area.height` rows ×4 =
-/// total sub-pixel resolution.
+/// `Idle` and `Stalled` collapse the wave to a flat centre line (`Stalled` tinted red).
 ///
 /// Inspired by the [`tui-equalizer`](https://github.com/ratatui/tui-widgets/tree/main/tui-equalizer)
 /// reference widget, adapted for the Zeph teal design language.
@@ -348,9 +348,24 @@ pub struct EqualizerWidget<'a> {
     pub theme: &'a Theme,
     /// Resolved terminal colour capability.
     pub color_mode: EffectiveColorMode,
-    /// When `true`, uses ASCII-safe `|` instead of `▄`.
+    /// When `true`, renders the wave with ASCII density characters instead of braille.
     pub ascii_only: bool,
 }
+
+/// Braille dot bit for each `(sub_col, sub_row)`, where `sub_row = 0` is the top.
+///
+/// Unicode braille (`U+2800` base) dot numbering:
+///
+/// ```text
+///   (1)(4)
+///   (2)(5)
+///   (3)(6)
+///   (7)(8)
+/// ```
+const BRAILLE_DOT: [[u8; 4]; 2] = [
+    [0x01, 0x02, 0x04, 0x40], // left column  → dots 1, 2, 3, 7
+    [0x08, 0x10, 0x20, 0x80], // right column → dots 4, 5, 6, 8
+];
 
 impl Widget for EqualizerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
@@ -358,120 +373,138 @@ impl Widget for EqualizerWidget<'_> {
             return;
         }
 
-        let n_bands = area.width / BAND_W as u16;
-        if n_bands == 0 {
-            return;
-        }
-        let effective_w = n_bands * BAND_W as u16;
-        let eq_area = Rect {
-            width: effective_w,
-            ..area
-        };
+        let w = usize::from(area.width);
+        let sub_w = area.width * 2; // 2 braille dot columns per terminal cell
+        let sub_h = area.height * 4; // 4 braille dot rows per terminal cell
+        let center = f32::from(sub_h) / 2.0;
+        let max_half = (center - 1.0).max(0.0);
 
-        let band_areas =
-            Layout::horizontal(vec![Constraint::Length(BAND_W as u16); n_bands as usize])
-                .split(eq_area);
-
-        for (idx, &band_area) in band_areas.iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
-            let value = band_value(self.state, idx as u32, self.tick);
-            render_eq_band(
-                band_area,
-                value,
-                self.state,
-                self.color_mode,
-                self.theme,
-                self.ascii_only,
-                buf,
-            );
-        }
-    }
-}
-
-/// Render one equalizer band into the buffer using braille sub-pixel filling.
-///
-/// Each terminal row contains one braille character whose dots are filled from
-/// the bottom row up, giving 4× the vertical resolution of half-block characters:
-///
-/// | Dots lit (bottom → top) | Char |
-/// |-------------------------|------|
-/// | 1/4 (dots 7, 8)         | ⣀    |
-/// | 2/4 (+ dots 3, 6)       | ⣤    |
-/// | 3/4 (+ dots 2, 5)       | ⣶    |
-/// | 4/4 (+ dots 1, 4)       | ⣿    |
-fn render_eq_band(
-    area: Rect,
-    value: f32,
-    state: WaveState,
-    color_mode: EffectiveColorMode,
-    theme: &Theme,
-    ascii_only: bool,
-    buf: &mut Buffer,
-) {
-    // Total sub-pixels = terminal rows × 4 braille dot rows per character.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let total_sub = area.height as f32 * 4.0;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let lit_sub = (value.clamp(0.0, 1.0) * total_sub).round() as u16;
-
-    for row_from_bottom in 0..area.height {
-        let y = area.bottom().saturating_sub(row_from_bottom + 1);
-        let sub_base = row_from_bottom * 4;
-        let lit_in_cell = lit_sub.saturating_sub(sub_base).min(4) as u8;
-
-        if lit_in_cell == 0 {
-            continue;
-        }
-
-        let color = eq_row_color(row_from_bottom, area.height, state, color_mode, theme);
-        let symbol = if ascii_only {
-            "|"
-        } else {
-            // Braille dot layout (Unicode):
-            //   row 1 top  → bits 0 (left), 3 (right) = 0x01 | 0x08 = 0x09
-            //   row 2      → bits 1, 4 = 0x12
-            //   row 3      → bits 2, 5 = 0x24
-            //   row 4 bot  → bits 6, 7 = 0xC0
-            // Fill bottom-up: 0xC0 → 0xC0|0x24 → 0xC0|0x24|0x12 → 0xFF
-            match lit_in_cell {
-                1 => "⣀", // U+28C0
-                2 => "⣤", // U+28E4
-                3 => "⣶", // U+28F6
-                _ => "⣿", // U+28FF
+        // Accumulate braille dot bits per terminal cell, then write once.
+        let mut cells = vec![0u8; w * usize::from(area.height)];
+        for sx in 0..sub_w {
+            let amp = wave_profile(self.state, sx, sub_w, self.tick);
+            let half = amp * max_half;
+            // `center ± half` is bounded to `[0, sub_h]`, which fits u16.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let top = (center - half).round().clamp(0.0, f32::from(sub_h - 1)) as u16;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let bot = (center + half).round().clamp(0.0, f32::from(sub_h - 1)) as u16;
+            let col = usize::from(sx / 2);
+            let sub_col = usize::from(sx % 2);
+            for sy in top..=bot {
+                let row = usize::from(sy / 4);
+                let sub_row = usize::from(sy % 4);
+                cells[row * w + col] |= BRAILLE_DOT[sub_col][sub_row];
             }
-        };
+        }
 
-        for x in area.left()..area.right() {
-            buf[(x, y)].set_fg(color).set_symbol(symbol);
+        // Brightness rises toward the wave extremes (peaks = brightest accent).
+        let mid_row = (f32::from(area.height) - 1.0) / 2.0;
+        let mut utf8 = [0u8; 4];
+        for row in 0..area.height {
+            for col in 0..area.width {
+                let bits = cells[usize::from(row) * w + usize::from(col)];
+                if bits == 0 {
+                    continue;
+                }
+                let intensity = if mid_row <= 0.0 {
+                    1.0
+                } else {
+                    ((f32::from(row) - mid_row).abs() / mid_row).clamp(0.0, 1.0)
+                };
+                let color = wave_color(intensity, self.state, self.color_mode, self.theme);
+                let symbol = if self.ascii_only {
+                    ascii_density(bits)
+                } else {
+                    // 0x2800..=0x28FF are all valid braille code points.
+                    char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' ')
+                };
+                buf[(area.left() + col, area.top() + row)]
+                    .set_fg(color)
+                    .set_symbol(symbol.encode_utf8(&mut utf8));
+            }
         }
     }
 }
 
-/// Compute the foreground colour for a single lit row of an equalizer band.
+/// Vertical half-amplitude (`0.0..=1.0` of the half-height) of the braille
+/// waveform at sub-column `sx` and tick `t`.
 ///
-/// `row_from_bottom = 0` is the lowest (darkest) lit row; increasing values move
-/// toward the top (brightest). In Truecolor mode a smooth teal gradient is applied;
-/// ANSI modes fall back to the theme highlight or error colour.
-fn eq_row_color(
-    row_from_bottom: u16,
-    total_height: u16,
+/// The outline is a travelling superposition of sines (so it ripples across the
+/// width), multiplied by a sharp beat envelope (instant attack, cubic decay,
+/// floored so it pulses without fully dying). `Idle` / `Stalled` return `0.0`,
+/// collapsing the wave to a flat centre line.
+fn wave_profile(state: WaveState, sx: u16, sub_w: u16, t: u64) -> f32 {
+    let p = state.params();
+    if p.amplitude < f32::EPSILON {
+        return 0.0;
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let tf = (t % 65536) as f32; // harmless wrap after ≈4.5 h
+    #[allow(clippy::cast_precision_loss)]
+    let u = if sub_w <= 1 {
+        0.0
+    } else {
+        f32::from(sx) / f32::from(sub_w - 1)
+    };
+
+    // Travelling waveform: superposed sines drifting across the width.
+    let mut s = (u * TAU * 1.5 + p.omega * tf).sin();
+    let mut denom = 1.0_f32;
+    s += 0.6 * (u * TAU * 3.0 - p.omega * 1.6 * tf).sin();
+    denom += 0.6;
+    if p.choppy {
+        s += 0.4 * (u * TAU * 5.0 + p.omega * 2.3 * tf).sin();
+        denom += 0.4;
+    }
+    if p.sines > 1 {
+        s += 0.5 * (u * TAU * 2.3 + p.omega * 1.27 * tf).sin();
+        denom += 0.5;
+    }
+    let shape = (s / denom).abs();
+
+    // Sharp beat envelope: instant attack, cubic decay, floored at 0.3.
+    let beat_phase = (p.omega * 0.18 * tf).fract();
+    let energy = 0.3 + 0.7 * (1.0 - beat_phase).powi(3);
+
+    (p.amplitude * energy * shape).clamp(0.0, 1.0)
+}
+
+/// ASCII density glyph for a braille cell, chosen by how many dots are lit.
+///
+/// Used when the terminal cannot render braille (`ascii_only`).
+fn ascii_density(bits: u8) -> char {
+    match bits.count_ones() {
+        0 => ' ',
+        1..=2 => '.',
+        3..=4 => ':',
+        5..=6 => '+',
+        _ => '#',
+    }
+}
+
+/// Foreground colour for a braille wave cell.
+///
+/// `intensity` (`0.0..=1.0`) is the cell's distance from the centre axis: peaks
+/// (`1.0`) get the full accent, the quiet centre (`0.0`) stays dim. In Truecolor
+/// mode a smooth teal gradient is applied; ANSI modes fall back to the theme
+/// highlight (or error colour for `Stalled`).
+fn wave_color(
+    intensity: f32,
     state: WaveState,
     color_mode: EffectiveColorMode,
     theme: &Theme,
 ) -> Color {
     match color_mode {
         EffectiveColorMode::Truecolor => {
-            let v = if total_height <= 1 {
-                1.0_f32
-            } else {
-                row_from_bottom as f32 / (total_height - 1) as f32
-            };
+            let v = intensity.clamp(0.0, 1.0);
             if matches!(state, WaveState::Stalled) {
-                // Error tint: dark red at bottom → bright red at top.
+                // Error tint: dark red at centre → bright red at the peaks.
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 return Color::Rgb((80.0 + v * 175.0) as u8, 10, 10);
             }
-            // Teal gradient: #0A191E (bottom) → #1FB9A8 (top / accent).
+            // Teal gradient: #0A191E (centre) → #1FB9A8 (peaks / accent).
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             Color::Rgb(
                 (10.0 + v * 21.0) as u8,  // 10 → 31
@@ -503,6 +536,7 @@ fn bucket_to_rgb(state: WaveState, bucket: usize) -> Color {
         return Color::Rgb(v, 15, 15);
     }
     // Quadratic fade: 0 → dark (#0A191E), 7 → accent (#1FB9A8).
+    #[allow(clippy::cast_precision_loss)]
     let t = (bucket as f32 / 7.0).powi(2);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let r = (10.0_f32 + t * 21.0) as u8; // 10..=31
@@ -741,5 +775,112 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- EqualizerWidget (braille waveform) ---------------------------------
+
+    /// Count terminal rows that contain at least one non-blank cell.
+    fn non_blank_rows(buf: &Buffer, area: Rect) -> usize {
+        (0..area.height)
+            .filter(|&row| {
+                (0..area.width).any(|col| {
+                    let s = buf[(area.left() + col, area.top() + row)].symbol();
+                    !s.trim().is_empty()
+                })
+            })
+            .count()
+    }
+
+    /// Idle collapses the wave to a single flat centre line — exactly one row lit.
+    #[test]
+    fn wave_widget_idle_is_flat_line() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 12, 4);
+        let mut buf = Buffer::empty(area);
+        EqualizerWidget {
+            state: WaveState::Idle,
+            tick: 123,
+            theme: &theme,
+            color_mode: EffectiveColorMode::Truecolor,
+            ascii_only: false,
+        }
+        .render(area, &mut buf);
+        assert_eq!(
+            non_blank_rows(&buf, area),
+            1,
+            "Idle must render a single flat centre line"
+        );
+    }
+
+    /// A busy state spreads the wave across more than one terminal row for at
+    /// least one tick (mirrored amplitude above/below the centre axis).
+    #[test]
+    fn wave_widget_busy_spreads_vertically() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 16, 4);
+        let spread = (0u64..40).any(|tick| {
+            let mut buf = Buffer::empty(area);
+            EqualizerWidget {
+                state: WaveState::Streaming,
+                tick,
+                theme: &theme,
+                color_mode: EffectiveColorMode::Truecolor,
+                ascii_only: false,
+            }
+            .render(area, &mut buf);
+            non_blank_rows(&buf, area) > 1
+        });
+        assert!(spread, "busy wave must span >1 row for some tick");
+    }
+
+    /// Rendering into a degenerate 1×1 area must never panic.
+    #[test]
+    fn wave_widget_tiny_area_no_panic() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 1, 1);
+        let mut buf = Buffer::empty(area);
+        EqualizerWidget {
+            state: WaveState::Tool,
+            tick: 7,
+            theme: &theme,
+            color_mode: EffectiveColorMode::Truecolor,
+            ascii_only: false,
+        }
+        .render(area, &mut buf);
+    }
+
+    /// ASCII mode emits only density characters, never braille code points.
+    #[test]
+    fn wave_widget_ascii_has_no_braille() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 16, 4);
+        let mut buf = Buffer::empty(area);
+        EqualizerWidget {
+            state: WaveState::Swell,
+            tick: 11,
+            theme: &theme,
+            color_mode: EffectiveColorMode::Ansi256,
+            ascii_only: true,
+        }
+        .render(area, &mut buf);
+        for row in 0..area.height {
+            for col in 0..area.width {
+                let s = buf[(area.left() + col, area.top() + row)].symbol();
+                assert!(
+                    s.chars().all(|c| !('\u{2800}'..='\u{28FF}').contains(&c)),
+                    "ASCII mode must not emit braille: {s:?}"
+                );
+            }
+        }
+    }
+
+    /// `ascii_density` maps dot-count buckets to increasing ink density.
+    #[test]
+    fn ascii_density_buckets() {
+        assert_eq!(ascii_density(0x00), ' ');
+        assert_eq!(ascii_density(0x01), '.'); // 1 dot
+        assert_eq!(ascii_density(0x0F), ':'); // 4 dots
+        assert_eq!(ascii_density(0x3F), '+'); // 6 dots
+        assert_eq!(ascii_density(0xFF), '#'); // 8 dots
     }
 }
