@@ -160,9 +160,9 @@ pub use forgetting::{ForgettingConfig, ForgettingResult, start_forgetting_loop};
 pub use graph::EntityLockManager;
 pub use graph::experience::{EvolutionSweepStats, ExperienceStore};
 pub use graph::ingest::{
-    ClaudeCodeJsonl, CodexJsonl, HubDegree, ImportBatchId, IngestDocument, IngestFailure,
-    IngestLedger, IngestProgress, IngestReport, IngestSourceAdapter, IngestSourceKind, LedgerEntry,
-    SubagentJsonl, TranscriptEntry,
+    BatchIdResolution, ClaudeCodeJsonl, CodexJsonl, HubDegree, ImportBatchId, IngestDocument,
+    IngestFailure, IngestLedger, IngestProgress, IngestReport, IngestSourceAdapter,
+    IngestSourceKind, LedgerEntry, SubagentJsonl, TranscriptEntry,
 };
 pub use graph::{
     BeliefMemConfig, BeliefRevisionConfig, BeliefStore, Community, Edge, EdgeType, Entity,

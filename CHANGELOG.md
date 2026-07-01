@@ -123,6 +123,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the combination previously made `check_graph_completion` see no ready/running tasks and
   falsely report a scheduler deadlock, marking the graph `Failed` and cancelling already-completed
   work. Closes #5403.
+- `fix(knowledge)`: `zeph knowledge ingest --provider <PROVIDER>` no longer silently ignores the
+  override for notes-sink sources (`specs`, `changelog`, `handoff`, `coverage`, `git-log`). The
+  CLI override now threads through `run_ingest` into `build_ingest_resources` via a new
+  `resolve_notes_embed_provider` helper that honours only the explicit `--provider` flag (falling
+  back to primary otherwise). This is intentionally a separate, narrower resolution policy from
+  the graph-sink's `resolve_graph_extraction_provider` (CLI override → `knowledge.ingest_provider`
+  → `memory.graph.extract_provider` → primary): the notes sink only ever calls `.embed()`, while
+  `knowledge.ingest_provider` / `memory.graph.extract_provider` select the Phase-2
+  LLM-extraction provider, so folding the extraction chain into the embedding path would silently
+  risk an embedding-model/dimension mismatch against the existing `documents` Qdrant collection.
+  Closes #5396.
+- `fix(knowledge)`: `zeph knowledge rollback --batch-id` now accepts the 8-character batch id
+  prefix printed by `zeph knowledge status`, resolving it git-style against the ledger: an exact
+  match wins immediately, a unique prefix resolves to the full id, an ambiguous prefix lists every
+  matching batch, and no match keeps the existing "not found" error. An empty or whitespace-only
+  `--batch-id` is now rejected up front instead of matching (and silently rolling back) every
+  batch in a single-batch ledger. New `IngestLedger::resolve_batch_id` / `BatchIdResolution` in
+  `zeph-memory`. Closes #5399.
 - `fix(orchestration)`: `cargo build --release` no longer fails on `zeph-orchestration` with
   `error: queries overflow the depth limit!` while computing the layout of
   `durable::journal_budget()`'s async state machine. Release-profile layout computation walks

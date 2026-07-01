@@ -34,13 +34,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
+use zeph_core::config::Config;
 use zeph_core::vault::Secret;
+use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider;
 use zeph_memory::graph::ingest::IngestProgress as GraphIngestProgress;
 use zeph_memory::{
-    ClaudeCodeJsonl, CodexJsonl, Document, DocumentMetadata, GraphStore, ImportBatchId,
-    IngestBatchConfig, IngestLedger, IngestSourceAdapter, IngestionPipeline, QdrantOps,
-    SharedPostExtractValidator, SplitterConfig, SubagentJsonl, TextSplitter, store::DbStore,
+    BatchIdResolution, ClaudeCodeJsonl, CodexJsonl, Document, DocumentMetadata, GraphStore,
+    ImportBatchId, IngestBatchConfig, IngestLedger, IngestSourceAdapter, IngestionPipeline,
+    QdrantOps, SharedPostExtractValidator, SplitterConfig, SubagentJsonl, TextSplitter,
+    store::DbStore,
 };
 
 use crate::bootstrap::{AppBuilder, create_named_provider, find_repo_root};
@@ -214,6 +217,7 @@ async fn handle_ingest(
                 discovery_errors,
                 per_source_counts,
                 config_path,
+                provider_override.as_deref(),
             ))
             .await?;
         }
@@ -411,8 +415,119 @@ fn run_dry_run(source_items: &[SourceItem], total_files: usize, discovery_errors
     println!("Dry run complete. Run without --dry-run to ingest.");
 }
 
+/// Pure name-selection logic for the notes-sink **embedding** provider (#5396).
+///
+/// Returns only an explicit CLI `--provider` override (non-empty); never consults
+/// `knowledge.ingest_provider` / `memory.graph.extract_provider`. See
+/// [`resolve_notes_embed_provider`] for why the notes sink deliberately does not share the
+/// graph-sink's fallback chain. Split out from the async resolver so the selection policy is
+/// unit-testable without `AppBuilder`/async (#5396 regression coverage).
+fn select_notes_embed_provider_name(provider_override: Option<&str>) -> Option<&str> {
+    provider_override.filter(|s| !s.is_empty())
+}
+
+/// Resolve the notes-sink **embedding** provider for `zeph knowledge ingest` (#5396).
+///
+/// Only honours an explicit CLI `--provider` override, falling back to the primary provider
+/// otherwise. Deliberately does **not** fall through `knowledge.ingest_provider` /
+/// `memory.graph.extract_provider` — those two config fields select the Phase-2
+/// **LLM-extraction** provider (see [`resolve_graph_extraction_provider`] and the doc contract on
+/// `KnowledgeConfig::ingest_provider` in `crates/zeph-config/src/knowledge.rs`, which states the
+/// notes sink "does not perform LLM calls; this field is ... ignored" by it). The notes sink only
+/// ever calls `.embed()` (see [`build_ingest_resources`]), so folding in the extraction chain
+/// would silently point notes embeddings at a provider entry that may use a different embedding
+/// model/dimension than the primary provider the existing `documents` Qdrant collection was built
+/// with — the same silent embed-dimension-mismatch bug class this fix must not reintroduce.
+async fn resolve_notes_embed_provider(
+    provider_override: Option<&str>,
+    config: &Config,
+    app: &AppBuilder,
+) -> anyhow::Result<Arc<AnyProvider>> {
+    let Some(name) = select_notes_embed_provider_name(provider_override) else {
+        let (p, _, _) = app.build_provider().await?;
+        return Ok(Arc::new(p));
+    };
+
+    let provider = match create_named_provider(name, config) {
+        Ok(p) => {
+            tracing::debug!(
+                provider = name,
+                "using named provider for knowledge ingest (notes)"
+            );
+            Arc::new(p)
+        }
+        Err(e) => {
+            tracing::warn!(
+                provider = name,
+                "named provider resolution failed ({e:#}); falling back to primary"
+            );
+            let (p, _, _) = app.build_provider().await?;
+            Arc::new(p)
+        }
+    };
+    Ok(provider)
+}
+
+/// Pure name-selection logic for the graph-sink **LLM-extraction** provider (FR-041): CLI
+/// override → `knowledge.ingest_provider` → `memory.graph.extract_provider` → `None` (caller
+/// falls back to primary).
+///
+/// Split out from the async resolver so the fallback-chain policy is unit-testable without
+/// `AppBuilder`/async (#5396 regression coverage).
+fn select_graph_extraction_provider_name<'a>(
+    provider_override: Option<&'a str>,
+    config: &'a Config,
+) -> Option<&'a str> {
+    provider_override
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let p = config.knowledge.ingest_provider.as_str();
+            if p.is_empty() { None } else { Some(p) }
+        })
+        .or_else(|| {
+            let p = config.memory.graph.extract_provider.as_str();
+            if p.is_empty() { None } else { Some(p) }
+        })
+}
+
+/// Resolve the graph-sink **LLM-extraction** provider for `zeph knowledge ingest` (FR-041): CLI
+/// override → `knowledge.ingest_provider` → `memory.graph.extract_provider` → primary.
+///
+/// Used exclusively by [`run_graph_ingest`] (`--source subagents`), where the resolved provider
+/// drives entity/edge extraction chat calls. Must not be reused for the notes-sink embedding path
+/// — see [`resolve_notes_embed_provider`] for why the two are separate resolution policies.
+async fn resolve_graph_extraction_provider(
+    provider_override: Option<&str>,
+    config: &Config,
+    app: &AppBuilder,
+) -> anyhow::Result<Arc<AnyProvider>> {
+    let provider_name = select_graph_extraction_provider_name(provider_override, config);
+
+    let provider = if let Some(name) = provider_name {
+        match create_named_provider(name, config) {
+            Ok(p) => {
+                tracing::debug!(provider = name, "using named provider for graph ingest");
+                Arc::new(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = name,
+                    "named provider resolution failed ({e:#}); falling back to primary"
+                );
+                let (p, _, _) = app.build_provider().await?;
+                Arc::new(p)
+            }
+        }
+    } else {
+        let (p, _, _) = app.build_provider().await?;
+        Arc::new(p)
+    };
+    Ok(provider)
+}
+
 async fn build_ingest_resources(
     config_path: Option<&Path>,
+    provider_override: Option<&str>,
 ) -> anyhow::Result<(IngestionPipeline, IngestLedger, String, String)> {
     const DIMENSION_PROBE_TIMEOUT_SECS: u64 = 15;
 
@@ -424,8 +539,7 @@ async fn build_ingest_resources(
     )
     .map_err(|e| anyhow::anyhow!("failed to connect to Qdrant: {e}"))?;
     let collection = config.memory.documents.collection.clone();
-    let (provider, _status_tx, _status_rx) = app.build_provider().await?;
-    let provider = Arc::new(provider);
+    let provider = resolve_notes_embed_provider(provider_override, config, &app).await?;
     let embed_fn = {
         let p = Arc::clone(&provider);
         move |text: &str| -> zeph_llm::provider::EmbedFuture {
@@ -478,9 +592,10 @@ async fn run_ingest(
     discovery_errors: Vec<IngestError>,
     per_source_counts: Vec<(&'static str, usize)>,
     config_path: Option<&Path>,
+    provider_override: Option<&str>,
 ) -> anyhow::Result<()> {
     let (pipeline, ledger, batch_id, collection) =
-        Box::pin(build_ingest_resources(config_path)).await?;
+        Box::pin(build_ingest_resources(config_path, provider_override)).await?;
 
     // FR-014: create a dedicated progress channel and spawn a CLI printer consumer.
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
@@ -820,39 +935,10 @@ async fn run_graph_ingest(
         println!();
     }
 
-    // Resolve LLM provider (FR-041): CLI override → knowledge.ingest_provider →
+    // Resolve LLM-extraction provider (FR-041): CLI override → knowledge.ingest_provider →
     // memory.graph.extract_provider → primary.
-    let provider_name = provider_override
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let p = config.knowledge.ingest_provider.as_str();
-            if p.is_empty() { None } else { Some(p) }
-        })
-        .or_else(|| {
-            let p = config.memory.graph.extract_provider.as_str();
-            if p.is_empty() { None } else { Some(p) }
-        });
-
-    let provider = if let Some(name) = provider_name {
-        match create_named_provider(name, config) {
-            Ok(p) => {
-                tracing::debug!(provider = name, "using named provider for graph ingest");
-                Arc::new(p)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    provider = name,
-                    "named provider resolution failed ({e:#}); falling back to primary"
-                );
-                let (p, _, _) = app.build_provider().await?;
-                Arc::new(p)
-            }
-        }
-    } else {
-        let (p, _, _) = app.build_provider().await?;
-        Arc::new(p)
-    };
+    let provider =
+        resolve_graph_extraction_provider(provider_override.as_deref(), config, &app).await?;
 
     let kn_sup2 = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
     let memory = app.build_memory(&provider, &kn_sup2).await?;
@@ -1444,9 +1530,31 @@ async fn handle_rollback(
     let pool = store.pool().clone();
     let ledger = IngestLedger::new(pool.clone());
 
-    if !ledger.batch_exists(batch_id).await? {
-        anyhow::bail!("batch '{batch_id}' not found in the ingest ledger — nothing to roll back");
+    // Reject an empty/whitespace `--batch-id` (e.g. an unset `$VAR` shell substitution) up front
+    // with an unambiguous message, rather than letting it fall through to `resolve_batch_id`'s
+    // generic "not found" (#5399 F2: an unguarded empty prefix would otherwise match every batch).
+    if batch_id.trim().is_empty() {
+        anyhow::bail!("--batch-id must not be empty");
     }
+
+    // Git-style unambiguous prefix resolution (#5399): `zeph knowledge status` prints only an
+    // 8-char prefix of `import_batch_id`, so a caller pasting that prefix must still resolve.
+    let batch_id = match ledger.resolve_batch_id(batch_id).await? {
+        BatchIdResolution::Resolved(full_id) => full_id,
+        BatchIdResolution::Ambiguous(candidates) => {
+            anyhow::bail!(
+                "batch id '{batch_id}' is ambiguous, matches {} batches: {}",
+                candidates.len(),
+                candidates.join(", ")
+            );
+        }
+        BatchIdResolution::NotFound => {
+            anyhow::bail!(
+                "batch '{batch_id}' not found in the ingest ledger — nothing to roll back"
+            );
+        }
+    };
+    let batch_id = batch_id.as_str();
 
     if !yes {
         print!(
@@ -1620,6 +1728,82 @@ mod tests {
         assert_eq!(source_label(&KnowledgeSource::GitLog), "git-log");
         assert_eq!(source_label(&KnowledgeSource::ClaudeCode), "claude-code");
         assert_eq!(source_label(&KnowledgeSource::Codex), "codex");
+    }
+
+    // ── provider name selection (#5396) ───────────────────────────────────────
+    //
+    // Pure sync tests for select_notes_embed_provider_name / select_graph_extraction_provider_name
+    // — no AppBuilder/async required. These pin the exact regression #5396 fixed (the CLI
+    // --provider override reaching the notes-sink path) and the F1 fix (the notes-sink embed
+    // provider must NOT fall through knowledge.ingest_provider / memory.graph.extract_provider).
+
+    #[test]
+    fn notes_embed_provider_name_uses_cli_override_when_present() {
+        assert_eq!(select_notes_embed_provider_name(Some("fast")), Some("fast"));
+    }
+
+    #[test]
+    fn notes_embed_provider_name_none_when_no_override() {
+        assert_eq!(select_notes_embed_provider_name(None), None);
+    }
+
+    #[test]
+    fn notes_embed_provider_name_treats_empty_override_as_absent() {
+        assert_eq!(select_notes_embed_provider_name(Some("")), None);
+    }
+
+    #[test]
+    fn graph_extraction_provider_name_cli_override_wins_over_both_config_fields() {
+        let mut config = Config::default();
+        config.knowledge.ingest_provider = "from-knowledge".to_owned();
+        config.memory.graph.extract_provider = "from-graph".into();
+        assert_eq!(
+            select_graph_extraction_provider_name(Some("cli"), &config),
+            Some("cli")
+        );
+    }
+
+    #[test]
+    fn graph_extraction_provider_name_knowledge_ingest_provider_wins_when_no_cli_override() {
+        let mut config = Config::default();
+        config.knowledge.ingest_provider = "from-knowledge".to_owned();
+        config.memory.graph.extract_provider = "from-graph".into();
+        assert_eq!(
+            select_graph_extraction_provider_name(None, &config),
+            Some("from-knowledge")
+        );
+    }
+
+    #[test]
+    fn graph_extraction_provider_name_falls_back_to_memory_graph_extract_provider() {
+        let mut config = Config::default();
+        config.memory.graph.extract_provider = "from-graph".into();
+        assert_eq!(
+            select_graph_extraction_provider_name(None, &config),
+            Some("from-graph")
+        );
+    }
+
+    #[test]
+    fn graph_extraction_provider_name_none_when_everything_empty() {
+        let config = Config::default();
+        assert_eq!(select_graph_extraction_provider_name(None, &config), None);
+    }
+
+    #[test]
+    fn graph_extraction_provider_name_does_not_leak_into_notes_embed_selection() {
+        // The critic's F1 regression scenario: knowledge.ingest_provider / extract_provider set
+        // (the documented multi-model best practice), no CLI --provider. The notes-sink embed
+        // path must resolve to None (-> primary), not fall through to either config field.
+        let mut config = Config::default();
+        config.knowledge.ingest_provider = "from-knowledge".to_owned();
+        config.memory.graph.extract_provider = "from-graph".into();
+        assert_eq!(select_notes_embed_provider_name(None), None);
+        assert_eq!(
+            select_graph_extraction_provider_name(None, &config),
+            Some("from-knowledge"),
+            "sanity: the graph-sink chain should still resolve the config field"
+        );
     }
 
     // ── ingest_one skip gate (FR-012) ─────────────────────────────────────────

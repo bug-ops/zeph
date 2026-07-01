@@ -46,6 +46,21 @@ use zeph_db::{DbPool, query, query_as, query_scalar, sql};
 
 use crate::MemoryError;
 
+/// Outcome of resolving a (possibly abbreviated) batch id prefix against the ledger.
+///
+/// Returned by [`IngestLedger::resolve_batch_id`] to support git-style unambiguous prefix
+/// matching for `zeph knowledge rollback --batch-id`, since `zeph knowledge status` only
+/// prints an 8-character prefix of each `import_batch_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchIdResolution {
+    /// Exactly one batch id matches the supplied prefix (or matches it exactly).
+    Resolved(String),
+    /// More than one batch id shares the supplied prefix; lists every match.
+    Ambiguous(Vec<String>),
+    /// No batch id in the ledger starts with the supplied prefix.
+    NotFound,
+}
+
 /// A single row from the `knowledge_ingest_ledger` table.
 ///
 /// Returned by [`IngestLedger::summary`] to back `zeph knowledge status`.
@@ -191,6 +206,49 @@ impl IngestLedger {
         .fetch_optional(&self.pool)
         .await?;
         Ok(exists.is_some())
+    }
+
+    /// Resolves a (possibly abbreviated) `batch_id` prefix to a full `import_batch_id`.
+    ///
+    /// Mirrors git's unambiguous short-hash resolution: an exact match on a full id wins
+    /// immediately; otherwise a prefix that uniquely identifies one batch resolves to it, a
+    /// prefix shared by several batches is reported as [`BatchIdResolution::Ambiguous`], and a
+    /// prefix matching no batch is reported as [`BatchIdResolution::NotFound`]. This lets
+    /// `zeph knowledge rollback --batch-id` accept the 8-character prefix printed by
+    /// `zeph knowledge status` (#5399).
+    ///
+    /// An empty (or whitespace-only) `prefix` always resolves to [`BatchIdResolution::NotFound`],
+    /// even when the ledger is non-empty — every id trivially `starts_with("")`, so without this
+    /// guard a blank prefix (e.g. an unset `--batch-id "$VAR"` shell substitution) would silently
+    /// resolve to the sole batch in a single-batch ledger instead of being rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Sqlx`] on database failure.
+    pub async fn resolve_batch_id(&self, prefix: &str) -> Result<BatchIdResolution, MemoryError> {
+        if prefix.trim().is_empty() {
+            return Ok(BatchIdResolution::NotFound);
+        }
+
+        let ids: Vec<String> = query_scalar(sql!(
+            "SELECT DISTINCT import_batch_id FROM knowledge_ingest_ledger"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+
+        if ids.iter().any(|id| id == prefix) {
+            return Ok(BatchIdResolution::Resolved(prefix.to_owned()));
+        }
+
+        let mut matches: Vec<String> = ids
+            .into_iter()
+            .filter(|id| id.starts_with(prefix))
+            .collect();
+        match matches.len() {
+            0 => Ok(BatchIdResolution::NotFound),
+            1 => Ok(BatchIdResolution::Resolved(matches.remove(0))),
+            _ => Ok(BatchIdResolution::Ambiguous(matches)),
+        }
     }
 
     /// Deletes all ledger rows for the given `import_batch_id`.
@@ -413,5 +471,87 @@ mod tests {
         let ledger = test_ledger().await;
         let removed = ledger.delete_batch("ghost-batch").await.unwrap();
         assert_eq!(removed, 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_batch_id_not_found_when_no_match() {
+        let ledger = test_ledger().await;
+        ledger
+            .mark_ingested("a", "h1", "01234567-aaaa", 0, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.resolve_batch_id("ghost").await.unwrap(),
+            BatchIdResolution::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_batch_id_empty_prefix_is_not_found_even_with_a_single_batch() {
+        let ledger = test_ledger().await;
+        ledger
+            .mark_ingested("a", "h1", "01234567-aaaa", 0, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.resolve_batch_id("").await.unwrap(),
+            BatchIdResolution::NotFound
+        );
+        assert_eq!(
+            ledger.resolve_batch_id("   ").await.unwrap(),
+            BatchIdResolution::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_batch_id_exact_match_wins_even_if_also_a_prefix() {
+        let ledger = test_ledger().await;
+        ledger.mark_ingested("a", "h1", "0123", 0, 0).await.unwrap();
+        ledger
+            .mark_ingested("b", "h2", "01234567", 0, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.resolve_batch_id("0123").await.unwrap(),
+            BatchIdResolution::Resolved("0123".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_batch_id_unique_prefix_resolves_to_full_id() {
+        let ledger = test_ledger().await;
+        ledger
+            .mark_ingested("a", "h1", "01234567-aaaa-bbbb-cccc", 0, 0)
+            .await
+            .unwrap();
+        ledger
+            .mark_ingested("b", "h2", "89abcdef-aaaa-bbbb-cccc", 0, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.resolve_batch_id("012345").await.unwrap(),
+            BatchIdResolution::Resolved("01234567-aaaa-bbbb-cccc".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_batch_id_ambiguous_prefix_lists_candidates() {
+        let ledger = test_ledger().await;
+        ledger
+            .mark_ingested("a", "h1", "01234567-aaaa", 0, 0)
+            .await
+            .unwrap();
+        ledger
+            .mark_ingested("b", "h2", "01234567-bbbb", 0, 0)
+            .await
+            .unwrap();
+        let resolution = ledger.resolve_batch_id("01234567").await.unwrap();
+        match resolution {
+            BatchIdResolution::Ambiguous(mut candidates) => {
+                candidates.sort();
+                assert_eq!(candidates, ["01234567-aaaa", "01234567-bbbb"]);
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
     }
 }
