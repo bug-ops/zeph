@@ -112,9 +112,64 @@ Terminal states: `completed | failed | canceled | rejected`
 - History is append-only — never reorder or delete entries
 - Artifacts are immutable once created — no in-place updates
 - SSE stream must emit `[DONE]` on completion — clients depend on this terminator
-- SSRF protection: DNS lookup + IP check post-fetch (prevents DNS rebinding attacks)
-- TLS enforcement: if `require_tls` enabled, `http://` URLs must be rejected
+- SSRF protection: the address validated by DNS lookup + private-IP check MUST be the exact
+  address the client connects to — no re-resolution between validation and connect (see
+  Client Security Posture below)
+- TLS enforcement: if `require_tls` enabled, `http://` URLs must be rejected, including via redirect
 - Server feature (`zeph-a2a?/server`) is independent of client — can run one without the other
+
+---
+
+## Client Security Posture
+
+`A2aClient` accepts a [`SecurityPolicy`] (`crates/zeph-a2a/src/client.rs`) with two independent
+flags: `require_tls` and `ssrf_protection`. `SecurityPolicy::hardened()` enables both;
+`SecurityPolicy::permissive()` (the `A2aClient::new` default) disables both, for local/dev use
+against trusted endpoints.
+
+### SSRF invariant: validated address == connected address
+
+`validate_endpoint` resolves the endpoint hostname via DNS once and returns the resolved
+`SocketAddr` list alongside the hostname (`PinnedTarget`). When `ssrf_protection` is on, every
+`rpc_call`/`stream_message` request is sent through a per-request `reqwest::Client` built with
+`.resolve_to_addrs(host, addrs)`, pinning the connection to those exact addresses. reqwest never
+re-resolves the hostname at connect time, so a DNS answer that changes between the check and the
+connect (DNS rebinding) cannot redirect the connection to a private/internal address.
+
+**NEVER** discard the resolved addresses after validation and let the underlying HTTP client
+re-resolve the hostname independently — that reintroduces the TOCTOU window this invariant closes.
+
+### Redirect policy
+
+Whenever `require_tls` or `ssrf_protection` is enabled, the per-request client is built with
+`.redirect(Policy::none())`. A malicious `3xx` response with `Location` pointing at a private
+address or downgrading to `http://` is never followed automatically — `rpc_call` (which always
+calls `.json()` on the raw response) and `stream_message` (which checks `status.is_success()`)
+both surface the unfollowed redirect as an error instead of connecting to `Location`.
+
+### TLS enforcement across hops
+
+`require_tls` rejects any endpoint that does not start with `https://` before the request is
+sent, and additionally builds the per-request client with `.https_only(true)`. Combined with the
+redirect policy above, a hop cannot downgrade an `https://` connection to `http://` — `https_only`
+rejects the plaintext connection outright rather than silently allowing it.
+
+### Secure-by-default config wiring
+
+`A2aServerConfig.require_tls` / `.ssrf_protection` (`crates/zeph-config/src/channels.rs`) both
+default to `true` and are env-overridable (`ZEPH_A2A_REQUIRE_TLS`, `ZEPH_A2A_SSRF_PROTECTION`).
+The TUI-remote client (`src/tui_remote.rs`) builds its `A2aClient` with
+`SecurityPolicy { require_tls: config.a2a.require_tls, ssrf_protection: config.a2a.ssrf_protection }`,
+so production deployments are hardened by default through existing config — no separate
+client-side security config section exists, and none should be added (avoid config sprawl; the
+server config's flags already express the intended security posture for outbound A2A traffic).
+
+### Shared resolution helper
+
+The DNS-resolve-then-validate loop lives in `zeph_common::net::resolve_and_validate` (used by both
+`zeph-a2a`'s client and `zeph-tools`'s `scrape.rs` web-fetch executor) — do not duplicate this
+loop in a new call site; add a caller that maps `zeph_common::net::ResolveError` into the local
+error type instead.
 
 ---
 

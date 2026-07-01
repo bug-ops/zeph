@@ -36,7 +36,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 subtle = { workspace = true, optional = true }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
 tree-sitter = { workspace = true, optional = true }

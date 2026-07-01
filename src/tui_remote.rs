@@ -19,7 +19,12 @@ pub(crate) async fn run_tui_remote(
     config.validate()?;
     let auth_token = config.a2a.auth_token.clone();
 
-    let client = zeph_a2a::A2aClient::new(zeph_core::http::default_client());
+    let client = zeph_a2a::A2aClient::new(zeph_core::http::default_client()).with_security(
+        zeph_a2a::SecurityPolicy {
+            require_tls: config.a2a.require_tls,
+            ssrf_protection: config.a2a.ssrf_protection,
+        },
+    );
 
     // user_tx is passed to App; App sends user text through it.
     // We receive on user_rx and forward to the A2A SSE pump.

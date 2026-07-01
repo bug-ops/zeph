@@ -3,6 +3,7 @@
 
 //! A2A protocol HTTP client with optional TLS enforcement and SSRF protection.
 
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use eventsource_stream::Eventsource;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio_stream::StreamExt;
-use zeph_common::net::is_private_ip;
+use zeph_common::net::resolve_and_validate;
 
 use crate::error::A2aError;
 use crate::jsonrpc::{
@@ -40,6 +41,88 @@ pub enum TaskEvent {
     ArtifactUpdate(TaskArtifactUpdateEvent),
 }
 
+/// Security posture applied to outbound [`A2aClient`] requests.
+///
+/// Named fields eliminate the transposition hazard of a two-bool builder method
+/// (`with_security(true, false)` vs. `with_security(false, true)` are easy to swap
+/// by accident) and group the security boundary as one reviewable unit.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_a2a::{A2aClient, SecurityPolicy};
+///
+/// // Recommended for production: reject HTTP and private/loopback targets.
+/// let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy::hardened());
+///
+/// // Partial policy via named fields — no ambiguity about which flag is which.
+/// let tls_only = SecurityPolicy {
+///     require_tls: true,
+///     ssrf_protection: false,
+/// };
+/// let _ = client.with_security(tls_only);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecurityPolicy {
+    /// Reject any endpoint that does not start with `https://`, and build requests with
+    /// `https_only(true)` so a redirect cannot silently downgrade the connection to `http://`.
+    pub require_tls: bool,
+    /// Resolve the endpoint hostname via DNS, reject private/loopback/link-local ranges,
+    /// and pin the validated address for the actual connection so it cannot be re-resolved
+    /// to a different (attacker-controlled) address between the check and the connect.
+    pub ssrf_protection: bool,
+}
+
+impl SecurityPolicy {
+    /// Both protections enabled. The recommended posture for production deployments
+    /// that talk to untrusted or third-party A2A endpoints.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::SecurityPolicy;
+    ///
+    /// let policy = SecurityPolicy::hardened();
+    /// assert!(policy.require_tls);
+    /// assert!(policy.ssrf_protection);
+    /// ```
+    #[must_use]
+    pub const fn hardened() -> Self {
+        Self {
+            require_tls: true,
+            ssrf_protection: true,
+        }
+    }
+
+    /// Both protections disabled. Suitable only for local development against
+    /// trusted, non-adversarial endpoints (e.g. `http://localhost`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::SecurityPolicy;
+    ///
+    /// let policy = SecurityPolicy::permissive();
+    /// assert!(!policy.require_tls);
+    /// assert!(!policy.ssrf_protection);
+    /// ```
+    #[must_use]
+    pub const fn permissive() -> Self {
+        Self {
+            require_tls: false,
+            ssrf_protection: false,
+        }
+    }
+}
+
+/// A DNS-validated hostname and its resolved addresses, used to pin the actual HTTP
+/// connection to the exact addresses that passed SSRF validation (see [`SecurityPolicy`]).
+#[derive(Debug)]
+struct PinnedTarget {
+    host: String,
+    addrs: Vec<SocketAddr>,
+}
+
 /// HTTP client for the A2A protocol.
 ///
 /// `A2aClient` wraps a `reqwest::Client` and provides typed methods for the four
@@ -49,19 +132,19 @@ pub enum TaskEvent {
 /// # Security
 ///
 /// Use [`with_security`](A2aClient::with_security) to harden the client for
-/// production deployments:
-/// - `require_tls = true` rejects any `http://` endpoint before connecting.
-/// - `ssrf_protection = true` resolves the endpoint's hostname via DNS and rejects
-///   addresses in private/loopback ranges (10/8, 172.16/12, 192.168/16, 127/8, etc.).
+/// production deployments — see [`SecurityPolicy`]. When either flag is enabled,
+/// each request is sent through a dedicated per-request `reqwest::Client` with
+/// redirects disabled and, when `ssrf_protection` is on, the connection pinned to
+/// the exact addresses that were validated (no re-resolution at connect time).
 ///
 /// # Examples
 ///
 /// ```rust,no_run
-/// use zeph_a2a::{A2aClient, SendMessageParams, Message};
+/// use zeph_a2a::{A2aClient, SecurityPolicy, SendMessageParams, Message};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = A2aClient::new(reqwest::Client::new())
-///     .with_security(true, true); // require HTTPS, block SSRF
+///     .with_security(SecurityPolicy::hardened());
 ///
 /// let params = SendMessageParams {
 ///     message: Message::user_text("Summarize this page."),
@@ -74,8 +157,7 @@ pub enum TaskEvent {
 /// ```
 pub struct A2aClient {
     client: reqwest::Client,
-    require_tls: bool,
-    ssrf_protection: bool,
+    security: SecurityPolicy,
     /// Per-request timeout applied to `rpc_call` (send + JSON parse) and to the initial
     /// `send()` in `stream_message`. The SSE body stream itself is not bounded — that
     /// is the caller's responsibility.
@@ -95,32 +177,27 @@ impl A2aClient {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
             client,
-            require_tls: false,
-            ssrf_protection: false,
+            security: SecurityPolicy::permissive(),
             request_timeout: Duration::from_secs(30),
         }
     }
 
-    /// Configure TLS enforcement and SSRF protection for this client.
+    /// Configure the [`SecurityPolicy`] for this client.
     ///
-    /// Both flags default to `false`. This method uses the builder pattern and
-    /// can be chained directly after [`new`](Self::new).
-    ///
-    /// - `require_tls`: reject any endpoint that does not start with `https://`.
-    /// - `ssrf_protection`: resolve the endpoint hostname via DNS and reject private IP ranges.
+    /// Defaults to [`SecurityPolicy::permissive()`] (no restrictions). This method
+    /// uses the builder pattern and can be chained directly after [`new`](Self::new).
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use zeph_a2a::A2aClient;
+    /// use zeph_a2a::{A2aClient, SecurityPolicy};
     ///
     /// let client = A2aClient::new(reqwest::Client::new())
-    ///     .with_security(true, true);
+    ///     .with_security(SecurityPolicy::hardened());
     /// ```
     #[must_use]
-    pub fn with_security(mut self, require_tls: bool, ssrf_protection: bool) -> Self {
-        self.require_tls = require_tls;
-        self.ssrf_protection = ssrf_protection;
+    pub fn with_security(mut self, policy: SecurityPolicy) -> Self {
+        self.security = policy;
         self
     }
 
@@ -158,9 +235,10 @@ impl A2aClient {
         params: SendMessageParams,
         token: Option<&str>,
     ) -> Result<TaskEventStream, A2aError> {
-        self.validate_endpoint(endpoint).await?;
+        let pinned = self.validate_endpoint(endpoint).await?;
+        let request_client = self.request_client(pinned.as_ref())?;
         let request = JsonRpcRequest::new(METHOD_SEND_STREAMING_MESSAGE, params);
-        let mut req = self.client.post(endpoint).json(&request);
+        let mut req = request_client.post(endpoint).json(&request);
         if let Some(t) = token {
             req = req.bearer_auth(t);
         }
@@ -234,40 +312,87 @@ impl A2aClient {
             .await
     }
 
+    /// Validates `endpoint` against the configured [`SecurityPolicy`] and, when
+    /// `ssrf_protection` is enabled, resolves its hostname once and returns the
+    /// validated addresses to be pinned for the actual connection.
+    ///
+    /// Returning `Ok(None)` means either security is off for that check, or the
+    /// endpoint has no host (validation is skipped, matching prior behavior).
     #[tracing::instrument(name = "a2a.client.validate_endpoint", skip_all, err)]
-    async fn validate_endpoint(&self, endpoint: &str) -> Result<(), A2aError> {
-        if self.require_tls && !endpoint.starts_with("https://") {
+    async fn validate_endpoint(&self, endpoint: &str) -> Result<Option<PinnedTarget>, A2aError> {
+        if self.security.require_tls && !endpoint.starts_with("https://") {
             return Err(A2aError::Security(format!(
                 "TLS required but endpoint uses HTTP: {endpoint}"
             )));
         }
 
-        if self.ssrf_protection {
-            let url: url::Url = endpoint
-                .parse()
-                .map_err(|e| A2aError::Security(format!("invalid URL: {e}")))?;
-
-            if let Some(host) = url.host_str() {
-                let addrs = tokio::net::lookup_host(format!(
-                    "{}:{}",
-                    host,
-                    url.port_or_known_default().unwrap_or(443)
-                ))
-                .await
-                .map_err(|e| A2aError::Security(format!("DNS resolution failed: {e}")))?;
-
-                for addr in addrs {
-                    if is_private_ip(addr.ip()) {
-                        return Err(A2aError::Security(format!(
-                            "SSRF protection: private IP {} for host {host}",
-                            addr.ip()
-                        )));
-                    }
-                }
-            }
+        if !self.security.ssrf_protection {
+            return Ok(None);
         }
 
-        Ok(())
+        let url: url::Url = endpoint
+            .parse()
+            .map_err(|e| A2aError::Security(format!("invalid URL: {e}")))?;
+
+        let Some(host) = url.host_str() else {
+            return Ok(None);
+        };
+        let port = url.port_or_known_default().unwrap_or(443);
+        let addrs = resolve_and_validate(host, port)
+            .await
+            .map_err(|e| A2aError::Security(e.to_string()))?;
+
+        Ok(Some(PinnedTarget {
+            host: host.to_owned(),
+            addrs,
+        }))
+    }
+
+    /// Returns `true` when either half of the [`SecurityPolicy`] requires requests
+    /// to be sent through a dedicated per-request client instead of `self.client`.
+    fn needs_hardened_client(&self) -> bool {
+        self.security.require_tls || self.security.ssrf_protection
+    }
+
+    /// Selects the `reqwest::Client` to use for a single request: the shared
+    /// injected client when no security is configured, or a fresh hardened client
+    /// (redirects disabled, optionally TLS-enforced and address-pinned) otherwise.
+    fn request_client(&self, pinned: Option<&PinnedTarget>) -> Result<reqwest::Client, A2aError> {
+        if self.needs_hardened_client() {
+            self.build_hardened_client(pinned)
+        } else {
+            Ok(self.client.clone())
+        }
+    }
+
+    /// Builds a per-request client hardened per the configured [`SecurityPolicy`].
+    ///
+    /// Redirects are always disabled (`Policy::none()`) so a malicious `3xx` response
+    /// cannot silently redirect the connection to a private address or downgrade to
+    /// `http://` — the caller (`rpc_call`/`stream_message`) treats any non-2xx or
+    /// unparseable response as an error instead of following it. When `pinned` is
+    /// `Some`, the client is additionally locked to the exact addresses that passed
+    /// SSRF validation via `resolve_to_addrs`, so reqwest cannot re-resolve the
+    /// hostname to a different address at connect time (closing the DNS-rebinding
+    /// TOCTOU window).
+    fn build_hardened_client(
+        &self,
+        pinned: Option<&PinnedTarget>,
+    ) -> Result<reqwest::Client, A2aError> {
+        let mut builder = reqwest::Client::builder()
+            .user_agent(concat!("zeph-a2a/", env!("CARGO_PKG_VERSION")))
+            .redirect(reqwest::redirect::Policy::none());
+
+        if self.security.require_tls {
+            builder = builder.https_only(true);
+        }
+        if let Some(target) = pinned {
+            builder = builder.resolve_to_addrs(&target.host, &target.addrs);
+        }
+
+        builder
+            .build()
+            .map_err(|e| A2aError::Security(format!("failed to build hardened client: {e}")))
     }
 
     #[tracing::instrument(name = "a2a.client.rpc_call", skip_all, err)]
@@ -278,9 +403,10 @@ impl A2aClient {
         params: P,
         token: Option<&str>,
     ) -> Result<R, A2aError> {
-        self.validate_endpoint(endpoint).await?;
+        let pinned = self.validate_endpoint(endpoint).await?;
+        let request_client = self.request_client(pinned.as_ref())?;
         let request = JsonRpcRequest::new(method, params);
-        let mut req = self.client.post(endpoint).json(&request);
+        let mut req = request_client.post(endpoint).json(&request);
         if let Some(t) = token {
             req = req.bearer_auth(t);
         }
@@ -301,6 +427,8 @@ mod tests {
     use std::net::IpAddr;
 
     use super::*;
+    use zeph_common::net::is_private_ip;
+
     use crate::jsonrpc::{JsonRpcError, JsonRpcResponse};
     use crate::types::{
         Artifact, Message, Part, Task, TaskArtifactUpdateEvent, TaskState, TaskStatus,
@@ -427,7 +555,10 @@ mod tests {
 
     #[tokio::test]
     async fn tls_enforcement_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: true,
+            ssrf_protection: false,
+        });
         let result = client.validate_endpoint("http://example.com/rpc").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -437,14 +568,20 @@ mod tests {
 
     #[tokio::test]
     async fn tls_enforcement_allows_https() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: true,
+            ssrf_protection: false,
+        });
         let result = client.validate_endpoint("https://example.com/rpc").await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn ssrf_protection_rejects_localhost() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(false, true);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: false,
+            ssrf_protection: true,
+        });
         let result = client.validate_endpoint("http://127.0.0.1:8080/rpc").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("SSRF"));
@@ -563,7 +700,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_message_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: true,
+            ssrf_protection: false,
+        });
         let params = SendMessageParams {
             message: Message::user_text("hello"),
             configuration: None,
@@ -579,7 +719,10 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: true,
+            ssrf_protection: false,
+        });
         let params = SendMessageParams {
             message: Message::user_text("hello"),
             configuration: None,
@@ -593,7 +736,10 @@ mod tests {
 
     #[tokio::test]
     async fn get_task_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: true,
+            ssrf_protection: false,
+        });
         let params = TaskIdParams {
             id: "t-1".into(),
             history_length: None,
@@ -607,7 +753,10 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_task_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(true, false);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: true,
+            ssrf_protection: false,
+        });
         let params = TaskIdParams {
             id: "t-1".into(),
             history_length: None,
@@ -621,7 +770,10 @@ mod tests {
 
     #[tokio::test]
     async fn validate_endpoint_invalid_url_with_ssrf() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(false, true);
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: false,
+            ssrf_protection: true,
+        });
         let result = client.validate_endpoint("not-a-url").await;
         assert!(result.is_err());
         assert_matches!(result.unwrap_err(), A2aError::Security(_));
@@ -629,16 +781,43 @@ mod tests {
 
     #[test]
     fn with_security_returns_configured_client() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(true, true);
-        assert!(client.require_tls);
-        assert!(client.ssrf_protection);
+        let client =
+            A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy::hardened());
+        assert!(client.security.require_tls);
+        assert!(client.security.ssrf_protection);
     }
 
     #[test]
     fn default_client_no_security() {
         let client = A2aClient::new(reqwest::Client::new());
-        assert!(!client.require_tls);
-        assert!(!client.ssrf_protection);
+        assert!(!client.security.require_tls);
+        assert!(!client.security.ssrf_protection);
+    }
+
+    #[test]
+    fn needs_hardened_client_reflects_policy() {
+        assert!(!A2aClient::new(reqwest::Client::new()).needs_hardened_client());
+        assert!(
+            A2aClient::new(reqwest::Client::new())
+                .with_security(SecurityPolicy {
+                    require_tls: true,
+                    ssrf_protection: false,
+                })
+                .needs_hardened_client()
+        );
+        assert!(
+            A2aClient::new(reqwest::Client::new())
+                .with_security(SecurityPolicy {
+                    require_tls: false,
+                    ssrf_protection: true,
+                })
+                .needs_hardened_client()
+        );
+        assert!(
+            A2aClient::new(reqwest::Client::new())
+                .with_security(SecurityPolicy::hardened())
+                .needs_hardened_client()
+        );
     }
 
     #[test]
@@ -753,7 +932,7 @@ mod wiremock_tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::client::A2aClient;
+    use crate::client::{A2aClient, PinnedTarget, SecurityPolicy};
     use crate::jsonrpc::{SendMessageParams, TaskIdParams};
     use crate::testing::*;
     use crate::types::Message;
@@ -945,6 +1124,112 @@ mod wiremock_tests {
         assert!(
             matches!(result.unwrap_err(), crate::error::A2aError::Timeout(_)),
             "expected Timeout error"
+        );
+    }
+
+    /// Proves the DNS-rebinding TOCTOU is closed: `resolve_to_addrs` pins the connection to
+    /// the address validated by `resolve_and_validate`, so reqwest never re-resolves `fake_host`
+    /// (a hostname reserved by RFC 2606 and guaranteed to never resolve via real DNS) at connect
+    /// time. If the client re-resolved instead of using the pinned address, this request would
+    /// fail with a DNS lookup error rather than reaching the mock server.
+    #[tokio::test]
+    async fn hardened_client_pins_connection_bypassing_dns() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let addr = *server.address();
+        let fake_host = "zeph-a2a-pin-test.invalid";
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: false,
+            ssrf_protection: true,
+        });
+        let pinned = PinnedTarget {
+            host: fake_host.to_owned(),
+            addrs: vec![addr],
+        };
+        let hardened = client.build_hardened_client(Some(&pinned)).unwrap();
+
+        let resp = hardened
+            .get(format!("http://{fake_host}:{}/", addr.port()))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("pinned request to unresolvable host failed: {e}"));
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+    }
+
+    /// Proves the redirect-based SSRF bypass is closed: the hardened client does not
+    /// automatically follow a `3xx` response, even when `Location` points at a private
+    /// address. `rpc_call`/`stream_message` treat the raw redirect response as a normal
+    /// (non-2xx) response and surface an error instead of connecting to `Location`.
+    #[tokio::test]
+    async fn hardened_client_does_not_auto_follow_redirect_to_private_ip() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("Location", "http://127.0.0.1:9/internal"),
+            )
+            .mount(&server)
+            .await;
+
+        let addr = *server.address();
+        let fake_host = "zeph-a2a-redirect-test.invalid";
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: false,
+            ssrf_protection: true,
+        });
+        let pinned = PinnedTarget {
+            host: fake_host.to_owned(),
+            addrs: vec![addr],
+        };
+        let hardened = client.build_hardened_client(Some(&pinned)).unwrap();
+
+        let resp = hardened
+            .get(format!("http://{fake_host}:{}/start", addr.port()))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::FOUND);
+        assert_eq!(
+            resp.headers().get(reqwest::header::LOCATION).unwrap(),
+            "http://127.0.0.1:9/internal"
+        );
+    }
+
+    /// Proves TLS enforcement holds even on the hardened per-request client: `https_only(true)`
+    /// rejects a plaintext `http://` connection outright, closing the https-to-http downgrade
+    /// gap that an unvalidated redirect could otherwise exploit.
+    #[tokio::test]
+    async fn hardened_client_with_require_tls_rejects_plaintext_connection() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let addr = *server.address();
+        let fake_host = "zeph-a2a-tls-test.invalid";
+        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
+            require_tls: true,
+            ssrf_protection: true,
+        });
+        let pinned = PinnedTarget {
+            host: fake_host.to_owned(),
+            addrs: vec![addr],
+        };
+        let hardened = client.build_hardened_client(Some(&pinned)).unwrap();
+
+        let result = hardened
+            .get(format!("http://{fake_host}:{}/", addr.port()))
+            .send()
+            .await;
+        assert!(
+            result.is_err(),
+            "https_only(true) must reject a plain http:// URL"
         );
     }
 }

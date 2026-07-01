@@ -3,7 +3,11 @@
 
 //! Network utilities shared across crates.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+
+/// Timeout applied to the DNS lookup performed by [`resolve_and_validate`].
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Returns `true` if `addr` is a non-routable or private IP address that
 /// should be blocked for outbound connections (SSRF defense).
@@ -43,6 +47,75 @@ pub fn is_private_ip(addr: IpAddr) -> bool {
                 || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
         }
     }
+}
+
+/// Error returned by [`resolve_and_validate`] when a hostname cannot be safely resolved.
+///
+/// Callers map this into their own error type — it carries enough context (the timeout,
+/// the underlying I/O error, or the offending address) to build a user-facing message.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ResolveError {
+    /// DNS resolution did not complete within the lookup timeout.
+    #[error("DNS resolution timed out after {0:?}")]
+    Timeout(Duration),
+    /// The DNS lookup itself failed (NXDOMAIN, network error, etc.).
+    #[error("DNS resolution failed: {0}")]
+    Lookup(std::io::Error),
+    /// A resolved address falls in a private/loopback/link-local range.
+    #[error("SSRF protection: private IP {addr} for host {host}")]
+    PrivateAddress {
+        /// The hostname that was being resolved.
+        host: String,
+        /// The rejected private/loopback address.
+        addr: IpAddr,
+    },
+}
+
+/// Resolves `host:port` via DNS and rejects the result if any resolved address is
+/// private, loopback, link-local, or otherwise non-routable per [`is_private_ip`].
+///
+/// Returns the full set of resolved [`SocketAddr`]s on success so the caller can pin
+/// an HTTP client to them (e.g. via `reqwest::ClientBuilder::resolve_to_addrs`),
+/// eliminating the TOCTOU window between this check and the actual connection —
+/// resolving again at connect time could return a different (attacker-controlled)
+/// address for the same hostname (DNS rebinding).
+///
+/// # Errors
+///
+/// Returns [`ResolveError::Timeout`] if the lookup exceeds 10 seconds,
+/// [`ResolveError::Lookup`] if DNS resolution fails, or
+/// [`ResolveError::PrivateAddress`] if any resolved address is private/loopback.
+///
+/// # Examples
+///
+/// ```rust
+/// # async fn example() {
+/// use zeph_common::net::resolve_and_validate;
+///
+/// // A private hostname is rejected before any connection is attempted.
+/// let result = resolve_and_validate("localhost", 443).await;
+/// assert!(result.is_err());
+/// # }
+/// ```
+pub async fn resolve_and_validate(host: &str, port: u16) -> Result<Vec<SocketAddr>, ResolveError> {
+    let addrs: Vec<SocketAddr> =
+        tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, port)))
+            .await
+            .map_err(|_| ResolveError::Timeout(RESOLVE_TIMEOUT))?
+            .map_err(ResolveError::Lookup)?
+            .collect();
+
+    for addr in &addrs {
+        if is_private_ip(addr.ip()) {
+            return Err(ResolveError::PrivateAddress {
+                host: host.to_owned(),
+                addr: addr.ip(),
+            });
+        }
+    }
+
+    Ok(addrs)
 }
 
 #[cfg(test)]
@@ -107,5 +180,18 @@ mod tests {
     #[test]
     fn ipv6_public() {
         assert!(!is_private_ip("2001:4860:4860::8888".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn resolve_and_validate_rejects_loopback_hostname() {
+        let err = resolve_and_validate("localhost", 443).await.unwrap_err();
+        assert!(matches!(err, ResolveError::PrivateAddress { .. }));
+        assert!(err.to_string().contains("SSRF protection"));
+    }
+
+    #[tokio::test]
+    async fn resolve_and_validate_rejects_loopback_ip_literal() {
+        let err = resolve_and_validate("127.0.0.1", 443).await.unwrap_err();
+        assert!(matches!(err, ResolveError::PrivateAddress { .. }));
     }
 }

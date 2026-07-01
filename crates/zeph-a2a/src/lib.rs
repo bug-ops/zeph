@@ -82,7 +82,7 @@ mod testing;
 pub const A2A_PROTOCOL_VERSION: &str = "0.2.1";
 
 pub use card::AgentCardBuilder;
-pub use client::{A2aClient, TaskEvent, TaskEventStream};
+pub use client::{A2aClient, SecurityPolicy, TaskEvent, TaskEventStream};
 pub use discovery::AgentRegistry;
 pub use error::A2aError;
 pub use ibct::{Ibct, IbctError, IbctKey};

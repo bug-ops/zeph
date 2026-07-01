@@ -45,6 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `fix(a2a)!`: `A2aClient::with_security` no longer takes two positional bools (transposing
+  `with_security(true, false)` vs. `with_security(false, true)` was a silent foot-gun). It now
+  takes a `SecurityPolicy { require_tls, ssrf_protection }` struct, with `SecurityPolicy::hardened()`
+  / `SecurityPolicy::permissive()` presets. Closes #5381.
 - `feat(mcp)!`: upgrade `rmcp` from 1.8.0 to 2.0.0. **Breaking dependency change**:
   `RawContent`/`Content`/`Annotated<RawContent>` are removed in favor of a unified
   `ContentBlock` enum (`Text`/`Image`/`Audio`/`Resource`/`ResourceLink`); elicitation types
@@ -83,6 +87,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `crates/zeph-db/src/pool.rs`), which would otherwise break unrelated ignored tests
   (`hela_spreading_activation.rs`). Also corrected both files' module doc-comments, which
   recommended the crate-wide command that triggers that exact failure. Closes #5377.
+- `fix(a2a)`: close two SSRF gaps in `A2aClient`. (1) DNS-rebinding TOCTOU — `validate_endpoint`
+  resolved and validated the hostname but discarded the address, letting the underlying
+  `reqwest::Client` re-resolve independently at connect time; requests now pin the connection to
+  the validated address via `resolve_to_addrs`, so a DNS answer that changes between the check
+  and the connect can no longer redirect to a private/internal address. (2) redirect-based
+  bypass — the client's redirect policy (`Policy::limited(10)`) followed a malicious `3xx`
+  response toward a private address or an `https`→`http` downgrade with no re-validation;
+  requests through a client with any `SecurityPolicy` flag enabled now use `Policy::none()`
+  (and `https_only(true)` when `require_tls` is set), so the raw redirect is surfaced as an
+  error instead of being followed. The shared resolve+validate loop was factored out to
+  `zeph_common::net::resolve_and_validate` and is now used by both `zeph-a2a` and
+  `zeph-tools`'s `scrape.rs`. The TUI-remote client (`src/tui_remote.rs`) now wires
+  `SecurityPolicy` from `config.a2a.require_tls`/`.ssrf_protection` (both default `true`)
+  instead of running with no security applied — the only production call site was previously
+  unprotected despite the config defaulting to hardened. Closes #5380.
 - `fix(acp)`: `zeph acp model-config show` now loads the resolved config and marks the active
   `[acp.model_config].default_temperature_preset` in its output (e.g. `balanced   temperature =
   0.7  (default)`), instead of only printing the static preset table with a generic pointer to

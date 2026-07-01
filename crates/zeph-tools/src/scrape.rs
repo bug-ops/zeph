@@ -1132,29 +1132,32 @@ fn is_private_host(host: &url::Host<&str>) -> bool {
 ///
 /// Returning the addresses allows the caller to pin the HTTP client to these exact
 /// addresses, eliminating TOCTOU between DNS validation and the actual connection.
+///
+/// Delegates the actual lookup+validation loop to the shared
+/// [`zeph_common::net::resolve_and_validate`] helper (also used by `zeph-a2a`'s client)
+/// and maps its neutral error into this crate's [`ToolError`].
 #[tracing::instrument(name = "tools.scrape.dns.resolve", skip(url), fields(host = url.host_str().unwrap_or("")))]
 async fn resolve_and_validate(url: &Url) -> Result<(String, Vec<SocketAddr>), ToolError> {
     let Some(host) = url.host_str() else {
         return Ok((String::new(), vec![]));
     };
     let port = url.port_or_known_default().unwrap_or(443);
-    let addrs: Vec<SocketAddr> = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::net::lookup_host(format!("{host}:{port}")),
-    )
-    .await
-    .map_err(|_| ToolError::Timeout { timeout_secs: 10 })?
-    .map_err(|e| ToolError::Blocked {
-        command: format!("DNS resolution failed: {e}"),
-    })?
-    .collect();
-    for addr in &addrs {
-        if is_private_ip(addr.ip()) {
-            return Err(ToolError::Blocked {
-                command: format!("SSRF protection: private IP {} for host {host}", addr.ip()),
-            });
-        }
-    }
+    let addrs = zeph_common::net::resolve_and_validate(host, port)
+        .await
+        .map_err(|e| match e {
+            zeph_common::net::ResolveError::Timeout(timeout) => ToolError::Timeout {
+                timeout_secs: timeout.as_secs(),
+            },
+            zeph_common::net::ResolveError::Lookup(io_err) => ToolError::Blocked {
+                command: format!("DNS resolution failed: {io_err}"),
+            },
+            zeph_common::net::ResolveError::PrivateAddress { host, addr } => ToolError::Blocked {
+                command: format!("SSRF protection: private IP {addr} for host {host}"),
+            },
+            other => ToolError::Blocked {
+                command: format!("DNS resolution failed: {other}"),
+            },
+        })?;
     Ok((host.to_owned(), addrs))
 }
 
