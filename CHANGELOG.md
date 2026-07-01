@@ -62,6 +62,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(knowledge)`: `zeph knowledge ingest` no longer fails on a fresh Qdrant instance.
+  `build_ingest_resources` now probes the embedding dimension and calls
+  `QdrantOps::ensure_collection` for the documents collection before constructing the
+  `IngestionPipeline` (mirroring `EmbeddingRegistry::ensure_collection`), instead of assuming
+  the collection already exists. Also fixed misleading progress output: a failed file previously
+  emitted the same `IngestProgress::FileDone { chunks: 0, .. }` event as a legitimate zero-chunk
+  success, printing `[done] ... → 0 chunk(s)`; a new `IngestProgress::FileError { uri, msg }`
+  variant is now sent instead, printed as `[ERR] {uri}: {msg}`. Closes #5382.
 - `fix(acp)`: `zeph acp model-config show` now loads the resolved config and marks the active
   `[acp.model_config].default_temperature_preset` in its output (e.g. `balanced   temperature =
   0.7  (default)`), instead of only printing the static preset table with a generic pointer to

@@ -60,13 +60,16 @@ pub(crate) enum IngestProgress {
     Discovered { source: String, files: usize },
     /// A file is about to be embedded (pre-write signal for TUI spinner: `Ingesting knowledge: <uri>…`).
     Ingesting { uri: String },
-    /// All chunks for a file have been processed (or the file failed).
+    /// All chunks for a file were successfully processed (or skipped as unchanged).
     FileDone {
         uri: String,
         chunks: usize,
         /// `true` when the ledger skipped this file (unchanged content).
         skipped: bool,
     },
+    /// A file failed to ingest; distinct from `FileDone` so the printer doesn't
+    /// misreport a failure as a successful zero-chunk ingest.
+    FileError { uri: String, msg: String },
     /// The run is complete.
     Finished,
 }
@@ -429,6 +432,19 @@ async fn build_ingest_resources(
             Box::pin(async move { p.embed(&owned).await })
         }
     };
+
+    // Probe the embedding dimension and pre-create the documents collection so a fresh
+    // Qdrant instance doesn't fail on the first upsert (mirrors EmbeddingRegistry::ensure_collection).
+    let vector_size = provider
+        .embed("dimension probe")
+        .await
+        .map(|v| v.len() as u64)
+        .map_err(|e| anyhow::anyhow!("failed to probe embedding dimension: {e}"))?;
+    qdrant
+        .ensure_collection(&collection, vector_size)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to ensure Qdrant collection '{collection}': {e}"))?;
+
     let pipeline = IngestionPipeline::new(
         TextSplitter::new(SplitterConfig::default()),
         qdrant,
@@ -478,6 +494,9 @@ async fn run_ingest(
                         println!("  [done] {uri} → {chunks} chunk(s)");
                     }
                 }
+                IngestProgress::FileError { uri, msg } => {
+                    println!("  [ERR] {uri}: {msg}");
+                }
                 IngestProgress::Finished => break,
             }
         }
@@ -523,12 +542,8 @@ async fn run_ingest(
                 });
             }
             IngestOneResult::Error(msg) => {
-                failures.push((uri.clone(), msg));
-                let _ = progress_tx.send(IngestProgress::FileDone {
-                    uri,
-                    chunks: 0,
-                    skipped: false,
-                });
+                failures.push((uri.clone(), msg.clone()));
+                let _ = progress_tx.send(IngestProgress::FileError { uri, msg });
             }
         }
     }
@@ -1731,6 +1746,44 @@ mod tests {
         assert!(
             matches!(second, IngestProgress::FileDone { skipped: true, .. }),
             "FileDone(skipped) must follow Ingesting"
+        );
+    }
+
+    // ── IngestProgress channel: failed ingest emits FileError, not FileDone (#5382) ──
+
+    #[tokio::test]
+    async fn progress_channel_emits_file_error_for_failed_ingest() {
+        // Simulate the IngestOneResult::Error branch of run_ingest's loop body
+        // (run_ingest itself needs a live Qdrant pipeline and can't be called here).
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
+
+        let uri = "specs/README.md@abc1234".to_owned();
+        let msg = "embedding provider returned 500".to_owned();
+
+        let _ = tx.send(IngestProgress::Ingesting { uri: uri.clone() });
+        let _ = tx.send(IngestProgress::FileError {
+            uri: uri.clone(),
+            msg: msg.clone(),
+        });
+        let _ = tx.send(IngestProgress::Finished);
+        drop(tx);
+
+        let first = rx.recv().await.expect("first event");
+        assert!(
+            matches!(first, IngestProgress::Ingesting { uri: ref u } if u == &uri),
+            "Ingesting must fire before the terminal event"
+        );
+
+        let second = rx.recv().await.expect("second event");
+        assert!(
+            matches!(second, IngestProgress::FileError { uri: ref got_uri, msg: ref got_msg }
+                if got_uri == &uri && got_msg == &msg),
+            "#5382: a failed ingest must emit FileError{{uri, msg}}, not FileDone{{chunks:0}}, \
+             so the CLI prints [ERR] instead of misreporting [done]"
+        );
+        assert!(
+            !matches!(second, IngestProgress::FileDone { .. }),
+            "#5382 regression guard: must never fall back to FileDone on error"
         );
     }
 
