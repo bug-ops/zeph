@@ -135,9 +135,29 @@ mod url_scheme;
 use clap::Parser;
 use cli::Cli;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    Box::pin(runner::run(Cli::parse())).await
+// `Config`'s derive-generated `Deserialize` visitor (43 top-level fields,
+// `crates/zeph-config/src/root.rs`) produces a very large single stack frame in
+// unoptimized debug builds. Stacked on top of the similarly large `runner::run`/
+// `run_daemon` async-fn frames, this can exceed the OS main thread's default stack
+// size (8 MiB on macOS/Linux, entirely governed by the caller's `ulimit -s`). Driving
+// the runtime from a dedicated thread with an explicit, generous stack removes the
+// dependency on the invoking shell/service manager's default (see #5394).
+// 32 MiB is a 2x margin over the 16 MiB confirmed sufficient during root-cause
+// debugging, leaving headroom as `Config` grows new fields over time.
+const MAIN_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+fn main() -> anyhow::Result<()> {
+    std::thread::Builder::new()
+        .name("zeph-main".into())
+        .stack_size(MAIN_THREAD_STACK_SIZE)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(Box::pin(runner::run(Cli::parse())))
+        })?
+        .join()
+        .expect("zeph-main thread panicked")
 }
 
 #[cfg(test)]

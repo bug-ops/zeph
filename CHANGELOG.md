@@ -116,6 +116,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DurableContext::step`, exceeding rustc's default 128 query-depth limit. Added
   `#![recursion_limit = "256"]` to `zeph-orchestration`, the same precedented fix already applied
   to `zeph-acp` for the identical error class. Closes #5395.
+- `fix`: `zeph --daemon` no longer crashes with a stack overflow on startup. `main()` used to
+  run the whole async runtime (via `#[tokio::main]`) directly on the OS main thread, whose stack
+  size is governed by the caller's `ulimit -s` (default 8 MiB on macOS); the large
+  `Config::deserialize` frame (43 top-level fields) stacked on top of the already-large
+  `runner::run`/`run_daemon` async-fn frames could exceed that default. `main()` now spawns a
+  dedicated `"zeph-main"` OS thread with a 32 MiB stack and drives a manually built
+  `tokio::runtime::Builder::new_multi_thread().enable_all()` runtime from it, so daemon startup
+  no longer depends on the caller's shell `ulimit`. Closes #5394.
 - `fix(knowledge)`: `zeph knowledge ingest` no longer fails on a fresh Qdrant instance.
   `build_ingest_resources` now probes the embedding dimension and calls
   `QdrantOps::ensure_collection` for the documents collection before constructing the
