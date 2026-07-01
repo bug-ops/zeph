@@ -91,6 +91,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(orchestration)`: `/plan confirm` no longer deadlocks and discards completed work when the
+  LLM planner attaches a `verify_criteria` acceptance criterion to a task under the default
+  config (`orchestration.verify_predicate_enabled = false`). `convert_response` (planner.rs) now
+  only populates `TaskNode::verify_predicate` when the flag is enabled, so a disabled predicate
+  gate no longer leaves a completed parent's dependents permanently blocked in
+  `dag::all_parents_predicate_clear` while nothing ever evaluates the predicate to clear it —
+  the combination previously made `check_graph_completion` see no ready/running tasks and
+  falsely report a scheduler deadlock, marking the graph `Failed` and cancelling already-completed
+  work. Closes #5403.
 - `fix(knowledge)`: `zeph knowledge ingest` no longer fails on a fresh Qdrant instance.
   `build_ingest_resources` now probes the embedding dimension and calls
   `QdrantOps::ensure_collection` for the documents collection before constructing the
