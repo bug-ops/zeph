@@ -42,6 +42,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tests for the two fixes above. Note: `resume_session` coverage exercises only the in-memory
   early-return path; the store-backed reconstruction path remains untested (tracked in #5374).
   Closes #5367.
+- `test(memory)`: add Postgres integration coverage for `save_session_config`/`get_session_config`
+  (`crates/zeph-memory/src/store/acp_sessions.rs`), previously exercised only against SQLite.
+  New tests in `crates/zeph-memory/tests/postgres_integration.rs` cover the `thinking_enabled`
+  `BOOLEAN`(Postgres)/`INTEGER`(SQLite) dialect divergence from migration `105_acp_session_config`
+  in both directions, plus `current_model`/`temperature_preset`/`auto_approve_level`, and the
+  missing-snapshot/unknown-session negative paths. Closes #5384.
 
 ### Changed
 
