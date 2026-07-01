@@ -80,6 +80,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   derives the dimension from an already-computed vector and ensures the collection in one call,
   used by `admission.rs`, `semantic/recall.rs` (5 call sites), and `semantic/summarization.rs`,
   which each already hold a real embedding rather than a throwaway probe. No behavior change.
+- `refactor(memory)`: finish the probe-then-ensure_collection dedup started above. New
+  `EmbeddingStore::ensure_named_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
+  replaces 8 remaining inline `ensure_named_collection(vector.len())` call sites across
+  `episodic_consolidation.rs`, `graph/resolver/mod.rs`, and `semantic/{summarization,cross_session,
+  corrections}.rs`, eliminating a dead-fallback default (`1536`/`896`/`384`) that had already
+  diverged across the inline copies. `src/bootstrap/mod.rs`'s reasoning-strategies collection probe
+  now also calls `zeph_memory::probe_vector_size` directly instead of its own inline throwaway
+  probe. No behavior change. Closes #5393.
 
 ### Fixed
 

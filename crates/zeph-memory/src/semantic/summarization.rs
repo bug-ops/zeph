@@ -277,9 +277,8 @@ impl SemanticMemory {
                 return;
             }
         };
-        let vector_size = u64::try_from(first_vector.len()).unwrap_or(896);
         if let Err(e) = qdrant
-            .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
+            .ensure_named_collection_for_vector(KEY_FACTS_COLLECTION, &first_vector)
             .await
         {
             tracing::warn!("Failed to ensure key_facts collection: {e:#}");
@@ -397,9 +396,8 @@ impl SemanticMemory {
                 return Ok(Vec::new());
             }
         };
-        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
-            .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
+            .ensure_named_collection_for_vector(KEY_FACTS_COLLECTION, &vector)
             .await?;
 
         let points = qdrant

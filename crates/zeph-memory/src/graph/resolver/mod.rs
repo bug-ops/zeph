@@ -711,15 +711,14 @@ impl<'a> EntityResolver<'a> {
     ) {
         // Ensure the Qdrant collection exists exactly once per resolver lifetime.
         // All entity embeddings use the same model dimension, so the first call's
-        // vector_size wins — subsequent entities share the same collection.
+        // vector dimension wins — subsequent entities share the same collection.
         // On error the cell stays unset, so the next entity retries — transient
         // network failures do not permanently disable embedding storage.
-        let vector_size = u64::try_from(vector.len()).unwrap_or(384);
         let collection_ensured = Arc::clone(&self.collection_ensured);
         if let Err(err) = collection_ensured
             .get_or_try_init(|| async {
                 emb_store
-                    .ensure_named_collection(ENTITY_COLLECTION, vector_size)
+                    .ensure_named_collection_for_vector(ENTITY_COLLECTION, vector)
                     .await
             })
             .await
