@@ -100,6 +100,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the combination previously made `check_graph_completion` see no ready/running tasks and
   falsely report a scheduler deadlock, marking the graph `Failed` and cancelling already-completed
   work. Closes #5403.
+- `fix(orchestration)`: `cargo build --release` no longer fails on `zeph-orchestration` with
+  `error: queries overflow the depth limit!` while computing the layout of
+  `durable::journal_budget()`'s async state machine. Release-profile layout computation walks
+  deeper than debug builds through the generic/trait-object nesting in `zeph_durable`'s
+  `DurableContext::step`, exceeding rustc's default 128 query-depth limit. Added
+  `#![recursion_limit = "256"]` to `zeph-orchestration`, the same precedented fix already applied
+  to `zeph-acp` for the identical error class. Closes #5395.
 - `fix(knowledge)`: `zeph knowledge ingest` no longer fails on a fresh Qdrant instance.
   `build_ingest_resources` now probes the embedding dimension and calls
   `QdrantOps::ensure_collection` for the documents collection before constructing the
