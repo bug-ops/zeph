@@ -34,8 +34,10 @@ impl IngestionPipeline {
     ///
     /// # Errors
     ///
-    /// Returns an error if embedding or Qdrant storage fails.
+    /// Returns an error if embedding, embedding timeout, or Qdrant storage fails.
     pub async fn ingest(&self, document: Document) -> Result<usize, DocumentError> {
+        const CHUNK_EMBED_TIMEOUT_SECS: u64 = 15;
+
         let chunks = self.splitter.split(&document);
         if chunks.is_empty() {
             return Ok(0);
@@ -43,7 +45,19 @@ impl IngestionPipeline {
 
         let mut points = Vec::with_capacity(chunks.len());
         for chunk in &chunks {
-            let vector = (self.embed_fn)(&chunk.content).await?;
+            let vector = tokio::time::timeout(
+                std::time::Duration::from_secs(CHUNK_EMBED_TIMEOUT_SECS),
+                (self.embed_fn)(&chunk.content),
+            )
+            .await
+            .map_err(|_| {
+                tracing::warn!(
+                    timeout_secs = CHUNK_EMBED_TIMEOUT_SECS,
+                    source = %chunk.metadata.source,
+                    "embedding provider timed out during chunk ingest"
+                );
+                zeph_llm::LlmError::Timeout
+            })??;
             let payload = QdrantOps::json_to_payload(json!({
                 "source": chunk.metadata.source,
                 "content_type": chunk.metadata.content_type,
@@ -115,6 +129,20 @@ mod tests {
         })
     }
 
+    /// Embed fn that sleeps longer than `IngestionPipeline::ingest`'s 15 s
+    /// `CHUNK_EMBED_TIMEOUT_SECS`, used to exercise the timeout path without a real wall-clock
+    /// wait (paired with `#[tokio::test(start_paused = true)]`).
+    fn stalled_embed(
+        delay_secs: u64,
+    ) -> Box<dyn Fn(&str) -> zeph_llm::provider::EmbedFuture + Send + Sync> {
+        Box::new(move |_text: &str| {
+            Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                Ok(vec![0.0f32; 4])
+            })
+        })
+    }
+
     #[tokio::test]
     async fn ingest_empty_document_returns_zero() {
         // Empty document should short-circuit before calling Qdrant.
@@ -138,5 +166,24 @@ mod tests {
         let doc = make_document("hello world, this is test content for embedding");
         let result = pipeline.ingest(doc).await;
         assert!(result.is_err(), "expected error from embedding failure");
+    }
+
+    /// Regression for #5387: an embed provider that never responds must not hang `ingest`
+    /// indefinitely. The per-chunk embed call is bounded by a 15 s timeout that surfaces as
+    /// `DocumentError::Embedding(LlmError::Timeout)`. Uses `start_paused` + a sleeping `embed_fn`
+    /// so the timeout fires against virtual time instead of a real 15 s wait.
+    #[tokio::test(start_paused = true)]
+    async fn ingest_embed_timeout_returns_error_without_hanging() {
+        let qdrant = crate::QdrantOps::new("http://127.0.0.1:1", None).unwrap();
+        let splitter = TextSplitter::new(SplitterConfig::default());
+        let pipeline = IngestionPipeline::new(splitter, qdrant, "col", stalled_embed(16));
+
+        let doc = make_document("hello world, this is test content for embedding");
+        let result = pipeline.ingest(doc).await;
+
+        match result {
+            Err(DocumentError::Embedding(zeph_llm::LlmError::Timeout)) => {}
+            other => panic!("expected DocumentError::Embedding(LlmError::Timeout), got {other:?}"),
+        }
     }
 }

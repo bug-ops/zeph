@@ -108,6 +108,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SecurityPolicy` from `config.a2a.require_tls`/`.ssrf_protection` (both default `true`)
   instead of running with no security applied — the only production call site was previously
   unprotected despite the config defaulting to hardened. Closes #5380.
+- `fix(knowledge)`: `zeph knowledge ingest` no longer hangs indefinitely on an unresponsive
+  embedding provider. Both the dimension-probe `embed()` call in `build_ingest_resources` and
+  the per-chunk `embed_fn` call in `IngestionPipeline::ingest` are now wrapped in a 15s
+  `tokio::time::timeout`, mirroring the existing pattern in
+  `zeph_index::indexer::ensure_collection_for_provider`. A per-chunk timeout surfaces as a
+  clear per-file `[ERR] <uri>: ...` error via the existing collect-and-continue reporting
+  instead of blocking the whole ingest run. Closes #5387.
 - `fix(acp)`: `zeph acp model-config show` now loads the resolved config and marks the active
   `[acp.model_config].default_temperature_preset` in its output (e.g. `balanced   temperature =
   0.7  (default)`), instead of only printing the static preset table with a generic pointer to
