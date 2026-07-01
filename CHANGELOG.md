@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `ci`: add a `Release Build Check` job to `.github/workflows/ci.yml` that runs
+  `cargo build --release --workspace --all-targets --features
+  desktop,ide,server,chat,pdf,scheduler,testing,deep-link` on every PR and push to `main`.
+  Previously `cargo build --release` only ran at an actual release cut
+  (`.github/workflows/release.yml`), so release-profile-only regressions — such as the
+  query-depth overflow behind #5395/#5407/#5408 — were invisible to the normal commit/PR gate.
+  `cargo check --release` was evaluated and rejected: it does not reproduce this bug class
+  because it skips the codegen/LTO layout finalization where the overflow occurs, so only a
+  real `cargo build --release` (which exercises this workspace's `lto = true`,
+  `codegen-units = 1` release profile) closes the gap. Wired into the `ci-status` gate.
+  Closes #5409.
 - `test(mcp)`: add an in-process duplex-transport integration test for `McpClient` /
   `ToolListChangedHandler`, covering a full `initialize -> tools/list -> tools/call`
   round-trip through the real rmcp wire serialization path over `tokio::io::duplex`
@@ -156,6 +167,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dedicated `"zeph-main"` OS thread with a 32 MiB stack and drives a manually built
   `tokio::runtime::Builder::new_multi_thread().enable_all()` runtime from it, so daemon startup
   no longer depends on the caller's shell `ulimit`. Closes #5394.
+- `fix(acp)`: `cargo build --release --workspace --all-targets` no longer fails on
+  `crates/zeph-acp/tests/integration.rs` with the same `queries overflow the depth limit!`
+  error already fixed in `zeph-acp/src/lib.rs` (see 076c7fb3) and `zeph-orchestration`
+  (#5395/#5407). Each file directly under a crate's `tests/` directory is compiled by Cargo as
+  its own crate root and does not inherit `#![recursion_limit]` from `src/lib.rs`, so the
+  attribute has to be repeated per test-binary crate root (same precedent already applied to
+  `zeph-core/tests/turn_lifecycle.rs`). Added `#![recursion_limit = "256"]` to
+  `zeph-acp/tests/integration.rs`; a workspace-wide sweep of the remaining top-level
+  `crates/*/tests/*.rs` files found no other file exceeding the default depth limit under
+  `cargo build --release --workspace --features full --all-targets`. Closes #5408.
 - `fix(knowledge)`: `zeph knowledge ingest` no longer fails on a fresh Qdrant instance.
   `build_ingest_resources` now probes the embedding dimension and calls
   `QdrantOps::ensure_collection` for the documents collection before constructing the

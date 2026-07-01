@@ -460,6 +460,33 @@ jobs:
         continue-on-error: ${{ matrix.allow_failure == true }}
         run: cargo check --features ${{ matrix.bundle }}
 
+  release-build:
+    name: Release Build Check
+    needs: detect-changes
+    if: needs.detect-changes.outputs.run-full-ci == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-targets: "false"
+          shared-key: "release-build"
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - name: cargo build (release, --all-targets)
+        # `cargo check --release` does not reproduce the release-profile query-depth overflow
+        # class of bug fixed by #5407/#5408 (verified empirically: it passes even without the
+        # `#![recursion_limit]` fix) because it skips codegen/LTO layout finalization. Only a
+        # real `cargo build --release` with this workspace's `[profile.release]` (lto = true,
+        # codegen-units = 1) exercises the same query depth CI is meant to gate on.
+        run: cargo build --release --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing,deep-link"
+
   build-postgres:
     name: Build (postgres)
     needs: detect-changes
@@ -517,7 +544,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
-    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, msrv, build-tests, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs, build-postgres, rustdoc]
+    needs: [cla, lint-shellcheck, lint-fmt, lint-clippy, msrv, build-tests, test, integration, coverage, docker-build-and-scan, bundle-check, validate-specs, build-postgres, rustdoc, release-build]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -538,6 +565,7 @@ jobs:
             "${{ needs.validate-specs.result }}"
             "${{ needs.build-postgres.result }}"
             "${{ needs.rustdoc.result }}"
+            "${{ needs.release-build.result }}"
           )
           for r in "${results[@]}"; do
             if [[ "$r" != "success" && "$r" != "skipped" ]]; then
