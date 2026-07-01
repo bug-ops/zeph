@@ -55,16 +55,12 @@ impl AccessFrequencyCache {
 
         // sqlx does not support binding Vec<i64> with IN directly for all backends;
         // build the query with placeholders manually.
-        let placeholders: String = ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let session_placeholder = zeph_db::numbered_placeholder(1);
+        let placeholders = zeph_db::placeholder_list(2, ids.len());
 
         let sql = format!(
             "SELECT fact_id, COUNT(*) as cnt FROM fact_access_log \
-             WHERE session_id = ?1 AND fact_id IN ({placeholders}) \
+             WHERE session_id = {session_placeholder} AND fact_id IN ({placeholders}) \
              GROUP BY fact_id"
         );
 

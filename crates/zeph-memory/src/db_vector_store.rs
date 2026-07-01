@@ -78,11 +78,11 @@ impl VectorStore for DbVectorStore {
     ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
         let collection = collection.to_owned();
         Box::pin(async move {
-            let sql = format!(
+            let sql = zeph_db::rewrite_placeholders(&format!(
                 "{} INTO vector_collections (name) VALUES (?){}",
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-            );
+            ));
             zeph_db::query(sqlx::AssertSqlSafe(sql))
                 .bind(&collection)
                 .execute(&self.pool)

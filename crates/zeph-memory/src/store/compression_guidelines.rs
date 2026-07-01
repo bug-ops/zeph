@@ -229,7 +229,7 @@ impl SqliteStore {
         let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(sql!(
             "SELECT id, conversation_id, compressed_context, failure_reason, category, created_at \
              FROM compression_failure_pairs \
-             WHERE used_in_update = 0 \
+             WHERE used_in_update = FALSE \
              ORDER BY created_at ASC \
              LIMIT ?"
         ))
@@ -268,7 +268,7 @@ impl SqliteStore {
         let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(sql!(
             "SELECT id, conversation_id, compressed_context, failure_reason, category, created_at \
              FROM compression_failure_pairs \
-             WHERE used_in_update = 0 AND category = ? \
+             WHERE used_in_update = FALSE AND category = ? \
              ORDER BY created_at ASC \
              LIMIT ?"
         ))
@@ -303,7 +303,7 @@ impl SqliteStore {
     ) -> Result<i64, MemoryError> {
         let count = zeph_db::query_scalar(sql!(
             "SELECT COUNT(*) FROM compression_failure_pairs \
-             WHERE used_in_update = 0 AND category = ?"
+             WHERE used_in_update = FALSE AND category = ?"
         ))
         .bind(category)
         .fetch_one(&self.pool)
@@ -377,9 +377,9 @@ impl SqliteStore {
         if ids.is_empty() {
             return Ok(());
         }
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
         let query = format!(
-            "UPDATE compression_failure_pairs SET used_in_update = 1 WHERE id IN ({placeholders})"
+            "UPDATE compression_failure_pairs SET used_in_update = TRUE WHERE id IN ({placeholders})"
         );
         let mut q = zeph_db::query(sqlx::AssertSqlSafe(query));
         for id in ids {
@@ -396,7 +396,7 @@ impl SqliteStore {
     /// Returns an error if the database query fails.
     pub async fn count_unused_failure_pairs(&self) -> Result<i64, MemoryError> {
         let count = zeph_db::query_scalar(sql!(
-            "SELECT COUNT(*) FROM compression_failure_pairs WHERE used_in_update = 0"
+            "SELECT COUNT(*) FROM compression_failure_pairs WHERE used_in_update = FALSE"
         ))
         .fetch_one(&self.pool)
         .await?;
@@ -405,7 +405,7 @@ impl SqliteStore {
 
     /// Delete old used failure pairs, keeping the most recent `keep_recent` unused pairs.
     ///
-    /// Removes all rows where `used_in_update = 1`. Unused rows are managed by the
+    /// Removes all rows where `used_in_update = TRUE`. Unused rows are managed by the
     /// `max_stored_pairs` enforcement below: if there are more than `keep_recent` unused pairs,
     /// the oldest excess rows are deleted.
     ///
@@ -415,7 +415,7 @@ impl SqliteStore {
     pub async fn cleanup_old_failure_pairs(&self, keep_recent: usize) -> Result<(), MemoryError> {
         // Delete all used pairs (they've already been processed).
         zeph_db::query(sql!(
-            "DELETE FROM compression_failure_pairs WHERE used_in_update = 1"
+            "DELETE FROM compression_failure_pairs WHERE used_in_update = TRUE"
         ))
         .execute(&self.pool)
         .await?;
@@ -424,10 +424,10 @@ impl SqliteStore {
         let keep = i64::try_from(keep_recent).unwrap_or(i64::MAX);
         zeph_db::query(sql!(
             "DELETE FROM compression_failure_pairs \
-             WHERE used_in_update = 0 \
+             WHERE used_in_update = FALSE \
              AND id NOT IN ( \
                  SELECT id FROM compression_failure_pairs \
-                 WHERE used_in_update = 0 \
+                 WHERE used_in_update = FALSE \
                  ORDER BY created_at DESC \
                  LIMIT ? \
              )"

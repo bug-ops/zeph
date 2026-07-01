@@ -62,6 +62,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(db,memory,index)`: fix the remaining `PostgreSQL` runtime defects in `zeph-memory`/
+  `zeph-index` surfaced by actually running the new `postgres_integration.rs` suites against a
+  real Postgres container (22 tests now pass against live Postgres — 19 `zeph-memory` +
+  1 inline `zeph-memory` lib test + 2 `zeph-index` — not just compile-checked). Beyond the
+  placeholder-conversion fix below, found and fixed several more dialect-incompatibility classes:
+  - **Boolean columns compared/assigned via integer literals** (`col = 0`/`col = 1`) across
+    `messages.consolidated`/`qdrant_cleaned`, `graph_entities`-adjacent `graph_processed`,
+    `skill_versions.is_active`, and `experiment_results.accepted` — `PostgreSQL` has no implicit
+    integer↔boolean coercion; replaced with `TRUE`/`FALSE` literals (also valid SQLite syntax).
+  - **`MAX`/`MIN` used as two-argument scalar functions** (`MAX(x, 0)`, `MIN(1.0, x)`) in
+    `graph_store::decay_edge_retrieval_counts` and the forgetting-sweep replay phase —
+    `PostgreSQL`'s `MAX`/`MIN` are aggregate-only; added `Dialect::GREATEST_FN`/`LEAST_FN`
+    (`MAX`/`MIN` on `SQLite`, `GREATEST`/`LEAST` on `PostgreSQL`).
+  - **`messages.parts` (`JSONB`) and similar `TEXT`-on-`SQLite`-but-natively-typed-on-`PostgreSQL`
+    columns decoded directly into `String`** at both bind (`INSERT`/`UPDATE`) and `SELECT` sites —
+    added `Dialect::JSON_CAST` (bind-side `::jsonb` suffix) and `Dialect::select_as_text` (SELECT-
+    side `::text` cast) and applied them to `save_message_with_metadata`, the hide+summarize batch
+    insert, `import_snapshot`, `load_history`/`load_history_filtered`/`message_by_id`/
+    `messages_by_ids`, and the `EntityRow`/`EdgeRow`/`AliasRow` projections in `graph/store/mod.rs`
+    (`first_seen_at`/`last_seen_at`/`valid_from`/`valid_to`/`created_at`/`expired_at`, all
+    `TIMESTAMPTZ` on `PostgreSQL`).
+  - **`REAL`-vs-`DOUBLE PRECISION` decode mismatch**: `graph_edges.weight`/`confidence_fast`/
+    `confidence_slow` are `REAL` (`f32`) on `PostgreSQL` but decoded as `f64` in `EdgeRow`; added
+    `CAST(... AS DOUBLE PRECISION)` at all 14 `EdgeRow`-projecting queries.
+  - **Code review caught the same `REAL`-vs-`DOUBLE PRECISION` defect at 3 more sites, missed
+    during the mechanical pass above, on the primary graph-edge write path**:
+    `insert_edge_typed`'s existing-row dedup `SELECT` (returns a raw tuple, not an `EdgeRow`, so
+    the earlier sed pass never touched it), `record_reassertion`'s `SELECT`, and
+    `bfs_edges_at_depth`'s hand-built `EdgeRow` query (which was *also* still missing the
+    `TIMESTAMPTZ` `select_as_text` casts applied everywhere else — fixed in the same pass).
+    This crashed the moment any caller re-asserted a previously-seen `(source, target, relation,
+    edge_type)` fact — the designed, normal behavior of the Benna-Fusi multi-timescale confidence
+    update, not an edge case — which is why `insert_edge`'s ~65 call sites would have hit it in
+    practice despite the new test suite's first round reporting all-green (every test there only
+    ever inserts each edge once). Added 2 new regression tests exercising the update/dedup branch
+    via both `insert_edge` and `insert_or_supersede`, asserting the re-assertion updates the
+    existing row (not a duplicate) and the Benna-Fusi confidence values move correctly.
+  - **Two sites entirely missing dialect conversion**: `graph_store::find_entity_by_alias` (raw
+    `?` placeholders, never wrapped) and `agent_sessions::update_agent_session_status`/
+    `reconcile_stale_sessions` (same, plus `datetime('now')` replaced with portable
+    `CURRENT_TIMESTAMP`).
+  - 3 additional regression tests added for gaps found during review:
+    `five_signal::access_frequency::load_for_candidates`, `apply_consolidation_update` (the
+    `apply_consolidation_merge` sibling), and `semantic::recall::apply_five_signal_scoring`'s
+    `created_at` batch fetch (also fixed: it decoded `messages.created_at` `TIMESTAMPTZ` directly
+    as `i64`, now wrapped in `Dialect::epoch_from_col`). The latter is an inline test in
+    `recall.rs` itself (the method under test is private) and initially failed even after the SQL
+    fix: its `&self` receiver came from the existing `make_semantic_memory()` test helper, which
+    calls `SqliteStore::new(":memory:")` — under the `postgres` feature `ActiveDriver` is
+    unconditionally `PostgresDriver`, so `:memory:` fails to parse as a Postgres URL. Split the
+    helper into `make_semantic_memory_with_sqlite(sqlite)` so the test can supply the same
+    real Postgres-backed store it already uses elsewhere, instead of the broken in-memory path.
+  - Also gated 4 pre-existing, unrelated inline `#[cfg(test)]` helpers
+    (`reasoning.rs::make_test_pool`, `graph/ingest/ledger.rs`, `five_signal/causal_distance.rs`,
+    `zeph-index/src/watcher.rs`) that hardcode `sqlx::SqlitePool` regardless of the active
+    feature, behind `#[cfg(not(feature = "postgres"))]` — without this, `cargo check/clippy
+    --tests --features postgres` fails to compile independent of any of the above.
+
+- `fix(memory,index)`: convert dynamic-SQL `?` placeholders to the active backend's syntax at
+  ~22 call sites in `zeph-memory` and `zeph-index` that bypassed `zeph_db`'s dialect-conversion
+  layer (`placeholder_list`/`numbered_placeholder`/`rewrite_placeholders`). Two anti-patterns
+  were affected: hand-rolled `IN (...)` lists built with `.map(|_| "?").join(",")`, and
+  `INSERT ... ON CONFLICT` statements combining `ActiveDialect::INSERT_IGNORE`/`CONFLICT_NOTHING`
+  with a hardcoded `?` that was never converted. Under the `postgres` feature these queries sent
+  literal `?` characters to Postgres's bind-parameter parser, which does not recognize them,
+  causing a runtime protocol error or, in some bind-count-mismatch cases, silently returning zero
+  rows. Added `crates/zeph-memory/tests/postgres_integration.rs` and
+  `crates/zeph-index/tests/postgres_integration.rs` (new `test-utils` feature, gated behind
+  Docker via `testcontainers`) as regression coverage, following the existing
+  `crates/zeph-db/tests/postgres_integration.rs` convention. Closes #5364.
+
 - `fix(mcp)`: stop silently dropping non-text MCP tool-result content. Image, audio, and
   embedded-resource content blocks returned by an MCP server are now rendered as descriptive
   placeholders (`[image: <mime>, <N> bytes]`, `[resource: <uri>]\n<text>`, etc.) instead of

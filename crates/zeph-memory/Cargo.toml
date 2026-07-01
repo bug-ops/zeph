@@ -30,6 +30,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 sqlx = { workspace = true, features = ["macros", "runtime-tokio", "tls-rustls", "sqlite", "migrate"] } # TODO(#2385-phase3): audit and remove direct sqlx dep once #[derive(sqlx::Type)] is resolved
+testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tiktoken-rs.workspace = true
 tokio = { workspace = true, features = ["rt"] }
@@ -53,6 +54,8 @@ scheduler = ["dep:zeph-scheduler"]
 sqlite = ["zeph-db/sqlite"]
 postgres = ["zeph-db/postgres"]
 testing = ["zeph-llm/testing"]
+# Enables test utilities and testcontainers for PostgreSQL integration tests.
+test-utils = ["dep:testcontainers-modules", "postgres"]
 
 [[bench]]
 name = "token_estimation"

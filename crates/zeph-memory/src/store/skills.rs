@@ -192,7 +192,7 @@ impl SqliteStore {
             std::collections::HashMap::new();
         for name in skill_names {
             let vid: Option<(i64,)> = zeph_db::query_as(sql!(
-                "SELECT id FROM skill_versions WHERE skill_name = ? AND is_active = 1"
+                "SELECT id FROM skill_versions WHERE skill_name = ? AND is_active = TRUE"
             ))
             .bind(name)
             .fetch_optional(&mut *tx)
@@ -364,16 +364,18 @@ impl SqliteStore {
         let id = row.0;
 
         zeph_db::query(sql!(
-            "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1"
+            "UPDATE skill_versions SET is_active = FALSE WHERE skill_name = ? AND is_active = TRUE"
         ))
         .bind(skill_name)
         .execute(&mut *tx)
         .await?;
 
-        zeph_db::query(sql!("UPDATE skill_versions SET is_active = 1 WHERE id = ?"))
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        zeph_db::query(sql!(
+            "UPDATE skill_versions SET is_active = TRUE WHERE id = ?"
+        ))
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(id)
@@ -412,7 +414,7 @@ impl SqliteStore {
         let row: Option<SkillVersionTuple> = zeph_db::query_as(sql!(
             "SELECT id, skill_name, version, body, description, source, \
                  is_active, success_count, failure_count, created_at \
-                 FROM skill_versions WHERE skill_name = ? AND is_active = 1 LIMIT 1"
+                 FROM skill_versions WHERE skill_name = ? AND is_active = TRUE LIMIT 1"
         ))
         .bind(skill_name)
         .fetch_optional(&self.pool)
@@ -435,16 +437,18 @@ impl SqliteStore {
         let mut tx = begin_write(&self.pool).await?;
 
         zeph_db::query(sql!(
-            "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1"
+            "UPDATE skill_versions SET is_active = FALSE WHERE skill_name = ? AND is_active = TRUE"
         ))
         .bind(skill_name)
         .execute(&mut *tx)
         .await?;
 
-        zeph_db::query(sql!("UPDATE skill_versions SET is_active = 1 WHERE id = ?"))
-            .bind(version_id)
-            .execute(&mut *tx)
-            .await?;
+        zeph_db::query(sql!(
+            "UPDATE skill_versions SET is_active = TRUE WHERE id = ?"
+        ))
+        .bind(version_id)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(())
@@ -526,16 +530,18 @@ impl SqliteStore {
             let id = row.0;
 
             zeph_db::query(sql!(
-                "UPDATE skill_versions SET is_active = 0 WHERE skill_name = ? AND is_active = 1"
+                "UPDATE skill_versions SET is_active = FALSE WHERE skill_name = ? AND is_active = TRUE"
             ))
             .bind(skill_name)
             .execute(&mut *tx)
             .await?;
 
-            zeph_db::query(sql!("UPDATE skill_versions SET is_active = 1 WHERE id = ?"))
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            zeph_db::query(sql!(
+                "UPDATE skill_versions SET is_active = TRUE WHERE id = ?"
+            ))
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         }
 
         tx.commit().await?;
@@ -596,7 +602,7 @@ impl SqliteStore {
         let result = zeph_db::query(sql!(
             "DELETE FROM skill_versions WHERE id IN (\
                 SELECT id FROM skill_versions \
-                WHERE skill_name = ? AND source = 'auto' AND is_active = 0 \
+                WHERE skill_name = ? AND source = 'auto' AND is_active = FALSE \
                 ORDER BY id ASC \
                 LIMIT max(0, (SELECT COUNT(*) FROM skill_versions \
                     WHERE skill_name = ? AND source = 'auto') - ?)\
@@ -625,7 +631,7 @@ impl SqliteStore {
         let result = zeph_db::query(sql!(
             "DELETE FROM skill_versions WHERE id IN (\
                 SELECT id FROM skill_versions \
-                WHERE skill_name = ? AND source = 'auto' AND is_active = 0 \
+                WHERE skill_name = ? AND source = 'auto' AND is_active = FALSE \
                 ORDER BY id DESC \
                 OFFSET ?\
             )"
@@ -679,7 +685,7 @@ impl SqliteStore {
     #[tracing::instrument(skip_all, name = "memory.skills.list_active_auto_versions")]
     pub async fn list_active_auto_versions(&self) -> Result<Vec<String>, MemoryError> {
         let rows: Vec<(String,)> = zeph_db::query_as(sql!(
-            "SELECT skill_name FROM skill_versions WHERE is_active = 1 AND source = 'auto'"
+            "SELECT skill_name FROM skill_versions WHERE is_active = TRUE AND source = 'auto'"
         ))
         .fetch_all(&self.pool)
         .await?;

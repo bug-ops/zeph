@@ -110,14 +110,10 @@ impl SqliteStore {
         if message_ids.is_empty() {
             return Ok(());
         }
-        let placeholders: String = message_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = zeph_db::placeholder_list(1, message_ids.len());
         let query = format!(
             "UPDATE admission_training_data \
-             SET was_recalled = 1, updated_at = datetime('now') \
+             SET was_recalled = 1, updated_at = CURRENT_TIMESTAMP \
              WHERE message_id IN ({placeholders})"
         );
         let mut q = zeph_db::query(sqlx::AssertSqlSafe(query));

@@ -226,12 +226,12 @@ pub async fn annotate_conflicts(
 
     for chunk in edge_ids.chunks(MAX_IDS_PER_QUERY) {
         let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let query_str = format!(
+        let query_str = zeph_db::rewrite_placeholders(&format!(
             "SELECT id, edge_a_id, edge_b_id
              FROM implicit_conflict_candidates
              WHERE status = 'pending'
                AND (edge_a_id IN ({placeholders}) OR edge_b_id IN ({placeholders}))",
-        );
+        ));
 
         let mut q = sqlx::query(sqlx::AssertSqlSafe(query_str));
         for id in chunk {

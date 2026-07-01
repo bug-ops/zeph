@@ -29,11 +29,11 @@ impl SqliteStore {
     ///
     /// Returns an error if the database write fails.
     pub async fn create_acp_session(&self, session_id: &str) -> Result<(), MemoryError> {
-        let sql = format!(
+        let sql = zeph_db::rewrite_placeholders(&format!(
             "{} INTO acp_sessions (id) VALUES (?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        );
+        ));
         zeph_db::query(sqlx::AssertSqlSafe(sql))
             .bind(session_id)
             .execute(&self.pool)
@@ -268,11 +268,11 @@ impl SqliteStore {
         session_id: &str,
         conversation_id: ConversationId,
     ) -> Result<(), MemoryError> {
-        let sql = format!(
+        let sql = zeph_db::rewrite_placeholders(&format!(
             "{} INTO acp_sessions (id, conversation_id) VALUES (?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        );
+        ));
         zeph_db::query(sqlx::AssertSqlSafe(sql))
             .bind(session_id)
             .bind(conversation_id)

@@ -176,6 +176,9 @@ mod tests {
     }
 
     // Regression test for #4405: goal_entity_id=None returns empty map without touching the DB.
+    // Hardcodes `sqlx::SqlitePool` and is not portable to PostgreSQL; skipped entirely
+    // when `postgres` is the active backend (see issue #5364).
+    #[cfg(not(feature = "postgres"))]
     #[tokio::test]
     async fn compute_none_goal_returns_empty_map() {
         use std::sync::Arc;

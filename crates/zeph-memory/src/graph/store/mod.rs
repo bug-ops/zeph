@@ -113,7 +113,7 @@ impl GraphStore {
              VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(canonical_name, entity_type) DO UPDATE SET
                name = excluded.name,
-               summary = COALESCE(excluded.summary, summary),
+               summary = COALESCE(excluded.summary, graph_entities.summary),
                last_seen_at = CURRENT_TIMESTAMP
              RETURNING id"
         ))
@@ -326,11 +326,11 @@ impl GraphStore {
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.add_alias", skip_all)]
     pub async fn add_alias(&self, entity_id: i64, alias_name: &str) -> Result<(), MemoryError> {
-        let insert_alias_sql = format!(
+        let insert_alias_sql = zeph_db::rewrite_placeholders(&format!(
             "{} INTO graph_entity_aliases (entity_id, alias_name) VALUES (?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        );
+        ));
         zeph_db::query(sqlx::AssertSqlSafe(insert_alias_sql))
             .bind(entity_id)
             .bind(alias_name)
@@ -353,9 +353,14 @@ impl GraphStore {
         entity_type: EntityType,
     ) -> Result<Option<Entity>, MemoryError> {
         let type_str = entity_type.as_str();
-        let alias_typed_sql = format!(
+        let first_seen_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("e.first_seen_at");
+        let last_seen_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("e.last_seen_at");
+        let alias_typed_sql = zeph_db::rewrite_placeholders(&format!(
             "SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
-                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id \
+                    {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, \
+                    e.qdrant_point_id \
              FROM graph_entity_aliases a \
              JOIN graph_entities e ON e.id = a.entity_id \
              WHERE a.alias_name = ? {} \
@@ -363,7 +368,7 @@ impl GraphStore {
              ORDER BY e.id ASC \
              LIMIT 1",
             <ActiveDialect as zeph_db::dialect::Dialect>::COLLATE_NOCASE,
-        );
+        ));
         let row: Option<EntityRow> = zeph_db::query_as(sqlx::AssertSqlSafe(alias_typed_sql))
             .bind(alias_name)
             .bind(type_str)
@@ -382,15 +387,18 @@ impl GraphStore {
         &self,
         entity_id: i64,
     ) -> Result<Vec<EntityAlias>, MemoryError> {
-        let rows: Vec<AliasRow> = zeph_db::query_as(sql!(
-            "SELECT id, entity_id, alias_name, created_at
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let sql = zeph_db::rewrite_placeholders(&format!(
+            "SELECT id, entity_id, alias_name, {created_at_sel} AS created_at
              FROM graph_entity_aliases
              WHERE entity_id = ?
              ORDER BY id ASC"
-        ))
-        .bind(entity_id)
-        .fetch_all(&self.pool)
-        .await?;
+        ));
+        let rows: Vec<AliasRow> = zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(entity_id)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(alias_from_row).collect())
     }
 
@@ -502,7 +510,8 @@ impl GraphStore {
         let mut tx = zeph_db::begin(&self.pool).await?;
 
         let existing: Option<(i64, f64, f64, f64)> = zeph_db::query_as(sql!(
-            "SELECT id, confidence, confidence_fast, confidence_slow FROM graph_edges
+            "SELECT id, confidence, CAST(confidence_fast AS DOUBLE PRECISION),
+                    CAST(confidence_slow AS DOUBLE PRECISION) FROM graph_edges
              WHERE source_entity_id = ?
                AND target_entity_id = ?
                AND relation = ?
@@ -688,7 +697,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
                  FROM graph_edges
                  WHERE valid_to IS NULL{origin_filter}
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))"
@@ -700,7 +709,7 @@ impl GraphStore {
             format!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
                  FROM graph_edges
                  WHERE valid_to IS NULL{origin_filter}
                    AND (source_entity_id IN ({placeholders}) OR target_entity_id IN ({placeholders2}))
@@ -749,7 +758,7 @@ impl GraphStore {
         let sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL{origin_filter}
                AND (source_entity_id = ? OR target_entity_id = ?)"
@@ -779,7 +788,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE source_entity_id = ? OR target_entity_id = ?
              ORDER BY valid_from DESC
@@ -808,7 +817,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
                AND ((source_entity_id = ? AND target_entity_id = ?)
@@ -838,7 +847,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
                AND source_entity_id = ?
@@ -907,7 +916,7 @@ impl GraphStore {
              ON CONFLICT(name) DO UPDATE SET
                summary = excluded.summary,
                entity_ids = excluded.entity_ids,
-               fingerprint = COALESCE(excluded.fingerprint, fingerprint),
+               fingerprint = COALESCE(excluded.fingerprint, graph_communities.fingerprint),
                updated_at = CURRENT_TIMESTAMP
              RETURNING id"
         ))
@@ -1108,7 +1117,7 @@ impl GraphStore {
         zeph_db::query_as::<_, EdgeRow>(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
              ORDER BY id ASC"
@@ -1142,7 +1151,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL AND id > ?
              ORDER BY id ASC
@@ -1531,9 +1540,10 @@ impl GraphStore {
         interval_secs: u64,
     ) -> Result<usize, MemoryError> {
         let epoch_now_decay = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let greatest_fn = <ActiveDialect as zeph_db::dialect::Dialect>::GREATEST_FN;
         let decay_raw = format!(
             "UPDATE graph_edges \
-             SET retrieval_count = MAX(CAST(retrieval_count * ? AS INTEGER), 0) \
+             SET retrieval_count = {greatest_fn}(CAST(retrieval_count * ? AS INTEGER), 0) \
              WHERE valid_to IS NULL \
                AND retrieval_count > 0 \
                AND (last_retrieved_at IS NULL OR last_retrieved_at < {epoch_now_decay} - ?)"
@@ -1554,15 +1564,20 @@ impl GraphStore {
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.delete_expired_edges", skip_all)]
     pub async fn delete_expired_edges(&self, retention_days: u32) -> Result<usize, MemoryError> {
-        let days = i64::from(retention_days);
-        let result = zeph_db::query(sql!(
+        let retention_secs = i64::from(retention_days) * 86400;
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let expired_at_epoch =
+            <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("expired_at");
+        let raw = format!(
             "DELETE FROM graph_edges
              WHERE expired_at IS NOT NULL
-               AND expired_at < datetime('now', '-' || ? || ' days')"
-        ))
-        .bind(days)
-        .execute(&self.pool)
-        .await?;
+               AND {expired_at_epoch} < {epoch_now} - ?"
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        let result = zeph_db::query(sqlx::AssertSqlSafe(sql))
+            .bind(retention_secs)
+            .execute(&self.pool)
+            .await?;
         Ok(usize::try_from(result.rows_affected())?)
     }
 
@@ -1573,19 +1588,24 @@ impl GraphStore {
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.delete_orphan_entities", skip_all)]
     pub async fn delete_orphan_entities(&self, retention_days: u32) -> Result<usize, MemoryError> {
-        let days = i64::from(retention_days);
-        let result = zeph_db::query(sql!(
+        let retention_secs = i64::from(retention_days) * 86400;
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let last_seen_at_epoch =
+            <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("last_seen_at");
+        let raw = format!(
             "DELETE FROM graph_entities
              WHERE id NOT IN (
                  SELECT DISTINCT source_entity_id FROM graph_edges WHERE valid_to IS NULL
                  UNION
                  SELECT DISTINCT target_entity_id FROM graph_edges WHERE valid_to IS NULL
              )
-             AND last_seen_at < datetime('now', '-' || ? || ' days')"
-        ))
-        .bind(days)
-        .execute(&self.pool)
-        .await?;
+             AND {last_seen_at_epoch} < {epoch_now} - ?"
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        let result = zeph_db::query(sqlx::AssertSqlSafe(sql))
+            .bind(retention_secs)
+            .execute(&self.pool)
+            .await?;
         Ok(usize::try_from(result.rows_affected())?)
     }
 
@@ -1731,7 +1751,7 @@ impl GraphStore {
         let rows: Vec<EdgeRow> = zeph_db::query_as(sql!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NULL
                AND valid_from <= ?
@@ -1739,7 +1759,7 @@ impl GraphStore {
              UNION ALL
              SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                     valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE valid_to IS NOT NULL
                AND valid_from <= ?
@@ -1785,7 +1805,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -1803,7 +1823,7 @@ impl GraphStore {
             zeph_db::query_as(sql!(
                 "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
                         valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                        edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
                  FROM graph_edges
                  WHERE source_entity_id = ?
                    AND fact LIKE ? ESCAPE '\\'
@@ -2146,10 +2166,19 @@ impl GraphStore {
             format!("edge_type IN ({type_in}) AND valid_to IS NULL")
         };
 
+        let valid_from_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_from");
+        let valid_to_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_to");
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let expired_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("expired_at");
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to,
+                    {created_at_sel} AS created_at, {expired_at_sel} AS expired_at,
+                    episode_id, qdrant_point_id,
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -2171,8 +2200,13 @@ impl GraphStore {
         let edge_rows: Vec<EdgeRow> = edge_query.fetch_all(&self.pool).await?;
 
         // For entity query, use plain sequential bind positions (no type prefix offset)
+        let first_seen_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("first_seen_at");
+        let last_seen_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_seen_at");
         let entity_sql2 = format!(
-            "SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+            "SELECT id, name, canonical_name, entity_type, summary, \
+                    {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, qdrant_point_id
              FROM graph_entities WHERE id IN ({ph})",
             ph = placeholder_list(1, visited_ids.len()),
         );
@@ -2226,10 +2260,19 @@ impl GraphStore {
         } else {
             "valid_to IS NULL".to_owned()
         };
+        let valid_from_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_from");
+        let valid_to_sel = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("valid_to");
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let expired_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("expired_at");
         let edge_sql = format!(
             "SELECT id, source_entity_id, target_entity_id, relation, fact, confidence,
-                    valid_from, valid_to, created_at, expired_at, episode_id, qdrant_point_id,
-                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, weight, confidence_fast, confidence_slow, turn_index
+                    {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to,
+                    {created_at_sel} AS created_at, {expired_at_sel} AS expired_at,
+                    episode_id, qdrant_point_id,
+                    edge_type, retrieval_count, last_retrieved_at, superseded_by, canonical_relation, supersedes, CAST(weight AS DOUBLE PRECISION) AS weight, CAST(confidence_fast AS DOUBLE PRECISION) AS confidence_fast, CAST(confidence_slow AS DOUBLE PRECISION) AS confidence_slow, turn_index
              FROM graph_edges
              WHERE {edge_filter}
                AND source_entity_id IN ({ph_ids1})
@@ -2247,8 +2290,13 @@ impl GraphStore {
         }
         let edge_rows: Vec<EdgeRow> = edge_query.fetch_all(&self.pool).await?;
 
+        let first_seen_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("first_seen_at");
+        let last_seen_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_seen_at");
         let entity_sql = format!(
-            "SELECT id, name, canonical_name, entity_type, summary, first_seen_at, last_seen_at, qdrant_point_id
+            "SELECT id, name, canonical_name, entity_type, summary, \
+                    {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, qdrant_point_id
              FROM graph_entities WHERE id IN ({ph})",
             ph = placeholder_list(1, n),
         );
@@ -2322,7 +2370,7 @@ impl GraphStore {
         let limit = i64::try_from(limit)?;
         let rows: Vec<(i64, String)> = zeph_db::query_as(sql!(
             "SELECT id, content FROM messages
-             WHERE graph_processed = 0
+             WHERE graph_processed = FALSE
              ORDER BY id ASC
              LIMIT ?"
         ))
@@ -2343,7 +2391,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.unprocessed_message_count", skip_all)]
     pub async fn unprocessed_message_count(&self) -> Result<i64, MemoryError> {
         let count: i64 = zeph_db::query_scalar(sql!(
-            "SELECT COUNT(*) FROM messages WHERE graph_processed = 0"
+            "SELECT COUNT(*) FROM messages WHERE graph_processed = FALSE"
         ))
         .fetch_one(&self.pool)
         .await?;
@@ -2367,7 +2415,7 @@ impl GraphStore {
         for chunk in ids.chunks(MAX_BATCH) {
             let placeholders = placeholder_list(1, chunk.len());
             let sql =
-                format!("UPDATE messages SET graph_processed = 1 WHERE id IN ({placeholders})");
+                format!("UPDATE messages SET graph_processed = TRUE WHERE id IN ({placeholders})");
             let mut query = zeph_db::query(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 query = query.bind(id.0);
@@ -3075,12 +3123,23 @@ impl GraphStore {
         let src_ph = numbered_placeholder(src_pos);
         let tgt_ph = numbered_placeholder(tgt_pos);
 
+        let valid_from_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.valid_from");
+        let valid_to_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.valid_to");
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.created_at");
+        let expired_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("ge.expired_at");
         let sql = format!(
             "SELECT ge.id, ge.source_entity_id, ge.target_entity_id, ge.relation, ge.fact,
-                    ge.confidence, ge.valid_from, ge.valid_to, ge.created_at, ge.expired_at,
+                    ge.confidence, {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to,
+                    {created_at_sel} AS created_at, {expired_at_sel} AS expired_at,
                     ge.episode_id, ge.qdrant_point_id, ge.edge_type, ge.retrieval_count,
                     ge.last_retrieved_at, ge.superseded_by, ge.canonical_relation, ge.supersedes,
-                    ge.weight, ge.confidence_fast, ge.confidence_slow, ge.turn_index
+                    CAST(ge.weight AS DOUBLE PRECISION) AS weight,
+                    CAST(ge.confidence_fast AS DOUBLE PRECISION) AS confidence_fast,
+                    CAST(ge.confidence_slow AS DOUBLE PRECISION) AS confidence_slow, ge.turn_index
              FROM graph_edges ge
              WHERE ge.edge_type IN ({ph})
                AND ge.valid_to IS NULL
@@ -3223,7 +3282,8 @@ async fn record_reassertion(
 
     // Apply Benna-Fusi update to the head edge's synaptic variables.
     let existing: Option<(f64, f64)> = zeph_db::query_as(sql!(
-        "SELECT confidence_fast, confidence_slow FROM graph_edges WHERE id = ? LIMIT 1"
+        "SELECT CAST(confidence_fast AS DOUBLE PRECISION), \
+                CAST(confidence_slow AS DOUBLE PRECISION) FROM graph_edges WHERE id = ? LIMIT 1"
     ))
     .bind(head_id)
     .fetch_optional(&mut **tx)

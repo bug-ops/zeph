@@ -250,9 +250,9 @@ impl SqliteStore {
         id: &str,
         status: SessionStatus,
     ) -> Result<(), MemoryError> {
-        zeph_db::query(
-            "UPDATE agent_sessions SET status = ?, last_active_at = datetime('now') WHERE id = ?",
-        )
+        zeph_db::query(sql!(
+            "UPDATE agent_sessions SET status = ?, last_active_at = CURRENT_TIMESTAMP WHERE id = ?"
+        ))
         .bind(status.as_str())
         .bind(id)
         .execute(&self.pool)
@@ -278,10 +278,10 @@ impl SqliteStore {
         &self,
         current_session_id: &str,
     ) -> Result<u64, MemoryError> {
-        let result = zeph_db::query(
+        let result = zeph_db::query(sql!(
             "UPDATE agent_sessions SET status = 'unknown' \
-             WHERE status = 'active' AND id != ?",
-        )
+             WHERE status = 'active' AND id != ?"
+        ))
         .bind(current_session_id)
         .execute(&self.pool)
         .await?;

@@ -106,8 +106,9 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
         let cid = ConversationId(cid_raw);
 
         let epoch_expr = <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("created_at");
+        let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
         let msg_sql = zeph_db::rewrite_placeholders(&format!(
-            "SELECT id, role, content, parts, {epoch_expr} \
+            "SELECT id, role, content, {parts_select} AS parts, {epoch_expr} \
             FROM messages WHERE conversation_id = ? ORDER BY id ASC"
         ));
         let msg_rows: Vec<(i64, String, String, String, i64)> =
@@ -205,11 +206,12 @@ pub async fn import_snapshot(
         }
 
         for msg in conv.messages {
-            let msg_sql = format!(
-                "{} INTO messages (id, conversation_id, role, content, parts) VALUES (?, ?, ?, ?, ?){}",
+            let json_cast = <ActiveDialect as zeph_db::dialect::Dialect>::JSON_CAST;
+            let msg_sql = zeph_db::rewrite_placeholders(&format!(
+                "{} INTO messages (id, conversation_id, role, content, parts) VALUES (?, ?, ?, ?, ?{json_cast}){}",
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-            );
+            ));
             let result = zeph_db::query(sqlx::AssertSqlSafe(msg_sql))
                 .bind(msg.id)
                 .bind(msg.conversation_id)
@@ -227,11 +229,11 @@ pub async fn import_snapshot(
         }
 
         for sum in conv.summaries {
-            let sum_sql = format!(
+            let sum_sql = zeph_db::rewrite_placeholders(&format!(
                 "{} INTO summaries (id, conversation_id, content, first_message_id, last_message_id, token_estimate) VALUES (?, ?, ?, ?, ?, ?){}",
                 <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
                 <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-            );
+            ));
             let result = zeph_db::query(sqlx::AssertSqlSafe(sum_sql))
                 .bind(sum.id)
                 .bind(sum.conversation_id)

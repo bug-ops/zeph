@@ -371,9 +371,7 @@ impl CodeStore {
         let mut result = std::collections::HashSet::new();
 
         for chunk in hashes.chunks(900) {
-            let placeholders = std::iter::repeat_n("?", chunk.len())
-                .collect::<Vec<_>>()
-                .join(", ");
+            let placeholders = zeph_db::placeholder_list(1, chunk.len());
             let sql = format!(
                 "SELECT content_hash FROM chunk_metadata WHERE content_hash IN ({placeholders})"
             );

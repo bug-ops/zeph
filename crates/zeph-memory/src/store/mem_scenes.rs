@@ -74,11 +74,11 @@ impl SqliteStore {
         .await?;
         let scene_id = row.0;
 
-        let member_sql = format!(
+        let member_sql = zeph_db::rewrite_placeholders(&format!(
             "{} INTO mem_scene_members (scene_id, message_id) VALUES (?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        );
+        ));
         for &msg_id in member_ids {
             zeph_db::query(sqlx::AssertSqlSafe(member_sql.as_str()))
                 .bind(scene_id)

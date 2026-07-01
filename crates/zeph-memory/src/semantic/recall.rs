@@ -1112,14 +1112,12 @@ impl SemanticMemory {
         // Batch-fetch `created_at` timestamps for novelty computation.
         let created_at_map: std::collections::HashMap<MessageId, i64> = {
             let id_vals: Vec<i64> = ids.iter().map(|id| id.0).collect();
-            let placeholders: String = id_vals
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("?{}", i + 1))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let placeholders = zeph_db::placeholder_list(1, id_vals.len());
+            let created_at_epoch =
+                <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("created_at");
             let sql = format!(
-                "SELECT id, created_at FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+                "SELECT id, {created_at_epoch} AS created_at FROM messages \
+                 WHERE id IN ({placeholders}) AND deleted_at IS NULL"
             );
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
             for id in &id_vals {
@@ -2121,13 +2119,26 @@ mod tests {
     }
 
     async fn make_semantic_memory() -> crate::semantic::SemanticMemory {
+        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        make_semantic_memory_with_sqlite(sqlite)
+    }
+
+    /// Build a `SemanticMemory` around a caller-supplied store.
+    ///
+    /// Split out of [`make_semantic_memory`] so tests that need a real `PostgreSQL`-backed
+    /// pool (e.g. `apply_five_signal_scoring_decodes_created_at_on_postgres`) can supply one
+    /// directly instead of going through `SqliteStore::new(":memory:")`, which always routes
+    /// through `ActiveDriver` and fails to parse `:memory:` as a Postgres URL once the
+    /// `postgres` feature is active.
+    fn make_semantic_memory_with_sqlite(
+        sqlite: crate::store::SqliteStore,
+    ) -> crate::semantic::SemanticMemory {
         use std::sync::Arc;
         use std::sync::atomic::AtomicU64;
         use zeph_llm::any::AnyProvider;
         use zeph_llm::mock::MockProvider;
 
         let provider = AnyProvider::Mock(MockProvider::default());
-        let sqlite = crate::store::SqliteStore::new(":memory:").await.unwrap();
         crate::semantic::SemanticMemory {
             sqlite,
             qdrant: None,
@@ -2234,6 +2245,107 @@ mod tests {
         assert!(
             should_warn3,
             "call after window expiry must not be suppressed"
+        );
+    }
+
+    /// Regression test for issue #5364: `apply_five_signal_scoring`'s `created_at` batch
+    /// fetch built its `IN (...)` list correctly via `placeholder_list`, but decoded the
+    /// `created_at` column directly as `i64` — which fails on `PostgreSQL`, where
+    /// `messages.created_at` is `TIMESTAMPTZ`, not an integer. Fixed by wrapping the
+    /// column in the dialect's `epoch_from_col` (the same helper already used by
+    /// `graph_store::decay_edge_retrieval_counts` and `snapshot::export_snapshot`).
+    ///
+    /// `apply_five_signal_scoring` does not read `self` — only the `fs` parameter and
+    /// `ranked` — so a plain in-memory `self` receiver is fine; only `fs` needs the real
+    /// PostgreSQL-backed pool that the `created_at` query actually executes against.
+    #[cfg(feature = "test-utils")]
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn apply_five_signal_scoring_decodes_created_at_on_postgres() {
+        use std::sync::Arc;
+        use testcontainers::runners::AsyncRunner as _;
+        use testcontainers_modules::postgres::Postgres;
+        use zeph_config::memory::FiveSignalConfig;
+
+        let image = Postgres::default();
+        let container = image.start().await.expect("docker must be available");
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        let pool = zeph_db::DbConfig {
+            url,
+            max_connections: 5,
+            pool_size: 5,
+        }
+        .connect()
+        .await
+        .expect("failed to connect to PG");
+
+        let pg_store = crate::store::SqliteStore::from_pool(pool.clone());
+        let cid = pg_store.create_conversation().await.unwrap();
+
+        // Session starts at a fixed epoch; one message is "fresh" (created at session
+        // start, novelty ~= 1.0), one is "stale" (created 20 days later, novelty << 1.0
+        // at decay_rate=0.1) — isolates the novelty signal so the score difference is
+        // attributable only to the created_at value actually fetched from Postgres.
+        let session_start = 1_700_000_000_i64;
+        let fresh = pg_store.save_message(cid, "user", "fresh").await.unwrap();
+        let stale = pg_store.save_message(cid, "user", "stale").await.unwrap();
+
+        for (id, epoch) in [(fresh, session_start), (stale, session_start + 20 * 86_400)] {
+            #[expect(clippy::cast_precision_loss)]
+            let epoch_f = epoch as f64;
+            sqlx::query(zeph_db::sql!(
+                "UPDATE messages SET created_at = to_timestamp(?) WHERE id = ?"
+            ))
+            .bind(epoch_f)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let graph_store = Arc::new(crate::graph::GraphStore::new(pool.clone()));
+        let config = FiveSignalConfig {
+            w_recency: 0.0,
+            w_relevance: 0.0,
+            w_frequency: 0.0,
+            w_causal: 0.0,
+            w_novelty: 1.0,
+            ..FiveSignalConfig::default()
+        };
+        let fs = crate::five_signal::FiveSignalRuntime::new(
+            config,
+            pool,
+            graph_store,
+            None,
+            session_start,
+            "sess-novelty-test",
+        );
+
+        // `make_semantic_memory()` cannot be used here: it calls `SqliteStore::new(":memory:")`,
+        // which under the `postgres` feature routes through `ActiveDriver = PostgresDriver` and
+        // fails trying to parse `:memory:` as a Postgres URL. `apply_five_signal_scoring` does
+        // not read `self`, so any valid receiver works — build it directly from the same
+        // Postgres-backed `pg_store` used above instead.
+        let memory = make_semantic_memory_with_sqlite(pg_store);
+        let mut ranked = vec![(fresh, 0.0), (stale, 0.0)];
+        memory
+            .apply_five_signal_scoring(&mut ranked, &fs, None)
+            .await;
+
+        assert_eq!(
+            ranked[0].0, fresh,
+            "fresher message (created_at == session_start) must rank first by novelty"
+        );
+        assert!(
+            (ranked[0].1 - 1.0).abs() < 1e-6,
+            "message created at session_start must have novelty ~1.0, got {}",
+            ranked[0].1
+        );
+        assert!(
+            ranked[1].1 < ranked[0].1,
+            "message created 20 days later must have strictly lower novelty"
         );
     }
 

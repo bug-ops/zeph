@@ -400,13 +400,13 @@ pub async fn fetch_recent_events(
     session_id: &str,
     limit: usize,
 ) -> Result<Vec<EpisodicEvent>, MemoryError> {
-    let rows = sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(
+    let rows = sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(zeph_db::sql!(
         "SELECT id, session_id, message_id, event_type, summary, created_at
          FROM episodic_events
          WHERE session_id = ?
          ORDER BY created_at DESC
-         LIMIT ?",
-    )
+         LIMIT ?"
+    ))
     .bind(session_id)
     .bind(i64::try_from(limit).unwrap_or(i64::MAX))
     .fetch_all(store.pool())
@@ -465,11 +465,11 @@ pub async fn recall_episodic_causal(
             let frontier_ph = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let visited_ph = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
-            let query = format!(
+            let query = zeph_db::rewrite_placeholders(&format!(
                 "SELECT DISTINCT effect_event_id FROM causal_links
                  WHERE cause_event_id IN ({frontier_ph})
                    AND effect_event_id NOT IN ({visited_ph})"
-            );
+            ));
 
             let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(query));
             for &id in &frontier {
@@ -493,12 +493,12 @@ pub async fn recall_episodic_causal(
         // Fetch all collected events ordered by creation time.
         let placeholders = visited.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
-        let query = format!(
+        let query = zeph_db::rewrite_placeholders(&format!(
             "SELECT id, session_id, message_id, event_type, summary, created_at
              FROM episodic_events
              WHERE id IN ({placeholders}) AND session_id = ?
              ORDER BY created_at ASC"
-        );
+        ));
 
         let mut q = sqlx::query_as::<_, (i64, String, i64, String, String, i64)>(
             sqlx::AssertSqlSafe(query),

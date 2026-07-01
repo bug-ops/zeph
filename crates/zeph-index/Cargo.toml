@@ -20,6 +20,8 @@ notify-debouncer-mini.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+testcontainers = { workspace = true, optional = true }
+testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "rt"] }
 tracing.workspace = true
@@ -53,6 +55,8 @@ zeph-llm = { workspace = true, features = ["testing"] }
 sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
 default = ["sqlite"]
+# Enables test utilities and testcontainers for PostgreSQL integration tests.
+test-utils = ["dep:testcontainers", "dep:testcontainers-modules", "postgres"]
 
 [lints]
 workspace = true

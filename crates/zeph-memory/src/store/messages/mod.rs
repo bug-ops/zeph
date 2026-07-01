@@ -239,18 +239,20 @@ impl SqliteStore {
         };
 
         let importance_score = crate::semantic::importance::compute_importance(&content_cow, role);
-        let row: (MessageId,) = zeph_db::query_as(
-            sql!("INSERT INTO messages (conversation_id, role, content, parts, visibility, importance_score) \
-             VALUES (?, ?, ?, ?, ?, ?) RETURNING id"),
-        )
-        .bind(conversation_id)
-        .bind(role)
-        .bind(content_cow.as_ref())
-        .bind(parts_json)
-        .bind(visibility.as_db_str())
-        .bind(importance_score)
-        .fetch_one(&self.pool)
-        .await?;
+        let json_cast = <ActiveDialect as zeph_db::dialect::Dialect>::JSON_CAST;
+        let insert_sql = zeph_db::rewrite_placeholders(&format!(
+            "INSERT INTO messages (conversation_id, role, content, parts, visibility, importance_score) \
+             VALUES (?, ?, ?, ?{json_cast}, ?, ?) RETURNING id"
+        ));
+        let row: (MessageId,) = zeph_db::query_as(sqlx::AssertSqlSafe(insert_sql))
+            .bind(conversation_id)
+            .bind(role)
+            .bind(content_cow.as_ref())
+            .bind(parts_json)
+            .bind(visibility.as_db_str())
+            .bind(importance_score)
+            .fetch_one(&self.pool)
+            .await?;
         Ok(row.0)
     }
 
@@ -268,18 +270,23 @@ impl SqliteStore {
         conversation_id: ConversationId,
         limit: u32,
     ) -> Result<Vec<Message>, MemoryError> {
-        let rows: Vec<(String, String, String, String, i64, i32)> = zeph_db::query_as(sql!(
-            "SELECT role, content, parts, visibility, id, fidelity_tag FROM (\
+        let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
+        let raw = format!(
+            "SELECT role, content, {parts_select} AS parts, visibility, id, \
+                    CAST(fidelity_tag AS INTEGER) AS fidelity_tag FROM (\
                 SELECT role, content, parts, visibility, id, fidelity_tag FROM messages \
                 WHERE conversation_id = ? AND deleted_at IS NULL \
                 ORDER BY id DESC \
                 LIMIT ?\
              ) ORDER BY id ASC"
-        ))
-        .bind(conversation_id)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<(String, String, String, String, i64, i32)> =
+            zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(conversation_id)
+                .bind(i64::from(limit))
+                .fetch_all(&self.pool)
+                .await?;
 
         let messages = rows
             .into_iter()
@@ -339,7 +346,8 @@ impl SqliteStore {
         let exclude_user_only = agent_visible == Some(true);
         let exclude_agent_only = user_visible == Some(true);
 
-        let rows: Vec<(String, String, String, String, i64, i32)> = zeph_db::query_as(sql!(
+        let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
+        let raw = format!(
             "WITH recent AS (\
                 SELECT role, content, parts, visibility, id, fidelity_tag FROM messages \
                 WHERE conversation_id = ? \
@@ -348,14 +356,18 @@ impl SqliteStore {
                   AND (NOT ? OR visibility != 'agent_only') \
                 ORDER BY id DESC \
                 LIMIT ?\
-             ) SELECT role, content, parts, visibility, id, fidelity_tag FROM recent ORDER BY id ASC"
-        ))
-        .bind(conversation_id)
-        .bind(exclude_user_only)
-        .bind(exclude_agent_only)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
+             ) SELECT role, content, {parts_select} AS parts, visibility, id, \
+                      CAST(fidelity_tag AS INTEGER) AS fidelity_tag FROM recent ORDER BY id ASC"
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<(String, String, String, String, i64, i32)> =
+            zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(conversation_id)
+                .bind(exclude_user_only)
+                .bind(exclude_agent_only)
+                .bind(i64::from(limit))
+                .fetch_all(&self.pool)
+                .await?;
 
         let messages = rows
             .into_iter()
@@ -419,9 +431,9 @@ impl SqliteStore {
                 .collect::<Vec<_>>()
                 .join(" ");
             let in_list: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            let sql = format!(
+            let sql = zeph_db::rewrite_placeholders(&format!(
                 "UPDATE messages SET fidelity_tag = CASE id {case_arms} END WHERE id IN ({in_list})"
-            );
+            ));
             let mut q = zeph_db::query(sqlx::AssertSqlSafe(sql));
             for &(id, tag) in chunk {
                 q = q.bind(id.0).bind(i32::from(tag));
@@ -536,16 +548,18 @@ impl SqliteStore {
                 text: summary.clone(),
             }])
             .unwrap_or_else(|_| "[]".to_string());
-            zeph_db::query(sql!(
+            let json_cast = <ActiveDialect as zeph_db::dialect::Dialect>::JSON_CAST;
+            let insert_sql = zeph_db::rewrite_placeholders(&format!(
                 "INSERT INTO messages \
                  (conversation_id, role, content, parts, visibility) \
-                 VALUES (?, 'assistant', ?, ?, 'agent_only')"
-            ))
-            .bind(conversation_id)
-            .bind(&content)
-            .bind(&parts)
-            .execute(&mut *tx)
-            .await?;
+                 VALUES (?, 'assistant', ?, ?{json_cast}, 'agent_only')"
+            ));
+            zeph_db::query(sqlx::AssertSqlSafe(insert_sql))
+                .bind(conversation_id)
+                .bind(&content)
+                .bind(&parts)
+                .execute(&mut *tx)
+                .await?;
         }
 
         tx.commit().await?;
@@ -595,12 +609,16 @@ impl SqliteStore {
         &self,
         message_id: MessageId,
     ) -> Result<Option<Message>, MemoryError> {
-        let row: Option<(String, String, String, String)> = zeph_db::query_as(
-            sql!("SELECT role, content, parts, visibility FROM messages WHERE id = ? AND deleted_at IS NULL"),
-        )
-        .bind(message_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
+        let sql = zeph_db::rewrite_placeholders(&format!(
+            "SELECT role, content, {parts_select} AS parts, visibility FROM messages \
+             WHERE id = ? AND deleted_at IS NULL"
+        ));
+        let row: Option<(String, String, String, String)> =
+            zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(message_id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(row.map(|(role_str, content, parts_json, visibility_str)| {
             let parts = parse_parts_json(&role_str, &parts_json);
@@ -635,10 +653,11 @@ impl SqliteStore {
             return Ok(Vec::new());
         }
 
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
+        let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
 
         let query = format!(
-            "SELECT id, role, content, parts FROM messages \
+            "SELECT id, role, content, {parts_select} AS parts FROM messages \
              WHERE id IN ({placeholders}) AND visibility != 'user_only' AND deleted_at IS NULL"
         );
         let mut q =
@@ -873,7 +892,7 @@ impl SqliteStore {
             ""
         };
 
-        let sql = format!(
+        let sql = zeph_db::rewrite_placeholders(&format!(
             "SELECT m.id, -rank AS score \
              FROM messages_fts f \
              JOIN messages m ON m.id = f.rowid \
@@ -881,7 +900,7 @@ impl SqliteStore {
              {after_clause}{before_clause}{conv_clause} \
              ORDER BY rank \
              LIMIT ?"
-        );
+        ));
 
         let mut q =
             zeph_db::query_as::<_, (MessageId, f64)>(sqlx::AssertSqlSafe(sql)).bind(&safe_query);
@@ -1022,7 +1041,7 @@ impl SqliteStore {
         &self,
     ) -> Result<Vec<MessageId>, crate::error::MemoryError> {
         let rows: Vec<(MessageId,)> = zeph_db::query_as(sql!(
-            "SELECT id FROM messages WHERE deleted_at IS NOT NULL AND qdrant_cleaned = 0"
+            "SELECT id FROM messages WHERE deleted_at IS NOT NULL AND qdrant_cleaned = FALSE"
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -1087,10 +1106,12 @@ impl SqliteStore {
         ids: &[MessageId],
     ) -> Result<(), crate::error::MemoryError> {
         for &id in ids {
-            zeph_db::query(sql!("UPDATE messages SET qdrant_cleaned = 1 WHERE id = ?"))
-                .bind(id)
-                .execute(&self.pool)
-                .await?;
+            zeph_db::query(sql!(
+                "UPDATE messages SET qdrant_cleaned = TRUE WHERE id = ?"
+            ))
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
@@ -1109,7 +1130,7 @@ impl SqliteStore {
         if ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
         let query = format!(
             "SELECT id, importance_score FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
@@ -1132,7 +1153,7 @@ impl SqliteStore {
         if ids.is_empty() {
             return Ok(());
         }
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
         let query = format!(
             "UPDATE messages SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP \
              WHERE id IN ({placeholders})"
@@ -1163,9 +1184,10 @@ impl SqliteStore {
         if ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
         let query = format!(
-            "SELECT id, access_count FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
+            "SELECT id, CAST(access_count AS BIGINT) AS access_count FROM messages \
+             WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
         let mut q = zeph_db::query_as::<_, (MessageId, i64)>(sqlx::AssertSqlSafe(query));
         for &id in ids {
@@ -1310,7 +1332,7 @@ impl SqliteStore {
         for &id in original_ids {
             zeph_db::query(sql!(
                 "UPDATE messages \
-                 SET deleted_at = CURRENT_TIMESTAMP, qdrant_cleaned = 0 \
+                 SET deleted_at = CURRENT_TIMESTAMP, qdrant_cleaned = FALSE \
                  WHERE id = ? AND deleted_at IS NULL"
             ))
             .bind(id)
@@ -1389,7 +1411,7 @@ impl SqliteStore {
         if ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = zeph_db::placeholder_list(1, ids.len());
         let query = format!(
             "SELECT id, tier FROM messages WHERE id IN ({placeholders}) AND deleted_at IS NULL"
         );
@@ -1413,7 +1435,7 @@ impl SqliteStore {
     ) -> Result<Vec<ConversationId>, MemoryError> {
         let rows: Vec<(ConversationId,)> = zeph_db::query_as(sql!(
             "SELECT DISTINCT conversation_id FROM messages \
-             WHERE consolidated = 0 AND deleted_at IS NULL"
+             WHERE consolidated = FALSE AND deleted_at IS NULL"
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -1437,7 +1459,7 @@ impl SqliteStore {
         let rows: Vec<(MessageId, String)> = zeph_db::query_as(sql!(
             "SELECT id, content FROM messages \
              WHERE conversation_id = ? \
-               AND consolidated = 0 \
+               AND consolidated = FALSE \
                AND deleted_at IS NULL \
              ORDER BY id ASC \
              LIMIT ?"
@@ -1508,7 +1530,7 @@ impl SqliteStore {
             "INSERT INTO messages \
                (conversation_id, role, content, parts, visibility, \
                 importance_score, consolidated, consolidation_confidence) \
-             VALUES (?, ?, ?, '[]', 'both', ?, 1, ?) \
+             VALUES (?, ?, ?, '[]', 'both', ?, TRUE, ?) \
              RETURNING id"
         ))
         .bind(conversation_id)
@@ -1520,11 +1542,11 @@ impl SqliteStore {
         .await?;
         let consolidated_id = row.0;
 
-        let consol_sql = format!(
+        let consol_sql = zeph_db::rewrite_placeholders(&format!(
             "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES (?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        );
+        ));
         for &source_id in source_ids {
             zeph_db::query(sqlx::AssertSqlSafe(consol_sql.as_str()))
                 .bind(consolidated_id)
@@ -1533,7 +1555,7 @@ impl SqliteStore {
                 .await?;
 
             // Mark original as consolidated so future sweeps skip it.
-            zeph_db::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
+            zeph_db::query(sql!("UPDATE messages SET consolidated = TRUE WHERE id = ?"))
                 .bind(source_id)
                 .execute(&mut *tx)
                 .await?;
@@ -1570,7 +1592,7 @@ impl SqliteStore {
         let mut tx = self.pool.begin().await?;
 
         zeph_db::query(sql!(
-            "UPDATE messages SET content = ?, consolidation_confidence = ?, consolidated = 1 WHERE id = ?"
+            "UPDATE messages SET content = ?, consolidation_confidence = ?, consolidated = TRUE WHERE id = ?"
         ))
         .bind(new_content)
         .bind(confidence)
@@ -1578,11 +1600,11 @@ impl SqliteStore {
         .execute(&mut *tx)
         .await?;
 
-        let consol_sql = format!(
+        let consol_sql = zeph_db::rewrite_placeholders(&format!(
             "{} INTO memory_consolidation_sources (consolidated_id, source_id) VALUES (?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
             <ActiveDialect as zeph_db::dialect::Dialect>::CONFLICT_NOTHING,
-        );
+        ));
         for &source_id in additional_source_ids {
             zeph_db::query(sqlx::AssertSqlSafe(consol_sql.as_str()))
                 .bind(target_id)
@@ -1590,7 +1612,7 @@ impl SqliteStore {
                 .execute(&mut *tx)
                 .await?;
 
-            zeph_db::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
+            zeph_db::query(sql!("UPDATE messages SET consolidated = TRUE WHERE id = ?"))
                 .bind(source_id)
                 .execute(&mut *tx)
                 .await?;
@@ -1657,7 +1679,7 @@ impl SqliteStore {
     /// Returns an error if the update fails.
     pub async fn mark_messages_consolidated(&self, ids: &[i64]) -> Result<(), MemoryError> {
         for &id in ids {
-            zeph_db::query(sql!("UPDATE messages SET consolidated = 1 WHERE id = ?"))
+            zeph_db::query(sql!("UPDATE messages SET consolidated = TRUE WHERE id = ?"))
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
@@ -1689,16 +1711,16 @@ impl SqliteStore {
         let decay = f64::from(config.decay_rate);
         let floor = f64::from(config.forgetting_floor);
         let batch = i64::try_from(config.sweep_batch_size).unwrap_or(i64::MAX);
-        let replay_hours = i64::from(config.replay_window_hours);
+        let replay_window_secs = i64::from(config.replay_window_hours) * 3600;
         let replay_min_access = i64::from(config.replay_min_access_count);
-        let protect_hours = i64::from(config.protect_recent_hours);
+        let protect_window_secs = i64::from(config.protect_recent_hours) * 3600;
         let protect_min_access = i64::from(config.protect_min_access_count);
 
         // Phase 1: downscale all active, non-consolidated messages (limited to batch_size).
         // We target a specific set of IDs to respect sweep_batch_size.
         let candidate_ids: Vec<(MessageId,)> = zeph_db::query_as(sql!(
             "SELECT id FROM messages \
-             WHERE deleted_at IS NULL AND consolidated = 0 \
+             WHERE deleted_at IS NULL AND consolidated = FALSE \
              ORDER BY importance_score ASC \
              LIMIT ?"
         ))
@@ -1710,11 +1732,7 @@ impl SqliteStore {
         let downscaled = candidate_ids.len() as u32;
 
         if downscaled > 0 {
-            let placeholders: String = candidate_ids
-                .iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = zeph_db::placeholder_list(1, candidate_ids.len());
             let downscale_sql = format!(
                 "UPDATE messages SET importance_score = importance_score * (1.0 - {decay}) \
                  WHERE id IN ({placeholders})"
@@ -1737,22 +1755,26 @@ impl SqliteStore {
                 .map(|_| "?")
                 .collect::<Vec<_>>()
                 .join(",");
-            let replay_sql = format!(
+            let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+            let last_accessed_epoch =
+                <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("last_accessed");
+            let least_fn = <ActiveDialect as zeph_db::dialect::Dialect>::LEAST_FN;
+            let replay_sql = zeph_db::rewrite_placeholders(&format!(
                 "UPDATE messages \
-                 SET importance_score = MIN(1.0, importance_score / (1.0 - {decay})) \
+                 SET importance_score = {least_fn}(1.0, importance_score / (1.0 - {decay})) \
                  WHERE id IN ({replay_placeholders}) \
                  AND (\
                      (last_accessed IS NOT NULL \
-                      AND last_accessed >= datetime('now', '-' || ? || ' hours')) \
+                      AND {last_accessed_epoch} >= {epoch_now} - ?) \
                      OR access_count >= ?\
                  )"
-            );
+            ));
             let mut rq = zeph_db::query(sqlx::AssertSqlSafe(replay_sql));
             for &(id,) in &candidate_ids {
                 rq = rq.bind(id);
             }
             let replay_result = rq
-                .bind(replay_hours)
+                .bind(replay_window_secs)
                 .bind(replay_min_access)
                 .execute(&mut *tx)
                 .await?;
@@ -1764,19 +1786,22 @@ impl SqliteStore {
         };
 
         // Phase 3: targeted forgetting — soft-delete low-score unprotected messages.
-        let prune_sql = format!(
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let last_accessed_epoch =
+            <ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("last_accessed");
+        let prune_sql = zeph_db::rewrite_placeholders(&format!(
             "UPDATE messages \
              SET deleted_at = CURRENT_TIMESTAMP \
-             WHERE deleted_at IS NULL AND consolidated = 0 \
+             WHERE deleted_at IS NULL AND consolidated = FALSE \
              AND importance_score < {floor} \
              AND (\
                  last_accessed IS NULL \
-                 OR last_accessed < datetime('now', '-' || ? || ' hours')\
+                 OR {last_accessed_epoch} < {epoch_now} - ?\
              ) \
              AND access_count < ?"
-        );
+        ));
         let prune_result = zeph_db::query(sqlx::AssertSqlSafe(prune_sql))
-            .bind(protect_hours)
+            .bind(protect_window_secs)
             .bind(protect_min_access)
             .execute(&mut *tx)
             .await?;
