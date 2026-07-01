@@ -436,20 +436,22 @@ async fn build_ingest_resources(
     };
 
     // Probe the embedding dimension and pre-create the documents collection so a fresh
-    // Qdrant instance doesn't fail on the first upsert (mirrors EmbeddingRegistry::ensure_collection).
-    let vector_size = tokio::time::timeout(
-        std::time::Duration::from_secs(DIMENSION_PROBE_TIMEOUT_SECS),
+    // Qdrant instance doesn't fail on the first upsert (same probe helper used by
+    // EmbeddingRegistry::ensure_collection and zeph-index's indexer).
+    let vector_size = zeph_memory::probe_vector_size(
         provider.embed("dimension probe"),
+        Some(std::time::Duration::from_secs(DIMENSION_PROBE_TIMEOUT_SECS)),
     )
     .await
-    .map_err(|_| {
-        anyhow::anyhow!(
+    .map_err(|e| match e {
+        zeph_memory::ProbeError::Timeout(_) => anyhow::anyhow!(
             "embedding dimension probe timed out after {DIMENSION_PROBE_TIMEOUT_SECS}s: \
              provider is unresponsive"
-        )
-    })?
-    .map(|v| v.len() as u64)
-    .map_err(|e| anyhow::anyhow!("failed to probe embedding dimension: {e}"))?;
+        ),
+        zeph_memory::ProbeError::Embed(err) => {
+            anyhow::anyhow!("failed to probe embedding dimension: {err}")
+        }
+    })?;
     qdrant
         .ensure_collection(&collection, vector_size)
         .await

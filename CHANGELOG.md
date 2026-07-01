@@ -69,6 +69,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   union, replacing the previous text-only extraction at every MCP tool-result call site
   (`zeph-mcp` executor/manager, `zeph-core` hooks dispatch, `zeph-acp` LSP provider,
   `src/agent_setup.rs`). MCP Tasks API support is explicitly out of scope (zero existing usage).
+- `refactor(memory,index)`: extract the duplicated "probe embedding dimension, then
+  `ensure_collection`" sequence into shared helpers instead of 6+ independent
+  re-implementations. New `zeph_memory::probe_vector_size` (`crates/zeph-memory/src/embed_probe.rs`)
+  awaits an already-invoked embed future (optionally bounded by a timeout) and returns the
+  vector's dimension, used by `EmbeddingRegistry::ensure_collection`, `zeph-index`'s
+  `Indexer::ensure_collection_for_provider` (preserving its existing 15s startup timeout), and
+  `src/commands/knowledge.rs::build_ingest_resources`. New
+  `EmbeddingStore::ensure_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
+  derives the dimension from an already-computed vector and ensures the collection in one call,
+  used by `admission.rs`, `semantic/recall.rs` (5 call sites), and `semantic/summarization.rs`,
+  which each already hold a real embedding rather than a throwaway probe. No behavior change.
 
 ### Fixed
 

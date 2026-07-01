@@ -152,8 +152,7 @@ impl SemanticMemory {
             .await
             {
                 Ok(Ok(vector)) => {
-                    let vector_size = u64::try_from(vector.len()).unwrap_or(896);
-                    if let Err(e) = qdrant.ensure_collection(vector_size).await {
+                    if let Err(e) = qdrant.ensure_collection_for_vector(&vector).await {
                         tracing::warn!("Failed to ensure Qdrant collection: {e:#}");
                     } else if let Err(e) = qdrant
                         .store(

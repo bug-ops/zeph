@@ -172,6 +172,21 @@ impl EmbeddingStore {
         Ok(())
     }
 
+    /// Ensure the collection exists with a vector dimension matching an already-computed
+    /// `vector`.
+    ///
+    /// Callers that already hold an embedding (e.g. from embedding real content for search or
+    /// storage) use this instead of duplicating `vector.len() as u64` followed by a call to
+    /// [`Self::ensure_collection`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Qdrant cannot be reached or collection creation fails.
+    pub async fn ensure_collection_for_vector(&self, vector: &[f32]) -> Result<(), MemoryError> {
+        // Safe: a Vec<f32> with 4B+ elements is impossible in practice on any 64-bit platform.
+        self.ensure_collection(vector.len() as u64).await
+    }
+
     /// Store a vector in Qdrant with additional tool execution metadata as payload fields.
     ///
     /// Metadata fields (`tool_name`, `exit_code`, `timestamp`) are stored as Qdrant payload

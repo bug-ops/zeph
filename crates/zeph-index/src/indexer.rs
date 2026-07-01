@@ -310,19 +310,21 @@ impl CodeIndexer {
     #[tracing::instrument(name = "index.indexer.ensure_collection", skip_all)]
     async fn ensure_collection_for_provider(&self) -> Result<()> {
         const STARTUP_EMBED_TIMEOUT_SECS: u64 = 15;
-        let probe = tokio::time::timeout(
-            Duration::from_secs(STARTUP_EMBED_TIMEOUT_SECS),
+        let vector_size = zeph_memory::probe_vector_size(
             self.provider.embed("probe"),
+            Some(Duration::from_secs(STARTUP_EMBED_TIMEOUT_SECS)),
         )
         .await
-        .map_err(|_| {
-            tracing::warn!(
-                timeout_secs = STARTUP_EMBED_TIMEOUT_SECS,
-                "embedding provider timed out during startup"
-            );
-            crate::error::IndexError::EmbedTimeout(STARTUP_EMBED_TIMEOUT_SECS)
-        })??;
-        let vector_size = u64::try_from(probe.len())?;
+        .map_err(|e| match e {
+            zeph_memory::ProbeError::Timeout(_) => {
+                tracing::warn!(
+                    timeout_secs = STARTUP_EMBED_TIMEOUT_SECS,
+                    "embedding provider timed out during startup"
+                );
+                crate::error::IndexError::EmbedTimeout(STARTUP_EMBED_TIMEOUT_SECS)
+            }
+            zeph_memory::ProbeError::Embed(err) => crate::error::IndexError::from(err),
+        })?;
         self.store.ensure_collection(vector_size).await
     }
 
