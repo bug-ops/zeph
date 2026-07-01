@@ -57,12 +57,12 @@ fn daemon_boots_under_constrained_stack_ulimit() {
         .to_string()]));
     std::fs::write(&config_path, doc.to_string()).expect("write test config");
 
-    let bin = env!("CARGO_BIN_EXE_zeph");
+    let bin = zeph_bin_path();
     let child = std::process::Command::new("bash")
         .arg("-c")
         .arg(format!(
             "ulimit -s 4096 && exec {bin} --config {config} --daemon --bare",
-            bin = shell_escape(bin),
+            bin = shell_escape(&bin),
             config = shell_escape(&config_path.display().to_string()),
         ))
         .stdout(std::process::Stdio::null())
@@ -98,6 +98,22 @@ fn main_rs_drives_runtime_from_dedicated_stack_thread() {
          thread — its stack size is bounded by the caller's ulimit -s and can overflow \
          (see #5394); use the dedicated stack_size thread instead"
     );
+}
+
+/// Resolves the path to the built `zeph` binary at runtime rather than baking it in via the
+/// `CARGO_BIN_EXE_zeph` compile-time macro, which breaks under `cargo nextest`'s
+/// archive-and-restore CI flow (the path is captured at build time on a different runner and
+/// is no longer valid after `--workspace-remap`). `NEXTEST_BIN_EXE_zeph` is nextest's
+/// archive-aware runtime variable; `CARGO_BIN_EXE_zeph` read as a runtime env var (not via
+/// `env!`) is the fallback for plain `cargo test`/`cargo nextest run` without an archive.
+#[cfg(all(unix, feature = "a2a"))]
+fn zeph_bin_path() -> String {
+    std::env::var("NEXTEST_BIN_EXE_zeph")
+        .or_else(|_| std::env::var("CARGO_BIN_EXE_zeph"))
+        .expect(
+            "NEXTEST_BIN_EXE_zeph or CARGO_BIN_EXE_zeph must be set by the test runner \
+             (cargo test / cargo nextest run / cargo nextest run --archive-file)",
+        )
 }
 
 /// Minimal single-quote shell escaping for interpolating paths into the `bash -c` string.
