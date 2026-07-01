@@ -855,6 +855,112 @@ async fn resume_session_reconnects_to_existing_session() {
         .await;
 }
 
+/// `session/resume` reconstructs a session from the `SQLite` store when it is no longer
+/// held in the agent's in-memory `sessions` map — the scenario that matters in practice,
+/// e.g. reconnecting after a server restart (#5374).
+///
+/// Two independent `serve_connection` calls share the same `sqlite_path`, so the second
+/// connection gets a brand-new `ZephAcpAgentState` with an empty `sessions` map: any
+/// successful `session/resume` there can only come from the store-backed reconstruction
+/// branch (`store.acp_session_exists` + `resolve_conversation_id` + `make_session_entry` +
+/// `spawn_local` re-attach), not the in-memory early-return checked by
+/// `resume_session_reconnects_to_existing_session`. A follow-up `session/prompt` on the
+/// resumed session proves the reconstructed entry is actually wired up and functional.
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_reconstructs_from_store_after_restart() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-resume-test.db")
+                .to_string_lossy()
+                .into_owned();
+
+            // First connection: create the session, then drop the connection (and its
+            // in-memory ZephAcpAgentState) without ever calling session/resume on it.
+            let session_id = {
+                let (sw, sr, cw, cr) = duplex_pair();
+                let config = AcpServerConfig {
+                    sqlite_path: Some(sqlite_path.clone()),
+                    ..test_config("test-agent")
+                };
+                let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+                let client_fut =
+                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::schema::v1::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+
+                        let session_id = cx
+                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
+                        Ok(session_id)
+                    });
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result.expect("session/new failed"),
+                }
+            };
+
+            // Second connection: fresh ZephAcpAgentState (empty `sessions` map), same
+            // sqlite_path. `session/resume` here can only succeed via the store-backed path.
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(echo_spawner(), config, sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
+                    session_id.clone(),
+                    workdir.path(),
+                ))
+                .block_task()
+                .await?;
+
+                // Prove the rebuilt session is actually functional: a real agent-loop task
+                // must have been spawned and wired to the reconstructed channel entry.
+                let content = vec![acp::schema::v1::ContentBlock::Text(
+                    acp::schema::v1::TextContent::new("hello again"),
+                )];
+                let resp = cx
+                    .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
+                    .block_task()
+                    .await?;
+                assert_eq!(
+                    resp.stop_reason,
+                    acp::schema::v1::StopReason::EndTurn,
+                    "expected EndTurn from the store-reconstructed session, got {:?}",
+                    resp.stop_reason,
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(
+                        result.is_ok(),
+                        "store-backed resume_session test failed: {result:?}"
+                    );
+                }
+            }
+        })
+        .await;
+}
+
 /// `session/set_mode` switches the active mode and is reflected in subsequent requests (#5367).
 #[tokio::test(flavor = "current_thread")]
 async fn set_session_mode_switches_mode() {
