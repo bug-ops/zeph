@@ -34,7 +34,7 @@ mod pg {
     use zeph_memory::graph::implicit_conflict;
     use zeph_memory::graph::store::GraphStore;
     use zeph_memory::graph::types::EntityType;
-    use zeph_memory::store::SqliteStore;
+    use zeph_memory::store::{AcpSessionConfigSnapshot, SqliteStore};
     use zeph_memory::types::MessageId;
     use zeph_memory::{VectorStore, episodic_graph, snapshot};
 
@@ -780,6 +780,102 @@ mod pg {
         .await
         .unwrap();
         assert_eq!(linked_cid.0, Some(cid.0));
+    }
+
+    // ── acp_sessions: session_config snapshot (#5373/#5384) ─────────────────────
+    //
+    // `thinking_enabled` is `INTEGER` on SQLite vs `BOOLEAN` on Postgres (migration
+    // 105_acp_session_config); these tests exercise the dialect-generic
+    // save_session_config/get_session_config round trip against real Postgres to catch a
+    // silent boolean-as-integer coercion bug (precedent: #5364/#5377).
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn session_config_round_trips_thinking_enabled_true() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        store.create_acp_session("sess-1").await.unwrap();
+        let snapshot = AcpSessionConfigSnapshot {
+            current_model: "claude:opus".to_owned(),
+            temperature_preset: "creative".to_owned(),
+            thinking_enabled: true,
+            auto_approve_level: "auto-edit".to_owned(),
+        };
+        store
+            .save_session_config("sess-1", &snapshot)
+            .await
+            .unwrap();
+
+        let loaded = store
+            .get_session_config("sess-1")
+            .await
+            .unwrap()
+            .expect("snapshot must be present after save");
+        assert_eq!(loaded.current_model, "claude:opus");
+        assert_eq!(loaded.temperature_preset, "creative");
+        assert!(
+            loaded.thinking_enabled,
+            "thinking_enabled=true must round-trip as a proper bool on Postgres"
+        );
+        assert_eq!(loaded.auto_approve_level, "auto-edit");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn session_config_round_trips_thinking_enabled_false() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        store.create_acp_session("sess-1").await.unwrap();
+        let snapshot = AcpSessionConfigSnapshot {
+            current_model: "claude:sonnet".to_owned(),
+            temperature_preset: "precise".to_owned(),
+            thinking_enabled: false,
+            auto_approve_level: "manual".to_owned(),
+        };
+        store
+            .save_session_config("sess-1", &snapshot)
+            .await
+            .unwrap();
+
+        let loaded = store
+            .get_session_config("sess-1")
+            .await
+            .unwrap()
+            .expect("snapshot must be present after save");
+        assert_eq!(loaded.current_model, "claude:sonnet");
+        assert_eq!(loaded.temperature_preset, "precise");
+        assert!(
+            !loaded.thinking_enabled,
+            "thinking_enabled=false must round-trip as a proper bool, not coerce to true"
+        );
+        assert_eq!(loaded.auto_approve_level, "manual");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn session_config_missing_snapshot_returns_none() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        store.create_acp_session("sess-1").await.unwrap();
+        assert!(
+            store.get_session_config("sess-1").await.unwrap().is_none(),
+            "session with no saved config must return None, not a zeroed snapshot"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn session_config_unknown_session_returns_none() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        assert!(
+            store.get_session_config("no-such").await.unwrap().is_none(),
+            "nonexistent session must return None"
+        );
     }
 
     // ── snapshot: import (Pattern B insert paths) ───────────────────────────────
