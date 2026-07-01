@@ -3,10 +3,10 @@
 
 //! `PostgreSQL` integration tests for `zeph-index`.
 //!
-//! These tests require Docker to be running and are skipped in CI unless the
-//! `test-postgres` CI job is active. Run locally with:
+//! These tests require Docker to be running. They run in CI as part of the
+//! `build-tests`/`integration` jobs in `.github/workflows/ci.yml`. Run locally with:
 //! ```bash
-//! cargo nextest run -p zeph-index --features test-utils --ignored
+//! cargo nextest run -p zeph-index --features test-utils --test postgres_integration --run-ignored ignored-only
 //! ```
 
 #[cfg(feature = "test-utils")]

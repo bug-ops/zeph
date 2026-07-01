@@ -3,11 +3,17 @@
 
 //! `PostgreSQL` integration tests for `zeph-memory`.
 //!
-//! These tests require Docker to be running and are skipped in CI unless the
-//! `test-postgres` CI job is active. Run locally with:
+//! These tests require Docker to be running. They run in CI as part of the
+//! `build-tests`/`integration` jobs in `.github/workflows/ci.yml`. Run locally with:
 //! ```bash
-//! cargo nextest run -p zeph-memory --features test-utils --ignored
+//! cargo nextest run -p zeph-memory --features test-utils --test postgres_integration --run-ignored ignored-only
 //! ```
+//! Scoping to `--test postgres_integration` matters: `test-utils` enables the `postgres`
+//! feature alongside the crate's default `sqlite` feature, and `DbConfig::connect()` gives
+//! `postgres` cfg-priority whenever both are enabled (see `zeph-db/src/pool.rs`). Running the
+//! crate-wide `--ignored` command instead would route unrelated `SqliteStore::new(":memory:")`
+//! calls in other ignored tests (e.g. `hela_spreading_activation.rs`) through `connect_postgres`
+//! and fail them with a `RelativeUrlWithoutBase` error.
 //!
 //! Regression coverage for issue #5364: several dynamic-SQL call sites in
 //! `zeph-memory` built `IN (...)` lists and `INSERT ... ON CONFLICT` statements with

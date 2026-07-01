@@ -70,6 +70,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   emitted the same `IngestProgress::FileDone { chunks: 0, .. }` event as a legitimate zero-chunk
   success, printing `[done] ... → 0 chunk(s)`; a new `IngestProgress::FileError { uri, msg }`
   variant is now sent instead, printed as `[ERR] {uri}: {msg}`. Closes #5382.
+- `fix(ci)`: wire the 19 `zeph-memory` + 2 `zeph-index` Postgres integration tests added by
+  #5376 into `.github/workflows/ci.yml`, mirroring the existing `zeph-db` postgres archive/run
+  job pattern (`nextest-archive-{zeph-memory,zeph-index}-postgres.tar.zst`). These tests, added
+  to catch the dynamic-SQL dialect regressions behind #5364, compiled behind the crates'
+  `test-utils` feature but were never built or run in CI, so a reintroduced regression would
+  have silently passed. The new run steps scope execution to
+  `-E 'binary(postgres_integration)'` rather than the crate-wide `--ignored` set, since enabling
+  `test-utils` (which adds `postgres` on top of the crate's default `sqlite` feature) makes
+  `zeph-db::DbConfig::connect()` route every `SqliteStore::new(":memory:")` call in the same
+  crate through `connect_postgres` (documented at the cfg-priority site in
+  `crates/zeph-db/src/pool.rs`), which would otherwise break unrelated ignored tests
+  (`hela_spreading_activation.rs`). Also corrected both files' module doc-comments, which
+  recommended the crate-wide command that triggers that exact failure. Closes #5377.
 - `fix(acp)`: `zeph acp model-config show` now loads the resolved config and marks the active
   `[acp.model_config].default_temperature_preset` in its output (e.g. `balanced   temperature =
   0.7  (default)`), instead of only printing the static preset table with a generic pointer to

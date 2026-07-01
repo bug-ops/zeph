@@ -223,6 +223,30 @@ jobs:
           name: nextest-archive-zeph-db-postgres
           path: nextest-archive-zeph-db-postgres.tar.zst
           retention-days: 1
+      - name: Build and archive zeph-memory postgres integration tests
+        # zeph-memory's sqlite/postgres features are additive (unlike zeph-db's
+        # mutually-exclusive default), so default features stay on here — building
+        # with --no-default-features would disable the "sqlite" feature and turn
+        # unrelated sqlite-only test helpers into dead-code errors under -D warnings.
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-memory --features test-utils --tests --archive-file nextest-archive-zeph-memory-postgres.tar.zst
+      - name: Upload zeph-memory postgres test archive
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nextest-archive-zeph-memory-postgres
+          path: nextest-archive-zeph-memory-postgres.tar.zst
+          retention-days: 1
+      - name: Build and archive zeph-index postgres integration tests
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-index --features test-utils --tests --archive-file nextest-archive-zeph-index-postgres.tar.zst
+      - name: Upload zeph-index postgres test archive
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nextest-archive-zeph-index-postgres
+          path: nextest-archive-zeph-index-postgres.tar.zst
+          retention-days: 1
       - name: Upload binary
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -308,6 +332,24 @@ jobs:
           name: nextest-archive-zeph-db-postgres
       - name: Run postgres integration tests (testcontainers)
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-db-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only
+      - name: Download zeph-memory postgres test archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: nextest-archive-zeph-memory-postgres
+      - name: Run zeph-memory postgres integration tests (testcontainers)
+        # Scoped to the postgres_integration binary: zeph-memory's archive also
+        # contains hela_spreading_activation.rs (SQLite `:memory:` ignored tests,
+        # unrelated to postgres). Both sqlite and postgres are enabled in this
+        # archive (see the archive step's comment in build-tests), so DbConfig::connect
+        # gives postgres cfg-priority for the whole crate; running crate-wide would
+        # route those unrelated :memory: tests through connect_postgres and fail them.
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-memory-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(postgres_integration)'
+      - name: Download zeph-index postgres test archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: nextest-archive-zeph-index-postgres
+      - name: Run zeph-index postgres integration tests (testcontainers)
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-index-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(postgres_integration)'
       - name: Run Qdrant integration tests (testcontainers)
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(qdrant_integration)'
 
