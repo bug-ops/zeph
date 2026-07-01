@@ -91,6 +91,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools)`: file-tool calls (`write`, `edit`, `create_directory`, and every other
+  `FileExecutor` handler) now expand a leading `~` in the LLM-supplied `path` argument to the
+  real home directory before sandbox checks run, instead of treating it as a literal `~`
+  directory relative to the current working directory. `FileExecutor::validate_path`
+  (`crates/zeph-tools/src/file.rs`) now applies the existing `expand_tilde` helper — previously
+  only used for the `allowed_paths` sandbox policy config — to the runtime path argument as
+  well, since every handler funnels through this single entry point. Closes #5410.
+- `fix(durable)`: `zeph durable show --reveal` (and `inspect --reveal`) no longer requires
+  `ZEPH_DURABLE_KEY` in the vault when `[durable] encrypt_payload = false` (the documented
+  dev-only plaintext override). `open_backend` (`src/commands/durable.rs`) now only loads the
+  AEAD cipher when `reveal && config.durable.encrypt_payload`; with encryption disabled, no
+  cipher is attached and the already-plaintext payload bytes are returned as-is. Encrypted
+  deployments (`encrypt_payload = true`, the default) still require the key as before. Closes
+  #5404.
 - `fix(worktree)`: `WorktreeManager::remove()` no longer leaves a stale handle in the in-memory
   session list when the worktree directory itself was already deleted but the subsequent branch
   prune (`git branch -D`, `prune_branch = true`) fails. The handle is now dropped from

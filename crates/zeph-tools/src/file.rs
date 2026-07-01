@@ -181,8 +181,9 @@ impl FileExecutor {
     }
 
     fn validate_path(&self, path: &Path) -> Result<PathBuf, ToolError> {
+        let path = expand_tilde(path.to_path_buf());
         let resolved = if path.is_absolute() {
-            path.to_path_buf()
+            path
         } else {
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
@@ -1616,6 +1617,26 @@ mod tests {
             !exec.allowed_paths[0].to_string_lossy().starts_with('~'),
             "bare tilde was not expanded: {:?}",
             exec.allowed_paths[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_path_expands_tilde_in_runtime_argument() {
+        // Regression for #5410: a `~`-prefixed path coming from an LLM tool call
+        // (write/edit/create_directory) must resolve to the real home directory,
+        // not be treated as a literal `~` directory relative to cwd.
+        let home = dirs::home_dir().expect("home dir must be resolvable in test env");
+        let exec = FileExecutor::new(vec![home.clone()]);
+        let canonical = exec
+            .validate_path(Path::new("~/zeph_test_tilde_marker_regression"))
+            .unwrap();
+        assert!(
+            canonical.ends_with("zeph_test_tilde_marker_regression"),
+            "expected path ending in zeph_test_tilde_marker_regression, got {canonical:?}"
+        );
+        assert!(
+            !canonical.to_string_lossy().contains('~'),
+            "tilde must not appear in normalized runtime path: {canonical:?}"
         );
     }
 

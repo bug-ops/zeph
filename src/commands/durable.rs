@@ -58,7 +58,10 @@ fn load_durable_cipher() -> anyhow::Result<XChaCha20Poly1305Cipher> {
         .map_err(|e| anyhow::anyhow!("invalid ZEPH_DURABLE_KEY: {e}"))
 }
 
-/// Open the local durable backend, attaching the AEAD cipher when `reveal` is set.
+/// Open the local durable backend, attaching the AEAD cipher when `reveal` is set and payloads are
+/// actually encrypted (`config.durable.encrypt_payload`). When `encrypt_payload` is `false` (the
+/// documented dev-only override), stored payloads are already plaintext, so `--reveal` must not
+/// require `ZEPH_DURABLE_KEY` to be present in the vault.
 ///
 /// Returns `Ok(None)` when no journal file exists yet (a friendly signal that durable execution has
 /// not run on this deployment), so the caller can print guidance instead of creating an empty file.
@@ -78,7 +81,7 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
         .init()
         .await
         .map_err(|e| anyhow::anyhow!("failed to initialize durable schema: {e}"))?;
-    if reveal {
+    if reveal && config.durable.encrypt_payload {
         let cipher = load_durable_cipher()?;
         Ok(Some(backend.with_cipher(Arc::new(cipher))))
     } else {
@@ -320,6 +323,7 @@ fn print_revealed(entries: &[zeph_durable::JournalEntry]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn durable_db_is_sibling_of_sqlite_path() {
@@ -338,5 +342,60 @@ mod tests {
     #[test]
     fn fmt_ts_formats_epoch_millis_as_utc() {
         assert_eq!(fmt_ts(0), "1970-01-01 00:00:00");
+    }
+
+    /// Regression for #5404: `--reveal` must not require `ZEPH_DURABLE_KEY` when
+    /// `encrypt_payload = false` — stored payloads are already plaintext.
+    #[tokio::test]
+    async fn open_backend_reveal_succeeds_without_key_when_encrypt_payload_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.encrypt_payload = false;
+
+        let url = resolve_durable_db_url(&config);
+        std::fs::write(&url, []).unwrap();
+
+        let backend = open_backend(&config, true)
+            .await
+            .expect("--reveal must succeed without ZEPH_DURABLE_KEY when encrypt_payload=false");
+        assert!(backend.is_some());
+    }
+
+    /// Regression for #5404: `--reveal` must still require `ZEPH_DURABLE_KEY` when
+    /// `encrypt_payload = true` (the default, encrypted-at-rest posture).
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn open_backend_reveal_requires_key_when_encrypt_payload_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.encrypt_payload = true;
+
+        let url = resolve_durable_db_url(&config);
+        std::fs::write(&url, []).unwrap();
+
+        // Point the vault dir at an empty temp dir so no real ZEPH_DURABLE_KEY is found,
+        // regardless of what happens to be configured on the machine running this test.
+        let vault_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
+        }
+
+        let result = open_backend(&config, true).await;
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.is_err(),
+            "expected --reveal to fail without ZEPH_DURABLE_KEY when encrypt_payload=true"
+        );
     }
 }
