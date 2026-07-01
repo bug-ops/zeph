@@ -1019,6 +1019,21 @@ mod tests {
 
     use super::Cli;
 
+    #[cfg(feature = "acp")]
+    #[test]
+    fn cli_parses_acp_model_config_show() {
+        use super::{AcpCommand, AcpModelConfigCommand, Command};
+        let cli = Cli::try_parse_from(["zeph", "acp", "model-config", "show"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Acp {
+                command: AcpCommand::ModelConfig {
+                    command: AcpModelConfigCommand::Show
+                }
+            })
+        ));
+    }
+
     #[cfg(feature = "scheduler")]
     #[test]
     fn cli_parses_schedule_list() {

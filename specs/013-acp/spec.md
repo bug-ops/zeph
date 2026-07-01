@@ -32,6 +32,7 @@ related:
 | 1.4 | 2026-06-30 | developer | ACP 1.0.1 schema-path migration: bumped core 0.14.0→1.0.1, schema pinned =1.1.0; mechanical `schema::X` → `schema::v1::X` reorg (root re-export removed upstream), `ProtocolVersion`/`MaybeUndefined`/`IntoOption`/`IntoMaybeUndefined` stay flat; removed root re-exports `cookbook`/`handler`/`jsonrpcmsg`/six message enums; deleted 5 long-dead `#[cfg(any())]` test modules (153 unverifiable sites); no handler/transport/builder logic changed; `unstable_cancel_request` and `model_config` evaluated and deferred to follow-up issues |
 | 1.5 | 2026-07-01 | developer | Adopt `model_config` option category (#5361): new `config_id="temperature"` `session/set_config_option`, presets precise/balanced/creative, `[acp.model_config]` config section, CLI + wizard integration. Wire `unstable_cancel_request` (#5362): new `unstable-cancel-request` Cargo feature (not in `default`), `$/cancel_request` bridged onto `cancel_signal: Arc<Notify>` via `Responder::cancellation()` in `session/prompt`, plus a low-level tracing-only `CancelRequestNotification` handler in the `Agent.builder()` chain. Added test coverage for the 8 previously-untested handler files (#5367). |
 | 1.6 | 2026-07-01 | developer | Review fix pass on #5361/#5362: (S-C1) `default_temperature_preset` is now primed into the effective `provider_override` at session creation (`do_new_session`/`do_load_session`/`do_fork_session`/`do_resume_session`), not just advertised in the IDE dropdown; (S-C2) the `$/cancel_request` watcher select is now `biased` with prompt completion checked first, and `drain_agent_events` drains a stale `cancel_signal` permit before its main loop, so a cancellation resolving at/after prompt completion can no longer leak into the next, unrelated prompt (also hardens the pre-existing `session/cancel` no-active-prompt race — `cancel_before_prompt_returns_cancelled` renamed to `cancel_before_prompt_is_a_no_op` to reflect the corrected semantics). Documented fork/resume reset behavior for `temperature_preset` (#5373 tracking issue filed); filed #5374 for the untested `resume_session` store-backed path. |
+| 1.7 | 2026-07-01 | developer | Fixed #5379: `zeph acp model-config show` now loads the resolved config and marks the active `[acp.model_config].default_temperature_preset` in its output, instead of only printing the static preset table. Resolved #5373: `session/fork` and `session/resume` now inherit `model`/`temperature_preset`/`thinking_enabled`/`auto_approve_level` from the source session (live in-memory state, falling back to a persisted close-time snapshot, falling back to configured defaults) instead of always resetting to defaults — new `acp_sessions` columns via migration `105_acp_session_config`; see "Fork/Resume Config Inheritance" below. |
 
 ---
 
@@ -354,10 +355,53 @@ Applied to the session's *effective* provider (not just the advertised dropdown 
 session's very first prompt, via the same `provider_with_temperature` rebuild mechanism used for
 explicit switches.
 
-`session/fork` and `session/resume` reset `temperature_preset` to the configured default rather
-than inheriting the source session's current value, consistent with the pre-existing
-`thinking_enabled`/`auto_approve_level` reset behavior — see #5373 for a tracking issue covering
-inheritance/persistence of all four session-config fields on fork/resume.
+`session/fork` and `session/resume` inherit `model`, `temperature_preset`, `thinking_enabled`,
+and `auto_approve_level` from the source session rather than resetting to configured defaults
+(#5373) — see "Fork/Resume Config Inheritance" below for the resolution order and edge cases.
+
+---
+
+## Fork/Resume Config Inheritance (#5373)
+
+**Status: implemented**
+
+`session/fork` and `session/resume` inherit the source session's current `model`,
+`temperature_preset`, `thinking_enabled`, and `auto_approve_level` rather than resetting to
+`[acp.model_config].default_temperature_preset` / the built-in `thinking_enabled=false` /
+`auto_approve_level="suggest"` defaults. `session/new` and `session/load` are unaffected — they
+have no "source" session to inherit from and continue to seed configured defaults.
+
+Resolution order (`ZephAcpAgent::inherited_session_config`), in `crates/zeph-acp/src/agent/mod.rs`:
+
+1. **Live in-memory state** — if the source session is still resident in the `AcpSessionManager`
+   LRU cache (the common case for `session/fork`, and for `session/resume` when the source was
+   never evicted), its current `SessionEntry` fields are read directly.
+2. **Persisted close-time snapshot** — if not in memory, the session's `acp_sessions` row is
+   checked for a config snapshot (`current_model`, `temperature_preset`, `thinking_enabled`,
+   `auto_approve_level` columns, migration `105_acp_session_config`). The snapshot is written by
+   `do_close_session` immediately before the in-memory entry is removed, so a session closed via
+   `session/close` and later resumed inherits its last-known config even across process restarts.
+3. **Configured defaults** — if neither is available (the source was evicted rather than closed
+   gracefully — LRU capacity pressure or the idle reaper — or predates the snapshot migration),
+   inheritance falls back to the same defaults `session/new` uses.
+
+Additionally, an inherited `model` that is no longer present in the current
+`available_models_snapshot()` (e.g. removed from `[[llm.providers]]` since the source session was
+created) falls back to `initial_model()` rather than handing the spawner a dangling model key.
+
+### Key Invariants
+
+- Eviction paths (idle reaper timeout, LRU capacity eviction in `session/new`, `session/fork`, and
+  `session/resume`) do **not** write a config snapshot — only graceful `session/close` does. A
+  session that was evicted rather than closed falls back to configured defaults on later
+  resume/fork; this is a known, documented boundary, not a bug.
+- The snapshot is best-effort: a write failure is logged (`tracing::warn!`) and does not fail
+  `session/close`, since losing the config snapshot is far less severe than failing to close the
+  session.
+- `session/fork`'s inheritance lookup runs before the LRU capacity-eviction pass in the same
+  handler, since that pass does not exclude the fork source from eviction candidates (pre-existing
+  behavior, unchanged by this feature) — reading inheritance first avoids a race where forking
+  could otherwise evict the very session it inherits from.
 
 ---
 

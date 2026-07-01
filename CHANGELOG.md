@@ -62,6 +62,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(acp)`: `zeph acp model-config show` now loads the resolved config and marks the active
+  `[acp.model_config].default_temperature_preset` in its output (e.g. `balanced   temperature =
+  0.7  (default)`), instead of only printing the static preset table with a generic pointer to
+  `config.toml`. Closes #5379.
+- `fix(acp)`: `session/fork` and `session/resume` now inherit the source session's current
+  `model`, `temperature_preset`, `thinking_enabled`, and `auto_approve_level` instead of always
+  resetting to configured defaults. Resolution order: the source session's live in-memory state
+  (fork's common case), then a persisted close-time snapshot written by `session/close` (new
+  `current_model`/`temperature_preset`/`thinking_enabled`/`auto_approve_level` columns on
+  `acp_sessions`, migration `105_acp_session_config`), then configured defaults (source was
+  evicted rather than closed, or predates the snapshot migration). An inherited model no longer
+  present in `available_models` falls back to the current default instead of a dangling model
+  key. Closes #5373.
 - `fix(db,memory,index)`: fix the remaining `PostgreSQL` runtime defects in `zeph-memory`/
   `zeph-index` surfaced by actually running the new `postgres_integration.rs` suites against a
   real Postgres container (22 tests now pass against live Postgres — 19 `zeph-memory` +

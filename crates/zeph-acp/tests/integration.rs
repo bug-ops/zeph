@@ -961,6 +961,185 @@ async fn resume_session_reconstructs_from_store_after_restart() {
         .await;
 }
 
+/// `session/fork` inherits the source session's current `temperature`, `thinking`, and
+/// `auto_approve` config from its live in-memory state, rather than resetting to configured
+/// defaults (#5373).
+#[cfg(feature = "unstable-session-fork")]
+#[tokio::test(flavor = "current_thread")]
+async fn fork_session_inherits_config_from_in_memory_source() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            // Configured default is "balanced" — the source session will be switched away
+            // from it so the test can distinguish "inherited" from "reset to default".
+            let server_fut = serve_connection(
+                noop_spawner(),
+                test_config_with_models("test-agent", vec!["claude:sonnet"]),
+                sw,
+                sr,
+            );
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let source_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                    source_id.clone(),
+                    "temperature",
+                    "creative",
+                ))
+                .block_task()
+                .await?;
+                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                    source_id.clone(),
+                    "thinking",
+                    "on",
+                ))
+                .block_task()
+                .await?;
+                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                    source_id.clone(),
+                    "auto_approve",
+                    "auto-edit",
+                ))
+                .block_task()
+                .await?;
+
+                let forked = cx
+                    .send_request(acp::schema::v1::ForkSessionRequest::new(
+                        source_id,
+                        workdir.path(),
+                    ))
+                    .block_task()
+                    .await?;
+
+                let options = forked.config_options.unwrap_or_default();
+                let get = |id: &str| {
+                    select_current_value(options.iter().find(|o| o.id.0.as_ref() == id).unwrap())
+                        .to_owned()
+                };
+                assert_eq!(
+                    get("temperature"),
+                    "creative",
+                    "forked session must inherit the source's temperature preset, not reset to \
+                     the configured default"
+                );
+                assert_eq!(
+                    get("thinking"),
+                    "on",
+                    "forked session must inherit the source's thinking toggle"
+                );
+                assert_eq!(
+                    get("auto_approve"),
+                    "auto-edit",
+                    "forked session must inherit the source's auto-approve level"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "fork inheritance test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/resume` of a session that was gracefully closed inherits its persisted config
+/// snapshot (temperature preset applied to the effective provider) rather than resetting to
+/// the configured default (#5373).
+#[tokio::test(flavor = "current_thread")]
+async fn resume_session_inherits_temperature_preset_after_close() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+
+            let captured: Arc<std::sync::Mutex<Option<zeph_llm::provider::GenerationOverrides>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let captured_for_factory = Arc::clone(&captured);
+            let factory: zeph_acp::ProviderFactory = Arc::new(move |_key: &str| {
+                Some(zeph_llm::any::AnyProvider::Mock(
+                    zeph_llm::mock::MockProvider::default()
+                        .with_overrides_capture(Arc::clone(&captured_for_factory)),
+                ))
+            });
+
+            let mut config = test_config_with_models("test-agent", vec!["claude:sonnet"]);
+            config.provider_factory = Some(factory);
+            config.sqlite_path = Some(":memory:".to_owned());
+
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                // Switch away from the configured default ("balanced") before closing.
+                cx.send_request(acp::schema::v1::SetSessionConfigOptionRequest::new(
+                    session_id.clone(),
+                    "temperature",
+                    "creative",
+                ))
+                .block_task()
+                .await?;
+
+                cx.send_request(acp::schema::v1::CloseSessionRequest::new(
+                    session_id.clone(),
+                ))
+                .block_task()
+                .await?;
+
+                cx.send_request(acp::schema::v1::ResumeSessionRequest::new(
+                    session_id,
+                    workdir.path(),
+                ))
+                .block_task()
+                .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "resume inheritance test failed: {result:?}");
+                }
+            }
+
+            let applied_temperature = captured
+                .lock()
+                .expect("capture mutex poisoned")
+                .as_ref()
+                .and_then(|o| o.temperature);
+            assert_eq!(
+                applied_temperature,
+                Some(zeph_config::AcpTemperaturePreset::Creative.temperature()),
+                "resumed session must inherit the closed source's persisted temperature preset, \
+                 not reset to the configured default"
+            );
+        })
+        .await;
+}
+
 /// `session/set_mode` switches the active mode and is reflected in subsequent requests (#5367).
 #[tokio::test(flavor = "current_thread")]
 async fn set_session_mode_switches_mode() {

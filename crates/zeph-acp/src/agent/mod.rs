@@ -372,6 +372,16 @@ struct DrainResult {
     turn_usage: TurnUsage,
 }
 
+/// Per-session config fields seeded into a fresh `SessionEntry` (#5373).
+///
+/// Callers pass either configured defaults (new/loaded session) or values inherited from a
+/// source session (fork/resume of an existing session) — see `inherited_session_config`.
+struct SessionConfigSeed {
+    thinking_enabled: bool,
+    auto_approve_level: String,
+    temperature_preset: zeph_config::AcpTemperaturePreset,
+}
+
 pub(crate) struct SessionEntry {
     pub(crate) input_tx: mpsc::Sender<ChannelMessage>,
     /// Receiver is owned solely by the `prompt()` handler.
@@ -1353,7 +1363,11 @@ impl ZephAcpAgentState {
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
-        self.prime_provider_override(&provider_override, &initial_model);
+        self.prime_provider_override(
+            &provider_override,
+            &initial_model,
+            self.model_config.default_temperature_preset,
+        );
         #[cfg_attr(not(feature = "unstable-elicitation"), allow(unused_mut))]
         let mut entry = Self::make_session_entry(
             handle,
@@ -1361,7 +1375,11 @@ impl ZephAcpAgentState {
             session_cwd.clone(),
             shell_executor,
             provider_override,
-            self.model_config.default_temperature_preset,
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "suggest".to_owned(),
+                temperature_preset: self.model_config.default_temperature_preset,
+            },
         );
         #[cfg(feature = "unstable-elicitation")]
         {
@@ -1569,8 +1587,26 @@ impl ZephAcpAgentState {
                 }
             }
         }
-        if let Some(entry) = self.sessions.lock().remove(&args.session_id) {
+        let removed = self.sessions.lock().remove(&args.session_id);
+        if let Some(entry) = removed {
             entry.cancel_signal.notify_one();
+            // Snapshot the session's config fields (#5373) so a later `session/resume` or
+            // `session/fork` of this now-evicted session can inherit them instead of
+            // resetting to configured defaults.
+            if let Some(ref store) = self.store {
+                let snapshot = zeph_memory::store::AcpSessionConfigSnapshot {
+                    current_model: entry.current_model.lock().clone(),
+                    temperature_preset: (*entry.temperature_preset.lock()).as_str().to_owned(),
+                    thinking_enabled: entry.thinking_enabled.load(Ordering::Relaxed),
+                    auto_approve_level: entry.auto_approve_level.lock().clone(),
+                };
+                if let Err(e) = store
+                    .save_session_config(&args.session_id.to_string(), &snapshot)
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to persist session config snapshot on close");
+                }
+            }
         }
         Ok(acp::schema::v1::CloseSessionResponse::default())
     }
@@ -1646,14 +1682,22 @@ impl ZephAcpAgentState {
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = self.initial_model();
-        self.prime_provider_override(&provider_override, &initial_model);
+        self.prime_provider_override(
+            &provider_override,
+            &initial_model,
+            self.model_config.default_temperature_preset,
+        );
         let entry = Self::make_session_entry(
             handle,
             initial_model,
             session_cwd.clone(),
             shell_executor,
             provider_override,
-            self.model_config.default_temperature_preset,
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "suggest".to_owned(),
+                temperature_preset: self.model_config.default_temperature_preset,
+            },
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -1742,6 +1786,76 @@ impl ZephAcpAgentState {
         Ok(acp::schema::v1::ListSessionsResponse::new(sessions_vec))
     }
 
+    /// Resolve the config a new `SessionEntry` should inherit from `source_id` (#5373).
+    ///
+    /// Order of precedence: the source session's live in-memory state (source still resident
+    /// in the LRU cache — the common case for `session/fork`), then the persisted close-time
+    /// snapshot (source was gracefully closed — the common case for `session/resume`), then
+    /// configured defaults (no snapshot available: the source was evicted rather than closed,
+    /// or predates the config-snapshot migration).
+    ///
+    /// Returns `(model, thinking_enabled, auto_approve_level, temperature_preset)`.
+    async fn inherited_session_config(
+        &self,
+        source_id: &acp::schema::v1::SessionId,
+    ) -> (String, bool, String, zeph_config::AcpTemperaturePreset) {
+        let inherited = if let Some(entry) = self.sessions.lock().get(source_id) {
+            Some((
+                entry.current_model.lock().clone(),
+                entry.thinking_enabled.load(Ordering::Relaxed),
+                entry.auto_approve_level.lock().clone(),
+                *entry.temperature_preset.lock(),
+            ))
+        } else if let Some(ref store) = self.store {
+            store
+                .get_session_config(&source_id.to_string())
+                .await
+                .ok()
+                .flatten()
+                .map(|snapshot| {
+                    let preset = snapshot
+                        .temperature_preset
+                        .parse()
+                        .unwrap_or(self.model_config.default_temperature_preset);
+                    (
+                        snapshot.current_model,
+                        snapshot.thinking_enabled,
+                        snapshot.auto_approve_level,
+                        preset,
+                    )
+                })
+        } else {
+            None
+        };
+
+        let (model, thinking_enabled, auto_approve_level, temperature_preset) = inherited
+            .unwrap_or_else(|| {
+                (
+                    self.initial_model(),
+                    false,
+                    "suggest".to_owned(),
+                    self.model_config.default_temperature_preset,
+                )
+            });
+
+        // The inherited model may no longer be configured (removed from the provider list
+        // since the source session was created) — fall back to the current default rather
+        // than handing the spawner a dangling model key.
+        let available_models = self.available_models_snapshot();
+        let model = if model.is_empty() || available_models.iter().any(|m| m == &model) {
+            model
+        } else {
+            self.initial_model()
+        };
+
+        (
+            model,
+            thinking_enabled,
+            auto_approve_level,
+            temperature_preset,
+        )
+    }
+
     #[cfg(feature = "unstable-session-fork")]
     #[allow(dead_code, clippy::too_many_lines)]
     #[tracing::instrument(skip_all, name = "acp.handler.fork_session")]
@@ -1771,6 +1885,11 @@ impl ZephAcpAgentState {
                 }
             }
         }
+
+        // Captured before the LRU eviction pass below, since (pre-existing behavior) that
+        // pass does not exclude the fork source and could otherwise evict it out from under us.
+        let (inherited_model, inherited_thinking, inherited_auto_approve, inherited_preset) =
+            self.inherited_session_config(&args.session_id).await;
 
         if self.sessions.lock().len() >= self.max_sessions {
             let evict_id = {
@@ -1815,15 +1934,19 @@ impl ZephAcpAgentState {
             )
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
-        let initial_model = self.initial_model();
-        self.prime_provider_override(&provider_override, &initial_model);
+        let initial_model = inherited_model;
+        self.prime_provider_override(&provider_override, &initial_model, inherited_preset);
         let entry = Self::make_session_entry(
             handle,
             initial_model.clone(),
             args.cwd.clone(),
             shell_executor,
             provider_override,
-            self.model_config.default_temperature_preset,
+            SessionConfigSeed {
+                thinking_enabled: inherited_thinking,
+                auto_approve_level: inherited_auto_approve.clone(),
+                temperature_preset: inherited_preset,
+            },
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -1849,9 +1972,9 @@ impl ZephAcpAgentState {
         let config_options = build_config_options(
             &available_models,
             &initial_model,
-            false,
-            "suggest",
-            self.model_config.default_temperature_preset,
+            inherited_thinking,
+            &inherited_auto_approve,
+            inherited_preset,
         );
         let default_mode_id = acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID);
         let mut resp = acp::schema::v1::ForkSessionResponse::new(new_id)
@@ -1889,6 +2012,13 @@ impl ZephAcpAgentState {
         if !exists {
             return Err(acp::Error::internal_error().data("session not found"));
         }
+
+        // Resolved from the persisted close-time snapshot (#5373) — by construction the
+        // session is not in memory here (the early return above handles that case), so this
+        // always reads through to the store, falling back to config defaults if no snapshot
+        // was ever saved for this session.
+        let (inherited_model, inherited_thinking, inherited_auto_approve, inherited_preset) =
+            self.inherited_session_config(&args.session_id).await;
 
         if self.sessions.lock().len() >= self.max_sessions {
             let evict_id = {
@@ -1930,15 +2060,19 @@ impl ZephAcpAgentState {
             )
             .await;
         let shell_executor = acp_ctx.shell_executor.clone();
-        let initial_model = self.initial_model();
-        self.prime_provider_override(&provider_override, &initial_model);
+        let initial_model = inherited_model;
+        self.prime_provider_override(&provider_override, &initial_model, inherited_preset);
         let entry = Self::make_session_entry(
             handle,
             initial_model,
             args.cwd.clone(),
             shell_executor,
             provider_override,
-            self.model_config.default_temperature_preset,
+            SessionConfigSeed {
+                thinking_enabled: inherited_thinking,
+                auto_approve_level: inherited_auto_approve,
+                temperature_preset: inherited_preset,
+            },
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -2194,10 +2328,12 @@ impl ZephAcpAgentState {
         }))
     }
 
-    /// Prime a freshly created session's `provider_override` with the configured default
-    /// `[acp.model_config].default_temperature_preset`, so that preset is the *effective*
-    /// sampling temperature from the session's very first prompt — not just the value
-    /// advertised in the IDE dropdown until an explicit `session/set_config_option` call.
+    /// Prime a freshly created session's `provider_override` with `temperature_preset`, so
+    /// that preset is the *effective* sampling temperature from the session's very first
+    /// prompt — not just the value advertised in the IDE dropdown until an explicit
+    /// `session/set_config_option` call. Callers pass the configured
+    /// `[acp.model_config].default_temperature_preset` for new/loaded sessions, or a preset
+    /// inherited from a source session for fork/resume (#5373).
     ///
     /// No-op (leaves `provider_override` as `None`, falling back to the spawner's own
     /// provider) when model switching isn't configured (`provider_factory` unset) or
@@ -2208,10 +2344,9 @@ impl ZephAcpAgentState {
         &self,
         provider_override: &Arc<RwLock<Option<AnyProvider>>>,
         initial_model: &str,
+        temperature_preset: zeph_config::AcpTemperaturePreset,
     ) {
-        if let Ok(provider) = self
-            .provider_with_temperature(initial_model, self.model_config.default_temperature_preset)
-        {
+        if let Ok(provider) = self.provider_with_temperature(initial_model, temperature_preset) {
             *provider_override.write() = Some(provider);
         }
     }
@@ -2812,14 +2947,14 @@ impl ZephAcpAgentState {
         }
     }
 
-    /// Build a fresh `SessionEntry` from a `LoopbackHandle`.
+    /// Build a fresh `SessionEntry` from a `LoopbackHandle`, seeded with `config` (#5373).
     fn make_session_entry(
         handle: LoopbackHandle,
         initial_model: String,
         cwd: PathBuf,
         shell_executor: Option<AcpShellExecutor>,
         provider_override: Arc<RwLock<Option<AnyProvider>>>,
-        temperature_preset: zeph_config::AcpTemperaturePreset,
+        config: SessionConfigSeed,
     ) -> SessionEntry {
         // Bounded: prevents a misbehaving IDE from buffering notifications without limit.
         // 256 slots cover any realistic burst between drainer loop iterations.
@@ -2845,9 +2980,9 @@ impl ZephAcpAgentState {
             current_mode: Mutex::new(acp::schema::v1::SessionModeId::new(DEFAULT_MODE_ID)),
             first_prompt_done: AtomicBool::new(false),
             title: Mutex::new(None),
-            thinking_enabled: AtomicBool::new(false),
-            auto_approve_level: Mutex::new("suggest".to_owned()),
-            temperature_preset: Mutex::new(temperature_preset),
+            thinking_enabled: AtomicBool::new(config.thinking_enabled),
+            auto_approve_level: Mutex::new(config.auto_approve_level),
+            temperature_preset: Mutex::new(config.temperature_preset),
             shell_executor,
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge_handle: None,
@@ -3275,7 +3410,11 @@ mod notify_timeout_tests {
             std::path::PathBuf::from("."),
             None,
             provider_override,
-            zeph_config::AcpTemperaturePreset::default(),
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "suggest".to_owned(),
+                temperature_preset: zeph_config::AcpTemperaturePreset::default(),
+            },
         );
         // Insert without starting the drainer — no ack will ever be sent.
         agent.sessions.lock().insert(session_id.clone(), entry);
@@ -3288,6 +3427,66 @@ mod notify_timeout_tests {
         assert!(
             result.is_err(),
             "send_notification must fail when ack does not arrive within the timeout"
+        );
+    }
+}
+
+/// Regression tests for #5373: `inherited_session_config`'s fallback when the inherited model
+/// is no longer configured.
+#[cfg(test)]
+mod inherited_session_config_tests {
+    use std::sync::Arc;
+
+    use parking_lot::RwLock;
+    use zeph_core::channel::LoopbackChannel;
+    use zeph_llm::any::AnyProvider;
+
+    use super::*;
+
+    /// The inherited model must fall back to `initial_model()` when it is absent from
+    /// `available_models_snapshot()` (e.g. removed from `[[llm.providers]]`/`available_models`
+    /// since the source session was created), rather than handing the spawner a dangling model
+    /// key (#5373).
+    #[tokio::test]
+    async fn falls_back_to_initial_model_when_inherited_model_not_available() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None).with_provider_factory(
+            Arc::new(|_key: &str| None),
+            Arc::new(RwLock::new(vec!["claude:sonnet".to_owned()])),
+        );
+
+        let session_id = acp::schema::v1::SessionId::new("source-session".to_owned());
+        let (_, handle) = LoopbackChannel::pair(4);
+        let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let entry = ZephAcpAgent::make_session_entry(
+            handle,
+            "claude:opus".to_owned(),
+            std::path::PathBuf::from("."),
+            None,
+            provider_override,
+            SessionConfigSeed {
+                thinking_enabled: true,
+                auto_approve_level: "auto-edit".to_owned(),
+                temperature_preset: zeph_config::AcpTemperaturePreset::Creative,
+            },
+        );
+        agent.sessions.lock().insert(session_id.clone(), entry);
+
+        let (model, thinking_enabled, auto_approve_level, temperature_preset) =
+            agent.inherited_session_config(&session_id).await;
+
+        assert_eq!(
+            model,
+            agent.initial_model(),
+            "model no longer in available_models must fall back to initial_model()"
+        );
+        // Non-model fields are unaffected by the model-availability check — they still carry
+        // through from the source session.
+        assert!(thinking_enabled);
+        assert_eq!(auto_approve_level, "auto-edit");
+        assert_eq!(
+            temperature_preset,
+            zeph_config::AcpTemperaturePreset::Creative
         );
     }
 }

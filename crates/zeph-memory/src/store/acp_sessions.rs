@@ -22,6 +22,16 @@ pub struct AcpSessionInfo {
     pub message_count: i64,
 }
 
+/// Snapshot of per-session config fields (#5373), taken on graceful `session/close` so a later
+/// `session/resume` or `session/fork` can inherit these values instead of resetting to
+/// configured defaults.
+pub struct AcpSessionConfigSnapshot {
+    pub current_model: String,
+    pub temperature_preset: String,
+    pub thinking_enabled: bool,
+    pub auto_approve_level: String,
+}
+
 impl SqliteStore {
     /// Create a new ACP session record.
     ///
@@ -244,6 +254,69 @@ impl SqliteStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Persist a snapshot of the session's current config fields (#5373).
+    ///
+    /// Called on graceful `session/close` so a later `session/resume` or `session/fork` of a
+    /// session no longer resident in memory can inherit these values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database write fails.
+    pub async fn save_session_config(
+        &self,
+        session_id: &str,
+        snapshot: &AcpSessionConfigSnapshot,
+    ) -> Result<(), MemoryError> {
+        zeph_db::query(sql!(
+            "UPDATE acp_sessions SET current_model = ?, temperature_preset = ?, \
+             thinking_enabled = ?, auto_approve_level = ? WHERE id = ?"
+        ))
+        .bind(&snapshot.current_model)
+        .bind(&snapshot.temperature_preset)
+        .bind(snapshot.thinking_enabled)
+        .bind(&snapshot.auto_approve_level)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Load the persisted config snapshot for a session, if one was saved (#5373).
+    ///
+    /// Returns `None` when the session has no snapshot yet — either it was never closed
+    /// gracefully, or it predates the config-snapshot migration. Callers should fall back to
+    /// configured defaults in that case.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn get_session_config(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<AcpSessionConfigSnapshot>, MemoryError> {
+        let row = zeph_db::query_as::<
+            _,
+            (Option<String>, Option<String>, Option<bool>, Option<String>),
+        >(sql!(
+            "SELECT current_model, temperature_preset, thinking_enabled, auto_approve_level \
+                 FROM acp_sessions WHERE id = ?"
+        ))
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.and_then(
+            |(current_model, temperature_preset, thinking_enabled, auto_approve_level)| {
+                Some(AcpSessionConfigSnapshot {
+                    current_model: current_model?,
+                    temperature_preset: temperature_preset?,
+                    thinking_enabled: thinking_enabled?,
+                    auto_approve_level: auto_approve_level?,
+                })
+            },
+        ))
+    }
+
     /// Check whether an ACP session record exists.
     ///
     /// # Errors
@@ -379,6 +452,45 @@ mod tests {
         store.create_acp_session("sess-1").await.unwrap();
         assert!(store.acp_session_exists("sess-1").await.unwrap());
         assert!(!store.acp_session_exists("sess-2").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn session_config_round_trips() {
+        let store = make_store().await;
+        store.create_acp_session("sess-1").await.unwrap();
+        let snapshot = AcpSessionConfigSnapshot {
+            current_model: "claude:opus".to_owned(),
+            temperature_preset: "creative".to_owned(),
+            thinking_enabled: true,
+            auto_approve_level: "auto-edit".to_owned(),
+        };
+        store
+            .save_session_config("sess-1", &snapshot)
+            .await
+            .unwrap();
+
+        let loaded = store
+            .get_session_config("sess-1")
+            .await
+            .unwrap()
+            .expect("snapshot must be present after save");
+        assert_eq!(loaded.current_model, "claude:opus");
+        assert_eq!(loaded.temperature_preset, "creative");
+        assert!(loaded.thinking_enabled);
+        assert_eq!(loaded.auto_approve_level, "auto-edit");
+    }
+
+    #[tokio::test]
+    async fn session_config_missing_snapshot_returns_none() {
+        let store = make_store().await;
+        store.create_acp_session("sess-1").await.unwrap();
+        assert!(store.get_session_config("sess-1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_config_unknown_session_returns_none() {
+        let store = make_store().await;
+        assert!(store.get_session_config("no-such").await.unwrap().is_none());
     }
 
     #[tokio::test]

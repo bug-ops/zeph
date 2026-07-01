@@ -539,7 +539,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
         #[cfg(feature = "acp")]
         Some(Command::Acp { command: acp_cmd }) => {
-            return handle_acp_command(acp_cmd).await;
+            return handle_acp_command(acp_cmd, cli.config.as_deref()).await;
         }
         #[cfg(feature = "acp")]
         Some(Command::Sessions { command: sess_cmd }) => {
