@@ -91,6 +91,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(worktree)`: `WorktreeManager::remove()` no longer leaves a stale handle in the in-memory
+  session list when the worktree directory itself was already deleted but the subsequent branch
+  prune (`git branch -D`, `prune_branch = true`) fails. The handle is now dropped from
+  `self.handles` immediately after `git worktree remove` succeeds, before the branch-prune step
+  runs, so `list()` never reports a path that no longer exists on disk; a failed prune is still
+  surfaced to the caller as a distinct `WorktreeError::GitCommand { op: "branch -D", .. }`. Also
+  extracted a shared `check_git_status` helper deduplicating the repeated git-exit-status/error
+  handling across the six call sites in `crates/zeph-worktree/src/manager.rs`. Closes #5397,
+  closes #5398.
 - `fix(orchestration)`: `/plan confirm` no longer deadlocks and discards completed work when the
   LLM planner attaches a `verify_criteria` acceptance criterion to a task under the default
   config (`orchestration.verify_predicate_enabled = false`). `convert_response` (planner.rs) now
