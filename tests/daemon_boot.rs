@@ -8,8 +8,10 @@
 
 /// Kills the wrapped child process (and waits briefly for it to exit) on drop, so the
 /// daemon is never left running after a test completes or an assertion panics mid-test.
+#[cfg(all(unix, feature = "a2a"))]
 struct KillOnDrop(std::process::Child);
 
+#[cfg(all(unix, feature = "a2a"))]
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         let _ = self.0.kill();
