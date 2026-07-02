@@ -102,6 +102,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(plugins)`: the plugin auto-update path (`apply_staged_update`,
+  `crates/zeph-plugins/src/manager/registry.rs`) now enforces the same manifest validation as
+  initial install (`PluginManager::add()`) — dependency count/name validation
+  (`MAX_DEPENDENCIES`, per-dependency `validate_plugin_name`) and `[[skills]] path` traversal
+  validation (rejecting any skill path that canonicalizes outside the plugin source root).
+  Previously the auto-update path skipped both checks despite its doc comment claiming parity
+  with `add()`, so a compromised auto-update URL (registry compromise, DNS hijack, or a
+  malicious plugin author shipping a benign v1 then a malicious v2) could bypass validations
+  that would have blocked the same manifest content at initial install time. Both checks are
+  now unified in a single shared `validate_manifest_for_install` (`crates/zeph-plugins/src/
+  manager/security.rs`) called by both `add()` and `apply_staged_update()`, so the two paths
+  cannot silently diverge again. Closes #5401.
 - `fix(tools)`: file-tool calls (`write`, `edit`, `create_directory`, and every other
   `FileExecutor` handler) now expand a leading `~` in the LLM-supplied `path` argument to the
   real home directory before sandbox checks run, instead of treating it as a literal `~`

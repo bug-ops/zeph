@@ -8,8 +8,8 @@ use crate::PluginError;
 use super::{
     AddResult, AutoUpdateResult, AutoUpdateStatus, InstalledPlugin, PluginManager, PluginSource,
     collect_skill_names, extract_archive_safe, scan_skill_entries, strip_bundled_markers,
-    validate_mcp_commands, validate_overlay_keys, validate_url_scheme,
-    validate_url_scheme_ephemeral,
+    validate_manifest_for_install, validate_mcp_commands, validate_overlay_keys,
+    validate_url_scheme, validate_url_scheme_ephemeral,
 };
 
 impl PluginManager {
@@ -657,7 +657,16 @@ pub(crate) fn apply_staged_update(
         ));
     }
 
-    // Run the full validation pipeline — same checks as `add()`.
+    // Run the full validation pipeline — same checks as `add()` (issue #5401: this must call
+    // the shared `validate_manifest_for_install` helper, not just the overlay/MCP/skill-conflict
+    // checks, or a compromised auto-update URL can bypass the dependency and skill-path-traversal
+    // guards that `add()` enforces).
+    if let Err(e) = validate_manifest_for_install(staging, &manifest) {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(format!(
+            "staged manifest failed dependency/skill-path validation: {e}"
+        ));
+    }
     if let Err(e) = validate_overlay_keys(&manifest.config) {
         let _ = std::fs::remove_dir_all(staging);
         return Err(format!(

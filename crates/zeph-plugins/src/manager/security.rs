@@ -10,7 +10,7 @@ use zeph_skills::registry::SkillRegistry;
 use zeph_skills::scanner::scan_skill_body;
 
 use crate::PluginError;
-use crate::manifest::PluginMcpServer;
+use crate::manifest::{PluginManifest, PluginMcpServer};
 
 use super::{PluginManager, SkillScanInput, parse_frontmatter_meta};
 
@@ -21,6 +21,80 @@ const CONFIG_SAFELIST: &[&str] = &[
     "tools.allowed_commands",
     "skills.disambiguation_threshold",
 ];
+
+/// Maximum number of entries allowed in `plugin.dependencies`.
+///
+/// Prevents a malicious manifest from triggering a fan-out `DoS` via recursive `enable()` calls
+/// across an unbounded dependency graph.
+const MAX_DEPENDENCIES: usize = 64;
+
+/// Validate a manifest's dependency list and `[[skills]] path` entries before it is installed.
+///
+/// # Security invariant
+///
+/// This is the single shared checkpoint for two checks that must run on **every** manifest
+/// before its declared skills are ever interpreted by
+/// [`super::collect_skill_names`]/`SkillRegistry::load`:
+///
+/// 1. **Dependency bound** — rejects manifests with more than [`MAX_DEPENDENCIES`] entries or a
+///    malformed dependency name, bounding the fan-out of recursive `enable()` calls.
+/// 2. **Skill path traversal** — each `[[skills]] path` entry is canonicalized and must resolve
+///    inside `source_path`. [`extract_archive_safe`]'s tar-slip protection only guards *tar
+///    entry paths* during extraction; it does not protect against a manifest `path` value
+///    (e.g. `"../../etc"`) that is interpreted later, after extraction, by
+///    `collect_skill_names`/`SkillRegistry::load`.
+///
+/// [`PluginManager::add`] (fresh installs) and `apply_staged_update` (the auto-update path) both
+/// write a manifest's declared skills to disk and must call this function so the two call sites
+/// cannot silently diverge again — see issue #5401, where `apply_staged_update` re-ran the
+/// overlay/MCP/skill-conflict checks but skipped both of these, letting a compromised
+/// auto-update URL bypass validation that `add()` would have enforced.
+///
+/// # Errors
+///
+/// - [`PluginError::InvalidManifest`] — dependency count exceeds [`MAX_DEPENDENCIES`].
+/// - [`PluginError::InvalidName`] — a dependency name fails [`validate_plugin_name`].
+/// - [`PluginError::Io`] — `source_path` or a skill path cannot be canonicalized.
+/// - [`PluginError::InvalidSource`] — a `[[skills]] path` entry resolves outside `source_path`.
+/// - [`PluginError::SkillEntryMissing`] — a `[[skills]] path` entry has no `SKILL.md`.
+pub(crate) fn validate_manifest_for_install(
+    source_path: &Path,
+    manifest: &PluginManifest,
+) -> Result<(), PluginError> {
+    if manifest.plugin.dependencies.len() > MAX_DEPENDENCIES {
+        return Err(PluginError::InvalidManifest(format!(
+            "plugin declares {} dependencies; maximum allowed is {MAX_DEPENDENCIES}",
+            manifest.plugin.dependencies.len()
+        )));
+    }
+    for dep in &manifest.plugin.dependencies {
+        validate_plugin_name(dep)?;
+    }
+
+    for entry in &manifest.skills {
+        let skill_path = source_path.join(&entry.path);
+        // Reject path traversal: resolved path must be inside source_path.
+        let canonical_source = source_path.canonicalize().map_err(|e| PluginError::Io {
+            path: source_path.to_path_buf(),
+            source: e,
+        })?;
+        let canonical_skill = skill_path.canonicalize().map_err(|e| PluginError::Io {
+            path: skill_path.clone(),
+            source: e,
+        })?;
+        if !canonical_skill.starts_with(&canonical_source) {
+            return Err(PluginError::InvalidSource {
+                path: entry.path.clone(),
+                reason: "skill path escapes plugin source root".to_owned(),
+            });
+        }
+        // Ensure the skill directory contains a SKILL.md file.
+        if !skill_path.join("SKILL.md").is_file() {
+            return Err(PluginError::SkillEntryMissing { path: skill_path });
+        }
+    }
+    Ok(())
+}
 
 impl PluginManager {
     /// Collect [`SkillScanInput`] entries for each skill in the plugin at `source`.

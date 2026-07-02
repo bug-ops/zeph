@@ -11,14 +11,9 @@ use crate::manifest::PluginManifest;
 use super::{
     AddResult, DisableResult, PluginManager, RemoveResult, check_allowed_commands_overlay_effect,
     collect_skill_names, copy_dir_all, load_installed_manifest, scan_skill_entries,
-    strip_bundled_markers, validate_mcp_commands, validate_overlay_keys, validate_plugin_name,
+    strip_bundled_markers, validate_manifest_for_install, validate_mcp_commands,
+    validate_overlay_keys, validate_plugin_name,
 };
-
-/// Maximum number of entries allowed in `plugin.dependencies`.
-///
-/// Prevents a malicious manifest from triggering a fan-out `DoS` via recursive `enable()` calls
-/// across an unbounded dependency graph.
-const MAX_DEPENDENCIES: usize = 64;
 
 impl PluginManager {
     /// Install a plugin from a local directory path.
@@ -51,40 +46,8 @@ impl PluginManager {
 
         // Name validity is enforced by PluginName deserialization; no separate call needed.
 
-        // Validate dependency list: enforce count limit and name format.
-        if manifest.plugin.dependencies.len() > MAX_DEPENDENCIES {
-            return Err(PluginError::InvalidManifest(format!(
-                "plugin declares {} dependencies; maximum allowed is {MAX_DEPENDENCIES}",
-                manifest.plugin.dependencies.len()
-            )));
-        }
-        for dep in &manifest.plugin.dependencies {
-            validate_plugin_name(dep)?;
-        }
-
-        // Validate each [[skills]] entry: path must stay within source root and SKILL.md must exist.
-        for entry in &manifest.skills {
-            let skill_path = source_path.join(&entry.path);
-            // Reject path traversal: resolved path must be inside source_path.
-            let canonical_source = source_path.canonicalize().map_err(|e| PluginError::Io {
-                path: source_path.clone(),
-                source: e,
-            })?;
-            let canonical_skill = skill_path.canonicalize().map_err(|e| PluginError::Io {
-                path: skill_path.clone(),
-                source: e,
-            })?;
-            if !canonical_skill.starts_with(&canonical_source) {
-                return Err(PluginError::InvalidSource {
-                    path: entry.path.clone(),
-                    reason: "skill path escapes plugin source root".to_owned(),
-                });
-            }
-            // Ensure the skill directory contains a SKILL.md file.
-            if !skill_path.join("SKILL.md").is_file() {
-                return Err(PluginError::SkillEntryMissing { path: skill_path });
-            }
-        }
+        // Validate dependency list and [[skills]] path entries (shared with apply_staged_update).
+        validate_manifest_for_install(&source_path, &manifest)?;
 
         // Validate config overlay keys.
         validate_overlay_keys(&manifest.config)?;

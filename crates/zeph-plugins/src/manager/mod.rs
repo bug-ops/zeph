@@ -241,7 +241,8 @@ pub(crate) use security::extract_archive;
 pub use security::validate_url_scheme_ephemeral;
 pub(crate) use security::{
     check_allowed_commands_overlay_effect, extract_archive_safe, scan_skill_entries,
-    validate_mcp_commands, validate_overlay_keys, validate_plugin_name, validate_url_scheme,
+    validate_manifest_for_install, validate_mcp_commands, validate_overlay_keys,
+    validate_plugin_name, validate_url_scheme,
 };
 pub(crate) use store::{
     collect_skill_names, copy_dir_all, load_installed_manifest, parse_frontmatter_meta,

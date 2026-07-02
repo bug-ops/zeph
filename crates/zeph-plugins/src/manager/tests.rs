@@ -2152,3 +2152,121 @@ fn strip_bundled_markers_removes_marker_files() {
         "regular files must not be affected by strip_bundled_markers"
     );
 }
+
+// --- regression: #5401 apply_staged_update validation parity with add() ---
+
+#[test]
+fn apply_staged_update_rejects_too_many_dependencies() {
+    use super::registry::apply_staged_update;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let deps: Vec<String> = (0..=64).map(|i| format!("dep-{i:02}")).collect();
+    let deps_toml = deps
+        .iter()
+        .map(|d| format!("\"{d}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let manifest = format!(
+        "[plugin]\nname = \"update-target\"\nversion = \"0.2.0\"\ndependencies = [{deps_toml}]\n"
+    );
+    let src = tmp.path().join("staged-src");
+    write_plugin(&src, "update-target", &manifest, &[]);
+    let archive = build_tar_gz(&src);
+
+    let dest = plugins_dir.join("update-target");
+    let staging = plugins_dir.join(".staging-update-target");
+    let backup = plugins_dir.join(".backup-update-target");
+    let integrity_path = plugins_dir.join(".plugin-integrity.toml");
+
+    let err = apply_staged_update(
+        &archive,
+        "https://example.com/update-target.tar.gz",
+        &dest,
+        &staging,
+        &backup,
+        "update-target",
+        &[],
+        &managed_dir,
+        &plugins_dir,
+        &integrity_path,
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("maximum allowed"),
+        "expected too-many-dependencies rejection, got {err}"
+    );
+    assert!(
+        !staging.exists(),
+        "staging dir must be cleaned up after a rejected update"
+    );
+    assert!(
+        !dest.exists(),
+        "dest must not be touched when the staged manifest fails validation"
+    );
+}
+
+#[test]
+fn apply_staged_update_rejects_skill_path_traversal() {
+    use super::registry::apply_staged_update;
+
+    let tmp = tempfile::tempdir().unwrap();
+    // Canonicalize so the traversal guard's prefix check works on macOS (/tmp -> /private/tmp).
+    let real_tmp = tmp.path().canonicalize().unwrap();
+    let plugins_dir = real_tmp.join("plugins");
+    let managed_dir = real_tmp.join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    // Pre-create a real directory outside the staging root so canonicalize resolves it —
+    // this is what the traversal guard must catch, not a plain IO NotFound.
+    std::fs::create_dir_all(plugins_dir.join("outside-skill")).unwrap();
+
+    let manifest = r#"[plugin]
+name = "traversal-update"
+version = "0.2.0"
+description = "test"
+
+[[skills]]
+path = "../outside-skill"
+"#;
+    let src = real_tmp.join("staged-src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("plugin.toml"), manifest).unwrap();
+    let archive = build_tar_gz(&src);
+
+    let dest = plugins_dir.join("traversal-update");
+    let staging = plugins_dir.join(".staging-traversal-update");
+    let backup = plugins_dir.join(".backup-traversal-update");
+    let integrity_path = plugins_dir.join(".plugin-integrity.toml");
+
+    let err = apply_staged_update(
+        &archive,
+        "https://example.com/traversal-update.tar.gz",
+        &dest,
+        &staging,
+        &backup,
+        "traversal-update",
+        &[],
+        &managed_dir,
+        &plugins_dir,
+        &integrity_path,
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("escapes plugin source root"),
+        "expected skill path traversal rejection, got {err}"
+    );
+    assert!(
+        !staging.exists(),
+        "staging dir must be cleaned up after a rejected update"
+    );
+    assert!(
+        !dest.exists(),
+        "dest must not be touched when the staged manifest fails validation"
+    );
+}
