@@ -1181,6 +1181,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   brand-new conversation with no linked session yet still falls back to a bare log open since there
   is nothing to hydrate. `src/runner.rs`.
 
+- `fix(memory)`: `zeph-memory` sent malformed SQL to Postgres from 22 production call sites across
+  `graph/store/mod.rs`, `graph/implicit_conflict.rs`, `five_signal/consolidation.rs`,
+  `five_signal/access_frequency.rs`, `optical_forgetting.rs`, `episodic_consolidation.rs`, and
+  `graph/experience.rs`. `zeph_db::sql!()` is the only place that rewrites SQLite's `?` placeholder
+  syntax to Postgres's `$1, $2, ...` — under `--features postgres`, `DbPool`/`DbTransaction` are
+  compile-time aliases for the Postgres driver, so any call bypassing the macro fails at runtime.
+  Two defect shapes were found and fixed: (1) 11 sites called `sqlx::query`/`query_as`/
+  `query_scalar` directly instead of through `sql!()`, sending raw `?` tokens straight to Postgres;
+  (2) 11 more sites already used `sql!()` but contained SQLite's numbered `?1`/`?2` placeholder
+  syntax, which the macro's `rewrite_placeholders` cannot parse (it does a naive per-character
+  `?`→`$N` replace with no `?N` awareness, e.g. turning `?1` into `$11`) — renumbered to bare `?`,
+  with one site (`episodic_consolidation.rs::compute_cognitive_weight`) requiring a duplicated
+  `.bind()` call since its `?2` placeholder was reused twice in the SQL text for one bound value.
+  Added 5 new Postgres regression tests (`tests/postgres_integration.rs`, `test-utils` feature)
+  covering previously-untested fixed call sites. Closes #5488, closes #5491.
+
 ### Changed
 
 - `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into

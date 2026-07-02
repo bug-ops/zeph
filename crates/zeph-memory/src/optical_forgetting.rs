@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
+use zeph_db::sql;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
@@ -236,15 +237,15 @@ async fn fetch_full_candidates(
     // so pinned messages are not excluded here — the caller should avoid passing pinned
     // message IDs through optical forgetting, which is ensured by only sweeping full
     // sessions at the agent level.
-    let rows = sqlx::query_as::<_, (i64, String)>(
+    let rows = zeph_db::query_as::<_, (i64, String)>(sql!(
         "SELECT id, content FROM messages
          WHERE content_fidelity = 'Full'
            AND deleted_at IS NULL
            AND (importance_score IS NULL OR importance_score >= ?)
            AND id <= (SELECT COALESCE(MAX(id), 0) - ? FROM messages)
          ORDER BY id ASC
-         LIMIT ?",
-    )
+         LIMIT ?"
+    ))
     .bind(forgetting_floor)
     .bind(i64::from(config.compress_after_turns))
     .bind(i64::try_from(config.sweep_batch_size).unwrap_or(i64::MAX))
@@ -260,15 +261,15 @@ async fn fetch_compressed_candidates(
     config: &OpticalForgettingConfig,
     forgetting_floor: f32,
 ) -> Result<Vec<(i64, String)>, MemoryError> {
-    let rows = sqlx::query_as::<_, (i64, Option<String>)>(
+    let rows = zeph_db::query_as::<_, (i64, Option<String>)>(sql!(
         "SELECT id, compressed_content FROM messages
          WHERE content_fidelity = 'Compressed'
            AND deleted_at IS NULL
            AND (importance_score IS NULL OR importance_score >= ?)
            AND id <= (SELECT COALESCE(MAX(id), 0) - ? FROM messages)
          ORDER BY id ASC
-         LIMIT ?",
-    )
+         LIMIT ?"
+    ))
     .bind(forgetting_floor)
     .bind(i64::from(config.summarize_after_turns))
     .bind(i64::try_from(config.sweep_batch_size).unwrap_or(i64::MAX))
@@ -287,11 +288,11 @@ async fn store_compressed(
     msg_id: i64,
     compressed: &str,
 ) -> Result<(), MemoryError> {
-    sqlx::query(
+    zeph_db::query(sql!(
         "UPDATE messages
          SET content_fidelity = 'Compressed', compressed_content = ?
-         WHERE id = ?",
-    )
+         WHERE id = ?"
+    ))
     .bind(compressed)
     .bind(msg_id)
     .execute(store.pool())
@@ -305,11 +306,11 @@ async fn store_summary_only(
     msg_id: i64,
     summary: &str,
 ) -> Result<(), MemoryError> {
-    sqlx::query(
+    zeph_db::query(sql!(
         "UPDATE messages
          SET content_fidelity = 'SummaryOnly', content = ?, compressed_content = NULL
-         WHERE id = ?",
-    )
+         WHERE id = ?"
+    ))
     .bind(summary)
     .bind(msg_id)
     .execute(store.pool())

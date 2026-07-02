@@ -79,7 +79,7 @@ impl ExperienceStore {
         let id: i64 = zeph_db::query_scalar(sql!(
             "INSERT INTO experience_nodes
              (session_id, turn, tool_name, outcome, detail, error_ctx, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
         ))
         .bind(session_id)
@@ -111,7 +111,7 @@ impl ExperienceStore {
         for &entity_id in entity_ids {
             zeph_db::query(sql!(
                 "INSERT INTO experience_entity_links
-                 (experience_id, entity_id) VALUES (?1, ?2)
+                 (experience_id, entity_id) VALUES (?, ?)
                  ON CONFLICT (experience_id, entity_id) DO NOTHING"
             ))
             .bind(experience_id.0)
@@ -136,7 +136,7 @@ impl ExperienceStore {
         zeph_db::query(sql!(
             "INSERT INTO experience_edges
              (source_exp_id, target_exp_id, relation)
-             VALUES (?1, ?2, 'followed_by')"
+             VALUES (?, ?, 'followed_by')"
         ))
         .bind(prev.0)
         .bind(next.0)
@@ -173,7 +173,7 @@ impl ExperienceStore {
 
         let low_conf = zeph_db::query(sql!(
             "DELETE FROM graph_edges
-             WHERE confidence < ?1 AND retrieval_count = 0 AND valid_to IS NULL"
+             WHERE confidence < ? AND retrieval_count = 0 AND valid_to IS NULL"
         ))
         .bind(confidence_threshold)
         .execute(graph_store.pool())

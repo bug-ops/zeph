@@ -17,7 +17,7 @@ const MAX_IDS_PER_QUERY: usize = 499;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zeph_config::ImplicitConflictConfig;
-use zeph_db::DbTransaction;
+use zeph_db::{DbTransaction, sql};
 
 use crate::error::MemoryError;
 use crate::graph::activation::ActivatedFact;
@@ -146,11 +146,11 @@ impl ImplicitConflictDetector {
         let expires_at = now + ttl_secs;
 
         for c in candidates {
-            sqlx::query(
+            zeph_db::query(sql!(
                 "INSERT INTO implicit_conflict_candidates
                  (edge_a_id, edge_b_id, similarity, method, status, created_at, expires_at)
-                 VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-            )
+                 VALUES (?, ?, ?, ?, 'pending', ?, ?)"
+            ))
             .bind(c.edge_a_id)
             .bind(c.edge_b_id)
             .bind(c.similarity)

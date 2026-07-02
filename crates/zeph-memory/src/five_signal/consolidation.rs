@@ -16,6 +16,8 @@ use std::sync::Arc;
 use tokio::time::Duration;
 #[cfg(feature = "scheduler")]
 use zeph_config::memory::FiveSignalConsolidationConfig;
+#[cfg(feature = "scheduler")]
+use zeph_db::sql;
 
 #[cfg(feature = "scheduler")]
 use crate::error::MemoryError;
@@ -92,14 +94,14 @@ impl ConsolidationHandler {
         rt.metrics.inc_consolidation_run();
 
         // NOTE: ORDER BY id DESC retrieves newest facts — known MVP trade-off per NFR-004.
-        let rows = sqlx::query(
+        let rows = zeph_db::query(sql!(
             "SELECT id, created_at, qdrant_promoted, memory_tier \
              FROM messages \
              WHERE deleted_at IS NULL \
                AND (memory_tier IS NULL OR memory_tier NOT IN ('episodic_only')) \
              ORDER BY id DESC \
-             LIMIT ?1",
-        )
+             LIMIT ?"
+        ))
         .bind(i64::try_from(self.config.top_k_per_run).unwrap_or(i64::MAX))
         .fetch_all(&rt.pool)
         .await
@@ -168,9 +170,9 @@ impl ConsolidationHandler {
         let mut count: u64 = 0;
         for fact_id in promote_ids {
             tracing::debug!(fact_id, "five_signal: promoting fact");
-            let res = sqlx::query(
-                "UPDATE messages SET memory_tier = 'semantic', qdrant_promoted = 1 WHERE id = ?1",
-            )
+            let res = zeph_db::query(sql!(
+                "UPDATE messages SET memory_tier = 'semantic', qdrant_promoted = 1 WHERE id = ?"
+            ))
             .bind(fact_id)
             .execute(&rt.pool)
             .await;
@@ -193,10 +195,10 @@ impl ConsolidationHandler {
         let mut count: u64 = 0;
         for msg_id in demote_ids {
             tracing::debug!(fact_id = msg_id.0, "five_signal: demoting fact");
-            let res = sqlx::query(
+            let res = zeph_db::query(sql!(
                 "UPDATE messages SET memory_tier = 'episodic_only', qdrant_promoted = 0 \
-                 WHERE id = ?1",
-            )
+                 WHERE id = ?"
+            ))
             .bind(msg_id.0)
             .execute(&rt.pool)
             .await;

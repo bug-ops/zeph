@@ -367,10 +367,10 @@ async fn fetch_candidates(
          FROM episodic_events e
          JOIN messages m ON m.id = e.message_id
          WHERE e.consolidated_at IS NULL
-           AND e.created_at < unixepoch() - ?1
+           AND e.created_at < unixepoch() - ?
            AND m.content_fidelity != 'SummaryOnly'
          ORDER BY e.created_at ASC
-         LIMIT ?2"
+         LIMIT ?"
     ))
     .bind(min_age)
     .bind(batch)
@@ -398,10 +398,11 @@ async fn compute_cognitive_weight(
              ELSE 0.0
          END), 0.0)
          FROM experience_nodes
-         WHERE session_id = ?1
-           AND created_at BETWEEN ?2 - 30 AND ?2 + 30"
+         WHERE session_id = ?
+           AND created_at BETWEEN ? - 30 AND ? + 30"
     ))
     .bind(session_id)
+    .bind(created_at)
     .bind(created_at)
     .fetch_one(pool)
     .await
@@ -520,7 +521,7 @@ async fn extract_facts_via_llm(
 #[tracing::instrument(skip(pool), name = "memory.episodic.fetch_existing_facts")]
 async fn fetch_existing_facts(pool: &DbPool, limit: i64) -> Result<Vec<String>, MemoryError> {
     let rows: Vec<(String,)> = zeph_db::query_as(sql!(
-        "SELECT fact_text FROM consolidated_facts ORDER BY created_at DESC LIMIT ?1"
+        "SELECT fact_text FROM consolidated_facts ORDER BY created_at DESC LIMIT ?"
     ))
     .bind(limit)
     .fetch_all(pool)
@@ -573,7 +574,7 @@ async fn promote_fact(
 
         let fid: i64 = sqlx::query_scalar(sql!(
             "INSERT INTO consolidated_facts (fact_text, source, cognitive_weight)
-             VALUES (?1, 'episodic_consolidation', ?2)
+             VALUES (?, 'episodic_consolidation', ?)
              RETURNING id"
         ))
         .bind(fact_text)
@@ -585,7 +586,7 @@ async fn promote_fact(
         for &event_id in source_event_ids {
             sqlx::query(sql!(
                 "INSERT INTO consolidated_fact_sources (fact_id, event_id)
-                 VALUES (?1, ?2)
+                 VALUES (?, ?)
                  ON CONFLICT (fact_id, event_id) DO NOTHING"
             ))
             .bind(fid)
@@ -632,7 +633,7 @@ async fn promote_fact(
 #[tracing::instrument(skip(pool), name = "memory.episodic.mark_consolidated")]
 async fn mark_consolidated(pool: &DbPool, event_id: i64) -> Result<(), MemoryError> {
     zeph_db::query(sql!(
-        "UPDATE episodic_events SET consolidated_at = unixepoch() WHERE id = ?1"
+        "UPDATE episodic_events SET consolidated_at = unixepoch() WHERE id = ?"
     ))
     .bind(event_id)
     .execute(pool)

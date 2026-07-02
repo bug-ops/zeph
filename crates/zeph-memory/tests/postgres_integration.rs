@@ -22,6 +22,15 @@
 //! exercises one of the fixed call sites against a real Postgres instance and
 //! asserts actual row-level results (not just absence of error), since a bind-count
 //! mismatch can in some cases silently return zero rows rather than erroring.
+//!
+//! Regression coverage for issues #5488/#5491: several call sites used raw
+//! `sqlx::query`/`query_as`/`query_scalar` with literal `?`/`?N` placeholders instead of
+//! going through the `sql!()` macro, and a handful of call sites already wrapped in
+//! `sql!()` still used `SQLite`'s `?1`/`?2` numbered-placeholder syntax — which
+//! `sql!()`'s `rewrite_placeholders` does not parse, producing malformed `$11` instead
+//! of `$1` under Postgres. The tests below close the Postgres coverage gap for those
+//! fixes; see the `NOTE` comment near the end of this module for one call-site family
+//! that could not get coverage here due to an unrelated bug.
 
 #[cfg(feature = "test-utils")]
 mod pg {
@@ -1021,5 +1030,297 @@ mod pg {
         .await
         .unwrap();
         assert_eq!(was_recalled, 1);
+    }
+
+    // ── Regression coverage for #5488/#5491: sql!() bypasses and the ?N-inside-sql!()
+    // Postgres rewrite defect (raw `?` characters silently become `$11` instead of `$1`
+    // when the literal SQL used SQLite's numbered-placeholder syntax). Each test below
+    // exercises a call site that was fixed as part of that pass and had zero Postgres
+    // coverage before. ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn access_frequency_log_access_writes_entry() {
+        use zeph_memory::five_signal::access_frequency::AccessFrequencyCache;
+
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool.clone());
+        let cache = AccessFrequencyCache::new(pool.clone());
+
+        let cid = store.create_conversation().await.unwrap();
+        let msg = store
+            .save_message(cid, "user", "logged fact")
+            .await
+            .unwrap();
+
+        cache.log_access(msg, "message", "sess-log").await;
+
+        let (fact_id, fact_type, session_id): (i64, String, String) =
+            sqlx::query_as(zeph_db::sql!(
+                "SELECT fact_id, fact_type, session_id FROM fact_access_log WHERE fact_id = ?"
+            ))
+            .bind(msg.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(fact_id, msg.0);
+        assert_eq!(fact_type, "message");
+        assert_eq!(session_id, "sess-log");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn graph_store_source_entity_id_for_edge_postgres() {
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+
+        let a = graph
+            .upsert_entity("Ivy", "ivy", EntityType::Person, None, None)
+            .await
+            .unwrap();
+        let b = graph
+            .upsert_entity("Jack", "jack", EntityType::Person, None, None)
+            .await
+            .unwrap();
+        let edge_id = graph
+            .insert_edge(a.0, b.0, "knows", "Ivy knows Jack", 0.9, None, None)
+            .await
+            .unwrap();
+
+        let found = graph.source_entity_id_for_edge(edge_id).await.unwrap();
+        assert_eq!(found, Some(a.0));
+
+        let missing = graph.source_entity_id_for_edge(999_999_999).await.unwrap();
+        assert_eq!(missing, None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn graph_store_insert_or_supersede_with_conflict_detection_and_depth_check() {
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+
+        let a = graph
+            .upsert_entity("Eve", "eve", EntityType::Person, None, None)
+            .await
+            .unwrap();
+        let b = graph
+            .upsert_entity("Frank", "frank", EntityType::Person, None, None)
+            .await
+            .unwrap();
+
+        let detector_config = zeph_config::memory::ImplicitConflictConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let detector = implicit_conflict::ImplicitConflictDetector::new(detector_config);
+        let ontology = zeph_memory::graph::ontology::OntologyTable::from_default(64);
+
+        let first_id = graph
+            .insert_or_supersede_with_conflict_detection(
+                a.0,
+                b.0,
+                "manages",
+                "manages",
+                "Eve manages Frank",
+                0.6,
+                None,
+                zeph_memory::graph::types::EdgeType::Semantic,
+                true,
+                None,
+                Some(&detector),
+                Some(&ontology),
+            )
+            .await
+            .unwrap();
+
+        // Different fact text for the same (source, target, canonical_relation, edge_type) head
+        // must go through the supersede chain — exercising check_supersede_depth_in_tx — and,
+        // since the detector is enabled, the conflict-candidate raw query.
+        let second_id = graph
+            .insert_or_supersede_with_conflict_detection(
+                a.0,
+                b.0,
+                "manages",
+                "manages",
+                "Eve no longer manages Frank",
+                0.9,
+                None,
+                zeph_memory::graph::types::EdgeType::Semantic,
+                true,
+                None,
+                Some(&detector),
+                Some(&ontology),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            first_id, second_id,
+            "differing fact text must create a new superseding row, not a reassertion"
+        );
+
+        let supersedes: Option<i64> = sqlx::query_scalar(zeph_db::sql!(
+            "SELECT supersedes FROM graph_edges WHERE id = ?"
+        ))
+        .bind(second_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            supersedes,
+            Some(first_id),
+            "second edge must record the first as superseded"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn implicit_conflict_stage_candidates_inserts_pending_row() {
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+
+        let a = graph
+            .upsert_entity("G", "g", EntityType::Concept, None, None)
+            .await
+            .unwrap();
+        let b = graph
+            .upsert_entity("H", "h", EntityType::Concept, None, None)
+            .await
+            .unwrap();
+        let edge_a = graph
+            .insert_edge(a.0, b.0, "relates_to", "G relates to H", 0.8, None, None)
+            .await
+            .unwrap();
+        let edge_b = graph
+            .insert_edge(b.0, a.0, "relates_to", "H relates to G", 0.8, None, None)
+            .await
+            .unwrap();
+
+        let detector = implicit_conflict::ImplicitConflictDetector::new(
+            zeph_config::memory::ImplicitConflictConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+
+        let candidates = vec![implicit_conflict::ConflictCandidate {
+            edge_a_id: edge_a,
+            edge_b_id: edge_b,
+            similarity: 0.9,
+            method: "levenshtein".to_owned(),
+        }];
+
+        let mut tx = pool.begin().await.unwrap();
+        detector
+            .stage_candidates(&candidates, &mut tx, 30)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let row: (i64, i64, String, String) = sqlx::query_as(zeph_db::sql!(
+            "SELECT edge_a_id, edge_b_id, method, status FROM implicit_conflict_candidates \
+             WHERE edge_a_id = ? AND edge_b_id = ?"
+        ))
+        .bind(edge_a)
+        .bind(edge_b)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(row.0, edge_a);
+        assert_eq!(row.1, edge_b);
+        assert_eq!(row.2, "levenshtein");
+        assert_eq!(row.3, "pending");
+    }
+
+    // NOTE: a Postgres regression test for `ConsolidationHandler::execute` (which exercises
+    // `run_once` / `apply_promotions` / `apply_demotions`) was attempted here but is omitted.
+    // It immediately surfaced a pre-existing, UNRELATED production bug: `messages.created_at`
+    // is `TIMESTAMPTZ` in the Postgres schema (`zeph-db/migrations/postgres/001_init.sql`) but
+    // `five_signal/consolidation.rs::run_once` does `row.get::<i64, _>("created_at")`, which
+    // panics with `ColumnDecode { ... mismatched types ... INT8 ... TIMESTAMPTZ }` for any row
+    // when `scheduler` + `postgres` are both enabled. This is a distinct defect class from the
+    // `sql!()`/placeholder bug this PR fixes (`apply_promotions`/`apply_demotions` themselves
+    // only touch `id`, not `created_at`, and are already correctly fixed). `apply_promotions`
+    // and `apply_demotions` are private methods not reachable from this external test file, so
+    // they cannot be covered without either fixing the `created_at` decode bug or changing
+    // their visibility — both out of scope here. See the PR discussion / follow-up issue for
+    // the `created_at` type-mismatch bug before attempting this coverage again.
+
+    // NOTE: Postgres regression tests for `episodic_consolidation.rs::fetch_candidates` and
+    // `compute_cognitive_weight` (both fixed for the `?N`-inside-`sql!()` defect in this PR)
+    // are omitted for the same reason as above: both are private, reachable only via the
+    // public `run_episodic_consolidation_sweep` entry point, and `fetch_candidates`'s WHERE
+    // clause calls SQLite's `unixepoch()` function directly — undefined under Postgres (no
+    // compat function/extension is installed; confirmed via `crates/zeph-db/migrations/postgres/`
+    // and `crates/zeph-db/src/dialect.rs`'s `EPOCH_NOW` abstraction, which exists for exactly
+    // this purpose but isn't used at this call site). Since `fetch_candidates` runs first in
+    // the sweep pipeline, this fails before `compute_cognitive_weight` is ever reached, so
+    // neither function can get real Postgres coverage without fixing the `unixepoch()` dialect
+    // bug first — a distinct defect class from the placeholder bug, out of scope here. The
+    // `?N` renumbering itself is still correct and necessary (verify by inspection: bind
+    // count/order match the SQL text exactly for both functions) — it just cannot be exercised
+    // end-to-end against a real Postgres instance until the dialect bug is fixed separately.
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn optical_forgetting_summarizes_compressed_message() {
+        use std::sync::Arc;
+
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::optical_forgetting::run_optical_forgetting_sweep;
+
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool.clone());
+
+        let cid = store.create_conversation().await.unwrap();
+        let msg_id = store
+            .save_message(cid, "user", "original content")
+            .await
+            .unwrap();
+
+        // Force the message into `Compressed` fidelity with prior compressed_content so
+        // Phase 2 (fetch_compressed_candidates + store_summary_only) picks it up.
+        sqlx::query(zeph_db::sql!(
+            "UPDATE messages SET content_fidelity = 'Compressed', \
+             compressed_content = 'prior summary', importance_score = 1.0 WHERE id = ?"
+        ))
+        .bind(msg_id.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let provider = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![
+            "one-line summary".to_owned(),
+        ])));
+
+        let config = zeph_config::memory::OpticalForgettingConfig {
+            enabled: true,
+            summarize_after_turns: 0,
+            sweep_batch_size: 50,
+            ..Default::default()
+        };
+
+        let result = run_optical_forgetting_sweep(&store, &provider, &config, 0.0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.summarized, 1,
+            "the Compressed message must transition to SummaryOnly"
+        );
+
+        let (fidelity, content): (String, String) = sqlx::query_as(zeph_db::sql!(
+            "SELECT content_fidelity, content FROM messages WHERE id = ?"
+        ))
+        .bind(msg_id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(fidelity, "SummaryOnly");
+        assert_eq!(content, "one-line summary");
     }
 }

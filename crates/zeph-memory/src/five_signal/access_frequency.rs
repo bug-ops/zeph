@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use sqlx::Row as _;
-use zeph_db::DbPool;
+use zeph_db::{DbPool, sql};
 
 use crate::types::MessageId;
 
@@ -108,10 +108,10 @@ impl AccessFrequencyCache {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
 
-        let res = sqlx::query(
+        let res = zeph_db::query(sql!(
             "INSERT INTO fact_access_log (fact_id, fact_type, session_id, accessed_at) \
-             VALUES (?1, ?2, ?3, ?4)",
-        )
+             VALUES (?, ?, ?, ?)"
+        ))
         .bind(fact_id.0)
         .bind(fact_type)
         .bind(session_id)

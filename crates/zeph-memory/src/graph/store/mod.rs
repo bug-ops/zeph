@@ -2921,12 +2921,12 @@ impl GraphStore {
                 onto.cardinality(canonical_relation) == crate::graph::ontology::Cardinality::Many;
 
             // Query existing active edges for the same source entity (excluding the new one).
-            let existing_raw = sqlx::query(
+            let existing_raw = zeph_db::query(sql!(
                 "SELECT id, canonical_relation FROM graph_edges
                      WHERE source_entity_id = ?
                        AND id != ?
-                       AND expired_at IS NULL",
-            )
+                       AND expired_at IS NULL"
+            ))
             .bind(source_entity_id)
             .bind(new_id)
             .fetch_all(&self.pool)
@@ -3088,7 +3088,7 @@ impl GraphStore {
         edge_id: i64,
     ) -> Result<Option<i64>, crate::error::MemoryError> {
         let row: Option<i64> = zeph_db::query_scalar(sql!(
-            "SELECT source_entity_id FROM graph_edges WHERE id = ?1 AND valid_to IS NULL LIMIT 1"
+            "SELECT source_entity_id FROM graph_edges WHERE id = ? AND valid_to IS NULL LIMIT 1"
         ))
         .bind(edge_id)
         .fetch_optional(&self.pool)
@@ -3340,7 +3340,7 @@ async fn find_prior_active_head(
 #[tracing::instrument(name = "memory.graph.store.check_supersede_depth_in_tx", skip_all)]
 async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryError> {
     let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
-    let depth: Option<i64> = sqlx::query_scalar(
+    let depth: Option<i64> = zeph_db::query_scalar(sql!(
         "WITH RECURSIVE chain(id, depth) AS (
            SELECT supersedes, 1 FROM graph_edges WHERE id = ? AND supersedes IS NOT NULL
            UNION ALL
@@ -3348,8 +3348,8 @@ async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<()
            FROM graph_edges e JOIN chain c ON e.id = c.id
            WHERE e.supersedes IS NOT NULL AND c.depth < ?
          )
-         SELECT MAX(depth) FROM chain",
-    )
+         SELECT MAX(depth) FROM chain"
+    ))
     .bind(head_id)
     .bind(cap)
     .fetch_optional(&mut **tx)
