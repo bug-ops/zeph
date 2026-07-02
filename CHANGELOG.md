@@ -1259,6 +1259,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   public `TaskHandler::execute` entry point (`run_once`/`apply_promotions`/`apply_demotions` are
   private) and asserting a fresh, high-novelty fact is correctly promoted.
 
+- `fix(memory)`: two more Postgres SQL-compatibility gaps in the same defect class as #5488/#5491.
+  `agent_sessions.rs`'s `upsert_agent_session` and both branches of `list_agent_sessions` passed
+  raw `?`-placeholder string literals straight to `zeph_db::query`/`query_as`, bypassing
+  `sql!()`'s SQLite-to-Postgres placeholder rewrite (#5524). Separately, four call sites embedded
+  the SQLite-only `unixepoch()` function literally in SQL text with no Postgres equivalent —
+  `episodic_consolidation.rs`'s `fetch_candidates` and `mark_consolidated`, and `graph/belief.rs`'s
+  `mark_promoted` and `apply_evidence_update` (#5508); each now builds its query via
+  `format!("... {epoch_now} ...")` with `<ActiveDialect as Dialect>::EPOCH_NOW` interpolated
+  before `zeph_db::rewrite_placeholders` runs, then dispatches through `sqlx::AssertSqlSafe`,
+  mirroring the existing `episodic_graph.rs`/`store/messages/mod.rs` idiom for dynamic SQL text.
+  The remaining `unixepoch()` occurrences in `reasoning.rs` (SQLite-only test fixture, already
+  `#[cfg(not(feature = "postgres"))]`-gated) and in `mem_scenes.rs`/`store/messages/mod.rs`
+  (comments/doc text, not SQL) were confirmed as false positives and left unchanged.
+
+  A live Postgres run against the `sql!()`-only #5524 fix then surfaced a second, deeper defect
+  blocking closure: `agent_sessions.created_at`/`last_active_at` are `TIMESTAMPTZ` columns
+  (`zeph-db/migrations/postgres/090_agent_sessions.sql`) but `AgentSessionRow` binds/decodes them
+  as plain `String` — Postgres has no implicit `text`↔`timestamptz` cast, so the INSERT failed
+  with `PgDatabaseError` 42804 and, once that was fixed, the SELECT failed to decode with a
+  `ColumnDecode` mismatch. Added a new `Dialect::TIMESTAMPTZ_CAST` associated constant
+  (`::timestamptz` on Postgres, empty on `SQLite`) appended after the two INSERT placeholders,
+  and reused the existing `Dialect::select_as_text` helper (already used elsewhere for the same
+  native-column-vs-`String`-decode mismatch) to project `created_at`/`last_active_at` as text in
+  both `list_agent_sessions` SELECT branches. Verified against a real Postgres container with a
+  new `agent_sessions_upsert_and_list_postgres` regression test (insert, conflict-update, and
+  both filtered/unfiltered list branches). Closes #5524, closes #5508.
+
 ### Changed
 
 - `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into

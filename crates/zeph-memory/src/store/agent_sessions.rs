@@ -4,6 +4,7 @@
 //! CRUD for the `agent_sessions` table used by the fleet dashboard (#3884).
 
 use serde::{Deserialize, Serialize};
+use zeph_db::ActiveDialect;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -194,11 +195,17 @@ impl SqliteStore {
     /// Returns an error if the database write fails.
     #[tracing::instrument(name = "memory.fleet.upsert_session", skip_all, level = "debug", err)]
     pub async fn upsert_agent_session(&self, s: &AgentSessionRow) -> Result<(), MemoryError> {
-        zeph_db::query(
+        // `created_at`/`last_active_at` are Rust-formatted timestamp strings bound into a
+        // `TIMESTAMPTZ` column on Postgres (`TEXT` on SQLite). Postgres has no implicit
+        // text->timestamptz cast, so an explicit `::timestamptz` suffix is required on those
+        // two placeholders (PgDatabaseError 42804 otherwise); `excluded.last_active_at` in the
+        // conflict clause already carries the column's native type, no cast needed there.
+        let ts_cast = <ActiveDialect as zeph_db::dialect::Dialect>::TIMESTAMPTZ_CAST;
+        let raw = format!(
             "INSERT INTO agent_sessions \
              (id, kind, status, channel, model, created_at, last_active_at, \
               turns, prompt_tokens, completion_tokens, reasoning_tokens, cost_cents, goal_text) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             VALUES (?, ?, ?, ?, ?, ?{ts_cast}, ?{ts_cast}, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
                kind = excluded.kind, \
                status = excluded.status, \
@@ -210,27 +217,29 @@ impl SqliteStore {
                completion_tokens = excluded.completion_tokens, \
                reasoning_tokens = excluded.reasoning_tokens, \
                cost_cents = excluded.cost_cents, \
-               goal_text = excluded.goal_text",
-        )
-        .bind(&s.id)
-        .bind(s.kind.as_str())
-        .bind(s.status.as_str())
-        .bind(s.channel.as_str())
-        .bind(&s.model)
-        .bind(&s.created_at)
-        .bind(&s.last_active_at)
-        // `turns` maps to an `INTEGER` column in both dialects; bind it as `i32` so the query
-        // stays backend-agnostic. A bare `u32` only implements `Type<Sqlite>` (Postgres has no
-        // unsigned integer types), which pins the query to the SQLite driver and breaks the
-        // Postgres backend (#4964).
-        .bind(s.turns.cast_signed())
-        .bind(s.prompt_tokens.cast_signed())
-        .bind(s.completion_tokens.cast_signed())
-        .bind(s.reasoning_tokens.cast_signed())
-        .bind(s.cost_cents)
-        .bind(&s.goal_text)
-        .execute(&self.pool)
-        .await?;
+               goal_text = excluded.goal_text"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        zeph_db::query(sqlx::AssertSqlSafe(query_sql))
+            .bind(&s.id)
+            .bind(s.kind.as_str())
+            .bind(s.status.as_str())
+            .bind(s.channel.as_str())
+            .bind(&s.model)
+            .bind(&s.created_at)
+            .bind(&s.last_active_at)
+            // `turns` maps to an `INTEGER` column in both dialects; bind it as `i32` so the query
+            // stays backend-agnostic. A bare `u32` only implements `Type<Sqlite>` (Postgres has no
+            // unsigned integer types), which pins the query to the SQLite driver and breaks the
+            // Postgres backend (#4964).
+            .bind(s.turns.cast_signed())
+            .bind(s.prompt_tokens.cast_signed())
+            .bind(s.completion_tokens.cast_signed())
+            .bind(s.reasoning_tokens.cast_signed())
+            .bind(s.cost_cents)
+            .bind(&s.goal_text)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -322,27 +331,39 @@ impl SqliteStore {
             f64,
             Option<String>,
         );
+        // `created_at`/`last_active_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite);
+        // decoding straight into `String` fails on Postgres without an explicit `::text`
+        // projection, mirroring `Dialect::select_as_text`'s use elsewhere for the same
+        // native-column-type-vs-`String`-decode mismatch.
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let last_active_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_active_at");
         let rows: Vec<SessionRow> = if let Some(sf) = status_filter {
-            zeph_db::query_as(
-                "SELECT id, kind, status, channel, model, created_at, last_active_at, \
+            let raw = format!(
+                "SELECT id, kind, status, channel, model, {created_at_sel}, {last_active_at_sel}, \
                  turns, prompt_tokens, completion_tokens, reasoning_tokens, cost_cents, goal_text \
                  FROM agent_sessions WHERE status = ? \
-                 ORDER BY last_active_at DESC LIMIT ?",
-            )
-            .bind(sf.as_str())
-            .bind(sql_limit)
-            .fetch_all(&self.pool)
-            .await?
+                 ORDER BY last_active_at DESC LIMIT ?"
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+                .bind(sf.as_str())
+                .bind(sql_limit)
+                .fetch_all(&self.pool)
+                .await?
         } else {
-            zeph_db::query_as(
-                "SELECT id, kind, status, channel, model, created_at, last_active_at, \
+            let raw = format!(
+                "SELECT id, kind, status, channel, model, {created_at_sel}, {last_active_at_sel}, \
                  turns, prompt_tokens, completion_tokens, reasoning_tokens, cost_cents, goal_text \
                  FROM agent_sessions \
-                 ORDER BY last_active_at DESC LIMIT ?",
-            )
-            .bind(sql_limit)
-            .fetch_all(&self.pool)
-            .await?
+                 ORDER BY last_active_at DESC LIMIT ?"
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+                .bind(sql_limit)
+                .fetch_all(&self.pool)
+                .await?
         };
 
         Ok(rows

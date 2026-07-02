@@ -28,7 +28,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 use zeph_common::types::ProviderName;
-use zeph_db::{DbPool, sql};
+use zeph_db::{ActiveDialect, DbPool, sql};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
@@ -360,23 +360,26 @@ async fn fetch_candidates(
     let min_age = i64::try_from(config.min_age_secs).unwrap_or(i64::MAX);
     let batch = i64::try_from(config.batch_size).unwrap_or(i64::MAX);
 
-    let rows: Vec<CandidateRow> = zeph_db::query_as(sql!(
+    let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+    let raw = format!(
         "SELECT e.id, e.session_id, e.event_type, e.summary,
                 COALESCE(m.compressed_content, m.content) AS message_content,
                 e.created_at
          FROM episodic_events e
          JOIN messages m ON m.id = e.message_id
          WHERE e.consolidated_at IS NULL
-           AND e.created_at < unixepoch() - ?
+           AND e.created_at < {epoch_now} - ?
            AND m.content_fidelity != 'SummaryOnly'
          ORDER BY e.created_at ASC
          LIMIT ?"
-    ))
-    .bind(min_age)
-    .bind(batch)
-    .fetch_all(pool)
-    .await
-    .map_err(MemoryError::from)?;
+    );
+    let query_sql = zeph_db::rewrite_placeholders(&raw);
+    let rows: Vec<CandidateRow> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+        .bind(min_age)
+        .bind(batch)
+        .fetch_all(pool)
+        .await
+        .map_err(MemoryError::from)?;
 
     Ok(rows)
 }
@@ -632,13 +635,14 @@ async fn promote_fact(
 /// Mark an episodic event as consolidated.
 #[tracing::instrument(skip(pool), name = "memory.episodic.mark_consolidated")]
 async fn mark_consolidated(pool: &DbPool, event_id: i64) -> Result<(), MemoryError> {
-    zeph_db::query(sql!(
-        "UPDATE episodic_events SET consolidated_at = unixepoch() WHERE id = ?"
-    ))
-    .bind(event_id)
-    .execute(pool)
-    .await
-    .map_err(MemoryError::from)?;
+    let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+    let raw = format!("UPDATE episodic_events SET consolidated_at = {epoch_now} WHERE id = ?");
+    let query_sql = zeph_db::rewrite_placeholders(&raw);
+    zeph_db::query(sqlx::AssertSqlSafe(query_sql))
+        .bind(event_id)
+        .execute(pool)
+        .await
+        .map_err(MemoryError::from)?;
     Ok(())
 }
 

@@ -72,6 +72,20 @@ pub trait Dialect: Send + Sync + 'static {
     /// `PostgreSQL`: `::jsonb`
     const JSON_CAST: &'static str;
 
+    /// Cast suffix for a bind parameter carrying a pre-formatted timestamp string, destined
+    /// for a timestamp-typed column.
+    ///
+    /// `sqlx` sends string bind parameters as `TEXT`/`VARCHAR`. `SQLite` stores timestamp
+    /// columns as `TEXT` so no cast is needed. `PostgreSQL` stores them as `TIMESTAMPTZ`, which
+    /// has no implicit cast from `TEXT` — binding a plain string fails with
+    /// `PgDatabaseError` 42804 ("column is of type timestamptz but expression is of type
+    /// text"). Append this suffix directly after the `?` placeholder for that bind position,
+    /// e.g. `format!("VALUES (?{timestamptz_cast})", timestamptz_cast = ...)`.
+    ///
+    /// `SQLite`: empty string
+    /// `PostgreSQL`: `::timestamptz`
+    const TIMESTAMPTZ_CAST: &'static str;
+
     /// Project a non-`TEXT` column so it decodes into a plain `String`.
     ///
     /// `SQLite` is dynamically typed and stores JSON/timestamp columns as `TEXT`, so
@@ -121,6 +135,7 @@ impl Dialect for Sqlite {
     const EPOCH_NOW: &'static str = "unixepoch('now')";
     const NOW: &'static str = "datetime('now')";
     const JSON_CAST: &'static str = "";
+    const TIMESTAMPTZ_CAST: &'static str = "";
     const GREATEST_FN: &'static str = "MAX";
     const LEAST_FN: &'static str = "MIN";
 
@@ -148,6 +163,7 @@ impl Dialect for Postgres {
     const EPOCH_NOW: &'static str = "EXTRACT(EPOCH FROM NOW())::BIGINT";
     const NOW: &'static str = "NOW()";
     const JSON_CAST: &'static str = "::jsonb";
+    const TIMESTAMPTZ_CAST: &'static str = "::timestamptz";
     const GREATEST_FN: &'static str = "GREATEST";
     const LEAST_FN: &'static str = "LEAST";
 
@@ -217,6 +233,11 @@ mod tests {
         }
 
         #[test]
+        fn timestamptz_cast() {
+            assert_eq!(Sqlite::TIMESTAMPTZ_CAST, "");
+        }
+
+        #[test]
         fn greatest_fn() {
             assert_eq!(Sqlite::GREATEST_FN, "MAX");
         }
@@ -273,6 +294,11 @@ mod tests {
         #[test]
         fn json_cast() {
             assert_eq!(Postgres::JSON_CAST, "::jsonb");
+        }
+
+        #[test]
+        fn timestamptz_cast() {
+            assert_eq!(Postgres::TIMESTAMPTZ_CAST, "::timestamptz");
         }
 
         #[test]

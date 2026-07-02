@@ -24,7 +24,7 @@
 //! - Noisy-OR guarantees `prob ∈ (0, 1)` given inputs in `(0, 1)`.
 
 use tracing::instrument;
-use zeph_db::{DbPool, sql};
+use zeph_db::{ActiveDialect, DbPool, sql};
 
 use crate::error::MemoryError;
 use crate::graph::types::EdgeType;
@@ -362,15 +362,18 @@ impl BeliefStore {
         belief_id: i64,
         committed_edge_id: i64,
     ) -> Result<(), MemoryError> {
-        zeph_db::query(sql!(
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let raw = format!(
             "UPDATE pending_beliefs
-             SET promoted_at = unixepoch(), promoted_edge_id = ?
+             SET promoted_at = {epoch_now}, promoted_edge_id = ?
              WHERE id = ?"
-        ))
-        .bind(committed_edge_id)
-        .bind(belief_id)
-        .execute(&self.pool)
-        .await?;
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        zeph_db::query(sqlx::AssertSqlSafe(sql))
+            .bind(committed_edge_id)
+            .bind(belief_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -472,16 +475,19 @@ impl BeliefStore {
 
         let posterior = noisy_or(prior_prob, evidence_prob);
 
-        zeph_db::query(sql!(
+        let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
+        let raw = format!(
             "UPDATE pending_beliefs
-             SET prob = ?, updated_at = unixepoch(), episode_id = ?
+             SET prob = ?, updated_at = {epoch_now}, episode_id = ?
              WHERE id = ?"
-        ))
-        .bind(posterior)
-        .bind(episode_id)
-        .bind(row.id)
-        .execute(&self.pool)
-        .await?;
+        );
+        let sql = zeph_db::rewrite_placeholders(&raw);
+        zeph_db::query(sqlx::AssertSqlSafe(sql))
+            .bind(posterior)
+            .bind(episode_id)
+            .bind(row.id)
+            .execute(&self.pool)
+            .await?;
 
         zeph_db::query(sql!(
             "INSERT INTO belief_evidence

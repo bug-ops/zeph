@@ -31,6 +31,22 @@
 //! of `$1` under Postgres. The tests below close the Postgres coverage gap for those
 //! fixes; see the `NOTE` comment near the end of this module for one call-site family
 //! that could not get coverage here due to an unrelated bug.
+//!
+//! Regression coverage for issue #5524: `agent_sessions.rs`'s `upsert_agent_session`
+//! (INSERT ... ON CONFLICT) and both branches of `list_agent_sessions`'s SELECT used raw
+//! `?`-placeholder string literals passed directly to `zeph_db::query`/`query_as` instead
+//! of through `sql!()`, so the `?` tokens were never rewritten to Postgres's `$1, $2, ...`.
+//! A live Postgres run against the `sql!()`-only fix then surfaced a second defect blocking
+//! closure: `created_at`/`last_active_at` are `TIMESTAMPTZ` columns but `AgentSessionRow`
+//! binds plain `String`s, which Postgres rejects (no implicit text->timestamptz cast).
+//! `upsert_agent_session` now appends the new `Dialect::TIMESTAMPTZ_CAST` constant
+//! (`::timestamptz` on Postgres, empty on `SQLite`) after those two placeholders.
+//!
+//! Regression coverage for issue #5508: `unixepoch()` (SQLite-only) was embedded as a
+//! literal in SQL text at four call sites (`episodic_consolidation.rs::fetch_candidates`/
+//! `mark_consolidated`, `graph/belief.rs::mark_promoted`/`apply_evidence_update`), which
+//! has no Postgres equivalent and fails at runtime. Fixed by interpolating
+//! `<ActiveDialect as Dialect>::EPOCH_NOW` via `format!()` before `rewrite_placeholders`.
 
 #[cfg(feature = "test-utils")]
 mod pg {
@@ -40,10 +56,14 @@ mod pg {
     use zeph_db::DbConfig;
     use zeph_memory::db_vector_store::DbVectorStore;
     use zeph_memory::graph::activation::ActivatedFact;
+    use zeph_memory::graph::belief::{BeliefMemConfig, BeliefStore};
     use zeph_memory::graph::implicit_conflict;
     use zeph_memory::graph::store::GraphStore;
-    use zeph_memory::graph::types::EntityType;
-    use zeph_memory::store::{AcpSessionConfigSnapshot, SqliteStore};
+    use zeph_memory::graph::types::{EdgeType, EntityType};
+    use zeph_memory::store::{
+        AcpSessionConfigSnapshot, AgentSessionRow, SessionChannel, SessionKind, SessionStatus,
+        SqliteStore,
+    };
     use zeph_memory::types::MessageId;
     use zeph_memory::{VectorStore, episodic_graph, snapshot};
 
@@ -1310,20 +1330,176 @@ mod pg {
         assert_eq!(memory_tier.as_deref(), Some("semantic"));
     }
 
-    // NOTE: Postgres regression tests for `episodic_consolidation.rs::fetch_candidates` and
-    // `compute_cognitive_weight` (both fixed for the `?N`-inside-`sql!()` defect in this PR)
-    // are omitted for the same reason as above: both are private, reachable only via the
-    // public `run_episodic_consolidation_sweep` entry point, and `fetch_candidates`'s WHERE
-    // clause calls SQLite's `unixepoch()` function directly — undefined under Postgres (no
-    // compat function/extension is installed; confirmed via `crates/zeph-db/migrations/postgres/`
-    // and `crates/zeph-db/src/dialect.rs`'s `EPOCH_NOW` abstraction, which exists for exactly
-    // this purpose but isn't used at this call site). Since `fetch_candidates` runs first in
-    // the sweep pipeline, this fails before `compute_cognitive_weight` is ever reached, so
-    // neither function can get real Postgres coverage without fixing the `unixepoch()` dialect
-    // bug first — a distinct defect class from the placeholder bug, out of scope here. The
-    // `?N` renumbering itself is still correct and necessary (verify by inspection: bind
-    // count/order match the SQL text exactly for both functions) — it just cannot be exercised
-    // end-to-end against a real Postgres instance until the dialect bug is fixed separately.
+    // ── agent_sessions: upsert_agent_session + list_agent_sessions (Postgres) ──
+    // Regression coverage for issue #5524, completing the fix after a live Postgres run
+    // surfaced a second, previously-theorized-only defect: `agent_sessions.created_at`/
+    // `last_active_at` are `TIMESTAMPTZ` in the Postgres schema
+    // (`zeph-db/migrations/postgres/090_agent_sessions.sql`) but `AgentSessionRow.created_at`/
+    // `last_active_at` are plain `String`, bound as text — Postgres has no implicit
+    // text->timestamptz cast, so the INSERT failed with `PgDatabaseError` 42804 even after the
+    // `sql!()` placeholder rewrite was fixed. `upsert_agent_session` now appends
+    // `<ActiveDialect as Dialect>::TIMESTAMPTZ_CAST` (`::timestamptz` on Postgres, empty on
+    // SQLite) directly after the `created_at`/`last_active_at` placeholders, mirroring the
+    // existing `JSON_CAST` idiom used for `messages.parts`.
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn agent_sessions_upsert_and_list_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        let row = AgentSessionRow {
+            id: "sess-pg-1".to_owned(),
+            kind: SessionKind::Interactive,
+            status: SessionStatus::Active,
+            channel: SessionChannel::Cli,
+            model: "claude-sonnet-5".to_owned(),
+            created_at: "2026-07-03T00:00:00".to_owned(),
+            last_active_at: "2026-07-03T00:00:00".to_owned(),
+            turns: 3,
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            reasoning_tokens: 0,
+            cost_cents: 1.5,
+            goal_text: None,
+        };
+        store.upsert_agent_session(&row).await.unwrap();
+
+        // Second upsert exercises the ON CONFLICT DO UPDATE branch.
+        let mut updated = row.clone();
+        updated.turns = 7;
+        updated.status = SessionStatus::Completed;
+        updated.last_active_at = "2026-07-03T00:05:00".to_owned();
+        store.upsert_agent_session(&updated).await.unwrap();
+
+        let all = store.list_agent_sessions(10, None).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "sess-pg-1");
+        assert_eq!(all[0].turns, 7);
+        assert_eq!(all[0].status, SessionStatus::Completed);
+
+        let filtered = store
+            .list_agent_sessions(10, Some(SessionStatus::Completed))
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        let none_active = store
+            .list_agent_sessions(10, Some(SessionStatus::Active))
+            .await
+            .unwrap();
+        assert!(none_active.is_empty());
+    }
+
+    // NOTE (found live, unrelated to issues #5524/#5508): a Postgres regression test for the
+    // full `episodic_consolidation.rs` sweep (`run_episodic_consolidation_sweep`, which chains
+    // `fetch_candidates` → `compute_cognitive_weight` → ... → `mark_consolidated`) was attempted
+    // here and is omitted. `fetch_candidates`'s `unixepoch()` fix (issue #5508) is confirmed
+    // structurally sound — the SELECT executes and returns the mature candidate row without
+    // error — but the very next step, `compute_cognitive_weight`'s
+    // `SELECT COALESCE(SUM(CASE ... THEN 1.0 ... END), 0.0)`, fails to decode: Postgres types an
+    // aggregate `SUM()` over decimal literals as `NUMERIC`, and sqlx cannot decode `NUMERIC` into
+    // the declared `f64` without an explicit cast — `ColumnDecode { source: "mismatched types;
+    // Rust type \`f64\` (as SQL type \`FLOAT8\`) is not compatible with SQL type \`NUMERIC\`" }`.
+    // This is the exact same REAL/NUMERIC-decode defect class already fixed at 14 other
+    // `EdgeRow`-projecting queries elsewhere in this file (see the module docstring), just missed
+    // at this call site — `compute_cognitive_weight` does not call `unixepoch()` itself and was
+    // not touched by this PR's #5508 fix. Because it always runs before `mark_consolidated` is
+    // ever reached, `mark_consolidated`'s `EPOCH_NOW`-based UPDATE (also part of #5508) cannot get
+    // real Postgres round-trip coverage until `compute_cognitive_weight` gets an explicit
+    // `CAST(... AS DOUBLE PRECISION)`, matching the established idiom. File a follow-up issue for
+    // the `compute_cognitive_weight` decode bug before attempting this coverage again.
+
+    // ── belief: record_evidence (apply_evidence_update) + mark_promoted (Postgres) ──
+    // Regression coverage for issue #5508. `mark_promoted` and `apply_evidence_update` had
+    // zero test coverage under either backend before this PR.
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn belief_store_record_evidence_and_promote_postgres() {
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+
+        let source = graph
+            .upsert_entity("Rust", "rust", EntityType::Tool, None, None)
+            .await
+            .unwrap();
+        let target = graph
+            .upsert_entity(
+                "Memory Safety",
+                "memory-safety",
+                EntityType::Concept,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let belief_store = BeliefStore::new(
+            pool.clone(),
+            BeliefMemConfig {
+                enabled: true,
+                min_entry_prob: 0.3,
+                promote_threshold: 0.85,
+                max_candidates_per_group: 10,
+                retrieval_top_k: 3,
+                belief_decay_rate: 0.0,
+            },
+        );
+
+        // First call hits insert_new_belief; the remaining five hit apply_evidence_update —
+        // the exact call site that embedded the SQLite-only unixepoch() before this fix.
+        let mut promoted = None;
+        for _ in 0..6 {
+            promoted = belief_store
+                .record_evidence(
+                    source.0,
+                    target.0,
+                    "provides",
+                    "provides",
+                    "Rust provides memory safety",
+                    EdgeType::Semantic,
+                    0.3,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let belief = promoted.expect("six evidence updates at 0.3 must cross the 0.85 threshold");
+        assert!(belief.prob >= 0.85);
+
+        // Commit a real edge and mark the belief promoted — the other call site that
+        // embedded the SQLite-only unixepoch() before this fix.
+        let committed_edge_id = graph
+            .insert_edge(
+                source.0,
+                target.0,
+                "provides",
+                "Rust provides memory safety",
+                belief.prob,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        belief_store
+            .mark_promoted(belief.id, committed_edge_id)
+            .await
+            .unwrap();
+
+        let (promoted_at, promoted_edge_id): (Option<i64>, Option<i64>) = sqlx::query_as(
+            zeph_db::sql!("SELECT promoted_at, promoted_edge_id FROM pending_beliefs WHERE id = ?"),
+        )
+        .bind(belief.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            promoted_at.is_some(),
+            "mark_promoted must set promoted_at via the EPOCH_NOW-based UPDATE"
+        );
+        assert_eq!(promoted_edge_id, Some(committed_edge_id));
+    }
 
     #[tokio::test]
     #[ignore = "requires Docker"]
