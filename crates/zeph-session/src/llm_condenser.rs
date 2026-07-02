@@ -74,8 +74,9 @@ impl Condenser for LlmCondenser {
             .cloned()
             .collect();
 
-        // Indices of events that start a new agent-ready message; `ToolCall`/`ToolResult` attach
-        // to the preceding `AssistantMessage` boundary rather than starting their own.
+        // Indices of events that start a new agent-ready message; `ToolCall` attaches to the
+        // preceding `AssistantMessage` boundary and `ToolResult` to its own open tool-result
+        // batch (see `ReplayEngine::fold`) rather than starting a counted boundary of its own.
         let boundaries: Vec<usize> = uncondensed
             .iter()
             .enumerate()

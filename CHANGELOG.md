@@ -591,6 +591,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `false`, since `forward_webhooks`/`AgentTaskProcessor` already sanitize before injecting a
   `ChannelMessage`, avoiding a double-wrap. Telegram's internally-generated `/reset`/`/skills`
   literal `ChannelMessage`s remain unsanitized (fixed strings, not external input).
+- `fix(session)`: a resumed CLI/TUI session that had used a tool during its previous run corrupted
+  every subsequent turn with an OpenAI/Claude 400 error ("`tool_calls` must be followed by tool
+  messages") (#5464). Two compounding bugs in the durable event-log write/replay path:
+  `SessionSink::record_message` (`crates/zeph-agent-persistence/src/session_sink.rs`) collapsed a
+  `Role::User` tool-result turn (`MessagePart::ToolResult` parts, the shape
+  `process_tool_result_batch`/`persist_cancelled_tool_results` in
+  `crates/zeph-core/src/agent/tool_execution/` always produce) into a generic
+  `SessionEvent::UserMessage`, discarding the `tool_use_id` pairing — now emits one
+  `SessionEvent::ToolResult` per part instead. Separately, `ReplayEngine::fold`
+  (`crates/zeph-session/src/replay.rs`) folded `SessionEvent::ToolResult` back onto the *preceding*
+  `Role::Assistant` message (via `push_part_to_last_assistant`), producing a single assistant
+  message carrying both `MessagePart::ToolUse` and `MessagePart::ToolResult` — a shape neither
+  `zeph-llm`'s OpenAI nor Claude serializer accepts, since both require tool results in a separate
+  `Role::User` message. New `push_part_to_tool_result_batch` folds consecutive `ToolResult` events
+  from the same tool-call batch into one `Role::User` message instead, matching the live turn
+  loop's real shape (`Assistant{ToolUse}` → `User{ToolResult...}`). Both fixes apply identically to
+  the ACP path, which already emitted dedicated `SessionEvent::ToolCall`/`ToolResult` events and
+  hit the same fold bug.
 - `fix(gateway)`: `zeph-gateway`'s `/webhook` endpoint forwarded third-party payloads into the
   agent's primary input queue as a plain `ChannelMessage` with only control-character stripping
   applied — bypassing the `ContentTrustLevel::ExternalUntrusted` classification, spotlight

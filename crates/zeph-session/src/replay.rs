@@ -108,7 +108,7 @@ impl ReplayEngine {
                     is_error,
                     ..
                 } => {
-                    push_part_to_last_assistant(
+                    push_part_to_tool_result_batch(
                         &mut messages,
                         &mut origin_seqs,
                         seq,
@@ -167,10 +167,10 @@ impl ReplayEngine {
     }
 }
 
-/// Append `part` to the last message if it is a pending `Assistant` message; otherwise start a
-/// new one. Tool calls/results always follow the `AssistantMessage` that requested them within
-/// the same turn, but the fold does not assume `AssistantMessage` was itself logged first (a
-/// tool-only turn is valid).
+/// Append `part` (a `MessagePart::ToolUse`) to the last message if it is a pending `Assistant`
+/// message; otherwise start a new one. `ToolCall` events always follow the `AssistantMessage`
+/// that requested them within the same turn, but the fold does not assume `AssistantMessage` was
+/// itself logged first (a tool-only turn is valid).
 fn push_part_to_last_assistant(
     messages: &mut Vec<Message>,
     origin_seqs: &mut Vec<u64>,
@@ -184,6 +184,40 @@ fn push_part_to_last_assistant(
         return;
     }
     messages.push(Message::from_parts(Role::Assistant, vec![part]));
+    origin_seqs.push(seq);
+}
+
+/// Append `part` (a `MessagePart::ToolResult`) to the last message if it is an already-open
+/// tool-result batch; otherwise start a new `Role::User` message.
+///
+/// `zeph-llm`'s `OpenAI` and Claude serializers require every tool result to arrive in a
+/// `Role::User` message, never merged into the preceding `Role::Assistant` message that carried
+/// the matching `MessagePart::ToolUse` (#5464) — this mirrors the real shape
+/// `process_tool_result_batch` in `crates/zeph-core/src/agent/tool_execution/tier_loop.rs`
+/// produces live: one `Role::User` message per tool-call batch, holding one `ToolResult` part per
+/// tool. "Already-open batch" is a `Role::User` message with non-empty `parts` that are all
+/// `ToolResult` — a genuine `SessionEvent::UserMessage` always folds to empty `parts`
+/// ([`Message::from_legacy`]), so this never merges into a real user turn.
+fn push_part_to_tool_result_batch(
+    messages: &mut Vec<Message>,
+    origin_seqs: &mut Vec<u64>,
+    seq: u64,
+    part: MessagePart,
+) {
+    let is_open_batch = messages.last().is_some_and(|m| {
+        m.role == Role::User
+            && !m.parts.is_empty()
+            && m.parts
+                .iter()
+                .all(|p| matches!(p, MessagePart::ToolResult { .. }))
+    });
+    if is_open_batch {
+        let last = messages.last_mut().expect("checked by is_open_batch above");
+        last.parts.push(part);
+        last.rebuild_content();
+        return;
+    }
+    messages.push(Message::from_parts(Role::User, vec![part]));
     origin_seqs.push(seq);
 }
 
@@ -327,14 +361,103 @@ mod tests {
         let state = ReplayEngine::fold(events, None);
         assert_eq!(
             state.messages.len(),
-            2,
-            "user message + one assistant message holding both parts"
+            3,
+            "user message + assistant ToolUse message + user ToolResult message (#5464: a \
+             ToolResult must never merge into the preceding Assistant message — OpenAI/Claude \
+             both require it in a separate Role::User message)"
         );
         let assistant = &state.messages[1];
         assert_eq!(assistant.role, Role::Assistant);
-        assert_eq!(assistant.parts.len(), 2);
+        assert_eq!(assistant.parts.len(), 1);
         assert!(matches!(assistant.parts[0], MessagePart::ToolUse { .. }));
-        assert!(matches!(assistant.parts[1], MessagePart::ToolResult { .. }));
+
+        let tool_result_msg = &state.messages[2];
+        assert_eq!(tool_result_msg.role, Role::User);
+        assert_eq!(tool_result_msg.parts.len(), 1);
+        assert!(matches!(
+            tool_result_msg.parts[0],
+            MessagePart::ToolResult { .. }
+        ));
+    }
+
+    #[test]
+    fn test_replay_tool_result_batch_merges_into_one_user_message() {
+        // Multiple ToolResult events from the same tool-call batch (tier_loop.rs's
+        // process_tool_result_batch persists one Role::User message per batch, holding one
+        // ToolResult part per tool) must fold back into a single Role::User message, not one
+        // per event.
+        let events = vec![
+            envelope(
+                0,
+                SessionEvent::AssistantMessage {
+                    parts: vec![
+                        MessagePart::ToolUse {
+                            id: "tc1".to_owned(),
+                            name: "shell".to_owned(),
+                            input: serde_json::json!({}),
+                        },
+                        MessagePart::ToolUse {
+                            id: "tc2".to_owned(),
+                            name: "shell".to_owned(),
+                            input: serde_json::json!({}),
+                        },
+                    ],
+                },
+            ),
+            envelope(
+                1,
+                SessionEvent::ToolResult {
+                    id: "tc1".to_owned(),
+                    name: "shell".to_owned(),
+                    output: "a".to_owned(),
+                    is_error: false,
+                    duration_ms: 1,
+                },
+            ),
+            envelope(
+                2,
+                SessionEvent::ToolResult {
+                    id: "tc2".to_owned(),
+                    name: "shell".to_owned(),
+                    output: "b".to_owned(),
+                    is_error: false,
+                    duration_ms: 1,
+                },
+            ),
+        ];
+        let state = ReplayEngine::fold(events, None);
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(state.messages[1].role, Role::User);
+        assert_eq!(state.messages[1].parts.len(), 2);
+    }
+
+    #[test]
+    fn test_replay_tool_result_never_merges_into_plain_user_message() {
+        // A genuine SessionEvent::UserMessage (folds to empty `parts`) must never be treated as
+        // an open tool-result batch, even if a ToolResult event immediately follows it.
+        let events = vec![
+            envelope(
+                0,
+                SessionEvent::UserMessage {
+                    text: "hello".to_owned(),
+                    image_refs: vec![],
+                },
+            ),
+            envelope(
+                1,
+                SessionEvent::ToolResult {
+                    id: "tc1".to_owned(),
+                    name: "shell".to_owned(),
+                    output: "a".to_owned(),
+                    is_error: false,
+                    duration_ms: 1,
+                },
+            ),
+        ];
+        let state = ReplayEngine::fold(events, None);
+        assert_eq!(state.messages.len(), 2);
+        assert!(state.messages[0].parts.is_empty());
+        assert_eq!(state.messages[1].parts.len(), 1);
     }
 
     #[test]
