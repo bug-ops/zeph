@@ -145,41 +145,7 @@ async fn run_foreground(
         config.scheduler.security.attenuate_after_external_read,
     );
 
-    if config.durable.enabled && config.durable.scheduler {
-        let durable_url = crate::commands::durable::resolve_durable_db_url(config);
-        let local =
-            zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
-                .await
-                .context("failed to open scheduler durable backend")?;
-        local
-            .init()
-            .await
-            .context("failed to init scheduler durable schema")?;
-        let local = std::sync::Arc::new(local);
-        let backend = std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
-        let durable_cfg = std::sync::Arc::new(config.durable.clone());
-        let (writer_actor, writer_handle) = zeph_durable::JournalWriter::new(local, &durable_cfg);
-        {
-            let writer_fut = writer_actor.run();
-            let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(writer_fut)));
-            sched_supervisor.spawn(zeph_common::TaskDescriptor {
-                name: "journal_writer",
-                restart: zeph_common::RestartPolicy::RunOnce,
-                factory: move || {
-                    let f = cell.lock().take();
-                    async move {
-                        if let Some(f) = f {
-                            f.await;
-                        }
-                    }
-                },
-            });
-        }
-        let adapter = zeph_scheduler::durable::SchedulerDurableAdapter::new(
-            backend,
-            writer_handle,
-            durable_cfg,
-        );
+    if let Some(adapter) = build_durable_adapter(config, &sched_supervisor).await? {
         scheduler = scheduler.with_durable(adapter);
     }
 
@@ -204,6 +170,66 @@ async fn run_foreground(
         .shutdown_all(std::time::Duration::from_secs(5))
         .await;
     result
+}
+
+/// Open the scheduler's durable backend, attach the write-path AEAD cipher when
+/// `[durable] encrypt_payload = true`, and spawn its journal-writer task under `sched_supervisor`.
+///
+/// Returns `Ok(None)` when durable execution is disabled for the scheduler
+/// (`[durable] enabled = false` or `[durable] scheduler = false`), so the caller runs without
+/// durable execution unchanged.
+///
+/// # Errors
+///
+/// Returns an error if the durable backend cannot be opened or initialized, or if the AEAD
+/// cipher cannot be resolved when `encrypt_payload = true` — this fails closed instead of
+/// silently falling back to plaintext.
+async fn build_durable_adapter(
+    config: &zeph_core::config::Config,
+    sched_supervisor: &zeph_common::TaskSupervisor,
+) -> anyhow::Result<Option<zeph_scheduler::durable::SchedulerDurableAdapter>> {
+    if !(config.durable.enabled && config.durable.scheduler) {
+        return Ok(None);
+    }
+    let durable_url = crate::commands::durable::resolve_durable_db_url(config);
+    let local = zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
+        .await
+        .context("failed to open scheduler durable backend")?;
+    local
+        .init()
+        .await
+        .context("failed to init scheduler durable schema")?;
+    let cipher = crate::commands::durable::load_write_cipher(config)?;
+    let local = if let Some(cipher) = cipher {
+        local.with_cipher(cipher)
+    } else {
+        local
+    };
+    let local = std::sync::Arc::new(local);
+    let backend = std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
+    let durable_cfg = std::sync::Arc::new(config.durable.clone());
+    let (writer_actor, writer_handle) = zeph_durable::JournalWriter::new(local, &durable_cfg);
+    {
+        let writer_fut = writer_actor.run();
+        let cell = std::sync::Arc::new(parking_lot::Mutex::new(Some(writer_fut)));
+        sched_supervisor.spawn(zeph_common::TaskDescriptor {
+            name: "journal_writer",
+            restart: zeph_common::RestartPolicy::RunOnce,
+            factory: move || {
+                let f = cell.lock().take();
+                async move {
+                    if let Some(f) = f {
+                        f.await;
+                    }
+                }
+            },
+        });
+    }
+    Ok(Some(zeph_scheduler::durable::SchedulerDurableAdapter::new(
+        backend,
+        writer_handle,
+        durable_cfg,
+    )))
 }
 
 fn print_status_human(status: &zeph_scheduler::DaemonStatus) {

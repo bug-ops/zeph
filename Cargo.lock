@@ -10219,6 +10219,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "blake3",
+ "bytes",
  "chrono",
  "clap",
  "cron",

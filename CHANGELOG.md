@@ -126,6 +126,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now unified in a single shared `validate_manifest_for_install` (`crates/zeph-plugins/src/
   manager/security.rs`) called by both `add()` and `apply_staged_update()`, so the two paths
   cannot silently diverge again. Closes #5401.
+- `fix(durable)`: `[durable] encrypt_payload = true` (the default, encrypted-at-rest posture)
+  now actually attaches an AEAD cipher on every durable-journal *write* path, not just the
+  `--reveal` read path (#5404/#5413). Previously `runner.rs` unconditionally passed
+  `cipher=None` to `with_durable_orchestration`, and `scheduler_daemon.rs` opened its
+  `LocalBackend` with no cipher at all, so a deployment believing its payloads were encrypted
+  at rest was silently storing plaintext. New shared helper
+  `load_write_cipher` (`src/commands/durable.rs`) resolves the vault-backed
+  `ZEPH_DURABLE_KEY` and gates cipher construction on `encrypt_payload`, mirroring the existing
+  `open_backend`/`load_durable_cipher` read-path pattern; it fails closed (errors out) instead
+  of silently falling back to plaintext when the key is missing. Wired into `runner.rs`
+  (durable orchestration write path) and `scheduler_daemon.rs` (scheduler durable write path).
+  The TUI's `durable_poll_task` (`src/tui_bridge.rs`) is unaffected — it only lists execution
+  metadata and never reads or writes payload bytes, so it never needed a cipher. Closes #5414.
 - `fix(tools)`: file-tool calls (`write`, `edit`, `create_directory`, and every other
   `FileExecutor` handler) now expand a leading `~` in the LLM-supplied `path` argument to the
   real home directory before sandbox checks run, instead of treating it as a literal `~`

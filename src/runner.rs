@@ -2996,7 +2996,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let agent = agent.with_orchestration(config.orchestration.clone(), agents_config, mgr);
         if config.durable.enabled && config.durable.orchestration {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
-            agent.with_durable_orchestration(config.durable.clone(), durable_url, None)
+            let cipher = crate::commands::durable::load_write_cipher(config)?;
+            agent.with_durable_orchestration(config.durable.clone(), durable_url, cipher)
         } else {
             agent
         }
