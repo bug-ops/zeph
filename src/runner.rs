@@ -473,10 +473,17 @@ async fn init_session_sink(
     }
 
     let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
-    let existing = store
-        .get_by_conversation_id(conversation_id.0)
-        .await
-        .unwrap_or_default();
+    let existing = match store.get_by_conversation_id(conversation_id.0).await {
+        Ok(existing) => existing,
+        Err(e) => {
+            // #5455: a transient store error (e.g. SQLITE_BUSY) must not be treated as "no
+            // session linked yet" — that would mint a duplicate SessionId, fail the subsequent
+            // link_conversation write against the real link, and open a bare orphan log instead
+            // of hydrating the actual session. Defer session linkage entirely instead.
+            tracing::warn!(error = %e, "failed to query session store for conversation link; session persistence disabled for this run");
+            return (None, Vec::new());
+        }
+    };
 
     let Some(meta) = existing else {
         let id = SessionId::generate();
@@ -548,6 +555,37 @@ async fn init_session_sink(
         Err(e) => {
             tracing::warn!(error = %e, "session hydration failed for default continuation; session persistence disabled for this run");
             (None, Vec::new())
+        }
+    }
+}
+
+/// Bare [`zeph_session::SessionEventLog::open`] fallback for an explicit `sessions resume <id>`
+/// whose initial [`zeph_agent_persistence::hydrate_and_condense`] attempt failed (#5456).
+///
+/// Mirrors the bare-open branch [`init_session_sink`] already takes when minting a brand-new
+/// session, so a resume with a failing initial hydration still gets a working sink whenever the
+/// event log directory is otherwise accessible, instead of silently narrowing to no sink at all.
+/// Returns `None` (and logs a warning) if the bare open also fails — session persistence stays
+/// best-effort/non-fatal here too.
+async fn resume_session_sink_fallback(
+    session_path: &std::path::Path,
+    session_store: zeph_session::SessionStore,
+    resume_id: &str,
+) -> Option<std::sync::Arc<zeph_agent_persistence::SessionSink>> {
+    match zeph_session::SessionEventLog::open(session_path).await {
+        Ok(log) => {
+            tracing::info!(session_id = %resume_id, "session event log opened via bare fallback after failed hydration");
+            Some(std::sync::Arc::new(
+                zeph_agent_persistence::SessionSink::new(
+                    std::sync::Arc::new(log),
+                    session_store,
+                    SessionId::new(resume_id.to_string()),
+                ),
+            ))
+        }
+        Err(open_err) => {
+            tracing::warn!(error = %open_err, "bare session event log fallback also failed; continuing with SQLite-only history");
+            None
         }
     }
 }
@@ -1756,7 +1794,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     ));
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "session hydration failed for resume; continuing with SQLite-only history");
+                    // #5456: pre-#5451 behavior always guaranteed a bare SessionEventLog::open
+                    // fallback for the resumed session. Falling through to init_session_sink
+                    // below would just re-attempt hydrate_and_condense a second time against the
+                    // same session (it is already linked to `conversation_id`), so open the log
+                    // bare here instead of leaving `resumed_session_sink` unset.
+                    tracing::warn!(error = %e, "session hydration failed for resume; attempting bare event log fallback");
+                    resumed_session_sink =
+                        resume_session_sink_fallback(&session_path, session_store, &resume_id)
+                            .await;
                 }
             }
         }
@@ -5117,5 +5163,92 @@ mod tests {
             "default continuation must replay durable session history"
         );
         assert_eq!(messages[0].content, "hello");
+    }
+
+    /// #5455 regression: a `get_by_conversation_id` failure (e.g. a transient store error) must
+    /// short-circuit to `(None, Vec::new())` instead of being treated as "no session linked yet"
+    /// — the pre-fix `.unwrap_or_default()` would otherwise mint a duplicate `SessionId` and
+    /// attempt `link_conversation` against the real link. Drops just the `conversation_id`
+    /// column so the `SELECT ... WHERE conversation_id = ?` lookup fails while leaving
+    /// `store.create`'s `INSERT (id, status)` unaffected — if the buggy fallback path ran, it
+    /// would still succeed at minting a row, making the failure observable via the row count
+    /// below rather than merely via the returned sink.
+    #[tokio::test]
+    async fn init_session_sink_returns_none_on_store_query_error() {
+        let memory = make_runner_test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = runner_test_session_config(dir.path());
+        let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+
+        // migration 106's unique index on `conversation_id` must go first — SQLite refuses to
+        // drop a column that is still indexed.
+        sqlx::query("DROP INDEX idx_acp_sessions_conversation_id")
+            .execute(memory.sqlite().pool())
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE acp_sessions DROP COLUMN conversation_id")
+            .execute(memory.sqlite().pool())
+            .await
+            .expect("sqlite must support DROP COLUMN to set up this test's failure mode");
+
+        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        assert!(
+            sink.is_none(),
+            "a store query error must not produce a SessionSink"
+        );
+        assert!(messages.is_empty());
+
+        let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM acp_sessions")
+            .fetch_one(memory.sqlite().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            row_count, 0,
+            "no session row must be minted when the existence check itself fails"
+        );
+    }
+
+    async fn make_runner_test_session_store() -> zeph_session::SessionStore {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite");
+        zeph_session::SessionStore::new(pool)
+    }
+
+    /// #5456 regression: the extracted `resume_session_sink_fallback` helper must return a
+    /// working `SessionSink` bound to `resume_id` when the bare `SessionEventLog::open` succeeds
+    /// — the same guarantee the pre-#5451 inline resume path always gave, now reachable directly
+    /// without driving `run()` end-to-end.
+    #[tokio::test]
+    async fn resume_session_sink_fallback_returns_some_when_open_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session-abc");
+        let session_store = make_runner_test_session_store().await;
+
+        let sink = resume_session_sink_fallback(&session_path, session_store, "resume-id-1").await;
+        let sink =
+            sink.expect("SessionEventLog::open must succeed against a fresh, writable directory");
+        assert_eq!(sink.session_id().as_str(), "resume-id-1");
+    }
+
+    /// #5456 regression: when the bare open also fails (e.g. the session directory cannot be
+    /// created), the helper must return `None` rather than panicking or fabricating a sink.
+    #[tokio::test]
+    async fn resume_session_sink_fallback_returns_none_when_open_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        // A regular file where a directory component is expected: `create_dir_all` inside
+        // `SessionEventLog::open` cannot create a directory through it.
+        let blocker = dir.path().join("blocker-file");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let session_path = blocker.join("session-subdir");
+        let session_store = make_runner_test_session_store().await;
+
+        let sink = resume_session_sink_fallback(&session_path, session_store, "resume-id-2").await;
+        assert!(
+            sink.is_none(),
+            "a session_path colliding with a non-directory file must not produce a sink"
+        );
     }
 }

@@ -550,6 +550,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(session)`: two `init_session_sink`/resume hydration bugs found during code review of
+  PR #5454 (default CLI continuation hydration fix). `init_session_sink` (`src/runner.rs`)
+  resolved whether a session was already linked to the conversation via
+  `SessionStore::get_by_conversation_id(...).unwrap_or_default()`, collapsing a transient store
+  error (e.g. `SQLITE_BUSY` under shared-pool `BEGIN IMMEDIATE` contention) into the same branch
+  as "no session linked yet" — minting a duplicate `SessionId`, silently failing the real link's
+  unique-index write, and opening an orphan event log disconnected from the real session's
+  history (#5455). Replaced with an explicit `match` on the `Result`: `Err` now short-circuits to
+  `(None, Vec::new())` with a `tracing::warn!`, deferring session linkage entirely for this run
+  instead of minting a duplicate.
+  Separately, on the explicit `--resume <id>` path, a failed initial `hydrate_and_condense` left
+  `resumed_session_sink` as `None` and fell through to `init_session_sink`, which — since the
+  conversation was already linked — redundantly retried hydration a second time and, if that
+  retry also failed, returned no sink at all, narrower than the guaranteed bare-open fallback that
+  existed before PR #5454 (#5456). The resume branch's failure arm now attempts a bare
+  `SessionEventLog::open` fallback directly (extracted as `resume_session_sink_fallback`, mirroring
+  `init_session_sink`'s own bare-open branch) before ever reaching `init_session_sink` again,
+  restoring the pre-#5454 guarantee. Both paths gained direct unit-test coverage via real
+  failure-injection (dropped `acp_sessions` column/index for the store-query error; a
+  file-blocking-a-directory path for the bare-open failure).
 - `fix(gateway)`: `zeph-gateway`'s `/webhook` endpoint forwarded third-party payloads into the
   agent's primary input queue as a plain `ChannelMessage` with only control-character stripping
   applied — bypassing the `ContentTrustLevel::ExternalUntrusted` classification, spotlight
