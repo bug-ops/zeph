@@ -564,6 +564,13 @@ pub async fn list_sessions_handler(
 
 /// `GET /sessions/{id}/messages` — retrieve all events for a persisted ACP session.
 ///
+/// Reads `session_id`'s durable JSONL event log (`state.server_config.session_data_dir`) instead
+/// of the legacy `acp_session_events` table (spec-068 §12.3 / D-2), which the P1 write cutover
+/// leaves permanently empty for every post-cutover session — same bug class and fix shape as
+/// `do_load_session`/`do_list_sessions` in `crates/zeph-acp/src/agent/mod.rs` (S1). Returns an
+/// empty array (not an error) when `[session] data_dir` isn't configured or the log can't be
+/// read — matching `do_load_session`'s replay tolerance of missing durable history.
+///
 /// # Errors
 ///
 /// Returns `503 Service Unavailable` if no `SQLite` store is configured.
@@ -593,18 +600,106 @@ pub async fn session_messages_handler(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let events = store.load_acp_events(&session_id).await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to load ACP session events");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let dtos: Vec<SessionEventDto> = events
-        .into_iter()
-        .map(|e| SessionEventDto {
-            event_type: e.event_type,
-            payload: e.payload,
-            created_at: e.created_at,
-        })
-        .collect();
+    let dtos = load_session_event_dtos(&state, &session_id).await;
     Ok(Json(dtos))
+}
+
+/// Read `session_id`'s durable event log and map each event to a [`SessionEventDto`] row.
+///
+/// Soft-fails to an empty `Vec` (logging a warning) when `session_data_dir` is unset or the log
+/// can't be opened/read — mirrors `crates/zeph-acp/src/agent/mod.rs`'s
+/// `load_session_replay_events` tolerance for the same scenario.
+#[cfg(feature = "acp-http")]
+async fn load_session_event_dtos(state: &AcpHttpState, session_id: &str) -> Vec<SessionEventDto> {
+    let Some(ref data_dir) = state.server_config.session_data_dir else {
+        return Vec::new();
+    };
+    let session_path = zeph_session::session_dir(data_dir, session_id);
+    let log = match zeph_session::SessionEventLog::open(&session_path).await {
+        Ok(log) => log,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open session event log for HTTP messages endpoint");
+            return Vec::new();
+        }
+    };
+    let events = match log.read_all().await {
+        Ok(events) => events,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read session event log for HTTP messages endpoint");
+            return Vec::new();
+        }
+    };
+    events
+        .into_iter()
+        .flat_map(session_event_envelope_to_dtos)
+        .collect()
+}
+
+/// Map one durable [`zeph_session::SessionEventEnvelope`] to the [`SessionEventDto`] row(s) it
+/// surfaces as. `SessionStarted`/`ForkPoint`/`Condensation`/`Compaction`/`ModelChanged`/
+/// `SessionEnded` are session-log bookkeeping, not turn content — they produce no row, matching
+/// `session_event_to_updates`'s equivalent bookkeeping carve-out for the ACP JSON-RPC path.
+#[cfg(feature = "acp-http")]
+fn session_event_envelope_to_dtos(
+    envelope: zeph_session::SessionEventEnvelope,
+) -> Vec<SessionEventDto> {
+    let created_at = chrono::DateTime::from_timestamp_millis(envelope.ts_ms).map_or_else(
+        || envelope.ts_ms.to_string(),
+        |dt| dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+    );
+    match envelope.kind {
+        zeph_session::SessionEvent::UserMessage { text, .. } => vec![SessionEventDto {
+            event_type: "user_message".to_owned(),
+            payload: text,
+            created_at,
+        }],
+        zeph_session::SessionEvent::AssistantMessage { parts } => parts
+            .into_iter()
+            .filter_map(|part| match part {
+                zeph_llm::provider::MessagePart::ToolUse { id, name, input } => {
+                    serde_json::to_string(&serde_json::json!({
+                        "id": id,
+                        "name": name,
+                        "input": input,
+                    }))
+                    .ok()
+                    .map(|payload| SessionEventDto {
+                        event_type: "tool_call".to_owned(),
+                        payload,
+                        created_at: created_at.clone(),
+                    })
+                }
+                other => other.as_plain_text().map(|text| SessionEventDto {
+                    event_type: "agent_message".to_owned(),
+                    payload: text.to_owned(),
+                    created_at: created_at.clone(),
+                }),
+            })
+            .collect(),
+        zeph_session::SessionEvent::ToolCall { id, name, input } => {
+            serde_json::to_string(&serde_json::json!({ "id": id, "name": name, "input": input }))
+                .ok()
+                .map(|payload| {
+                    vec![SessionEventDto {
+                        event_type: "tool_call".to_owned(),
+                        payload,
+                        created_at,
+                    }]
+                })
+                .unwrap_or_default()
+        }
+        zeph_session::SessionEvent::ToolResult { id, output, .. } => {
+            vec![SessionEventDto {
+                event_type: "tool_result".to_owned(),
+                payload: serde_json::json!({ "id": id, "output": output }).to_string(),
+                created_at,
+            }]
+        }
+        zeph_session::SessionEvent::SessionStarted { .. }
+        | zeph_session::SessionEvent::ForkPoint { .. }
+        | zeph_session::SessionEvent::Condensation { .. }
+        | zeph_session::SessionEvent::Compaction { .. }
+        | zeph_session::SessionEvent::ModelChanged { .. }
+        | zeph_session::SessionEvent::SessionEnded { .. } => Vec::new(),
+    }
 }

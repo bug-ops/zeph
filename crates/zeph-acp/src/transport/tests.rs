@@ -56,6 +56,33 @@ fn test_state() -> AcpHttpState {
     .with_ready(true)
 }
 
+fn test_state_with_session_data_dir(data_dir: std::path::PathBuf) -> AcpHttpState {
+    AcpHttpState::new(
+        noop_spawner(),
+        AcpServerConfig {
+            agent_name: "test".into(),
+            agent_version: "0.0.1".into(),
+            max_sessions: 4,
+            session_idle_timeout_secs: 1800,
+            permission_file: None,
+            provider_factory: None,
+            available_models: shared_models(vec![]),
+            mcp_manager: None,
+            auth_bearer_token: None,
+            discovery_enabled: true,
+            terminal_timeout_secs: 120,
+            project_rules: vec![],
+            title_max_chars: 60,
+            max_history: 100,
+            sqlite_path: None,
+            session_data_dir: Some(data_dir),
+            ready_notification: None,
+            ..Default::default()
+        },
+    )
+    .with_ready(true)
+}
+
 fn state_with_max_sessions(max: usize) -> AcpHttpState {
     AcpHttpState::new(
         noop_spawner(),
@@ -810,10 +837,13 @@ async fn list_sessions_returns_session_data() {
         .await
         .expect("SqliteStore::new");
     store.create_acp_session("sess-1").await.unwrap();
-    store
-        .save_acp_event("sess-1", "user", "hello")
-        .await
-        .unwrap();
+    // Regression guard for the S1 false-green (spec-068 §12.3 / D-2): `list_acp_sessions`
+    // now derives `message_count` from `acp_sessions.event_count`, so the fixture must drive
+    // it through `zeph_session::SessionStore::update_seq` — the same primitive
+    // `SessionSink::record_message` calls in production — not the retired `save_acp_event`,
+    // which only ever populated the now-permanently-empty `acp_session_events` table.
+    let session_store = zeph_session::SessionStore::new(store.pool().clone());
+    session_store.update_seq("sess-1", 0, 1).await.unwrap();
     store
         .update_session_title("sess-1", "Test Session")
         .await
@@ -901,12 +931,28 @@ async fn session_messages_returns_events_for_known_session() {
         .expect("SqliteStore::new");
     let session_id = "00000000-0000-0000-0000-000000000001";
     store.create_acp_session(session_id).await.unwrap();
-    store
-        .save_acp_event(session_id, "user_message", "hello")
+
+    // Regression guard for the S1-class false-green: message_messages_handler now reads the
+    // durable JSONL event log (spec-068 §12.3 / D-2), not the legacy acp_session_events table —
+    // seed the log directly instead of the retired save_acp_event write path.
+    let dir = tempfile::tempdir().unwrap();
+    let session_path = zeph_session::session_dir(dir.path(), session_id);
+    let log = zeph_session::SessionEventLog::open(&session_path)
         .await
         .unwrap();
+    log.append(
+        None,
+        None,
+        zeph_session::SessionEvent::UserMessage {
+            text: "hello".to_owned(),
+            image_refs: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    drop(log);
 
-    let state = test_state().with_store(store);
+    let state = test_state_with_session_data_dir(dir.path().to_path_buf()).with_store(store);
     let router = acp_router(state);
 
     let req = Request::builder()

@@ -176,6 +176,7 @@ zeph-orchestration = { path = "crates/zeph-orchestration", version = "0.21.4" }
 zeph-plugins = { path = "crates/zeph-plugins", version = "0.21.4" }
 zeph-sanitizer = { path = "crates/zeph-sanitizer", version = "0.21.4" }
 zeph-scheduler = { path = "crates/zeph-scheduler", version = "0.21.4" }
+zeph-session = { path = "crates/zeph-session", default-features = false, version = "0.21.4" }
 zeph-skills = { path = "crates/zeph-skills", version = "0.21.4" }
 zeph-subagent = { path = "crates/zeph-subagent", version = "0.21.4" }
 zeph-tools = { path = "crates/zeph-tools", version = "0.21.4" }
@@ -209,9 +210,9 @@ readme = "README.md"
 default = ["scheduler", "sqlite"]
 
 # === Use-case bundles ===
-desktop = ["tui", "deep-link"]
+desktop = ["tui", "deep-link", "session"]
 ide     = ["acp", "acp-http"]
-server  = ["gateway", "a2a", "otel", "prometheus"]
+server  = ["gateway", "a2a", "otel", "prometheus", "session"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
 full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "sandbox", "gonka", "cocoon", "sqlite", "testing"]
@@ -234,6 +235,11 @@ slack = ["zeph-channels/slack"]
 gateway = ["dep:zeph-gateway"]
 prometheus = ["gateway", "dep:prometheus-client", "zeph-gateway/prometheus"]
 scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "zeph-core/scheduler", "zeph-scheduler/daemon", "zeph-memory/scheduler"]
+# Session persistence, event-log replay, and `zeph serve` (spec-068, #5343). Independent of `acp`:
+# `acp` gates ACP protocol transports, `session` gates the persistence CLI verbs and `zeph serve`.
+# The `zeph-session` crate/agent-loop dual-write is always compiled and config-gated
+# (`[session] enabled`). `dep:axum` backs `zeph serve-sessions`'s HTTP/SSE API — see `src/serve/`.
+session = ["dep:axum", "dep:tokio-stream", "zeph-common/http-middleware"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 pdf = ["zeph-memory/pdf"]
 profiling = [
@@ -267,6 +273,8 @@ sqlite = [
     "zeph-scheduler?/sqlite",
     "zeph-core/sqlite",
     "zeph-durable/sqlite",
+    "zeph-session/sqlite",
+    "zeph-agent-persistence/sqlite",
 ]
 postgres = [
     "zeph-db/postgres",
@@ -278,6 +286,8 @@ postgres = [
     "zeph-scheduler?/postgres",
     "zeph-core/postgres",
     "zeph-durable/postgres",
+    "zeph-session/postgres",
+    "zeph-agent-persistence/postgres",
 ]
 
 [dependencies]
@@ -310,6 +320,7 @@ sysinfo = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { workspace = true, features = ["sync"], optional = true }
 tokio-util.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
@@ -322,6 +333,8 @@ url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-a2a = { workspace = true, optional = true }
 zeph-acp = { workspace = true, optional = true }
+zeph-agent-context.workspace = true
+zeph-agent-persistence.workspace = true
 zeph-bench = { workspace = true, optional = true }
 zeph-channels.workspace = true
 zeph-common.workspace = true
@@ -340,6 +353,7 @@ zeph-orchestration.workspace = true
 zeph-plugins.workspace = true
 zeph-sanitizer.workspace = true
 zeph-scheduler = { workspace = true, optional = true }
+zeph-session.workspace = true
 zeph-skills.workspace = true
 zeph-subagent.workspace = true
 zeph-tools.workspace = true

@@ -130,9 +130,12 @@ impl SqliteStore {
         // LIMIT -1 in SQLite means no limit; cast limit=0 sentinel to -1.
         #[allow(clippy::cast_possible_wrap)]
         let sql_limit: i64 = if limit == 0 { -1 } else { limit as i64 };
+        // spec-068 §12.3 / D-2: `acp_sessions.event_count` (migration 106, kept current by
+        // `SessionStore::update_seq` on every turn flush per INV-SP-1) replaces the subquery
+        // against `acp_session_events`, which the P1 write cutover leaves permanently empty for
+        // post-cutover sessions.
         let rows = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, \
-             (SELECT COUNT(*) FROM acp_session_events WHERE session_id = s.id) AS message_count \
+            "SELECT s.id, s.title, s.created_at, s.updated_at, s.event_count AS message_count \
              FROM acp_sessions s \
              ORDER BY s.updated_at DESC \
              LIMIT ?",
@@ -166,9 +169,10 @@ impl SqliteStore {
         &self,
         session_id: &str,
     ) -> Result<Option<AcpSessionInfo>, MemoryError> {
+        // spec-068 §12.3 / D-2: see `list_acp_sessions` — `event_count` replaces the emptied
+        // `acp_session_events` subquery.
         let row = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, \
-             (SELECT COUNT(*) FROM acp_session_events WHERE session_id = s.id) AS message_count \
+            "SELECT s.id, s.title, s.created_at, s.updated_at, s.event_count AS message_count \
              FROM acp_sessions s \
              WHERE s.id = ?",
         )
@@ -446,6 +450,25 @@ mod tests {
             .expect("SqliteStore::new")
     }
 
+    /// Bump `acp_sessions.event_count` and `updated_at`, mirroring the `UPDATE`
+    /// `zeph_session::SessionStore::update_seq` issues in production (spec-068 §12.3 / D-2).
+    /// `list_acp_sessions`/`get_acp_session_info` read `event_count`, not the legacy
+    /// `acp_session_events` table that `save_acp_event` populates — tests asserting on
+    /// `message_count` (or activity ordering, which depends on `updated_at`) must drive both
+    /// through this column directly rather than the retired write path.
+    async fn bump_event_count(store: &SqliteStore, session_id: &str, event_count: i64) {
+        let stmt = zeph_db::rewrite_placeholders(&format!(
+            "UPDATE acp_sessions SET event_count = ?, updated_at = {} WHERE id = ?",
+            <ActiveDialect as zeph_db::dialect::Dialect>::NOW,
+        ));
+        zeph_db::query(sqlx::AssertSqlSafe(stmt))
+            .bind(event_count)
+            .bind(session_id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn create_and_exists() {
         let store = make_store().await;
@@ -546,11 +569,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
         store.create_acp_session("sess-a").await.unwrap();
-        store.save_acp_event("sess-a", "user", "hi").await.unwrap();
-        store
-            .save_acp_event("sess-a", "agent", "hello")
-            .await
-            .unwrap();
+        bump_event_count(&store, "sess-a", 2).await;
         store
             .update_session_title("sess-a", "My Chat")
             .await
@@ -618,10 +637,7 @@ mod tests {
     async fn get_acp_session_info_returns_data() {
         let store = make_store().await;
         store.create_acp_session("sess-x").await.unwrap();
-        store
-            .save_acp_event("sess-x", "user", "hello")
-            .await
-            .unwrap();
+        bump_event_count(&store, "sess-x", 1).await;
         store.update_session_title("sess-x", "Test").await.unwrap();
 
         let info = store.get_acp_session_info("sess-x").await.unwrap().unwrap();

@@ -54,6 +54,36 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Build the `SummarizationDeps` used by durable event-log condensation (spec-068 §8,
+    /// architect ruling D-11) — `LlmCondenser` reuses the same `summarize_structured` machinery
+    /// as live compaction, so the only difference from [`Self::build_summarization_deps`] is
+    /// resolving `[session.condense] condense_provider` instead of `compaction_provider`.
+    /// `structured_summaries` is shared with the compaction setting rather than adding a
+    /// dedicated condense-specific toggle.
+    pub(in crate::agent) fn build_condense_deps(
+        &self,
+        condense_provider: &zeph_common::ProviderName,
+    ) -> SummarizationDeps {
+        let token_counter = Arc::clone(&self.runtime.metrics.token_counter);
+        let token_counter_adapter: std::sync::Arc<
+            dyn zeph_context::summarization::MessageTokenCounter,
+        > = std::sync::Arc::new(
+            zeph_agent_context::memory_backend::TokenCounterAdapter::new(token_counter),
+        );
+        let provider = if condense_provider.is_empty() {
+            self.summary_or_primary_provider().clone()
+        } else {
+            self.resolve_background_provider(condense_provider.as_str())
+        };
+        SummarizationDeps {
+            provider,
+            llm_timeout: std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds),
+            token_counter: token_counter_adapter,
+            structured_summaries: self.services.memory.compaction.structured_summaries,
+            on_anchored_summary: None,
+        }
+    }
+
     /// Load the current compression guidelines from `SQLite` if the feature is enabled.
     ///
     /// Returns an empty string when the feature is disabled, memory is not initialized,

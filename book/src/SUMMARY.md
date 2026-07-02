@@ -69,6 +69,8 @@
 - [TUI Dashboard](advanced/tui.md)
 - [HTTP Gateway](advanced/gateway.md)
 - [Daemon & Scheduler](advanced/daemon.md)
+- [Session Persistence and Resume](advanced/session-persistence.md)
+- [zeph serve — Persistent Agent Service](advanced/serve-mode.md)
 - [Document Loaders](advanced/document-loaders.md)
 - [Observability & Cost](advanced/observability.md)
 - [Channels](advanced/channels.md)

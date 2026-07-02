@@ -36,6 +36,13 @@ pub trait Dialect: Send + Sync + 'static {
     /// `PostgreSQL`: `EXTRACT(EPOCH FROM NOW())::BIGINT`
     const EPOCH_NOW: &'static str;
 
+    /// Current timestamp expression, for direct assignment into a `TEXT`/`TIMESTAMPTZ`
+    /// `updated_at`-style column (as opposed to [`Self::EPOCH_NOW`], which yields an integer).
+    ///
+    /// `SQLite`: `datetime('now')`
+    /// `PostgreSQL`: `NOW()`
+    const NOW: &'static str;
+
     /// Case-insensitive comparison expression for a column.
     ///
     /// `SQLite`: `{col} COLLATE NOCASE`
@@ -112,6 +119,7 @@ impl Dialect for Sqlite {
     const CONFLICT_NOTHING: &'static str = "";
     const COLLATE_NOCASE: &'static str = "COLLATE NOCASE";
     const EPOCH_NOW: &'static str = "unixepoch('now')";
+    const NOW: &'static str = "datetime('now')";
     const JSON_CAST: &'static str = "";
     const GREATEST_FN: &'static str = "MAX";
     const LEAST_FN: &'static str = "MIN";
@@ -138,6 +146,7 @@ impl Dialect for Postgres {
     const CONFLICT_NOTHING: &'static str = "ON CONFLICT DO NOTHING";
     const COLLATE_NOCASE: &'static str = "";
     const EPOCH_NOW: &'static str = "EXTRACT(EPOCH FROM NOW())::BIGINT";
+    const NOW: &'static str = "NOW()";
     const JSON_CAST: &'static str = "::jsonb";
     const GREATEST_FN: &'static str = "GREATEST";
     const LEAST_FN: &'static str = "LEAST";
@@ -177,6 +186,11 @@ mod tests {
         #[test]
         fn epoch_now() {
             assert_eq!(Sqlite::EPOCH_NOW, "unixepoch('now')");
+        }
+
+        #[test]
+        fn now() {
+            assert_eq!(Sqlite::NOW, "datetime('now')");
         }
 
         #[test]
@@ -231,6 +245,11 @@ mod tests {
         #[test]
         fn epoch_now() {
             assert_eq!(Postgres::EPOCH_NOW, "EXTRACT(EPOCH FROM NOW())::BIGINT");
+        }
+
+        #[test]
+        fn now() {
+            assert_eq!(Postgres::NOW, "NOW()");
         }
 
         #[test]

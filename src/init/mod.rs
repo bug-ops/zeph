@@ -22,6 +22,7 @@ pub(super) mod llm;
 pub(super) mod mcp;
 pub(super) mod memory;
 pub(super) mod security;
+pub(super) mod session;
 pub(super) mod worktree;
 
 use agents::{step_agents, step_learning, step_orchestration, step_router};
@@ -30,6 +31,7 @@ use llm::step_llm;
 use mcp::{step_mcp_discovery, step_mcp_remote, step_mcpls, write_mcpls_config};
 use memory::{step_context_compression, step_memory};
 use security::{step_policy, step_sandbox, step_security, step_trajectory};
+use session::{step_serve, step_session};
 use worktree::step_worktree;
 
 #[cfg_attr(test, derive(Clone))]
@@ -299,6 +301,17 @@ pub(crate) struct WizardState {
     pub(crate) tui_delights_enabled: bool,
     /// Whether opt-in mouse capture is enabled at startup.
     pub(crate) tui_mouse_enabled: bool,
+    // Durable session persistence (spec-068, #5343, P4)
+    /// Whether to maintain a durable, replayable JSONL event log per conversation-session.
+    pub(crate) session_persistence_enabled: bool,
+    /// Directory under which per-session event logs are stored.
+    pub(crate) session_data_dir: String,
+    // `zeph serve-sessions` HTTP/SSE API (spec-068 §9, #5343, P4)
+    pub(crate) serve_http_addr: String,
+    pub(crate) serve_require_auth: bool,
+    pub(crate) serve_auth_token_vault_key: String,
+    pub(crate) serve_max_sessions: usize,
+    pub(crate) serve_session_idle_ttl_secs: u64,
 }
 
 impl Default for WizardState {
@@ -495,6 +508,13 @@ impl Default for WizardState {
             tui_color_mode: zeph_config::ColorMode::Auto,
             tui_delights_enabled: true,
             tui_mouse_enabled: false,
+            session_persistence_enabled: zeph_config::SessionConfig::default().enabled,
+            session_data_dir: zeph_config::SessionConfig::default().data_dir,
+            serve_http_addr: zeph_config::ServeConfig::default().http_addr,
+            serve_require_auth: zeph_config::ServeConfig::default().require_auth,
+            serve_auth_token_vault_key: zeph_config::ServeConfig::default().auth_token_vault_key,
+            serve_max_sessions: zeph_config::ServeConfig::default().max_sessions,
+            serve_session_idle_ttl_secs: zeph_config::ServeConfig::default().session_idle_ttl_secs,
         }
     }
 }
@@ -564,6 +584,8 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_trajectory(&mut state)?;
     step_telemetry(&mut state)?;
     step_prometheus(&mut state)?;
+    step_session(&mut state)?;
+    step_serve(&mut state)?;
     step_session_recap(&mut state)?;
     step_caveman(&mut state)?;
     step_knowledge(&mut state)?;
@@ -858,6 +880,16 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.digest.enabled = state.digest_enabled;
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.persist_provider_overrides = state.persist_provider_overrides;
+    config.session.enabled = state.session_persistence_enabled;
+    config.session.data_dir.clone_from(&state.session_data_dir);
+    config.serve.http_addr.clone_from(&state.serve_http_addr);
+    config.serve.require_auth = state.serve_require_auth;
+    config
+        .serve
+        .auth_token_vault_key
+        .clone_from(&state.serve_auth_token_vault_key);
+    config.serve.max_sessions = state.serve_max_sessions;
+    config.serve.session_idle_ttl_secs = state.serve_session_idle_ttl_secs;
     config.caveman.default_on = state.caveman_default_on;
     config
         .knowledge
@@ -3293,5 +3325,59 @@ mod tests {
         };
         let config = build_config(&state);
         assert_eq!(config.tools.utility.utility_window, 5);
+    }
+
+    #[test]
+    fn build_config_defaults_match_session_and_serve_config_defaults() {
+        // A wizard run with no interactive customization of the new #5343 steps should produce
+        // a config identical to [session]/[serve]'s own Default impls.
+        let state = WizardState {
+            vault_backend: "env".into(),
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert_eq!(
+            config.session.enabled,
+            zeph_config::SessionConfig::default().enabled
+        );
+        assert_eq!(
+            config.session.data_dir,
+            zeph_config::SessionConfig::default().data_dir
+        );
+        assert_eq!(
+            config.serve.http_addr,
+            zeph_config::ServeConfig::default().http_addr
+        );
+        assert_eq!(
+            config.serve.require_auth,
+            zeph_config::ServeConfig::default().require_auth
+        );
+        assert_eq!(
+            config.serve.max_sessions,
+            zeph_config::ServeConfig::default().max_sessions
+        );
+    }
+
+    #[test]
+    fn build_config_applies_customized_session_and_serve_settings() {
+        let state = WizardState {
+            vault_backend: "env".into(),
+            session_persistence_enabled: false,
+            session_data_dir: "/custom/sessions".into(),
+            serve_http_addr: "0.0.0.0:9000".into(),
+            serve_require_auth: false,
+            serve_auth_token_vault_key: "MY_TOKEN".into(),
+            serve_max_sessions: 10,
+            serve_session_idle_ttl_secs: 60,
+            ..WizardState::default()
+        };
+        let config = build_config(&state);
+        assert!(!config.session.enabled);
+        assert_eq!(config.session.data_dir, "/custom/sessions");
+        assert_eq!(config.serve.http_addr, "0.0.0.0:9000");
+        assert!(!config.serve.require_auth);
+        assert_eq!(config.serve.auth_token_vault_key, "MY_TOKEN");
+        assert_eq!(config.serve.max_sessions, 10);
+        assert_eq!(config.serve.session_idle_ttl_secs, 60);
     }
 }

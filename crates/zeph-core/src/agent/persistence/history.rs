@@ -29,6 +29,17 @@ impl<C: Channel> Agent<C> {
     /// casts that saturate to zero on overflow; they cannot panic.
     #[tracing::instrument(name = "core.persist.load_history", skip_all, level = "debug", err)]
     pub async fn load_history(&mut self) -> Result<(), super::super::error::AgentError> {
+        // Idempotency guard (spec-068, #5343): a session already hydrated from the durable JSONL
+        // event log via `AgentBuilder::with_preloaded_messages` (see `spawn_acp_agent`,
+        // `src/acp.rs`) must not also load from `SQLite` — `PersistenceService::load_history`
+        // appends rather than replaces, so calling both would duplicate every message. Gated on
+        // the explicit `history_preloaded` flag, not `messages.is_empty()`: `Agent::new` always
+        // seeds `messages` with the system-prompt message, so emptiness never distinguishes
+        // "already hydrated" from "not yet loaded."
+        if self.msg.history_preloaded {
+            return Ok(());
+        }
+
         let (Some(memory), Some(cid)) = (
             self.services.memory.persistence.memory.as_ref(),
             self.services.memory.persistence.conversation_id,

@@ -1707,6 +1707,207 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
             Ok(out)
         })
     }
+
+    // ----- /conv -----
+
+    fn handle_conv<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let args_owned = args.trim().to_owned();
+        Box::pin(async move {
+            // `resume`/`fork` need `&mut self` (mid-session live conversation swap, D-9) —
+            // handled first so `self` isn't already borrowed by the `list`/`show` path below.
+            if let Some(id) = args_owned.strip_prefix("resume ") {
+                return self.handle_conv_resume(id.trim()).await;
+            }
+            if let Some(id) = args_owned.strip_prefix("fork ") {
+                return self.handle_conv_fork(id.trim()).await;
+            }
+
+            let Some(memory) = self.services.memory.persistence.memory.clone() else {
+                return Ok(
+                    "Conversation-session persistence requires memory to be enabled ([memory] enabled = true)."
+                        .to_owned(),
+                );
+            };
+            let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+
+            if let Some(id) = args_owned.strip_prefix("show ") {
+                return handle_conv_show(&store, id.trim()).await;
+            }
+            if args_owned.is_empty() || args_owned == "list" {
+                return handle_conv_list(&store).await;
+            }
+            Ok(format!(
+                "Unknown /conv subcommand '{args_owned}'. Usage: /conv [list | show <id> | resume <id> | fork <id>]"
+            ))
+        })
+    }
+}
+
+impl<C: Channel> Agent<C> {
+    /// `/conv resume <id>` (spec-068, #5343, D-9): mid-session live swap onto an existing
+    /// durable session. Resolves `conversation_id` via the `SessionId`<->`ConversationId`
+    /// bijection (spec §5.2) — reuses the session's existing linked conversation if one exists,
+    /// otherwise mints one and links it (a session created via the HTTP API's `POST /sessions`,
+    /// or a legacy session, may not have one yet).
+    async fn handle_conv_resume(&mut self, id: &str) -> Result<String, CommandError> {
+        if id.is_empty() {
+            return Ok("Usage: /conv resume <id>".to_owned());
+        }
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
+            return Ok(
+                "Conversation-session persistence requires memory to be enabled ([memory] enabled = true)."
+                    .to_owned(),
+            );
+        };
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let Some(metadata) = store
+            .get(id)
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?
+        else {
+            return Ok(format!("Session '{id}' not found."));
+        };
+
+        let conversation_id = if let Some(cid) = metadata.conversation_id {
+            zeph_memory::ConversationId(cid)
+        } else {
+            let cid = memory
+                .sqlite()
+                .create_conversation()
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))?;
+            store
+                .link_conversation(id, cid.0)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))?;
+            cid
+        };
+
+        let session_id = zeph_common::SessionId::new(id);
+        self.load_and_resume_conversation(&session_id, conversation_id)
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?;
+
+        Ok(format!(
+            "Resumed session {id} ({} event(s) replayed).",
+            metadata.event_count
+        ))
+    }
+
+    /// `/conv fork <id>` (spec-068, #5343, D-9): eager-copies `id`'s durable log into a fresh
+    /// child session via `ForkEngine::fork` (P2), then immediately live-swaps onto the child —
+    /// same effect as `POST /sessions/:id/fork` (spec §9.4) but for the current CLI/TUI session
+    /// instead of spawning a new `SessionActor`.
+    async fn handle_conv_fork(&mut self, id: &str) -> Result<String, CommandError> {
+        if id.is_empty() {
+            return Ok("Usage: /conv fork <id>".to_owned());
+        }
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
+            return Ok(
+                "Conversation-session persistence requires memory to be enabled ([memory] enabled = true)."
+                    .to_owned(),
+            );
+        };
+        let Some(session_persistence_config) =
+            self.services.session.session_persistence_config.clone()
+        else {
+            return Ok(
+                "Conversation-session persistence is not enabled ([session] enabled = true)."
+                    .to_owned(),
+            );
+        };
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let data_dir = std::path::PathBuf::from(&session_persistence_config.data_dir);
+        let new_id = zeph_common::SessionId::generate();
+
+        let fork_result =
+            zeph_session::ForkEngine::fork(&data_dir, id, new_id.as_str(), None, &store)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))?;
+
+        let conversation_id = memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?;
+
+        self.load_and_resume_conversation(&new_id, conversation_id)
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?;
+
+        Ok(format!(
+            "Forked session {id} -> {} ({} event(s) copied); now the active conversation.",
+            fork_result.new_session_id, fork_result.events_copied
+        ))
+    }
+}
+
+/// Formats `/conv list` — mirrors `sessions list`'s CLI table layout
+/// (`src/commands/sessions.rs`) and `zeph serve-sessions`'s `GET /sessions`.
+async fn handle_conv_list(store: &zeph_session::SessionStore) -> Result<String, CommandError> {
+    use std::fmt::Write as _;
+
+    let sessions = store
+        .list(&zeph_session::SessionFilter::default())
+        .await
+        .map_err(|e| CommandError::new(format!("failed to list sessions: {e}")))?;
+
+    if sessions.is_empty() {
+        return Ok("No conversation-sessions found.".to_owned());
+    }
+
+    let mut out = format!(
+        "{:<38} {:<30} {:<9} {:>6} {:<24}\n",
+        "ID", "TITLE", "STATUS", "EVENTS", "UPDATED"
+    );
+    out.push_str(&"-".repeat(110));
+    out.push('\n');
+    for s in &sessions {
+        let title = s.title.as_deref().unwrap_or("(untitled)");
+        let _ = writeln!(
+            out,
+            "{:<38} {:<30} {:<9} {:>6} {:<24}",
+            s.session_id,
+            crate::text::truncate_to_chars(title, 30),
+            s.status.as_str(),
+            s.event_count,
+            s.updated_at
+        );
+    }
+    Ok(out.trim_end().to_owned())
+}
+
+/// Formats `/conv show <id>` — one session's metadata, mirroring `zeph serve-sessions`'s
+/// `GET /sessions/:id` (metadata only; use `zeph sessions show --events <id>` on the CLI for a
+/// full event-log dump).
+async fn handle_conv_show(
+    store: &zeph_session::SessionStore,
+    id: &str,
+) -> Result<String, CommandError> {
+    if id.is_empty() {
+        return Ok("Usage: /conv show <id>".to_owned());
+    }
+    let metadata = store
+        .get(id)
+        .await
+        .map_err(|e| CommandError::new(format!("failed to read session metadata: {e}")))?;
+    let Some(m) = metadata else {
+        return Ok(format!("Session '{id}' not found."));
+    };
+    Ok(format!(
+        "Session {}\n  title: {}\n  status: {}\n  events: {} (last_seq={})\n  forked_from: {}\n  created: {}\n  updated: {}",
+        m.session_id,
+        m.title.as_deref().unwrap_or("(untitled)"),
+        m.status.as_str(),
+        m.event_count,
+        m.last_seq,
+        m.forked_from.as_deref().unwrap_or("-"),
+        m.created_at,
+        m.updated_at
+    ))
 }
 
 type GoalStore = crate::goal::GoalStore;

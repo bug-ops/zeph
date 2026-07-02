@@ -16,6 +16,7 @@ mod infra;
 mod llm;
 mod mcp;
 mod memory;
+mod serve;
 mod session;
 mod tools;
 
@@ -32,6 +33,7 @@ pub(crate) use llm::migrate_gonkagate_to_gonka;
 pub use llm::*;
 pub use mcp::*;
 pub use memory::*;
+pub use serve::migrate_serve_config;
 pub use session::*;
 pub use tools::*;
 
@@ -611,15 +613,15 @@ use steps::{
     MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
     MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
     MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSessionPersistProviderOverrides, MigrateSessionProviderPersistence,
-    MigrateSessionRecapConfig, MigrateShellCheckpointsConfig, MigrateShellTransactional,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
-    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateVigilConfig, MigrateWorktreeConfig,
-    MigrateWorktreeGitTimeout,
+    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
+    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
+    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
+    MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–69).
+/// Ordered registry of all sequential migration steps (steps 1–71).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -740,6 +742,10 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateTuiMouse),
             // Step 69 — add default_asset_sensitivity advisory comment under [orchestration] (spec-068, #3934)
             Box::new(MigrateOrchestrationAssetSensitivity),
+            // Step 70 — add session-persistence keys + [session.condense] advisory block (#5343)
+            Box::new(MigrateSessionPersistenceConfig),
+            // Step 71 — add [serve] advisory block for `zeph serve` (spec-068 §9, #5343)
+            Box::new(MigrateServeConfig),
         ]
     });
 

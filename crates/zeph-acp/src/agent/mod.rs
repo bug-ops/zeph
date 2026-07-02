@@ -481,6 +481,9 @@ pub struct ZephAcpAgentState {
     max_sessions: usize,
     idle_timeout: std::time::Duration,
     pub(crate) store: Option<SqliteStore>,
+    /// Directory for durable per-session JSONL event logs (spec-068, #5343). `Some` when
+    /// `[session] enabled = true`; enables `ForkEngine`-based forking in `fork_conversation`.
+    pub(crate) session_data_dir: Option<std::path::PathBuf>,
     permission_file: Option<std::path::PathBuf>,
     /// IDE capabilities received during `initialize()`; used by `build_acp_context`.
     pub(crate) client_caps: RwLock<acp::schema::v1::ClientCapabilities>,
@@ -557,6 +560,7 @@ impl ZephAcpAgentState {
             max_sessions,
             idle_timeout: std::time::Duration::from_secs(session_idle_timeout_secs),
             store: None,
+            session_data_dir: None,
             permission_file,
             client_caps: RwLock::new(acp::schema::v1::ClientCapabilities::default()),
             provider_factory: None,
@@ -634,6 +638,13 @@ impl ZephAcpAgentState {
     #[must_use]
     pub fn with_store(mut self, store: SqliteStore) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Set the durable per-session JSONL event-log directory (spec-068, #5343).
+    #[must_use]
+    pub fn with_session_data_dir(mut self, data_dir: std::path::PathBuf) -> Self {
+        self.session_data_dir = Some(data_dir);
         self
     }
 
@@ -1441,20 +1452,15 @@ impl ZephAcpAgentState {
         Ok((entry.input_tx.clone(), rx))
     }
 
-    /// Fire-and-forget: persist `text` as a `user_message` ACP event for `session_id`.
-    fn persist_user_message_async(&self, session_id: &acp::schema::v1::SessionId, text: String) {
-        if let Some(ref store) = self.store {
-            let sid = session_id.to_string();
-            let store = store.clone();
-            // EXEMPT(#5144): short-lived independent DB write; many fire concurrently —
-            // unique-named supervisor entries would flood the registry with no lifecycle benefit.
-            tokio::spawn(async move {
-                if let Err(e) = store.save_acp_event(&sid, "user_message", &text).await {
-                    tracing::warn!(error = %e, "failed to persist user message");
-                }
-            });
-        }
-    }
+    // `persist_user_message_async` (an unsupervised fire-and-forget `tokio::spawn` writing
+    // `user_message` rows to `acp_session_events`, EXEMPT #5144) was retired here (spec-068
+    // P1, #5343): every ACP session's underlying `zeph_core::agent::Agent` now carries a
+    // `SessionSink` (wired in `spawn_acp_agent`, `src/acp.rs`), so the same user-message text
+    // is already durably appended to the session's JSONL event log — before the SQLite
+    // `messages` projection — by `Agent::persist_message`'s existing INV-SP-1 dual-write, the
+    // moment the prompt reaches the agent loop via `input_tx.send(...)` below. A second,
+    // unordered write to the legacy `acp_session_events` table would only reintroduce the
+    // double-write this cutover removes; `SessionSink` is the sole live writer.
 
     #[tracing::instrument(skip_all, name = "acp.handler.prompt", fields(session_id = %args.session_id))]
     pub(crate) async fn do_prompt(
@@ -1498,8 +1504,6 @@ impl ZephAcpAgentState {
                 "injection patterns detected in ACP prompt"
             );
         }
-
-        self.persist_user_message_async(&args.session_id, text.clone());
 
         input_tx
             .send(ChannelMessage {
@@ -1654,13 +1658,12 @@ impl ZephAcpAgentState {
             return Err(acp::Error::internal_error().data("session not found"));
         }
 
-        let events = store
-            .load_acp_events(&args.session_id.to_string())
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, session_id = %args.session_id, "failed to load ACP session events");
-                acp::Error::internal_error().data("internal error")
-            })?;
+        // spec-068 §12.3 / D-2: the legacy `acp_session_events` table is emptied by the write-path
+        // cutover — post-cutover sessions must replay from the durable JSONL event log instead
+        // (`self.session_data_dir`, wired the same way `do_fork_session` already reads it).
+        let events = self
+            .load_session_replay_events(&args.session_id.to_string())
+            .await;
 
         let session_cwd = args.cwd.clone();
         let conversation_id = resolve_conversation_id(store, &args.session_id).await;
@@ -2761,18 +2764,21 @@ impl ZephAcpAgentState {
                 None
             };
             for update in loopback_event_to_updates(event) {
-                if let Some(ref store) = self.store {
-                    let sid = session_id.to_string();
-                    let (event_type, payload) = session_update_to_event(&update);
-                    let store = store.clone();
-                    // EXEMPT(#5144): high-frequency per-event DB write; supervising each unique
-                    // task floods the registry — independent, short-lived, errors are logged.
-                    tokio::spawn(async move {
-                        if let Err(e) = store.save_acp_event(&sid, event_type, &payload).await {
-                            tracing::warn!(error = %e, "failed to persist session event");
-                        }
-                    });
-                }
+                // The unsupervised fire-and-forget `tokio::spawn` write to `acp_session_events`
+                // that used to live here (EXEMPT #5144) was retired (spec-068 P1, #5343):
+                // assistant/tool-call/tool-result content reaching the IDE via `update` here
+                // is the same content the underlying `Agent::persist_message` already durably
+                // appended to the session's JSONL event log via `SessionSink` (INV-SP-1,
+                // ordered ahead of the SQLite `messages` projection). `SessionSink` is now the
+                // sole live writer for conversation-history events.
+                //
+                // KNOWN GAP (tracked for the §12.3 read-handler thinning follow-up): finer-grained
+                // `SessionUpdate` variants that never reach `Agent::persist_message` at all
+                // (`agent_thought`, `tool_call_update` deltas, `config_option_update`) are no
+                // longer persisted anywhere. `do_load_session`'s `replay_session_events` call
+                // (which reads `load_acp_events`) still exists but has nothing new to replay for
+                // sessions created after this cutover, until it is migrated to
+                // `ReplayEngine::replay` alongside the other read handlers.
                 let notification =
                     acp::schema::v1::SessionNotification::new(session_id.clone(), update);
                 if let Err(e) = self.send_notification(session_id, notification).await {
@@ -2806,9 +2812,20 @@ impl ZephAcpAgentState {
 
     /// Create a forked conversation for `new_id` from `source_id`.
     ///
-    /// Copies ACP events and conversation history from the source session synchronously before
-    /// the agent loop is spawned to eliminate race conditions where the agent starts
-    /// `load_history()` before the copy completes.
+    /// Copies conversation history from the source session synchronously before the agent loop
+    /// is spawned to eliminate race conditions where the agent starts `load_history()` before the
+    /// copy completes.
+    ///
+    /// Session persistence (spec-068 P2, #5343): when `[session] enabled = true`
+    /// (`self.session_data_dir` is `Some`), also forks the durable JSONL event log via
+    /// [`zeph_session::ForkEngine::fork`] and links the new `SQLite` conversation to the
+    /// `acp_sessions` row `ForkEngine::fork` already created (via `record_fork`) — rather than
+    /// creating a second row. This retires the legacy `acp_session_events`
+    /// `import_acp_events`/`load_acp_events` copy for new forks: `zeph-acp` no longer needs a
+    /// second source of forked history once the JSONL log is the source of truth, matching the P1
+    /// write-path cutover's philosophy. When persistence is disabled, behavior is unchanged from
+    /// before spec-068 (`SQLite` `messages`/`conversations` copy only, `acp_sessions` row created
+    /// directly).
     #[allow(dead_code)]
     async fn fork_conversation(
         &self,
@@ -2818,19 +2835,25 @@ impl ZephAcpAgentState {
         let Some(s) = &self.store else {
             return Ok(None);
         };
-        let source_events = s
-            .load_acp_events(&source_id.to_string())
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "failed to load ACP session events for fork");
-                acp::Error::internal_error().data("internal error")
-            })?;
-
         let new_id_str = new_id.to_string();
-        let pairs: Vec<(&str, &str)> = source_events
-            .iter()
-            .map(|ev| (ev.event_type.as_str(), ev.payload.as_str()))
-            .collect();
+
+        if let Some(ref data_dir) = self.session_data_dir {
+            let session_store = zeph_session::SessionStore::new(s.pool().clone());
+            if let Err(e) = zeph_session::ForkEngine::fork(
+                data_dir,
+                &source_id.to_string(),
+                &new_id_str,
+                None,
+                &session_store,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "failed to fork session event log; SQLite-only fork continues"
+                );
+            }
+        }
 
         match s.create_conversation().await {
             Ok(forked_cid) => {
@@ -2838,14 +2861,23 @@ impl ZephAcpAgentState {
                     .get_acp_session_conversation_id(&source_id.to_string())
                     .await
                     .unwrap_or(None);
-                if let Err(e) = s
+                if self.session_data_dir.is_some() {
+                    // `ForkEngine::fork` above already created the `acp_sessions` row (via
+                    // `record_fork`) with `forked_from`/`forked_at_seq` set but no
+                    // `conversation_id` — link it now rather than attempting a second
+                    // (INSERT-IGNORE, silently-skipped) row creation.
+                    let session_store = zeph_session::SessionStore::new(s.pool().clone());
+                    if let Err(e) = session_store
+                        .link_conversation(&new_id_str, forked_cid.0)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to link conversation to forked session");
+                    }
+                } else if let Err(e) = s
                     .create_acp_session_with_conversation(&new_id_str, forked_cid)
                     .await
                 {
                     tracing::warn!(error = %e, "failed to persist forked ACP session mapping");
-                }
-                if let Err(e) = s.import_acp_events(&new_id_str, &pairs).await {
-                    tracing::warn!(error = %e, "failed to import events for forked session");
                 }
                 if let Some(src_cid) = forked_from_cid
                     && let Err(e) = s.copy_conversation(src_cid, forked_cid).await
@@ -2856,11 +2888,10 @@ impl ZephAcpAgentState {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to create conversation for forked session; history will not be copied");
-                if let Err(e2) = s.create_acp_session(&new_id_str).await {
+                if self.session_data_dir.is_none()
+                    && let Err(e2) = s.create_acp_session(&new_id_str).await
+                {
                     tracing::warn!(error = %e2, "failed to persist forked ACP session");
-                }
-                if let Err(e2) = s.import_acp_events(&new_id_str, &pairs).await {
-                    tracing::warn!(error = %e2, "failed to import events for forked session");
                 }
                 Ok(None)
             }
@@ -2991,44 +3022,46 @@ impl ZephAcpAgentState {
         }
     }
 
-    /// Replay stored `AcpSessionEvent` records as ACP notifications for the session.
+    /// Read a session's durable JSONL event log for ACP replay (spec-068 §12.3, D-2).
+    ///
+    /// Returns an empty `Vec` (logging a warning, never erroring the caller) when
+    /// `self.session_data_dir` is unset (`[session] enabled = false`) or the log can't be opened —
+    /// matching `replay_session_events`'s existing tolerance of missing/legacy history: a session
+    /// with no durable log still loads, it just has no client-visible replay.
+    async fn load_session_replay_events(
+        &self,
+        session_id: &str,
+    ) -> Vec<zeph_session::SessionEventEnvelope> {
+        let Some(ref data_dir) = self.session_data_dir else {
+            return Vec::new();
+        };
+        let session_path = zeph_session::session_dir(data_dir, session_id);
+        match zeph_session::SessionEventLog::open(&session_path).await {
+            Ok(log) => log.read_all().await.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, session_id, "failed to read session event log for replay");
+                Vec::new()
+            }),
+            Err(e) => {
+                tracing::warn!(error = %e, session_id, "failed to open session event log for replay");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Replay a session's durable `SessionEvent` log as ACP notifications (spec-068 §12.3, D-2).
     async fn replay_session_events(
         &self,
         session_id: &acp::schema::v1::SessionId,
-        events: Vec<zeph_memory::store::AcpSessionEvent>,
+        events: Vec<zeph_session::SessionEventEnvelope>,
     ) {
-        for ev in events {
-            let update = match ev.event_type.as_str() {
-                "user_message" => acp::schema::v1::SessionUpdate::UserMessageChunk(
-                    acp::schema::v1::ContentChunk::new(ev.payload.into()),
-                ),
-                "agent_message" => acp::schema::v1::SessionUpdate::AgentMessageChunk(
-                    acp::schema::v1::ContentChunk::new(ev.payload.into()),
-                ),
-                "agent_thought" => acp::schema::v1::SessionUpdate::AgentThoughtChunk(
-                    acp::schema::v1::ContentChunk::new(ev.payload.into()),
-                ),
-                "tool_call" => match serde_json::from_str::<acp::schema::v1::ToolCall>(&ev.payload)
-                {
-                    Ok(tc) => acp::schema::v1::SessionUpdate::ToolCall(tc),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to deserialize tool call event during replay");
-                        continue;
-                    }
-                },
-                other => {
-                    tracing::debug!(
-                        event_type = other,
-                        "skipping unknown event type during replay"
-                    );
-                    continue;
+        for envelope in events {
+            for update in session_event_to_updates(envelope.kind) {
+                let notification =
+                    acp::schema::v1::SessionNotification::new(session_id.clone(), update);
+                if let Err(e) = self.send_notification(session_id, notification).await {
+                    tracing::warn!(error = %e, "failed to replay notification");
+                    return;
                 }
-            };
-            let notification =
-                acp::schema::v1::SessionNotification::new(session_id.clone(), update);
-            if let Err(e) = self.send_notification(session_id, notification).await {
-                tracing::warn!(error = %e, "failed to replay notification");
-                break;
             }
         }
     }
@@ -3134,6 +3167,75 @@ impl ZephAcpAgentState {
     }
 }
 
+/// Map one durable [`zeph_session::SessionEvent`] to the ACP `SessionUpdate`(s) it replays as
+/// (spec-068 §12.3, D-2's ACP read-handler cutover).
+///
+/// `SessionStarted`/`ForkPoint`/`Condensation`/`Compaction`/`ModelChanged`/`SessionEnded` are
+/// session-log bookkeeping, not turn content — they produce no client-visible notification.
+/// `ToolCall`/`ToolResult` are handled for schema completeness even though no production write
+/// path currently emits them (today, tool use/results are embedded as `MessagePart::ToolUse`/text
+/// inside `AssistantMessage`/`UserMessage` via `persist_message`).
+///
+/// Pure and side-effect-free so the event-to-notification mapping is unit-testable without the
+/// full `serve_connection` ACP harness — see `tests::session_event_to_updates_*` below.
+fn session_event_to_updates(
+    event: zeph_session::SessionEvent,
+) -> Vec<acp::schema::v1::SessionUpdate> {
+    match event {
+        zeph_session::SessionEvent::UserMessage { text, .. } => {
+            vec![acp::schema::v1::SessionUpdate::UserMessageChunk(
+                acp::schema::v1::ContentChunk::new(text.into()),
+            )]
+        }
+        zeph_session::SessionEvent::AssistantMessage { parts } => parts
+            .into_iter()
+            .filter_map(|part| match part {
+                zeph_llm::provider::MessagePart::ToolUse { id, name, input } => {
+                    Some(acp::schema::v1::SessionUpdate::ToolCall(
+                        acp::schema::v1::ToolCall::new(id, name).raw_input(input),
+                    ))
+                }
+                other => other.as_plain_text().map(|text| {
+                    acp::schema::v1::SessionUpdate::AgentMessageChunk(
+                        acp::schema::v1::ContentChunk::new(text.to_owned().into()),
+                    )
+                }),
+            })
+            .collect(),
+        zeph_session::SessionEvent::ToolCall { id, name, input } => {
+            vec![acp::schema::v1::SessionUpdate::ToolCall(
+                acp::schema::v1::ToolCall::new(id, name).raw_input(input),
+            )]
+        }
+        zeph_session::SessionEvent::ToolResult {
+            id,
+            output,
+            is_error,
+            ..
+        } => {
+            let status = if is_error {
+                acp::schema::v1::ToolCallStatus::Failed
+            } else {
+                acp::schema::v1::ToolCallStatus::Completed
+            };
+            vec![acp::schema::v1::SessionUpdate::ToolCallUpdate(
+                acp::schema::v1::ToolCallUpdate::new(
+                    id,
+                    acp::schema::v1::ToolCallUpdateFields::new()
+                        .status(status)
+                        .content(vec![output.into()]),
+                ),
+            )]
+        }
+        zeph_session::SessionEvent::SessionStarted { .. }
+        | zeph_session::SessionEvent::ForkPoint { .. }
+        | zeph_session::SessionEvent::Condensation { .. }
+        | zeph_session::SessionEvent::Compaction { .. }
+        | zeph_session::SessionEvent::ModelChanged { .. }
+        | zeph_session::SessionEvent::SessionEnded { .. } => Vec::new(),
+    }
+}
+
 /// Returns `true` when `trimmed_text` is an ACP-native slash command that should
 /// be handled by [`ZephAcpAgentState::handle_slash_command`] rather than forwarded
 /// to the agent loop.
@@ -3204,7 +3306,6 @@ pub(super) mod helpers;
 use helpers::{
     DEFAULT_MODE_ID, DIAGNOSTICS_MIME_TYPE, build_available_commands, build_config_options,
     build_mode_state, format_diagnostics_block, loopback_event_to_updates, mime_to_ext, model_meta,
-    session_update_to_event,
 };
 use zeph_common::text::xml_escape;
 
@@ -3540,6 +3641,146 @@ mod prompt_injection_detection_tests {
         assert_eq!(
             result.body, clean,
             "clean prompt must be returned unmodified"
+        );
+    }
+}
+
+/// Regression coverage for S1 (spec-068 §12.3 / D-2): `session_event_to_updates` is the mapping
+/// `do_load_session` now uses to replay the durable JSONL event log instead of the emptied
+/// `acp_session_events` table. Exercised directly (no ACP client/server harness needed) since the
+/// function is pure.
+#[cfg(test)]
+mod session_event_replay_tests {
+    use super::*;
+
+    #[test]
+    fn user_message_becomes_user_message_chunk() {
+        let updates = session_event_to_updates(zeph_session::SessionEvent::UserMessage {
+            text: "hello".to_owned(),
+            image_refs: Vec::new(),
+        });
+        assert_eq!(updates.len(), 1);
+        assert!(matches!(
+            updates[0],
+            acp::schema::v1::SessionUpdate::UserMessageChunk(_)
+        ));
+    }
+
+    #[test]
+    fn assistant_text_part_becomes_agent_message_chunk() {
+        let updates = session_event_to_updates(zeph_session::SessionEvent::AssistantMessage {
+            parts: vec![zeph_llm::provider::MessagePart::Text {
+                text: "hi there".to_owned(),
+            }],
+        });
+        assert_eq!(updates.len(), 1);
+        assert!(matches!(
+            updates[0],
+            acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
+        ));
+    }
+
+    #[test]
+    fn assistant_tool_use_part_becomes_tool_call() {
+        let updates = session_event_to_updates(zeph_session::SessionEvent::AssistantMessage {
+            parts: vec![zeph_llm::provider::MessagePart::ToolUse {
+                id: "call_0".to_owned(),
+                name: "shell".to_owned(),
+                input: serde_json::json!({"cmd": "ls"}),
+            }],
+        });
+        assert_eq!(updates.len(), 1);
+        assert!(matches!(
+            updates[0],
+            acp::schema::v1::SessionUpdate::ToolCall(_)
+        ));
+    }
+
+    #[test]
+    fn assistant_message_maps_each_part_independently() {
+        let updates = session_event_to_updates(zeph_session::SessionEvent::AssistantMessage {
+            parts: vec![
+                zeph_llm::provider::MessagePart::ToolUse {
+                    id: "call_0".to_owned(),
+                    name: "shell".to_owned(),
+                    input: serde_json::json!({}),
+                },
+                zeph_llm::provider::MessagePart::Text {
+                    text: "done".to_owned(),
+                },
+            ],
+        });
+        assert_eq!(updates.len(), 2);
+        assert!(matches!(
+            updates[0],
+            acp::schema::v1::SessionUpdate::ToolCall(_)
+        ));
+        assert!(matches!(
+            updates[1],
+            acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
+        ));
+    }
+
+    #[test]
+    fn tool_result_becomes_tool_call_update_with_status() {
+        let updates = session_event_to_updates(zeph_session::SessionEvent::ToolResult {
+            id: "call_0".to_owned(),
+            name: "shell".to_owned(),
+            output: "ok".to_owned(),
+            is_error: false,
+            duration_ms: 10,
+        });
+        assert_eq!(updates.len(), 1);
+        let acp::schema::v1::SessionUpdate::ToolCallUpdate(update) = &updates[0] else {
+            panic!("expected ToolCallUpdate");
+        };
+        assert_eq!(
+            update.fields.status,
+            Some(acp::schema::v1::ToolCallStatus::Completed)
+        );
+    }
+
+    #[test]
+    fn failed_tool_result_maps_to_failed_status() {
+        let updates = session_event_to_updates(zeph_session::SessionEvent::ToolResult {
+            id: "call_0".to_owned(),
+            name: "shell".to_owned(),
+            output: "boom".to_owned(),
+            is_error: true,
+            duration_ms: 10,
+        });
+        let acp::schema::v1::SessionUpdate::ToolCallUpdate(update) = &updates[0] else {
+            panic!("expected ToolCallUpdate");
+        };
+        assert_eq!(
+            update.fields.status,
+            Some(acp::schema::v1::ToolCallStatus::Failed)
+        );
+    }
+
+    #[test]
+    fn bookkeeping_events_produce_no_client_visible_update() {
+        assert!(
+            session_event_to_updates(zeph_session::SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/tmp".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            })
+            .is_empty()
+        );
+        assert!(
+            session_event_to_updates(zeph_session::SessionEvent::ForkPoint {
+                new_session_id: "s2".to_owned(),
+            })
+            .is_empty()
+        );
+        assert!(
+            session_event_to_updates(zeph_session::SessionEvent::SessionEnded {
+                reason: "user_quit".to_owned(),
+            })
+            .is_empty()
         );
     }
 }

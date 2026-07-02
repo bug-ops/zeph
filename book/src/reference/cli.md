@@ -462,19 +462,43 @@ Model files are cached in `~/.cache/huggingface/hub/`. Run this before starting 
 
 ### `zeph sessions`
 
-Manage ACP session history. Requires the `acp` feature.
+Manage durable conversation-session event logs (see [Session Persistence and
+Resume](../advanced/session-persistence.md)). Requires the `session` or `acp` feature.
 
 | Subcommand | Description |
 |------------|-------------|
-| `sessions list` | List recent ACP sessions with ID, timestamp, and turn count |
-| `sessions resume <ID>` | Print all events from a past session to stdout |
-| `sessions delete <ID>` | Delete a session and its events from the database |
+| `sessions list` | List sessions — ID, title, status, event count, last updated |
+| `sessions show <ID> [--events]` | Session metadata, or the full event-log dump with `--events` |
+| `sessions resume <ID>` | Launch a live interactive agent bound to `<ID>`, replaying its history |
+| `sessions resume <ID> --print` | Print all events from the session to stdout instead (no agent started; matches the pre-session-persistence `resume` behavior) |
+| `sessions fork <ID> [--at N]` | Eager-copy the session into a fresh one, optionally cut at event `N` |
+| `sessions export <ID> <path>` | Write the session's event log to a file |
+| `sessions import <path>` | Load an exported event log as a new session |
+| `sessions delete <ID>` | Delete a session and its event log |
 
 ```bash
 zeph sessions list
-zeph sessions resume abc123
+zeph sessions show abc123 --events
+zeph sessions resume abc123               # live interactive agent
+zeph sessions resume abc123 --print       # dump events, no agent
+zeph sessions fork abc123 --at 40
+zeph sessions export abc123 backup.jsonl
+zeph sessions import backup.jsonl
 zeph sessions delete abc123
 ```
+
+### `zeph serve-sessions`
+
+Run Zeph as a long-lived process exposing durable sessions over HTTP/SSE. See [zeph serve —
+Persistent Agent Service](../advanced/serve-mode.md) for the full REST API. Requires the
+`session` feature.
+
+```bash
+zeph serve-sessions [--http-addr ADDR] [--max-sessions N]
+```
+
+`--acp` is not supported here — it errors with guidance to run `zeph --acp` (or `--acp-http`) as
+a separate process instead of combining transports in one process.
 
 ## Interactive Commands
 
@@ -650,6 +674,26 @@ Generate an on-demand summary of the current conversation. Useful for understand
 ```
 
 Configuration: Set `[session.recap]` in your config to control which LLM provider and whether to auto-recap on session resume.
+
+### `/conv`
+
+Browse, resume, or fork durable conversation-sessions (see [Session Persistence and
+Resume](../advanced/session-persistence.md)). Works identically in the CLI, TUI, and chat
+channels.
+
+| Subcommand | Description |
+|------------|-------------|
+| `/conv` or `/conv list` | List sessions — ID, title, status, event count, last updated |
+| `/conv show <id>` | One session's metadata |
+| `/conv resume <id>` | Live-swap the current conversation onto `<id>`, replaying its history |
+| `/conv fork <id>` | Eager-copy `<id>` into a fresh session, then swap onto the copy |
+
+```bash
+> /conv list
+> /conv show abc123
+> /conv resume abc123
+> /conv fork abc123
+```
 
 ## Global Options
 

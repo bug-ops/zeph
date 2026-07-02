@@ -815,6 +815,128 @@ async fn fork_session_creates_distinct_session_id() {
         .await;
 }
 
+/// `session/fork` copies the source session's durable JSONL event log into a new,
+/// self-contained child log when `[session] enabled = true` (spec-068 P2, #5343).
+///
+/// The mock spawner used by this test harness never runs a real `zeph_core::Agent` (that only
+/// happens in the root binary's `spawn_acp_agent`), so it cannot generate turns through the
+/// normal `SessionSink` path. Instead this test seeds the source session's `events.jsonl`
+/// directly via `zeph_session::SessionEventLog`, exercising exactly the `fork_conversation` /
+/// `ForkEngine::fork` wiring under test without needing the full agent-loop integration.
+#[cfg(feature = "unstable-session-fork")]
+#[tokio::test(flavor = "current_thread")]
+async fn fork_session_copies_event_log_when_persistence_enabled() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-fork-test.db")
+                .to_string_lossy()
+                .into_owned();
+            let session_data_dir = db_dir.path().join("sessions");
+
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path),
+                session_data_dir: Some(session_data_dir.clone()),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let source_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                // Seed the source session's event log directly (simulating turns that a real
+                // agent loop would have appended via SessionSink).
+                let source_dir =
+                    zeph_session::session_dir(&session_data_dir, &source_id.to_string());
+                let log = zeph_session::SessionEventLog::open(&source_dir)
+                    .await
+                    .expect("open source event log");
+                log.append(
+                    None,
+                    None,
+                    zeph_session::SessionEvent::SessionStarted {
+                        session_id: source_id.to_string(),
+                        cwd: workdir.path().to_string_lossy().into_owned(),
+                        provider_name: "claude".to_owned(),
+                        model: "opus".to_owned(),
+                        forked_from: None,
+                    },
+                )
+                .await
+                .expect("append SessionStarted");
+                log.append(
+                    None,
+                    None,
+                    zeph_session::SessionEvent::UserMessage {
+                        text: "hello".to_owned(),
+                        image_refs: vec![],
+                    },
+                )
+                .await
+                .expect("append UserMessage");
+
+                let forked = cx
+                    .send_request(acp::schema::v1::ForkSessionRequest::new(
+                        source_id.clone(),
+                        workdir.path(),
+                    ))
+                    .block_task()
+                    .await?;
+
+                let child_dir =
+                    zeph_session::session_dir(&session_data_dir, &forked.session_id.to_string());
+                let child_log = zeph_session::SessionEventLog::open(&child_dir)
+                    .await
+                    .expect("open child event log");
+                let events = child_log.read_all().await.expect("read child event log");
+                // 1 synthesized SessionStarted header (forked_from) + the 2 seeded events.
+                assert_eq!(events.len(), 3, "child log must contain the copied events");
+                assert!(matches!(
+                    events[0].kind,
+                    zeph_session::SessionEvent::SessionStarted {
+                        forked_from: Some(_),
+                        ..
+                    }
+                ));
+
+                let parent_log = zeph_session::SessionEventLog::open(&source_dir)
+                    .await
+                    .expect("reopen source event log");
+                let parent_events = parent_log.read_all().await.expect("read source event log");
+                assert!(
+                    matches!(
+                        parent_events.last().expect("parent has events").kind,
+                        zeph_session::SessionEvent::ForkPoint { .. }
+                    ),
+                    "parent log must record a ForkPoint provenance event"
+                );
+
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "fork_session persistence test failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
 /// `session/resume` reconnects to an in-memory session by id (#5367).
 #[tokio::test(flavor = "current_thread")]
 async fn resume_session_reconnects_to_existing_session() {
@@ -955,6 +1077,106 @@ async fn resume_session_reconstructs_from_store_after_restart() {
                         result.is_ok(),
                         "store-backed resume_session test failed: {result:?}"
                     );
+                }
+            }
+        })
+        .await;
+}
+
+/// `session/load` replays from the durable JSONL event log (spec-068 §12.3 / D-2), not the
+/// legacy `acp_session_events` table, which the P1 write cutover leaves permanently empty for
+/// post-cutover sessions (S1 regression fix). This test seeds only the JSONL log — never
+/// `save_acp_event` — so a `session/load` that still reached into the legacy table would find
+/// nothing there while this test's event still proves the store-backed reconstruction branch
+/// (fresh connection, empty in-memory `sessions` map) can load the session at all.
+#[tokio::test(flavor = "current_thread")]
+async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let db_dir = tempfile::tempdir().expect("failed to create temp db dir");
+            let sqlite_path = db_dir
+                .path()
+                .join("acp-load-test.db")
+                .to_string_lossy()
+                .into_owned();
+            let session_data_dir = db_dir.path().join("sessions");
+
+            let session_id = {
+                let (sw, sr, cw, cr) = duplex_pair();
+                let config = AcpServerConfig {
+                    sqlite_path: Some(sqlite_path.clone()),
+                    session_data_dir: Some(session_data_dir.clone()),
+                    ..test_config("test-agent")
+                };
+                let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+                let client_fut =
+                    acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                        cx.send_request(acp::schema::v1::InitializeRequest::new(
+                            acp::schema::ProtocolVersion::LATEST,
+                        ))
+                        .block_task()
+                        .await?;
+
+                        let session_id = cx
+                            .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                            .block_task()
+                            .await?
+                            .session_id;
+                        Ok(session_id)
+                    });
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result.expect("session/new failed"),
+                }
+            };
+
+            // Seed only the durable JSONL log (as SessionSink would in production) — no
+            // acp_session_events legacy rows exist for this session at all.
+            let session_dir = zeph_session::session_dir(&session_data_dir, &session_id.to_string());
+            let log = zeph_session::SessionEventLog::open(&session_dir)
+                .await
+                .expect("open event log");
+            log.append(
+                None,
+                None,
+                zeph_session::SessionEvent::UserMessage {
+                    text: "hello".to_owned(),
+                    image_refs: vec![],
+                },
+            )
+            .await
+            .expect("append UserMessage");
+
+            // Fresh connection: empty in-memory `sessions` map, so `session/load` can only
+            // succeed via the store-backed reconstruction branch.
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = AcpServerConfig {
+                sqlite_path: Some(sqlite_path),
+                session_data_dir: Some(session_data_dir),
+                ..test_config("test-agent")
+            };
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                cx.send_request(acp::schema::v1::LoadSessionRequest::new(
+                    session_id,
+                    workdir.path(),
+                ))
+                .block_task()
+                .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "session/load from event log failed: {result:?}");
                 }
             }
         })

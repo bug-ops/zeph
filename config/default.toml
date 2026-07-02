@@ -1462,6 +1462,18 @@ autonomous_turn_delay_ms = 500
 # Set to false to always start with the configured primary provider.
 provider_persistence = true
 
+# Maintain a durable, replayable JSONL event log per conversation-session (spec-068, #5343).
+# When true (default), every channel mints a session id on first turn and appends events to
+# <data_dir>/sessions/<session_id>/events.jsonl — the source of truth for crash-safe resume
+# and fork. When false, only the SQLite `messages` projection is written (pre-#5343 behavior).
+# enabled = true
+# Directory for per-session event logs; default is a sibling of memory.sqlite_path's parent.
+# data_dir = ".zeph/sessions"
+# Opt-in AEAD encryption of session event logs (deferred to a post-MVP implementation).
+# encrypt = false
+# Event-log size (MB) that guards a rotate/condense trigger.
+# max_event_log_mb = 256
+
 # [session.recap] — session recap on resume (#3064)
 # [session.recap]
 # Show a recap of the previous session when resuming a conversation (requires a persisted digest)
@@ -1472,6 +1484,30 @@ provider_persistence = true
 # provider = ""
 # Maximum recent messages included for fresh-generation path (no cached digest)
 # max_input_messages = 20
+
+# [session.condense] — durable context condensation policy (spec-068 §8, #5343)
+# [session.condense]
+# Provider name from [[llm.providers]] for condensation calls; empty = primary provider
+# condense_provider = "fast"
+# Fraction of the context budget that triggers condensation on resume/mid-session
+# threshold = 0.85
+# Minimum recent events preserved after condensation
+# keep_recent = 20
+
+# [serve] — `zeph serve` persistent agent service (spec-068 §9, #5343)
+# [serve]
+# HTTP/SSE API bind address
+# http_addr = "127.0.0.1:8420"
+# Require a bearer token on /sessions* endpoints (/health is always unauthenticated)
+# require_auth = true
+# Zeph age-vault key name to resolve the bearer token from at startup
+# auth_token_vault_key = "ZEPH_SERVE_AUTH_TOKEN"
+# Maximum number of concurrent live sessions LiveSessionRegistry will hold
+# max_sessions = 50
+# Seconds of no attached broadcast receivers before an idle SessionActor is evicted
+# session_idle_ttl_secs = 1800
+# Bounded mpsc capacity for a SessionActor's prompt mailbox; full mailbox -> HTTP 429
+# max_queued_prompts = 8
 
 # ── Lifecycle hooks ────────────────────────────────────────────────────────────
 # Hooks fire at named lifecycle points. Each hook specifies an action (shell

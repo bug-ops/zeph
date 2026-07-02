@@ -125,6 +125,8 @@ mod runner;
 mod scheduler;
 #[cfg(feature = "scheduler")]
 mod scheduler_executor;
+#[cfg(feature = "session")]
+mod serve;
 mod startup_checks;
 mod tracing_init;
 mod tui_bridge;

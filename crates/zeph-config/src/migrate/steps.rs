@@ -25,7 +25,12 @@
 //! step 63 adds `recall_include_imported` to `[memory.graph]` (#5015);
 //! step 64 adds `policy_provider` and `utility_window` advisory comments (#5067);
 //! step 65 adds `[tui.theme]` advisory block (Theme System 2.0, #5087);
-//! step 66 inserts active `name`/`color_mode` defaults into `[tui.theme]` (#5091).
+//! step 66 inserts active `name`/`color_mode` defaults into `[tui.theme]` (#5091);
+//! step 67 adds `[tui] delights` advisory comment;
+//! step 68 adds `mouse = false` advisory comment under `[tui]` (#5103);
+//! step 69 adds `default_asset_sensitivity` advisory comment under `[orchestration]` (spec-068, #3934);
+//! step 70 adds session-persistence keys and a `[session.condense]` advisory block (spec-068, #5343);
+//! step 71 adds a `[serve]` advisory block for `zeph serve` (spec-068 §9, #5343).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -52,13 +57,14 @@ use super::{
     migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
     migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
-    migrate_session_persist_provider_overrides, migrate_session_provider_persistence,
-    migrate_session_recap_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
-    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
-    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults, migrate_vigil_config,
-    migrate_worktree_config, migrate_worktree_git_timeout,
+    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_serve_config,
+    migrate_session_persist_provider_overrides, migrate_session_persistence_config,
+    migrate_session_provider_persistence, migrate_session_recap_config,
+    migrate_shell_checkpoints_config, migrate_shell_transactional, migrate_stt_to_provider,
+    migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
+    migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
+    migrate_tui_theme_defaults, migrate_vigil_config, migrate_worktree_config,
+    migrate_worktree_git_timeout,
 };
 
 // ── Wrapper structs for all 69 sequential migration steps ───────────────────────────────────────
@@ -821,5 +827,30 @@ impl Migration for MigrateOrchestrationAssetSensitivity {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_orchestration_asset_sensitivity(toml_src)
+    }
+}
+
+/// Step 70 — add session-persistence keys and a `[session.condense]` advisory block
+/// (spec-068-session-persistence, #5343).
+pub(super) struct MigrateSessionPersistenceConfig;
+impl Migration for MigrateSessionPersistenceConfig {
+    fn name(&self) -> &'static str {
+        "migrate_session_persistence_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_session_persistence_config(toml_src)
+    }
+}
+
+/// Step 71 — add a `[serve]` advisory block for `zeph serve` (spec-068 §9, #5343).
+pub(super) struct MigrateServeConfig;
+impl Migration for MigrateServeConfig {
+    fn name(&self) -> &'static str {
+        "migrate_serve_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_serve_config(toml_src)
     }
 }

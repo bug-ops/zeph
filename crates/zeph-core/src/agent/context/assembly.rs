@@ -399,6 +399,185 @@ impl<C: Channel> Agent<C> {
         Ok((old_conversation_id, new_conversation_id))
     }
 
+    /// Mid-session live conversation swap for `/conv resume <id>` / `/conv fork <id>`
+    /// (spec-068, #5343, architect ruling D-9).
+    ///
+    /// Sibling to [`Self::reset_conversation`] (`/new`) — same reset shape (clear message
+    /// history/queues/caches, keep cross-session state like memory/MCP/providers/skills intact)
+    /// — but instead of minting a fresh empty `ConversationId`, it sets `conversation_id` to the
+    /// resumed/forked session's own id (spec §5.2 bijection) and replays that session's durable
+    /// event log into `msg.messages` (same "append replayed messages" shape as
+    /// [`super::super::builder::AgentBuilder::with_preloaded_messages`], the D-6 startup path).
+    ///
+    /// Also re-points [`crate::agent::state::SessionState::session_sink`] to the resumed/forked
+    /// session's own [`zeph_session::SessionEventLog`] — `reset_conversation` swaps
+    /// `conversation_id` but has no equivalent concept, since `/new` always keeps writing to the
+    /// *same* session's log. Skipping this re-point here would mean subsequent turns silently
+    /// keep appending to the *previous* session's `events.jsonl` (INV-SP-1 accounting
+    /// corruption) instead of the resumed one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if minting the pre-reset digest's memory lookup, opening the resumed
+    /// session's [`zeph_session::SessionEventLog`], or replaying it fails. On error, no agent
+    /// state has been mutated yet (the replay happens before any reset step).
+    pub(in crate::agent) async fn load_and_resume_conversation(
+        &mut self,
+        session_id: &zeph_common::SessionId,
+        conversation_id: zeph_memory::ConversationId,
+    ) -> Result<(), super::super::error::AgentError> {
+        let Some(session_persistence_config) =
+            self.services.session.session_persistence_config.clone()
+        else {
+            return Err(super::super::error::AgentError::ContextError(
+                "session persistence is not enabled for this agent".to_owned(),
+            ));
+        };
+        let data_dir = PathBuf::from(&session_persistence_config.data_dir);
+        let session_path = zeph_session::session_dir(&data_dir, session_id.as_str());
+
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
+            return Err(super::super::error::AgentError::ContextError(
+                "session persistence requires semantic memory to be enabled".to_owned(),
+            ));
+        };
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+
+        // D-10 (spec-068 §12.3/§13): route through the shared hydration pipeline (legacy
+        // bootstrap + ReplayEngine fold + INV-SP-3 reconcile) instead of the previous inline
+        // copy, which never called `reconcile_projection` at all (impl-critic finding C2) and
+        // opened the event log up to three separate times (bootstrap, replay, sink re-point).
+        // D-13 (spec-068 §8.1, N3): `hydrate_and_condense` additionally folds in resume-time
+        // durable condensation — `condenser`/`token_counter`/`context_window` are all resolvable
+        // here without touching anything construction-time-only, exactly as they are at the
+        // other three resume paths (CLI/ACP/serve), which is what makes centralizing this call
+        // possible instead of each site carrying its own inline condensation block.
+        //
+        // Replay BEFORE mutating any agent state (fail-fast, matching reset_conversation's
+        // "mint id first" ordering) — if this fails, the agent keeps its current conversation.
+        let condense_config = &session_persistence_config.condense;
+        let condenser = zeph_session::LlmCondenser::new(
+            self.build_condense_deps(&condense_config.condense_provider),
+            condense_config.threshold,
+            condense_config.keep_recent,
+        );
+        let context_window = self
+            .context_manager
+            .budget
+            .as_ref()
+            .map_or(0, zeph_context::budget::ContextBudget::max_tokens);
+        let token_counter_adapter = zeph_agent_context::memory_backend::TokenCounterAdapter::new(
+            Arc::clone(&self.runtime.metrics.token_counter),
+        );
+
+        let hydrated = zeph_agent_persistence::hydrate_and_condense(
+            &session_path,
+            &store,
+            session_id.as_str(),
+            conversation_id,
+            &memory,
+            None,
+            &condenser,
+            &token_counter_adapter,
+            context_window,
+        )
+        .await
+        .map_err(|e| super::super::error::AgentError::ContextError(e.to_string()))?;
+
+        if let Some(ref tx) = self.services.session.status_tx {
+            let _ = tx.send("Replaying conversation...".to_string());
+        }
+
+        let old_conversation_id = self.services.memory.persistence.conversation_id;
+        self.spawn_outgoing_digest(old_conversation_id);
+        self.reset_swap_state();
+
+        // --- Apply the replayed history (same shape as `with_preloaded_messages`, D-6) ---
+        let mut messages = hydrated.messages;
+        self.msg.messages.append(&mut messages);
+        self.msg.history_preloaded = true;
+
+        // --- Set conversation_id from the resumed/forked session, not a freshly minted one ---
+        self.services.memory.persistence.conversation_id = Some(conversation_id);
+        self.services.memory.persistence.unsummarized_count = 0;
+        self.services.memory.compaction.cached_session_digest = None;
+        if let Some(ref acc) = self.services.memory.extraction.memcot_accumulator {
+            acc.reset_session_counters().await;
+        }
+
+        // --- Re-point SessionSink to the resumed/forked session's own event log, reusing the
+        // handle `hydrate_from_event_log` opened above (INV-D2: only one open
+        // `SessionEventLog` per session at a time) instead of opening the file again. ---
+        if session_persistence_config.enabled {
+            let sink = Arc::new(zeph_agent_persistence::SessionSink::new(
+                hydrated.log,
+                store,
+                session_id.clone(),
+            ));
+            self.services.session.session_sink = Some(sink);
+        }
+
+        if let Some(ref tx) = self.services.session.status_tx {
+            let _ = tx.send(String::new());
+        }
+
+        Ok(())
+    }
+
+    /// Clears message history/queues/caches shared by [`Self::reset_conversation`] (`/new`) and
+    /// [`Self::load_and_resume_conversation`] (`/conv resume`/`/conv fork`, D-9) — the parts of
+    /// a conversation swap that don't depend on where the new `conversation_id`/message history
+    /// comes from (mirrors `reset_conversation`'s steps 4-9).
+    fn reset_swap_state(&mut self) {
+        if let Some(h) = self.services.compression.pending_task_goal.take() {
+            h.abort();
+        }
+        if let Some(h) = self.services.compression.pending_sidequest_result.take() {
+            h.abort();
+        }
+        if let Some(h) = self.services.compression.pending_subgoal.take() {
+            h.abort();
+        }
+        self.services.compression.current_task_goal = None;
+        self.services.compression.task_goal_user_msg_hash = None;
+        self.services.compression.subgoal_registry = zeph_agent_context::SubgoalRegistry::default();
+        self.services.compression.subgoal_user_msg_hash = None;
+
+        if let Some(token) = self.services.orchestration.plan_cancel_token.take() {
+            token.cancel();
+        }
+        self.services.orchestration.pending_graph = None;
+        self.services.orchestration.pending_goal_embedding = None;
+        if let Some(ref mut mgr) = self.services.orchestration.subagent_manager {
+            mgr.shutdown_all();
+        }
+
+        self.clear_history();
+        self.tool_orchestrator.clear_cache();
+        let discarded = self.clear_queue();
+        if discarded > 0 {
+            tracing::debug!(
+                discarded,
+                "conversation swap: discarded queued messages that arrived during reset"
+            );
+        }
+        self.msg.pending_image_parts.clear();
+
+        self.services.security.user_provided_urls.write().clear();
+        self.services.security.flagged_urls.clear();
+
+        self.context_manager.reset_compaction();
+        self.services.focus.reset();
+        self.services.sidequest.reset();
+
+        self.runtime.debug.iteration_counter = 0;
+        self.msg.last_persisted_message_id = None;
+        self.msg.deferred_db_hide_ids.clear();
+        self.msg.deferred_db_summaries.clear();
+        self.services.tool_state.cached_filtered_tool_ids = None;
+        self.runtime.providers.cached_prompt_tokens = 0;
+    }
+
     /// Gather context from all memory sources and inject into the message window.
     ///
     /// Delegates to [`zeph_agent_context::ContextService::prepare_context`] and then

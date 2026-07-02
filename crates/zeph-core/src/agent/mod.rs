@@ -324,6 +324,7 @@ impl<C: Channel> Agent<C> {
                 last_persisted_message_id: None,
                 deferred_db_hide_ids: Vec::new(),
                 deferred_db_summaries: Vec::new(),
+                history_preloaded: false,
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -591,6 +592,7 @@ impl<C: Channel> Agent<C> {
                     caveman::CavemanCommand,
                     checkpoint::{RedoCommand, UndoCommand},
                     compaction::{CompactCommand, NewConversationCommand, RecapCommand},
+                    conv::ConvCommand,
                     experiment::ExperimentCommand,
                     goal::GoalCommand,
                     loop_cmd::LoopCommand,
@@ -652,6 +654,7 @@ impl<C: Channel> Agent<C> {
                 agent_reg.register(GoalCommand);
                 agent_reg.register(UndoCommand);
                 agent_reg.register(RedoCommand);
+                agent_reg.register(ConvCommand);
 
                 let mut ctx = zeph_commands::CommandContext {
                     sink: &mut agent_null_sink,

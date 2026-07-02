@@ -9,46 +9,6 @@ use zeph_config::AcpTemperaturePreset;
 
 use zeph_core::LoopbackEvent;
 
-pub(super) fn content_chunk_text(chunk: &ContentChunk) -> String {
-    match &chunk.content {
-        ContentBlock::Text(t) => t.text.clone(),
-        _ => String::new(),
-    }
-}
-
-pub(super) fn session_update_to_event(update: &SessionUpdate) -> (&'static str, String) {
-    match update {
-        SessionUpdate::UserMessageChunk(c) => ("user_message", content_chunk_text(c)),
-        SessionUpdate::AgentMessageChunk(c) => ("agent_message", content_chunk_text(c)),
-        SessionUpdate::AgentThoughtChunk(c) => ("agent_thought", content_chunk_text(c)),
-        SessionUpdate::ToolCall(tc) => {
-            let payload = match serde_json::to_string(tc) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to serialize ToolCall for persistence");
-                    String::new()
-                }
-            };
-            ("tool_call", payload)
-        }
-        SessionUpdate::ToolCallUpdate(tcu) => {
-            let payload = match serde_json::to_string(tcu) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to serialize ToolCallUpdate for persistence");
-                    String::new()
-                }
-            };
-            ("tool_call_update", payload)
-        }
-        SessionUpdate::ConfigOptionUpdate(u) => {
-            let payload = serde_json::to_string(u).unwrap_or_default();
-            ("config_option_update", payload)
-        }
-        _ => ("unknown", String::new()),
-    }
-}
-
 /// Returns `true` if `text` looks like a raw tool-use marker that should not be
 /// forwarded to the IDE (e.g. `[tool_use: bash (toolu_abc123)]`).
 pub(super) fn is_tool_use_marker(text: &str) -> bool {

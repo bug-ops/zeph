@@ -115,6 +115,9 @@ pub struct Config {
     /// Session UX settings (recap-on-resume, etc.).
     #[serde(default)]
     pub session: crate::session::SessionConfig,
+    /// `zeph serve` persistent agent service settings (spec-068 §9).
+    #[serde(default)]
+    pub serve: crate::serve::ServeConfig,
     /// Session-scoped CLI overrides (bare mode, JSON output, auto-approve).
     #[serde(default)]
     pub cli: CliConfig,
@@ -349,6 +352,7 @@ impl Default for Config {
             telemetry: TelemetryConfig::default(),
             metrics: MetricsConfig::default(),
             session: crate::session::SessionConfig::default(),
+            serve: crate::serve::ServeConfig::default(),
             cli: CliConfig::default(),
             quality: crate::quality::QualityConfig::default(),
             notifications: NotificationsConfig::default(),

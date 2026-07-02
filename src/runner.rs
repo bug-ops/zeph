@@ -33,8 +33,8 @@ use parking_lot::RwLock;
 use zeph_channels::AnyChannel;
 #[cfg(feature = "deep-link")]
 use zeph_common::deep_link::parse_deep_link;
-use zeph_common::{RestartPolicy, TaskDescriptor, TaskSupervisor};
-use zeph_config::{ThinkingConfig, ThinkingEffort};
+use zeph_common::{RestartPolicy, SessionId, TaskDescriptor, TaskSupervisor};
+use zeph_config::{SessionConfig, ThinkingConfig, ThinkingEffort};
 use zeph_core::agent::Agent;
 #[cfg(feature = "acp")]
 use zeph_core::config::AcpTransport;
@@ -43,6 +43,8 @@ use zeph_core::config::AcpTransport;
 use crate::acp::run_acp_http_server;
 #[cfg(feature = "acp")]
 use crate::acp::{print_acp_manifest, run_acp_server};
+#[cfg(any(feature = "acp", feature = "session"))]
+use crate::cli::SessionsCommand;
 use crate::cli::{Command, DbCommand};
 #[cfg(feature = "acp")]
 use crate::commands::acp::handle_acp_command;
@@ -52,7 +54,7 @@ use crate::commands::memory::handle_memory_command;
 use crate::commands::router::handle_router_command;
 #[cfg(feature = "scheduler")]
 use crate::commands::schedule::handle_schedule_command;
-#[cfg(feature = "acp")]
+#[cfg(any(feature = "acp", feature = "session"))]
 use crate::commands::sessions::handle_sessions_command;
 use crate::commands::skill::handle_skill_command;
 use crate::commands::vault::handle_vault_command;
@@ -439,6 +441,64 @@ impl Drop for EarlyTuiGuard {
     }
 }
 
+/// Mint or resume this conversation's durable session event log (spec-068, #5343).
+///
+/// Reuses the session already linked to `conversation_id` across restarts rather than minting a
+/// new one every launch, so a CLI/TUI conversation's event log stays continuous. Returns `None`
+/// (and logs a warning) on any I/O/DB failure — session persistence is best-effort: the agent
+/// must still run with only the existing `SQLite` `messages` projection if it fails.
+async fn init_session_sink(
+    memory: &std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
+    conversation_id: zeph_memory::ConversationId,
+    session_config: &SessionConfig,
+) -> Option<std::sync::Arc<zeph_agent_persistence::SessionSink>> {
+    if !session_config.enabled {
+        return None;
+    }
+
+    let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+    let existing = store
+        .get_by_conversation_id(conversation_id.0)
+        .await
+        .unwrap_or_default();
+
+    let session_id = if let Some(meta) = existing {
+        SessionId::new(meta.session_id)
+    } else {
+        let id = SessionId::generate();
+        if let Err(e) = store.create(id.as_str()).await {
+            tracing::warn!(error = %e, "failed to create session-store row; session persistence disabled for this run");
+            return None;
+        }
+        if let Err(e) = store
+            .link_conversation(id.as_str(), conversation_id.0)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to link session to conversation");
+        }
+        id
+    };
+
+    let data_dir = std::path::PathBuf::from(&session_config.data_dir);
+    let session_path = zeph_session::session_dir(&data_dir, session_id.as_str());
+    match zeph_session::SessionEventLog::open(&session_path).await {
+        Ok(log) => {
+            tracing::info!(session_id = %session_id, "session event log opened");
+            Some(std::sync::Arc::new(
+                zeph_agent_persistence::SessionSink::new(
+                    std::sync::Arc::new(log),
+                    store,
+                    session_id,
+                ),
+            ))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open session event log; session persistence disabled for this run");
+            None
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines, clippy::large_futures)]
 #[cfg_attr(not(feature = "deep-link"), allow(unused_mut))]
 pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
@@ -541,9 +601,45 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(Command::Acp { command: acp_cmd }) => {
             return handle_acp_command(acp_cmd, cli.config.as_deref()).await;
         }
-        #[cfg(feature = "acp")]
+        // D-6 (spec-068, #5343): `sessions resume <id>` (no `--print`) launches a live
+        // interactive agent bound to the chosen past session, not a one-shot dump. Falls
+        // through to the normal interactive bootstrap below (matching the `UrlOpen` precedent
+        // above) rather than `return`ing, so replay/hydration and the continuation loop reuse
+        // the existing interactive machinery — only `conversation_id` resolution differs (see
+        // `resume_session_id` handling further down).
+        #[cfg(any(feature = "acp", feature = "session"))]
+        Some(Command::Sessions {
+            command:
+                SessionsCommand::Resume {
+                    ref id,
+                    print: false,
+                },
+        }) => {
+            cli.resume_session_id = Some(id.clone());
+            cli.command = None;
+        }
+        #[cfg(any(feature = "acp", feature = "session"))]
         Some(Command::Sessions { command: sess_cmd }) => {
             return handle_sessions_command(sess_cmd, cli.config.as_deref()).await;
+        }
+        #[cfg(feature = "session")]
+        Some(Command::ServeSessions {
+            http_addr,
+            acp,
+            max_sessions,
+        }) => {
+            return crate::serve::handle_serve_sessions_command(
+                crate::serve::ServeSessionsArgs {
+                    http_addr,
+                    acp,
+                    max_sessions,
+                    vault_backend: cli.vault.clone(),
+                    vault_key: cli.vault_key.clone(),
+                    vault_path: cli.vault_path.clone(),
+                },
+                cli.config.as_deref(),
+            )
+            .await;
         }
         Some(Command::Agents {
             command: agents_cmd,
@@ -1544,11 +1640,93 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         _ => app.config().cli.allowed_tools.clone(),
     };
 
-    let conversation_id = match memory.sqlite().latest_conversation_id().await? {
-        Some(id) => id,
-        None => memory.sqlite().create_conversation().await?,
+    // D-6 (spec-068, #5343): `sessions resume <id>` seeds this run with a specific past
+    // session's conversation instead of the latest one.
+    let mut resumed_messages: Vec<zeph_llm::provider::Message> = Vec::new();
+    let mut resumed_session_sink: Option<std::sync::Arc<zeph_agent_persistence::SessionSink>> =
+        None;
+    let conversation_id = if let Some(resume_id) = cli.resume_session_id.clone() {
+        let session_store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let meta = session_store
+            .get(&resume_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session not found: {resume_id}"))?;
+        let cid = meta
+            .conversation_id
+            .map(zeph_memory::ConversationId)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "session {resume_id} has no linked conversation (legacy session with no \
+                     recorded history); use `zeph sessions resume {resume_id} --print` to \
+                     inspect its raw event log instead"
+                )
+            })?;
+
+        // D-10 (spec-068 §12.3/§13): route through the shared hydration pipeline (legacy
+        // bootstrap + ReplayEngine fold + INV-SP-3 reconcile) instead of falling through to the
+        // SQLite-only `agent.load_history()` below — impl-critic finding C1: CLI resume
+        // previously never replayed the durable event log at all, silently diverging from the
+        // ACP resume pipeline for the exact path AC-1/AC-5 name. `hydrated.log` becomes this
+        // run's SessionSink directly (INV-D2: only one open `SessionEventLog` handle per
+        // session at a time — reusing it here instead of also calling `init_session_sink` avoids
+        // a second, conflicting open of the same file below).
+        // D-13 (spec-068 §8.1, N3): `hydrate_and_condense` folds in resume-time durable
+        // condensation — `condenser`/`token_counter`/`context_window` are all resolvable here,
+        // before agent construction, via the same `provider`/`budget_tokens` this run already
+        // computed for its own `AgentSessionConfig` (no live `Agent` needed, architect ruling).
+        if app.config().session.enabled {
+            let data_dir = std::path::PathBuf::from(&app.config().session.data_dir);
+            let session_path = zeph_session::session_dir(&data_dir, &resume_id);
+            let (condenser, token_counter_adapter) =
+                zeph_core::provider_factory::build_resume_condenser(app.config(), &provider);
+            match zeph_agent_persistence::hydrate_and_condense(
+                &session_path,
+                &session_store,
+                &resume_id,
+                cid,
+                &memory,
+                None,
+                &condenser,
+                token_counter_adapter.as_ref(),
+                budget_tokens,
+            )
+            .await
+            {
+                Ok(hydrated) => {
+                    resumed_messages = hydrated.messages;
+                    resumed_session_sink = Some(std::sync::Arc::new(
+                        zeph_agent_persistence::SessionSink::new(
+                            hydrated.log,
+                            session_store,
+                            SessionId::new(resume_id.clone()),
+                        ),
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "session hydration failed for resume; continuing with SQLite-only history");
+                }
+            }
+        }
+
+        cid
+    } else {
+        match memory.sqlite().latest_conversation_id().await? {
+            Some(id) => id,
+            None => memory.sqlite().create_conversation().await?,
+        }
     };
     tracing::info!("conversation id: {conversation_id}");
+
+    // Session persistence (spec-068, #5343): mint or resume this conversation's durable JSONL
+    // event log. Config-gated, not Cargo-feature-gated — `[session] enabled` (default: true)
+    // is the sole switch; the `session` Cargo feature is reserved for the CLI persistence verbs
+    // and `zeph serve` (P2/P3), not for this core dual-write path. When resuming, the sink was
+    // already constructed above from the hydration helper's opened log.
+    let session_sink = if let Some(sink) = resumed_session_sink {
+        Some(sink)
+    } else {
+        init_session_sink(&memory, conversation_id, &app.config().session).await
+    };
 
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
     let config = app.config();
@@ -2433,6 +2611,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         config.memory.semantic.recall_limit,
         config.memory.summarization_threshold,
     )
+    .with_session_sink(session_sink.clone())
+    .with_session_persistence_config(Some(config.session.clone()))
     .with_compression(config.memory.compression.clone())
     .with_typed_pages_state(typed_pages_state)
     .with_routing(config.memory.store_routing.clone())
@@ -2487,6 +2667,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     .with_embedding_provider(embedding_provider.clone())
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider)
     .await;
+
+    // D-10 (spec-068 §12.3): seed replayed history from `sessions resume`'s hydration above —
+    // mirrors ACP's own `with_preloaded_messages` usage. Sets `history_preloaded`, so the
+    // `agent.load_history()` SQLite fallback further down becomes a no-op for this run.
+    let agent = if resumed_messages.is_empty() {
+        agent
+    } else {
+        agent.with_preloaded_messages(resumed_messages)
+    };
 
     // Hold ephemeral plugin TempDir handles in the agent for the session lifetime.
     let agent = if ephemeral_plugin_dirs.is_empty() {

@@ -139,6 +139,53 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach the durable session event-log dual-writer (spec-068, #5343).
+    ///
+    /// `None` when `[session] enabled = false` — the agent then persists only the `SQLite`
+    /// `messages` projection, matching pre-#5343 behavior.
+    #[must_use]
+    pub fn with_session_sink(
+        mut self,
+        session_sink: Option<Arc<zeph_agent_persistence::SessionSink>>,
+    ) -> Self {
+        self.services.session.session_sink = session_sink;
+        self
+    }
+
+    /// Retain the `[session]` config snapshot (spec-068, #5343, D-9) so a mid-session
+    /// `/conv resume`/`/conv fork` swap can locate `data_dir` later — unlike
+    /// [`Self::with_session_sink`], this config is not consumed at construction time.
+    #[must_use]
+    pub fn with_session_persistence_config(
+        mut self,
+        config: Option<zeph_config::SessionConfig>,
+    ) -> Self {
+        self.services.session.session_persistence_config = config;
+        self
+    }
+
+    /// Seed `MessageState` directly from a durable event-log replay (spec-068, #5343), bypassing
+    /// the `SQLite`-based [`Self::load_history`] path.
+    ///
+    /// Appends `messages` after `Agent::new`'s system-prompt message (never replaces it — the
+    /// system prompt is not part of the replayed conversation history). No-op (aside from
+    /// marking history as preloaded) when `messages` is empty — callers should only pass a
+    /// non-empty `Vec` once they've confirmed the replay produced content.
+    ///
+    /// Call this **before** [`Self::load_history`] (or not at all if the caller intends to load
+    /// from `SQLite`) — once called, `load_history` becomes a no-op (gated on the
+    /// `history_preloaded` flag this method sets), since `PersistenceService::load_history`
+    /// appends rather than replaces and would otherwise duplicate every message.
+    #[must_use]
+    pub fn with_preloaded_messages(
+        mut self,
+        mut messages: Vec<zeph_llm::provider::Message>,
+    ) -> Self {
+        self.msg.messages.append(&mut messages);
+        self.msg.history_preloaded = true;
+        self
+    }
+
     /// Configure autosave behaviour for assistant messages.
     #[must_use]
     pub fn with_autosave_config(mut self, autosave_assistant: bool, min_length: usize) -> Self {

@@ -279,6 +279,14 @@ pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 
+    /// Session id to resume interactively (spec-068 D-6, #5343).
+    ///
+    /// Not a CLI flag — populated programmatically when dispatching `sessions resume <id>`
+    /// (without `--print`) to the interactive `runner::run` path instead of the one-shot
+    /// hydration-summary dump.
+    #[arg(skip)]
+    pub(crate) resume_session_id: Option<String>,
+
     /// Initial prompt pre-queued from a deep-link URI (set by `handle_url_open` before bootstrap).
     ///
     /// Not a CLI flag — populated programmatically by the `url-open` dispatch arm.
@@ -350,11 +358,29 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ScheduleCommand,
     },
-    /// Manage ACP session history
-    #[cfg(feature = "acp")]
+    /// Manage conversation-session history (spec-068, #5343)
+    #[cfg(any(feature = "acp", feature = "session"))]
     Sessions {
         #[command(subcommand)]
         command: SessionsCommand,
+    },
+    /// Run as a persistent agent service exposing sessions over HTTP/SSE (spec-068 §9, #5343).
+    ///
+    /// Named `serve-sessions` rather than the spec's literal `serve` — `Command::Serve` is
+    /// already the scheduler's foreground-daemon command (`#[cfg(all(unix, feature =
+    /// "scheduler"))]`, `src/cli.rs` above); both features can be enabled simultaneously, so a
+    /// second command claiming the same top-level name is not viable.
+    #[cfg(feature = "session")]
+    ServeSessions {
+        /// HTTP/SSE API bind address (overrides `[serve] http_addr`).
+        #[arg(long, value_name = "ADDR")]
+        http_addr: Option<String>,
+        /// Also run the ACP protocol transport alongside the HTTP/SSE API.
+        #[arg(long)]
+        acp: bool,
+        /// Maximum concurrent live sessions (overrides `[serve] max_sessions`).
+        #[arg(long, value_name = "N")]
+        max_sessions: Option<usize>,
     },
     /// Inspect or reset Thompson Sampling router state
     Router {
@@ -896,20 +922,60 @@ pub(crate) enum ScheduleCommand {
     },
 }
 
-#[cfg(feature = "acp")]
+#[cfg(any(feature = "acp", feature = "session"))]
 #[derive(Subcommand)]
 pub(crate) enum SessionsCommand {
-    /// List recent ACP sessions
+    /// List recent conversation-sessions
     List,
-    /// Resume a past session by ID (print events to stdout)
+    /// Resume a session as a live interactive agent, replaying its event log to reconstruct
+    /// history (spec-068 D-6, #5343)
     Resume {
         /// Session ID
         id: String,
+        /// Dump the session's raw JSONL events to stdout instead of resuming interactively
+        /// (the pre-#5343 one-shot dump behavior)
+        #[arg(long)]
+        print: bool,
     },
-    /// Delete an ACP session and its events
+    /// Show metadata (and optionally events) for a single session
+    Show {
+        /// Session ID
+        id: String,
+        /// Only include events with `seq >= FROM`
+        #[arg(long, value_name = "SEQ")]
+        from: Option<u64>,
+        /// Only include events with `seq < TO`
+        #[arg(long, value_name = "SEQ")]
+        to: Option<u64>,
+        /// Also print the session's events (JSONL, one per line)
+        #[arg(long)]
+        events: bool,
+    },
+    /// Delete a session and its event log
     Delete {
         /// Session ID
         id: String,
+    },
+    /// Fork a session into a new, independent child session
+    Fork {
+        /// Session ID to fork from
+        id: String,
+        /// Fork at this event `seq` (exclusive upper bound); omit to fork at the current end of
+        /// the log (copies everything)
+        #[arg(long, value_name = "SEQ")]
+        at: Option<u64>,
+    },
+    /// Export a session's event log to a JSONL file
+    Export {
+        /// Session ID to export
+        id: String,
+        /// Destination path for the exported JSONL file
+        path: std::path::PathBuf,
+    },
+    /// Import a session event log from a JSONL file as a new session
+    Import {
+        /// Source JSONL file (as produced by `sessions export`)
+        path: std::path::PathBuf,
     },
 }
 

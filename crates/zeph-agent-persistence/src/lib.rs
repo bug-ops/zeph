@@ -24,15 +24,25 @@
 //! # TODO(critic): consolidate MockChannel/MockToolExecutor into shared zeph-agent-test-helpers
 //! crate; tracked separately from #3515/#3516
 
+pub mod condense;
 pub mod embed;
 pub mod error;
 pub mod graph;
+pub mod hydrate;
+pub mod legacy_bootstrap;
+pub mod reconcile;
 pub mod request;
 pub mod sanitize;
 pub mod service;
+pub mod session_sink;
 pub mod state;
 
+pub use condense::{hydrate_and_condense, maybe_condense_on_resume, resume_budget_fraction};
 pub use error::PersistenceError;
+pub use hydrate::{Hydrated, hydrate_from_event_log};
+pub use legacy_bootstrap::bootstrap_legacy_session;
+pub use reconcile::reconcile_projection;
 pub use request::{LoadHistoryOutcome, PersistMessageOutcome, PersistMessageRequest};
 pub use service::{LoadHistoryParams, PersistenceService};
+pub use session_sink::SessionSink;
 pub use state::{MemoryPersistenceView, MetricsView, ProviderHandles, SecurityView};

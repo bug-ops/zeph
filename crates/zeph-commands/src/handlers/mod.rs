@@ -17,6 +17,7 @@ pub mod checkpoint;
 #[cfg(feature = "cocoon")]
 pub mod cocoon;
 pub mod compaction;
+pub mod conv;
 pub mod debug;
 pub mod experiment;
 pub mod goal;

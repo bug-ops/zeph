@@ -564,6 +564,27 @@ pub trait AgentAccess: Send {
         let _ = args;
         Box::pin(async move { Ok(String::new()) })
     }
+
+    // ----- /conv -----
+
+    /// Execute `/conv [list]` or `/conv show <id>` (spec-068, #5343).
+    ///
+    /// `args` is everything after `/conv`. Empty string and `"list"` both list durable
+    /// conversation-sessions; `"show <id>"` returns one session's metadata. Mirrors
+    /// `zeph serve-sessions`'s `GET /sessions`/`GET /sessions/:id` REST endpoints, reading
+    /// through the same `zeph_session::SessionStore`.
+    ///
+    /// Returns a formatted response string. The default returns a "not supported" message —
+    /// only channels backed by an `Agent` with `[session] enabled = true` override this.
+    fn handle_conv<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = args;
+        Box::pin(async move {
+            Ok("Conversation-session persistence is not enabled in this context.".to_owned())
+        })
+    }
 }
 
 /// A no-op [`AgentAccess`] implementation.

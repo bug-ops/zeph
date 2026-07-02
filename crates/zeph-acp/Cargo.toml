@@ -24,8 +24,8 @@ default = [
 ]
 # `zeph-memory`/`zeph-db` require a backend to compile; default to `sqlite` so this crate
 # builds in isolation, and expose `postgres` for PostgreSQL deployments (#4956).
-sqlite = ["zeph-memory/sqlite"]
-postgres = ["zeph-memory/postgres"]
+sqlite = ["zeph-memory/sqlite", "zeph-session/sqlite"]
+postgres = ["zeph-memory/postgres", "zeph-session/postgres"]
 acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:tower-http", "dep:subtle", "dep:tower", "zeph-common/deep-link"]
 # session/close and session/delete stabilized in acp 0.14.0; no upstream feature gate needed
 unstable-session-delete = []
@@ -82,6 +82,7 @@ zeph-core.workspace = true
 zeph-llm.workspace = true
 zeph-mcp.workspace = true
 zeph-memory.workspace = true
+zeph-session = { workspace = true, default-features = false }
 zeph-tools.workspace = true
 # See https://github.com/bug-ops/zeph (workspace dependencies only contain versions)
 

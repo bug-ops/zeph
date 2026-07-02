@@ -140,6 +140,91 @@ pub fn build_provider_from_entry(
     }
 }
 
+/// Resolve a provider by name from `config.llm.providers`, falling back to `primary` when
+/// `name` is empty, not found, or fails to build.
+///
+/// The Agent-free counterpart to `Agent::resolve_background_provider` (`crates/zeph-core/src/
+/// agent/learning/arise.rs`) — that method looks up an *already-built* provider from the live
+/// `Agent`'s `provider_pool` cache; this one builds fresh from `config.llm.providers` via
+/// [`build_provider_from_entry`] for callers that run *before* an `Agent` (and its pool) exists
+/// — e.g. resume-time condensation at CLI/ACP/`zeph serve` construction sites (spec-068
+/// architect ruling D-13, spec §8.1). Fresh-build cost is a non-issue here: this only runs on
+/// session resume, not the hot per-turn path.
+#[must_use]
+pub fn resolve_named_provider(config: &Config, primary: &AnyProvider, name: &str) -> AnyProvider {
+    if name.is_empty() {
+        return primary.clone();
+    }
+    let Some(entry) = config
+        .llm
+        .providers
+        .iter()
+        .find(|e| e.effective_name().eq_ignore_ascii_case(name))
+    else {
+        tracing::warn!(
+            provider = name,
+            "provider not found in [[llm.providers]], falling back to primary"
+        );
+        return primary.clone();
+    };
+    match build_provider_from_entry(entry, config) {
+        Ok(provider) => provider,
+        Err(e) => {
+            tracing::warn!(error = %e, provider = name, "failed to build named provider, falling back to primary");
+            primary.clone()
+        }
+    }
+}
+
+/// Build the [`zeph_session::LlmCondenser`] + token counter D-13's Agent-free resume-time
+/// condensation needs, shared by every construction-time session-open path (CLI `sessions
+/// resume`, ACP `spawn_acp_agent`, `zeph serve`'s `hydrate_session_sink`) so they cannot drift
+/// from each other on `[session.condense]` field mapping — the same divergence risk D-10 named
+/// for the hydration pipeline itself, applied here to condenser construction.
+///
+/// Returns the condenser plus a standalone `Arc<TokenCounterAdapter>` for
+/// [`zeph_agent_persistence::resume_budget_fraction`]'s own token-counting need (distinct from
+/// the counter embedded in the condenser's `SummarizationDeps`, which the LLM-summarization path
+/// uses) — cheap to construct twice: [`zeph_memory::TokenCounter::new`] is backed by a
+/// process-scoped `OnceLock`, so only the first call anywhere in the process pays for loading
+/// the BPE tokenizer.
+#[must_use]
+pub fn build_resume_condenser(
+    config: &Config,
+    primary_provider: &AnyProvider,
+) -> (
+    zeph_session::LlmCondenser,
+    std::sync::Arc<zeph_agent_context::memory_backend::TokenCounterAdapter>,
+) {
+    let condense_config = &config.session.condense;
+    let condense_provider = resolve_named_provider(
+        config,
+        primary_provider,
+        condense_config.condense_provider.as_str(),
+    );
+    let token_counter_adapter = std::sync::Arc::new(
+        zeph_agent_context::memory_backend::TokenCounterAdapter::new(std::sync::Arc::new(
+            zeph_memory::TokenCounter::new(),
+        )),
+    );
+    let condenser = zeph_session::LlmCondenser::new(
+        zeph_context::summarization::SummarizationDeps {
+            provider: condense_provider,
+            llm_timeout: std::time::Duration::from_secs(config.timeouts.llm_seconds),
+            token_counter: std::sync::Arc::new(
+                zeph_agent_context::memory_backend::TokenCounterAdapter::new(std::sync::Arc::new(
+                    zeph_memory::TokenCounter::new(),
+                )),
+            ),
+            structured_summaries: config.memory.structured_summaries,
+            on_anchored_summary: None,
+        },
+        condense_config.threshold,
+        condense_config.keep_recent,
+    );
+    (condenser, token_counter_adapter)
+}
+
 fn build_ollama_provider(entry: &ProviderEntry, config: &Config) -> AnyProvider {
     let base_url = entry
         .base_url

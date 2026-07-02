@@ -146,6 +146,17 @@ struct SharedAgentDeps {
 
     // Config snapshot — single source of truth for all config-derived agent settings
     session_config: zeph_core::AgentSessionConfig,
+    /// `[session]` persistence settings (spec-068, #5343) — durable JSONL event log dual-write.
+    /// Distinct from `session_config` (`AgentSessionConfig`, recap/loop settings).
+    session_persistence_config: zeph_config::SessionConfig,
+    /// D-13 (spec-068 §8.1, N3): resume-time durable condensation, pre-built once here (where
+    /// the full `Config` — needed for `[[llm.providers]]` name resolution and secrets — is
+    /// still in scope) rather than per-session in `spawn_acp_agent`, which only receives
+    /// pre-decomposed sub-configs, not the raw `Config`. Mirrors the existing
+    /// `session_persistence_config` pattern: extract once at deps-build time, read by
+    /// reference per session.
+    resume_condenser: zeph_session::LlmCondenser,
+    resume_token_counter: std::sync::Arc<zeph_agent_context::memory_backend::TokenCounterAdapter>,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
     trajectory_config: zeph_core::config::TrajectoryConfig,
@@ -577,6 +588,10 @@ async fn build_acp_deps(
     };
 
     let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
+    // D-13 (spec-068 §8.1, N3): built once here, where the full `Config` is still in scope —
+    // see the `resume_condenser` field's doc comment on `SharedAgentDeps`.
+    let (resume_condenser_built, resume_token_counter_built) =
+        zeph_core::provider_factory::build_resume_condenser(config, &provider);
     let feedback_classifier = app.build_feedback_classifier(&provider);
 
     let deps = SharedAgentDeps {
@@ -637,6 +652,9 @@ async fn build_acp_deps(
         audit_logger: acp_audit_logger,
         hooks_config: config.hooks.clone(),
         session_config,
+        session_persistence_config: config.session.clone(),
+        resume_condenser: resume_condenser_built,
+        resume_token_counter: resume_token_counter_built,
         focus_config: config.agent.focus.clone(),
         sidequest_config: config.memory.sidequest.clone(),
         trajectory_config: config.memory.trajectory.clone(),
@@ -750,6 +768,7 @@ async fn spawn_acp_agent(
     let quarantine_provider = d.quarantine_provider.clone();
     let guardrail_provider = d.guardrail_provider.clone();
     let session_config = d.session_config.clone();
+    let session_persistence_config = d.session_persistence_config.clone();
     let managed_skills_dir = crate::bootstrap::managed_skills_dir();
     let skill_reload_tx = d.skill_reload_tx.clone();
     let config_reload_tx = d.config_reload_tx.clone();
@@ -933,6 +952,76 @@ async fn spawn_acp_agent(
             recall_limit,
             summarization_threshold,
         );
+    }
+
+    // Session persistence (spec-068, #5343): reuse the ACP session_id directly as the
+    // zeph_common::SessionId — ACP already owns this session's identity/lifecycle, so no
+    // separate minting/reuse logic is needed here (unlike the CLI/TUI path in runner.rs, which
+    // has no pre-existing session identity to anchor to). `SessionStore::create` is idempotent
+    // (INSERT_IGNORE) and does not touch `conversation_id`, which ACP's own
+    // `create_acp_session_with_conversation` already manages — this call only ensures the row
+    // exists so `SessionStore::update_seq` has something to update.
+    if session_persistence_config.enabled {
+        let sid = zeph_common::SessionId::new(session_ctx.session_id.to_string());
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        if let Err(e) = store.create(sid.as_str()).await {
+            tracing::warn!(error = %e, session_id = %sid, "failed to create session-store row for ACP session");
+        }
+        let data_dir = std::path::PathBuf::from(&session_persistence_config.data_dir);
+        let session_path = zeph_session::session_dir(&data_dir, sid.as_str());
+
+        // D-10 (spec-068 §12.3/§13): route through the shared hydration pipeline (legacy
+        // bootstrap + ReplayEngine fold + INV-SP-3 reconcile) — the one pipeline every
+        // session-open path (ACP, CLI `sessions resume`, `/conv resume`) now shares, so they
+        // cannot silently diverge again (impl-critic finding C1). Bootstrap/reconcile need a
+        // linked `ConversationId`; when absent (store was unavailable at session creation —
+        // `with_memory` above was skipped too), fall back to a bare log open with no
+        // SQLite-touching steps, matching this edge case's pre-D-10 behavior.
+        // D-13 (spec-068 §8.1, N3): `hydrate_and_condense` additionally folds in resume-time
+        // durable condensation via the pre-built `d.resume_condenser`/`d.resume_token_counter`
+        // (see `SharedAgentDeps`'s doc comment for why they're built once at deps-construction
+        // time, not here).
+        let log = if let Some(cid) = session_ctx.conversation_id {
+            match zeph_agent_persistence::hydrate_and_condense(
+                &session_path,
+                &store,
+                sid.as_str(),
+                cid,
+                &memory,
+                None,
+                &d.resume_condenser,
+                d.resume_token_counter.as_ref(),
+                d.session_config.budget_tokens,
+            )
+            .await
+            {
+                Ok(hydrated) => {
+                    if !hydrated.messages.is_empty() {
+                        agent = agent.with_preloaded_messages(hydrated.messages);
+                    }
+                    Some(hydrated.log)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "session hydration failed; session persistence disabled for this session");
+                    None
+                }
+            }
+        } else {
+            match zeph_session::SessionEventLog::open(&session_path).await {
+                Ok(log) => Some(Arc::new(log)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to open session event log for ACP session; session persistence disabled for this session");
+                    None
+                }
+            }
+        };
+
+        if let Some(log) = log {
+            let sink = Arc::new(zeph_agent_persistence::SessionSink::new(log, store, sid));
+            agent = agent
+                .with_session_sink(Some(sink))
+                .with_session_persistence_config(Some(session_persistence_config.clone()));
+        }
     }
 
     if let Some(signal) = cancel_signal {
@@ -1437,6 +1526,10 @@ pub(crate) async fn run_acp_server(
         title_max_chars: deps.acp_title_max_chars,
         max_history: deps.acp_max_history,
         sqlite_path: Some(deps.sqlite_path.clone()),
+        session_data_dir: deps
+            .session_persistence_config
+            .enabled
+            .then(|| std::path::PathBuf::from(&deps.session_persistence_config.data_dir)),
         ready_notification: Some(zeph_acp::transport::ReadyNotification {
             version: deps.acp_agent_version.clone(),
             pid: std::process::id(),
@@ -1511,6 +1604,11 @@ pub(crate) async fn run_acp_http_server(
         title_max_chars: app.config().memory.sessions.title_max_chars,
         max_history: app.config().memory.sessions.max_history,
         sqlite_path: Some(crate::db_url::resolve_db_url(app.config()).to_owned()),
+        session_data_dir: app
+            .config()
+            .session
+            .enabled
+            .then(|| std::path::PathBuf::from(&app.config().session.data_dir)),
         ready_notification: None,
         additional_directories: app.config().acp.additional_directories.clone(),
         auth_methods: app.config().acp.auth_methods.clone(),

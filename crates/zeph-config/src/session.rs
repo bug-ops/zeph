@@ -13,6 +13,7 @@ use crate::providers::ProviderName;
 /// Top-level `[session]` config block.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 pub struct SessionConfig {
     /// Recap-on-resume settings.
     pub recap: RecapConfig,
@@ -30,6 +31,26 @@ pub struct SessionConfig {
     /// `provider_persistence` is also `true` — overrides are meaningless without a persisted
     /// provider to apply them to. Default: `true`.
     pub persist_provider_overrides: bool,
+    /// Whether to maintain a durable, replayable JSONL event log per conversation-session
+    /// (spec-068, #5343). Default: `true`.
+    ///
+    /// When `true`, every channel (CLI, TUI, Telegram, ACP) mints a
+    /// [`zeph_common::SessionId`] on first turn and appends
+    /// `SessionEvent`s to `<data_dir>/sessions/<session_id>/events.jsonl`. When `false`, only the
+    /// existing `messages` `SQLite` projection is written (pre-#5343 behavior).
+    pub enabled: bool,
+    /// Directory under which per-session event logs are stored (spec-068 §4.1).
+    ///
+    /// Default: `.zeph/sessions` (sibling of `memory.sqlite_path`'s parent directory).
+    pub data_dir: String,
+    /// Opt-in AEAD encryption of session event logs. Deferred to a post-MVP implementation
+    /// (spec-068 §4.3) — currently has no effect. Default: `false`.
+    pub encrypt: bool,
+    /// Event-log size (in MB) that acts as a rotate/condense trigger guard (spec-068 §17).
+    /// Default: `256`.
+    pub max_event_log_mb: u64,
+    /// Durable context condensation settings (spec-068 §8).
+    pub condense: CondenseConfig,
 }
 
 impl Default for SessionConfig {
@@ -38,6 +59,39 @@ impl Default for SessionConfig {
             recap: RecapConfig::default(),
             provider_persistence: true,
             persist_provider_overrides: true,
+            enabled: true,
+            data_dir: ".zeph/sessions".to_owned(),
+            encrypt: false,
+            max_event_log_mb: 256,
+            condense: CondenseConfig::default(),
+        }
+    }
+}
+
+/// `[session.condense]` — durable context condensation policy (spec-068 §8).
+///
+/// Distinct from live in-memory compaction (`zeph-context`): condensation operates at the
+/// event-log level and is recorded as a replayable `Condensation` event.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CondenseConfig {
+    /// Provider name from `[[llm.providers]]` for condensation LLM calls.
+    ///
+    /// An empty [`ProviderName`] falls back to the primary provider. Default: `"fast"`.
+    pub condense_provider: ProviderName,
+    /// Fraction of the context budget that triggers condensation on resume/mid-session.
+    /// Default: `0.85`.
+    pub threshold: f64,
+    /// Minimum number of recent events to preserve after condensation. Default: `20`.
+    pub keep_recent: usize,
+}
+
+impl Default for CondenseConfig {
+    fn default() -> Self {
+        Self {
+            condense_provider: ProviderName::from("fast"),
+            threshold: 0.85,
+            keep_recent: 20,
         }
     }
 }

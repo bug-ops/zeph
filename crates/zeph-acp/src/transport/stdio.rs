@@ -91,6 +91,9 @@ pub(crate) async fn build_agent_state(
             Err(e) => tracing::warn!(error = %e, "failed to open ACP SQLite store"),
         }
     }
+    if let Some(data_dir) = server_config.session_data_dir {
+        agent = agent.with_session_data_dir(data_dir);
+    }
     if let Some(factory) = server_config.provider_factory {
         agent = agent.with_provider_factory(factory, server_config.available_models);
     }

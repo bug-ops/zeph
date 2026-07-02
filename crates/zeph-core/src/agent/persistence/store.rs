@@ -48,6 +48,18 @@ impl<C: Channel> Agent<C> {
             );
         }
 
+        // INV-SP-1 (spec-068 §13): the durable event log must be appended and flushed before the
+        // SQLite `messages` projection is written — the projection must never lead the log. A
+        // failed session-log write is logged and the turn proceeds; a crash between the two
+        // leaves the log ahead of the projection, which INV-SP-3 reconciles on next open.
+        if let Some(sink) = self.services.session.session_sink.clone() {
+            tracing::debug!("persist_message: session_sink.record_message start");
+            if let Err(e) = sink.record_message(role, content, parts).await {
+                tracing::warn!(error = %e, "failed to append session event log entry");
+            }
+            tracing::debug!("persist_message: session_sink.record_message done");
+        }
+
         let req = PersistMessageRequest::from_borrowed(role, content, parts, has_injection_flags);
 
         let mut unsummarized = self.services.memory.persistence.unsummarized_count;

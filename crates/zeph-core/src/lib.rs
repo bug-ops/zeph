@@ -91,6 +91,7 @@ pub mod project;
 pub mod provider_factory;
 pub mod quality;
 pub mod redact;
+pub mod serve;
 #[cfg(feature = "sysinfo")]
 pub mod system_metrics;
 

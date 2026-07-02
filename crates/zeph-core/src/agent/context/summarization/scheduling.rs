@@ -67,6 +67,23 @@ impl<C: Channel> Agent<C> {
             });
         }
 
+        // Session persistence (spec-068 §8.1, #5343): record the compaction as a replayable
+        // `Compaction` event when it actually pruned messages this turn.
+        if compacted && let Some(sink) = self.services.session.session_sink.clone() {
+            let tier = if hard_fired {
+                zeph_session::CompactionTier::Hard
+            } else {
+                zeph_session::CompactionTier::Soft
+            };
+            let cleared_count =
+                u32::try_from(msg_count_before.saturating_sub(msg_count_after)).unwrap_or(u32::MAX);
+            tracing::debug!("maybe_compact: session_sink.record_compaction start");
+            if let Err(e) = sink.record_compaction(tier, cleared_count).await {
+                tracing::warn!(error = %e, "failed to record Compaction session event");
+            }
+            tracing::debug!("maybe_compact: session_sink.record_compaction done");
+        }
+
         Ok(())
     }
 

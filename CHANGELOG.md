@@ -8,6 +8,433 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `feat(session)`: add the `zeph-session` crate foundation (spec-068 P0, #5343) — an append-only
+  JSONL event log (`SessionEventLog`) as the durable source of truth for a conversation, the
+  `SessionEvent` schema (reusing `zeph_llm::provider::MessagePart` and
+  `zeph_common::memory::AnchoredSummary`), `SessionStore` (metadata CRUD over the existing
+  `acp_sessions` table, promoted from ACP-only to channel-agnostic per spec-068 Decision D1),
+  `ReplayEngine` (deterministic fold of an event log into agent-ready messages — never calls the
+  LLM or a tool executor), and the `Condenser` trait contract with the INV-SP-4 non-overlap guard
+  (`validate_non_overlap`). New migration `106_session_persistence.sql` (SQLite + PostgreSQL) adds
+  `last_seq`/`event_count`/`forked_from`/`forked_at_seq`/`status`/`last_condensed_seq` to
+  `acp_sessions`. New `session` Cargo feature (added to the `desktop`/`server` bundles).
+
+- `feat(session)`: wire the durable JSONL event log into the live agent turn loop (spec-068 P1,
+  #5343). New `zeph_agent_persistence::SessionSink` dual-writes every persisted user/assistant
+  message to the session's `events.jsonl` **before** the `SQLite` `messages` projection
+  (INV-SP-1), called from `Agent::persist_message` — the single choke point already shared by
+  every channel and every tool-loop persistence call site. `[session]` config gains `enabled`
+  (default `true`), `data_dir` (default `.zeph/sessions`), `encrypt` (deferred, default `false`),
+  `max_event_log_mb`, and a new `[session.condense]` block (`condense_provider`, `threshold`,
+  `keep_recent`) — `--migrate-config` step 70 surfaces the new keys as commented advisories.
+  CLI/TUI/Telegram channels mint (and reuse, across restarts, keyed by `conversation_id`) a
+  session id in `runner.rs`; ACP sessions reuse their existing ACP session id directly, with no
+  separate minting step.
+
+  **Write-path cutover** (critic-flagged correction): retired both live per-turn writers to the
+  legacy `acp_session_events` table in `crates/zeph-acp/src/agent/mod.rs` —
+  `persist_user_message_async` (an unsupervised `tokio::spawn`, `EXEMPT #5144`) and the
+  notify-drainer's per-`SessionUpdate` write (also `EXEMPT #5144`) — since the same content now
+  reaches the JSONL log through the shared `Agent::persist_message` path once a `SessionSink` is
+  attached. `SessionSink` is the sole live writer for conversation-session history; no partial
+  double-write to `acp_session_events` survives. Removes two unsupervised `tokio::spawn` sites
+  (net positive against the CI spawn-baseline tracked in `.claude/rules/continuous-improvement.md`).
+  Dead code this cutover exposed (`session_update_to_event`, `content_chunk_text` in
+  `crates/zeph-acp/src/agent/helpers.rs`) removed rather than `#[allow(dead_code)]`-suppressed.
+
+  **Known gap** (tracked for the spec §12.3 read-handler thinning follow-up, out of scope for this
+  cutover): `do_load_session`'s replay of historical `SessionUpdate`s (`agent_thought`,
+  `tool_call_update` deltas, `config_option_update` — variants with no `SessionEvent` equivalent)
+  now has nothing new to replay for sessions created after this cutover, since it still reads the
+  now-frozen `acp_session_events` table.
+
+- `feat(session)`: replay-based `MessageState` hydration for ACP session resume/load/fork (spec-068
+  P1, #5343). Every ACP session spawned via `spawn_acp_agent` (`src/acp.rs`) — `do_new_session`,
+  `do_load_session`, `do_fork_session`, `do_resume_session` all share this one spawner — now folds
+  its `events.jsonl` (if non-empty) via `ReplayEngine::fold` and seeds `MessageState` from the
+  result, via a new `AgentBuilder::with_preloaded_messages` builder method, **before** the existing
+  `SQLite`-based `Agent::load_history()` call. `load_history()` gained an explicit
+  `MessageState::history_preloaded` guard (not a `messages.is_empty()` check — `Agent::new` always
+  seeds `messages` with the system-prompt message, so emptiness never distinguishes "already
+  hydrated" from "not yet loaded") so it becomes a safe no-op once replay has already populated
+  history, rather than duplicating every message (`PersistenceService::load_history` appends, it
+  does not replace). A session with an empty/absent JSONL log (brand-new sessions, and legacy
+  sessions that predate this feature) falls through unchanged to the existing `SQLite` path — no
+  retroactive synthesis, matching spec §18's legacy-session decision.
+
+- `feat(cli)`: enrich `zeph sessions` (spec-068 P1, #5343). `sessions list` now shows
+  `status`/`event_count`/`forked_from` columns sourced from `zeph_session::SessionStore`. New
+  `sessions show <id> [--from N] [--to N] [--events]` prints session metadata (status, timestamps,
+  conversation id, `last_seq`, `event_count`, `last_condensed_seq`, fork provenance) and, with
+  `--events`, the session's JSONL event log (optionally sliced by `seq` range). `sessions resume
+  <id>` gained a `--print` flag that dumps the JSONL event log (replacing the old
+  `acp_session_events`-sourced dump — the source of truth moved to JSONL). The `Sessions` CLI
+  command is no longer gated behind the `acp` feature alone — it's now available under
+  `any(feature = "acp", feature = "session")`, since the underlying data (`acp_sessions`) is
+  channel-agnostic as of spec-068 Decision D1, not ACP-specific.
+
+- `feat(session)`: INV-SP-3 projection reconciliation (spec-068 §13, #5343). New
+  `zeph_agent_persistence::reconcile_projection`, called from `spawn_acp_agent` alongside the
+  replay-hydration wiring: when `acp_sessions.event_count` trails the session's JSONL event log
+  (e.g. a crash between the log append and the `SQLite` write of the same turn), rebuilds the
+  missing `messages` rows forward from the log. Deliberately conservative — reconciles only a gap
+  containing exclusively `UserMessage`/`AssistantMessage` events; any gap containing a
+  `ToolCall`/`ToolResult`/`Condensation`/`Compaction`/`ForkPoint` event is left stale (logged, not
+  guessed at) rather than risk writing an incorrect row. Not correctness-critical for
+  resume/load/fork itself (which already sources conversation history from the JSONL log directly
+  when it has content); keeps other features that read `messages` directly (semantic search,
+  history displays) in sync with the log after a crash.
+
+- `feat(session)`: `ForkEngine` — eager-copy session forking (spec-068 P2 §7, #5343). New
+  `zeph_session::ForkEngine::fork(data_dir, src_id, new_id, at_seq, store)`: copies parent events
+  `[0, at_seq)` (or the whole log when `at_seq` is `None`) into a caller-allocated child session's
+  own, fully self-contained JSONL log, prefixed with a synthetic `SessionStarted { forked_from:
+  Some((src_id, at_seq)) }` header; creates the child's `acp_sessions` row via
+  `SessionStore::record_fork`; appends a `ForkPoint` provenance event to the parent's log.
+  Copy-on-write forking is explicitly deferred (spec §15 NEVER) in favor of eager copy for MVP
+  simplicity and independence from the parent's subsequent condensation. `new_id` is
+  caller-supplied (not minted internally) since ACP's `do_fork_session` needs the id before the
+  fork call completes, to construct the session's in-memory entry.
+
+- `feat(acp)`: `do_fork_session` delegates to `ForkEngine::fork` when `[session] enabled = true`
+  (spec-068 P2, #5343). New `AcpServerConfig.session_data_dir` /
+  `ZephAcpAgentState.session_data_dir` (threaded through `build_agent_state`) gate the new path.
+  `fork_conversation` now forks the durable JSONL log via `ForkEngine::fork` and links the new
+  `SQLite` conversation to the `acp_sessions` row `ForkEngine::fork` already created (via
+  `record_fork`) rather than creating a second row — the legacy `acp_session_events`
+  `import_acp_events`/`load_acp_events` copy is retired for new forks (the JSONL log is now the
+  sole source of truth for forked history, matching the P1 write-path cutover's philosophy). The
+  `SQLite` `messages`/`conversations` copy (`copy_conversation`) is unchanged. When persistence is
+  disabled, behavior is unchanged from before spec-068.
+
+- `feat(cli)`: `sessions fork/export/import` (spec-068 P2, #5343). `sessions fork <id> [--at
+  <seq>]` mints a new session id and delegates to `ForkEngine::fork`. `sessions export <id>
+  <path.jsonl>` copies a session's validated (INV-SP-2 torn-tail-truncated) event log to a file.
+  `sessions import <path.jsonl>` restores a previously-exported log as a brand-new session (fresh
+  id, no `forked_from` provenance — an import is a restore, not a fork).
+
+- `feat(session)`: `LlmCondenser` — the default `Condenser` implementation (spec-068 P2 §8,
+  #5343). New `zeph_session::LlmCondenser`, reusing
+  `zeph_context::summarization::summarize_structured` (`zeph-session` now depends on
+  `zeph-context` — confirmed `cargo tree` still excludes `zeph-durable`/`zeph-memory`/`zeph-core`,
+  INV-1 preserved). `should_condense` triggers once `budget_used_fraction` reaches a configurable
+  threshold and there are more than `keep_recent` messages; `condense` keeps the last
+  `keep_recent` messages un-summarized, folds the rest via `ReplayEngine::fold`, and summarizes
+  via the LLM, enforcing INV-SP-4 (`validate_non_overlap`) on the computed `replaced_range`. New
+  `SessionError::Llm` variant for summarization failures.
+
+- `feat(session)`: `Compaction` event hook (spec-068 P2 §8.1, #5343). New
+  `SessionSink::record_compaction(tier, cleared_count)`, called from `Agent::maybe_compact`
+  (`crates/zeph-core/src/agent/context/summarization/scheduling.rs`) whenever live in-memory
+  compaction actually pruned messages this turn — makes the prune replayable
+  (`ReplayEngine::fold` already handled `Compaction` events conservatively since P0). **Known
+  limitation**: emitted with `summary: None` — the LLM-produced hard-compaction summary text is
+  produced deep inside `zeph-agent-context`'s `do_hard_compaction`/`compact_context` and is not
+  currently surfaced to the `Agent<C>` call site that has `session_sink` access; `tier`/
+  `cleared_count` alone are recorded for now, tracked as a follow-up to fully close AC-6.
+
+- `feat(config)`: `[serve]` config section for `zeph serve` (spec-068 P3 §9, #5343). New
+  `zeph_config::ServeConfig` (`http_addr`, `require_auth`, `auth_token_vault_key`, `max_sessions`,
+  `session_idle_ttl_secs`, `max_queued_prompts`) — the bearer token itself is never stored inline
+  (only the age-vault key name to resolve it from at startup, per the vault-only secrets policy).
+  New `--migrate-config` step 71 adds a commented-out `[serve]` block for discoverability;
+  `config/default.toml` documents all fields.
+
+- `feat(core)`: `SessionActor` + `LiveSessionRegistry` for `zeph serve` (spec-068 P3 §9.2-9.3,
+  #5343). New `zeph_core::serve` module: `SessionCommand` (`Prompt`/`Cancel`/`Shutdown`),
+  `SessionOutput` (`Token`/`ToolCall`/`ToolResult`/`TurnComplete`/`Error`), and
+  `SessionActor::drive` — a single `tokio::select!` loop (no raw `tokio::spawn`) bridging an
+  `mpsc::Receiver<SessionCommand>` into an `Agent<LoopbackChannel>`'s channel input and forwarding
+  channel output as `SessionOutput` over a `broadcast::Sender`, while concurrently driving
+  `agent.run()` to completion. Graceful shutdown (explicit `Shutdown` command, or the
+  `TaskSupervisor`'s `CancellationToken` cancelling) drops the channel's input sender, letting
+  `Agent::run`'s `next_event()` observe closure and exit on its own rather than aborting mid-turn.
+  Also new `LiveSessionRegistry` (spec §9.3): pure bookkeeping
+  (`HashMap<SessionId, SessionActorHandle>` behind a `parking_lot::Mutex`, never held across
+  `.await`) with `get`/`insert`/`remove`/`idle_candidates` (no attached broadcast subscribers +
+  TTL-expired `last_active`, for a future `serve.evict` task).
+
+  `SessionActor::spawn` — the production entry point — registers a *coordinator* task under
+  `TaskSupervisor` via `spawn_oneshot(name: Arc<str>, factory)` (architect ruling D-7): a dynamic
+  `serve.session.<id>` name and `RestartPolicy::RunOnce` (no auto-restart after a crash —
+  re-driving a torn turn/replay in place is unsafe; recovery is a fresh spawn that replays the
+  durable log from the last committed `seq`). `Agent<C>`'s futures are `!Send` (same constraint
+  `zeph-acp`'s `serve_stdio` documents), and `Agent<LoopbackChannel>` itself cannot cross *any*
+  thread boundary, so `spawn` takes a `Send`-safe agent-construction factory
+  (architect ruling D-8: `FnOnce(LoopbackChannel) -> Agent<LoopbackChannel> + Send + 'static`,
+  mirroring `zeph-acp`'s `SendAgentSpawner`) rather than an already-built `Agent` — the factory
+  runs *inside* a dedicated OS thread with its own `current_thread` runtime and `LocalSet`,
+  mirroring `serve_stdio`'s exact pattern (only `Send`-safe state crosses the thread boundary; the
+  `Agent` is constructed entirely inside it). The `spawn_oneshot` task itself is a thin
+  coordinator that never touches the `!Send` `Agent` — it awaits the thread's completion signal
+  and, on process-wide supervisor shutdown, forwards cancellation onto a **per-session**
+  `CancellationToken` (new `SessionActorHandle.cancel` field, distinct from the supervisor's
+  process-wide token) so idle eviction (`serve.evict`, spec §9.3) can cancel exactly one session
+  without tearing down every live actor, while `drive` only ever selects on one cancellation
+  source regardless of trigger.
+
+- `feat(cli)`: `zeph serve-sessions` — process lifecycle for `zeph serve` (spec-068 §9, #5343).
+  New root-binary `src/serve/` module and `Command::ServeSessions` CLI variant (new `session`
+  Cargo feature dependency: `dep:axum`, `zeph-common/http-middleware`). **Naming note**: named
+  `serve-sessions` rather than the spec's literal `serve` — `Command::Serve` already names the
+  scheduler's foreground daemon (`#[cfg(all(unix, feature = "scheduler"))]`), and both features
+  can be enabled simultaneously, so a second command claiming the same top-level name isn't
+  viable; documented in the module doc and CLI help text. Implements: config resolution
+  (`--http-addr`/`--max-sessions` CLI overrides `[serve]` config), TCP bind, an unauthenticated
+  `GET /health` endpoint (status/uptime/live-session-count), and graceful shutdown — SIGTERM
+  (Unix) or Ctrl-C triggers `axum::serve`'s `with_graceful_shutdown`, cancels the process's
+  `TaskSupervisor` `CancellationToken`, then calls `shutdown_all(30s)`. Live-tested: bind, `curl
+  /health` (`{"status":"ok","uptime_secs":1,"live_sessions":0}`), SIGTERM, clean exit — verified
+  manually against the built binary. Also implements `serve.evict` (spec §9.3): a
+  `TaskSupervisor`-registered task (`RestartPolicy::Restart { max: 5, .. }`) that scans
+  `LiveSessionRegistry::idle_candidates` every minute and cancels each idle session's own
+  `SessionActorHandle::cancel` token — uses `registry.remove` rather than `registry.get` so the
+  eviction scan itself never resets the `last_active` timer it is reading. Selects on the
+  supervisor's `CancellationToken` so it exits immediately on shutdown rather than forcing
+  `shutdown_all`'s full grace-period timeout (live-tested: shutdown completed in 0s, not the 30s
+  fallback). Implements a first slice of the `/sessions*` REST surface (spec §9.4):
+  `POST /sessions` (create), `GET /sessions` (list live ids), `DELETE /sessions/:id` (end a
+  session — same `SessionActorHandle::cancel` mechanism `serve.evict` uses, caller-initiated
+  instead of TTL-triggered), backed by a new `src/serve/deps.rs` (`ServeAgentDeps`,
+  `build_serve_deps`) and `src/serve/agent_factory.rs` (`build_agent_factory`) that assemble a
+  working `Agent<LoopbackChannel>` — provider, embedding provider, skill registry/matcher,
+  memory, a core shell/file/web/cwd tool set (with sandbox + audit wired the same way ACP does),
+  and `SessionSink` durable persistence when `[session] enabled = true`. Deliberately **not** a
+  reuse of `src/acp.rs`'s `SharedAgentDeps`/`build_acp_deps` — that struct carries ~15
+  ACP-transport-only fields (permission files, ACP model-switching provider factory, auth bearer
+  tokens) that don't apply to a plain HTTP session; `ServeAgentDeps` calls the same underlying
+  `AppBuilder`/`zeph_tools`/`zeph_mcp` constructors but stops before MCP, the scheduler, and every
+  ACP-only field, at the cost of some orchestration-call duplication with `build_acp_deps`.
+  `POST /sessions` enforces `[serve] max_sessions` (`503` when at capacity). Because a live
+  session can execute shell/file/web tools and bearer-auth enforcement is not implemented yet,
+  `handle_serve_sessions_command` now refuses to start when `[serve] require_auth = true`
+  (the default) and the bind address is not loopback, rather than silently exposing
+  unauthenticated tool execution to the network. Live-tested end-to-end against a local Ollama
+  provider: `POST /sessions` → `201` with a durable `events.jsonl` written under `[session]
+  data_dir`, `GET /sessions` reflects the new id, filling `[serve] max_sessions` (5) then a 6th
+  create correctly returns `503`, `DELETE /sessions/:id` returns `204` and a repeat `DELETE`
+  returns `404`, and SIGTERM with 5 live sessions registered shuts down cleanly (`shutdown_all`
+  gated on all 6 supervised tasks — 5 session coordinators + `serve.evict` — reaching
+  `active_count() == 0`, not the 30s force-abort fallback). New `LiveSessionRegistry::ids()`
+  accessor (1 new unit test) backs the list endpoint.
+  MCP tools, the scheduler executor, and skill/config hot-reload are not wired into
+  `ServeAgentDeps`. `--acp` (running the ACP transport alongside HTTP/SSE) and `require_auth`'s
+  vault-token resolution are also not yet wired.
+
+- `feat(cli)`: `POST /sessions/:id/prompt` and `GET /sessions/:id/events` — the conversational
+  surface of `/sessions*` (spec §9.4). `prompt_session_handler` sends `SessionCommand::Prompt`
+  over the session's mailbox (fire-and-forget; `202` once queued, `404` if not live, `410` if the
+  mailbox already closed). `events_session_handler` subscribes to the session's
+  `SessionActorHandle::tx_out` broadcast and streams it as SSE via `axum::response::sse`; multiple
+  concurrent subscribers are supported (broadcast fan-out) and a lagged subscriber has missed
+  events dropped rather than the connection closed (the durable log is the source of truth for
+  anything missed). `SessionOutput` gained `Serialize` (adjacently tagged —
+  `{"type": "token", "data": "..."}` — since `Token`/`Error` wrap a bare `String` that can't
+  flatten into an internally tagged object). New `tokio-stream` dependency (`sync` feature, gated
+  behind the `session` Cargo feature) for `BroadcastStream`. Live-tested end-to-end against a
+  local Ollama provider: created a session, subscribed to its SSE stream, posted a prompt, and
+  received `{"type":"token","data":"PONG"}` followed by `{"type":"turn_complete"}` — a real
+  model round-trip, not a mock. The durable event log correctly recorded the user message at
+  `seq 0`; the persisted `assistant_message` at `seq 1` had empty `parts: []` even though the
+  correct content streamed over SSE — this looks like a pre-existing gap in `SessionSink`'s
+  dual-write content capture (P1/P2 work, not part of this REST-endpoint change) rather than
+  something introduced here; filed #5419 rather than fixing blind since it's outside this
+  change's scope.
+
+- `feat(cli)`: `GET /sessions/:id` — durable session metadata (spec §9.4). Returns
+  `zeph_session::SessionMetadata` (now `Serialize`, as is `SessionStatus`) flattened alongside a
+  `live: bool` computed from `LiveSessionRegistry`. `404` only when the session is neither live
+  nor known to `SessionStore` — a session whose actor has ended (idle eviction, explicit delete,
+  process restart) still returns its metadata with `live: false`, since the durable log allows it
+  to be resumed. Live-tested: a live session returns `live: true`; an unknown id returns `404`;
+  after `DELETE`, the same id still returns its metadata with `live: false` — matching the
+  documented resumability semantics exactly.
+
+- `feat(cli)`: `POST /sessions/:id/fork` — completes spec §9.4's `/sessions*` surface. Reuses
+  `zeph_session::ForkEngine::fork` (P2) to eager-copy the source session's durable log up to an
+  optional `at_seq` into a fresh child id, then immediately spawns a live `SessionActor` for the
+  child (a fresh `ConversationId`, same as `POST /sessions`) so the fork is usable via
+  `/prompt`+`/events` right away rather than only durably persisted. `404` when the source has no
+  durable log, `400` when `at_seq` exceeds the source log's event count, `503` at
+  `[serve] max_sessions` (the child counts as a new live session). Live-tested end-to-end against
+  a local Ollama provider: prompted a source session to completion, forked it, confirmed the
+  child's metadata shows `forked_from`/`forked_at_seq` pointing at the source and `live: true`,
+  and both the parent's and child's `events.jsonl` on disk reflect the fork correctly (child gets
+  the copied events plus a fresh `SessionStarted` header; parent gets a `ForkPoint` provenance
+  record per spec §7.2 step 8). Also verified `404` (unknown source) and `400`
+  (`at_seq` too large) against the running binary.
+
+- `feat(cli)`: wire `[serve] require_auth` / `auth_token_vault_key` bearer-auth enforcement
+  (spec §9.4) — the last major security gap flagged when `zeph serve-sessions` first landed.
+  `build_serve_deps` resolves the token from the vault at startup (`AppBuilder::vault()`,
+  extracted into `resolve_auth_token`/`build_tool_executor` helpers to stay under clippy's
+  `too_many_lines`) and returns it separately from `ServeAgentDeps` (server-level config, not an
+  agent-construction dependency). Every `/sessions*` route (not `/health`) is now layered with
+  `zeph_common::http_middleware::auth_middleware` via `AuthConfig`, the same pattern
+  `zeph-gateway`'s router uses. **Refined the earlier loopback-only bind guard**: now that auth
+  can actually be enforced, a non-loopback bind is only refused when `require_auth = true` *and*
+  no token was resolved (which would otherwise mean the API is reachable over the network while
+  rejecting every single request — a footgun, not a protection); a non-loopback bind with a
+  resolved token is legitimately safe and now allowed. Live-tested against a local Ollama
+  provider with `require_auth = true`: `/health` still succeeds unauthenticated (200);
+  `POST /sessions` without a bearer token now returns `401` (confirmed via
+  `zeph_common::http_middleware`'s own `require_auth=true but no auth_token configured,
+  rejecting request` log line); binding `0.0.0.0` with no vault token resolved correctly refuses
+  to start with a clear error message. The `require_auth = false` (default) path was already
+  exercised unauthenticated across every prior live test in this session (create/list/
+  get/delete/prompt/events/fork).
+
+- `feat(cli)`: `/conv [list | show <id>]` slash command (spec-068, #5343) — browse durable
+  conversation-sessions from inside an already-running agent, channel-agnostic by construction
+  (works identically in CLI, TUI, and Telegram, matching `/model`/`/undo`'s
+  `CommandHandler`/`AgentAccess` pattern rather than a TUI-only command). Mirrors
+  `zeph serve-sessions`'s `GET /sessions`/`GET /sessions/:id` REST endpoints, reading through the
+  same `zeph_session::SessionStore` — metadata only (title/status/event count/`forked_from`/
+  timestamps); use `zeph sessions show --events <id>` on the CLI for a full event-log dump. New
+  `AgentAccess::handle_conv` trait method (default: "not enabled in this context" message,
+  matching `handle_undo`'s pattern) with the real implementation in
+  `crates/zeph-core/src/agent/agent_access_impl.rs`, registered in the agent command registry
+  alongside `/undo`/`/redo`. New `ConvCommand` in `crates/zeph-commands/src/handlers/conv.rs`.
+  Live-tested via the interactive CLI against the shared production SQLite database: `/conv list`
+  printed the full session table (confirmed a session created by an earlier `zeph serve-sessions`
+  live test in this same session appears correctly); `/conv show <id>` printed full metadata for
+  an existing session and a clear "not found" message for an unknown one; an unrecognized
+  subcommand (`/conv bogus`) printed a usage hint rather than silently failing.
+
+- `fix(session)`: **#5419** — `SessionSink::record_message`'s `Role::Assistant` branch used only
+  `parts` and ignored `content` entirely, but the real production call sites
+  (`Agent::persist_message` from `crates/zeph-core/src/agent/tool_execution/tier_loop.rs:2435,
+  2659`) always pass an empty `parts` slice and put the response text in `content` — this was the
+  universal path for every assistant turn, not an edge case, so every durably persisted assistant
+  message had empty `parts` in production. Undermined AC-1 (resume shows empty assistant turns),
+  AC-5 (crash reconciliation reconstructs empty assistant messages), and `ReplayEngine`'s fold
+  logic for the common case. Fixed in `crates/zeph-agent-persistence/src/session_sink.rs`: when
+  `parts` is empty and `content` is non-empty, wrap `content` into a single `MessagePart::Text`;
+  an explicitly provided non-empty `parts` is used as-is and never overwritten by `content`. Two
+  new regression tests mirror both call shapes
+  (`record_assistant_message_wraps_content_when_parts_empty` for the real production shape,
+  `record_assistant_message_prefers_explicit_parts_over_content` to guard the pre-existing
+  explicit-`parts` shape against regressing). Re-verified against the exact live-Ollama repro from
+  #5419: the durable log now shows `{"seq":1,...,"kind":{"type":"assistant_message","parts":
+  [{"kind":"text","text":"PONG"}]}}` instead of empty `parts: []`.
+
+- `feat(cli)`: `zeph serve-sessions --acp` now fails fast with a clear error naming the correct
+  alternative, instead of silently logging a warning and running HTTP/SSE-only. Researched
+  in-process combination before implementing: `src/acp.rs`'s `run_acp_server`/
+  `run_acp_http_server` each build a complete, independent `SharedAgentDeps` (own
+  `SemanticMemory`/`SQLite` pool, provider, `McpManager`, skill registry, `TaskSupervisor`) with
+  no existing path to share those with `ServeAgentDeps` — running both in one process would mean
+  two independent `SQLite` connection pools writing the same database file concurrently (a real
+  contention/correctness risk, not just wasted resources) plus duplicate MCP subprocess spawning.
+  Rather than build that silently, `--acp` now errors naming the workaround (run `zeph --acp` /
+  `zeph --acp-http` as a separate process alongside `zeph serve-sessions`). Filed **#5420** for
+  proper in-process support: refactor `build_acp_deps` to accept prebuilt shared resources, the
+  same pattern it already uses for the MCP manager (`prebuilt_mcp_manager`) — real design work
+  deserving its own attention rather than being squeezed into this PR.
+
+- `feat(cli)`: `/conv resume <id>` and `/conv fork <id>` (spec-068, #5343, architect ruling D-9)
+  — mid-session live conversation swap on the CLI/TUI's single running agent. Architect ruling:
+  the "needs new live-swap machinery" estimate for descoping these was checked against code and
+  was wrong — the machinery already exists (`reset_conversation`/`/new` IS the live-swap
+  precedent; `AgentBuilder::with_preloaded_messages` IS the replay-hydration precedent; slash
+  commands already dispatch with `&mut self` between turns). New
+  `Agent::load_and_resume_conversation` (`crates/zeph-core/src/agent/context/assembly.rs`,
+  sibling to `reset_conversation`, same reset shape) sets `conversation_id` from the
+  `SessionId`<->`ConversationId` bijection (spec §5.2, resolving or minting+linking one via
+  `SessionStore`) instead of minting a fresh empty one, and applies `ReplayEngine::replay`'s
+  output to `msg.messages` (same "append replayed messages" shape as `with_preloaded_messages`,
+  the D-6 startup path). Sends `"Replaying conversation..."` over the existing TUI status
+  channel during the swap (AC-10). **Critical, explicitly-flagged bit**: re-points
+  `SessionState::session_sink` to the resumed/forked session's own `SessionEventLog` — without
+  this, `reset_conversation`'s conversation_id-only swap would leave subsequent turns silently
+  appending to the *previous* session's `events.jsonl` (INV-SP-1 accounting corruption). New
+  `SessionState::session_persistence_config` field + `AgentBuilder::with_session_persistence_config`
+  retain the `[session]` config snapshot (previously only consumed at construction via
+  `with_session_sink`) so the resume/fork swap can locate `data_dir` later; wired into all three
+  agent-construction call sites (`spawn_acp_agent`, the CLI/TUI bootstrap in `src/runner.rs`, and
+  `src/serve/agent_factory.rs`). `handle_conv_resume`/`handle_conv_fork` on `Agent<C>`
+  (`agent_access_impl.rs`) wire this into the existing `ConvCommand`/`handle_conv` dispatcher
+  (`resume <id>`/`fork <id>` subcommands, alongside `list`/`show`) rather than adding separate
+  `AgentAccess` trait methods — `ConvCommand` already forwards raw args to one entry point, so a
+  second dispatch layer would just duplicate subcommand parsing. `/conv fork <id>` reuses
+  `ForkEngine::fork` (P2) then the same resume-swap into the child — same effect as
+  `POST /sessions/:id/fork` but for the current CLI/TUI session instead of spawning a new
+  `SessionActor`. New `AgentError::Session(#[from] zeph_session::SessionError)` variant.
+  Live-tested end-to-end against a local Ollama provider: created a session via
+  `zeph serve-sessions` with real content ("the secret word is BANANA"), `/conv resume <id>` in
+  a plain CLI session showed the "Replaying conversation..." status, confirmed "2 event(s)
+  replayed", and a follow-up question correctly recalled "BANANA" via `memory_search` — proving
+  the replayed history is genuinely usable, not just cosmetically loaded. Verified the SessionSink
+  re-point specifically: new turns after resume correctly appended to the *resumed* session's
+  `events.jsonl` (seq 2-4), not a stale one. `/conv fork <id>` copied 5 events into a fresh child
+  session, immediately became the active conversation, and both logs were verified on disk (child
+  gained a `session_started` header with `forked_from`, parent gained a `fork_point` record).
+
+- `feat(session)`: legacy session lazy-bootstrap (spec-068 §18, P4). Existing installs have
+  `SQLite` `messages` rows for conversations that predate durable event-log persistence — these
+  are **not** retroactively synthesized into full event logs (lossy: no tool-call/result
+  granularity survives in the old projection). Instead, new `zeph_agent_persistence::
+  bootstrap_legacy_session` (`crates/zeph-agent-persistence/src/legacy_bootstrap.rs`) runs on
+  the first resume of such a session: no-ops if the event log already has events (already
+  bootstrapped, or #5343-native) or if the linked conversation has zero `SQLite` messages
+  (genuinely new session — `SessionSink` writes its own `SessionStarted` on the first real turn
+  instead); otherwise writes a `SessionStarted` header plus a single `Condensation`-style
+  "imported history" event (`replaced_seq_range: (0, 0)`) summarizing the pre-existing message
+  count, so `ReplayEngine::fold`'s existing (unmodified) logic produces one system message
+  representing the imported history — verified this replays correctly using the existing
+  `replace_range` fallback path (inserts the summary even when no prior in-log messages match
+  the range) rather than needing new replay logic. Old sessions cannot be forked or replayed at
+  an arbitrary historical `seq` predating this import boundary. Wired into both resume paths:
+  ACP's `spawn_acp_agent` (`src/acp.rs`, additive — inserted before the existing resume-hydration
+  read, not a restructure) and the new `/conv resume`/`Agent::load_and_resume_conversation`
+  (`crates/zeph-core/src/agent/context/assembly.rs`). Extracted a shared `reset_swap_state`
+  helper (steps 4-9 of `reset_conversation`) used by `load_and_resume_conversation` — did **not**
+  refactor `reset_conversation` itself to call it, since `reset_conversation`'s `keep_plan`
+  parameter conditionally skips the plan-cancellation step in a way `load_and_resume_conversation`
+  never needs to (resume/fork always fully resets); sharing the helper both ways would have
+  required either dropping that conditional (behavior change to the tested `/new --keep-plan`
+  path) or adding a parameter neither caller other than `/new` needs. 3 new unit tests
+  (no-op-with-existing-events, no-op-with-no-messages, bootstraps-and-is-idempotent). Live-tested
+  regression: created a normal (non-legacy, already has real session-persistence events) session
+  via `zeph serve-sessions`, then `/conv resume`d it via CLI — confirmed the bootstrap correctly
+  no-ops (event count stayed at 2, not 4) and the existing resume flow is unaffected.
+
+- `feat(cli)`: `--init` wizard steps for `[session]` and `[serve]` (spec-068, #5343, P4). New
+  `src/init/session.rs`: `step_session` prompts whether to enable durable session persistence and
+  its event-log directory; `step_serve` gates `zeph serve-sessions`'s `[serve]` settings
+  (bind address, bearer-auth requirement + vault key name, max concurrent sessions, idle eviction
+  TTL) behind a single "customize now?" confirmation rather than a per-field prompt cascade, since
+  `[serve]` has no `enabled` toggle of its own (the command is opt-in by virtue of being a
+  separate CLI subcommand) — declining leaves `ServeConfig::default()` values in place. New
+  `WizardState` fields for both, wired into `build_config()`. 2 new unit tests verifying
+  `build_config` output matches `SessionConfig`/`ServeConfig`'s own `Default` impls when the user
+  declines customization, and correctly applies overrides when they don't. Smoke-tested: `zeph
+  init` starts and reaches the first prompt without a compile or runtime crash (full interactive
+  drive-through of a wizard with ~40 prior steps was impractical to script; correctness of the
+  actual generated config is covered by the `build_config` unit tests, matching how every other
+  wizard step in this file is verified — individual `dialoguer` prompts aren't unit-tested
+  anywhere in this wizard, only their effect on the resulting `Config`).
+
+- `docs`: mdBook chapters for session persistence (spec-068, #5343) — the last P4 deliverable.
+  New `book/src/advanced/session-persistence.md` ("Session Persistence and Resume": the durable
+  JSONL event log, `SessionId`<->`ConversationId` bijection, `/conv`/`sessions` verbs, forking,
+  condensation, crash-safety invariants in plain language, legacy session lazy-bootstrap) and
+  `book/src/advanced/serve-mode.md` ("`zeph serve` — Persistent Agent Service": the REST+SSE API,
+  `SessionActor` isolation model, `serve.evict`, bearer-auth + the loopback-bind safety guard, and
+  the explicit `--acp` non-goal with a link to running ACP as a separate process). Both linked
+  from `book/src/SUMMARY.md` under "Advanced". Updated `book/src/reference/cli.md`'s `zeph
+  sessions` section (was still describing the old ACP-only, print-events-by-default behavior) with
+  the current verb set (`show`, `resume` [live agent by default, `--print` for the old behavior],
+  `fork`, `export`, `import`) plus new `zeph serve-sessions` and `/conv` entries. Updated
+  `book/src/reference/configuration.md` with `[session]`/`[session.condense]`/`[serve]` — also
+  fixed a pre-existing bug found while editing the adjacent block: `[session.provider_persistence]
+  enabled = true` was documented as a nested table, but `provider_persistence` is a plain `bool`
+  field directly on `[session]` in `zeph_config::SessionConfig`; corrected to
+  `[session] provider_persistence = true`. `mdbook build book/` succeeds with only a pre-existing,
+  unrelated warning in `changelog.md` (an unclosed HTML tag from an earlier entry, not touched by
+  this change). No `mdbook-linkcheck` preprocessor is configured, so all cross-reference links
+  added in the new/updated pages were verified manually against `SUMMARY.md`'s existing entries.
+
 - `test(mcp)`: add an in-process duplex-transport integration test for `McpClient` /
   `ToolListChangedHandler`, covering a full `initialize -> tools/list -> tools/call`
   round-trip through the real rmcp wire serialization path over `tokio::io::duplex`
@@ -51,6 +478,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `feat(cli)!`: `zeph sessions resume <id>` no longer dumps events to stdout by default (spec-068,
+  #5343) — it now launches a **live interactive agent** bound to that session's conversation,
+  replaying its JSONL event log to reconstruct history before accepting the next prompt (spec §10,
+  architect ruling D-6). Pass `--print` for the old dump behavior (now sourced from the JSONL
+  event log rather than the legacy `acp_session_events` table). Implementation: `Cli` gained a new
+  internal `resume_session_id` field; `runner::run` intercepts `Sessions{Resume{id, print: false}}`
+  before the one-shot command dispatch and falls through to the normal interactive bootstrap
+  (mirroring the existing `UrlOpen` dispatch precedent), then resolves `conversation_id` via
+  `SessionStore::get(id).conversation_id` instead of `latest_conversation_id()` at the single
+  point `runner.rs` resolves it — every downstream step (replay, hydrate, `SessionSink`,
+  continuation loop) was already wired for the interactive path in the P1 slice and needed no
+  changes. A session with no linked `conversation_id` (a legacy session with no recorded history)
+  errors with a message pointing at `--print`. Dead `resume_summary` (the interim hydration-summary
+  dump this replaces) removed.
 - `fix(a2a)!`: `A2aClient::with_security` no longer takes two positional bools (transposing
   `with_security(true, false)` vs. `with_security(false, true)` was a silent foot-gun). It now
   takes a `SecurityPolicy { require_tls, ssrf_protection }` struct, with `SecurityPolicy::hardened()`
@@ -72,6 +513,170 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(session)`: resume-time durable condensation (D-11) only fired on `/conv resume`, not on
+  the other three session-open paths — CLI `sessions resume`, ACP `spawn_acp_agent`, or `zeph
+  serve` reactivation (impl-critic re-verify finding N3, architect ruling D-13). The original
+  scope decision assumed those three sites had no live `Agent` to source a condenser/token
+  counter/budget from; that premise was wrong — `maybe_condense_on_resume` never took an `Agent`
+  parameter, and `condenser`/`context_window` are both resolvable from config + the provider
+  registry before agent construction at every site (the same "sounds harder than it is" pattern
+  as D-6/D-9). New `zeph_agent_persistence::hydrate_and_condense` centralizes
+  `hydrate_from_event_log` + `maybe_condense_on_resume` into one call so all four resume paths
+  share it instead of each carrying its own inline copy (same centralization principle as D-10).
+  New `resume_budget_fraction(messages, token_counter, window)` computes `budget_used_fraction`
+  without a live `Agent`; new `zeph_core::provider_factory::{resolve_named_provider,
+  build_resume_condenser}` resolve `[session.condense].condense_provider` and build the
+  `LlmCondenser` from config alone. CLI/ACP/`zeph serve` now all call `hydrate_and_condense`,
+  built once at deps-construction time for ACP/serve (`SharedAgentDeps::resume_condenser`,
+  `ServeAgentDeps::resume_condenser`) since their per-session code only receives pre-decomposed
+  config, not the raw `Config`. `/conv resume` itself was refactored onto the same shared call.
+  New end-to-end regression test drives `SessionSink::record_message` through
+  `hydrate_and_condense` and asserts both a `Condensation` event is appended and
+  `last_condensed_seq` advances; fails without the fix.
+- `chore(session)`: added `tracing::instrument` spans across the session-persistence subsystem
+  (`zeph-session`'s log/replay/condenser/store/fork operations, `zeph-agent-persistence`'s
+  hydrate/condense/reconcile/legacy-bootstrap/session-sink functions, `zeph-core`'s
+  `LiveSessionRegistry::get_or_reactivate`, and every `src/serve/handlers.rs` HTTP handler) —
+  the code-review pass on #5343 found the entire new subsystem had zero instrumentation despite
+  `.claude/rules/continuous-improvement.md`'s mandatory coverage requirement for I/O, DB, and LLM
+  round-trip paths. 33 spans added (`session.*`/`persistence.*`/`core.serve.*`/
+  `serve.handlers.*` naming), covering every fsync'd log append, `SessionStore` query, the
+  `LlmCondenser::condense` LLM round-trip, and each REST endpoint.
+- `fix(acp)`: `GET /sessions/{id}/messages` (the `acp-http` transport's own REST surface, distinct
+  from `zeph serve-sessions`) now reads the durable JSONL event log instead of the legacy
+  `acp_session_events` table — same bug class and fix shape as `do_load_session`/
+  `do_list_sessions` (S1), for the one legacy-table read S1 left out of scope pending
+  `session_data_dir` plumbing. No new config plumbing was actually needed: `AcpHttpState`
+  already carries the full `AcpServerConfig` (including `session_data_dir`) via its existing
+  `server_config` field, so the fix reads `state.server_config.session_data_dir` directly rather
+  than duplicating the field. New `session_event_envelope_to_dtos` maps each durable
+  `SessionEvent` to the endpoint's existing `SessionEventDto` shape (`user_message`/
+  `agent_message`/`tool_call`/`tool_result`, timestamps formatted to match the legacy column's
+  `datetime('now')` format for API-consumer compatibility). Fixed the same-class false-green
+  test this endpoint had (seeded the legacy table via the retired `save_acp_event` instead of
+  the JSONL log the handler now actually reads).
+- `fix(serve)`: close a durable-log corruption race in D-12's reactivation (impl-critic
+  re-verify finding N1, gated merge). `reactivate_session`'s check→hydrate→spawn→register
+  sequence was not atomic: two concurrent requests for the same evicted-but-durable session
+  (e.g. two `/prompt` calls, or a `/prompt` racing a `/events` subscribe) could both miss the
+  registry's fast-path `get`, both independently open and replay the *same* `SessionEventLog`,
+  and both spawn a live `SessionActor` writing to it — violating INV-D2 (single-writer) and
+  risking duplicate `seq` numbers or a non-trailing torn line, corrupting the durable log. New
+  `LiveSessionRegistry::get_or_reactivate` makes this atomic: a fast, lock-free path when the
+  session is already live, and a `tokio::sync::Mutex`-guarded double-checked-locking slow path
+  otherwise — the loser of a concurrent race never runs its `reactivate` closure at all, it just
+  observes the winner's `insert`. A genuine concurrency regression test (8 real `tokio::spawn`
+  tasks racing `get_or_reactivate` for the same id, each yielding inside its closure to force
+  real interleaving — not a sequential table-driven test) asserts exactly one reactivation runs;
+  it fails (`left: 8, right: 1`) without the fix. Live end-to-end verified with two genuinely
+  concurrent `curl` requests against a real evicted session: `GET /health` showed exactly one
+  live session afterward (not two), and the event log shows both prompts correctly serialized
+  through the single actor's mailbox with no duplicate or out-of-order `seq`.
+- `fix(session)`: durable resume-time condensation (D-11) could only ever fire once per session
+  (impl-critic re-verify finding N2). `LlmCondenser::condense` computed its boundaries over the
+  *full* event list passed in, not just the events after `last_condensed_seq` — so on any resume
+  after the first condensation, the caller's full-log re-pass made the proposed range start back
+  near `seq 0`, which `validate_non_overlap` correctly rejected as overlapping the (now
+  non-zero) watermark. `condense` now filters to `seq > last_condensed_seq` before computing
+  boundaries, so a session that stays over budget across many resumes keeps condensing instead
+  of silently falling back to per-turn live compaction after the first pass. New regression test
+  drives two condensations against a growing log (matching how `maybe_condense_on_resume` is
+  actually called on repeated resumes) and asserts the second succeeds with a range strictly
+  after the first's; fails with the exact `CondensationOverlap` error the bug produced in
+  production before the fix.
+- `fix(serve)`: `POST /sessions/:id/prompt` and `GET /sessions/:id/events` no longer return `404`
+  forever once a session's actor ends (idle eviction, explicit `DELETE`, or a process restart) —
+  they now reactivate it: look up the durable `acp_sessions` row, replay its event log via the
+  D-10 hydration pipeline, and spawn+register a fresh `SessionActor`, exactly as `POST /sessions`
+  does for a new one (architect ruling D-12, spec §9.3: "connect to absent session: replay → spawn
+  SessionActor → register → attach"). Before this, `[serve] session_idle_ttl_secs` eviction was a
+  one-way trip — a durably-intact session became permanently unpromptable over HTTP after its TTL,
+  contradicting `GET /sessions/:id`'s own documented claim that "the durable log allows it to be
+  resumed" (impl-critic finding S2). `build_agent_factory`/`SessionActor::spawn` now always route
+  through `hydrate_from_event_log` (a brand-new session's empty log makes this a no-op there), so
+  create and reactivate share one code path. Also fixed a gap this surfaced: `POST /sessions`
+  never linked the minted session to its `conversation_id` in `SessionStore` at all — reactivation
+  couldn't have found a conversation to replay for *any* serve-created session without it. Live
+  end-to-end verified: create → prompt (establish context) → `DELETE` (ends the live actor, keeps
+  the durable record) → prompt again → session reactivates and correctly recalls the earlier
+  context from the replayed log; the event log's `seq` continues (2, 3, ...) rather than
+  restarting, confirming the reactivated actor writes to the same durable log, not a fresh one.
+- `fix(serve)`: a session's `LiveSessionRegistry` entry could survive its actor's death forever
+  when no `serve.evict` TTL eviction ever ran for it (e.g. a lingering `GET /sessions/:id/events`
+  SSE subscriber, which `idle_candidates`' `receiver_count() == 0` check requires) — leaving
+  `POST /sessions/:id/prompt` returning `410 Gone` permanently for a session D-12 reactivation
+  should otherwise be able to recover (impl-critic finding M1). `SessionActor`'s coordinator now
+  reaps its own registry entry unconditionally once the dedicated thread signals completion,
+  regardless of cause (panic, normal exit, or supervisor shutdown) — via a new
+  `LiveSessionRegistry::remove_if_current`, not a plain key-based `remove`, so a stale coordinator
+  racing a concurrent D-12 reactivation under the same session id can never evict the *new* live
+  entry (verified by a dedicated regression test simulating exactly that race).
+- `fix(session)`: wire `zeph_session::LlmCondenser` into the `/conv resume` path — durable
+  resume-time condensation (#3102, spec §8.1) was fully built but never invoked from any
+  production call site, so `[session.condense]` config was dead and `last_condensed_seq` never
+  advanced (impl-critic finding S3). New `zeph_agent_persistence::maybe_condense_on_resume`
+  triggers `LlmCondenser` when the replayed context exceeds the configured budget threshold,
+  emitting a durable `Condensation` event and advancing the `INV-SP-4` non-overlap watermark
+  (architect ruling D-11). Also fixed the M2 fold-in this exposed: `SessionSink::record_compaction`
+  now also advances `last_condensed_seq`, so live in-memory compaction and durable condensation
+  share the same non-overlap ledger and cannot overlap each other's ranges. **Not yet wired** into
+  ACP or CLI resume — both happen during agent *construction*, before a live `Agent` (and its
+  `build_condense_deps`/`ContextBudget`/token counter) exists, an architectural asymmetry `/conv
+  resume` (a mid-session swap on an already-built agent) doesn't have; tracked as a follow-up.
+- `fix(session)`: `INV-SP-4`'s non-overlap check (`validate_non_overlap`) rejected the very first
+  condensation of every session — discovered only once `LlmCondenser` was actually invoked
+  end-to-end (previous entry). `acp_sessions.last_condensed_seq` defaults to `0` (migration 106),
+  which collided with `0` also being a valid real event `seq` (logs are 0-indexed), so any
+  proposed range starting at `seq == 0` — the *only* possible starting point for a session's first
+  condensation — was rejected as "overlapping the default". Fixed by treating
+  `last_condensed_seq == 0` as the "nothing condensed yet" sentinel; documented residual gap (a
+  condensation whose range happens to end at `seq == 0` is indistinguishable from "never
+  condensed", narrow enough in practice to defer a full `Option<u64>` schema fix).
+- `fix(session)!`: unify CLI `sessions resume`, `/conv resume`/`fork`, and ACP resume/load/fork
+  behind one shared hydration pipeline, `zeph_agent_persistence::hydrate_from_event_log`
+  (architect ruling D-10, spec-068 §12.3/§13). Previously each path had its own inline copy of
+  "legacy bootstrap → `ReplayEngine` fold → `SQLite` projection reconcile", and they had already
+  diverged: CLI `sessions resume` (`src/runner.rs`) never replayed the JSONL log or reconciled
+  the projection at all — it silently fell back to stale `SQLite` history only, breaking AC-1/
+  AC-2/AC-5 on the exact user-facing path AC-1 names (impl-critic finding C1). `/conv resume`/
+  `fork` (`crates/zeph-core/src/agent/context/assembly.rs`) replayed but never called
+  `reconcile_projection` (finding C2). Both now route through the same helper ACP already used,
+  so the three pipelines cannot silently diverge again. Live-verified: `sessions resume <id>`
+  correctly replays prior turns into the LLM context (confirmed via debug dump) and new turns
+  append to the resumed session's own `events.jsonl` at the correct `seq`, not a fresh log.
+  **Breaking**: `zeph_agent_persistence::reconcile_projection`'s signature drops its
+  `session_store: &SessionStore` parameter (no longer needed — see the `INV-SP-3` fix below).
+- `fix(session)`: `INV-SP-3` projection reconciliation (`reconcile_projection`) could never
+  actually detect the crash gap it exists to close. It compared the log's event count against
+  `acp_sessions.event_count` — but `SessionSink::record_message` advances that column
+  immediately after the durable log append, *before* the corresponding `SQLite` `messages` write
+  runs (INV-SP-1's log-first ordering), so `event_count` races ahead of `SQLite` on every single
+  turn, not just a crashed one. The gap-detection watermark now reads the real `SQLite` message
+  count (`SqliteStore::count_messages`) instead. Added a regression test
+  (`crash_after_session_sink_write_is_reconciled_on_resume`) that writes through the real
+  `SessionSink::record_message` primitive (not a raw log append) and confirms the `SQLite`
+  projection is rebuilt correctly on resume — this test failed before the fix, confirming the
+  bug was real and not just theoretical.
+- `fix(acp)`: `session/load` and `session/list` now replay a session's durable JSONL event log
+  (spec-068 §12.3) instead of the legacy `acp_session_events` table, which the P1 write cutover
+  (#5343) leaves permanently empty for every session created after it — an IDE loading a
+  post-cutover session previously saw an empty transcript, and `session/list`'s `message_count`
+  was always `0`. `do_load_session` now reads the session's `events.jsonl` via
+  `zeph_session::SessionEventLog` and maps each `SessionEvent` to the corresponding ACP
+  `SessionUpdate` (new pure helper `session_event_to_updates`, unit-tested directly).
+  `zeph_memory::store::acp_sessions::{list_acp_sessions, get_acp_session_info}` now read
+  `acp_sessions.event_count` (kept current by `SessionSink`/`SessionStore::update_seq`) instead
+  of a `COUNT(*)` subquery against the emptied table. Also fixed a related regression this
+  surfaced: `SessionStore::update_seq` never bumped `acp_sessions.updated_at` (previously done
+  only by an `AFTER INSERT ON acp_session_events` trigger that no longer fires post-cutover), so
+  `session/list`'s "ordered by last activity" silently degraded to "ordered by creation time" for
+  every post-cutover session — `update_seq` now sets `updated_at` explicitly via a new
+  `Dialect::NOW` cross-backend SQL fragment. The false-green test at
+  `crates/zeph-acp/src/transport/tests.rs` that asserted `message_count == 1` only because it
+  called the retired `save_acp_event` directly now drives the fixture through
+  `SessionStore::update_seq`, the real write primitive; a new integration test
+  (`load_session_succeeds_from_event_log_with_no_legacy_rows`) seeds only the JSONL log and
+  confirms `session/load` succeeds via the store-backed reconstruction path with zero legacy rows.
 - `fix(knowledge)`: `zeph knowledge ingest` no longer fails on a fresh Qdrant instance.
   `build_ingest_resources` now probes the embedding dimension and calls
   `QdrantOps::ensure_collection` for the documents collection before constructing the

@@ -131,6 +131,52 @@ async fn load_history_with_empty_store_returns_ok() {
 }
 
 #[tokio::test]
+async fn with_preloaded_messages_makes_load_history_a_noop() {
+    // Regression test for spec-068/#5343: `Agent::new` always seeds `messages` with the
+    // system-prompt message, so `load_history`'s SQLite-skip guard must key off the explicit
+    // `history_preloaded` flag, not `messages.is_empty()` — an emptiness check is never true at
+    // this point and would either always skip (dropping SQLite history) or never skip
+    // (duplicating replayed history), depending on which way the bug goes.
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    memory
+        .sqlite()
+        .save_message(cid, "user", "from sqlite, should not be loaded")
+        .await
+        .unwrap();
+
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
+    let messages_before = agent.msg.messages.len(); // system prompt only, at this point
+
+    let replayed = vec![zeph_llm::provider::Message::from_legacy(
+        zeph_llm::provider::Role::User,
+        "from replay",
+    )];
+    agent = agent.with_preloaded_messages(replayed);
+
+    // Preload appended after the system prompt, not in place of it.
+    assert_eq!(agent.msg.messages.len(), messages_before + 1);
+    assert_eq!(agent.msg.messages.last().unwrap().content, "from replay");
+
+    agent.load_history().await.unwrap();
+
+    // load_history must not have added the SQLite message — no duplication, no clobbering.
+    assert_eq!(agent.msg.messages.len(), messages_before + 1);
+    assert_eq!(agent.msg.messages.last().unwrap().content, "from replay");
+}
+
+#[tokio::test]
 async fn load_history_increments_session_count_for_existing_messages() {
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);

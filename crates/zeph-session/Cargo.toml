@@ -1,0 +1,38 @@
+[package]
+name = "zeph-session"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Conversation-session persistence: append-only JSONL event log, replay, and fork engine"
+readme = "README.md"
+
+[features]
+default = ["sqlite"]
+sqlite = ["zeph-db/sqlite"]
+postgres = ["zeph-db/postgres"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["macros"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+tracing.workspace = true
+zeph-common.workspace = true
+zeph-context.workspace = true
+zeph-db = { workspace = true, default-features = false }
+zeph-llm.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+zeph-llm = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

@@ -463,15 +463,36 @@ edge_history_limit = 100               # Max historical edge versions per source
 # contradiction_risk_threshold = 0.7           # Graph edge conflict risk (default: 0.7)
 # Fail-open contract: embed/LLM/graph errors yield neutral defaults. Requires graph memory for contradiction scoring.
 
+[session]
+# Durable, replayable event log per conversation-session — see "Session Persistence and Resume"
+# in the mdBook guide (advanced/session-persistence.md).
+enabled = true                 # Maintain a durable JSONL event log per session (default: true)
+data_dir = ".zeph/sessions"    # Directory under which per-session event logs are stored
+encrypt = false                # Opt-in AEAD encryption — reserved, not yet implemented (default: false)
+max_event_log_mb = 256         # Event-log size (MB) that triggers condensation (default: 256)
+provider_persistence = true    # Persist channel-level provider overrides across restarts (default: true)
+persist_provider_overrides = true  # Store reasoning_effort per session; requires provider_persistence (default: true)
+
+[session.condense]
+# condense_provider = ""       # Provider name from [[llm.providers]] for condensation; empty = primary (default: "fast")
+threshold = 0.85               # Fraction of the context budget that triggers condensation (default: 0.85)
+keep_recent = 20               # Minimum recent events preserved after condensation (default: 20)
+
 [session.recap]
 on_resume = true              # Auto-generate recap when resuming a stored conversation (default: true)
 # recap_provider = ""           # Provider name for recap generation; empty = primary provider (default: "")
 max_tokens = 500              # Max tokens for the recap summary (default: 500)
 max_input_messages = 50       # Max messages included in recap context (default: 50)
 
-[session.provider_persistence]
-enabled = true                # Persist channel-level provider overrides across restarts (default: true)
-# persist_provider_overrides = true  # Store reasoning_effort per session (default: true)
+[serve]
+# Settings for `zeph serve-sessions` — see advanced/serve-mode.md. Independent of whether you
+# ever run the command; only takes effect when you do.
+http_addr = "127.0.0.1:8420"              # Bind address for the HTTP/SSE API (default)
+require_auth = true                        # Require a bearer token on /sessions* (/health is always open) (default: true)
+auth_token_vault_key = "ZEPH_SERVE_AUTH_TOKEN"  # Vault key name to resolve the bearer token from (default)
+max_sessions = 50                          # Maximum concurrent live sessions (default: 50)
+session_idle_ttl_secs = 1800               # Idle session eviction TTL in seconds (default: 1800 = 30 min)
+max_queued_prompts = 8                     # Per-session prompt mailbox capacity (default: 8)
 
 [tools]
 enabled = true

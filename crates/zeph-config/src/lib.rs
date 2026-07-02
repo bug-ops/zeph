@@ -103,6 +103,7 @@ pub mod rate_limit;
 pub mod root;
 pub mod sanitizer;
 pub mod security;
+pub mod serve;
 pub mod session;
 pub mod subagent;
 pub mod telemetry;
@@ -184,6 +185,7 @@ pub use security::{
     CapabilityScopesConfig, PatternStrictness, ScannerConfig, ScopeConfig, SecurityConfig,
     ShadowSentinelConfig, TimeoutConfig, TrajectorySentinelConfig, TrustConfig,
 };
+pub use serve::ServeConfig;
 pub use session::{RecapConfig, SessionConfig};
 pub use subagent::{
     HookAction, HookDef, HookMatcher, MemoryScope, PermissionMode, SkillFilter, SubagentHooks,

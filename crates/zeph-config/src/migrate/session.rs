@@ -242,3 +242,55 @@ pub fn migrate_session_persist_provider_overrides(
         sections_changed: vec!["session".to_owned()],
     })
 }
+
+/// Splice the session-persistence keys (`enabled`, `data_dir`, `encrypt`, `max_event_log_mb`)
+/// into an existing `[session]` block and append a commented-out `[session.condense]` block
+/// (spec-068, #5343).
+///
+/// `SessionConfig`/`CondenseConfig` use `#[serde(default)]` so existing configs without these
+/// keys parse fine (event-log persistence defaults to enabled). This step is
+/// discoverability-only, mirroring [`migrate_session_persist_provider_overrides`].
+///
+/// Idempotent: skipped when `max_event_log_mb` is already present (commented or live), or when
+/// there is no `[session]` section yet (a prior run of
+/// [`migrate_session_provider_persistence`] creates the block itself).
+///
+/// # Errors
+///
+/// Infallible in practice; `Result` matches the migration convention.
+pub fn migrate_session_persistence_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("max_event_log_mb") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+    if !toml_src.lines().any(|l| l.trim() == "[session]") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let session_keys = "# enabled = true  \
+        # maintain a durable, replayable JSONL event log per session (spec-068, #5343)\n\
+        # data_dir = \".zeph/sessions\"  # directory for per-session event logs\n\
+        # encrypt = false  # opt-in AEAD encryption of session event logs (deferred to post-MVP)\n\
+        # max_event_log_mb = 256  # event-log size (MB) that guards a rotate/condense trigger\n";
+    let output = toml_src.replacen("[session]\n", &format!("[session]\n{session_keys}"), 1);
+
+    let condense_block = "\n# [session.condense] — durable context condensation policy (spec-068 §8, #5343).\n\
+         # [session.condense]\n\
+         # condense_provider = \"fast\"  # [[llm.providers]] name; empty falls back to the primary provider\n\
+         # threshold = 0.85            # fraction of context budget that triggers condensation\n\
+         # keep_recent = 20            # minimum recent events preserved after condensation\n";
+    let output = format!("{output}{condense_block}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["session".to_owned(), "session.condense".to_owned()],
+    })
+}

@@ -118,6 +118,12 @@ pub struct AcpServerConfig {
     /// When set, the agent persists session events and loads conversation history
     /// from this database. When `None`, sessions are in-memory only.
     pub sqlite_path: Option<String>,
+    /// Directory for durable per-session JSONL event logs (spec-068, #5343).
+    ///
+    /// `Some` when `[session] enabled = true`; enables `ForkEngine`-based session forking in
+    /// `do_fork_session`. `None` (the default when `[session] enabled = false`) falls back to the
+    /// pre-#5343 `SQLite`-only fork path (`messages`/`conversations` copy, no JSONL log).
+    pub session_data_dir: Option<std::path::PathBuf>,
     /// Optional startup notification emitted as the first stdio JSON-RPC frame.
     pub ready_notification: Option<ReadyNotification>,
     /// Canonicalized allowlist of directories ACP clients may reference in session requests.
@@ -150,6 +156,7 @@ impl Clone for AcpServerConfig {
             title_max_chars: self.title_max_chars,
             max_history: self.max_history,
             sqlite_path: self.sqlite_path.clone(),
+            session_data_dir: self.session_data_dir.clone(),
             ready_notification: self.ready_notification.clone(),
             additional_directories: self.additional_directories.clone(),
             auth_methods: self.auth_methods.clone(),
@@ -178,6 +185,7 @@ impl Default for AcpServerConfig {
             title_max_chars: 60,
             max_history: 100,
             sqlite_path: None,
+            session_data_dir: None,
             ready_notification: None,
             additional_directories: Vec::new(),
             auth_methods: vec![zeph_core::config::AcpAuthMethod::Agent],

@@ -837,6 +837,18 @@ pub(crate) struct SessionState {
     /// `/caveman [on|off]`. Preserved across `/new` (session resets do not clear style flags —
     /// only process restart returns to `default_on`).
     pub(crate) caveman_active: bool,
+    /// Durable JSONL event-log dual-writer for this conversation-session (spec-068, #5343).
+    ///
+    /// `Some` when `[session] enabled = true`; the session has minted a
+    /// [`zeph_common::SessionId`](zeph_common::SessionId) and opened its event log. `None` when
+    /// session persistence is disabled — in which case only the `SQLite` `messages` projection
+    /// is written (pre-#5343 behavior).
+    pub(crate) session_sink: Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>,
+    /// `[session]` config snapshot (spec-068, #5343, D-9) — retained (not just consumed at
+    /// construction) so a mid-session `/conv resume`/`/conv fork` swap can locate `data_dir` to
+    /// replay a different session's event log and re-point [`Self::session_sink`] to it.
+    /// `None` when session persistence is disabled.
+    pub(crate) session_persistence_config: Option<zeph_config::SessionConfig>,
 }
 
 /// Extracted hook lists from `[hooks]` config, stored in `SessionState`.
@@ -875,6 +887,13 @@ pub(crate) struct MessageState {
     pub(crate) deferred_db_hide_ids: Vec<i64>,
     /// Summary texts pending insertion after deferred tool pair summarization.
     pub(crate) deferred_db_summaries: Vec<String>,
+    /// Set by `AgentBuilder::with_preloaded_messages` (spec-068, #5343) when `messages` was
+    /// seeded from a durable event-log replay rather than the default single system-prompt
+    /// message `Agent::new` always seeds. Makes [`super::super::Agent::load_history`]'s
+    /// `SQLite`-skip guard precise — `messages.is_empty()` is never true at that point in the
+    /// normal flow (the system prompt is always present), so a plain emptiness check cannot
+    /// distinguish "already hydrated from the log" from "not yet loaded."
+    pub(crate) history_preloaded: bool,
 }
 
 impl McpState {
@@ -1205,6 +1224,8 @@ impl SessionState {
             durable_subagent: false,
             durable_turn_replayed: false,
             caveman_active: false,
+            session_sink: None,
+            session_persistence_config: None,
         }
     }
 }

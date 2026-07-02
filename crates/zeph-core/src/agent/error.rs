@@ -116,6 +116,11 @@ pub enum AgentError {
     /// A database operation in the agent subsystem failed.
     #[error(transparent)]
     Db(#[from] zeph_db::DbError),
+
+    /// A durable session event-log operation failed (spec-068, #5343) — event log replay, fork,
+    /// or `SessionStore` metadata read/write.
+    #[error(transparent)]
+    Session(#[from] zeph_session::SessionError),
 }
 
 impl AgentError {

@@ -55,6 +55,7 @@ fn make_message_state() -> MessageState {
         last_persisted_message_id: None,
         deferred_db_hide_ids: Vec::new(),
         deferred_db_summaries: Vec::new(),
+        history_preloaded: false,
     }
 }
 
@@ -74,6 +75,8 @@ fn make_session_state() -> SessionState {
         durable_ctx: None,
         durable_subagent: false,
         durable_turn_replayed: false,
+        session_sink: None,
+        session_persistence_config: None,
     }
 }
 

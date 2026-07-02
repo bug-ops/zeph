@@ -28,4 +28,8 @@ pub enum PersistenceError {
     /// Failed to serialize message parts to JSON.
     #[error("serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
+
+    /// `zeph-session` event log or `SessionStore` operation failed (spec-068, #5343).
+    #[error("session persistence error: {0}")]
+    Session(#[from] zeph_session::SessionError),
 }
