@@ -2320,6 +2320,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `get_tool_history` also gained a SQL-level `exclude_session_id` filter so the current session's
   own rows cannot crowd out cross-session rows within the query's `LIMIT`.
 
+### Fixed
+- `docs(llm)`: fixed two unqualified `` [`CandleClassifier`] `` intra-doc links in
+  `crates/zeph-llm/src/classifier/ner.rs` that broke `RUSTDOCFLAGS="--deny
+  rustdoc::broken_intra_doc_links" cargo doc` — both now use the qualified
+  `` [`super::candle::CandleClassifier`] `` form already used elsewhere in the same file (#5458).
+- `test(llm)`: the ignored `candle_pii` integration test `real_model_detects_email` asserted that
+  `iiiorg/piiranha-v1-detect-personal-information` flags `"Contact John Smith at
+  john@example.com for details."` as PII, which failed even after the earlier `classifier.bias`
+  fix (#5457). A numerical diff against the real `torch`+`transformers` reference
+  implementation showed the candle port's per-token logits match the reference **exactly** (4
+  decimal places) — there is no bug in the candle-transformers DeBERTa-v2 port or in this
+  crate's loading code. The checkpoint itself is simply weak at free-text given-name/surname/
+  email recognition in casual sentences; it reliably flags structured PII (SSNs, street
+  addresses, phone numbers) with >0.99 confidence, verified against the same reference
+  implementation. Replaced the test with `real_model_detects_ssn`, which exercises a
+  verified-detected SSN sentence instead, and added a new characterization test
+  (`free_text_names_yield_no_confident_span`) on the original email/name sentence so the
+  known weak-spot behavior is pinned and any future drift — regression or improvement — in
+  `candle-transformers`, the cached checkpoint, or the threshold gets caught by CI instead of
+  passing silently. The investigation trail (safetensors key audit, reference-implementation
+  numeric diff) is preserved in the `PiiNerHead` doc comment in `candle_pii.rs`. Closes #5457.
+
 
 ## [0.21.4] - 2026-06-05
 

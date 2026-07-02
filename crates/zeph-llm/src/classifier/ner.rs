@@ -16,13 +16,15 @@
 //!
 //! ## Chunking
 //!
-//! Long inputs are split into overlapping chunks (same strategy as [`CandleClassifier`]).
+//! Long inputs are split into overlapping chunks (same strategy as
+//! [`super::candle::CandleClassifier`]).
 //! Spans from overlapping regions are deduplicated: when two spans share the same
 //! `(start, end)` position, the one with the higher score wins.
 //!
 //! ## `OnceLock` failure caching
 //!
-//! Load failures are permanently cached until process restart (same as [`CandleClassifier`]).
+//! Load failures are permanently cached until process restart (same as
+//! [`super::candle::CandleClassifier`]).
 //! **Important for NER/PII use cases**: a transient model download failure will disable
 //! NER-based PII detection for the lifetime of the process. The caller must rely on
 //! regex-based PII fallback in this scenario.

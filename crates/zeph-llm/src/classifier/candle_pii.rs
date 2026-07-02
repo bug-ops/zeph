@@ -36,13 +36,40 @@ const CHUNK_OVERLAP_TOKENS: usize = 64;
 /// trained bias term corrupts every token's logits, so this type re-implements the same
 /// head using `candle_nn::linear` (with bias) instead to stay faithful to the checkpoint.
 ///
-/// This fix is necessary for a faithful checkpoint load but not sufficient on its own to
-/// restore end-to-end detection: `real_model_detects_email` (see the test module) still
-/// fails after this change, with predictions confidently wrong rather than restored — the
-/// remaining gap is suspected to be a separate issue in the upstream relative-attention
-/// implementation and is tracked in #5457
-/// (<https://github.com/bug-ops/zeph/issues/5457>), not fixed by loading the bias tensor
-/// correctly.
+/// ## #5457 investigation: closed, no candle-port bug found
+///
+/// After the bias-tensor fix above, the original regression test (`real_model_detects_email`,
+/// checking `"Contact John Smith at john@example.com for details."`) still failed to detect
+/// any PII. Two independent investigations followed:
+///
+/// 1. A line-by-line audit of `candle-transformers` v0.11.0's DeBERTa-v2 port (relative
+///    position building, log-bucket positions, disentangled attention bias, `XSoftmax`,
+///    embeddings) against the published `HuggingFace` `transformers` reference found every
+///    path to be a faithful port.
+/// 2. A `model.safetensors` header inspection confirmed every `vb.pp(...)`/`vb.get(...)`
+///    path in this module and in `candle-transformers`' `DebertaV2Model::load` resolves to
+///    an existing tensor with the expected shape — no silent prefix/key mismatch.
+/// 3. **Conclusive**: a throwaway `torch`+`transformers` reference harness ran the actual
+///    `iiiorg/piiranha-v1-detect-personal-information` checkpoint through the real
+///    `HuggingFace` `PyTorch` implementation on the same input. Its per-token predictions
+///    matched this crate's candle port *exactly*, to four decimal places, for every one of
+///    the 14 tokens produced by the test sentence. Only two representative values were
+///    recorded in this comment (`▁John` → `O` @ 0.9891 in both; `▁john` → `I-USERNAME` @
+///    0.4839 in both) — the full 14-token comparison table was observed in the terminal
+///    during the investigation but the throwaway venv was deleted afterward, so it is not
+///    reproducible from this repository without rebuilding the reference harness. The
+///    candle port is numerically correct.
+///
+/// The real finding: this checkpoint is weak at free-text given-name/surname/email
+/// recognition in casual sentences (even in the reference `PyTorch` implementation) but
+/// reliably flags structured PII — SSNs, street addresses, phone numbers — with >0.99
+/// confidence. The original test exercised the model's weak spot, not a code defect.
+/// The regression test was replaced with `real_model_detects_ssn`, which uses an input
+/// verified against the real `PyTorch` model to produce confident, stable predictions. A
+/// characterization test (`free_text_names_yield_no_confident_span`) locks in the known
+/// current weak-spot behavior on the original email/name sentence so a future change in
+/// either direction (regression or improvement) is caught by CI instead of drifting
+/// silently.
 struct PiiNerHead {
     deberta: DebertaV2Model,
     dropout: candle_nn::Dropout,
@@ -740,16 +767,52 @@ mod tests {
 
     // ── Integration tests requiring model download (#[ignore]) ──────────────
 
+    /// `iiiorg/piiranha-v1-detect-personal-information` reliably flags structured PII
+    /// (SSNs, addresses, phone numbers) with >0.99 confidence but is weak at free-text
+    /// name/email recognition (see the module-level doc comment for the numeric
+    /// evidence). A social-security-number sentence is used here instead of a
+    /// name/email sentence for a stable, high-confidence regression signal.
     #[tokio::test]
     #[ignore = "requires model download (~280MB, cached in HF_HOME)"]
-    async fn real_model_detects_email() {
+    async fn real_model_detects_ssn() {
+        let classifier =
+            CandlePiiClassifier::new("iiiorg/piiranha-v1-detect-personal-information", 0.75);
+        let result = classifier
+            .detect_pii("My social security number is 123-45-6789.")
+            .await
+            .unwrap();
+        assert!(result.has_pii, "expected PII detected");
+        assert!(
+            result.spans.iter().any(|s| s.entity_type == "SOCIALNUM"),
+            "expected a SOCIALNUM span, got: {:?}",
+            result.spans
+        );
+    }
+
+    /// Characterization test for the `iiiorg/piiranha-v1-detect-personal-information`
+    /// checkpoint's known weak spot: free-text given-name/surname/email recognition in
+    /// casual sentences (see the module-level doc comment, `#5457`). This is the exact
+    /// sentence the original (incorrect) `real_model_detects_email` test used, verified
+    /// against the real `HuggingFace` `PyTorch` reference implementation to currently
+    /// produce no span above the 0.75 threshold — the highest-confidence non-`O`
+    /// prediction is `▁john` → `I-USERNAME` @ ~0.48, well below threshold. Locking this
+    /// in means a future change to `candle-transformers`, the cached checkpoint, or the
+    /// threshold that flips this behavior (in either direction) is caught by CI instead
+    /// of silently drifting.
+    #[tokio::test]
+    #[ignore = "requires model download (~280MB, cached in HF_HOME)"]
+    async fn free_text_names_yield_no_confident_span() {
         let classifier =
             CandlePiiClassifier::new("iiiorg/piiranha-v1-detect-personal-information", 0.75);
         let result = classifier
             .detect_pii("Contact John Smith at john@example.com for details.")
             .await
             .unwrap();
-        assert!(result.has_pii, "expected PII detected");
-        assert!(!result.spans.is_empty());
+        assert!(
+            !result.has_pii,
+            "known checkpoint weakness on free-text names/emails regressed (improved?) \
+             — update this characterization test and the #5457 doc comment: {:?}",
+            result.spans
+        );
     }
 }
