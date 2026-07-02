@@ -56,6 +56,15 @@ pub const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
 /// Prefix for knowledge graph fact injections.
 pub const GRAPH_FACTS_PREFIX: &str = "[known facts]\n";
 
+/// Timeout for a single per-source fetch call during context assembly.
+///
+/// Bounds every per-source memory fetch (persona, trajectory, tree, summaries, cross-session,
+/// document RAG, semantic recall, corrections, reasoning strategies) and the code-index RAG
+/// fetch (`IndexAccess::fetch_code_rag`) so one stalled backend degrades only its own
+/// [`ContextSlot`] instead of the whole [`ContextAssembler::gather`] pass. Mirrors the default
+/// used for graph spreading-activation recall (`SpreadingActivationConfig::recall_timeout_ms`).
+const MEMORY_FETCH_TIMEOUT_MS: u64 = 1000;
+
 /// Result of one context-assembly pass.
 ///
 /// All source fields are `Option` — `None` means disabled, empty, or budget-exhausted.
@@ -202,8 +211,18 @@ fn schedule_context_fetchers<'r>(
         && let Some(idx) = index
     {
         fetchers.push(Box::pin(async move {
-            let result: Result<Option<String>, AssemblerError> =
-                idx.fetch_code_rag(query, code_context_budget).await;
+            let result: Result<Option<String>, AssemblerError> = if let Ok(r) =
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+                    idx.fetch_code_rag(query, code_context_budget),
+                )
+                .await
+            {
+                r
+            } else {
+                tracing::warn!("code RAG fetch timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+                Ok(None)
+            };
             result.map(ContextSlot::CodeContext)
         }));
     }
@@ -530,6 +549,32 @@ pub(crate) async fn fetch_graph_facts(
     Ok(Some(Message::from_legacy(Role::System, body)))
 }
 
+/// Greedily append pre-formatted `lines` to a `prefix` while staying within `budget_tokens`.
+///
+/// Shared by the fetchers whose body is "prefix + one line per recalled item, truncated at
+/// budget" (persona facts, trajectory hints, tree memory). Returns `None` when no line fit
+/// (i.e. the body is still just `prefix`), signalling the caller to skip injection entirely.
+fn append_budgeted_lines(
+    prefix: &str,
+    lines: impl Iterator<Item = String>,
+    budget_tokens: usize,
+    tc: &dyn TokenCounting,
+) -> Option<String> {
+    let mut body = String::from(prefix);
+    let mut tokens_so_far = tc.count_tokens(&body);
+
+    for line in lines {
+        let line_tokens = tc.count_tokens(&line);
+        if tokens_so_far + line_tokens > budget_tokens {
+            break;
+        }
+        body.push_str(&line);
+        tokens_so_far += line_tokens;
+    }
+
+    if body == prefix { None } else { Some(body) }
+}
+
 #[tracing::instrument(name = "context.persona_facts", skip_all)]
 pub(crate) async fn fetch_persona_facts(
     memory: &ContextMemoryView,
@@ -544,33 +589,29 @@ pub(crate) async fn fetch_persona_facts(
     };
 
     let min_confidence = memory.persona_config.min_confidence;
-    let facts = mem
-        .load_persona_facts(min_confidence)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let facts = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.load_persona_facts(min_confidence),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("persona facts load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
 
     if facts.is_empty() {
         return Ok(None);
     }
 
-    let mut body = String::from(crate::slot::PERSONA_PREFIX);
-    let mut tokens_so_far = tc.count_tokens(&body);
-
-    for fact in &facts {
-        let line = format!("[{}] {}\n", fact.category, fact.content);
-        let line_tokens = tc.count_tokens(&line);
-        if tokens_so_far + line_tokens > budget_tokens {
-            break;
-        }
-        body.push_str(&line);
-        tokens_so_far += line_tokens;
-    }
-
-    if body == crate::slot::PERSONA_PREFIX {
-        return Ok(None);
-    }
-
-    Ok(Some(Message::from_legacy(Role::System, body)))
+    let lines = facts
+        .iter()
+        .map(|fact| format!("[{}] {}\n", fact.category, fact.content));
+    Ok(
+        append_budgeted_lines(crate::slot::PERSONA_PREFIX, lines, budget_tokens, tc)
+            .map(|body| Message::from_legacy(Role::System, body)),
+    )
 }
 
 #[tracing::instrument(name = "context.trajectory_hints", skip_all)]
@@ -591,37 +632,31 @@ pub(crate) async fn fetch_trajectory_hints(
     // Load procedural trajectory entries via the backend abstraction.
     // The "procedural" filter maps to the same tier used by the original
     // sqlite().load_trajectory_entries(Some("procedural"), top_k) call.
-    let entries = mem
-        .load_trajectory_entries(Some("procedural"), top_k)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let entries = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.load_trajectory_entries(Some("procedural"), top_k),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("trajectory entries load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
 
     if entries.is_empty() {
         return Ok(None);
     }
 
-    let mut body = String::from(crate::slot::TRAJECTORY_PREFIX);
-    let mut tokens_so_far = tc.count_tokens(&body);
-
-    for entry in entries
+    let lines = entries
         .iter()
         .filter(|e| e.confidence >= min_conf)
         .take(top_k)
-    {
-        let line = format!("- {}: {}\n", entry.intent, entry.outcome);
-        let line_tokens = tc.count_tokens(&line);
-        if tokens_so_far + line_tokens > budget_tokens {
-            break;
-        }
-        body.push_str(&line);
-        tokens_so_far += line_tokens;
-    }
-
-    if body == crate::slot::TRAJECTORY_PREFIX {
-        return Ok(None);
-    }
-
-    Ok(Some(Message::from_legacy(Role::System, body)))
+        .map(|entry| format!("- {}: {}\n", entry.intent, entry.outcome));
+    Ok(
+        append_budgeted_lines(crate::slot::TRAJECTORY_PREFIX, lines, budget_tokens, tc)
+            .map(|body| Message::from_legacy(Role::System, body)),
+    )
 }
 
 #[tracing::instrument(name = "context.tree_memory", skip_all)]
@@ -638,33 +673,30 @@ pub(crate) async fn fetch_tree_memory(
     };
 
     let top_k = memory.tree_config.recall_top_k;
-    let nodes = mem
-        .load_tree_nodes(1, top_k)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let nodes = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.load_tree_nodes(1, top_k),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("tree nodes load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
 
     if nodes.is_empty() {
         return Ok(None);
     }
 
-    let mut body = String::from(crate::slot::TREE_MEMORY_PREFIX);
-    let mut tokens_so_far = tc.count_tokens(&body);
-
-    for node in nodes.iter().take(top_k) {
-        let line = format!("- {}\n", node.content);
-        let line_tokens = tc.count_tokens(&line);
-        if tokens_so_far + line_tokens > budget_tokens {
-            break;
-        }
-        body.push_str(&line);
-        tokens_so_far += line_tokens;
-    }
-
-    if body == crate::slot::TREE_MEMORY_PREFIX {
-        return Ok(None);
-    }
-
-    Ok(Some(Message::from_legacy(Role::System, body)))
+    let lines = nodes
+        .iter()
+        .take(top_k)
+        .map(|node| format!("- {}\n", node.content));
+    Ok(
+        append_budgeted_lines(crate::slot::TREE_MEMORY_PREFIX, lines, budget_tokens, tc)
+            .map(|body| Message::from_legacy(Role::System, body)),
+    )
 }
 
 #[tracing::instrument(name = "context.reasoning_strategies", skip_all)]
@@ -684,10 +716,17 @@ pub(crate) async fn fetch_reasoning_strategies(
         return Ok((None, None));
     };
 
-    let strategies = mem
-        .retrieve_reasoning_strategies(query, top_k)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let strategies = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.retrieve_reasoning_strategies(query, top_k),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("reasoning strategies retrieval timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
 
     if strategies.is_empty() {
         return Ok((None, None));
@@ -744,10 +783,17 @@ pub(crate) async fn fetch_corrections(
     let Some(ref mem) = memory.memory else {
         return Ok(None);
     };
-    let corrections = mem
-        .retrieve_corrections(query, limit, min_score)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let corrections = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.retrieve_corrections(query, limit, min_score),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("corrections retrieval timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
     if corrections.is_empty() {
         return Ok(None);
     }
@@ -775,10 +821,17 @@ pub(crate) async fn fetch_semantic_recall(
         return Ok((None, None));
     }
 
-    let recalled = mem
-        .recall(query, memory.recall_limit, router)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let recalled = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.recall(query, memory.recall_limit, router),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("semantic recall timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
     if recalled.is_empty() {
         return Ok((None, None));
     }
@@ -831,10 +884,17 @@ pub(crate) async fn fetch_document_rag(
 
     let collection = &memory.document_config.collection;
     let top_k = memory.document_config.top_k;
-    let chunks = mem
-        .search_document_collection(collection, query, top_k)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let chunks = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.search_document_collection(collection, query, top_k),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("document RAG search timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
     if chunks.is_empty() {
         return Ok(None);
     }
@@ -880,10 +940,17 @@ pub(crate) async fn fetch_summaries(
         return Ok(None);
     }
 
-    let summaries = mem
-        .load_summaries(cid)
-        .await
-        .map_err(AssemblerError::Memory)?;
+    let summaries = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.load_summaries(cid),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("summaries load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
     if summaries.is_empty() {
         return Ok(None);
     }
@@ -928,10 +995,18 @@ pub(crate) async fn fetch_cross_session(
     }
 
     let threshold = memory.cross_session_score_threshold;
-    let results: Vec<_> = mem
-        .search_session_summaries(query, 5, Some(cid))
-        .await
-        .map_err(AssemblerError::Memory)?
+    let summaries = if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        mem.search_session_summaries(query, 5, Some(cid)),
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)?
+    } else {
+        tracing::warn!("cross-session search timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Vec::new()
+    };
+    let results: Vec<_> = summaries
         .into_iter()
         .filter(|r| r.score >= threshold)
         .collect();
@@ -1324,6 +1399,9 @@ mod tests {
         document_chunks: Vec<MemDocumentChunk>,
         /// When `Some("method_name")`, that method returns `Err(...)`.
         fail_on: Option<&'static str>,
+        /// When `Some(duration)`, `load_persona_facts` and `recall` sleep for `duration`
+        /// before resolving — used to simulate a stalled backend for timeout-path tests.
+        delay: Option<std::time::Duration>,
         /// Tracks IDs passed to `mark_reasoning_used`.
         marked_ids: Mutex<Vec<String>>,
     }
@@ -1365,7 +1443,13 @@ mod tests {
             } else {
                 Ok(self.persona_facts.clone())
             };
-            Box::pin(async move { result })
+            let delay = self.delay;
+            Box::pin(async move {
+                if let Some(d) = delay {
+                    tokio::time::sleep(d).await;
+                }
+                result
+            })
         }
 
         fn load_trajectory_entries<'a>(
@@ -1517,7 +1601,13 @@ mod tests {
             } else {
                 Ok(self.recalled.clone())
             };
-            Box::pin(async move { result })
+            let delay = self.delay;
+            Box::pin(async move {
+                if let Some(d) = delay {
+                    tokio::time::sleep(d).await;
+                }
+                result
+            })
         }
 
         fn recall_graph_facts<'a>(
@@ -2375,5 +2465,112 @@ mod tests {
             msg.content.contains("[source:"),
             "provenance snippet must be rendered"
         );
+    }
+
+    // ── timeout guard (#5481) ─────────────────────────────────────────────────
+    //
+    // Uses `start_paused = true` so the mock's artificial delay and the fetcher's
+    // internal `tokio::time::timeout` race on tokio's virtual clock: since nothing
+    // else is runnable, the executor auto-advances straight to the earlier deadline
+    // (the 1s `MEMORY_FETCH_TIMEOUT_MS`), so the test resolves instantly in real time.
+
+    #[tokio::test(start_paused = true)]
+    async fn fetch_persona_facts_degrades_to_empty_on_timeout() {
+        let mock = MockMemoryBackend {
+            persona_facts: vec![MemPersonaFact {
+                category: "pref".to_string(),
+                content: "would have been returned".to_string(),
+            }],
+            delay: Some(std::time::Duration::from_millis(
+                MEMORY_FETCH_TIMEOUT_MS + 1000,
+            )),
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.persona_config.enabled = true;
+        let tc = NaiveTokenCounter;
+        let result = fetch_persona_facts(&view, 1000, &tc).await;
+        assert!(
+            result.is_ok(),
+            "timeout must degrade gracefully, not propagate as an error: {result:?}"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "timed-out fetch must yield no message, not the stale backend data"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fetch_semantic_recall_degrades_to_empty_on_timeout() {
+        let mock = MockMemoryBackend {
+            recalled: vec![MemRecalledMessage {
+                role: "user".to_string(),
+                content: "would have been returned".to_string(),
+                score: 0.95,
+            }],
+            delay: Some(std::time::Duration::from_millis(
+                MEMORY_FETCH_TIMEOUT_MS + 1000,
+            )),
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.recall_limit = 10;
+        let tc = NaiveTokenCounter;
+        let result = fetch_semantic_recall(&view, "query", 1000, &tc, None).await;
+        assert!(
+            result.is_ok(),
+            "timeout must degrade gracefully, not propagate as an error: {result:?}"
+        );
+        let (msg, score) = result.unwrap();
+        assert!(msg.is_none(), "timed-out recall must yield no message");
+        assert!(score.is_none(), "timed-out recall must yield no score");
+    }
+
+    // ── append_budgeted_lines (#5482 shared helper) ───────────────────────────
+
+    #[test]
+    fn append_budgeted_lines_empty_input_returns_none() {
+        let tc = NaiveTokenCounter;
+        let result = append_budgeted_lines("prefix\n", std::iter::empty(), 1000, &tc);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn append_budgeted_lines_all_items_fit() {
+        let tc = NaiveTokenCounter;
+        let lines = vec![
+            "one\n".to_string(),
+            "two\n".to_string(),
+            "three\n".to_string(),
+        ];
+        let result = append_budgeted_lines("prefix\n", lines.into_iter(), 1000, &tc).unwrap();
+        assert!(result.starts_with("prefix\n"));
+        assert!(result.contains("one"));
+        assert!(result.contains("two"));
+        assert!(result.contains("three"));
+    }
+
+    #[test]
+    fn append_budgeted_lines_truncates_at_budget() {
+        let tc = NaiveTokenCounter;
+        let prefix = "prefix\n";
+        let first = "one\n";
+        // Budget fits prefix + exactly the first line; the second must be dropped.
+        let budget = tc.count_tokens(prefix) + tc.count_tokens(first);
+        let lines = vec![first.to_string(), "two extra words here\n".to_string()];
+        let result = append_budgeted_lines(prefix, lines.into_iter(), budget, &tc).unwrap();
+        assert!(result.contains("one"), "first line must fit in budget");
+        assert!(
+            !result.contains("two extra words"),
+            "second line must be truncated by budget"
+        );
+    }
+
+    #[test]
+    fn append_budgeted_lines_zero_budget_returns_none() {
+        let tc = NaiveTokenCounter;
+        let lines = vec!["one\n".to_string()];
+        let result = append_budgeted_lines("prefix\n", lines.into_iter(), 0, &tc);
+        assert!(result.is_none(), "no line can fit within a zero budget");
     }
 }
