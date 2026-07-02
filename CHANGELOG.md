@@ -569,6 +569,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (confirmed on 2025-12-31, recurring every ~4 years), producing timestamps like
   `"2025-00-01T12:00:00Z"` that were persisted into the `task_graphs` SQLite table. `chrono_now()`
   now delegates to `chrono::Utc::now()`; `epoch_secs_to_datetime` is removed. Closes #5469.
+- `fix(context)`: seven of eight `zeph-context` assembler fetch functions (persona facts,
+  trajectory hints, tree memory, summaries, cross-session recall, document RAG, semantic recall,
+  corrections) plus the feature-gated code-RAG fetch awaited their memory-backend I/O with no
+  bound, violating the mandatory Await Discipline rule — a locked SQLite file or a stalled Qdrant
+  connection could hang the entire `ContextAssembler::gather` pass indefinitely (#5481). Every
+  fetcher now wraps its backend call in `tokio::time::timeout` (new `MEMORY_FETCH_TIMEOUT_MS`
+  const, mirroring the existing `fetch_graph_facts` pattern and the graph spreading-activation
+  recall default), degrading to a warn-logged empty result on timeout instead of blocking the
+  turn. Also extracted a shared `append_budgeted_lines` helper for the byte-identical
+  greedy-budget-accumulation loop duplicated across `fetch_persona_facts`,
+  `fetch_trajectory_hints`, and `fetch_tree_memory` (#5482).
 - `fix(session)`: two `init_session_sink`/resume hydration bugs found during code review of
   PR #5454 (default CLI continuation hydration fix). `init_session_sink` (`src/runner.rs`)
   resolved whether a session was already linked to the conversation via
