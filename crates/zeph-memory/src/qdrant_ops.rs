@@ -64,6 +64,10 @@ impl QdrantOps {
     ///
     /// If the collection already exists but has a different vector dimension than `vector_size`,
     /// the collection is deleted and recreated. All existing data in the collection is lost.
+    /// Callers on interactive/destructive-sensitive paths should pre-check via
+    /// [`Self::collection_exists`] + [`Self::get_collection_vector_size`] and gate the call
+    /// behind explicit confirmation instead of relying on this method's silent recreate (see
+    /// `zeph knowledge ingest`'s notes-sink resource setup for the reference pattern, #5444).
     ///
     /// # Errors
     ///
@@ -102,25 +106,35 @@ impl QdrantOps {
     }
 
     /// Returns the configured vector size of an existing collection, or `None` if it cannot be
-    /// determined (e.g. named-vector collections, or `collection_info` fails gracefully).
+    /// determined (e.g. named-vector collections).
+    ///
+    /// # Precondition
+    ///
+    /// The caller must already know the collection exists (e.g. via a prior
+    /// [`Self::collection_exists`] check that returned `true`). This method does **not** treat
+    /// "collection missing" and "dimension unreadable" as the same case: calling it on a
+    /// non-existent collection surfaces the underlying `collection_info` gRPC error (`Err`), it
+    /// does **not** return `Ok(None)`. Every existing call site (this type's own
+    /// [`Self::ensure_collection`], [`crate::EmbeddingRegistry`]) checks `collection_exists`
+    /// first for this reason.
     ///
     /// Used by [`crate::EmbeddingRegistry`] to validate query vector dimensions before issuing
     /// gRPC searches. Qdrant gRPC silently returns near-zero cosine scores when the query vector
     /// dimension does not match the stored collection dimension (unlike REST which returns 400).
+    /// Also used by callers that need to detect an [`Self::ensure_collection`] dimension mismatch
+    /// *before* invoking it, so a destructive recreate can be gated behind confirmation.
     ///
     /// # Errors
     ///
-    /// Returns an error only on hard Qdrant communication failures.
+    /// Returns an error on hard Qdrant communication failures, including calling this on a
+    /// collection that does not exist (see Precondition above).
     #[tracing::instrument(
         name = "memory.qdrant.get_collection_vector_size",
         skip_all,
         err,
         level = "debug"
     )]
-    pub(crate) async fn get_collection_vector_size(
-        &self,
-        collection: &str,
-    ) -> QdrantResult<Option<u64>> {
+    pub async fn get_collection_vector_size(&self, collection: &str) -> QdrantResult<Option<u64>> {
         let info = self
             .client
             .collection_info(collection)

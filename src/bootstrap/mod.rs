@@ -742,7 +742,15 @@ impl AppBuilder {
         .map_err(|e| BootstrapError::Memory(e.to_string()))
     }
 
-    fn build_memory_embed_provider(&self) -> Option<AnyProvider> {
+    /// Resolve the project's dedicated embedding provider (`[[llm.providers]]` entry with
+    /// `embed = true`, referenced by `memory.semantic.embedding_provider`), distinct from the
+    /// primary/chat provider. Returns `None` when unconfigured or resolution fails, in which case
+    /// callers fall back to the primary provider.
+    ///
+    /// Shared by memory backfill and `zeph knowledge ingest`'s notes sink (#5444) — both need
+    /// embedding-shaped work routed to an embedding-appropriate provider rather than whatever
+    /// chat provider `build_provider()` returns.
+    pub(crate) fn build_memory_embed_provider(&self) -> Option<AnyProvider> {
         let name = self
             .config
             .memory
@@ -753,7 +761,7 @@ impl AppBuilder {
 
         match create_named_provider(name, &self.config) {
             Ok(ep) => {
-                tracing::info!(provider = %name, "Using dedicated embed provider for memory backfill");
+                tracing::info!(provider = %name, "Using dedicated embed provider");
                 Some(ep)
             }
             Err(e) => {

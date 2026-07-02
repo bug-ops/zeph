@@ -10235,6 +10235,7 @@ dependencies = [
  "parking_lot",
  "pprof",
  "prometheus-client",
+ "qdrant-client",
  "reqwest 0.13.4",
  "rmcp",
  "schemars 1.2.1",

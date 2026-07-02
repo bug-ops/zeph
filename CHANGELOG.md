@@ -573,6 +573,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   finding S1). Verified `crates/zeph-channels` (Telegram/Discord/Slack adapters) has zero
   references to `ContentSanitizer`/`ContentSourceKind` — the same unsanitized-input gap exists
   there; left unfixed here to keep scope tight (candidate follow-up issue).
+- `fix(knowledge)`: `zeph knowledge ingest` without an explicit `--provider` resolved the
+  notes-sink embedding provider via `app.build_provider()` (the primary/chat provider) instead of
+  the project's dedicated embedding provider (`[[llm.providers]]` entry with `embed = true`,
+  referenced by `memory.semantic.embedding_provider`) — the same resolution already used by memory
+  backfill. When the chat provider's embedding dimension differed from whatever provider
+  originally created the `documents` Qdrant collection, `ensure_collection` silently deleted and
+  recreated the collection, discarding all previously ingested documents (#5444).
+  `resolve_notes_embed_provider` now reuses `AppBuilder::build_memory_embed_provider` (newly
+  `pub(crate)`) before falling back to the primary provider. Additionally, `build_ingest_resources`
+  now pre-checks the collection's existing vector dimension and refuses to proceed into the
+  destructive recreate path without `--yes`, printing a clear error instead of silently dropping
+  data; `QdrantOps::get_collection_vector_size` is now `pub` to support this pre-check, and its
+  precondition (caller must confirm the collection exists first) is now documented. The same gate
+  now also covers the `reasoning_strategies` Qdrant collection, which `AppBuilder::build_memory`
+  (via `attach_reasoning_memory`) recreates just as destructively and just as ungated whenever
+  `memory.reasoning.enabled = true` — every CLI ingest path that calls `build_memory`
+  (`--source subagents`, `--source claude-code`/`--source codex`, and the notes sink) now calls a
+  new `guard_reasoning_collection_recreate` first. The dimension-mismatch check also now fails
+  closed: an existing collection whose dimension cannot be read (previously treated as "no
+  mismatch") is now treated as a mismatch requiring `--yes`, since an unreadable dimension is not
+  proof of a safe match. On a transient embedding-dimension probe failure (network blip, cold
+  start), `guard_reasoning_collection_recreate` warns and skips its own pre-check rather than
+  aborting the whole ingest run, matching `attach_reasoning_memory`'s existing best-effort
+  fallback-to-SQLite-only behavior for that same probe — there is no data-loss risk from a probe
+  failure alone, since `ensure_collection` is never reached either way.
+- `fix(knowledge)`: `zeph knowledge ingest --source subagents` and `--source claude-code`/`--source
+  codex` built `IngestBatchConfig` via `..IngestBatchConfig::default()`, which embeds
+  `GraphExtractionConfig::default()` — a zero-sentinel default (`max_entities: 0, max_edges: 0`)
+  meant to be filled in from `[memory.graph]` config, not used standalone. `GraphExtractor::extract`
+  unconditionally truncates to `max_entities`/`max_edges`, so every real extraction result was
+  silently truncated to zero entities and edges (#5428). Both call sites in `src/commands/
+  knowledge.rs` now build the extraction config via `zeph_agent_persistence::graph::
+  build_graph_extraction_config(&config.memory.graph, None, embed_timeout_secs)` — the same
+  field-mapping helper already used by the conversational memory graph-backfill path — instead of
+  the bare zero-sentinel default.
 - `fix(session)`: resume-time durable condensation (D-11) only fired on `/conv resume`, not on
   the other three session-open paths — CLI `sessions resume`, ACP `spawn_acp_agent`, or `zeph
   serve` reactivation (impl-critic re-verify finding N3, architect ruling D-13). The original

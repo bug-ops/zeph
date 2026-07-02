@@ -128,6 +128,36 @@ mod tests {
         }
     }
 
+    /// #5428 regression: `GraphExtractionConfig::default()` zero-sentinels `max_entities`/
+    /// `max_edges` (they are only meaningful when set explicitly by a caller); this function must
+    /// map them from `GraphConfig`'s real, non-zero defaults instead of leaving them at 0, or
+    /// every downstream extraction call is silently truncated to empty results.
+    #[test]
+    fn build_graph_extraction_config_maps_non_zero_entity_and_edge_limits() {
+        let cfg = zeph_config::memory::GraphConfig::default();
+        let extraction_cfg = build_graph_extraction_config(&cfg, None, 5);
+
+        assert_eq!(extraction_cfg.max_entities, cfg.max_entities_per_message);
+        assert_eq!(extraction_cfg.max_edges, cfg.max_edges_per_message);
+        assert_ne!(
+            extraction_cfg.max_entities, 0,
+            "max_entities must not be left at GraphExtractionConfig::default()'s 0-sentinel"
+        );
+        assert_ne!(
+            extraction_cfg.max_edges, 0,
+            "max_edges must not be left at GraphExtractionConfig::default()'s 0-sentinel"
+        );
+    }
+
+    #[test]
+    fn build_graph_extraction_config_threads_conversation_id_and_embed_timeout() {
+        let cfg = zeph_config::memory::GraphConfig::default();
+        let extraction_cfg = build_graph_extraction_config(&cfg, Some(7), 42);
+
+        assert_eq!(extraction_cfg.conversation_id, Some(7));
+        assert_eq!(extraction_cfg.embed_timeout_secs, 42);
+    }
+
     #[test]
     fn collect_empty_messages() {
         let ctx = collect_context_messages(&[]);

@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
+use zeph_agent_persistence::graph::build_graph_extraction_config;
 use zeph_core::config::Config;
 use zeph_core::vault::Secret;
 use zeph_llm::any::AnyProvider;
@@ -218,6 +219,7 @@ async fn handle_ingest(
                 per_source_counts,
                 config_path,
                 provider_override.as_deref(),
+                yes,
             ))
             .await?;
         }
@@ -251,6 +253,7 @@ async fn handle_ingest(
             effective_max,
             config_path,
             &root,
+            yes,
         ))
         .await?;
     }
@@ -426,24 +429,31 @@ fn select_notes_embed_provider_name(provider_override: Option<&str>) -> Option<&
     provider_override.filter(|s| !s.is_empty())
 }
 
-/// Resolve the notes-sink **embedding** provider for `zeph knowledge ingest` (#5396).
+/// Resolve the notes-sink **embedding** provider for `zeph knowledge ingest` (#5396, #5444).
 ///
-/// Only honours an explicit CLI `--provider` override, falling back to the primary provider
-/// otherwise. Deliberately does **not** fall through `knowledge.ingest_provider` /
-/// `memory.graph.extract_provider` — those two config fields select the Phase-2
-/// **LLM-extraction** provider (see [`resolve_graph_extraction_provider`] and the doc contract on
-/// `KnowledgeConfig::ingest_provider` in `crates/zeph-config/src/knowledge.rs`, which states the
-/// notes sink "does not perform LLM calls; this field is ... ignored" by it). The notes sink only
-/// ever calls `.embed()` (see [`build_ingest_resources`]), so folding in the extraction chain
-/// would silently point notes embeddings at a provider entry that may use a different embedding
-/// model/dimension than the primary provider the existing `documents` Qdrant collection was built
-/// with — the same silent embed-dimension-mismatch bug class this fix must not reintroduce.
+/// Honours an explicit CLI `--provider` override first; otherwise resolves the project's
+/// dedicated embedding provider (`[[llm.providers]]` entry with `embed = true`, referenced by
+/// `memory.semantic.embedding_provider` — the same resolution used by memory backfill, see
+/// [`AppBuilder::build_memory_embed_provider`]), falling back to the primary/chat provider only
+/// when no embedding provider is configured or its resolution fails. Deliberately does **not**
+/// fall through `knowledge.ingest_provider` / `memory.graph.extract_provider` — those two config
+/// fields select the Phase-2 **LLM-extraction** provider (see
+/// [`resolve_graph_extraction_provider`] and the doc contract on `KnowledgeConfig::ingest_provider`
+/// in `crates/zeph-config/src/knowledge.rs`, which states the notes sink "does not perform LLM
+/// calls; this field is ... ignored" by it). The notes sink only ever calls `.embed()` (see
+/// [`build_ingest_resources`]), so folding in the extraction chain would silently point notes
+/// embeddings at a provider entry that may use a different embedding model/dimension than the
+/// collection was built with — the same silent embed-dimension-mismatch bug class this fix must
+/// not reintroduce.
 async fn resolve_notes_embed_provider(
     provider_override: Option<&str>,
     config: &Config,
     app: &AppBuilder,
 ) -> anyhow::Result<Arc<AnyProvider>> {
     let Some(name) = select_notes_embed_provider_name(provider_override) else {
+        if let Some(embed_provider) = app.build_memory_embed_provider() {
+            return Ok(Arc::new(embed_provider));
+        }
         let (p, _, _) = app.build_provider().await?;
         return Ok(Arc::new(p));
     };
@@ -525,12 +535,139 @@ async fn resolve_graph_extraction_provider(
     Ok(provider)
 }
 
+/// Timeout for the one-off `embed("dimension probe")` call used to pre-create/pre-check a Qdrant
+/// collection's vector size before committing to a write. Shared by every ingest path that probes
+/// a dimension ([`build_ingest_resources`], [`guard_reasoning_collection_recreate`]).
+const DIMENSION_PROBE_TIMEOUT_SECS: u64 = 15;
+
+/// Guard a Qdrant collection against `ensure_collection`'s destructive delete+recreate on a
+/// dimension mismatch (#5444).
+///
+/// No-op when the collection doesn't exist yet, or its existing dimension matches `required`.
+/// Otherwise returns an actionable error unless `yes` is `true`, so interactive CLI ingest flows
+/// fail closed instead of silently discarding previously stored data.
+///
+/// Fails closed on an unreadable dimension (#5444 M1): if the collection exists but
+/// [`QdrantOps::get_collection_vector_size`] cannot determine its dimension (e.g. a named-vector
+/// collection), that is treated as a mismatch requiring confirmation — an unreadable dimension is
+/// not proof of a safe match, and `ensure_collection` would still destructively recreate on that
+/// same unreadable state.
+///
+/// # Errors
+///
+/// Returns an error if Qdrant cannot be reached, or if a mismatch is detected and `yes` is
+/// `false`.
+async fn guard_destructive_recreate(
+    qdrant: &QdrantOps,
+    collection: &str,
+    required: u64,
+    yes: bool,
+) -> anyhow::Result<()> {
+    if !qdrant
+        .collection_exists(collection)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to check Qdrant collection '{collection}': {e}"))?
+    {
+        return Ok(());
+    }
+    let existing = qdrant
+        .get_collection_vector_size(collection)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to inspect Qdrant collection '{collection}': {e}"))?;
+
+    let existing_desc = match existing {
+        Some(size) if size == required => return Ok(()),
+        Some(size) => size.to_string(),
+        None => "unknown (unreadable)".to_owned(),
+    };
+
+    if yes {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "collection '{collection}' exists with {existing_desc}-dim vectors, but the resolved \
+         embedding provider produces {required}-dim vectors; continuing would delete and \
+         recreate the collection, discarding all previously stored data. Re-run with --yes to \
+         confirm, or pass --provider to select a provider matching the collection's existing \
+         dimension."
+    );
+}
+
+/// Guard the `reasoning_strategies` Qdrant collection against the same destructive recreate that
+/// [`crate::bootstrap::AppBuilder::attach_reasoning_memory`] triggers internally, ungated, when
+/// invoked via [`crate::bootstrap::AppBuilder::build_memory`] (#5444 S1).
+///
+/// `attach_reasoning_memory` is shared by every startup path (interactive agent, ACP, background
+/// services), so it cannot itself require a CLI confirmation flag. CLI ingest call sites that
+/// know they're about to call `build_memory` on an interactive/destructive-sensitive path call
+/// this first instead, mirroring `attach_reasoning_memory`'s own provider-selection: the dedicated
+/// embed provider when configured, else the passed-in `provider`.
+///
+/// No-op when reasoning memory is disabled, the vector backend isn't Qdrant, the resolved probe
+/// provider doesn't support embeddings, or the dimension probe itself fails (best-effort, logged
+/// via `tracing::warn!` — matches `attach_reasoning_memory`'s own "probe failure falls back to
+/// SQLite-only mode" handling; a probe failure is not a data-loss risk since `ensure_collection`
+/// is never reached either way, so it must not abort the ingest run) — these are exactly the
+/// conditions under which `attach_reasoning_memory` itself would skip `ensure_collection`.
+///
+/// # Errors
+///
+/// Returns an error only if [`guard_destructive_recreate`] detects an unconfirmed dimension
+/// mismatch.
+async fn guard_reasoning_collection_recreate(
+    app: &AppBuilder,
+    provider: &AnyProvider,
+    yes: bool,
+) -> anyhow::Result<()> {
+    if !app.config().memory.reasoning.enabled {
+        return Ok(());
+    }
+    let Some(qdrant) = app.qdrant_ops() else {
+        return Ok(());
+    };
+    let embed_provider = app.build_memory_embed_provider();
+    let probe_provider = embed_provider.as_ref().unwrap_or(provider);
+    if !probe_provider.supports_embeddings() {
+        return Ok(());
+    }
+
+    // Best-effort, matching `attach_reasoning_memory`'s own handling of this same probe
+    // (`src/bootstrap/mod.rs`): a probe failure is not itself a data-loss risk —
+    // `ensure_collection` is never reached either way — so it must not abort the whole ingest run
+    // over a transient hiccup (network blip, cold-start timeout). `attach_reasoning_memory` warns
+    // and falls back to SQLite-only mode; this guard warns and skips its own pre-check the same
+    // way, leaving `build_memory` to hit (and itself best-effort-handle) the identical failure.
+    let required = match zeph_memory::probe_vector_size(
+        probe_provider.embed("dimension probe"),
+        Some(std::time::Duration::from_secs(DIMENSION_PROBE_TIMEOUT_SECS)),
+    )
+    .await
+    {
+        Ok(size) => size,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "reasoning: embed probe failed — skipping reasoning_strategies dimension \
+                 pre-check"
+            );
+            return Ok(());
+        }
+    };
+
+    guard_destructive_recreate(
+        qdrant,
+        zeph_memory::reasoning::REASONING_COLLECTION,
+        required,
+        yes,
+    )
+    .await
+}
+
 async fn build_ingest_resources(
     config_path: Option<&Path>,
     provider_override: Option<&str>,
+    yes: bool,
 ) -> anyhow::Result<(IngestionPipeline, IngestLedger, String, String)> {
-    const DIMENSION_PROBE_TIMEOUT_SECS: u64 = 15;
-
     let app = AppBuilder::new(config_path, None, None, None).await?;
     let config = app.config();
     let qdrant = QdrantOps::new(
@@ -566,6 +703,12 @@ async fn build_ingest_resources(
             anyhow::anyhow!("failed to probe embedding dimension: {err}")
         }
     })?;
+
+    // A resolved embedding provider whose dimension differs from the collection's existing
+    // dimension would otherwise make `ensure_collection` silently delete + recreate it,
+    // discarding all previously ingested documents. Gate that destructive path behind --yes.
+    guard_destructive_recreate(&qdrant, &collection, vector_size, yes).await?;
+
     qdrant
         .ensure_collection(&collection, vector_size)
         .await
@@ -578,6 +721,9 @@ async fn build_ingest_resources(
         Box::new(embed_fn),
     );
     let kn_sup = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+    // #5444 S1: build_memory (via attach_reasoning_memory) would otherwise destructively
+    // recreate the reasoning_strategies collection on a dimension mismatch, ungated.
+    guard_reasoning_collection_recreate(&app, &provider, yes).await?;
     let mem = app.build_memory(&provider, &kn_sup).await?;
     let ledger = IngestLedger::new(mem.sqlite().pool().clone());
     let batch_id = uuid::Uuid::new_v4().to_string();
@@ -593,9 +739,10 @@ async fn run_ingest(
     per_source_counts: Vec<(&'static str, usize)>,
     config_path: Option<&Path>,
     provider_override: Option<&str>,
+    yes: bool,
 ) -> anyhow::Result<()> {
     let (pipeline, ledger, batch_id, collection) =
-        Box::pin(build_ingest_resources(config_path, provider_override)).await?;
+        Box::pin(build_ingest_resources(config_path, provider_override, yes)).await?;
 
     // FR-014: create a dedicated progress channel and spawn a CLI printer consumer.
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<IngestProgress>();
@@ -940,6 +1087,9 @@ async fn run_graph_ingest(
     let provider =
         resolve_graph_extraction_provider(provider_override.as_deref(), config, &app).await?;
 
+    // #5444 S1: build_memory (via attach_reasoning_memory) would otherwise destructively
+    // recreate the reasoning_strategies collection on a dimension mismatch, ungated.
+    guard_reasoning_collection_recreate(&app, &provider, yes).await?;
     let kn_sup2 = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
     let memory = app.build_memory(&provider, &kn_sup2).await?;
 
@@ -949,7 +1099,16 @@ async fn run_graph_ingest(
     // length-capped only, no body PII / exfiltration URL scan (#5023 INV-4 MVP boundary).
     let shared_validator = build_shared_validator(config.security.memory_validation.clone());
 
+    // #5428: IngestBatchConfig::default() embeds GraphExtractionConfig::default(), whose
+    // max_entities/max_edges are 0-sentinels (real values live in [memory.graph]), so extraction
+    // truncated every result to empty entities/edges. Resolve real values the same way the
+    // conversational memory path does.
     let batch_cfg = IngestBatchConfig {
+        extraction: build_graph_extraction_config(
+            &config.memory.graph,
+            None,
+            memory.embed_timeout().as_secs(),
+        ),
         dry_run,
         dry_run_hub_top_n: Some(10),
         ..IngestBatchConfig::default()
@@ -1276,6 +1435,7 @@ async fn handle_external_agent_ingest(
     effective_max: usize,
     config_path: Option<&Path>,
     root: &Path,
+    yes: bool,
 ) -> anyhow::Result<()> {
     use zeph_memory::IngestSourceAdapter as _;
 
@@ -1373,15 +1533,27 @@ async fn handle_external_agent_ingest(
     let app = AppBuilder::new(config_path, None, None, None).await?;
     let app_config = app.config();
     let (provider, _status_tx, _status_rx) = app.build_provider().await?;
+    // #5444 S1: build_memory (via attach_reasoning_memory) would otherwise destructively
+    // recreate the reasoning_strategies collection on a dimension mismatch, ungated.
+    guard_reasoning_collection_recreate(&app, &provider, yes).await?;
     let kn_sup3 = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
     let mem = app.build_memory(&provider, &kn_sup3).await?;
 
     // Build SharedPostExtractValidator wrapping MemoryWriteValidator (INV-4, spec-067 §G-5 S3).
     let shared_validator = build_shared_validator(app_config.security.memory_validation.clone());
 
-    let config = IngestBatchConfig::default();
+    // #5428: see the --source subagents path above — GraphExtractionConfig::default() zeroes
+    // max_entities/max_edges, truncating every extraction result to empty.
+    let batch_cfg = IngestBatchConfig {
+        extraction: build_graph_extraction_config(
+            &app_config.memory.graph,
+            None,
+            mem.embed_timeout().as_secs(),
+        ),
+        ..IngestBatchConfig::default()
+    };
     let report = mem
-        .ingest_documents(docs, config, batch_id, 4, shared_validator, None)
+        .ingest_documents(docs, batch_cfg, batch_id, 4, shared_validator, None)
         .await
         .map_err(|e| anyhow::anyhow!("graph ingest failed: {e}"))?;
 
@@ -2214,5 +2386,463 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let cwd = scan_codex_session_cwd(tmp.path());
         assert!(cwd.is_none());
+    }
+
+    // ── resolve_notes_embed_provider / build_ingest_resources live checks (#5444) ──
+    //
+    // These exercise the actual async decision paths end-to-end against a real Ollama +
+    // Qdrant instance (no mocks) — the mismatch-gate and provider-preference logic below is
+    // inline in `build_ingest_resources`/`resolve_notes_embed_provider` and not extracted into
+    // pure/sync helpers (unlike `select_notes_embed_provider_name` above), so this is the only
+    // way to pin the regression without changing production code. `#[ignore]`d like the existing
+    // live Qdrant tests in `crates/zeph-memory/src/qdrant_ops.rs`.
+
+    /// Writes a minimal, self-contained config pointing at local Ollama (no vault secrets
+    /// needed — `AppBuilder::new` never resolves a secret for an `ollama`-type provider) and a
+    /// local Qdrant instance. `embed_provider_name` is written into
+    /// `memory.semantic.embedding_provider`; when `None`, that field is omitted so
+    /// `resolve_notes_embed_provider` must fall back to the primary provider.
+    fn write_ollama_test_config(
+        dir: &std::path::Path,
+        collection: &str,
+        embed_provider_name: Option<&str>,
+    ) -> PathBuf {
+        let sqlite_path = dir.join("zeph-test.db");
+        let embedding_provider_line = embed_provider_name
+            .map(|name| format!("embedding_provider = \"{name}\"\n"))
+            .unwrap_or_default();
+        let config_toml = format!(
+            r#"
+[agent]
+name = "zeph-test"
+
+[skills]
+
+[[llm.providers]]
+type = "ollama"
+name = "primary"
+base_url = "http://localhost:11434"
+embedding_model = "definitely-not-a-real-embedding-model"
+
+[[llm.providers]]
+type = "ollama"
+name = "embed"
+base_url = "http://localhost:11434"
+embedding_model = "nomic-embed-text-v2-moe"
+
+[llm.router]
+chain = ["primary"]
+
+[memory]
+sqlite_path = {sqlite_path:?}
+qdrant_url = "http://localhost:6334"
+history_limit = 50
+
+[memory.semantic]
+{embedding_provider_line}
+[memory.documents]
+collection = "{collection}"
+"#
+        );
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, config_toml).unwrap();
+        config_path
+    }
+
+    /// #5444: with no CLI `--provider` override, `resolve_notes_embed_provider` must prefer the
+    /// dedicated `memory.semantic.embedding_provider` over the primary/chat provider. The
+    /// "primary" provider here is configured with a bogus embedding model that errors on
+    /// `.embed()`, while "embed" has a real, locally available model — so a successful embed call
+    /// on the resolved provider proves "embed" (not "primary") was selected.
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334) and Ollama (localhost:11434) with nomic-embed-text-v2-moe pulled"]
+    async fn resolve_notes_embed_provider_prefers_dedicated_embed_provider_over_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_ollama_test_config(dir.path(), "unused_collection", Some("embed"));
+
+        let app = AppBuilder::new(Some(&config_path), None, None, None)
+            .await
+            .expect("AppBuilder::new should succeed with a valid ollama-only config");
+        let config = app.config();
+
+        let provider = resolve_notes_embed_provider(None, config, &app)
+            .await
+            .expect("resolution must succeed");
+        let result = provider.embed("regression probe text").await;
+        assert!(
+            result.is_ok(),
+            "expected the dedicated embed provider (valid model) to be selected over primary \
+             (bogus model), got: {result:?}"
+        );
+    }
+
+    /// #5444: when `memory.semantic.embedding_provider` is unset, `resolve_notes_embed_provider`
+    /// must fall back to the primary provider (existing #5396 contract, unchanged by this fix).
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334) and Ollama (localhost:11434)"]
+    async fn resolve_notes_embed_provider_falls_back_to_primary_when_no_embed_provider_configured()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_ollama_test_config(dir.path(), "unused_collection", None);
+
+        let app = AppBuilder::new(Some(&config_path), None, None, None)
+            .await
+            .expect("AppBuilder::new should succeed with a valid ollama-only config");
+        let config = app.config();
+
+        let provider = resolve_notes_embed_provider(None, config, &app)
+            .await
+            .expect("resolution must succeed");
+        // "primary" has the bogus embedding model in this fixture, so falling back to it must
+        // surface as an embed error — proving no dedicated embed provider was silently invented.
+        let result = provider.embed("regression probe text").await;
+        assert!(
+            result.is_err(),
+            "expected fallback to primary (bogus model) to fail its embed call: {result:?}"
+        );
+    }
+
+    /// #5444 core regression test: a dimension mismatch between an existing collection and the
+    /// resolved embedding provider must bail out (not silently delete+recreate) unless `--yes`
+    /// is passed, and must proceed (recreating, as before) when `--yes` is passed.
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334) and Ollama (localhost:11434) with nomic-embed-text-v2-moe pulled"]
+    async fn build_ingest_resources_blocks_destructive_recreate_without_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let collection = format!("zeph_test_dim_mismatch_{}", uuid::Uuid::new_v4().simple());
+        let config_path = write_ollama_test_config(dir.path(), &collection, Some("embed"));
+
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        // Pre-create the collection at a dimension that cannot match nomic-embed-text-v2-moe's
+        // real output dimension.
+        qdrant.ensure_collection(&collection, 4).await.unwrap();
+
+        // Without --yes: must error, and must NOT touch the existing collection.
+        let Err(err) = Box::pin(build_ingest_resources(Some(&config_path), None, false)).await
+        else {
+            panic!("dimension mismatch without --yes must error, not silently recreate");
+        };
+        assert!(
+            err.to_string().contains("--yes"),
+            "error should instruct the user to re-run with --yes, got: {err}"
+        );
+        assert_eq!(
+            qdrant
+                .get_collection_vector_size(&collection)
+                .await
+                .unwrap(),
+            Some(4),
+            "collection must NOT have been recreated by the failed attempt"
+        );
+
+        // With --yes: proceeds, recreating the collection at the real embedding dimension.
+        Box::pin(build_ingest_resources(Some(&config_path), None, true))
+            .await
+            .expect("dimension mismatch with --yes must proceed");
+        let new_size = qdrant
+            .get_collection_vector_size(&collection)
+            .await
+            .unwrap();
+        assert_ne!(
+            new_size,
+            Some(4),
+            "collection should have been recreated with the resolved embedding provider's \
+             dimension"
+        );
+
+        qdrant.delete_collection(&collection).await.unwrap();
+    }
+
+    // ── guard_destructive_recreate direct checks (#5444 S1/M1) ─────────────────────
+    //
+    // Unlike `build_ingest_resources_blocks_destructive_recreate_without_yes` above, these
+    // exercise `guard_destructive_recreate` directly — it only needs a `QdrantOps`, no
+    // AppBuilder/Ollama — so they're cheaper and pin the exact function the S1 fix factored out.
+
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334)"]
+    async fn guard_destructive_recreate_noop_when_collection_missing() {
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        let collection = format!("zeph_test_guard_missing_{}", uuid::Uuid::new_v4().simple());
+        let result = guard_destructive_recreate(&qdrant, &collection, 128, false).await;
+        assert!(
+            result.is_ok(),
+            "no existing collection must never block: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334)"]
+    async fn guard_destructive_recreate_noop_when_dimension_matches() {
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        let collection = format!("zeph_test_guard_match_{}", uuid::Uuid::new_v4().simple());
+        qdrant.ensure_collection(&collection, 128).await.unwrap();
+
+        let result = guard_destructive_recreate(&qdrant, &collection, 128, false).await;
+        assert!(
+            result.is_ok(),
+            "matching dimension must never block: {result:?}"
+        );
+
+        qdrant.delete_collection(&collection).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334)"]
+    async fn guard_destructive_recreate_errors_on_mismatch_without_yes() {
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        let collection = format!("zeph_test_guard_mismatch_{}", uuid::Uuid::new_v4().simple());
+        qdrant.ensure_collection(&collection, 128).await.unwrap();
+
+        let Err(err) = guard_destructive_recreate(&qdrant, &collection, 256, false).await else {
+            panic!("dimension mismatch without --yes must error");
+        };
+        assert!(err.to_string().contains("--yes"), "got: {err}");
+        assert!(err.to_string().contains("128"), "got: {err}");
+        assert!(err.to_string().contains("256"), "got: {err}");
+
+        qdrant.delete_collection(&collection).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334)"]
+    async fn guard_destructive_recreate_proceeds_on_mismatch_with_yes() {
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        let collection = format!("zeph_test_guard_yes_{}", uuid::Uuid::new_v4().simple());
+        qdrant.ensure_collection(&collection, 128).await.unwrap();
+
+        let result = guard_destructive_recreate(&qdrant, &collection, 256, true).await;
+        assert!(result.is_ok(), "--yes must permit a mismatch: {result:?}");
+
+        qdrant.delete_collection(&collection).await.unwrap();
+    }
+
+    /// Creates a named-vector Qdrant collection (`ParamsMap` config) directly via the raw
+    /// `qdrant-client`, bypassing `QdrantOps` (which only ever creates single unnamed-vector
+    /// collections). `QdrantOps::get_collection_vector_size` treats `ParamsMap` as unreadable and
+    /// returns `Ok(None)` (see `crates/zeph-memory/src/qdrant_ops.rs`) — this is the only way to
+    /// construct the `None` case that #5444 M1 must fail closed on.
+    async fn create_named_vector_collection(collection: &str) {
+        let client = qdrant_client::Qdrant::from_url("http://localhost:6334")
+            .build()
+            .unwrap();
+        let _ = client.delete_collection(collection).await;
+        let mut vectors_config = qdrant_client::qdrant::VectorsConfigBuilder::default();
+        vectors_config.add_named_vector_params(
+            "custom",
+            qdrant_client::qdrant::VectorParamsBuilder::new(
+                64,
+                qdrant_client::qdrant::Distance::Cosine,
+            ),
+        );
+        client
+            .create_collection(
+                qdrant_client::qdrant::CreateCollectionBuilder::new(collection)
+                    .vectors_config(vectors_config),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// #5444 M1 regression test: an existing collection whose dimension `get_collection_vector_size`
+    /// cannot determine (named-vector config) must be treated as a mismatch requiring `--yes`, not
+    /// silently treated as safe.
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334)"]
+    async fn guard_destructive_recreate_fails_closed_on_unreadable_dimension_without_yes() {
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        let collection = format!(
+            "zeph_test_guard_unreadable_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        create_named_vector_collection(&collection).await;
+
+        // Sanity: confirm the fixture actually reproduces the `None` case this test targets.
+        assert_eq!(
+            qdrant
+                .get_collection_vector_size(&collection)
+                .await
+                .unwrap(),
+            None,
+            "fixture must produce an unreadable (named-vector) dimension"
+        );
+
+        let Err(err) = guard_destructive_recreate(&qdrant, &collection, 64, false).await else {
+            panic!("unreadable dimension without --yes must fail closed (error), not proceed");
+        };
+        assert!(err.to_string().contains("--yes"), "got: {err}");
+        assert!(
+            err.to_string().contains("unknown") || err.to_string().contains("unreadable"),
+            "error should describe the dimension as unreadable, got: {err}"
+        );
+
+        qdrant.delete_collection(&collection).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334)"]
+    async fn guard_destructive_recreate_proceeds_on_unreadable_dimension_with_yes() {
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        let collection = format!(
+            "zeph_test_guard_unreadable_yes_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        create_named_vector_collection(&collection).await;
+
+        let result = guard_destructive_recreate(&qdrant, &collection, 64, true).await;
+        assert!(
+            result.is_ok(),
+            "--yes must permit an unreadable dimension: {result:?}"
+        );
+
+        qdrant.delete_collection(&collection).await.unwrap();
+    }
+
+    // ── guard_reasoning_collection_recreate live checks (#5444 S1) ─────────────────
+
+    /// Same fixture shape as `write_ollama_test_config`, but additionally selects the Qdrant
+    /// vector backend and enables `memory.reasoning` — the two preconditions
+    /// `guard_reasoning_collection_recreate`/`attach_reasoning_memory` require before touching
+    /// `REASONING_COLLECTION` at all.
+    fn write_ollama_reasoning_test_config(
+        dir: &std::path::Path,
+        embed_provider_name: Option<&str>,
+    ) -> PathBuf {
+        let sqlite_path = dir.join("zeph-test.db");
+        let embedding_provider_line = embed_provider_name
+            .map(|name| format!("embedding_provider = \"{name}\"\n"))
+            .unwrap_or_default();
+        let config_toml = format!(
+            r#"
+[agent]
+name = "zeph-test"
+
+[skills]
+
+[[llm.providers]]
+type = "ollama"
+name = "primary"
+base_url = "http://localhost:11434"
+embedding_model = "definitely-not-a-real-embedding-model"
+
+[[llm.providers]]
+type = "ollama"
+name = "embed"
+base_url = "http://localhost:11434"
+embedding_model = "nomic-embed-text-v2-moe"
+
+[llm.router]
+chain = ["primary"]
+
+[memory]
+sqlite_path = {sqlite_path:?}
+qdrant_url = "http://localhost:6334"
+history_limit = 50
+vector_backend = "qdrant"
+
+[memory.semantic]
+{embedding_provider_line}
+[memory.reasoning]
+enabled = true
+
+[memory.documents]
+collection = "zeph_test_reasoning_guard_unused_documents"
+"#
+        );
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, config_toml).unwrap();
+        config_path
+    }
+
+    /// #5444 S1 core regression test: `attach_reasoning_memory` (invoked internally by every
+    /// `build_memory` call, on all three CLI ingest paths) would otherwise destructively
+    /// delete+recreate the shared `reasoning_strategies` Qdrant collection on a dimension
+    /// mismatch, completely ungated. `guard_reasoning_collection_recreate` must block that call
+    /// sequence the same way `guard_destructive_recreate` blocks the notes-sink `documents` path.
+    ///
+    /// Uses the fixed `REASONING_COLLECTION` name (the function under test hardcodes it, it is
+    /// not parameterizable) rather than a per-test-unique name — cleans up before and after to
+    /// avoid cross-test pollution, matching the existing fixed-name convention in
+    /// `crates/zeph-memory/src/qdrant_ops.rs`'s live tests.
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334) and Ollama (localhost:11434) with nomic-embed-text-v2-moe pulled"]
+    async fn guard_reasoning_collection_recreate_blocks_destructive_recreate_without_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_ollama_reasoning_test_config(dir.path(), Some("embed"));
+
+        let qdrant = QdrantOps::new("http://localhost:6334", None).unwrap();
+        let collection = zeph_memory::reasoning::REASONING_COLLECTION;
+        let _ = qdrant.delete_collection(collection).await;
+        qdrant.ensure_collection(collection, 4).await.unwrap();
+
+        let app = AppBuilder::new(Some(&config_path), None, None, None)
+            .await
+            .expect("AppBuilder::new should succeed with a valid ollama+qdrant config");
+        let config = app.config();
+        let provider = resolve_notes_embed_provider(None, config, &app)
+            .await
+            .expect("resolution must succeed");
+
+        // Without --yes: must error, and must NOT touch the existing collection.
+        let Err(err) = guard_reasoning_collection_recreate(&app, &provider, false).await else {
+            panic!(
+                "reasoning-collection dimension mismatch without --yes must error, not \
+                 silently recreate"
+            );
+        };
+        assert!(
+            err.to_string().contains("--yes"),
+            "error should instruct the user to re-run with --yes, got: {err}"
+        );
+        assert_eq!(
+            qdrant.get_collection_vector_size(collection).await.unwrap(),
+            Some(4),
+            "reasoning collection must NOT have been recreated by the failed attempt"
+        );
+
+        // With --yes: the guard permits it; the actual recreate happens inside `build_memory`
+        // (via `attach_reasoning_memory`), mirroring the real call-site sequence exactly.
+        guard_reasoning_collection_recreate(&app, &provider, true)
+            .await
+            .expect("dimension mismatch with --yes must proceed");
+        let kn_sup = zeph_common::TaskSupervisor::new(tokio_util::sync::CancellationToken::new());
+        app.build_memory(&provider, &kn_sup)
+            .await
+            .expect("build_memory should succeed once the guard has cleared");
+        let new_size = qdrant.get_collection_vector_size(collection).await.unwrap();
+        assert_ne!(
+            new_size,
+            Some(4),
+            "reasoning collection should have been recreated with the resolved embedding \
+             provider's dimension"
+        );
+
+        qdrant.delete_collection(collection).await.unwrap();
+    }
+
+    /// #5444 S1: when `memory.reasoning.enabled` is left at its default (`false`), the guard must
+    /// be a strict no-op regardless of `yes` — reasoning memory being disabled must never itself
+    /// cause an error or a write.
+    #[tokio::test]
+    #[ignore = "requires live Qdrant (localhost:6334) and Ollama (localhost:11434) with nomic-embed-text-v2-moe pulled"]
+    async fn guard_reasoning_collection_recreate_noop_when_reasoning_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        // Reuses the non-reasoning fixture: vector_backend defaults to sqlite and
+        // memory.reasoning.enabled defaults to false.
+        let config_path = write_ollama_test_config(dir.path(), "unused_collection", Some("embed"));
+
+        let app = AppBuilder::new(Some(&config_path), None, None, None)
+            .await
+            .expect("AppBuilder::new should succeed with a valid ollama-only config");
+        let config = app.config();
+        let provider = resolve_notes_embed_provider(None, config, &app)
+            .await
+            .expect("resolution must succeed");
+
+        let result = guard_reasoning_collection_recreate(&app, &provider, false).await;
+        assert!(
+            result.is_ok(),
+            "reasoning disabled (or non-Qdrant backend) must always no-op: {result:?}"
+        );
     }
 }

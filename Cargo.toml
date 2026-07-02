@@ -364,6 +364,7 @@ zeroize.workspace = true
 [dev-dependencies]
 bytes.workspace = true
 insta.workspace = true
+qdrant-client = { workspace = true, features = ["serde"] }
 serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
