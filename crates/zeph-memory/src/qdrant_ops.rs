@@ -75,6 +75,10 @@ impl QdrantOps {
     /// Defaults to 10 seconds. A slow or hung Qdrant server would otherwise block the
     /// calling async task indefinitely (#5484).
     ///
+    /// TODO(#5493): no production call site invokes this yet — the timeout is currently
+    /// hardcoded to the default rather than config-driven. Wire a config field through
+    /// `zeph-config`/bootstrap and call this from there.
+    ///
     /// # Examples
     ///
     /// ```
@@ -92,6 +96,13 @@ impl QdrantOps {
     }
 
     /// Access the underlying Qdrant client for advanced operations.
+    ///
+    /// # Warning
+    ///
+    /// Calls made directly through the returned client bypass the [`Self::with_timeout`]
+    /// guard (#5484) — they are not wrapped by [`Self::timed`]. Prefer the inherent
+    /// `QdrantOps` methods, which are all timeout-guarded, unless the client exposes an
+    /// operation this type does not wrap.
     #[must_use]
     pub fn client(&self) -> &Qdrant {
         &self.client
