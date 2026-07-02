@@ -132,6 +132,20 @@ impl zeph_tools::ProbeGate for ShadowSentinelProbeGateAdapter {
             }
         })
     }
+
+    fn record<'a>(
+        &'a self,
+        qualified_tool_id: &'a str,
+        turn_number: u64,
+        risk_level: &'a str,
+        context_summary: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.sentinel
+                .record_tool_event(qualified_tool_id, turn_number, risk_level, context_summary)
+                .await;
+        })
+    }
 }
 
 /// Warn at startup if legacy artifact paths exist but new `.zeph/`-based paths do not.
@@ -5085,6 +5099,163 @@ mod tests {
         let args = serde_json::Value::Object(serde_json::Map::new());
         let outcome = adapter.probe("builtin:shell", &args, 1, "calm").await;
         assert_eq!(outcome, ProbeOutcome::Skip);
+    }
+
+    /// Drives a single `builtin:shell` call through the real production chain —
+    /// `ShadowProbeExecutor` -> `ShadowSentinelProbeGateAdapter::record` ->
+    /// `ShadowSentinel::record_tool_event` -> `ShadowEventStore::record` — for `session_id`,
+    /// using `pool` as the backing store. Blocks until the fire-and-forget persist completes.
+    ///
+    /// Extracted from `shadow_probe_executor_writes_reach_a_different_sessions_probe_context`
+    /// to keep that test under the line-count lint.
+    async fn drive_tool_call_through_shadow_probe_executor(
+        pool: zeph_db::DbPool,
+        session_id: &'static str,
+    ) {
+        use zeph_core::agent::shadow_sentinel::{
+            ProbeVerdict, SafetyProbe, SentinelEvent, ShadowEventStore, ShadowSentinel,
+        };
+        use zeph_tools::{ProbeGate, ToolCall, ToolExecutor, ToolOutput};
+
+        struct AllowProbe;
+        impl SafetyProbe for AllowProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a serde_json::Value,
+                _: &'a [SentinelEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                Box::pin(async { ProbeVerdict::Allow })
+            }
+        }
+
+        struct OkExec;
+        impl ToolExecutor for OkExec {
+            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, zeph_tools::ToolError> {
+                Ok(None)
+            }
+
+            async fn execute_tool_call(
+                &self,
+                call: &ToolCall,
+            ) -> Result<Option<ToolOutput>, zeph_tools::ToolError> {
+                Ok(Some(ToolOutput {
+                    tool_name: call.tool_id.clone(),
+                    summary: "command completed".to_owned(),
+                    blocks_executed: 1,
+                    filter_stats: None,
+                    diff: None,
+                    streamed: false,
+                    terminal_id: None,
+                    locations: None,
+                    raw_response: None,
+                    claim_source: None,
+                }))
+            }
+        }
+
+        let sentinel = std::sync::Arc::new(ShadowSentinel::new(
+            ShadowEventStore::new(pool),
+            Box::new(AllowProbe),
+            zeph_config::ShadowSentinelConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            session_id,
+        ));
+        let probe_gate: std::sync::Arc<dyn ProbeGate> =
+            std::sync::Arc::new(ShadowSentinelProbeGateAdapter {
+                sentinel: std::sync::Arc::clone(&sentinel),
+            });
+        let executor = zeph_tools::ShadowProbeExecutor::new(
+            OkExec,
+            probe_gate,
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(7)),
+            std::sync::Arc::new(parking_lot::RwLock::new("elevated".to_owned())),
+        );
+        let call = ToolCall {
+            tool_id: zeph_common::ToolName::new("builtin:shell"),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = executor.execute_tool_call(&call).await;
+        assert!(result.unwrap().is_some(), "tool call must succeed");
+        // record_tool_event is fire-and-forget; drain before the store is queried.
+        sentinel.drain_pending().await;
+    }
+
+    /// #5449 regression: prove the production write path actually persists a `tool_call`
+    /// event that a DIFFERENT session's probe later sees via `get_tool_history`. Prior test
+    /// coverage only seeded `tool_call` events directly into the store, which never happens
+    /// in production since nothing called `record_tool_event`.
+    #[tokio::test]
+    async fn shadow_probe_executor_writes_reach_a_different_sessions_probe_context() {
+        use zeph_core::agent::shadow_sentinel::{
+            ProbeVerdict, SafetyProbe, SentinelEvent, ShadowEventStore, ShadowSentinel,
+        };
+
+        struct CapturingProbe {
+            captured: std::sync::Arc<tokio::sync::Mutex<Vec<SentinelEvent>>>,
+        }
+        impl SafetyProbe for CapturingProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a serde_json::Value,
+                trajectory: &'a [SentinelEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                let captured = std::sync::Arc::clone(&self.captured);
+                let trajectory = trajectory.to_vec();
+                Box::pin(async move {
+                    *captured.lock().await = trajectory;
+                    ProbeVerdict::Allow
+                })
+            }
+        }
+
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .expect("connect + migrate in-memory sqlite pool");
+
+        // Session A: drives a real tool call through the production executor chain.
+        drive_tool_call_through_shadow_probe_executor(pool.clone(), "session-a").await;
+
+        // Session B: a completely different ShadowSentinel/session, probing the same tool.
+        let captured: std::sync::Arc<tokio::sync::Mutex<Vec<SentinelEvent>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let sentinel_b = ShadowSentinel::new(
+            ShadowEventStore::new(pool),
+            Box::new(CapturingProbe {
+                captured: std::sync::Arc::clone(&captured),
+            }),
+            zeph_config::ShadowSentinelConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            "session-b",
+        );
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        sentinel_b
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+
+        let seen = captured.lock().await;
+        assert!(
+            seen.iter().any(|e| e.session_id.as_str() == "session-a"
+                && e.event_type == "tool_call"
+                && e.context_summary.as_deref() == Some("command completed")),
+            "session-b's probe context must include session-a's real tool_call event \
+             persisted via ShadowProbeExecutor, got: {seen:?}"
+        );
     }
 
     // --- init_session_sink (#5451: default CLI continuation hydration) ---

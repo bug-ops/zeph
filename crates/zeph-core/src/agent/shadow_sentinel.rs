@@ -38,7 +38,7 @@ use tokio::task::JoinSet;
 
 use serde_json::Value as JsonValue;
 use tracing::{Instrument as _, info_span};
-use zeph_db::DbPool;
+use zeph_db::{DbPool, sql};
 use zeph_llm::LlmProvider;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
@@ -320,12 +320,12 @@ impl ShadowEventStore {
     /// Returns `AgentError` on database failure.
     #[tracing::instrument(name = "security.shadow.record", skip_all, fields(event_type = %event.event_type))]
     pub async fn record(&self, event: &SentinelEvent) -> Result<(), AgentError> {
-        sqlx::query(
+        zeph_db::query(sql!(
             "INSERT INTO safety_shadow_events \
              (session_id, turn_number, event_type, tool_id, risk_signal, risk_level, \
               probe_verdict, context_summary, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ))
         .bind(event.session_id.as_str())
         .bind(i64::try_from(event.turn_number).unwrap_or(i64::MAX))
         .bind(&event.event_type)
@@ -355,14 +355,14 @@ impl ShadowEventStore {
         session_id: &str,
         limit: usize,
     ) -> Result<Vec<SentinelEvent>, AgentError> {
-        let rows = sqlx::query_as::<_, ShadowEventRow>(
+        let rows = zeph_db::query_as::<_, ShadowEventRow>(sql!(
             "SELECT id, session_id, turn_number, event_type, tool_id, risk_signal, \
              risk_level, probe_verdict, context_summary, created_at \
              FROM safety_shadow_events \
              WHERE session_id = ? \
              ORDER BY created_at DESC \
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(session_id)
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
@@ -375,9 +375,13 @@ impl ShadowEventStore {
         Ok(events)
     }
 
-    /// Retrieve the last `limit` events for a specific tool across all sessions.
+    /// Retrieve the last `limit` events for a specific tool from sessions OTHER than
+    /// `exclude_session_id`.
     ///
-    /// Used for cross-session pattern detection.
+    /// Used for cross-session pattern detection. The exclusion is applied in SQL (not just
+    /// filtered client-side afterward) so that a session with heavy recent activity for
+    /// `tool_id` cannot crowd its own rows into the `LIMIT` clip and starve genuinely
+    /// cross-session rows out of the result.
     ///
     /// # Errors
     ///
@@ -386,17 +390,19 @@ impl ShadowEventStore {
     pub async fn get_tool_history(
         &self,
         tool_id: &str,
+        exclude_session_id: &str,
         limit: usize,
     ) -> Result<Vec<SentinelEvent>, AgentError> {
-        let rows = sqlx::query_as::<_, ShadowEventRow>(
+        let rows = zeph_db::query_as::<_, ShadowEventRow>(sql!(
             "SELECT id, session_id, turn_number, event_type, tool_id, risk_signal, \
              risk_level, probe_verdict, context_summary, created_at \
              FROM safety_shadow_events \
-             WHERE tool_id = ? \
+             WHERE tool_id = ? AND session_id != ? \
              ORDER BY created_at DESC \
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(tool_id)
+        .bind(exclude_session_id)
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
@@ -597,7 +603,7 @@ impl ShadowSentinel {
         // Load recent trajectory for probe context.
         // Filter out probe_result events — exposing probe verdicts to the LLM would allow
         // prompt injection attacks that craft tool outputs to manipulate perceived safety.
-        let trajectory = match self
+        let mut trajectory: Vec<SentinelEvent> = match self
             .store
             .get_trajectory(&self.session_id, self.config.max_context_events)
             .await
@@ -611,6 +617,51 @@ impl ShadowSentinel {
                 vec![]
             }
         };
+
+        // Reserve half the total budget for cross-session history so recurring risk patterns
+        // from other sessions always have visibility — even in the busiest sessions, where the
+        // session's own trajectory alone would otherwise fill (and, pre-fix, silently evict
+        // the entire cross-session block from) the whole budget. Enforce the session-side cap
+        // here (trajectory is oldest-first/ASC, so excess is trimmed from the front, keeping
+        // the most recent events).
+        let cross_session_budget = self.config.max_context_events / 2;
+        let session_budget = self.config.max_context_events - cross_session_budget;
+        if trajectory.len() > session_budget {
+            let excess = trajectory.len() - session_budget;
+            trajectory.drain(0..excess);
+        }
+
+        // Load cross-session history for this tool so recurring risk patterns from
+        // other sessions inform the probe, not just the current session (#5449). The
+        // current session is excluded in SQL (not just filtered client-side) so its own
+        // activity can never crowd genuinely cross-session rows out of the LIMIT clip.
+        match self
+            .store
+            .get_tool_history(
+                qualified_tool_id,
+                self.session_id.as_str(),
+                self.config.max_context_events,
+            )
+            .await
+        {
+            Ok(history) => {
+                // get_tool_history is DESC (newest first); reverse to ASC to match
+                // trajectory ordering, then prepend so trajectory stays oldest-first.
+                let mut cross_session: Vec<SentinelEvent> = history
+                    .into_iter()
+                    .filter(|e| e.event_type != "probe_result")
+                    .rev()
+                    .collect();
+                if cross_session.len() > cross_session_budget {
+                    let excess = cross_session.len() - cross_session_budget;
+                    cross_session.drain(0..excess);
+                }
+                trajectory.splice(0..0, cross_session);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "ShadowSentinel: failed to load cross-session tool history, proceeding without it");
+            }
+        }
 
         let verdict = self
             .probe
@@ -1027,5 +1078,456 @@ mod tests {
             .expect("in-memory SQLite pool");
         let store = ShadowEventStore::new(pool);
         ShadowSentinel::new(store, Box::new(NoopProbe), config, "test-session")
+    }
+
+    // Opens a migrated in-memory SQLite pool (unlike `make_test_sentinel`'s pool, this one
+    // has the `safety_shadow_events` table from migration 085 and can serve real store queries.
+    async fn test_pool() -> DbPool {
+        zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .expect("connect + migrate in-memory sqlite pool")
+    }
+
+    fn make_event(
+        session_id: &str,
+        turn_number: u64,
+        tool_id: &str,
+        summary: &str,
+    ) -> SentinelEvent {
+        SentinelEvent {
+            id: 0,
+            session_id: SessionId::new(session_id),
+            turn_number,
+            event_type: "tool_call".to_owned(),
+            tool_id: Some(tool_id.to_owned()),
+            risk_signal: None,
+            risk_level: "elevated".to_owned(),
+            probe_verdict: None,
+            context_summary: Some(summary.to_owned()),
+            created_at: unix_now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_tool_history_returns_events_across_sessions() {
+        let store = ShadowEventStore::new(test_pool().await);
+
+        store
+            .record(&make_event(
+                "session-a",
+                1,
+                "builtin:shell",
+                "session-a ran a command",
+            ))
+            .await
+            .expect("record session-a event");
+        store
+            .record(&make_event(
+                "session-b",
+                1,
+                "builtin:shell",
+                "session-b ran a command",
+            ))
+            .await
+            .expect("record session-b event");
+        store
+            .record(&make_event(
+                "session-a",
+                2,
+                "builtin:write",
+                "unrelated tool",
+            ))
+            .await
+            .expect("record unrelated-tool event");
+
+        let history = store
+            .get_tool_history("builtin:shell", "unrelated-session", 10)
+            .await
+            .expect("get_tool_history");
+
+        assert_eq!(
+            history.len(),
+            2,
+            "must return events from both non-excluded sessions for the queried tool_id, \
+             excluding other tools"
+        );
+        assert!(history.iter().any(|e| e.session_id.as_str() == "session-a"));
+        assert!(history.iter().any(|e| e.session_id.as_str() == "session-b"));
+
+        let history_excluding_a = store
+            .get_tool_history("builtin:shell", "session-a", 10)
+            .await
+            .expect("get_tool_history");
+        assert_eq!(
+            history_excluding_a.len(),
+            1,
+            "exclude_session_id must be applied in SQL, not just usable for client-side \
+             filtering afterward"
+        );
+        assert!(
+            history_excluding_a
+                .iter()
+                .all(|e| e.session_id.as_str() != "session-a")
+        );
+    }
+
+    /// #5449 regression: `check_tool_call` must fold cross-session `get_tool_history` results
+    /// into the trajectory passed to the probe, not just the current session's own events.
+    #[tokio::test]
+    async fn check_tool_call_incorporates_cross_session_tool_history() {
+        struct CapturingProbe {
+            captured: Arc<Mutex<Vec<SentinelEvent>>>,
+        }
+        impl SafetyProbe for CapturingProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _tool_id: &'a str,
+                _tool_args: &'a JsonValue,
+                trajectory: &'a [SentinelEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                let captured = Arc::clone(&self.captured);
+                let trajectory = trajectory.to_vec();
+                Box::pin(async move {
+                    *captured.lock().await = trajectory;
+                    ProbeVerdict::Allow
+                })
+            }
+        }
+
+        let store = ShadowEventStore::new(test_pool().await);
+        let other_session = "other-session";
+        store
+            .record(&make_event(
+                other_session,
+                1,
+                "builtin:shell",
+                "other session ran rm -rf",
+            ))
+            .await
+            .expect("record cross-session event");
+
+        let captured: Arc<Mutex<Vec<SentinelEvent>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let sentinel = ShadowSentinel::new(
+            store,
+            Box::new(CapturingProbe {
+                captured: Arc::clone(&captured),
+            }),
+            config,
+            "current-session",
+        );
+
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        sentinel
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+
+        let seen = captured.lock().await;
+        assert!(
+            seen.iter().any(|e| e.session_id.as_str() == other_session
+                && e.context_summary.as_deref() == Some("other session ran rm -rf")),
+            "probe context must include the cross-session tool history event, got: {seen:?}"
+        );
+    }
+
+    /// Drives `check_tool_call` for `tool_id` under `session_id` and returns the exact
+    /// trajectory the probe received, so cap tests can assert WHICH events survive, not
+    /// just how many — a count-only assertion can pass while the cap silently drops all
+    /// cross-session data (the bug found in code review of the initial #5449 fix).
+    async fn capture_check_tool_call_trajectory(
+        store: ShadowEventStore,
+        config: zeph_config::ShadowSentinelConfig,
+        session_id: &str,
+        tool_id: &str,
+    ) -> Vec<SentinelEvent> {
+        struct CapturingProbe {
+            captured: Arc<Mutex<Vec<SentinelEvent>>>,
+        }
+        impl SafetyProbe for CapturingProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _tool_id: &'a str,
+                _tool_args: &'a JsonValue,
+                trajectory: &'a [SentinelEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                let captured = Arc::clone(&self.captured);
+                let trajectory = trajectory.to_vec();
+                Box::pin(async move {
+                    *captured.lock().await = trajectory;
+                    ProbeVerdict::Allow
+                })
+            }
+        }
+
+        let captured: Arc<Mutex<Vec<SentinelEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sentinel = ShadowSentinel::new(
+            store,
+            Box::new(CapturingProbe {
+                captured: Arc::clone(&captured),
+            }),
+            config,
+            session_id,
+        );
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        sentinel.check_tool_call(tool_id, &args, 1, "calm").await;
+        captured.lock().await.clone()
+    }
+
+    /// Seeds `count` events for `session_id`/`tool_id`, with ascending `created_at`
+    /// timestamps starting at `base`, so cap tests can control which events are "most
+    /// recent". Summaries are `"{summary_prefix}-{i}"` for index-based assertions.
+    async fn seed_events(
+        store: &ShadowEventStore,
+        session_id: &str,
+        tool_id: &str,
+        summary_prefix: &str,
+        base: i64,
+        count: u32,
+    ) {
+        for i in 0..count {
+            let mut event = make_event(
+                session_id,
+                u64::from(i),
+                tool_id,
+                &format!("{summary_prefix}-{i}"),
+            );
+            event.created_at = base + i64::from(i);
+            store.record(&event).await.expect("record seeded event");
+        }
+    }
+
+    /// Session trajectory and cross-session history are each independently capped at
+    /// `max_context_events`, so a naive merge can total up to 2x the configured budget.
+    /// `check_tool_call` must enforce the combined cap AND reserve budget for cross-session
+    /// data — the original fix trimmed unconditionally from the front, which silently wiped
+    /// ALL cross-session events whenever the session's own trajectory alone filled the
+    /// budget (precisely the busiest-session scenario #5449 cares about most).
+    #[tokio::test]
+    async fn check_tool_call_cap_reserves_cross_session_budget_when_session_heavy() {
+        let store = ShadowEventStore::new(test_pool().await);
+        let base = unix_now();
+        seed_events(
+            &store,
+            "current-session",
+            "builtin:shell",
+            "session",
+            base,
+            4,
+        )
+        .await;
+        seed_events(&store, "other-session", "builtin:shell", "cross", base, 3).await;
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_context_events: 4,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let trajectory =
+            capture_check_tool_call_trajectory(store, config, "current-session", "builtin:shell")
+                .await;
+
+        assert_eq!(
+            trajectory.len(),
+            4,
+            "total must be capped at max_context_events"
+        );
+        let cross_session_count = trajectory
+            .iter()
+            .filter(|e| e.session_id.as_str() == "other-session")
+            .count();
+        assert_eq!(
+            cross_session_count, 2,
+            "cross-session budget is max_context_events/2 = 2, and must survive even \
+             though the session's own trajectory alone fills the whole budget; \
+             got trajectory: {trajectory:?}"
+        );
+    }
+
+    /// Mirror case: cross-session history is the one over budget, session's own trajectory
+    /// is light. The session-side cap must not trim events that don't need trimming.
+    #[tokio::test]
+    async fn check_tool_call_cap_cross_session_heavy_case() {
+        let store = ShadowEventStore::new(test_pool().await);
+        let base = unix_now();
+        seed_events(
+            &store,
+            "current-session",
+            "builtin:shell",
+            "session",
+            base,
+            1,
+        )
+        .await;
+        seed_events(&store, "other-session", "builtin:shell", "cross", base, 4).await;
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_context_events: 4,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let trajectory =
+            capture_check_tool_call_trajectory(store, config, "current-session", "builtin:shell")
+                .await;
+
+        let session_count = trajectory
+            .iter()
+            .filter(|e| e.session_id.as_str() == "current-session")
+            .count();
+        let cross_session_count = trajectory.len() - session_count;
+        assert_eq!(
+            session_count, 1,
+            "session's own (light) trajectory must not be trimmed"
+        );
+        assert_eq!(
+            cross_session_count, 2,
+            "cross-session budget is max_context_events/2 = 2"
+        );
+    }
+
+    /// Boundary: session + cross-session totals exactly `max_context_events` — nothing
+    /// should be dropped from either side.
+    #[tokio::test]
+    async fn check_tool_call_cap_boundary_at_exact_limit() {
+        let store = ShadowEventStore::new(test_pool().await);
+        let base = unix_now();
+        seed_events(
+            &store,
+            "current-session",
+            "builtin:shell",
+            "session",
+            base,
+            2,
+        )
+        .await;
+        seed_events(&store, "other-session", "builtin:shell", "cross", base, 2).await;
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_context_events: 4,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let trajectory =
+            capture_check_tool_call_trajectory(store, config, "current-session", "builtin:shell")
+                .await;
+
+        assert_eq!(
+            trajectory.len(),
+            4,
+            "exactly at the limit: nothing should be dropped"
+        );
+    }
+
+    /// Boundary: one more cross-session event than the reserved budget — exactly one event
+    /// must be dropped, and it must be the OLDEST cross-session event (trajectory stays
+    /// oldest-first/ASC, so the most recent events are kept).
+    #[tokio::test]
+    async fn check_tool_call_cap_boundary_at_limit_plus_one() {
+        let store = ShadowEventStore::new(test_pool().await);
+        let base = unix_now();
+        seed_events(
+            &store,
+            "current-session",
+            "builtin:shell",
+            "session",
+            base,
+            2,
+        )
+        .await;
+        seed_events(&store, "other-session", "builtin:shell", "cross", base, 3).await;
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_context_events: 4,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let trajectory =
+            capture_check_tool_call_trajectory(store, config, "current-session", "builtin:shell")
+                .await;
+
+        assert_eq!(
+            trajectory.len(),
+            4,
+            "limit+1 overall: exactly one event must be dropped"
+        );
+        let cross_summaries: Vec<&str> = trajectory
+            .iter()
+            .filter(|e| e.session_id.as_str() == "other-session")
+            .filter_map(|e| e.context_summary.as_deref())
+            .collect();
+        assert_eq!(
+            cross_summaries,
+            vec!["cross-1", "cross-2"],
+            "the oldest cross-session event (cross-0) must be the one dropped, \
+             got: {cross_summaries:?}"
+        );
+    }
+
+    /// The current session's own events must not be double-counted into the cross-session
+    /// block — `get_tool_history` excludes `exclude_session_id` directly in its SQL
+    /// (`AND session_id != ?`), and this test confirms that exclusion end-to-end through
+    /// `check_tool_call`.
+    #[tokio::test]
+    async fn check_tool_call_excludes_current_session_from_cross_session_merge() {
+        let store = ShadowEventStore::new(test_pool().await);
+        let base = unix_now();
+        seed_events(&store, "current-session", "builtin:shell", "own", base, 2).await;
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_context_events: 10,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let trajectory =
+            capture_check_tool_call_trajectory(store, config, "current-session", "builtin:shell")
+                .await;
+
+        assert_eq!(
+            trajectory.len(),
+            2,
+            "current session's own events must appear exactly once, not duplicated via \
+             the cross-session merge; got: {trajectory:?}"
+        );
+    }
+
+    /// `probe_result` events from OTHER sessions must never leak into the cross-session
+    /// merge — `get_tool_history`'s SQL does not filter by `event_type`, so this relies
+    /// entirely on the Rust-side filter (the same LLM-isolation invariant already tested
+    /// for the same-session trajectory, exercised here on the cross-session path).
+    #[tokio::test]
+    async fn check_tool_call_excludes_probe_result_events_from_cross_session_merge() {
+        let store = ShadowEventStore::new(test_pool().await);
+        let base = unix_now();
+        let mut event = make_event("other-session", 1, "builtin:shell", "probe verdict leaked");
+        event.event_type = "probe_result".to_owned();
+        event.created_at = base;
+        store
+            .record(&event)
+            .await
+            .expect("record probe_result event");
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            max_context_events: 10,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let trajectory =
+            capture_check_tool_call_trajectory(store, config, "current-session", "builtin:shell")
+                .await;
+
+        assert!(
+            trajectory.is_empty(),
+            "probe_result events from other sessions must never appear in the \
+             cross-session merge (LLM isolation invariant), got: {trajectory:?}"
+        );
     }
 }

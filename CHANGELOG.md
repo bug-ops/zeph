@@ -2211,6 +2211,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `docs(config)`: `CandleConfig` in `zeph-config` now has a `///` doc comment describing its
   purpose (`[llm.candle]` TOML section) and its relationship to `CandleInlineConfig`. (#4869)
 
+### Fixed
+- `fix(core)`: `ShadowEventStore`'s three query methods (`record`, `get_trajectory`,
+  `get_tool_history`) used raw `sqlx::query`/`sqlx::query_as` with literal `?` placeholders instead
+  of `zeph_db::query*(sql!(...))`, so under a `postgres`-feature build the placeholders were never
+  rewritten to `$1, $2, ...` and every call to the `ShadowSentinel` safety-audit-trail persistence
+  layer would fail at runtime (#5494).
+- `fix(core,security)`: `ShadowSentinel`'s cross-session pattern detection was schema/comment-only —
+  `ShadowEventStore::get_tool_history` had zero callers, so probe context was built exclusively from
+  the current session's own trajectory (#5449). `check_tool_call` now merges cross-session tool
+  history (same `tool_id`, other sessions) into the probe context, reserving half of
+  `max_context_events` for each source so neither can fully starve the other. Closing this out
+  required wiring the previously-dead-code writer as well: `record_tool_event` had no production
+  caller either, so even after wiring the reader, no `tool_call` events existed to read back. Added
+  `ProbeGate::record(...)` (`zeph-tools`), called from `ShadowProbeExecutor` on `Allow`/`Deny`
+  outcomes (never `Skip`, to avoid recording low-risk/disabled calls) and skipped when the result is
+  `Err(ToolError::ConfirmationRequired { .. })` (avoids double-recording confirmation-gated calls,
+  which would otherwise record once as a spurious failure and again after user confirmation).
+  `get_tool_history` also gained a SQL-level `exclude_session_id` filter so the current session's
+  own rows cannot crowd out cross-session rows within the query's `LIMIT`.
+
 
 ## [0.21.4] - 2026-06-05
 
