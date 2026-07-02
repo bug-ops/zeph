@@ -489,6 +489,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(mcp)`: extract shared `rmcp_tool_to_mcp_tool` helper (`crates/zeph-mcp/src/client.rs`)
+  for converting an rmcp `tools/list` entry into `McpTool`, replacing two byte-for-byte identical
+  inline closures in `ToolListChangedHandler::on_tool_list_changed` (background refresh path) and
+  `McpClient::list_tools` (initial connect / manual list path). No behavior change. Closes #5479.
 - `feat(cli)!`: `zeph sessions resume <id>` no longer dumps events to stdout by default (spec-068,
   #5343) — it now launches a **live interactive agent** bound to that session's conversation,
   replaying its JSONL event log to reconstruct history before accepting the next prompt (spec §10,
