@@ -435,6 +435,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   this change). No `mdbook-linkcheck` preprocessor is configured, so all cross-reference links
   added in the new/updated pages were verified manually against `SUMMARY.md`'s existing entries.
 
+- `ci`: add a `Release Build Check` job to `.github/workflows/ci.yml` that runs
+  `cargo build --release --workspace --all-targets --features
+  desktop,ide,server,chat,pdf,scheduler,testing,deep-link` on every PR and push to `main`.
+  Previously `cargo build --release` only ran at an actual release cut
+  (`.github/workflows/release.yml`), so release-profile-only regressions — such as the
+  query-depth overflow behind #5395/#5407/#5408 — were invisible to the normal commit/PR gate.
+  `cargo check --release` was evaluated and rejected: it does not reproduce this bug class
+  because it skips the codegen/LTO layout finalization where the overflow occurs, so only a
+  real `cargo build --release` (which exercises this workspace's `lto = true`,
+  `codegen-units = 1` release profile) closes the gap. Wired into the `ci-status` gate.
+  Closes #5409.
 - `test(mcp)`: add an in-process duplex-transport integration test for `McpClient` /
   `ToolListChangedHandler`, covering a full `initialize -> tools/list -> tools/call`
   round-trip through the real rmcp wire serialization path over `tokio::io::duplex`
@@ -492,6 +503,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   changes. A session with no linked `conversation_id` (a legacy session with no recorded history)
   errors with a message pointing at `--print`. Dead `resume_summary` (the interim hydration-summary
   dump this replaces) removed.
+- `ci`: gate the `Release Build Check` job (`.github/workflows/ci.yml`) behind
+  `github.event_name == 'push'` in addition to the existing `run-full-ci` condition, so it only
+  runs post-merge on `main` instead of on every `pull_request` push. It is the most expensive
+  job in the workflow (`cargo build --release --workspace --all-targets` with
+  `lto = true, codegen-units = 1`), and `main` already re-verifies every change after merge, so
+  gating every feature/fix branch push behind it was wasteful. `ci-status` already treats
+  `skipped` as passing, so this does not weaken the gate for `push` runs.
 - `fix(a2a)!`: `A2aClient::with_security` no longer takes two positional bools (transposing
   `with_security(true, false)` vs. `with_security(false, true)` was a silent foot-gun). It now
   takes a `SecurityPolicy { require_tls, ssrf_protection }` struct, with `SecurityPolicy::hardened()`
@@ -510,6 +528,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   union, replacing the previous text-only extraction at every MCP tool-result call site
   (`zeph-mcp` executor/manager, `zeph-core` hooks dispatch, `zeph-acp` LSP provider,
   `src/agent_setup.rs`). MCP Tasks API support is explicitly out of scope (zero existing usage).
+- `refactor(memory,index)`: extract the duplicated "probe embedding dimension, then
+  `ensure_collection`" sequence into shared helpers instead of 6+ independent
+  re-implementations. New `zeph_memory::probe_vector_size` (`crates/zeph-memory/src/embed_probe.rs`)
+  awaits an already-invoked embed future (optionally bounded by a timeout) and returns the
+  vector's dimension, used by `EmbeddingRegistry::ensure_collection`, `zeph-index`'s
+  `Indexer::ensure_collection_for_provider` (preserving its existing 15s startup timeout), and
+  `src/commands/knowledge.rs::build_ingest_resources`. New
+  `EmbeddingStore::ensure_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
+  derives the dimension from an already-computed vector and ensures the collection in one call,
+  used by `admission.rs`, `semantic/recall.rs` (5 call sites), and `semantic/summarization.rs`,
+  which each already hold a real embedding rather than a throwaway probe. No behavior change.
+- `refactor(memory)`: finish the probe-then-ensure_collection dedup started above. New
+  `EmbeddingStore::ensure_named_collection_for_vector` (`crates/zeph-memory/src/embedding_store.rs`)
+  replaces 8 remaining inline `ensure_named_collection(vector.len())` call sites across
+  `episodic_consolidation.rs`, `graph/resolver/mod.rs`, and `semantic/{summarization,cross_session,
+  corrections}.rs`, eliminating a dead-fallback default (`1536`/`896`/`384`) that had already
+  diverged across the inline copies. `src/bootstrap/mod.rs`'s reasoning-strategies collection probe
+  now also calls `zeph_memory::probe_vector_size` directly instead of its own inline throwaway
+  probe. No behavior change. Closes #5393.
 
 ### Fixed
 
@@ -677,6 +714,111 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SessionStore::update_seq`, the real write primitive; a new integration test
   (`load_session_succeeds_from_event_log_with_no_legacy_rows`) seeds only the JSONL log and
   confirms `session/load` succeeds via the store-backed reconstruction path with zero legacy rows.
+- `fix(tools)`: expand a leading `~` in LLM-supplied paths for `DiagnosticsExecutor::validate_path`,
+  `SetCwdExecutor::execute_tool_call` (`set_working_directory` tool), and the `allowed_paths`
+  constructor argument of `DiagnosticsExecutor::new`/`SearchCodeExecutor::new`, mirroring the
+  `FileExecutor` fix below (#5413). Previously a `~/...` argument was treated as a literal path
+  component instead of being resolved to the user's home directory. Closes #5415.
+- `fix(plugins)`: the plugin auto-update path (`apply_staged_update`,
+  `crates/zeph-plugins/src/manager/registry.rs`) now enforces the same manifest validation as
+  initial install (`PluginManager::add()`) — dependency count/name validation
+  (`MAX_DEPENDENCIES`, per-dependency `validate_plugin_name`) and `[[skills]] path` traversal
+  validation (rejecting any skill path that canonicalizes outside the plugin source root).
+  Previously the auto-update path skipped both checks despite its doc comment claiming parity
+  with `add()`, so a compromised auto-update URL (registry compromise, DNS hijack, or a
+  malicious plugin author shipping a benign v1 then a malicious v2) could bypass validations
+  that would have blocked the same manifest content at initial install time. Both checks are
+  now unified in a single shared `validate_manifest_for_install` (`crates/zeph-plugins/src/
+  manager/security.rs`) called by both `add()` and `apply_staged_update()`, so the two paths
+  cannot silently diverge again. Closes #5401.
+- `fix(durable)`: `[durable] encrypt_payload = true` (the default, encrypted-at-rest posture)
+  now actually attaches an AEAD cipher on every durable-journal *write* path, not just the
+  `--reveal` read path (#5404/#5413). Previously `runner.rs` unconditionally passed
+  `cipher=None` to `with_durable_orchestration`, and `scheduler_daemon.rs` opened its
+  `LocalBackend` with no cipher at all, so a deployment believing its payloads were encrypted
+  at rest was silently storing plaintext. New shared helper
+  `load_write_cipher` (`src/commands/durable.rs`) resolves the vault-backed
+  `ZEPH_DURABLE_KEY` and gates cipher construction on `encrypt_payload`, mirroring the existing
+  `open_backend`/`load_durable_cipher` read-path pattern; it fails closed (errors out) instead
+  of silently falling back to plaintext when the key is missing. Wired into `runner.rs`
+  (durable orchestration write path) and `scheduler_daemon.rs` (scheduler durable write path).
+  The TUI's `durable_poll_task` (`src/tui_bridge.rs`) is unaffected — it only lists execution
+  metadata and never reads or writes payload bytes, so it never needed a cipher. Closes #5414.
+- `fix(tools)`: file-tool calls (`write`, `edit`, `create_directory`, and every other
+  `FileExecutor` handler) now expand a leading `~` in the LLM-supplied `path` argument to the
+  real home directory before sandbox checks run, instead of treating it as a literal `~`
+  directory relative to the current working directory. `FileExecutor::validate_path`
+  (`crates/zeph-tools/src/file.rs`) now applies the existing `expand_tilde` helper — previously
+  only used for the `allowed_paths` sandbox policy config — to the runtime path argument as
+  well, since every handler funnels through this single entry point. Closes #5410.
+- `fix(durable)`: `zeph durable show --reveal` (and `inspect --reveal`) no longer requires
+  `ZEPH_DURABLE_KEY` in the vault when `[durable] encrypt_payload = false` (the documented
+  dev-only plaintext override). `open_backend` (`src/commands/durable.rs`) now only loads the
+  AEAD cipher when `reveal && config.durable.encrypt_payload`; with encryption disabled, no
+  cipher is attached and the already-plaintext payload bytes are returned as-is. Encrypted
+  deployments (`encrypt_payload = true`, the default) still require the key as before. Closes
+  #5404.
+- `fix(worktree)`: `WorktreeManager::remove()` no longer leaves a stale handle in the in-memory
+  session list when the worktree directory itself was already deleted but the subsequent branch
+  prune (`git branch -D`, `prune_branch = true`) fails. The handle is now dropped from
+  `self.handles` immediately after `git worktree remove` succeeds, before the branch-prune step
+  runs, so `list()` never reports a path that no longer exists on disk; a failed prune is still
+  surfaced to the caller as a distinct `WorktreeError::GitCommand { op: "branch -D", .. }`. Also
+  extracted a shared `check_git_status` helper deduplicating the repeated git-exit-status/error
+  handling across the six call sites in `crates/zeph-worktree/src/manager.rs`. Closes #5397,
+  closes #5398.
+- `fix(orchestration)`: `/plan confirm` no longer deadlocks and discards completed work when the
+  LLM planner attaches a `verify_criteria` acceptance criterion to a task under the default
+  config (`orchestration.verify_predicate_enabled = false`). `convert_response` (planner.rs) now
+  only populates `TaskNode::verify_predicate` when the flag is enabled, so a disabled predicate
+  gate no longer leaves a completed parent's dependents permanently blocked in
+  `dag::all_parents_predicate_clear` while nothing ever evaluates the predicate to clear it —
+  the combination previously made `check_graph_completion` see no ready/running tasks and
+  falsely report a scheduler deadlock, marking the graph `Failed` and cancelling already-completed
+  work. Closes #5403.
+- `fix(knowledge)`: `zeph knowledge ingest --provider <PROVIDER>` no longer silently ignores the
+  override for notes-sink sources (`specs`, `changelog`, `handoff`, `coverage`, `git-log`). The
+  CLI override now threads through `run_ingest` into `build_ingest_resources` via a new
+  `resolve_notes_embed_provider` helper that honours only the explicit `--provider` flag (falling
+  back to primary otherwise). This is intentionally a separate, narrower resolution policy from
+  the graph-sink's `resolve_graph_extraction_provider` (CLI override → `knowledge.ingest_provider`
+  → `memory.graph.extract_provider` → primary): the notes sink only ever calls `.embed()`, while
+  `knowledge.ingest_provider` / `memory.graph.extract_provider` select the Phase-2
+  LLM-extraction provider, so folding the extraction chain into the embedding path would silently
+  risk an embedding-model/dimension mismatch against the existing `documents` Qdrant collection.
+  Closes #5396.
+- `fix(knowledge)`: `zeph knowledge rollback --batch-id` now accepts the 8-character batch id
+  prefix printed by `zeph knowledge status`, resolving it git-style against the ledger: an exact
+  match wins immediately, a unique prefix resolves to the full id, an ambiguous prefix lists every
+  matching batch, and no match keeps the existing "not found" error. An empty or whitespace-only
+  `--batch-id` is now rejected up front instead of matching (and silently rolling back) every
+  batch in a single-batch ledger. New `IngestLedger::resolve_batch_id` / `BatchIdResolution` in
+  `zeph-memory`. Closes #5399.
+- `fix(orchestration)`: `cargo build --release` no longer fails on `zeph-orchestration` with
+  `error: queries overflow the depth limit!` while computing the layout of
+  `durable::journal_budget()`'s async state machine. Release-profile layout computation walks
+  deeper than debug builds through the generic/trait-object nesting in `zeph_durable`'s
+  `DurableContext::step`, exceeding rustc's default 128 query-depth limit. Added
+  `#![recursion_limit = "256"]` to `zeph-orchestration`, the same precedented fix already applied
+  to `zeph-acp` for the identical error class. Closes #5395.
+- `fix`: `zeph --daemon` no longer crashes with a stack overflow on startup. `main()` used to
+  run the whole async runtime (via `#[tokio::main]`) directly on the OS main thread, whose stack
+  size is governed by the caller's `ulimit -s` (default 8 MiB on macOS); the large
+  `Config::deserialize` frame (43 top-level fields) stacked on top of the already-large
+  `runner::run`/`run_daemon` async-fn frames could exceed that default. `main()` now spawns a
+  dedicated `"zeph-main"` OS thread with a 32 MiB stack and drives a manually built
+  `tokio::runtime::Builder::new_multi_thread().enable_all()` runtime from it, so daemon startup
+  no longer depends on the caller's shell `ulimit`. Closes #5394.
+- `fix(acp)`: `cargo build --release --workspace --all-targets` no longer fails on
+  `crates/zeph-acp/tests/integration.rs` with the same `queries overflow the depth limit!`
+  error already fixed in `zeph-acp/src/lib.rs` (see 076c7fb3) and `zeph-orchestration`
+  (#5395/#5407). Each file directly under a crate's `tests/` directory is compiled by Cargo as
+  its own crate root and does not inherit `#![recursion_limit]` from `src/lib.rs`, so the
+  attribute has to be repeated per test-binary crate root (same precedent already applied to
+  `zeph-core/tests/turn_lifecycle.rs`). Added `#![recursion_limit = "256"]` to
+  `zeph-acp/tests/integration.rs`; a workspace-wide sweep of the remaining top-level
+  `crates/*/tests/*.rs` files found no other file exceeding the default depth limit under
+  `cargo build --release --workspace --features full --all-targets`. Closes #5408.
 - `fix(knowledge)`: `zeph knowledge ingest` no longer fails on a fresh Qdrant instance.
   `build_ingest_resources` now probes the embedding dimension and calls
   `QdrantOps::ensure_collection` for the documents collection before constructing the

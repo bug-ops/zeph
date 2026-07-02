@@ -26,5 +26,5 @@ pub use adapter::{
     ClaudeCodeJsonl, CodexJsonl, IngestSourceAdapter, SubagentJsonl, TranscriptEntry,
 };
 pub use document::{IngestDocument, IngestSourceKind};
-pub use ledger::{IngestLedger, LedgerEntry};
+pub use ledger::{BatchIdResolution, IngestLedger, LedgerEntry};
 pub use report::{HubDegree, ImportBatchId, IngestFailure, IngestProgress, IngestReport};

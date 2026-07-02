@@ -971,6 +971,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let topology_hint = self.compute_topology_hint(goal).await;
 
+        let cfg = &self.services.orchestration.orchestration_config;
         let planner_provider = self
             .services
             .orchestration
@@ -978,23 +979,16 @@ impl<C: crate::channel::Channel> Agent<C> {
             .as_ref()
             .unwrap_or(&self.provider)
             .clone();
-        let planner = LlmPlanner::new(
-            planner_provider,
-            &self.services.orchestration.orchestration_config,
-        );
+        let planner = LlmPlanner::new(planner_provider, cfg);
         let embed_model = self.services.skill.embedding_model.clone();
-        let max_tasks = self.services.orchestration.orchestration_config.max_tasks;
+        let max_tasks = cfg.max_tasks;
+        let verify_predicate_enabled = cfg.verify_predicate_enabled;
         let (graph, planner_usage) = {
             use zeph_orchestration::Planner as _;
             let use_cache = topology_hint
                 .as_ref()
                 .is_none_or(|h| h.prompt_sentence().is_none());
-            let planner_timeout = std::time::Duration::from_secs(
-                self.services
-                    .orchestration
-                    .orchestration_config
-                    .planner_timeout_secs,
-            );
+            let planner_timeout = std::time::Duration::from_secs(cfg.planner_timeout_secs);
             let result = if use_cache {
                 plan_with_cache(
                     &planner,
@@ -1006,6 +1000,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     &available_agents,
                     max_tasks,
                     planner_timeout,
+                    verify_predicate_enabled,
                 )
                 .await
             } else {

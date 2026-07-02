@@ -87,6 +87,7 @@ pub mod tiered_retrieval;
 pub mod tiers;
 
 pub mod db_vector_store;
+pub mod embed_probe;
 pub mod embedding_registry;
 pub mod embedding_store;
 pub mod error;
@@ -136,6 +137,7 @@ pub use document::{
     Chunk, Document, DocumentError, DocumentLoader, DocumentMetadata, IngestionPipeline,
     SplitterConfig, TextLoader, TextSplitter,
 };
+pub use embed_probe::{ProbeError, probe_vector_size};
 pub use embedding_registry::{
     EmbedFuture, Embeddable, EmbeddingRegistry, EmbeddingRegistryError, SyncStats,
 };
@@ -158,9 +160,9 @@ pub use forgetting::{ForgettingConfig, ForgettingResult, start_forgetting_loop};
 pub use graph::EntityLockManager;
 pub use graph::experience::{EvolutionSweepStats, ExperienceStore};
 pub use graph::ingest::{
-    ClaudeCodeJsonl, CodexJsonl, HubDegree, ImportBatchId, IngestDocument, IngestFailure,
-    IngestLedger, IngestProgress, IngestReport, IngestSourceAdapter, IngestSourceKind, LedgerEntry,
-    SubagentJsonl, TranscriptEntry,
+    BatchIdResolution, ClaudeCodeJsonl, CodexJsonl, HubDegree, ImportBatchId, IngestDocument,
+    IngestFailure, IngestLedger, IngestProgress, IngestReport, IngestSourceAdapter,
+    IngestSourceKind, LedgerEntry, SubagentJsonl, TranscriptEntry,
 };
 pub use graph::{
     BeliefMemConfig, BeliefRevisionConfig, BeliefStore, Community, Edge, EdgeType, Entity,

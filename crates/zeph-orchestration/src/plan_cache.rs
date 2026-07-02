@@ -481,6 +481,7 @@ pub async fn plan_with_cache<P>(
     available_agents: &[SubAgentDef],
     max_tasks: u32,
     planner_timeout: Duration,
+    verify_predicate_enabled: bool,
 ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError>
 where
     P: super::planner::Planner,
@@ -502,6 +503,7 @@ where
                     available_agents,
                     max_tasks,
                     planner_timeout,
+                    verify_predicate_enabled,
                 )
                 .await
                 {
@@ -537,6 +539,7 @@ where
 /// Returns `OrchestrationError::PlanningFailed` if the LLM call fails, times out, or the
 /// adapted graph fails DAG validation.
 #[tracing::instrument(name = "orchestration.plan_cache.adapt", skip_all, fields(goal_len = goal.len()))]
+#[allow(clippy::too_many_arguments)]
 async fn adapt_plan(
     provider: &impl LlmProvider,
     goal: &str,
@@ -544,6 +547,7 @@ async fn adapt_plan(
     available_agents: &[SubAgentDef],
     max_tasks: u32,
     timeout: Duration,
+    verify_predicate_enabled: bool,
 ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError> {
     use zeph_subagent::ToolPolicy;
 
@@ -598,7 +602,13 @@ async fn adapt_plan(
 
     let usage = provider.last_usage();
 
-    let graph = convert_response_pub(response, goal, available_agents, max_tasks)?;
+    let graph = convert_response_pub(
+        response,
+        goal,
+        available_agents,
+        max_tasks,
+        verify_predicate_enabled,
+    )?;
 
     dag::validate(&graph.tasks, max_tasks as usize)?;
 
@@ -980,6 +990,7 @@ mod tests {
             &[],
             20,
             Duration::from_mins(2),
+            false,
         )
         .await
         .unwrap();
@@ -1030,6 +1041,7 @@ mod tests {
             &[],
             20,
             Duration::from_mins(2),
+            false,
         )
         .await
         .unwrap();
@@ -1081,6 +1093,7 @@ mod tests {
             &[],
             20,
             Duration::from_mins(2),
+            false,
         )
         .await
         .unwrap();

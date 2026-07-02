@@ -3,6 +3,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    process::Output,
     time::SystemTime,
 };
 
@@ -183,9 +184,18 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// If `prune_branch` is `true`, also deletes the git branch after removing
     /// the worktree directory.
     ///
+    /// The in-memory handle is dropped as soon as the worktree directory has
+    /// been removed from disk, regardless of whether the subsequent branch
+    /// prune succeeds. This keeps [`list`][Self::list] from ever reporting a
+    /// path that no longer exists on disk, even if the branch prune step
+    /// fails below.
+    ///
     /// # Errors
     ///
-    /// Returns [`WorktreeError::GitCommand`] if either git command fails.
+    /// Returns [`WorktreeError::GitCommand`] if either git command fails. If
+    /// the `op` field is `"branch -D"`, the worktree itself was already
+    /// removed and the handle already dropped — only the branch delete
+    /// failed.
     ///
     /// # Examples
     ///
@@ -210,15 +220,15 @@ impl<R: GitRunner> WorktreeManager<R> {
                 &self.repo_root,
             )
             .await?;
+        check_git_status(&out, "worktree remove")?;
 
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            tracing::debug!(op = "worktree remove", %stderr, "git command failed");
-            return Err(WorktreeError::GitCommand {
-                op: "worktree remove".to_string(),
-                stderr,
-            });
-        }
+        // The worktree directory is gone from disk now — drop the in-memory
+        // handle unconditionally so a subsequent branch-prune failure below
+        // never leaves `self.handles` pointing at a nonexistent path.
+        self.handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|h| h.path != handle.path);
 
         if prune_branch {
             let branch = &handle.branch_name;
@@ -226,22 +236,8 @@ impl<R: GitRunner> WorktreeManager<R> {
                 .runner
                 .run(&["branch", "-D", "--", branch], &self.repo_root)
                 .await?;
-
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                tracing::debug!(op = "branch delete", %stderr, "git command failed");
-                return Err(WorktreeError::GitCommand {
-                    op: "branch -D".to_string(),
-                    stderr,
-                });
-            }
+            check_git_status(&out, "branch -D")?;
         }
-
-        // Remove from in-memory session list.
-        self.handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|h| h.path != handle.path);
 
         Ok(())
     }
@@ -294,15 +290,7 @@ impl<R: GitRunner> WorktreeManager<R> {
             .runner
             .run(&["worktree", "list", "--porcelain"], &self.repo_root)
             .await?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            tracing::debug!(op = "worktree list", %stderr, "git command failed");
-            return Err(WorktreeError::GitCommand {
-                op: "worktree list".to_string(),
-                stderr,
-            });
-        }
+        check_git_status(&out, "worktree list")?;
 
         let output_str = String::from_utf8_lossy(&out.stdout);
         let git_worktrees = parse_worktree_list_porcelain(&output_str);
@@ -428,15 +416,7 @@ impl<R: GitRunner> WorktreeManager<R> {
             .runner
             .run(&["fetch", "origin", "--", branch], &self.repo_root)
             .await?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            tracing::debug!(op = "fetch", %stderr, "git fetch failed");
-            return Err(WorktreeError::GitCommand {
-                op: "fetch".to_string(),
-                stderr,
-            });
-        }
+        check_git_status(&out, "fetch")?;
 
         Ok(())
     }
@@ -448,14 +428,7 @@ impl<R: GitRunner> WorktreeManager<R> {
             .runner
             .run(&["rev-parse", "--verify", "--", commitish], &self.repo_root)
             .await?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            return Err(WorktreeError::GitCommand {
-                op: format!("rev-parse --verify {commitish}"),
-                stderr,
-            });
-        }
+        check_git_status(&out, &format!("rev-parse --verify {commitish}"))?;
 
         Ok(())
     }
@@ -475,18 +448,27 @@ impl<R: GitRunner> WorktreeManager<R> {
                 &self.repo_root,
             )
             .await?;
-
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            tracing::debug!(op = "worktree add", %stderr, "git worktree add failed");
-            return Err(WorktreeError::GitCommand {
-                op: "worktree add".to_string(),
-                stderr,
-            });
-        }
+        check_git_status(&out, "worktree add")?;
 
         Ok(())
     }
+}
+
+/// Checks a git command's exit status, returning [`WorktreeError::GitCommand`]
+/// with `op` as the operation label if the command failed.
+///
+/// Raw stderr is logged at `DEBUG` level here — per [`WorktreeError`]'s
+/// contract, it must never be surfaced directly to the user.
+fn check_git_status(out: &Output, op: &str) -> Result<(), WorktreeError> {
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        tracing::debug!(op, %stderr, "git command failed");
+        return Err(WorktreeError::GitCommand {
+            op: op.to_string(),
+            stderr,
+        });
+    }
+    Ok(())
 }
 
 /// Probes that `git` is available and at a sufficient version, and that
@@ -799,6 +781,49 @@ mod tests {
         };
 
         mgr.remove(&handle, true).await.unwrap();
+    }
+
+    /// Regression test for #5397: `git worktree remove` succeeds but the
+    /// subsequent `git branch -D` fails. The in-memory handle must already be
+    /// gone from [`list`][WorktreeManager::list] once the worktree directory
+    /// removal succeeded, regardless of the branch-prune outcome.
+    #[tokio::test]
+    async fn remove_drops_handle_even_when_branch_prune_fails() {
+        let dir = make_repo();
+        let runner = FakeGitRunner::new();
+        // worktree remove → success
+        runner.push_ok(b"" as &[u8]);
+        // branch -D → failure (e.g. branch not fully merged)
+        runner.push_err(b"error: branch 'agent/agent-99' not fully merged\n" as &[u8]);
+
+        let mgr = make_manager(&dir, runner).await;
+        let handle = WorktreeHandle {
+            path: dir.path().join("worktrees/agent-99"),
+            branch_name: "agent/agent-99".to_string(),
+            base_ref_resolved: "HEAD".to_string(),
+            subagent_id: "agent-99".to_string(),
+            created_at: SystemTime::now(),
+        };
+
+        // Seed the in-memory handle list directly, bypassing `create()` — the
+        // `tests` module is a descendant of the manager's module so it can
+        // reach the private `handles` field.
+        mgr.handles.lock().unwrap().push(handle.clone());
+        assert_eq!(mgr.list().len(), 1, "precondition: handle is tracked");
+
+        let err = mgr.remove(&handle, true).await.unwrap_err();
+        assert_matches!(
+            err,
+            WorktreeError::GitCommand { ref op, .. } if op == "branch -D"
+        );
+
+        // The stale-handle bug (#5397) would leave this list non-empty even
+        // though the worktree directory was already removed from disk.
+        assert!(
+            mgr.list().is_empty(),
+            "handle must be dropped once `worktree remove` succeeded, \
+             independent of the branch -D outcome"
+        );
     }
 
     // --- reconcile ---

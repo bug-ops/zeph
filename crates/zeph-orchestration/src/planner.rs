@@ -93,6 +93,12 @@ pub struct LlmPlanner<P: LlmProvider> {
     /// Default failure strategy applied to every graph produced by this planner,
     /// unless a per-task `failure_strategy` override is set by the LLM.
     default_failure_strategy: FailureStrategy,
+    /// Whether the predicate gate is enabled (`config.verify_predicate_enabled`).
+    ///
+    /// When `false`, `verify_criteria` from the LLM response is dropped instead of
+    /// being attached to the graph node, so the scheduler never waits on a predicate
+    /// outcome that nothing will ever produce.
+    verify_predicate_enabled: bool,
 }
 
 impl<P: LlmProvider> LlmPlanner<P> {
@@ -109,6 +115,7 @@ impl<P: LlmProvider> LlmPlanner<P> {
             max_tasks: config.max_tasks,
             timeout: Duration::from_secs(config.planner_timeout_secs),
             default_failure_strategy: config.default_failure_strategy,
+            verify_predicate_enabled: config.verify_predicate_enabled,
         }
     }
 }
@@ -188,7 +195,13 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
                 .map_err(|_| OrchestrationError::PlanningFailed("planner timed out".into()))?
                 .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
         let usage = self.provider.last_usage();
-        let mut graph = convert_response(response, goal, available_agents, self.max_tasks)?;
+        let mut graph = convert_response(
+            response,
+            goal,
+            available_agents,
+            self.max_tasks,
+            self.verify_predicate_enabled,
+        )?;
         graph.default_failure_strategy = self.default_failure_strategy;
         dag::validate(&graph.tasks, self.max_tasks as usize)?;
         Ok((graph, usage))
@@ -217,7 +230,13 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
         // Capture usage right after the API call, before any fallible post-processing.
         let usage = self.provider.last_usage();
 
-        let mut graph = convert_response(response, goal, available_agents, self.max_tasks)?;
+        let mut graph = convert_response(
+            response,
+            goal,
+            available_agents,
+            self.max_tasks,
+            self.verify_predicate_enabled,
+        )?;
         graph.default_failure_strategy = self.default_failure_strategy;
 
         dag::validate(&graph.tasks, self.max_tasks as usize)?;
@@ -318,8 +337,15 @@ pub(crate) fn convert_response_pub(
     goal: &str,
     available_agents: &[SubAgentDef],
     max_tasks: u32,
+    verify_predicate_enabled: bool,
 ) -> Result<TaskGraph, OrchestrationError> {
-    convert_response(response, goal, available_agents, max_tasks)
+    convert_response(
+        response,
+        goal,
+        available_agents,
+        max_tasks,
+        verify_predicate_enabled,
+    )
 }
 
 fn convert_response(
@@ -327,6 +353,7 @@ fn convert_response(
     goal: &str,
     available_agents: &[SubAgentDef],
     max_tasks: u32,
+    verify_predicate_enabled: bool,
 ) -> Result<TaskGraph, OrchestrationError> {
     let planned = response.tasks;
 
@@ -413,7 +440,7 @@ fn convert_response(
             node.execution_mode = mode;
         }
 
-        if let Some(criteria) = &pt.verify_criteria {
+        if verify_predicate_enabled && let Some(criteria) = &pt.verify_criteria {
             let trimmed = criteria.trim();
             if !trimmed.is_empty() {
                 let criterion: String = trimmed.chars().take(1024).collect();
@@ -483,7 +510,7 @@ mod tests {
                 make_planned("task-c", "Task C", &["task-b"], None),
             ],
         };
-        let graph = convert_response(response, "linear goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "linear goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks.len(), 3);
         assert_eq!(graph.tasks[0].id, TaskId(0));
         assert_eq!(graph.tasks[1].depends_on, vec![TaskId(0)]);
@@ -501,7 +528,7 @@ mod tests {
                 make_planned("d", "D", &["b", "c"], None),
             ],
         };
-        let graph = convert_response(response, "diamond", &agents(), 20).unwrap();
+        let graph = convert_response(response, "diamond", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks[3].depends_on, vec![TaskId(1), TaskId(2)]);
     }
 
@@ -514,7 +541,7 @@ mod tests {
                 make_planned("t3", "T3", &[], None),
             ],
         };
-        let graph = convert_response(response, "parallel", &agents(), 20).unwrap();
+        let graph = convert_response(response, "parallel", &agents(), 20, true).unwrap();
         for node in &graph.tasks {
             assert!(node.depends_on.is_empty());
         }
@@ -523,7 +550,7 @@ mod tests {
     #[test]
     fn test_convert_empty_tasks_rejected() {
         let response = PlannerResponse { tasks: vec![] };
-        let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
+        let err = convert_response(response, "goal", &agents(), 20, true).unwrap_err();
         assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
@@ -533,7 +560,7 @@ mod tests {
             .map(|i| make_planned(&format!("task-{i}"), &format!("T{i}"), &[], None))
             .collect();
         let response = PlannerResponse { tasks };
-        let err = convert_response(response, "goal", &agents(), 3).unwrap_err();
+        let err = convert_response(response, "goal", &agents(), 3, true).unwrap_err();
         assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
@@ -547,7 +574,7 @@ mod tests {
                 make_planned("dup", "Second", &[], None),
             ],
         };
-        let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
+        let err = convert_response(response, "goal", &agents(), 20, true).unwrap_err();
         assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
@@ -556,7 +583,7 @@ mod tests {
         let response = PlannerResponse {
             tasks: vec![make_planned("task-a", "A", &["nonexistent"], None)],
         };
-        let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
+        let err = convert_response(response, "goal", &agents(), 20, true).unwrap_err();
         assert_matches!(err, OrchestrationError::PlanningFailed(_));
     }
 
@@ -565,7 +592,7 @@ mod tests {
         let response = PlannerResponse {
             tasks: vec![make_planned("task-a", "A", &[], Some("unknown-agent"))],
         };
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert!(graph.tasks[0].agent_hint.is_none());
     }
 
@@ -574,7 +601,7 @@ mod tests {
         let response = PlannerResponse {
             tasks: vec![make_planned("task-a", "A", &[], Some("agent-a"))],
         };
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks[0].agent_hint.as_deref(), Some("agent-a"));
     }
 
@@ -603,7 +630,7 @@ mod tests {
                     verify_criteria: None,
                 }],
             };
-            let err = convert_response(response, "goal", &agents(), 20).unwrap_err();
+            let err = convert_response(response, "goal", &agents(), 20, true).unwrap_err();
             assert!(
                 matches!(err, OrchestrationError::PlanningFailed(_)),
                 "expected PlanningFailed for task_id '{bad_id}'"
@@ -628,7 +655,7 @@ mod tests {
         ]}"#;
         let response: PlannerResponse = serde_json::from_str(json).unwrap();
         assert!(response.tasks[0].failure_strategy.is_none());
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert!(graph.tasks[0].failure_strategy.is_none());
     }
 
@@ -643,7 +670,7 @@ mod tests {
             response.tasks[0].failure_strategy,
             Some(FailureStrategy::Skip)
         );
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks[0].failure_strategy, Some(FailureStrategy::Skip));
     }
 
@@ -652,7 +679,7 @@ mod tests {
         let response = PlannerResponse {
             tasks: vec![make_planned("t1", "T1", &[], None)],
         };
-        let graph = convert_response(response, "my goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "my goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.goal, "my goal");
     }
 
@@ -666,7 +693,7 @@ mod tests {
         let response = PlannerResponse {
             tasks: vec![make_planned("t1", "T1", &[], None)],
         };
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert_eq!(
             graph.default_failure_strategy,
             FailureStrategy::Abort,
@@ -788,7 +815,7 @@ mod tests {
                 verify_criteria: None,
             }],
         };
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
     }
 
@@ -806,7 +833,7 @@ mod tests {
                 verify_criteria: None,
             }],
         };
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Sequential);
     }
 
@@ -815,8 +842,49 @@ mod tests {
         let response = PlannerResponse {
             tasks: vec![make_planned("t1", "T1", &[], None)],
         };
-        let graph = convert_response(response, "goal", &agents(), 20).unwrap();
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
+    }
+
+    // --- verify_predicate gating tests (#5403 regression) ---
+
+    #[test]
+    fn test_convert_verify_predicate_disabled_drops_criteria_with_dependent() {
+        // Regression for #5403: a parent task with verify_criteria and a downstream
+        // dependent must NOT get a verify_predicate when the flag is disabled, or the
+        // dependent is permanently blocked by dag::all_parents_predicate_clear, causing
+        // a false scheduler deadlock.
+        let response = PlannerResponse {
+            tasks: vec![
+                PlannedTask {
+                    verify_criteria: Some("output must be valid JSON".to_string()),
+                    ..make_planned("a", "A", &[], None)
+                },
+                make_planned("b", "B", &["a"], None),
+            ],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20, false).unwrap();
+        assert_eq!(graph.tasks[0].verify_predicate, None);
+    }
+
+    #[test]
+    fn test_convert_verify_predicate_enabled_sets_predicate_with_dependent() {
+        let response = PlannerResponse {
+            tasks: vec![
+                PlannedTask {
+                    verify_criteria: Some("output must be valid JSON".to_string()),
+                    ..make_planned("a", "A", &[], None)
+                },
+                make_planned("b", "B", &["a"], None),
+            ],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
+        assert_eq!(
+            graph.tasks[0].verify_predicate,
+            Some(VerifyPredicate::Natural(
+                "output must be valid JSON".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -990,6 +1058,7 @@ mod tests {
                 max_tasks: 20,
                 timeout: Duration::from_millis(50),
                 default_failure_strategy: FailureStrategy::Abort,
+                verify_predicate_enabled: false,
             };
             let err = planner.plan("some goal", &agents()).await.unwrap_err();
             assert!(

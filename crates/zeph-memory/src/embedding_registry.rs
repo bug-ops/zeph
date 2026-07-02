@@ -91,6 +91,19 @@ fn normalize_model_name(name: &str) -> &str {
     name.strip_suffix(":latest").unwrap_or(name)
 }
 
+/// Probe the embedding dimension via [`crate::embed_probe::probe_vector_size`], adapting its
+/// error into [`EmbeddingRegistryError::DimensionProbe`].
+///
+/// No timeout is applied here — `EmbeddingRegistry` has never bounded this call, unlike
+/// `zeph-index`'s indexer (which has its own 15s startup timeout).
+async fn probe_dimension(
+    embed_fn: &impl Fn(&str) -> EmbedFuture,
+) -> Result<u64, EmbeddingRegistryError> {
+    crate::embed_probe::probe_vector_size(embed_fn("dimension probe"), None)
+        .await
+        .map_err(|e| EmbeddingRegistryError::DimensionProbe(e.to_string()))
+}
+
 /// Returns `true` when any stored point uses a model name that is semantically different
 /// from `config_model` after normalizing `:latest` suffixes.
 ///
@@ -404,7 +417,7 @@ impl EmbeddingRegistry {
             })?
         {
             // Collection does not exist — probe once and create.
-            let vector_size = self.probe_vector_size(embed_fn).await?;
+            let vector_size = probe_dimension(embed_fn).await?;
             self.ops
                 .ensure_collection(&self.collection, vector_size)
                 .await
@@ -440,7 +453,7 @@ impl EmbeddingRegistry {
                 qdrant_client::qdrant::vectors_config::Config::ParamsMap(_) => None,
             });
 
-        let vector_size = self.probe_vector_size(embed_fn).await?;
+        let vector_size = probe_dimension(embed_fn).await?;
 
         if existing_size == Some(vector_size) {
             self.set_cached_dim(vector_size).await;
@@ -483,23 +496,6 @@ impl EmbeddingRegistry {
     )]
     async fn set_cached_dim(&self, dim: u64) {
         *self.cached_dim.write().await = Some(dim);
-    }
-
-    #[tracing::instrument(
-        name = "memory.embed_registry.probe_vector_size",
-        skip_all,
-        err,
-        level = "debug"
-    )]
-    async fn probe_vector_size(
-        &self,
-        embed_fn: &impl Fn(&str) -> EmbedFuture,
-    ) -> Result<u64, EmbeddingRegistryError> {
-        let probe = embed_fn("dimension probe")
-            .await
-            .map_err(|e| EmbeddingRegistryError::DimensionProbe(e.to_string()))?;
-        // Safe: a Vec<f32> with 4B+ elements is impossible in practice on any 64-bit platform.
-        Ok(probe.len() as u64)
     }
 
     #[tracing::instrument(

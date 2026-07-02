@@ -381,10 +381,7 @@ async fn compute_semantic_novelty(
             return 1.0;
         }
     };
-    let Ok(vector_size) = u64::try_from(vector.len()) else {
-        return 1.0;
-    };
-    if let Err(e) = store.ensure_collection(vector_size).await {
+    if let Err(e) = store.ensure_collection_for_vector(&vector).await {
         tracing::debug!(error = %e, "A-MAC: collection not ready for novelty check");
         return 1.0;
     }

@@ -111,9 +111,8 @@ impl SemanticMemory {
                 return Ok(());
             }
         };
-        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
-            .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
+            .ensure_named_collection_for_vector(SESSION_SUMMARIES_COLLECTION, &vector)
             .await?;
 
         let point_id = {
@@ -175,9 +174,8 @@ impl SemanticMemory {
                 return Ok(Vec::new());
             }
         };
-        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         qdrant
-            .ensure_named_collection(SESSION_SUMMARIES_COLLECTION, vector_size)
+            .ensure_named_collection_for_vector(SESSION_SUMMARIES_COLLECTION, &vector)
             .await?;
 
         let filter = exclude_conversation_id.map(|cid| VectorFilter {

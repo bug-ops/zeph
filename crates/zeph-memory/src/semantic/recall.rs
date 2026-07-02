@@ -130,8 +130,7 @@ async fn embed_and_store_regular_bg(args: EmbedBgArgs) {
     let Some(first) = vectors.first() else {
         return;
     };
-    let vector_size = first.len() as u64;
-    if let Err(e) = qdrant.ensure_collection(vector_size).await {
+    if let Err(e) = qdrant.ensure_collection_for_vector(first).await {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -197,24 +196,23 @@ async fn embed_chunks_with_tool_context_bg(args: EmbedBgArgs, embed_ctx: EmbedCo
         }
     };
 
-    if let Some(first) = vectors.first() {
-        let vector_size = first.len() as u64;
-        if let Err(e) = qdrant.ensure_collection(vector_size).await {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let last = last_qdrant_warn.load(Ordering::Relaxed);
-            if now.saturating_sub(last) >= 10 {
-                last_qdrant_warn.store(now, Ordering::Relaxed);
-                tracing::warn!("bg embed_tool: failed to ensure Qdrant collection: {e:#}");
-            } else {
-                tracing::debug!(
-                    "bg embed_tool: failed to ensure Qdrant collection (suppressed): {e:#}"
-                );
-            }
-            return;
+    if let Some(first) = vectors.first()
+        && let Err(e) = qdrant.ensure_collection_for_vector(first).await
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last = last_qdrant_warn.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= 10 {
+            last_qdrant_warn.store(now, Ordering::Relaxed);
+            tracing::warn!("bg embed_tool: failed to ensure Qdrant collection: {e:#}");
+        } else {
+            tracing::debug!(
+                "bg embed_tool: failed to ensure Qdrant collection (suppressed): {e:#}"
+            );
         }
+        return;
     }
 
     for (chunk_index, vector) in vectors.into_iter().enumerate() {
@@ -288,8 +286,7 @@ async fn embed_and_store_with_category_bg(args: EmbedBgArgs, category: Option<St
     let Some(first) = vectors.first() else {
         return;
     };
-    let vector_size = first.len() as u64;
-    if let Err(e) = qdrant.ensure_collection(vector_size).await {
+    if let Err(e) = qdrant.ensure_collection_for_vector(first).await {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -774,8 +771,7 @@ impl SemanticMemory {
                 }
             };
             let query_vector = self.apply_query_bias(query, query_vector).await;
-            let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
-            qdrant.ensure_collection(vector_size).await?;
+            qdrant.ensure_collection_for_vector(&query_vector).await?;
             qdrant
                 .search(&query_vector, self.effective_depth(limit), filter)
                 .await?
@@ -843,8 +839,7 @@ impl SemanticMemory {
             }
         };
         let query_vector = self.apply_query_bias(query, query_vector).await;
-        let vector_size = u64::try_from(query_vector.len()).unwrap_or(896);
-        qdrant.ensure_collection(vector_size).await?;
+        qdrant.ensure_collection_for_vector(&query_vector).await?;
         qdrant
             .search(&query_vector, self.effective_depth(limit), filter)
             .await

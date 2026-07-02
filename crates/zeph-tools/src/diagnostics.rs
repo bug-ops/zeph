@@ -9,6 +9,7 @@ use serde::Deserialize;
 use zeph_common::ToolName;
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
+use crate::file::expand_tilde;
 use crate::registry::{InvocationHint, ToolDef};
 
 /// Cargo diagnostics level.
@@ -46,7 +47,7 @@ impl DiagnosticsExecutor {
         let paths = if allowed_paths.is_empty() {
             vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
         } else {
-            allowed_paths
+            allowed_paths.into_iter().map(expand_tilde).collect()
         };
         Self {
             allowed_paths: paths
@@ -64,8 +65,9 @@ impl DiagnosticsExecutor {
     }
 
     fn validate_path(&self, path: &Path) -> Result<PathBuf, ToolError> {
+        let path = expand_tilde(path.to_path_buf());
         let resolved = if path.is_absolute() {
-            path.to_path_buf()
+            path
         } else {
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
@@ -406,6 +408,44 @@ mod tests {
         let p: DiagnosticsParams = serde_json::from_str(r"{}").unwrap();
         assert!(p.path.is_none());
         assert_eq!(p.level, DiagnosticsLevel::Check);
+    }
+
+    // --- tilde expansion regression (#5415) ---
+
+    #[tokio::test]
+    async fn validate_path_expands_tilde_in_runtime_argument() {
+        // Regression for #5415: a `~`-prefixed workspace path coming from an LLM
+        // tool call must resolve to the real home directory, mirroring the fix
+        // for `FileExecutor::validate_path` in #5410.
+        let home = dirs::home_dir().expect("home dir must be resolvable in test env");
+        let subdir = tempfile::Builder::new()
+            .prefix("zeph_test_diagnostics_tilde_")
+            .tempdir_in(&home)
+            .expect("failed to create temp dir under home");
+        let dir_name = subdir.path().file_name().unwrap().to_str().unwrap();
+
+        let exec = DiagnosticsExecutor::new(vec![home.clone()]);
+        let canonical = exec
+            .validate_path(Path::new(&format!("~/{dir_name}")))
+            .unwrap();
+
+        assert_eq!(canonical, subdir.path().canonicalize().unwrap());
+        assert!(
+            !canonical.to_string_lossy().contains('~'),
+            "tilde must not appear in normalized runtime path: {canonical:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_path_absolute_path_unchanged() {
+        // Non-regression: absolute paths without a leading `~` must still
+        // resolve exactly as before the tilde-expansion fix.
+        let dir = tempfile::tempdir().unwrap();
+        let exec = DiagnosticsExecutor::new(vec![dir.path().to_path_buf()]);
+
+        let canonical = exec.validate_path(dir.path()).unwrap();
+
+        assert_eq!(canonical, dir.path().canonicalize().unwrap());
     }
 
     // CR-14: verify that level=clippy maps to "clippy" subcommand string

@@ -39,9 +39,8 @@ impl SemanticMemory {
                 return Ok(());
             }
         };
-        let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
         store
-            .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)
+            .ensure_named_collection_for_vector(CORRECTIONS_COLLECTION, &embedding)
             .await?;
         let payload = serde_json::json!({ "correction_id": correction_id });
         store
@@ -85,9 +84,8 @@ impl SemanticMemory {
                 return Ok(vec![]);
             }
         };
-        let vector_size = u64::try_from(embedding.len()).unwrap_or(896);
         store
-            .ensure_named_collection(CORRECTIONS_COLLECTION, vector_size)
+            .ensure_named_collection_for_vector(CORRECTIONS_COLLECTION, &embedding)
             .await?;
         let scored = store
             .search_collection(CORRECTIONS_COLLECTION, &embedding, limit, None)

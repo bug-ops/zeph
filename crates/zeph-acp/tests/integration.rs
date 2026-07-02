@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Raised from 128: async-fn state machine chain through serve_connection/run_agent handlers
+// deepens past the default depth limit under release-profile query evaluation.
+#![recursion_limit = "256"]
 
 //! Integration tests for the ACP 0.11 server (`zeph-acp`) using in-process loopback transports.
 //!

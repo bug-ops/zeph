@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// Release-profile layout computation for `durable::journal_budget()`'s async state machine
+// exceeds rustc's default 128 query-depth limit due to the generic/trait-object nesting in
+// `zeph_durable`'s `DurableContext::step`. Same class of issue as zeph-acp (see commit
+// 076c7fb3); dev/debug builds are unaffected.
+#![recursion_limit = "256"]
+
 //! Multi-model task orchestration: DAG execution, failure propagation, and persistence.
 //!
 //! `zeph-orchestration` decomposes a user goal into a directed acyclic graph (DAG)

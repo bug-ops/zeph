@@ -15,6 +15,7 @@ use zeph_common::ToolName;
 use crate::executor::{
     ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
+use crate::file::expand_tilde;
 use crate::registry::{InvocationHint, ToolDef};
 
 // ---------------------------------------------------------------------------
@@ -218,7 +219,7 @@ impl SearchCodeExecutor {
         let paths = if allowed_paths.is_empty() {
             vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
         } else {
-            allowed_paths
+            allowed_paths.into_iter().map(expand_tilde).collect()
         };
         Self {
             allowed_paths: paths

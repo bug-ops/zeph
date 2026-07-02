@@ -112,6 +112,99 @@ fn test_completion_event_marks_deps_ready() {
 }
 
 #[test]
+fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
+    // End-to-end regression for #5403: a planner response where a task has a
+    // verify_criteria acceptance check and a downstream dependent, converted with
+    // verify_predicate_enabled = false (the reported bug's default config), must
+    // dispatch the dependent once the parent completes and drive the graph to
+    // GraphStatus::Completed instead of a false scheduler deadlock.
+    use crate::graph::PlanSlug;
+    use crate::planner::{PlannedTask, PlannerResponse, convert_response_pub};
+
+    let response = PlannerResponse {
+        tasks: vec![
+            PlannedTask {
+                task_id: PlanSlug::from("parent"),
+                title: "Parent".to_string(),
+                description: "do parent work".to_string(),
+                agent_hint: None,
+                depends_on: vec![],
+                failure_strategy: None,
+                execution_mode: None,
+                verify_criteria: Some("output must be valid JSON".to_string()),
+            },
+            PlannedTask {
+                task_id: PlanSlug::from("child"),
+                title: "Child".to_string(),
+                description: "do child work".to_string(),
+                agent_hint: None,
+                depends_on: vec![PlanSlug::from("parent")],
+                failure_strategy: None,
+                execution_mode: None,
+                verify_criteria: None,
+            },
+        ],
+    };
+    let graph = convert_response_pub(response, "goal", &[make_def("worker")], 20, false).unwrap();
+    assert!(
+        graph.tasks[0].verify_predicate.is_none(),
+        "verify_predicate must be dropped when verify_predicate_enabled is false"
+    );
+
+    let mut scheduler = make_scheduler(graph);
+
+    // Tick 1: parent has no dependencies, should be dispatched.
+    let actions = scheduler.tick();
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(0)))
+    );
+    scheduler.record_spawn(TaskId(0), "handle-parent".to_string(), "worker".to_string());
+    scheduler.buffered_events.push_back(TaskEvent {
+        task_id: TaskId(0),
+        agent_handle_id: "handle-parent".to_string(),
+        outcome: TaskOutcome::Completed {
+            output: "parent done".to_string(),
+            artifacts: vec![],
+        },
+    });
+
+    // Tick 2: parent completion processed; child must be dispatched, not blocked by a
+    // dangling verify_predicate gate.
+    let actions = scheduler.tick();
+    assert_eq!(scheduler.graph.tasks[0].status, TaskStatus::Completed);
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Spawn { task_id, .. } if *task_id == TaskId(1))),
+        "child must be dispatched once its only dependency completes"
+    );
+    scheduler.record_spawn(TaskId(1), "handle-child".to_string(), "worker".to_string());
+    scheduler.buffered_events.push_back(TaskEvent {
+        task_id: TaskId(1),
+        agent_handle_id: "handle-child".to_string(),
+        outcome: TaskOutcome::Completed {
+            output: "child done".to_string(),
+            artifacts: vec![],
+        },
+    });
+
+    // Tick 3: graph must reach Completed, not a false deadlock/Failed.
+    let actions = scheduler.tick();
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            SchedulerAction::Done {
+                status: GraphStatus::Completed
+            }
+        )),
+        "graph should complete successfully, not deadlock"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Completed);
+}
+
+#[test]
 fn test_failure_abort_cancels_running() {
     let graph = graph_from_nodes(vec![
         make_node(0, &[]),

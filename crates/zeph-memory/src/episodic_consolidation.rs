@@ -601,9 +601,8 @@ async fn promote_fact(
 
     // Upsert into Qdrant `zeph_key_facts` when a pre-computed embedding is available.
     if let (Some(qdrant), Some(vector)) = (qdrant, embedding) {
-        let vector_size = u64::try_from(vector.len()).unwrap_or(896);
         if let Err(e) = qdrant
-            .ensure_named_collection(KEY_FACTS_COLLECTION, vector_size)
+            .ensure_named_collection_for_vector(KEY_FACTS_COLLECTION, &vector)
             .await
         {
             tracing::warn!(error = %e, "episodic consolidation: failed to ensure key_facts collection");

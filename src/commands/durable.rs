@@ -58,7 +58,28 @@ fn load_durable_cipher() -> anyhow::Result<XChaCha20Poly1305Cipher> {
         .map_err(|e| anyhow::anyhow!("invalid ZEPH_DURABLE_KEY: {e}"))
 }
 
-/// Open the local durable backend, attaching the AEAD cipher when `reveal` is set.
+/// Resolve the AEAD payload cipher to attach on a durable *write* path when
+/// `config.durable.encrypt_payload` is enabled (INV-5).
+///
+/// Returns `Ok(None)` when encryption is disabled — the documented dev-only override where
+/// payloads are stored as plaintext, so no cipher is attached and writes stay unchanged.
+/// Returns `Ok(Some(cipher))` when encryption is enabled and `ZEPH_DURABLE_KEY` resolves from
+/// the vault. Fails closed (`Err`) when encryption is enabled but the key is missing: a write
+/// path must never silently persist plaintext while the config declares payloads encrypted.
+pub(crate) fn load_write_cipher(
+    config: &Config,
+) -> anyhow::Result<Option<Arc<dyn zeph_durable::PayloadCipher>>> {
+    if !config.durable.encrypt_payload {
+        return Ok(None);
+    }
+    let cipher = load_durable_cipher()?;
+    Ok(Some(Arc::new(cipher)))
+}
+
+/// Open the local durable backend, attaching the AEAD cipher when `reveal` is set and payloads are
+/// actually encrypted (`config.durable.encrypt_payload`). When `encrypt_payload` is `false` (the
+/// documented dev-only override), stored payloads are already plaintext, so `--reveal` must not
+/// require `ZEPH_DURABLE_KEY` to be present in the vault.
 ///
 /// Returns `Ok(None)` when no journal file exists yet (a friendly signal that durable execution has
 /// not run on this deployment), so the caller can print guidance instead of creating an empty file.
@@ -78,7 +99,7 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
         .init()
         .await
         .map_err(|e| anyhow::anyhow!("failed to initialize durable schema: {e}"))?;
-    if reveal {
+    if reveal && config.durable.encrypt_payload {
         let cipher = load_durable_cipher()?;
         Ok(Some(backend.with_cipher(Arc::new(cipher))))
     } else {
@@ -320,6 +341,7 @@ fn print_revealed(entries: &[zeph_durable::JournalEntry]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn durable_db_is_sibling_of_sqlite_path() {
@@ -338,5 +360,171 @@ mod tests {
     #[test]
     fn fmt_ts_formats_epoch_millis_as_utc() {
         assert_eq!(fmt_ts(0), "1970-01-01 00:00:00");
+    }
+
+    /// Regression for #5404: `--reveal` must not require `ZEPH_DURABLE_KEY` when
+    /// `encrypt_payload = false` — stored payloads are already plaintext.
+    #[tokio::test]
+    async fn open_backend_reveal_succeeds_without_key_when_encrypt_payload_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.encrypt_payload = false;
+
+        let url = resolve_durable_db_url(&config);
+        std::fs::write(&url, []).unwrap();
+
+        let backend = open_backend(&config, true)
+            .await
+            .expect("--reveal must succeed without ZEPH_DURABLE_KEY when encrypt_payload=false");
+        assert!(backend.is_some());
+    }
+
+    /// Regression for #5404: `--reveal` must still require `ZEPH_DURABLE_KEY` when
+    /// `encrypt_payload = true` (the default, encrypted-at-rest posture).
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn open_backend_reveal_requires_key_when_encrypt_payload_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.encrypt_payload = true;
+
+        let url = resolve_durable_db_url(&config);
+        std::fs::write(&url, []).unwrap();
+
+        // Point the vault dir at an empty temp dir so no real ZEPH_DURABLE_KEY is found,
+        // regardless of what happens to be configured on the machine running this test.
+        let vault_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
+        }
+
+        let result = open_backend(&config, true).await;
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.is_err(),
+            "expected --reveal to fail without ZEPH_DURABLE_KEY when encrypt_payload=true"
+        );
+    }
+
+    /// End-to-end regression for #5414: `encrypt_payload = true` must actually attach a cipher
+    /// on the write path (`load_write_cipher`, consumed by `runner.rs` and
+    /// `scheduler_daemon.rs`), not just gate `--reveal` on the read path. Writes a step result
+    /// through the real backend using the cipher `load_write_cipher` resolves from a real vault
+    /// key, then reads the raw `durable_journal.payload` column directly (bypassing decryption)
+    /// and asserts it is neither the plaintext bytes nor valid JSON — i.e., genuinely ciphertext
+    /// at rest, mirroring the issue's reproduction steps.
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn write_path_attaches_cipher_and_seals_payload_when_encrypt_payload_enabled() {
+        use zeph_durable::{
+            EffectClass, EntryKind, ExecutionKind, IdempotencyKey, JournalEntry, StepId,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        config.durable.encrypt_payload = true;
+
+        // Point the vault dir at a fresh temp dir and seed a real ZEPH_DURABLE_KEY, mirroring
+        // what `zeph --init` does (src/init/durable.rs::store_durable_key).
+        let vault_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
+        }
+
+        let vault_root = zeph_core::vault::default_vault_dir();
+        zeph_core::vault::AgeVaultProvider::init_vault(&vault_root).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap();
+        provider.set_secret_mut(
+            "ZEPH_DURABLE_KEY".to_owned(),
+            zeph_core::durable::generate_durable_key_b64(),
+        );
+        provider.save().unwrap();
+
+        // Exercise the exact glue the write paths (runner.rs, scheduler_daemon.rs) call.
+        let cipher = load_write_cipher(&config)
+            .expect("cipher load must succeed with a real vault key")
+            .expect("encrypt_payload=true must produce a cipher");
+
+        let url = resolve_durable_db_url(&config);
+        let backend = LocalBackend::open(&url, config.durable.max_payload_bytes)
+            .await
+            .unwrap()
+            .with_cipher(cipher);
+        backend.init().await.unwrap();
+
+        let exec = ExecutionId::new();
+        backend
+            .open_execution(exec, ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let step_id = StepId::new(0);
+        let plaintext: &[u8] = br#"{"secret":"token-value"}"#;
+        backend
+            .append(JournalEntry {
+                seq: None,
+                execution_id: exec,
+                kind: ExecutionKind::AgentTurn,
+                step_id,
+                entry: EntryKind::StepResult {
+                    idempotency_key: IdempotencyKey::derive(exec, step_id, b"tool:test"),
+                    payload: bytes::Bytes::copy_from_slice(plaintext),
+                    effect: EffectClass::Idempotent,
+                    payload_version: 1,
+                },
+                created_at_ms: 0,
+            })
+            .await
+            .unwrap();
+
+        let (stored,): (Option<Vec<u8>>,) = zeph_db::query_as(zeph_db::sql!(
+            "SELECT payload FROM durable_journal WHERE execution_id = ?"
+        ))
+        .bind(exec.as_uuid().to_string())
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        let stored = stored.expect("payload present");
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert_ne!(
+            stored.as_slice(),
+            plaintext,
+            "payload must not be stored verbatim when encrypt_payload=true"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&stored).is_err(),
+            "sealed payload must not parse as plaintext JSON"
+        );
+
+        // Round-trips back to plaintext through the same cipher-attached backend.
+        let entries = backend.read_execution(exec).await.unwrap();
+        match &entries[0].entry {
+            EntryKind::StepResult { payload, .. } => assert_eq!(payload.as_ref(), plaintext),
+            other => panic!("unexpected entry kind: {other:?}"),
+        }
     }
 }

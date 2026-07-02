@@ -628,9 +628,10 @@ impl AppBuilder {
             // Ensure the reasoning_strategies collection exists with the correct vector size.
             // Best-effort: a failure here is logged and Qdrant falls back to SQLite-only mode.
             if probe_provider.supports_embeddings() {
-                match probe_provider.embed("dimension probe").await {
-                    Ok(probe) => {
-                        let vector_size = u64::try_from(probe.len()).unwrap_or(1536);
+                match zeph_memory::probe_vector_size(probe_provider.embed("dimension probe"), None)
+                    .await
+                {
+                    Ok(vector_size) => {
                         if let Err(e) = ops
                             .ensure_collection(
                                 zeph_memory::reasoning::REASONING_COLLECTION,
