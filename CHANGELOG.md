@@ -967,6 +967,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   are inflight (`background_inflight() > 0`) — previously gated on `is_agent_busy()` alone, which
   left the violet `Network` wave frozen when the agent itself was idle. See `crates/zeph-tui/src/lib.rs`.
 
+- `fix(session)`: the default CLI continuation path (plain `zeph`, no `--resume`/`sessions resume
+  <id>`) bypassed session-log hydration and INV-SP-3 reconciliation entirely (#5451). Every other
+  session-open call site (ACP, CLI `sessions resume`, `/conv resume`/`fork`, `zeph serve`) already
+  routes through `hydrate_and_condense`, but resolving `conversation_id` via
+  `latest_conversation_id()` fell straight to `init_session_sink`'s bare `SessionEventLog::open`,
+  loading history exclusively from the `SQLite` `messages` projection — the exact crash-recovery
+  gap INV-SP-3 reconciliation exists to repair. `init_session_sink` now looks up whether a session
+  is already linked to the resolved `conversation_id` (`SessionStore::get_by_conversation_id`) and,
+  if so, routes through `hydrate_and_condense` instead, mirroring the explicit-resume branch; a
+  brand-new conversation with no linked session yet still falls back to a bare log open since there
+  is nothing to hydrate. `src/runner.rs`.
+
 ### Changed
 
 - `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into

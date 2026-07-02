@@ -34,7 +34,7 @@ use zeph_channels::AnyChannel;
 #[cfg(feature = "deep-link")]
 use zeph_common::deep_link::parse_deep_link;
 use zeph_common::{RestartPolicy, SessionId, TaskDescriptor, TaskSupervisor};
-use zeph_config::{SessionConfig, ThinkingConfig, ThinkingEffort};
+use zeph_config::{ThinkingConfig, ThinkingEffort};
 use zeph_core::agent::Agent;
 #[cfg(feature = "acp")]
 use zeph_core::config::AcpTransport;
@@ -441,19 +441,35 @@ impl Drop for EarlyTuiGuard {
     }
 }
 
-/// Mint or resume this conversation's durable session event log (spec-068, #5343).
+/// Mint, resume, or hydrate this conversation's durable session event log (spec-068, #5343;
+/// #5451).
 ///
 /// Reuses the session already linked to `conversation_id` across restarts rather than minting a
-/// new one every launch, so a CLI/TUI conversation's event log stays continuous. Returns `None`
-/// (and logs a warning) on any I/O/DB failure — session persistence is best-effort: the agent
-/// must still run with only the existing `SQLite` `messages` projection if it fails.
+/// new one every launch, so a CLI/TUI conversation's event log stays continuous. When an existing
+/// session is found, this routes through [`zeph_agent_persistence::hydrate_and_condense`] — the
+/// same legacy-bootstrap + `ReplayEngine` fold + INV-SP-3 reconciliation pipeline every other
+/// session-open path (ACP, `sessions resume`, `/conv resume`, `zeph serve`) already uses — instead
+/// of leaving the default CLI continuation path (no `--resume`) to the bare `SQLite` `messages`
+/// projection. A brand-new conversation with no linked session yet has nothing to hydrate, so it
+/// falls back to a bare [`zeph_session::SessionEventLog::open`] after creating and linking the
+/// session row.
+///
+/// Returns `(None, Vec::new())` (and logs a warning) on any I/O/DB failure — session persistence
+/// is best-effort: the agent must still run with only the existing `SQLite` `messages` projection
+/// if it fails.
 async fn init_session_sink(
     memory: &std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     conversation_id: zeph_memory::ConversationId,
-    session_config: &SessionConfig,
-) -> Option<std::sync::Arc<zeph_agent_persistence::SessionSink>> {
+    config: &Config,
+    provider: &LlmAnyProvider,
+    budget_tokens: usize,
+) -> (
+    Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>,
+    Vec<zeph_llm::provider::Message>,
+) {
+    let session_config = &config.session;
     if !session_config.enabled {
-        return None;
+        return (None, Vec::new());
     }
 
     let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
@@ -462,13 +478,11 @@ async fn init_session_sink(
         .await
         .unwrap_or_default();
 
-    let session_id = if let Some(meta) = existing {
-        SessionId::new(meta.session_id)
-    } else {
+    let Some(meta) = existing else {
         let id = SessionId::generate();
         if let Err(e) = store.create(id.as_str()).await {
             tracing::warn!(error = %e, "failed to create session-store row; session persistence disabled for this run");
-            return None;
+            return (None, Vec::new());
         }
         if let Err(e) = store
             .link_conversation(id.as_str(), conversation_id.0)
@@ -476,25 +490,64 @@ async fn init_session_sink(
         {
             tracing::warn!(error = %e, "failed to link session to conversation");
         }
-        id
+
+        let data_dir = std::path::PathBuf::from(&session_config.data_dir);
+        let session_path = zeph_session::session_dir(&data_dir, id.as_str());
+        return match zeph_session::SessionEventLog::open(&session_path).await {
+            Ok(log) => {
+                tracing::info!(session_id = %id, "session event log opened");
+                (
+                    Some(std::sync::Arc::new(
+                        zeph_agent_persistence::SessionSink::new(
+                            std::sync::Arc::new(log),
+                            store,
+                            id,
+                        ),
+                    )),
+                    Vec::new(),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open session event log; session persistence disabled for this run");
+                (None, Vec::new())
+            }
+        };
     };
 
+    // D-10/D-13 (spec-068 §12.3/§13, §8.1 N3), #5451: an existing session is already linked to
+    // this conversation — route through the shared hydration pipeline instead of a bare log
+    // open, exactly like the explicit `sessions resume <id>` path above, so a crash landing
+    // between durable append and SQLite projection write (INV-SP-3's gap) is reconciled on the
+    // ordinary "just restart zeph" flow too, not only on an explicit resume.
+    let session_id = meta.session_id;
     let data_dir = std::path::PathBuf::from(&session_config.data_dir);
-    let session_path = zeph_session::session_dir(&data_dir, session_id.as_str());
-    match zeph_session::SessionEventLog::open(&session_path).await {
-        Ok(log) => {
-            tracing::info!(session_id = %session_id, "session event log opened");
-            Some(std::sync::Arc::new(
-                zeph_agent_persistence::SessionSink::new(
-                    std::sync::Arc::new(log),
-                    store,
-                    session_id,
-                ),
-            ))
+    let session_path = zeph_session::session_dir(&data_dir, &session_id);
+    let (condenser, token_counter_adapter) =
+        zeph_core::provider_factory::build_resume_condenser(config, provider);
+    match zeph_agent_persistence::hydrate_and_condense(
+        &session_path,
+        &store,
+        &session_id,
+        conversation_id,
+        memory,
+        None,
+        &condenser,
+        token_counter_adapter.as_ref(),
+        budget_tokens,
+    )
+    .await
+    {
+        Ok(hydrated) => {
+            let sink = std::sync::Arc::new(zeph_agent_persistence::SessionSink::new(
+                hydrated.log,
+                store,
+                SessionId::new(session_id),
+            ));
+            (Some(sink), hydrated.messages)
         }
         Err(e) => {
-            tracing::warn!(error = %e, "failed to open session event log; session persistence disabled for this run");
-            None
+            tracing::warn!(error = %e, "session hydration failed for default continuation; session persistence disabled for this run");
+            (None, Vec::new())
         }
     }
 }
@@ -1717,15 +1770,23 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     };
     tracing::info!("conversation id: {conversation_id}");
 
-    // Session persistence (spec-068, #5343): mint or resume this conversation's durable JSONL
-    // event log. Config-gated, not Cargo-feature-gated — `[session] enabled` (default: true)
-    // is the sole switch; the `session` Cargo feature is reserved for the CLI persistence verbs
-    // and `zeph serve` (P2/P3), not for this core dual-write path. When resuming, the sink was
-    // already constructed above from the hydration helper's opened log.
+    // Session persistence (spec-068, #5343): mint, resume, or hydrate this conversation's
+    // durable JSONL event log. Config-gated, not Cargo-feature-gated — `[session] enabled`
+    // (default: true) is the sole switch; the `session` Cargo feature is reserved for the CLI
+    // persistence verbs and `zeph serve` (P2/P3), not for this core dual-write path. When an
+    // explicit `--resume` was given, the sink was already constructed above from the hydration
+    // helper's opened log. Otherwise (#5451), `init_session_sink` itself hydrates any session
+    // already linked to `conversation_id` — the default CLI continuation path must not silently
+    // skip INV-SP-3 reconciliation just because the user didn't type `sessions resume`.
     let session_sink = if let Some(sink) = resumed_session_sink {
         Some(sink)
     } else {
-        init_session_sink(&memory, conversation_id, &app.config().session).await
+        let (sink, hydrated_messages) =
+            init_session_sink(&memory, conversation_id, config, &provider, budget_tokens).await;
+        if !hydrated_messages.is_empty() {
+            resumed_messages = hydrated_messages;
+        }
+        sink
     };
 
     let (shutdown_tx, shutdown_rx) = AppBuilder::build_shutdown();
@@ -4968,5 +5029,93 @@ mod tests {
         let args = serde_json::Value::Object(serde_json::Map::new());
         let outcome = adapter.probe("builtin:shell", &args, 1, "calm").await;
         assert_eq!(outcome, ProbeOutcome::Skip);
+    }
+
+    // --- init_session_sink (#5451: default CLI continuation hydration) ---
+
+    async fn make_runner_test_memory() -> std::sync::Arc<zeph_memory::semantic::SemanticMemory> {
+        std::sync::Arc::new(
+            zeph_memory::semantic::SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    fn runner_test_session_config(data_dir: &std::path::Path) -> Config {
+        Config {
+            session: zeph_config::SessionConfig {
+                enabled: true,
+                data_dir: data_dir.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// New conversation with no linked session: `init_session_sink` must create and link a
+    /// fresh session and fall back to a bare log open — there is nothing to hydrate yet.
+    #[tokio::test]
+    async fn init_session_sink_creates_and_links_new_session() {
+        let memory = make_runner_test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = runner_test_session_config(dir.path());
+        let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+
+        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        assert!(
+            sink.is_some(),
+            "session persistence enabled must produce a SessionSink"
+        );
+        assert!(
+            messages.is_empty(),
+            "a brand-new conversation has no history to hydrate"
+        );
+
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let meta = store
+            .get_by_conversation_id(cid.0)
+            .await
+            .unwrap()
+            .expect("init_session_sink must link the new session to conversation_id");
+        assert_eq!(meta.conversation_id, Some(cid.0));
+    }
+
+    /// #5451 regression: the default CLI continuation path (no `--resume`) must route through
+    /// the same hydration pipeline as explicit resume, ACP, and `zeph serve` — not silently fall
+    /// back to the `SQLite`-only `messages` projection just because a session already existed.
+    #[tokio::test]
+    async fn init_session_sink_hydrates_existing_linked_session() {
+        let memory = make_runner_test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = runner_test_session_config(dir.path());
+        let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+
+        // First launch: mints the session, nothing to replay yet.
+        let (sink, initial_messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        let sink = sink.expect("session persistence enabled must produce a SessionSink");
+        assert!(initial_messages.is_empty());
+        sink.record_message(zeph_llm::provider::Role::User, "hello", &[])
+            .await
+            .unwrap();
+        drop(sink);
+
+        // Second launch (plain `zeph`, no --resume): must hydrate the message recorded above
+        // from the durable event log, not silently return an empty history.
+        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        assert!(sink.is_some());
+        assert_eq!(
+            messages.len(),
+            1,
+            "default continuation must replay durable session history"
+        );
+        assert_eq!(messages[0].content, "hello");
     }
 }
