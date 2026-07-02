@@ -8,6 +8,9 @@
 //! [`crate::embedding_registry::EmbeddingRegistry`]) route through this type.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
 
 use crate::vector_store::BoxFuture;
 use qdrant_client::Qdrant;
@@ -20,15 +23,25 @@ use qdrant_client::qdrant::{
 
 type QdrantResult<T> = Result<T, Box<qdrant_client::QdrantError>>;
 
+/// Default per-call timeout applied to every Qdrant gRPC operation (#5484).
+///
+/// Qdrant calls normally complete in well under a second; 10s bounds the await against a
+/// hung server or a stalled network path without misfiring on ordinary load spikes.
+/// Override via [`QdrantOps::with_timeout`].
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Thin wrapper over [`Qdrant`] client encapsulating common collection operations.
 #[derive(Clone)]
 pub struct QdrantOps {
     client: Qdrant,
+    timeout: Duration,
 }
 
 impl std::fmt::Debug for QdrantOps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QdrantOps").finish_non_exhaustive()
+        f.debug_struct("QdrantOps")
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
     }
 }
 
@@ -51,13 +64,61 @@ impl QdrantOps {
             builder = builder.api_key(key.trim());
         }
         let client = builder.build().map_err(Box::new)?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            timeout: DEFAULT_TIMEOUT,
+        })
+    }
+
+    /// Override the per-call timeout applied to every Qdrant gRPC operation.
+    ///
+    /// Defaults to 10 seconds. A slow or hung Qdrant server would otherwise block the
+    /// calling async task indefinitely (#5484).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use zeph_memory::QdrantOps;
+    ///
+    /// let ops = QdrantOps::new("http://localhost:6334", None)
+    ///     .unwrap()
+    ///     .with_timeout(Duration::from_secs(3));
+    /// ```
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Access the underlying Qdrant client for advanced operations.
     #[must_use]
     pub fn client(&self) -> &Qdrant {
         &self.client
+    }
+
+    /// Run a Qdrant gRPC future under the configured [`Self::with_timeout`] bound.
+    ///
+    /// Converts an elapsed timeout into `QdrantError::Io` so every existing call site
+    /// (which already returns `Result<T, Box<QdrantError>>`) needs no signature change.
+    ///
+    /// Takes a boxed future (rather than `impl Future`) so the timeout wrapper does not
+    /// inline the callee's gRPC future type into every caller's generated state machine —
+    /// with a generic parameter, that inlining compounds at each layer of async call
+    /// nesting and trips `clippy::large_futures` across the whole call chain.
+    async fn timed<T>(
+        &self,
+        fut: Pin<Box<dyn Future<Output = Result<T, qdrant_client::QdrantError>> + Send + '_>>,
+    ) -> QdrantResult<T> {
+        match tokio::time::timeout(self.timeout, fut).await {
+            Ok(result) => result.map_err(Box::new),
+            Err(_) => Err(Box::new(qdrant_client::QdrantError::Io(
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("Qdrant gRPC call exceeded {:?}", self.timeout),
+                ),
+            ))),
+        }
     }
 
     /// Ensure a collection exists with cosine distance vectors.
@@ -75,10 +136,8 @@ impl QdrantOps {
     #[tracing::instrument(name = "memory.qdrant.ensure_collection", skip_all, err)]
     pub async fn ensure_collection(&self, collection: &str, vector_size: u64) -> QdrantResult<()> {
         if self
-            .client
-            .collection_exists(collection)
-            .await
-            .map_err(Box::new)?
+            .timed(Box::pin(self.client.collection_exists(collection)))
+            .await?
         {
             let existing_size = self.get_collection_vector_size(collection).await?;
             if existing_size == Some(vector_size) {
@@ -90,18 +149,16 @@ impl QdrantOps {
                 required = vector_size,
                 "vector dimension mismatch — recreating collection (existing data will be lost)"
             );
-            self.client
-                .delete_collection(collection)
-                .await
-                .map_err(Box::new)?;
+            self.timed(Box::pin(self.client.delete_collection(collection)))
+                .await?;
         }
-        self.client
-            .create_collection(
+        self.timed(Box::pin(
+            self.client.create_collection(
                 CreateCollectionBuilder::new(collection)
                     .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine)),
-            )
-            .await
-            .map_err(Box::new)?;
+            ),
+        ))
+        .await?;
         Ok(())
     }
 
@@ -136,10 +193,8 @@ impl QdrantOps {
     )]
     pub async fn get_collection_vector_size(&self, collection: &str) -> QdrantResult<Option<u64>> {
         let info = self
-            .client
-            .collection_info(collection)
-            .await
-            .map_err(Box::new)?;
+            .timed(Box::pin(self.client.collection_info(collection)))
+            .await?;
         let size = info
             .result
             .and_then(|r| r.config)
@@ -161,10 +216,8 @@ impl QdrantOps {
     /// Returns an error if Qdrant cannot be reached.
     #[tracing::instrument(name = "memory.qdrant.collection_exists", skip_all, err)]
     pub async fn collection_exists(&self, collection: &str) -> QdrantResult<bool> {
-        self.client
-            .collection_exists(collection)
+        self.timed(Box::pin(self.client.collection_exists(collection)))
             .await
-            .map_err(Box::new)
     }
 
     /// Delete a collection.
@@ -174,10 +227,8 @@ impl QdrantOps {
     /// Returns an error if the collection cannot be deleted.
     #[tracing::instrument(name = "memory.qdrant.delete_collection", skip_all, err)]
     pub async fn delete_collection(&self, collection: &str) -> QdrantResult<()> {
-        self.client
-            .delete_collection(collection)
-            .await
-            .map_err(Box::new)?;
+        self.timed(Box::pin(self.client.delete_collection(collection)))
+            .await?;
         Ok(())
     }
 
@@ -188,10 +239,10 @@ impl QdrantOps {
     /// Returns an error if the upsert fails.
     #[tracing::instrument(name = "memory.qdrant.upsert", skip_all, err)]
     pub async fn upsert(&self, collection: &str, points: Vec<PointStruct>) -> QdrantResult<()> {
-        self.client
-            .upsert_points(UpsertPointsBuilder::new(collection, points).wait(true))
-            .await
-            .map_err(Box::new)?;
+        self.timed(Box::pin(self.client.upsert_points(
+            UpsertPointsBuilder::new(collection, points).wait(true),
+        )))
+        .await?;
         Ok(())
     }
 
@@ -218,7 +269,7 @@ impl QdrantOps {
         if let Some(f) = filter {
             builder = builder.filter(f);
         }
-        let results = self.client.query(builder).await.map_err(Box::new)?;
+        let results = self.timed(Box::pin(self.client.query(builder))).await?;
         Ok(results.result)
     }
 
@@ -232,14 +283,14 @@ impl QdrantOps {
         if ids.is_empty() {
             return Ok(());
         }
-        self.client
-            .delete_points(
+        self.timed(Box::pin(
+            self.client.delete_points(
                 DeletePointsBuilder::new(collection)
                     .points(PointsIdsList { ids })
                     .wait(true),
-            )
-            .await
-            .map_err(Box::new)?;
+            ),
+        ))
+        .await?;
         Ok(())
     }
 
@@ -269,7 +320,7 @@ impl QdrantOps {
                 builder = builder.offset(off.clone());
             }
 
-            let response = self.client.scroll(builder).await.map_err(Box::new)?;
+            let response = self.timed(Box::pin(self.client.scroll(builder))).await?;
 
             for point in &response.result {
                 let Some(key_val) = point.payload.get(key_field) else {
@@ -324,7 +375,7 @@ impl QdrantOps {
                 builder = builder.offset(off.clone());
             }
 
-            let response = self.client.scroll(builder).await.map_err(Box::new)?;
+            let response = self.timed(Box::pin(self.client.scroll(builder))).await?;
 
             for point in &response.result {
                 let Some(key_val) = point.payload.get(key_field) else {
@@ -379,8 +430,7 @@ impl QdrantOps {
             CreateFieldIndexCollectionBuilder, FieldType, ScalarQuantizationBuilder,
         };
         if self
-            .client
-            .collection_exists(collection)
+            .timed(Box::pin(self.client.collection_exists(collection)))
             .await
             .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?
         {
@@ -397,29 +447,26 @@ impl QdrantOps {
                 required = vector_size,
                 "vector dimension mismatch — recreating collection (existing data will be lost)"
             );
-            self.client
-                .delete_collection(collection)
+            self.timed(Box::pin(self.client.delete_collection(collection)))
                 .await
                 .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
         }
-        self.client
-            .create_collection(
+        self.timed(Box::pin(
+            self.client.create_collection(
                 CreateCollectionBuilder::new(collection)
                     .vectors_config(VectorParamsBuilder::new(vector_size, Distance::Cosine))
                     .quantization_config(ScalarQuantizationBuilder::default()),
-            )
-            .await
-            .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+            ),
+        ))
+        .await
+        .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
 
         for field in keyword_fields {
-            self.client
-                .create_field_index(CreateFieldIndexCollectionBuilder::new(
-                    collection,
-                    *field,
-                    FieldType::Keyword,
-                ))
-                .await
-                .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+            self.timed(Box::pin(self.client.create_field_index(
+                CreateFieldIndexCollectionBuilder::new(collection, *field, FieldType::Keyword),
+            )))
+            .await
+            .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
         }
         Ok(())
     }
@@ -564,7 +611,7 @@ impl crate::vector_store::VectorStore for QdrantOps {
         use tracing::Instrument as _;
         Box::pin(
             async move {
-                match self.client.health_check().await {
+                match self.timed(Box::pin(self.client.health_check())).await {
                     Ok(_) => Ok(true),
                     Err(e) => {
                         tracing::warn!(err = %e, "health_check failed");
@@ -588,14 +635,15 @@ impl crate::vector_store::VectorStore for QdrantOps {
         Box::pin(
             async move {
                 for field in &fields {
-                    self.client
-                        .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                    self.timed(Box::pin(self.client.create_field_index(
+                        CreateFieldIndexCollectionBuilder::new(
                             &collection,
                             field.as_str(),
                             FieldType::Keyword,
-                        ))
-                        .await
-                        .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
+                        ),
+                    )))
+                    .await
+                    .map_err(|e| crate::VectorStoreError::Collection(e.to_string()))?;
                 }
                 Ok(())
             }
@@ -617,12 +665,13 @@ impl crate::vector_store::VectorStore for QdrantOps {
                 }
                 let point_ids: Vec<PointId> = ids.into_iter().map(PointId::from).collect();
                 let response = self
-                    .client
-                    .get_points(
-                        GetPointsBuilder::new(&collection, point_ids)
-                            .with_vectors(true)
-                            .with_payload(true),
-                    )
+                    .timed(Box::pin(
+                        self.client.get_points(
+                            GetPointsBuilder::new(&collection, point_ids)
+                                .with_vectors(true)
+                                .with_payload(true),
+                        ),
+                    ))
                     .await
                     .map_err(|e| {
                         tracing::error!(err = %e, "get_points failed");
@@ -767,6 +816,36 @@ mod tests {
     fn new_with_api_key_constructs_successfully() {
         let result = QdrantOps::new("http://127.0.0.1:9999", Some("valid-key"));
         assert!(result.is_ok(), "valid key must not cause a build error");
+    }
+
+    /// `new` must apply [`DEFAULT_TIMEOUT`] and [`QdrantOps::with_timeout`] must override it
+    /// (#5484). The override is observable via the `Debug` impl since `timeout` is private.
+    #[test]
+    fn with_timeout_overrides_default() {
+        let ops = QdrantOps::new("http://localhost:6334", None).unwrap();
+        assert!(format!("{ops:?}").contains("10s"), "default must be 10s");
+
+        let ops = ops.with_timeout(Duration::from_secs(2));
+        assert!(
+            format!("{ops:?}").contains("2s"),
+            "with_timeout must override the default"
+        );
+    }
+
+    /// `timed` must return an error instead of hanging forever when the wrapped future never
+    /// resolves — the core guarantee of #5484.
+    #[tokio::test]
+    async fn timed_returns_error_instead_of_hanging() {
+        let ops = QdrantOps::new("http://localhost:6334", None)
+            .unwrap()
+            .with_timeout(Duration::from_millis(10));
+
+        let never_resolves: Pin<
+            Box<dyn Future<Output = Result<(), qdrant_client::QdrantError>> + Send>,
+        > = Box::pin(std::future::pending());
+
+        let result = ops.timed(never_resolves).await;
+        assert!(result.is_err(), "must time out instead of hanging forever");
     }
 
     #[test]

@@ -580,6 +580,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   turn. Also extracted a shared `append_budgeted_lines` helper for the byte-identical
   greedy-budget-accumulation loop duplicated across `fetch_persona_facts`,
   `fetch_trajectory_hints`, and `fetch_tree_memory` (#5482).
+- `fix(memory)`: no Qdrant gRPC operation in `zeph-memory` (`ensure_collection`,
+  `collection_exists`, `delete_collection`, `upsert`, `search`, `delete_by_ids`, `scroll_all`,
+  `scroll_all_with_point_ids`, `ensure_collection_with_quantization`, `health_check`,
+  `create_keyword_indexes`, `get_points`) had a timeout guard, so a slow or hung Qdrant server
+  could block the calling async task indefinitely, violating the mandatory Await Discipline rule
+  (#5484). `QdrantOps` now wraps every underlying gRPC call through a shared `timed` helper with a
+  10-second default (`QdrantOps::with_timeout` overrides it), converting an elapsed timeout into
+  `QdrantError::Io` so existing `Result<T, Box<QdrantError>>` call sites need no signature change.
+  Also replaced a duplicate inline `collection_info` dimension-extraction in
+  `EmbeddingRegistry::ensure_collection` with a call to the already-timeout-guarded
+  `QdrantOps::get_collection_vector_size`.
+- `fix(memory)`: `EmbeddingStore::store`, `store_with_tool_context`, and `store_with_category` each
+  duplicated the point-id/dimensions/base-payload construction and the `embeddings_metadata`
+  upsert SQL, having drifted independently three times (#5486). Factored the shared logic into a
+  private `store_impl` helper parameterized by a `StoreExtra` enum carrying each variant's
+  differing payload fields (tool metadata, category, or none); the three public methods'
+  signatures are unchanged.
 - `fix(session)`: two `init_session_sink`/resume hydration bugs found during code review of
   PR #5454 (default CLI continuation hydration fix). `init_session_sink` (`src/runner.rs`)
   resolved whether a session was already linked to the conversation via

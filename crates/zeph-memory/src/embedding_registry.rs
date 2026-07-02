@@ -435,23 +435,11 @@ impl EmbeddingRegistry {
 
         let existing_size = self
             .ops
-            .client()
-            .collection_info(&self.collection)
+            .get_collection_vector_size(&self.collection)
             .await
             .map_err(|e| {
                 EmbeddingRegistryError::VectorStore(VectorStoreError::Collection(e.to_string()))
-            })?
-            .result
-            .and_then(|info| info.config)
-            .and_then(|cfg| cfg.params)
-            .and_then(|params| params.vectors_config)
-            .and_then(|vc| vc.config)
-            .and_then(|cfg| match cfg {
-                qdrant_client::qdrant::vectors_config::Config::Params(vp) => Some(vp.size),
-                // Named-vector collections (ParamsMap) are not supported by this registry;
-                // treat size as unknown and recreate to ensure a compatible single-vector layout.
-                qdrant_client::qdrant::vectors_config::Config::ParamsMap(_) => None,
-            });
+            })?;
 
         let vector_size = probe_dimension(embed_fn).await?;
 

@@ -100,6 +100,24 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+/// Extra Qdrant payload fields specific to one of the `store*` variants (#5486).
+///
+/// Passed to [`EmbeddingStore::store_impl`], which owns the point-id/dimensions/base-payload
+/// construction and `embeddings_metadata` upsert shared by [`EmbeddingStore::store`],
+/// [`EmbeddingStore::store_with_tool_context`], and [`EmbeddingStore::store_with_category`].
+enum StoreExtra<'a> {
+    /// No extra payload fields (plain [`EmbeddingStore::store`]).
+    None,
+    /// `category` field for category-aware memory (#2428).
+    Category(Option<&'a str>),
+    /// Tool execution metadata fields.
+    ToolContext {
+        tool_name: &'a str,
+        exit_code: Option<i32>,
+        timestamp: Option<&'a str>,
+    },
+}
+
 impl EmbeddingStore {
     /// Create a new `EmbeddingStore` connected to the given Qdrant URL with optional API key.
     ///
@@ -231,54 +249,21 @@ impl EmbeddingStore {
         exit_code: Option<i32>,
         timestamp: Option<&str>,
     ) -> Result<String, MemoryError> {
-        let point_id = uuid::Uuid::new_v4().to_string();
-        let dimensions = i64::try_from(vector.len())?;
-
-        let mut payload = std::collections::HashMap::from([
-            ("message_id".to_owned(), serde_json::json!(message_id.0)),
-            (
-                "conversation_id".to_owned(),
-                serde_json::json!(conversation_id.0),
-            ),
-            ("role".to_owned(), serde_json::json!(role)),
-            (
-                "is_summary".to_owned(),
-                serde_json::json!(kind.is_summary()),
-            ),
-            ("tool_name".to_owned(), serde_json::json!(tool_name)),
-        ]);
-        if let Some(code) = exit_code {
-            payload.insert("exit_code".to_owned(), serde_json::json!(code));
-        }
-        if let Some(ts) = timestamp {
-            payload.insert("timestamp".to_owned(), serde_json::json!(ts));
-        }
-
-        let point = VectorPoint {
-            id: point_id.clone(),
+        self.store_impl(
+            message_id,
+            conversation_id,
+            role,
             vector,
-            payload,
-        };
-
-        self.ops.upsert(&self.collection, vec![point]).await?;
-
-        let chunk_index_i64 = i64::from(chunk_index);
-        zeph_db::query(sql!(
-            "INSERT INTO embeddings_metadata \
-             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT(message_id, chunk_index, model) DO UPDATE SET \
-             qdrant_point_id = excluded.qdrant_point_id, dimensions = excluded.dimensions"
-        ))
-        .bind(message_id)
-        .bind(chunk_index_i64)
-        .bind(&point_id)
-        .bind(dimensions)
-        .bind(model)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(point_id)
+            kind,
+            model,
+            chunk_index,
+            StoreExtra::ToolContext {
+                tool_name,
+                exit_code,
+                timestamp,
+            },
+        )
+        .await
     }
 
     /// Store a vector in Qdrant and persist metadata to `SQLite`.
@@ -303,47 +288,17 @@ impl EmbeddingStore {
         model: &str,
         chunk_index: u32,
     ) -> Result<String, MemoryError> {
-        let point_id = uuid::Uuid::new_v4().to_string();
-        let dimensions = i64::try_from(vector.len())?;
-
-        let payload = std::collections::HashMap::from([
-            ("message_id".to_owned(), serde_json::json!(message_id.0)),
-            (
-                "conversation_id".to_owned(),
-                serde_json::json!(conversation_id.0),
-            ),
-            ("role".to_owned(), serde_json::json!(role)),
-            (
-                "is_summary".to_owned(),
-                serde_json::json!(kind.is_summary()),
-            ),
-        ]);
-
-        let point = VectorPoint {
-            id: point_id.clone(),
+        self.store_impl(
+            message_id,
+            conversation_id,
+            role,
             vector,
-            payload,
-        };
-
-        self.ops.upsert(&self.collection, vec![point]).await?;
-
-        let chunk_index_i64 = i64::from(chunk_index);
-        zeph_db::query(sql!(
-            "INSERT INTO embeddings_metadata \
-             (message_id, chunk_index, qdrant_point_id, dimensions, model) \
-             VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT(message_id, chunk_index, model) DO UPDATE SET \
-             qdrant_point_id = excluded.qdrant_point_id, dimensions = excluded.dimensions"
-        ))
-        .bind(message_id)
-        .bind(chunk_index_i64)
-        .bind(&point_id)
-        .bind(dimensions)
-        .bind(model)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(point_id)
+            kind,
+            model,
+            chunk_index,
+            StoreExtra::None,
+        )
+        .await
     }
 
     /// Store a vector with an optional category tag in the Qdrant payload.
@@ -372,6 +327,34 @@ impl EmbeddingStore {
         chunk_index: u32,
         category: Option<&str>,
     ) -> Result<String, MemoryError> {
+        self.store_impl(
+            message_id,
+            conversation_id,
+            role,
+            vector,
+            kind,
+            model,
+            chunk_index,
+            StoreExtra::Category(category),
+        )
+        .await
+    }
+
+    /// Shared point-id/dimensions/base-payload construction and `embeddings_metadata` upsert
+    /// for [`Self::store`], [`Self::store_with_tool_context`], and [`Self::store_with_category`]
+    /// (#5486). `extra` supplies the payload fields that differ between the three callers.
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
+    async fn store_impl(
+        &self,
+        message_id: MessageId,
+        conversation_id: ConversationId,
+        role: &str,
+        vector: Vec<f32>,
+        kind: MessageKind,
+        model: &str,
+        chunk_index: u32,
+        extra: StoreExtra<'_>,
+    ) -> Result<String, MemoryError> {
         let point_id = uuid::Uuid::new_v4().to_string();
         let dimensions = i64::try_from(vector.len())?;
 
@@ -387,8 +370,26 @@ impl EmbeddingStore {
                 serde_json::json!(kind.is_summary()),
             ),
         ]);
-        if let Some(cat) = category {
-            payload.insert("category".to_owned(), serde_json::json!(cat));
+        match extra {
+            StoreExtra::None => {}
+            StoreExtra::Category(category) => {
+                if let Some(cat) = category {
+                    payload.insert("category".to_owned(), serde_json::json!(cat));
+                }
+            }
+            StoreExtra::ToolContext {
+                tool_name,
+                exit_code,
+                timestamp,
+            } => {
+                payload.insert("tool_name".to_owned(), serde_json::json!(tool_name));
+                if let Some(code) = exit_code {
+                    payload.insert("exit_code".to_owned(), serde_json::json!(code));
+                }
+                if let Some(ts) = timestamp {
+                    payload.insert("timestamp".to_owned(), serde_json::json!(ts));
+                }
+            }
         }
 
         let point = VectorPoint {
@@ -995,6 +996,116 @@ mod tests {
         assert_eq!(results[0].message_id, msg_id);
         assert_eq!(results[0].conversation_id, cid);
         assert!((results[0].score - 1.0).abs() < 0.001);
+    }
+
+    /// `store_with_category` must write a `category` payload field when given `Some` (#5486
+    /// shared `store_impl` helper must preserve this variant's distinguishing behavior).
+    #[tokio::test]
+    async fn embedding_store_store_with_category_sets_payload_field() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg_id = sqlite.save_message(cid, "user", "cat test").await.unwrap();
+
+        store
+            .store_with_category(
+                msg_id,
+                cid,
+                "user",
+                vec![1.0, 0.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "test-model",
+                0,
+                Some("preference"),
+            )
+            .await
+            .unwrap();
+
+        let results = store
+            .search_collection(COLLECTION_NAME, &[1.0, 0.0, 0.0, 0.0], 1, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].payload.get("category").and_then(|v| v.as_str()),
+            Some("preference")
+        );
+    }
+
+    /// `store_with_category(None)` must omit the `category` field entirely (no false positives
+    /// on category filters for pre-existing memories).
+    #[tokio::test]
+    async fn embedding_store_store_with_category_none_omits_payload_field() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg_id = sqlite.save_message(cid, "user", "no cat").await.unwrap();
+
+        store
+            .store_with_category(
+                msg_id,
+                cid,
+                "user",
+                vec![0.0, 1.0, 0.0, 0.0],
+                MessageKind::Regular,
+                "m",
+                0,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let results = store
+            .search_collection(COLLECTION_NAME, &[0.0, 1.0, 0.0, 0.0], 1, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].payload.contains_key("category"));
+    }
+
+    /// `store_with_tool_context` must write `tool_name`, `exit_code`, and `timestamp` payload
+    /// fields (#5486 shared `store_impl` helper must preserve this variant's fields).
+    #[tokio::test]
+    async fn embedding_store_store_with_tool_context_sets_payload_fields() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+        let msg_id = sqlite
+            .save_message(cid, "assistant", "ran a tool")
+            .await
+            .unwrap();
+
+        store
+            .store_with_tool_context(
+                msg_id,
+                cid,
+                "assistant",
+                vec![0.0, 0.0, 1.0, 0.0],
+                MessageKind::Regular,
+                "m",
+                0,
+                "shell",
+                Some(0),
+                Some("2026-07-02T00:00:00Z"),
+            )
+            .await
+            .unwrap();
+
+        let results = store
+            .search_collection(COLLECTION_NAME, &[0.0, 0.0, 1.0, 0.0], 1, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        let payload = &results[0].payload;
+        assert_eq!(
+            payload.get("tool_name").and_then(|v| v.as_str()),
+            Some("shell")
+        );
+        assert_eq!(
+            payload.get("exit_code").and_then(serde_json::Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(
+            payload.get("timestamp").and_then(|v| v.as_str()),
+            Some("2026-07-02T00:00:00Z")
+        );
     }
 
     #[tokio::test]
