@@ -300,9 +300,23 @@ pub fn propagate_failure(
             graph.status = GraphStatus::Paused;
             Vec::new()
         }
-        _ => {
+
+        // `FailureStrategy` is `#[non_exhaustive]` (zeph-config), so a wildcard arm is
+        // mandatory for compilation even though all current variants are handled above.
+        // Unlike the old dead wildcard, this one is loud: it logs the unhandled variant
+        // instead of silently falling back to Abort-equivalent behavior.
+        strategy => {
+            tracing::error!(
+                ?strategy,
+                "unhandled failure strategy variant, defaulting to Abort"
+            );
             graph.status = GraphStatus::Failed;
-            Vec::new()
+            graph
+                .tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::Running)
+                .map(|t| t.id)
+                .collect()
         }
     }
 }

@@ -530,67 +530,9 @@ impl TaskGraph {
     }
 }
 
+/// Current UTC time as an ISO-8601 timestamp (e.g. `"2026-03-05T22:04:41Z"`).
 pub(crate) fn chrono_now() -> String {
-    // ISO-8601 UTC timestamp, consistent with the rest of the codebase.
-    // Format: "2026-03-05T22:04:41Z"
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // Manual formatting: seconds since epoch → ISO-8601 UTC
-    // Days since epoch, then decompose into year/month/day
-    let (y, mo, d, h, mi, s) = epoch_secs_to_datetime(secs);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-}
-
-/// Convert Unix epoch seconds to (year, month, day, hour, min, sec) UTC.
-fn epoch_secs_to_datetime(secs: u64) -> (u64, u8, u8, u8, u8, u8) {
-    let s = (secs % 60) as u8;
-    let mins = secs / 60;
-    let mi = (mins % 60) as u8;
-    let hours = mins / 60;
-    let h = (hours % 24) as u8;
-    let days = hours / 24; // days since 1970-01-01
-
-    // Gregorian calendar decomposition
-    // 400-year cycle = 146097 days
-    let (mut year, mut remaining_days) = {
-        let cycles = days / 146_097;
-        let rem = days % 146_097;
-        (1970 + cycles * 400, rem)
-    };
-    // 100-year century (36524 days, no leap on century unless /400)
-    let centuries = (remaining_days / 36_524).min(3);
-    year += centuries * 100;
-    remaining_days -= centuries * 36_524;
-    // 4-year cycle (1461 days)
-    let quads = remaining_days / 1_461;
-    year += quads * 4;
-    remaining_days -= quads * 1_461;
-    // remaining years
-    let extra_years = (remaining_days / 365).min(3);
-    year += extra_years;
-    remaining_days -= extra_years * 365;
-
-    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-    let days_in_month: [u64; 12] = if is_leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 0u8;
-    for (i, &dim) in days_in_month.iter().enumerate() {
-        if remaining_days < dim {
-            // i is in 0..12, so i+1 fits in u8
-            month = u8::try_from(i + 1).unwrap_or(1);
-            break;
-        }
-        remaining_days -= dim;
-    }
-    // remaining_days is in 0..30, so +1 fits in u8
-    let day = u8::try_from(remaining_days + 1).unwrap_or(1);
-
-    (year, month, day, h, mi, s)
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// Maximum allowed length for a `TaskGraph` goal string.
@@ -768,6 +710,7 @@ pub struct PredicateOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     #[test]
     fn test_taskid_display() {
@@ -906,6 +849,29 @@ mod tests {
         // Year should be >= 2024
         let year: u32 = ts[..4].parse().expect("year should be numeric");
         assert!(year >= 2024, "year should be >= 2024: {year}");
+        // Month must be a valid 1..=12 component, not the 0-indexed 0 that the
+        // old hand-rolled Gregorian decomposition could produce (see #5469).
+        let month: u32 = ts[5..7].parse().expect("month should be numeric");
+        assert!((1..=12).contains(&month), "month out of range: {month}");
+        // Round-trip through a real RFC3339 parser so any future format
+        // regression is caught by the type system, not string slicing alone.
+        chrono::DateTime::parse_from_rfc3339(&ts)
+            .unwrap_or_else(|e| panic!("timestamp should be valid RFC3339: {ts}: {e}"));
+    }
+
+    #[test]
+    fn test_chrono_now_no_month_00_around_leap_year_boundary() {
+        // Regression test for #5469: the old hand-rolled epoch decomposition
+        // mis-decomposed dates immediately preceding a leap year (e.g.
+        // 2025-12-31), producing an invalid "month=00" timestamp. `chrono_now`
+        // now delegates to `chrono::Utc::now()`, so this is a smoke check that
+        // any produced timestamp always round-trips and never has month=0.
+        for _ in 0..5 {
+            let ts = chrono_now();
+            let parsed = chrono::DateTime::parse_from_rfc3339(&ts)
+                .unwrap_or_else(|e| panic!("invalid RFC3339 timestamp: {ts}: {e}"));
+            assert_ne!(parsed.month(), 0, "month must never be 0: {ts}");
+        }
     }
 
     #[test]

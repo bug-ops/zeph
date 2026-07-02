@@ -489,6 +489,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(orchestration)`: `dag::propagate_failure`'s trailing wildcard match arm on
+  `FailureStrategy` no longer silently falls back to `Abort`-equivalent behavior with no signal.
+  The wildcard arm is required for compilation because `FailureStrategy` is `#[non_exhaustive]`
+  (`zeph-config`), so it now logs `tracing::error!` with the unhandled variant before applying the
+  same fallback, making a future unknown variant visible in logs instead of silent. Closes #5466.
+- `refactor(orchestration)`: `LlmPlanner::plan` now forwards to `plan_with_hint(goal, agents, None)`
+  instead of duplicating the entire planning pipeline (empty-goal check, prompt build, timeout-
+  wrapped `chat_typed`, usage capture, response conversion, DAG validation). Pure behavior-preserving
+  refactor — no change in output when no topology hint is supplied. Closes #5471.
 - `feat(cli)!`: `zeph sessions resume <id>` no longer dumps events to stdout by default (spec-068,
   #5343) — it now launches a **live interactive agent** bound to that session's conversation,
   replaying its JSONL event log to reconstruct history before accepting the next prompt (spec §10,
@@ -550,6 +559,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(orchestration)`: `TaskGraph::created_at`/`finished_at` timestamps could be corrupted with an
+  invalid `month=00` ISO-8601 component. The hand-rolled `epoch_secs_to_datetime` Gregorian
+  decomposition in `graph.rs` mis-computed the month for dates immediately preceding a leap year
+  (confirmed on 2025-12-31, recurring every ~4 years), producing timestamps like
+  `"2025-00-01T12:00:00Z"` that were persisted into the `task_graphs` SQLite table. `chrono_now()`
+  now delegates to `chrono::Utc::now()`; `epoch_secs_to_datetime` is removed. Closes #5469.
 - `fix(session)`: two `init_session_sink`/resume hydration bugs found during code review of
   PR #5454 (default CLI continuation hydration fix). `init_session_sink` (`src/runner.rs`)
   resolved whether a session was already linked to the conversation via

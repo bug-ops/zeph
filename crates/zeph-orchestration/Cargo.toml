@@ -14,6 +14,7 @@ readme = "README.md"
 
 [dependencies]
 blake3.workspace = true
+chrono = { workspace = true, features = ["clock"] }
 dirs.workspace = true
 parking_lot.workspace = true
 rand.workspace = true

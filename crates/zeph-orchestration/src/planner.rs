@@ -213,35 +213,7 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
         goal: &str,
         available_agents: &[SubAgentDef],
     ) -> Result<(TaskGraph, Option<(u64, u64)>), OrchestrationError> {
-        if goal.trim().is_empty() {
-            return Err(OrchestrationError::PlanningFailed(
-                "goal cannot be empty".into(),
-            ));
-        }
-
-        let messages = build_prompt(goal, available_agents, self.max_tasks);
-
-        let response: PlannerResponse =
-            tokio::time::timeout(self.timeout, self.provider.chat_typed(&messages))
-                .await
-                .map_err(|_| OrchestrationError::PlanningFailed("planner timed out".into()))?
-                .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
-
-        // Capture usage right after the API call, before any fallible post-processing.
-        let usage = self.provider.last_usage();
-
-        let mut graph = convert_response(
-            response,
-            goal,
-            available_agents,
-            self.max_tasks,
-            self.verify_predicate_enabled,
-        )?;
-        graph.default_failure_strategy = self.default_failure_strategy;
-
-        dag::validate(&graph.tasks, self.max_tasks as usize)?;
-
-        Ok((graph, usage))
+        self.plan_with_hint(goal, available_agents, None).await
     }
 }
 
