@@ -75,6 +75,13 @@ impl Channel for AppChannel {
             Self::Tui(c) => c.supports_exit(),
         }
     }
+
+    fn requires_input_sanitization(&self) -> bool {
+        match self {
+            Self::Standard(c) => c.requires_input_sanitization(),
+            Self::Tui(c) => c.requires_input_sanitization(),
+        }
+    }
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_status, text)
     }

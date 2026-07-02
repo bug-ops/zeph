@@ -132,6 +132,18 @@ impl Channel for AnyChannel {
         }
     }
 
+    fn requires_input_sanitization(&self) -> bool {
+        match self {
+            Self::Cli(c) => c.requires_input_sanitization(),
+            Self::JsonCli(c) => c.requires_input_sanitization(),
+            Self::Telegram(c) => c.requires_input_sanitization(),
+            #[cfg(feature = "discord")]
+            Self::Discord(c) => c.requires_input_sanitization(),
+            #[cfg(feature = "slack")]
+            Self::Slack(c) => c.requires_input_sanitization(),
+        }
+    }
+
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_status, text)
     }
@@ -359,5 +371,7 @@ mod tests {
         // 15. send_stop_hint
         ch.send_stop_hint(StopHint::MaxTurnRequests).await.unwrap();
         // 16. confirm — skipped (reads from stdin; covered by separate test)
+        // 17. requires_input_sanitization
+        let _ = ch.requires_input_sanitization();
     }
 }

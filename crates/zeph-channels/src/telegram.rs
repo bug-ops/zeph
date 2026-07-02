@@ -1051,6 +1051,13 @@ impl Channel for TelegramChannel {
         false
     }
 
+    /// Returns `true` — Telegram users are external, untrusted input. The residual text
+    /// that survives command dispatch is sanitized centrally in `Agent::run` before it
+    /// reaches the LLM context (see `Channel::requires_input_sanitization`).
+    fn requires_input_sanitization(&self) -> bool {
+        true
+    }
+
     /// Non-blocking receive: returns a buffered message if one is available.
     ///
     /// Updates `chat_id` when a message is returned so subsequent [`send`]
@@ -1721,6 +1728,17 @@ mod tests {
         let msg = channel.recv().await.unwrap().unwrap();
         assert_eq!(msg.text, "hello world");
         assert!(msg.attachments.is_empty());
+    }
+
+    /// Regression test for #5460: `recv`/`try_recv` must return raw, unsanitized text so
+    /// command dispatch in `Agent::run` (session/agent registries, `dispatch_slash_command`)
+    /// still matches recognized commands over Telegram. Sanitization for the residual
+    /// non-command text happens centrally in the agent loop, gated on
+    /// `requires_input_sanitization`, not at the channel adapter.
+    #[test]
+    fn requires_input_sanitization_is_true() {
+        let channel = TelegramChannel::new("test_token".to_string(), Vec::new());
+        assert!(channel.requires_input_sanitization());
     }
 
     #[tokio::test]

@@ -94,6 +94,7 @@ pub(crate) struct MockChannel {
     pub(crate) statuses: Arc<Mutex<Vec<String>>>,
     pub(crate) tool_starts: Arc<Mutex<Vec<ToolStartEvent>>>,
     pub(crate) exit_supported: bool,
+    pub(crate) input_sanitization_required: bool,
 }
 
 impl MockChannel {
@@ -106,11 +107,19 @@ impl MockChannel {
             statuses: Arc::new(Mutex::new(Vec::new())),
             tool_starts: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
+            input_sanitization_required: false,
         }
     }
 
     pub(crate) fn without_exit_support(mut self) -> Self {
         self.exit_supported = false;
+        self
+    }
+
+    /// Simulates a bot-adapter channel (Telegram/Discord/Slack) whose input is external and
+    /// untrusted, exercising the `Channel::requires_input_sanitization` central-loop path.
+    pub(crate) fn with_input_sanitization_required(mut self) -> Self {
+        self.input_sanitization_required = true;
         self
     }
 
@@ -191,6 +200,10 @@ impl Channel for MockChannel {
 
     fn supports_exit(&self) -> bool {
         self.exit_supported
+    }
+
+    fn requires_input_sanitization(&self) -> bool {
+        self.input_sanitization_required
     }
 }
 

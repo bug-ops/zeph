@@ -1111,6 +1111,7 @@ impl<C: Channel> Agent<C> {
         result
     }
 
+    #[allow(clippy::too_many_lines)] // turn pipeline is inherently sequential; each step is a single call
     #[tracing::instrument(
         name = "core.agent.process_user_message_inner",
         skip_all,
@@ -1152,6 +1153,11 @@ impl<C: Channel> Agent<C> {
         if let Some(result) = self.dispatch_slash_command(trimmed).await {
             return result;
         }
+
+        // #5460: sanitize only after both dispatch layers ran on unsanitized text.
+        let text = self.sanitize_channel_text_if_untrusted(text);
+        let trimmed_owned = text.trim().to_owned();
+        let trimmed = trimmed_owned.as_str();
 
         self.check_pending_rollbacks().await;
 
@@ -1477,6 +1483,33 @@ impl<C: Channel> Agent<C> {
                 );
             }
         }
+    }
+
+    /// Sanitize `text` when it originates from an untrusted channel (#5460).
+    ///
+    /// Telegram/Discord/Slack users are external and untrusted, but recognized commands must
+    /// dispatch on raw text — by the time this is called, both dispatch layers
+    /// (`Agent::run`'s registries and `dispatch_slash_command`) have already run on the
+    /// unsanitized text and found no match. Only the residual text that actually reaches the
+    /// LLM context is wrapped here, mirroring how gateway webhooks and A2A messages are already
+    /// sanitized before they reach this function (`src/gateway_spawn.rs::forward_webhooks`,
+    /// `src/daemon.rs::AgentTaskProcessor`) — `LoopbackChannel` (which carries both) reports
+    /// `requires_input_sanitization() == false` so that pre-sanitized content isn't wrapped
+    /// twice.
+    fn sanitize_channel_text_if_untrusted(&self, text: String) -> String {
+        if !self.channel.requires_input_sanitization() {
+            return text;
+        }
+        self.services
+            .security
+            .sanitizer
+            .sanitize(
+                &text,
+                zeph_sanitizer::ContentSource::new(
+                    zeph_sanitizer::ContentSourceKind::ChannelMessage,
+                ),
+            )
+            .body
     }
 
     // Returns true if the input was blocked and the caller should return Ok(()) immediately.

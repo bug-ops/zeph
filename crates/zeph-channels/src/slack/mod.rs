@@ -215,6 +215,13 @@ impl Channel for SlackChannel {
         false
     }
 
+    /// Returns `true` — Slack users are external, untrusted input. The residual text
+    /// that survives command dispatch is sanitized centrally in `Agent::run` before it
+    /// reaches the LLM context (see `Channel::requires_input_sanitization`).
+    fn requires_input_sanitization(&self) -> bool {
+        true
+    }
+
     fn try_recv(&mut self) -> Option<ChannelMessage> {
         let incoming = self.rx.try_recv().ok()?;
         self.channel_id = Some(incoming.channel_id);
@@ -545,6 +552,16 @@ mod tests {
         let msg = ch.try_recv().unwrap();
         assert_eq!(msg.text, "hello");
         assert_eq!(ch.channel_id.as_deref(), Some("C123"));
+    }
+
+    /// Regression test for #5460: `recv`/`try_recv` must return raw, unsanitized text so
+    /// command dispatch in `Agent::run` still matches recognized commands over Slack.
+    /// Sanitization for the residual non-command text happens centrally in the agent loop,
+    /// gated on `requires_input_sanitization`, not at the channel adapter.
+    #[tokio::test(flavor = "current_thread")]
+    async fn requires_input_sanitization_is_true() {
+        let ch = make_channel();
+        assert!(ch.requires_input_sanitization());
     }
 
     #[tokio::test(flavor = "current_thread")]

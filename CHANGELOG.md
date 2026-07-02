@@ -570,6 +570,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restoring the pre-#5454 guarantee. Both paths gained direct unit-test coverage via real
   failure-injection (dropped `acp_sessions` column/index for the store-query error; a
   file-blocking-a-directory path for the bare-open failure).
+- `fix(channels,sanitizer)`: the Telegram, Discord, and Slack channel adapters built
+  `ChannelMessage` directly from raw bot-adapter input with zero `ContentSanitizer` involvement —
+  the same unsanitized-input gap flagged as a follow-up when `zeph-gateway` webhooks were fixed
+  (#5432/#5459) (#5460). Bot-adapter input is external and untrusted just like a webhook payload;
+  a valid bot token or allowlisted user ID proves the sender is authorized to talk to the bot, not
+  that the message content is safe. A first pass sanitized text directly inside each adapter's
+  `try_recv`/`recv` (mirroring `forward_webhooks` in `src/gateway_spawn.rs`), but that broke
+  **all** slash-command dispatch over these channels: `Agent::run`'s command registries and
+  `dispatch_slash_command` (`@mention`/`/subagent`) match on exact/prefix text, which never
+  matches once wrapped in `<external-data>` (impl-critic finding, changes-requested). Corrected
+  design: new `Channel::requires_input_sanitization` trait method (default `false`; `true` for
+  `TelegramChannel`/`DiscordChannel`/`SlackChannel`, delegated through `AnyChannel` and
+  `AppChannel`) leaves `recv`/`try_recv` returning **raw** text so both dispatch layers still see
+  unmodified commands; sanitization instead happens once, centrally, in
+  `Agent::process_user_message_inner` (new `sanitize_channel_text_if_untrusted` helper, reusing
+  the `ContentSanitizer` instance already held at `self.services.security.sanitizer`) immediately
+  after `dispatch_slash_command` falls through — i.e. only the residual text that actually reaches
+  the LLM is wrapped. `LoopbackChannel` (A2A daemon + gateway webhooks) keeps the trait's default
+  `false`, since `forward_webhooks`/`AgentTaskProcessor` already sanitize before injecting a
+  `ChannelMessage`, avoiding a double-wrap. Telegram's internally-generated `/reset`/`/skills`
+  literal `ChannelMessage`s remain unsanitized (fixed strings, not external input).
 - `fix(gateway)`: `zeph-gateway`'s `/webhook` endpoint forwarded third-party payloads into the
   agent's primary input queue as a plain `ChannelMessage` with only control-character stripping
   applied — bypassing the `ContentTrustLevel::ExternalUntrusted` classification, spotlight

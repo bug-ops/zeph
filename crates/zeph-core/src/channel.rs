@@ -243,6 +243,23 @@ pub trait Channel: Send {
         true
     }
 
+    /// Whether messages from this channel are raw external input that must be sanitized
+    /// (`ContentTrustLevel::ExternalUntrusted`) before the residual, non-command text reaches
+    /// the LLM context.
+    ///
+    /// Returns `true` for direct bot-adapter channels (Telegram, Discord, Slack) whose input
+    /// comes from arbitrary remote users. Returns `false` (default) for local/operator-trusted
+    /// channels (CLI, TUI) and for [`LoopbackChannel`] — gateway webhooks and A2A messages are
+    /// already sanitized by their respective forwarders before being injected as a
+    /// [`ChannelMessage`], so sanitizing again here would double-wrap them.
+    ///
+    /// Sanitization is applied downstream of all command dispatch (`Agent::run`'s registries and
+    /// `dispatch_slash_command`), not at `recv`/`try_recv`, so recognized commands still dispatch
+    /// on raw text — only the text that actually reaches the LLM is wrapped.
+    fn requires_input_sanitization(&self) -> bool {
+        false
+    }
+
     /// Send a text response.
     ///
     /// # Errors
