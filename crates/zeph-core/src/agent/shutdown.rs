@@ -427,13 +427,14 @@ impl<C: Channel> Agent<C> {
         tracing::info!("agent shutdown complete");
     }
 
-    /// Flush buffered durable journal entries then abort the writer task.
+    /// Flush buffered durable journal entries then abort the writer task, for both the P2
+    /// (orchestration) and P1 (agent-turn, #5452) durable adapters.
     ///
     /// `flush()` has a built-in ack timeout; the outer 2 s cap ensures shutdown never
     /// hangs beyond that. Errors are logged as warnings — shutdown must not fail.
     async fn flush_durable_writer(&mut self) {
+        let flush_deadline = std::time::Duration::from_secs(2);
         if let Some(ref writer) = self.services.orchestration.durable_writer {
-            let flush_deadline = std::time::Duration::from_secs(2);
             match tokio::time::timeout(flush_deadline, writer.flush()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
@@ -443,6 +444,18 @@ impl<C: Channel> Agent<C> {
             }
         }
         if let Some(h) = self.services.orchestration.durable_writer_task.take() {
+            h.abort();
+        }
+        if let Some(ref writer) = self.services.session.durable_writer {
+            match tokio::time::timeout(flush_deadline, writer.flush()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "durable agent_turns writer: flush on shutdown failed");
+                }
+                Err(_) => tracing::warn!("durable agent_turns writer: flush timed out on shutdown"),
+            }
+        }
+        if let Some(h) = self.services.session.durable_writer_task.take() {
             h.abort();
         }
     }

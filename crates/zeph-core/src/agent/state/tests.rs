@@ -75,6 +75,12 @@ fn make_session_state() -> SessionState {
         durable_ctx: None,
         durable_subagent: false,
         durable_turn_replayed: false,
+        durable_agent_turns_config: None,
+        durable_agent_turns_db_url: None,
+        durable_agent_turns_cipher: None,
+        durable_ctx_init_attempted: false,
+        durable_writer: None,
+        durable_writer_task: None,
         session_sink: None,
         session_persistence_config: None,
     }

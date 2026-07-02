@@ -2014,6 +2014,40 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Stash the P1 (agent-turn) durable adapter's config/db-url/cipher cheaply — no I/O runs
+    /// here (#5452). Call only when `config.durable.enabled && config.durable.agent_turns`;
+    /// the actual `DurableContext` is opened lazily by
+    /// [`Agent::ensure_session_durable_ctx`](crate::agent::Agent::ensure_session_durable_ctx) on
+    /// the first durable-gated call, once the real `TaskSupervisor` is attached
+    /// (see [`Self::with_task_supervisor`]).
+    ///
+    /// `db_url` is the same `durable.db` connection string as [`Self::with_durable_orchestration`]
+    /// — both P1 and P2 adapters share the same journal file when both are enabled.
+    #[must_use]
+    pub fn with_durable_agent_turns(
+        mut self,
+        config: zeph_config::DurableConfig,
+        db_url: String,
+        cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
+    ) -> Self {
+        self.services.session.durable_agent_turns_config = Some(config);
+        self.services.session.durable_agent_turns_db_url = Some(db_url);
+        self.services.session.durable_agent_turns_cipher = cipher;
+        self
+    }
+
+    /// Mirror `config.durable.subagent` onto `services.session.durable_subagent` (#5452 FR-003).
+    ///
+    /// A direct, unconditional config copy — no I/O, no dependency on `agent_turns`. The P4
+    /// gate at the subagent-spawn call sites (`maybe_make_durable_seat`) separately requires
+    /// `durable_ctx` to be `Some`, so setting this to `true` while `agent_turns = false` is a
+    /// harmless no-op there (FR-008).
+    #[must_use]
+    pub fn with_durable_subagent(mut self, enabled: bool) -> Self {
+        self.services.session.durable_subagent = enabled;
+        self
+    }
+
     /// Wire `graph_persistence` from the attached `SemanticMemory` `SQLite` pool.
     ///
     /// Idempotent: returns immediately if `graph_persistence` is already `Some`.

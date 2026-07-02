@@ -17,6 +17,12 @@ use super::{
 use crate::agent::Agent;
 use crate::channel::{Channel, StopHint, ToolStartEvent};
 
+/// Per-call timeout for the parameter-reformat LLM call (#5453) when
+/// `tools.retry.max_retry_duration_secs` is `0` ("no phase budget limit") — that value must not
+/// be reused directly as a per-call timeout (critic finding M1: `max(1)` on `0` collapsed to a
+/// 1-second timeout that always failed, silently disabling the whole feature).
+const REFORMAT_DEFAULT_TIMEOUT_SECS: u64 = 30;
+
 fn make_tool_hook_env(
     tool_name: &str,
     tool_input: &serde_json::Value,
@@ -49,7 +55,7 @@ impl<C: Channel> Agent<C> {
             .await?;
         self.handle_retry_phase(tool_calls, calls, tool_results, max_retries, cancel)
             .await?;
-        self.handle_reformat_phase(tool_calls, tool_results, cancel)
+        self.handle_reformat_phase(tool_calls, calls, tool_results, cancel)
             .await?;
         Ok(())
     }
@@ -230,6 +236,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_reformat_phase(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        calls: &[ToolCall],
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(), crate::agent::error::AgentError> {
@@ -240,7 +247,10 @@ impl<C: Channel> Agent<C> {
         {
             return Ok(());
         }
+        // Budget covers the whole reformat phase (all tool calls needing reformat this round),
+        // matching the retry phase's `retry_start`/`max_retry_duration_secs` accounting.
         let budget_secs = self.tool_orchestrator.max_retry_duration_secs;
+        let reformat_start = std::time::Instant::now();
         for idx in 0..tool_results.len() {
             if cancel.is_cancelled() {
                 self.tool_executor.set_skill_env(None);
@@ -258,29 +268,140 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
             let tc = &tool_calls[idx];
-            tracing::warn!(
-                tool = %tc.name,
-                "parameter error detected; parameter reformat path is reserved for future \
-                 LLM-based reformat implementation"
-            );
-            // Budget check: a newly created instant always has ~0 elapsed, so this guard
-            // is effectively a no-op today. Kept for structural parity with the planned
-            // LLM-based reformat implementation that will run actual work here.
-            let reformat_start = std::time::Instant::now();
             if budget_secs > 0 && reformat_start.elapsed().as_secs() >= budget_secs {
                 tracing::warn!(tool = %tc.name, "parameter reformat budget exhausted, skipping");
                 continue;
             }
+            let error_message = tool_results[idx]
+                .as_ref()
+                .err()
+                .map(std::string::ToString::to_string)
+                .unwrap_or_default();
+
             let _ = self
                 .channel
-                .send_status(&format!(
-                    "Reformat for {} pending provider integration…",
-                    tc.name
-                ))
+                .send_status(&format!("Reformatting parameters for {}...", tc.name))
+                .await;
+            let new_result = self
+                .reformat_tool_call(&calls[idx], tc, &error_message, cancel)
                 .await;
             let _ = self.channel.send_status("").await;
+
+            if cancel.is_cancelled() {
+                self.tool_executor.set_skill_env(None);
+                tracing::info!("parameter reformat phase cancelled by user");
+                self.update_metrics(|m| m.cancellations += 1);
+                self.channel.send("[Cancelled]").await?;
+                self.persist_cancelled_tool_results(tool_calls).await;
+                return Ok(());
+            }
+
+            if let Some(result) = new_result {
+                if let Err(ref e) = result
+                    && let Some(ref d) = self.runtime.debug.debug_dumper
+                {
+                    d.dump_tool_error(tc.name.as_str(), e);
+                }
+                tool_results[idx] = result;
+            }
         }
         Ok(())
+    }
+
+    /// LLM-based single-shot reformat-and-retry for a tool call that failed with an
+    /// `InvalidParameters`/`TypeMismatch` error (issue #5453).
+    ///
+    /// Resolves `tools.retry.parameter_reformat_provider` from `[[llm.providers]]` via
+    /// [`Agent::resolve_background_provider`] (falling back to the primary provider when the
+    /// name is empty or unknown), asks it for corrected arguments given the tool's JSON schema,
+    /// the originally-submitted arguments, and the error message, then re-dispatches the tool
+    /// call once with the corrected arguments.
+    ///
+    /// Returns `None` when the provider call fails, times out, or returns arguments that do not
+    /// parse as a JSON object — the caller keeps the original error result unchanged.
+    async fn reformat_tool_call(
+        &mut self,
+        call: &ToolCall,
+        tc: &zeph_llm::provider::ToolUseRequest,
+        error_message: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Option<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> {
+        #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+        struct ReformattedArguments {
+            /// Corrected JSON arguments object for the failed tool call.
+            arguments: serde_json::Value,
+        }
+
+        let Some(schema) = self
+            .tool_executor
+            .tool_definitions_erased()
+            .into_iter()
+            .find(|d| d.id.as_ref() == tc.name.as_str())
+            .map(|d| d.schema)
+        else {
+            tracing::warn!(tool = %tc.name, "parameter reformat: tool schema not found, skipping");
+            return None;
+        };
+
+        let provider_name = self.tool_orchestrator.parameter_reformat_provider.clone();
+        let provider = self.resolve_background_provider(&provider_name);
+
+        let original_args = serde_json::Value::Object(call.params.clone());
+        let prompt = format!(
+            "A tool call failed parameter validation. Propose corrected arguments as a JSON \
+             object under the `arguments` key.\n\n\
+             Tool: {}\nJSON schema:\n{}\n\nOriginal arguments:\n{}\n\nError: {error_message}",
+            tc.name,
+            serde_json::to_string_pretty(&schema).unwrap_or_default(),
+            serde_json::to_string_pretty(&original_args).unwrap_or_default(),
+        );
+        let messages = [Message::from_legacy(Role::User, prompt)];
+
+        // `max_retry_duration_secs == 0` means "no phase budget limit" (see the `budget_secs > 0`
+        // check in `handle_reformat_phase`), but a per-LLM-call timeout must never be 0 or
+        // collapse to 1s for that same value — that previously made `max_retry_duration_secs = 0`
+        // ("unlimited") silently disable the whole feature via an always-timing-out 1s call
+        // (critic finding M1). Use the configured budget as the per-call timeout only when it is a
+        // real bound; fall back to a fixed sane default otherwise.
+        let timeout_secs = match self.tool_orchestrator.max_retry_duration_secs {
+            0 => REFORMAT_DEFAULT_TIMEOUT_SECS,
+            secs => secs,
+        };
+        let reformat = tokio::select! {
+            r = tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_secs),
+                provider.chat_typed_erased::<ReformattedArguments>(&messages),
+            ) => match r {
+                Ok(Ok(reformat)) => reformat,
+                Ok(Err(e)) => {
+                    tracing::warn!(tool = %tc.name, error = %e, "parameter reformat: provider call failed");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(tool = %tc.name, timeout_secs, "parameter reformat: provider call timed out");
+                    return None;
+                }
+            },
+            () = cancel.cancelled() => return None,
+        };
+
+        let serde_json::Value::Object(corrected_params) = reformat.arguments else {
+            tracing::warn!(
+                tool = %tc.name,
+                "parameter reformat: corrected arguments were not a JSON object, skipping retry"
+            );
+            return None;
+        };
+
+        let mut retry_call = call.clone();
+        retry_call.params = corrected_params;
+
+        tokio::select! {
+            r = self.tool_executor.execute_tool_call_erased(&retry_call).instrument(
+                tracing::info_span!("tool_exec_reformat", tool_name = %tc.name)
+            ) => Some(r),
+            () = cancel.cancelled() => None,
+        }
     }
 
     fn run_pre_execution_verifiers(&mut self, calls: &[ToolCall]) -> Vec<bool> {
@@ -2536,6 +2657,7 @@ impl<C: Channel> Agent<C> {
         tool_defs: &[ToolDefinition],
         iteration: usize,
     ) -> Result<Option<zeph_llm::provider::ChatResponse>, crate::agent::error::AgentError> {
+        self.ensure_session_durable_ctx().await;
         let Some(ctx) = self.services.session.durable_ctx.clone() else {
             return self.call_chat_with_tools_retry(tool_defs, 2).await;
         };
@@ -3161,6 +3283,280 @@ mod tests {
             );
         } else {
             panic!("expected ToolResult part");
+        }
+    }
+
+    mod reformat_phase_tests {
+        use zeph_tools::registry::{InvocationHint, ToolDef};
+
+        use super::*;
+        use crate::agent::agent_tests::*;
+
+        fn test_tool_def() -> ToolDef {
+            ToolDef {
+                id: "test_tool".into(),
+                description: "a test tool".into(),
+                schema: schemars::Schema::default(),
+                invocation: InvocationHint::ToolCall,
+                output_schema: None,
+            }
+        }
+
+        fn invalid_params_error() -> zeph_tools::ToolError {
+            zeph_tools::ToolError::InvalidParams {
+                message: "path must be a string".to_owned(),
+            }
+        }
+
+        fn bad_tool_call() -> ToolCall {
+            let mut params = serde_json::Map::new();
+            params.insert("path".to_owned(), serde_json::json!(123));
+            ToolCall {
+                tool_id: zeph_common::ToolName::new("test_tool"),
+                params,
+                ..Default::default()
+            }
+        }
+
+        fn tool_use_request() -> zeph_llm::provider::ToolUseRequest {
+            zeph_llm::provider::ToolUseRequest {
+                id: "call-1".to_owned(),
+                name: "test_tool".to_owned().into(),
+                input: serde_json::json!({"path": 123}),
+            }
+        }
+
+        #[tokio::test]
+        async fn retries_with_corrected_arguments_on_success() {
+            let provider = mock_provider(vec![r#"{"arguments":{"path":"/corrected"}}"#.into()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::new(vec![Ok(Some(zeph_tools::ToolOutput {
+                tool_name: "test_tool".to_owned().into(),
+                summary: "done".to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))])
+            .with_definitions(vec![test_tool_def()]);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
+
+            let tool_calls = vec![tool_use_request()];
+            let calls = vec![bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            let output = tool_results
+                .remove(0)
+                .expect("reformat retry should succeed")
+                .expect("tool output should be present");
+            assert_eq!(output.summary, "done");
+        }
+
+        #[tokio::test]
+        async fn keeps_original_error_when_provider_returns_malformed_json() {
+            let provider = mock_provider(vec!["not json at all".into()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor =
+                MockToolExecutor::new(vec![Ok(None)]).with_definitions(vec![test_tool_def()]);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
+
+            let tool_calls = vec![tool_use_request()];
+            let calls = vec![bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            assert!(
+                matches!(
+                    tool_results[0],
+                    Err(zeph_tools::ToolError::InvalidParams { .. })
+                ),
+                "original error must be preserved on parse failure"
+            );
+        }
+
+        #[tokio::test]
+        async fn keeps_original_error_when_tool_schema_unknown() {
+            let provider = mock_provider(vec![r#"{"arguments":{"path":"/corrected"}}"#.into()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            // No `with_definitions` — schema lookup for "test_tool" fails.
+            let executor = MockToolExecutor::new(vec![Ok(None)]);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
+
+            let tool_calls = vec![tool_use_request()];
+            let calls = vec![bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            assert!(
+                matches!(
+                    tool_results[0],
+                    Err(zeph_tools::ToolError::InvalidParams { .. })
+                ),
+                "original error must be preserved when schema is unknown"
+            );
+        }
+
+        #[tokio::test]
+        async fn is_a_noop_when_provider_not_configured() {
+            let provider = mock_provider(vec![r#"{"arguments":{"path":"/corrected"}}"#.into()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor =
+                MockToolExecutor::new(vec![Ok(None)]).with_definitions(vec![test_tool_def()]);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            // parameter_reformat_provider left empty (default) — FR: disabled means no LLM call.
+
+            let tool_calls = vec![tool_use_request()];
+            let calls = vec![bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            assert!(
+                matches!(
+                    tool_results[0],
+                    Err(zeph_tools::ToolError::InvalidParams { .. })
+                ),
+                "reformat must not run when parameter_reformat_provider is empty"
+            );
+        }
+
+        #[tokio::test]
+        async fn replaces_original_error_when_retry_still_fails() {
+            // FR-004: the retried outcome MUST replace tool_results[idx] even when the retry
+            // itself fails — the reformat phase gives up cleanly after a single attempt rather
+            // than looping, and never leaves the pre-reformat error in place.
+            let provider = mock_provider(vec![r#"{"arguments":{"path":"/still-bad"}}"#.into()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::new(vec![Err(zeph_tools::ToolError::InvalidParams {
+                message: "still not a valid path".to_owned(),
+            })])
+            .with_definitions(vec![test_tool_def()]);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
+
+            let tool_calls = vec![tool_use_request()];
+            let calls = vec![bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            match &tool_results[0] {
+                Err(zeph_tools::ToolError::InvalidParams { message }) => {
+                    assert_eq!(
+                        message, "still not a valid path",
+                        "the retried failure must replace the original error, not leave the \
+                         pre-reformat error in place"
+                    );
+                }
+                other => {
+                    panic!("expected the retried failure to replace the original, got {other:?}")
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn budget_exhausted_skips_remaining_calls_in_same_phase() {
+            // Regression test for the timing bug: `reformat_start` used to be recreated
+            // immediately before each per-call elapsed check, making the budget guard an
+            // effective no-op. It is now created once before the loop, so real time consumed
+            // by an earlier reformat call in the same phase counts against later calls' budget.
+            let provider = mock_provider(vec![
+                r#"{"arguments":{"path":"/corrected"}}"#.into(),
+                r#"{"arguments":{"path":"/corrected"}}"#.into(),
+            ]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::new(vec![Ok(Some(zeph_tools::ToolOutput {
+                tool_name: "test_tool".to_owned().into(),
+                summary: "done".to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))])
+            .with_definitions(vec![test_tool_def()])
+            // Consumes >1s of wall time on the first (only) dispatched retry, so the second
+            // tool call's budget check — using the same `reformat_start` — sees the whole-phase
+            // budget already exhausted.
+            .with_delay(1_100);
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
+            agent.tool_orchestrator.max_retry_duration_secs = 1;
+
+            let tool_calls = vec![tool_use_request(), tool_use_request()];
+            let calls = vec![bad_tool_call(), bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error()), Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            assert!(
+                tool_results[0].is_ok(),
+                "first call is within budget and should be reformatted successfully"
+            );
+            assert!(
+                matches!(
+                    tool_results[1],
+                    Err(zeph_tools::ToolError::InvalidParams { .. })
+                ),
+                "second call must be skipped once the whole-phase budget is exhausted by the \
+                 first call's real elapsed time"
+            );
         }
     }
 }

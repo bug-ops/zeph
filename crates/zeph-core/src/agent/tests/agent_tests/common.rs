@@ -210,6 +210,8 @@ impl Channel for MockChannel {
 pub(crate) struct MockToolExecutor {
     outputs: Arc<Mutex<Vec<ToolOutputResult>>>,
     pub(crate) captured_env: Arc<Mutex<Vec<EnvSnapshot>>>,
+    definitions: Vec<zeph_tools::registry::ToolDef>,
+    delay_ms: u64,
 }
 
 impl MockToolExecutor {
@@ -217,11 +219,31 @@ impl MockToolExecutor {
         Self {
             outputs: Arc::new(Mutex::new(outputs)),
             captured_env: Arc::new(Mutex::new(Vec::new())),
+            definitions: Vec::new(),
+            delay_ms: 0,
         }
     }
 
     pub(crate) fn no_tools() -> Self {
         Self::new(vec![Ok(None)])
+    }
+
+    /// Attach tool definitions returned by `tool_definitions()`/`tool_definitions_erased()`, for
+    /// tests that need a schema lookup (e.g. the parameter-reformat phase, #5453).
+    pub(crate) fn with_definitions(
+        mut self,
+        definitions: Vec<zeph_tools::registry::ToolDef>,
+    ) -> Self {
+        self.definitions = definitions;
+        self
+    }
+
+    /// Sleep for `ms` milliseconds before returning a dispatch result, so timing-sensitive
+    /// tests (e.g. the reformat-phase whole-phase budget guard, #5453) can advance real
+    /// wall-clock time deterministically without a background sleep of their own.
+    pub(crate) fn with_delay(mut self, ms: u64) -> Self {
+        self.delay_ms = ms;
+        self
     }
 }
 
@@ -239,6 +261,9 @@ impl ToolExecutor for MockToolExecutor {
         &self,
         _call: &zeph_tools::executor::ToolCall,
     ) -> Result<Option<ToolOutput>, ToolError> {
+        if self.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
         let mut outputs = self.outputs.lock().unwrap();
         if outputs.is_empty() {
             Ok(None)
@@ -249,6 +274,10 @@ impl ToolExecutor for MockToolExecutor {
 
     fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
         self.captured_env.lock().unwrap().push(env);
+    }
+
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        self.definitions.clone()
     }
 }
 

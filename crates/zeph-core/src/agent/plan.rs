@@ -285,32 +285,16 @@ impl<C: crate::channel::Channel> Agent<C> {
                 return None;
             }
             let db_url = self.services.orchestration.durable_db_url.clone()?;
-            let local = match zeph_durable::LocalBackend::open(&db_url, cfg.max_payload_bytes).await
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(error = %e, "P2 durable: failed to open backend; skipping");
-                    return None;
-                }
-            };
-            if let Err(e) = local.init().await {
-                tracing::warn!(error = %e, "P2 durable: failed to init schema; skipping");
-                return None;
-            }
-            // Attach cipher to the backend before wrapping — callers never need to re-inject it.
-            let local = if let Some(c) = self.services.orchestration.durable_cipher.clone() {
-                local.with_cipher(c)
-            } else {
-                local
-            };
-            let local = std::sync::Arc::new(local);
-            let backend =
-                std::sync::Arc::new(zeph_durable::DurableBackendEnum::Local(local.clone()));
-            let (writer_actor, handle) = zeph_durable::JournalWriter::new(local, &cfg);
-            let task_handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
-                std::sync::Arc::from("agent.durable.journal_writer"),
-                move || async move { writer_actor.run().await },
-            );
+            let cipher = self.services.orchestration.durable_cipher.clone();
+            let (backend, handle, task_handle) =
+                crate::agent::durable_bootstrap::open_durable_backend(
+                    &self.runtime.lifecycle.task_supervisor,
+                    "agent.durable.journal_writer",
+                    &cfg,
+                    &db_url,
+                    cipher,
+                )
+                .await?;
             self.services.orchestration.durable_backend = Some(backend);
             self.services.orchestration.durable_writer = Some(handle);
             self.services.orchestration.durable_writer_task = Some(task_handle);

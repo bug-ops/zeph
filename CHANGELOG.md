@@ -667,6 +667,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build_graph_extraction_config(&config.memory.graph, None, embed_timeout_secs)` — the same
   field-mapping helper already used by the conversational memory graph-backfill path — instead of
   the bare zero-sentinel default.
+- `fix(durable)`: `[durable] agent_turns` and `[durable] subagent` were dead-code toggles (#5452) —
+  `services.session.durable_ctx`/`durable_subagent` were never populated anywhere in the
+  workspace, so `call_llm_durable()` and the subagent spawn sites' `maybe_make_durable_seat()`
+  always took the non-durable path regardless of config. New `Agent::ensure_session_durable_ctx`
+  (`crates/zeph-core/src/agent/durable_bootstrap.rs`) lazily constructs a `DurableContext` the
+  first time a durable-gated call site runs — deferred past `AgentBuilder::with_task_supervisor`
+  so the journal-writer actor spawns onto the real, shutdown-linked `TaskSupervisor` rather than
+  the builder's throwaway default — keyed on the session's `ConversationId` so every turn in a
+  session journals as a step within the same execution. New
+  `AgentBuilder::with_durable_agent_turns`/`with_durable_subagent` builder methods wire
+  `config.durable.agent_turns`/`subagent` in `src/runner.rs`, alongside the existing
+  `with_durable_orchestration` (P2) call. Extracted the P2 adapter's backend-open sequence
+  (`plan.rs::ensure_durable_backend`) into a shared `durable_bootstrap::open_durable_backend`
+  helper so both the P1 (agent-turn) and P2 (orchestration) adapters construct their
+  `LocalBackend`/`JournalWriter` consistently. Shutdown now flushes and aborts the P1 writer
+  alongside the existing P2 writer. **Critic-flagged correction:** a conversation switch
+  (`/new`, `/conv resume`, `/conv fork`) reassigns `conversation_id` but was leaving the P1
+  `durable_ctx` bound to the *old* conversation's `ExecutionId` — every turn after a switch kept
+  journaling under the stale execution, defeating per-conversation crash-resume. New
+  `Agent::reset_durable_ctx_for_conversation_switch` flushes/aborts the old writer and clears
+  `durable_ctx`/`durable_ctx_init_attempted` so the next durable-gated call re-derives a fresh
+  execution for the new `conversation_id`; wired into both `reset_conversation` and
+  `load_and_resume_conversation`.
+- `fix(tools)`: `tools.retry.parameter_reformat_provider` never called an LLM (#5453) — despite
+  being fully wired through config, the `--init` wizard, and the provider registry,
+  `handle_reformat_phase()` (`crates/zeph-core/src/agent/tool_execution/tier_loop.rs`) only logged
+  a warning on `InvalidParameters`/`TypeMismatch` tool errors. It now resolves the named provider
+  via `Agent::resolve_background_provider` (the same `[[llm.providers]]` lookup pattern as
+  `compress_provider`), asks it for corrected arguments (tool schema + original arguments + error
+  message) via `chat_typed_erased::<ReformattedArguments>`, and retries the tool call once with the
+  corrected arguments. Also fixed the reformat-phase budget guard, which previously created its
+  `Instant` immediately before the elapsed check (always ~0 elapsed, a no-op) — the guard now
+  spans the whole reformat phase, matching the retry phase's `retry_start` accounting.
+  **Critic-flagged correction:** the per-LLM-call timeout reused
+  `max_retry_duration_secs.max(1)`, so setting the budget to `0` ("unlimited") collapsed the
+  per-call timeout to 1 second — an always-timing-out call that silently disabled the feature.
+  The per-call timeout now falls back to a fixed 30s default when the budget is `0`, decoupled
+  from the phase-budget knob's zero-as-unlimited semantics.
 - `fix(session)`: resume-time durable condensation (D-11) only fired on `/conv resume`, not on
   the other three session-open paths — CLI `sessions resume`, ACP `spawn_acp_agent`, or `zeph
   serve` reactivation (impl-critic re-verify finding N3, architect ruling D-13). The original

@@ -381,6 +381,10 @@ impl<C: Channel> Agent<C> {
         self.services.tool_state.cached_filtered_tool_ids = None;
         self.runtime.providers.cached_prompt_tokens = 0;
 
+        // --- Step 9b: detach the P1 durable execution (#5452 critic finding S1) — it is keyed
+        // on the OLD conversation_id and must not keep journaling turns for the new one. ---
+        self.reset_durable_ctx_for_conversation_switch().await;
+
         // --- Step 10: update conversation ID and memory state ---
         self.services.memory.persistence.conversation_id = new_conversation_id;
         self.services.memory.persistence.unsummarized_count = 0;
@@ -491,6 +495,10 @@ impl<C: Channel> Agent<C> {
         let old_conversation_id = self.services.memory.persistence.conversation_id;
         self.spawn_outgoing_digest(old_conversation_id);
         self.reset_swap_state();
+        // Detach the P1 durable execution (#5452 critic finding S1) — same reasoning as
+        // `reset_conversation`: it is keyed on the OLD conversation_id and must not keep
+        // journaling turns for the resumed/forked one.
+        self.reset_durable_ctx_for_conversation_switch().await;
 
         // --- Apply the replayed history (same shape as `with_preloaded_messages`, D-6) ---
         let mut messages = hydrated.messages;

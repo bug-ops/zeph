@@ -17,6 +17,7 @@ mod context;
 mod context_impls;
 pub(crate) mod context_manager;
 mod corrections;
+mod durable_bootstrap;
 pub mod error;
 mod experiment_cmd;
 pub(crate) mod focus;

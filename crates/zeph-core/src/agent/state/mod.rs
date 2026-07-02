@@ -813,13 +813,18 @@ pub(crate) struct SessionState {
     /// When `true`, the agent prompt includes a brief guest-context annotation, and the response
     /// is delivered via `answerGuestQuery` instead of `sendMessage`.
     pub(crate) is_guest_context: bool,
-    /// Active durable execution context for the P1 agent-loop adapter (spec-064 §P1).
+    /// Active durable execution context for the P1 agent-loop adapter (spec-064 §P1, #5452).
     ///
     /// `Some` when `[durable] enabled = true` and `agent_turns = true`. The context is opened
-    /// once per session (or resumed from a prior crash) and shared across all turns via `Arc`.
-    /// `None` when durable execution is disabled — in which case the loop runs unmodified.
+    /// lazily by [`Agent::ensure_session_durable_ctx`](crate::agent::Agent::ensure_session_durable_ctx)
+    /// the first time a durable-gated call site runs (not eagerly in the builder chain, since the
+    /// real `TaskSupervisor` is only attached later via `with_task_supervisor`), keyed on the
+    /// session's `ConversationId` so every turn replays under the same execution. `None` when
+    /// durable execution is disabled (or construction failed and degraded) — in which case the
+    /// loop runs unmodified.
     pub(crate) durable_ctx: Option<std::sync::Arc<zeph_durable::DurableContext>>,
-    /// Mirror of `[durable] subagent` config flag (spec-064 §P4).
+    /// Mirror of `[durable] subagent` config flag (spec-064 §P4, #5452), set unconditionally at
+    /// bootstrap via `AgentBuilder::with_durable_subagent` from `config.durable.subagent`.
     ///
     /// When `true` and `durable_ctx` is `Some`, sub-agent spawns are wrapped in a durable
     /// promise so a resumed parent can replay the child result without re-running the child.
@@ -830,6 +835,30 @@ pub(crate) struct SessionState {
     /// output (spec-064 §INV-001 §15 `RuntimeLayer` double-print suppression). Cleared at the
     /// start of each turn.
     pub(crate) durable_turn_replayed: bool,
+    /// `DurableConfig`/db url/cipher stashed cheaply (no I/O) by
+    /// `AgentBuilder::with_durable_agent_turns` when `[durable] enabled = true` and
+    /// `agent_turns = true`. Consumed by `ensure_session_durable_ctx` to lazily open the backend
+    /// and construct `durable_ctx` on the first durable-gated call. `None` when the P1 adapter is
+    /// not configured, in which case `durable_ctx` stays `None` forever (#5452 FR-002).
+    pub(crate) durable_agent_turns_config: Option<zeph_config::DurableConfig>,
+    /// Sibling companion to [`Self::durable_agent_turns_config`]: the `durable.db` connection
+    /// string resolved at bootstrap.
+    pub(crate) durable_agent_turns_db_url: Option<String>,
+    /// Sibling companion to [`Self::durable_agent_turns_config`]: the AEAD cipher to attach to
+    /// the backend, `None` when `encrypt_payload = false` (development mode only).
+    pub(crate) durable_agent_turns_cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
+    /// Set to `true` the first time `ensure_session_durable_ctx` runs (success or failure) so a
+    /// failed backend construction (missing vault key, disk error) is not retried on every turn.
+    /// Reset to `false` by `reset_durable_ctx_for_conversation_switch` (`/new`, `/conv resume`,
+    /// `/conv fork` — #5452 critic finding S1) so a conversation switch re-derives a fresh
+    /// execution keyed on the new `ConversationId` instead of leaving this latched forever.
+    pub(crate) durable_ctx_init_attempted: bool,
+    /// Writer handle for the P1 adapter's durable backend, flushed on shutdown by
+    /// `flush_durable_writer` (mirrors `services.orchestration.durable_writer` for the P2 adapter).
+    pub(crate) durable_writer: Option<zeph_durable::JournalWriterHandle>,
+    /// [`BlockingHandle`] for the P1 adapter's background `JournalWriter` actor task, aborted on
+    /// shutdown by `flush_durable_writer` (mirrors `services.orchestration.durable_writer_task`).
+    pub(crate) durable_writer_task: Option<zeph_common::task_supervisor::BlockingHandle<()>>,
     /// When `true`, the system prompt volatile block includes the `CAVEMAN_DIRECTIVE` on every
     /// turn, instructing the LLM to use ultra-compressed telegraphic output.
     ///
@@ -1223,6 +1252,12 @@ impl SessionState {
             durable_ctx: None,
             durable_subagent: false,
             durable_turn_replayed: false,
+            durable_agent_turns_config: None,
+            durable_agent_turns_db_url: None,
+            durable_agent_turns_cipher: None,
+            durable_ctx_init_attempted: false,
+            durable_writer: None,
+            durable_writer_task: None,
             caveman_active: false,
             session_sink: None,
             session_persistence_config: None,

@@ -58,12 +58,24 @@ pub struct DurableConfig {
     /// startup warning) and is forbidden for non-local backends (INV-8).
     pub encrypt_payload: bool,
     /// P1 adapter: wrap agent-loop steps in durable steps.
+    ///
+    /// When `true` (with `enabled = true`), every ordinary agent turn's LLM call is journaled
+    /// via a `DurableContext` opened lazily on the session's first turn (see
+    /// `zeph_core::agent::Agent::ensure_session_durable_ctx`, #5452). The execution is keyed on
+    /// the session's `ConversationId`, so this adapter requires semantic memory (`[memory]`) to
+    /// be enabled — without it, `conversation_id` is never set and the agent degrades to
+    /// non-durable with a one-time `tracing::warn!` at bootstrap, even though `agent_turns = true`
+    /// looks fully enabled in the config.
     pub agent_turns: bool,
     /// P2 adapter: journal the orchestration `/plan resume` replan budget.
     pub orchestration: bool,
     /// P3 adapter: exactly-once scheduler job fire.
     pub scheduler: bool,
     /// P4 adapter: durable promise for subagent spawn/await.
+    ///
+    /// Requires `agent_turns = true` as well: the durable seat is only attached when the
+    /// session's `DurableContext` (populated by the `agent_turns` adapter) is already `Some`
+    /// (#5452).
     pub subagent: bool,
     /// Group-commit interval for buffered appends, in milliseconds.
     pub journal_flush_interval_ms: u64,

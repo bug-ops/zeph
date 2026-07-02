@@ -405,6 +405,7 @@ impl<C: Channel> Agent<C> {
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         // Background durable: seat wired so child can resolve; promise dropped (background
         // results are collected via poll_subagents, not await_durable_subagent).
+        self.ensure_session_durable_ctx().await;
         if let Some(seat) = maybe_make_durable_seat(
             self.services.session.durable_subagent,
             self.services.session.durable_ctx.as_deref(),
@@ -442,6 +443,7 @@ impl<C: Channel> Agent<C> {
         // Wire the durable resolver seat so the child can resolve its promise on exit.
         // The promise (await side) is dropped here; foreground result is collected via
         // poll_subagent_until_done which reads the join-handle output directly.
+        self.ensure_session_durable_ctx().await;
         if let Some(seat) = maybe_make_durable_seat(
             self.services.session.durable_subagent,
             self.services.session.durable_ctx.as_deref(),
@@ -937,4 +939,71 @@ fn sanitize_parent_messages(
         }
     }
     msgs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::agent_tests::*;
+
+    /// Agent with `durable_ctx` populated via the real `ensure_session_durable_ctx` bootstrap
+    /// path (mirrors `durable_bootstrap::tests::agent_with_conversation`), with
+    /// `durable_subagent` set per `subagent_enabled` — used to test the FR-003/US-002 seat
+    /// wiring gate at `maybe_make_durable_seat`, not just the config-to-builder plumbing.
+    async fn agent_with_durable_ctx_ready(subagent_enabled: bool) -> Agent<MockChannel> {
+        let provider = mock_provider(vec!["ok".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.memory.persistence.conversation_id = Some(zeph_memory::ConversationId(42));
+        agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+            enabled: true,
+            agent_turns: true,
+            ..zeph_config::DurableConfig::default()
+        });
+        agent.services.session.durable_agent_turns_db_url = Some(":memory:".to_owned());
+        agent.services.session.durable_subagent = subagent_enabled;
+
+        agent.ensure_session_durable_ctx().await;
+        assert!(
+            agent.services.session.durable_ctx.is_some(),
+            "test setup: durable_ctx must be populated before exercising the seat gate"
+        );
+        agent
+    }
+
+    #[tokio::test]
+    async fn seat_wired_when_subagent_enabled_and_durable_ctx_populated() {
+        let agent = Box::pin(agent_with_durable_ctx_ready(true)).await;
+
+        let seat = maybe_make_durable_seat(
+            agent.services.session.durable_subagent,
+            agent.services.session.durable_ctx.as_deref(),
+        )
+        .await;
+
+        assert!(
+            seat.is_some(),
+            "US-002: [durable] subagent=true with a populated durable_ctx must yield a seat, \
+             not just wire the config-to-builder plumbing"
+        );
+    }
+
+    #[tokio::test]
+    async fn seat_absent_when_subagent_disabled() {
+        let agent = Box::pin(agent_with_durable_ctx_ready(false)).await;
+
+        let seat = maybe_make_durable_seat(
+            agent.services.session.durable_subagent,
+            agent.services.session.durable_ctx.as_deref(),
+        )
+        .await;
+
+        assert!(
+            seat.is_none(),
+            "FR-008: durable_subagent=false must keep the seat gate closed even when \
+             durable_ctx is populated"
+        );
+    }
 }

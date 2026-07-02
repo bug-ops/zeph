@@ -3290,13 +3290,23 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
 
         let agent = agent.with_orchestration(config.orchestration.clone(), agents_config, mgr);
-        if config.durable.enabled && config.durable.orchestration {
+        let agent = if config.durable.enabled && config.durable.orchestration {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
             let cipher = crate::commands::durable::load_write_cipher(config)?;
             agent.with_durable_orchestration(config.durable.clone(), durable_url, cipher)
         } else {
             agent
-        }
+        };
+        // P1 agent-turn adapter (#5452): cheap stash only, no I/O — DurableContext is opened
+        // lazily by `ensure_session_durable_ctx` on the first turn.
+        let agent = if config.durable.enabled && config.durable.agent_turns {
+            let durable_url = crate::commands::durable::resolve_durable_db_url(config);
+            let cipher = crate::commands::durable::load_write_cipher(config)?;
+            agent.with_durable_agent_turns(config.durable.clone(), durable_url, cipher)
+        } else {
+            agent
+        };
+        agent.with_durable_subagent(config.durable.enabled && config.durable.subagent)
     };
     let agent = {
         let baseline = zeph_experiments::ConfigSnapshot::from_config(config);
