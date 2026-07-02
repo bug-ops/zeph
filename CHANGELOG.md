@@ -1230,6 +1230,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Added 5 new Postgres regression tests (`tests/postgres_integration.rs`, `test-utils` feature)
   covering previously-untested fixed call sites. Closes #5488, closes #5491.
 
+- `fix(db)`: `zeph_db::sql!()`'s Postgres `rewrite_placeholders` did a naive per-character `?`→`$N`
+  walk with no awareness of `SQLite`'s `?N` numbered-placeholder syntax, so wrapping `?1` in
+  `sql!()` produced `$11` (the `$1` rewrite immediately followed by the literal digit `1`) instead
+  of `$1`, and a repeated `?N` reference (valid `SQLite` syntax for binding the same value twice
+  with one `.bind()` call) was assigned two different Postgres placeholder numbers, silently
+  changing the required bind-parameter count (#5506). `rewrite_placeholders` now parses `?[0-9]+`
+  groups and rewrites them directly to `$N` — preserving the index rather than renumbering by
+  position, so repeated `?N` references collapse to the same `$N` and still need only one
+  `.bind()` call, matching both `SQLite`'s and `sqlx`'s Postgres binding semantics (bind values are
+  supplied once per distinct slot, in ascending order, regardless of how many times that slot's
+  placeholder appears in the SQL text). A bare `?` continues to be assigned the next index after
+  the highest index used so far, matching `SQLite`'s own numbering rule for anonymous
+  placeholders. This was a live, uncaught defect: 77 existing `sql!()` call sites across
+  `zeph-memory`'s test suite already used `?1`/`?2` syntax and would have silently emitted
+  corrupted SQL (or a bind-count mismatch) at runtime under the `postgres` feature. Added unit
+  tests covering numbered placeholders, repeated numbered placeholders, and mixed bare/numbered
+  placeholders in `crates/zeph-db/src/lib.rs`.
+
+- `fix(memory)`: `five_signal::consolidation::ConsolidationHandler::run_once` decoded
+  `messages.created_at` as `i64`, but the column is `TIMESTAMPTZ` on Postgres (`TEXT` on `SQLite`),
+  causing a `ColumnDecode` panic on every row once both the `scheduler` and `postgres` features
+  were enabled (#5507). The query now casts `created_at` through
+  `Dialect::epoch_from_col`, the existing dialect-neutral epoch-normalization pattern already used
+  by `semantic::recall`'s `created_at_map` fetch, aliasing the result back to `created_at` so it
+  decodes as `i64` on both backends. Added a Postgres regression test in
+  `crates/zeph-memory/tests/postgres_integration.rs` driving `ConsolidationHandler` through its
+  public `TaskHandler::execute` entry point (`run_once`/`apply_promotions`/`apply_demotions` are
+  private) and asserting a fresh, high-novelty fact is correctly promoted.
+
 ### Changed
 
 - `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into

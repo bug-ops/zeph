@@ -78,8 +78,10 @@ pub type ActiveDialect = <ActiveDriver as DatabaseDriver>::Dialect;
 ///
 /// `SQLite`: returns the input `&str` directly — zero allocation, zero runtime cost.
 ///
-/// `PostgreSQL`: rewrites `?` to `$1`, `$2`, ... using [`rewrite_placeholders`].
-/// The rewritten string is leaked via `Box::leak` to obtain `&'static str` —
+/// `PostgreSQL`: rewrites `?` to `$1`, `$2`, ... and `?N` (`SQLite`'s numbered
+/// placeholder, e.g. `?1`) to `$N` using [`rewrite_placeholders`]. Repeated
+/// references to the same `?N` collapse to the same `$N`. The rewritten
+/// string is leaked via `Box::leak` to obtain `&'static str` —
 /// no caching: each call site leaks one allocation per unique SQL string.
 /// The set of unique SQL strings is bounded (call sites are fixed at compile
 /// time), so total leaked memory is bounded and acceptable for a long-running
@@ -127,22 +129,43 @@ pub fn is_postgres_url(url: &str) -> bool {
 
 /// Rewrite `?` bind markers to `$1, $2, ...` for `PostgreSQL`.
 ///
+/// Handles both bare `?` (`SQLite`'s "next unused index" placeholder) and
+/// numbered `?N` (`SQLite`'s explicit-index placeholder, e.g. `?1`, `?2`).
+/// A numbered `?N` is rewritten directly to `$N` — preserving the index
+/// rather than renumbering by position — so that repeated references to the
+/// same `?N` collapse to the same `$N` and require only one `.bind()` call,
+/// matching both `SQLite`'s and `sqlx`'s `PostgreSQL` binding semantics (bind
+/// values are supplied once per distinct slot, in ascending slot order,
+/// regardless of how many times the slot's placeholder appears in the SQL
+/// text). A bare `?` is assigned the next index after the highest index used
+/// so far (explicit or bare), matching `SQLite`'s own numbering rule.
+///
 /// Skips `?` inside single-quoted string literals. Does NOT handle dollar-quoted
 /// strings (`$$...$$`) or `?` inside comments — document this limitation at call
 /// sites where those patterns appear.
 #[must_use]
 pub fn rewrite_placeholders(query: &str) -> String {
     let mut out = String::with_capacity(query.len() + 16);
-    let mut n = 0u32;
+    let mut chars = query.chars().peekable();
+    let mut max_n = 0u32;
     let mut in_string = false;
-    for ch in query.chars() {
+    while let Some(ch) = chars.next() {
         match ch {
             '\'' => {
                 in_string = !in_string;
                 out.push(ch);
             }
             '?' if !in_string => {
-                n += 1;
+                let digits: String =
+                    std::iter::from_fn(|| chars.next_if(char::is_ascii_digit)).collect();
+                let n = if digits.is_empty() {
+                    max_n += 1;
+                    max_n
+                } else {
+                    let explicit = digits.parse().unwrap_or(u32::MAX);
+                    max_n = max_n.max(explicit);
+                    explicit
+                };
                 out.push('$');
                 out.push_str(&n.to_string());
             }
@@ -203,6 +226,30 @@ mod tests {
     fn rewrite_placeholders_no_params() {
         let out = rewrite_placeholders("SELECT 1");
         assert_eq!(out, "SELECT 1");
+    }
+
+    #[test]
+    fn rewrite_placeholders_numbered() {
+        let out = rewrite_placeholders("INSERT INTO t (a, b) VALUES (?1, ?2) RETURNING id");
+        assert_eq!(out, "INSERT INTO t (a, b) VALUES ($1, $2) RETURNING id");
+    }
+
+    #[test]
+    fn rewrite_placeholders_collapses_repeated_numbered() {
+        // `?1` appears twice — SQLite binds it once, so PostgreSQL must too.
+        let out = rewrite_placeholders("INSERT INTO edges (source_id, target_id) VALUES (?1, ?1)");
+        assert_eq!(
+            out,
+            "INSERT INTO edges (source_id, target_id) VALUES ($1, $1)"
+        );
+    }
+
+    #[test]
+    fn rewrite_placeholders_mixed_bare_and_numbered() {
+        // A bare `?` after `?2` continues numbering from the highest index seen (3),
+        // matching SQLite's "next unused index" rule for anonymous placeholders.
+        let out = rewrite_placeholders("SELECT * FROM t WHERE a = ?2 AND b = ? AND c = ?1");
+        assert_eq!(out, "SELECT * FROM t WHERE a = $2 AND b = $3 AND c = $1");
     }
 
     #[test]

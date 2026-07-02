@@ -1235,19 +1235,80 @@ mod pg {
         assert_eq!(row.3, "pending");
     }
 
-    // NOTE: a Postgres regression test for `ConsolidationHandler::execute` (which exercises
-    // `run_once` / `apply_promotions` / `apply_demotions`) was attempted here but is omitted.
-    // It immediately surfaced a pre-existing, UNRELATED production bug: `messages.created_at`
-    // is `TIMESTAMPTZ` in the Postgres schema (`zeph-db/migrations/postgres/001_init.sql`) but
-    // `five_signal/consolidation.rs::run_once` does `row.get::<i64, _>("created_at")`, which
-    // panics with `ColumnDecode { ... mismatched types ... INT8 ... TIMESTAMPTZ }` for any row
-    // when `scheduler` + `postgres` are both enabled. This is a distinct defect class from the
-    // `sql!()`/placeholder bug this PR fixes (`apply_promotions`/`apply_demotions` themselves
-    // only touch `id`, not `created_at`, and are already correctly fixed). `apply_promotions`
-    // and `apply_demotions` are private methods not reachable from this external test file, so
-    // they cannot be covered without either fixing the `created_at` decode bug or changing
-    // their visibility — both out of scope here. See the PR discussion / follow-up issue for
-    // the `created_at` type-mismatch bug before attempting this coverage again.
+    // ── five_signal::consolidation: run_once created_at TIMESTAMPTZ decode (#5507) ─────
+    //
+    // Regression coverage for #5507: `messages.created_at` is `TIMESTAMPTZ` in the Postgres
+    // schema but `run_once` used to decode it via `row.get::<i64, _>("created_at")`, which
+    // panicked with `ColumnDecode { ... mismatched types ... INT8 ... TIMESTAMPTZ }` for any
+    // row once `scheduler` + `postgres` were both enabled. The fix casts the column through
+    // `Dialect::epoch_from_col` (same pattern as `semantic::recall`'s `created_at_map` fetch)
+    // before decoding. `run_once`/`apply_promotions`/`apply_demotions` are private, so this
+    // drives them through the only public entry point, `ConsolidationHandler`'s `TaskHandler`
+    // impl (`execute`).
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    #[cfg(feature = "scheduler")]
+    async fn five_signal_consolidation_promotes_fresh_fact() {
+        use zeph_config::memory::{FiveSignalConfig, FiveSignalConsolidationConfig};
+        use zeph_memory::five_signal::FiveSignalRuntime;
+        use zeph_memory::five_signal::consolidation::ConsolidationHandler;
+        use zeph_scheduler::TaskHandler as _;
+
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool.clone());
+        let graph_store = std::sync::Arc::new(GraphStore::new(pool.clone()));
+
+        let cid = store.create_conversation().await.unwrap();
+        let msg_id = store.save_message(cid, "user", "fresh fact").await.unwrap();
+
+        // session_start ~= now, so the freshly-inserted message's TIMESTAMPTZ `created_at`
+        // (defaulted to `NOW()` by the schema) yields novelty ~= 1.0 once correctly decoded.
+        let session_start = chrono::Utc::now().timestamp() - 5;
+        let signal_config = FiveSignalConfig {
+            w_recency: 0.0,
+            w_relevance: 0.0,
+            w_frequency: 0.0,
+            w_causal: 0.0,
+            w_novelty: 1.0,
+            consolidation_daemon: FiveSignalConsolidationConfig {
+                enabled: true,
+                promotion_score_threshold: 0.5,
+                ..FiveSignalConsolidationConfig::default()
+            },
+            ..FiveSignalConfig::default()
+        };
+        let daemon_config = signal_config.consolidation_daemon.clone();
+
+        let runtime = std::sync::Arc::new(FiveSignalRuntime::new(
+            signal_config,
+            pool.clone(),
+            graph_store,
+            None,
+            session_start,
+            "sess-consolidation-pg",
+        ));
+
+        let handler = ConsolidationHandler::new(runtime, daemon_config);
+        handler
+            .execute(&serde_json::json!({}))
+            .await
+            .expect("consolidation run must not fail decoding created_at as TIMESTAMPTZ");
+
+        let (qdrant_promoted, memory_tier): (i64, Option<String>) = sqlx::query_as(zeph_db::sql!(
+            "SELECT qdrant_promoted, memory_tier FROM messages WHERE id = ?"
+        ))
+        .bind(msg_id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            qdrant_promoted, 1,
+            "fresh, high-novelty fact must be promoted"
+        );
+        assert_eq!(memory_tier.as_deref(), Some("semantic"));
+    }
 
     // NOTE: Postgres regression tests for `episodic_consolidation.rs::fetch_candidates` and
     // `compute_cognitive_weight` (both fixed for the `?N`-inside-`sql!()` defect in this PR)

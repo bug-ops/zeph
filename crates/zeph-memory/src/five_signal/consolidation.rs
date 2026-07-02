@@ -94,18 +94,25 @@ impl ConsolidationHandler {
         rt.metrics.inc_consolidation_run();
 
         // NOTE: ORDER BY id DESC retrieves newest facts — known MVP trade-off per NFR-004.
-        let rows = zeph_db::query(sql!(
-            "SELECT id, created_at, qdrant_promoted, memory_tier \
+        // `messages.created_at` is `TIMESTAMPTZ` on PostgreSQL but text/epoch on SQLite;
+        // `epoch_from_col` normalizes it to an i64 epoch on both backends (same pattern
+        // used by `semantic::recall`'s `created_at_map` fetch).
+        let created_at_epoch =
+            <zeph_db::ActiveDialect as zeph_db::Dialect>::epoch_from_col("created_at");
+        let limit_placeholder = zeph_db::numbered_placeholder(1);
+        let query_sql = format!(
+            "SELECT id, {created_at_epoch} AS created_at, qdrant_promoted, memory_tier \
              FROM messages \
              WHERE deleted_at IS NULL \
                AND (memory_tier IS NULL OR memory_tier NOT IN ('episodic_only')) \
              ORDER BY id DESC \
-             LIMIT ?"
-        ))
-        .bind(i64::try_from(self.config.top_k_per_run).unwrap_or(i64::MAX))
-        .fetch_all(&rt.pool)
-        .await
-        .map_err(|e| MemoryError::Db(e.into()))?;
+             LIMIT {limit_placeholder}"
+        );
+        let rows = zeph_db::query(zeph_db::sqlx::AssertSqlSafe(query_sql))
+            .bind(i64::try_from(self.config.top_k_per_run).unwrap_or(i64::MAX))
+            .fetch_all(&rt.pool)
+            .await
+            .map_err(|e| MemoryError::Db(e.into()))?;
 
         let batch: Vec<_> = rows.iter().take(self.config.batch_size).collect();
         let processed = batch.len();
@@ -128,7 +135,7 @@ impl ConsolidationHandler {
 
         for row in &batch {
             let fact_id: i64 = row.get("id");
-            let novelty = rt.novelty_computer.compute(row.get("created_at"));
+            let novelty = rt.novelty_computer.compute(row.get::<i64, _>("created_at"));
             let frequency = freq_scores.get(&MessageId(fact_id)).copied().unwrap_or(0.0);
             let w = &rt.weights;
             let score = w.w_recency * novelty
