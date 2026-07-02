@@ -62,6 +62,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `ci`: gate the `Release Build Check` job (`.github/workflows/ci.yml`) behind
+  `github.event_name == 'push'` in addition to the existing `run-full-ci` condition, so it only
+  runs post-merge on `main` instead of on every `pull_request` push. It is the most expensive
+  job in the workflow (`cargo build --release --workspace --all-targets` with
+  `lto = true, codegen-units = 1`), and `main` already re-verifies every change after merge, so
+  gating every feature/fix branch push behind it was wasteful. `ci-status` already treats
+  `skipped` as passing, so this does not weaken the gate for `push` runs.
 - `fix(a2a)!`: `A2aClient::with_security` no longer takes two positional bools (transposing
   `with_security(true, false)` vs. `with_security(false, true)` was a silent foot-gun). It now
   takes a `SecurityPolicy { require_tls, ssrf_protection }` struct, with `SecurityPolicy::hardened()`

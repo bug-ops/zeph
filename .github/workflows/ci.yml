@@ -463,7 +463,7 @@ jobs:
   release-build:
     name: Release Build Check
     needs: detect-changes
-    if: needs.detect-changes.outputs.run-full-ci == 'true'
+    if: needs.detect-changes.outputs.run-full-ci == 'true' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
