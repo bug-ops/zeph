@@ -56,6 +56,31 @@ impl CredentialStore for ArcCredentialStore {
 /// Maximum number of tools accepted from a single server on refresh.
 const MAX_TOOLS_PER_SERVER: usize = 100;
 
+/// Convert a raw rmcp `tools/list` entry into the crate's `McpTool` representation.
+///
+/// Shared by the background `tools/list_changed` refresh path and the manual/initial
+/// `McpClient::list_tools` call so both stay byte-for-byte identical.
+fn rmcp_tool_to_mcp_tool(server_id: &str, tool: rmcp::model::Tool) -> McpTool {
+    let output_schema = tool.output_schema.as_ref().map(|s| {
+        let val = serde_json::to_value(s.as_ref()).unwrap_or_default();
+        tracing::debug!(
+            server_id = %server_id,
+            tool = %tool.name,
+            event = "mcp.output_schema.captured",
+            "MCP tool advertises output schema"
+        );
+        val
+    });
+    McpTool {
+        server_id: server_id.to_owned(),
+        name: tool.name.to_string(),
+        description: tool.description.map_or_else(String::new, |d| d.to_string()),
+        input_schema: serde_json::to_value(&*tool.input_schema).unwrap_or_default(),
+        output_schema,
+        security_meta: crate::tool::ToolSecurityMeta::default(),
+    }
+}
+
 /// Event sent from `ToolListChangedHandler` to `McpManager`'s refresh task.
 pub struct ToolRefreshEvent {
     pub server_id: String,
@@ -276,26 +301,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
         // Convert to McpTool.
         let tools: Vec<McpTool> = capped
             .into_iter()
-            .map(|t| {
-                let output_schema = t.output_schema.as_ref().map(|s| {
-                    let val = serde_json::to_value(s.as_ref()).unwrap_or_default();
-                    tracing::debug!(
-                        server_id = %self.server_id,
-                        tool = %t.name,
-                        event = "mcp.output_schema.captured",
-                        "MCP tool advertises output schema"
-                    );
-                    val
-                });
-                McpTool {
-                    server_id: self.server_id.clone(),
-                    name: t.name.to_string(),
-                    description: t.description.map_or_else(String::new, |d| d.to_string()),
-                    input_schema: serde_json::to_value(&*t.input_schema).unwrap_or_default(),
-                    output_schema,
-                    security_meta: crate::tool::ToolSecurityMeta::default(),
-                }
-            })
+            .map(|t| rmcp_tool_to_mcp_tool(&self.server_id, t))
             .collect();
 
         // Update rate-limit timestamp only after a successful refresh.
@@ -845,26 +851,7 @@ impl McpClient {
 
         Ok(tools
             .into_iter()
-            .map(|t| {
-                let output_schema = t.output_schema.as_ref().map(|s| {
-                    let val = serde_json::to_value(s.as_ref()).unwrap_or_default();
-                    tracing::debug!(
-                        server_id = %self.server_id,
-                        tool = %t.name,
-                        event = "mcp.output_schema.captured",
-                        "MCP tool advertises output schema"
-                    );
-                    val
-                });
-                McpTool {
-                    server_id: self.server_id.clone(),
-                    name: t.name.to_string(),
-                    description: t.description.map_or_else(String::new, |d| d.to_string()),
-                    input_schema: serde_json::to_value(&*t.input_schema).unwrap_or_default(),
-                    output_schema,
-                    security_meta: crate::tool::ToolSecurityMeta::default(),
-                }
-            })
+            .map(|t| rmcp_tool_to_mcp_tool(&self.server_id, t))
             .collect())
     }
 
