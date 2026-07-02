@@ -11,6 +11,7 @@ use zeph_common::ToolName;
 use crate::executor::{
     ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
+use crate::file::expand_tilde;
 use crate::registry::{InvocationHint, ToolDef};
 
 const TOOL_NAME: &str = "set_working_directory";
@@ -40,7 +41,7 @@ impl ToolExecutor for SetCwdExecutor {
             return Ok(None);
         }
         let params: SetCwdParams = deserialize_params(&call.params)?;
-        let target = PathBuf::from(&params.path);
+        let target = expand_tilde(PathBuf::from(&params.path));
 
         // Resolve relative paths against current cwd before changing.
         let resolved = if target.is_absolute() {
@@ -122,6 +123,37 @@ mod tests {
         // The returned summary is the new cwd.
         let new_cwd = std::env::current_dir().unwrap();
         assert_eq!(out.summary, new_cwd.display().to_string());
+        // Restore cwd so parallel tests are not affected.
+        let _ = std::env::set_current_dir(&original_cwd);
+    }
+
+    // --- tilde expansion regression (#5415) ---
+
+    #[tokio::test]
+    async fn set_cwd_expands_tilde_in_runtime_argument() {
+        // Regression for #5415: a `~`-prefixed path coming from an LLM tool
+        // call must resolve to the real home directory, mirroring the fix
+        // for `DiagnosticsExecutor::validate_path`.
+        let original_cwd = std::env::current_dir().unwrap();
+        let home = dirs::home_dir().expect("home dir must be resolvable in test env");
+        let subdir = tempfile::Builder::new()
+            .prefix("zeph_test_cwd_tilde_")
+            .tempdir_in(&home)
+            .expect("failed to create temp dir under home");
+        let dir_name = subdir.path().file_name().unwrap().to_str().unwrap();
+
+        let executor = SetCwdExecutor;
+        let call = make_call(&format!("~/{dir_name}"));
+        let result = executor.execute_tool_call(&call).await.unwrap();
+        assert!(result.is_some());
+
+        let new_cwd = std::env::current_dir().unwrap();
+        assert_eq!(new_cwd, subdir.path().canonicalize().unwrap());
+        assert!(
+            !new_cwd.to_string_lossy().contains('~'),
+            "tilde must not appear in resolved cwd: {new_cwd:?}"
+        );
+
         // Restore cwd so parallel tests are not affected.
         let _ = std::env::set_current_dir(&original_cwd);
     }

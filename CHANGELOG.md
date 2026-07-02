@@ -102,6 +102,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools)`: expand a leading `~` in LLM-supplied paths for `DiagnosticsExecutor::validate_path`,
+  `SetCwdExecutor::execute_tool_call` (`set_working_directory` tool), and the `allowed_paths`
+  constructor argument of `DiagnosticsExecutor::new`/`SearchCodeExecutor::new`, mirroring the
+  `FileExecutor` fix below (#5413). Previously a `~/...` argument was treated as a literal path
+  component instead of being resolved to the user's home directory. Closes #5415.
 - `fix(plugins)`: the plugin auto-update path (`apply_staged_update`,
   `crates/zeph-plugins/src/manager/registry.rs`) now enforces the same manifest validation as
   initial install (`PluginManager::add()`) — dependency count/name validation

@@ -104,7 +104,7 @@ pub struct FileExecutor {
     read_allow_globs: Option<globset::GlobSet>,
 }
 
-fn expand_tilde(path: PathBuf) -> PathBuf {
+pub(crate) fn expand_tilde(path: PathBuf) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(rest) = s
         .strip_prefix("~/")
