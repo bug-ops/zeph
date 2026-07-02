@@ -468,22 +468,29 @@ impl Drop for EarlyTuiGuard {
 /// falls back to a bare [`zeph_session::SessionEventLog::open`] after creating and linking the
 /// session row.
 ///
-/// Returns `(None, Vec::new())` (and logs a warning) on any I/O/DB failure — session persistence
-/// is best-effort: the agent must still run with only the existing `SQLite` `messages` projection
-/// if it fails.
+/// Returns `Ok((None, Vec::new()))` (and logs a warning) on any ordinary I/O/DB failure —
+/// session persistence is best-effort: the agent must still run with only the existing
+/// `SQLite` `messages` projection if it fails. The one exception is
+/// [`zeph_session::SessionError::AlreadyLocked`] (#5487 fix 3): silently degrading there would
+/// let a second `zeph` process race the same session's `SQLite` projection and durable log, so
+/// that case returns `Err` instead, aborting startup with a clear message.
+///
+/// # Errors
+///
+/// Returns `Err` only when another process already holds this session's exclusive write lock.
 async fn init_session_sink(
     memory: &std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     conversation_id: zeph_memory::ConversationId,
     config: &Config,
     provider: &LlmAnyProvider,
     budget_tokens: usize,
-) -> (
+) -> anyhow::Result<(
     Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>,
     Vec<zeph_llm::provider::Message>,
-) {
+)> {
     let session_config = &config.session;
     if !session_config.enabled {
-        return (None, Vec::new());
+        return Ok((None, Vec::new()));
     }
 
     let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
@@ -495,7 +502,7 @@ async fn init_session_sink(
             // link_conversation write against the real link, and open a bare orphan log instead
             // of hydrating the actual session. Defer session linkage entirely instead.
             tracing::warn!(error = %e, "failed to query session store for conversation link; session persistence disabled for this run");
-            return (None, Vec::new());
+            return Ok((None, Vec::new()));
         }
     };
 
@@ -503,7 +510,7 @@ async fn init_session_sink(
         let id = SessionId::generate();
         if let Err(e) = store.create(id.as_str()).await {
             tracing::warn!(error = %e, "failed to create session-store row; session persistence disabled for this run");
-            return (None, Vec::new());
+            return Ok((None, Vec::new()));
         }
         if let Err(e) = store
             .link_conversation(id.as_str(), conversation_id.0)
@@ -514,10 +521,10 @@ async fn init_session_sink(
 
         let data_dir = std::path::PathBuf::from(&session_config.data_dir);
         let session_path = zeph_session::session_dir(&data_dir, id.as_str());
-        return match zeph_session::SessionEventLog::open(&session_path).await {
+        return match zeph_session::SessionEventLog::open_exclusive(&session_path).await {
             Ok(log) => {
                 tracing::info!(session_id = %id, "session event log opened");
-                (
+                Ok((
                     Some(std::sync::Arc::new(
                         zeph_agent_persistence::SessionSink::new(
                             std::sync::Arc::new(log),
@@ -526,11 +533,14 @@ async fn init_session_sink(
                         ),
                     )),
                     Vec::new(),
-                )
+                ))
             }
+            Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => Err(anyhow::anyhow!(
+                "another zeph session is already active for this conversation; lock: {lock_path}"
+            )),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to open session event log; session persistence disabled for this run");
-                (None, Vec::new())
+                Ok((None, Vec::new()))
             }
         };
     };
@@ -564,11 +574,16 @@ async fn init_session_sink(
                 store,
                 SessionId::new(session_id),
             ));
-            (Some(sink), hydrated.messages)
+            Ok((Some(sink), hydrated.messages))
         }
+        Err(zeph_agent_persistence::PersistenceError::Session(
+            zeph_session::SessionError::AlreadyLocked(lock_path),
+        )) => Err(anyhow::anyhow!(
+            "another zeph session is already active for this conversation; lock: {lock_path}"
+        )),
         Err(e) => {
             tracing::warn!(error = %e, "session hydration failed for default continuation; session persistence disabled for this run");
-            (None, Vec::new())
+            Ok((None, Vec::new()))
         }
     }
 }
@@ -579,27 +594,36 @@ async fn init_session_sink(
 /// Mirrors the bare-open branch [`init_session_sink`] already takes when minting a brand-new
 /// session, so a resume with a failing initial hydration still gets a working sink whenever the
 /// event log directory is otherwise accessible, instead of silently narrowing to no sink at all.
-/// Returns `None` (and logs a warning) if the bare open also fails — session persistence stays
-/// best-effort/non-fatal here too.
+/// Returns `Ok(None)` (and logs a warning) if the bare open also fails for an ordinary reason —
+/// session persistence stays best-effort/non-fatal here too. Like [`init_session_sink`],
+/// [`zeph_session::SessionError::AlreadyLocked`] is the one exception: it returns `Err` instead
+/// of silently disabling persistence (#5487 fix 3).
+///
+/// # Errors
+///
+/// Returns `Err` only when another process already holds this session's exclusive write lock.
 async fn resume_session_sink_fallback(
     session_path: &std::path::Path,
     session_store: zeph_session::SessionStore,
     resume_id: &str,
-) -> Option<std::sync::Arc<zeph_agent_persistence::SessionSink>> {
-    match zeph_session::SessionEventLog::open(session_path).await {
+) -> anyhow::Result<Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>> {
+    match zeph_session::SessionEventLog::open_exclusive(session_path).await {
         Ok(log) => {
             tracing::info!(session_id = %resume_id, "session event log opened via bare fallback after failed hydration");
-            Some(std::sync::Arc::new(
+            Ok(Some(std::sync::Arc::new(
                 zeph_agent_persistence::SessionSink::new(
                     std::sync::Arc::new(log),
                     session_store,
                     SessionId::new(resume_id.to_string()),
                 ),
-            ))
+            )))
         }
+        Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => Err(anyhow::anyhow!(
+            "another zeph session is already active for session '{resume_id}'; lock: {lock_path}"
+        )),
         Err(open_err) => {
             tracing::warn!(error = %open_err, "bare session event log fallback also failed; continuing with SQLite-only history");
-            None
+            Ok(None)
         }
     }
 }
@@ -1807,6 +1831,17 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                         ),
                     ));
                 }
+                // #5487 fix 3: another process already holds this session's exclusive write
+                // lock — abort startup with a clear message instead of attempting the bare-open
+                // fallback below, which would just hit the same lock and fail identically, or
+                // (with a lockless open) silently race the other process's writes.
+                Err(zeph_agent_persistence::PersistenceError::Session(
+                    zeph_session::SessionError::AlreadyLocked(lock_path),
+                )) => {
+                    anyhow::bail!(
+                        "another zeph session is already active for session '{resume_id}'; lock: {lock_path}"
+                    );
+                }
                 Err(e) => {
                     // #5456: pre-#5451 behavior always guaranteed a bare SessionEventLog::open
                     // fallback for the resumed session. Falling through to init_session_sink
@@ -1816,7 +1851,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     tracing::warn!(error = %e, "session hydration failed for resume; attempting bare event log fallback");
                     resumed_session_sink =
                         resume_session_sink_fallback(&session_path, session_store, &resume_id)
-                            .await;
+                            .await?;
                 }
             }
         }
@@ -1842,7 +1877,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(sink)
     } else {
         let (sink, hydrated_messages) =
-            init_session_sink(&memory, conversation_id, config, &provider, budget_tokens).await;
+            init_session_sink(&memory, conversation_id, config, &provider, budget_tokens).await?;
         if !hydrated_messages.is_empty() {
             resumed_messages = hydrated_messages;
         }
@@ -5295,7 +5330,9 @@ mod tests {
         let config = runner_test_session_config(dir.path());
         let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
 
-        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0)
+            .await
+            .unwrap();
         assert!(
             sink.is_some(),
             "session persistence enabled must produce a SessionSink"
@@ -5326,7 +5363,9 @@ mod tests {
         let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
 
         // First launch: mints the session, nothing to replay yet.
-        let (sink, initial_messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        let (sink, initial_messages) = init_session_sink(&memory, cid, &config, &provider, 0)
+            .await
+            .unwrap();
         let sink = sink.expect("session persistence enabled must produce a SessionSink");
         assert!(initial_messages.is_empty());
         sink.record_message(zeph_llm::provider::Role::User, "hello", &[])
@@ -5336,7 +5375,9 @@ mod tests {
 
         // Second launch (plain `zeph`, no --resume): must hydrate the message recorded above
         // from the durable event log, not silently return an empty history.
-        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0)
+            .await
+            .unwrap();
         assert!(sink.is_some());
         assert_eq!(
             messages.len(),
@@ -5373,7 +5414,9 @@ mod tests {
             .await
             .expect("sqlite must support DROP COLUMN to set up this test's failure mode");
 
-        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        let (sink, messages) = init_session_sink(&memory, cid, &config, &provider, 0)
+            .await
+            .unwrap();
         assert!(
             sink.is_none(),
             "a store query error must not produce a SessionSink"
@@ -5408,7 +5451,9 @@ mod tests {
         let session_path = dir.path().join("session-abc");
         let session_store = make_runner_test_session_store().await;
 
-        let sink = resume_session_sink_fallback(&session_path, session_store, "resume-id-1").await;
+        let sink = resume_session_sink_fallback(&session_path, session_store, "resume-id-1")
+            .await
+            .unwrap();
         let sink =
             sink.expect("SessionEventLog::open must succeed against a fresh, writable directory");
         assert_eq!(sink.session_id().as_str(), "resume-id-1");
@@ -5426,10 +5471,76 @@ mod tests {
         let session_path = blocker.join("session-subdir");
         let session_store = make_runner_test_session_store().await;
 
-        let sink = resume_session_sink_fallback(&session_path, session_store, "resume-id-2").await;
+        let sink = resume_session_sink_fallback(&session_path, session_store, "resume-id-2")
+            .await
+            .unwrap();
         assert!(
             sink.is_none(),
             "a session_path colliding with a non-directory file must not produce a sink"
+        );
+    }
+
+    /// #5487 fix 3: when a second process already holds this session's exclusive write lock,
+    /// `init_session_sink` must fail fast with `Err` instead of silently degrading to
+    /// `(None, Vec::new())` — a real concurrent `SessionEventLog::open_exclusive` held on the
+    /// same directory (not a mocked error), exercising the actual `hydrate_and_condense` ->
+    /// `hydrate_from_event_log` -> `open_exclusive` call chain.
+    #[tokio::test]
+    async fn init_session_sink_bails_when_hydration_hits_already_locked() {
+        let memory = make_runner_test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = runner_test_session_config(dir.path());
+        let provider = LlmAnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+
+        // First call mints and links the session, then releases its lock.
+        let (sink, _) = init_session_sink(&memory, cid, &config, &provider, 0)
+            .await
+            .unwrap();
+        let sink = sink.expect("session persistence enabled must produce a SessionSink");
+        let session_id = sink.session_id().clone();
+        drop(sink);
+
+        // A second process holds the session's exclusive write lock.
+        let session_path = zeph_session::session_dir(
+            std::path::Path::new(&config.session.data_dir),
+            session_id.as_str(),
+        );
+        let _blocker = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .unwrap();
+
+        let result = init_session_sink(&memory, cid, &config, &provider, 0).await;
+        let Err(err) = result else {
+            panic!("AlreadyLocked must fail fast, not silently degrade to no persistence")
+        };
+        assert!(
+            err.to_string().contains("already active"),
+            "error must clearly state another session is active, got: {err}"
+        );
+    }
+
+    /// #5487 fix 3 counterpart for the bare-open fallback: a real concurrent
+    /// `SessionEventLog::open_exclusive` on the same directory must make
+    /// `resume_session_sink_fallback` fail fast with `Err`, not silently return `None`.
+    #[tokio::test]
+    async fn resume_session_sink_fallback_bails_when_already_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session-abc");
+        let session_store = make_runner_test_session_store().await;
+
+        let _blocker = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .unwrap();
+
+        let result =
+            resume_session_sink_fallback(&session_path, session_store, "resume-id-3").await;
+        let Err(err) = result else {
+            panic!("AlreadyLocked must fail fast, not silently degrade to no persistence")
+        };
+        assert!(
+            err.to_string().contains("already active"),
+            "error must clearly state another session is active, got: {err}"
         );
     }
 }

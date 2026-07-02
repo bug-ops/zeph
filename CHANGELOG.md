@@ -617,6 +617,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restoring the pre-#5454 guarantee. Both paths gained direct unit-test coverage via real
   failure-injection (dropped `acp_sessions` column/index for the store-query error; a
   file-blocking-a-directory path for the bare-open failure).
+- `fix(session)`: `SessionEventLog` could reuse an already-committed `seq` after two sequential
+  (non-overlapping) `zeph` runs against the same session, corrupting replay with duplicate `seq`
+  entries (#5487). Two compounding bugs: `append()` assigned `seq` via `fetch_add` *before*
+  acquiring the writer mutex, so two concurrent callers could be assigned adjacent seqs but land
+  their physical writes in the opposite order on disk; `read_and_truncate` then computed "next
+  seq" from the *last physical line's* value instead of the true running maximum across all
+  valid lines, so a since-reordered file's last line under-counted `next_seq` and a new append
+  collided with a seq already present earlier in the file. `append()` now assigns `seq` while
+  holding the writer lock (physical write order matches seq order again); `read_and_truncate`
+  (renamed `read_events`) now tracks `max_seq` as a running maximum, correct regardless of
+  on-disk physical order.
+
+  Also closes the issue's original concurrent-*process* scenario: added
+  `SessionEventLog::open_exclusive`, a non-blocking `flock(2)`-backed advisory lock (mirroring
+  `zeph-scheduler`'s `PidFile`) returning the new `SessionError::AlreadyLocked` if another process
+  already holds a session's lock, now wired into every writer-owning session-open path via the
+  shared D-10 hydration choke point (`hydrate_from_event_log`) plus the CLI/ACP bare-open
+  fallbacks — covering CLI default continuation, explicit `sessions resume`, `/conv resume`/
+  `fork`, ACP resume, and `zeph serve` reactivation in one edit. `AlreadyLocked` aborts CLI
+  startup and `/conv resume`/`fork` with a clear message instead of silently racing the other
+  process (`/conv resume` into the session already active in the current agent is now a fast
+  no-op instead of a self-deadlock); `zeph serve` reactivation retries a bounded number of times
+  first, since idle-eviction can race its own not-yet-drained prior actor. The plain `open()`
+  stays non-locking so read-only tooling (`sessions show`/`export`, the ACP HTTP inspection
+  endpoint, ACP `session/load` replay) can keep reading a session concurrently with a live
+  writer — and, closing a second defect that false premise exposed, `open()`/`read_all()` no
+  longer physically truncate a torn trailing line they find (only `open_exclusive`'s holder does):
+  a lockless reader can't prove a "torn" line isn't a live writer's in-flight, not-yet-fsynced
+  append, so mutating the file on every read-only `open()` could have destroyed that writer's
+  tail out from under it. ACP sessions now also surface an `AlreadyLocked` degrade to the client
+  (delivered as an agent-thought status update on the session's next prompt, via the same
+  `LoopbackChannel` used for every other agent output) instead of leaving it visible only in
+  server logs.
 - `fix(channels,sanitizer)`: the Telegram, Discord, and Slack channel adapters built
   `ChannelMessage` directly from raw bot-adapter input with zero `ContentSanitizer` involvement —
   the same unsanitized-input gap flagged as a follow-up when `zeph-gateway` webhooks were fixed

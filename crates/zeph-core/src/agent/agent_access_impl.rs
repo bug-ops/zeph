@@ -1756,6 +1756,16 @@ impl<C: Channel> Agent<C> {
         if id.is_empty() {
             return Ok("Usage: /conv resume <id>".to_owned());
         }
+        // #5487 fix 3: `load_and_resume_conversation` now opens the target session's event log
+        // exclusively (INV-D2). Resuming into the session already live in this agent would try
+        // to acquire a second exclusive lock on the same directory this agent's own
+        // `SessionSink` already holds open, deadlocking on `AlreadyLocked` — short-circuit with a
+        // clear message instead of attempting a self-conflicting reopen.
+        if let Some(sink) = &self.services.session.session_sink
+            && sink.session_id().as_str() == id
+        {
+            return Ok(format!("Already in session '{id}'."));
+        }
         let Some(memory) = self.services.memory.persistence.memory.clone() else {
             return Ok(
                 "Conversation-session persistence requires memory to be enabled ([memory] enabled = true)."
@@ -2584,6 +2594,106 @@ path = "skill-second"
         assert!(
             msg.contains("semantic_scan_provider"),
             "error message must mention semantic_scan_provider, got: {msg}"
+        );
+    }
+
+    // #5487 fix 3: `handle_conv_resume` had zero prior test coverage. Resuming into the
+    // session already live in this agent must short-circuit before attempting to re-acquire
+    // the exclusive lock this agent's own SessionSink already holds (a guaranteed
+    // `AlreadyLocked` self-deadlock, since flock conflicts are per open-file-description, not
+    // per-process).
+    #[tokio::test]
+    async fn handle_conv_resume_same_session_short_circuits() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        let session_id = zeph_common::SessionId::new("s1");
+        let session_path = zeph_session::session_dir(&data_dir, session_id.as_str());
+        let log = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .unwrap();
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let sink = zeph_agent_persistence::SessionSink::new(
+            std::sync::Arc::new(log),
+            store,
+            session_id.clone(),
+        );
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_sink(Some(std::sync::Arc::new(sink)))
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("resume s1").await.unwrap();
+        assert_eq!(
+            result, "Already in session 's1'.",
+            "resuming into the currently-active session must short-circuit, not attempt \
+             hydration/lock acquisition"
+        );
+    }
+
+    // Regression check for the guard above: resuming into a genuinely different session (not
+    // the one already live in this agent) must still hydrate normally.
+    #[tokio::test]
+    async fn handle_conv_resume_different_session_still_hydrates() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+
+        // Agent is currently "in" session s1, whose own lock is held by its SessionSink.
+        let active_session_id = zeph_common::SessionId::new("s1");
+        let active_session_path = zeph_session::session_dir(&data_dir, active_session_id.as_str());
+        let active_log = zeph_session::SessionEventLog::open_exclusive(&active_session_path)
+            .await
+            .unwrap();
+        let active_store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let active_sink = zeph_agent_persistence::SessionSink::new(
+            std::sync::Arc::new(active_log),
+            active_store,
+            active_session_id,
+        );
+
+        // Target session s2 exists in the store (unlocked directory) — this is what should be
+        // resumed into.
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s2").await.unwrap();
+
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_sink(Some(std::sync::Arc::new(active_sink)))
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("resume s2").await.unwrap();
+        assert!(
+            result.starts_with("Resumed session s2"),
+            "resuming into a different, unlocked session must still hydrate normally, got: {result}"
         );
     }
 }

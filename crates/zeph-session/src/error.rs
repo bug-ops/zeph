@@ -35,4 +35,9 @@ pub enum SessionError {
     /// Condensation summarization failed (LLM call error or timeout).
     #[error("condensation summarization failed: {0}")]
     Llm(#[from] zeph_llm::LlmError),
+
+    /// [`crate::log::SessionEventLog::open_exclusive`] found another process already
+    /// holding the session's advisory write lock.
+    #[error("session event log at {0} is already locked by another process")]
+    AlreadyLocked(String),
 }

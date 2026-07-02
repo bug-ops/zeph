@@ -13,6 +13,7 @@ use crate::agent_setup;
 use crate::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(feature = "acp")]
 use zeph_core::agent::Agent;
+use zeph_core::channel::Channel;
 #[cfg(feature = "acp")]
 use zeph_tools::ErasedToolExecutor;
 
@@ -728,7 +729,7 @@ async fn build_acp_deps(
 #[allow(clippy::too_many_lines)]
 async fn spawn_acp_agent(
     d: std::sync::Arc<SharedAgentDeps>,
-    channel: zeph_core::channel::LoopbackChannel,
+    mut channel: zeph_core::channel::LoopbackChannel,
     acp_ctx: Option<zeph_acp::AcpContext>,
     session_ctx: zeph_acp::SessionContext,
 ) {
@@ -885,6 +886,124 @@ async fn spawn_acp_agent(
             (zeph_tools::DynExecutor(base), None, None, None)
         };
 
+    // Session persistence (spec-068, #5343): reuse the ACP session_id directly as the
+    // zeph_common::SessionId — ACP already owns this session's identity/lifecycle, so no
+    // separate minting/reuse logic is needed here (unlike the CLI/TUI path in runner.rs, which
+    // has no pre-existing session identity to anchor to). `SessionStore::create` is idempotent
+    // (INSERT_IGNORE) and does not touch `conversation_id`, which ACP's own
+    // `create_acp_session_with_conversation` already manages — this call only ensures the row
+    // exists so `SessionStore::update_seq` has something to update.
+    //
+    // Computed here, before `channel` is consumed by `Agent::new_with_registry_arc` below, so an
+    // `AlreadyLocked` failure can be surfaced to the client via `channel.send_status` (delivered
+    // to the IDE as an `AgentThoughtChunk` on this session's next prompt-response drain, per
+    // `loopback_event_to_updates`) instead of only being visible in logs (#5487 fix 3).
+    let mut acp_session_sink = None;
+    let mut preloaded_messages: Vec<zeph_llm::provider::Message> = Vec::new();
+    if session_persistence_config.enabled {
+        let sid = zeph_common::SessionId::new(session_ctx.session_id.to_string());
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        if let Err(e) = store.create(sid.as_str()).await {
+            tracing::warn!(error = %e, session_id = %sid, "failed to create session-store row for ACP session");
+        }
+        let data_dir = std::path::PathBuf::from(&session_persistence_config.data_dir);
+        let session_path = zeph_session::session_dir(&data_dir, sid.as_str());
+
+        // D-10 (spec-068 §12.3/§13): route through the shared hydration pipeline (legacy
+        // bootstrap + ReplayEngine fold + INV-SP-3 reconcile) — the one pipeline every
+        // session-open path (ACP, CLI `sessions resume`, `/conv resume`) now shares, so they
+        // cannot silently diverge again (impl-critic finding C1). Bootstrap/reconcile need a
+        // linked `ConversationId`; when absent (store was unavailable at session creation —
+        // `with_memory` above was skipped too), fall back to a bare log open with no
+        // SQLite-touching steps, matching this edge case's pre-D-10 behavior.
+        // D-13 (spec-068 §8.1, N3): `hydrate_and_condense` additionally folds in resume-time
+        // durable condensation via the pre-built `d.resume_condenser`/`d.resume_token_counter`
+        // (see `SharedAgentDeps`'s doc comment for why they're built once at deps-construction
+        // time, not here).
+        let log = if let Some(cid) = session_ctx.conversation_id {
+            match zeph_agent_persistence::hydrate_and_condense(
+                &session_path,
+                &store,
+                sid.as_str(),
+                cid,
+                &memory,
+                None,
+                &d.resume_condenser,
+                d.resume_token_counter.as_ref(),
+                d.session_config.budget_tokens,
+            )
+            .await
+            {
+                Ok(hydrated) => {
+                    preloaded_messages = hydrated.messages;
+                    Some(hydrated.log)
+                }
+                // #5487 fix 3: another process already holds this session's exclusive write
+                // lock. Unlike the generic degrade-to-no-persistence branch below, this is
+                // elevated to `error` plus a client-visible status notification — silently
+                // continuing here would let this ACP session race the other process's writes
+                // exactly like the reported bug.
+                Err(zeph_agent_persistence::PersistenceError::Session(
+                    zeph_session::SessionError::AlreadyLocked(lock_path),
+                )) => {
+                    tracing::error!(
+                        lock_path,
+                        "session hydration failed: another process already holds this session's \
+                         write lock; session persistence disabled for this session"
+                    );
+                    // Do not interpolate `lock_path` into the client-facing message: it is an
+                    // absolute filesystem path (leaks the server's home-directory prefix/OS
+                    // username) and this session may be reached over an unauthenticated,
+                    // non-loopback ACP HTTP transport (security review finding).
+                    let _ = channel
+                        .send_status(
+                            "Session persistence unavailable: another process already holds \
+                             this session's write lock.",
+                        )
+                        .await;
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "session hydration failed; session persistence disabled for this session");
+                    None
+                }
+            }
+        } else {
+            match zeph_session::SessionEventLog::open_exclusive(&session_path).await {
+                Ok(log) => Some(Arc::new(log)),
+                Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => {
+                    tracing::error!(
+                        lock_path,
+                        "failed to open session event log for ACP session: another process \
+                         already holds this session's write lock; session persistence disabled \
+                         for this session"
+                    );
+                    // Do not interpolate `lock_path` into the client-facing message: it is an
+                    // absolute filesystem path (leaks the server's home-directory prefix/OS
+                    // username) and this session may be reached over an unauthenticated,
+                    // non-loopback ACP HTTP transport (security review finding).
+                    let _ = channel
+                        .send_status(
+                            "Session persistence unavailable: another process already holds \
+                             this session's write lock.",
+                        )
+                        .await;
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to open session event log for ACP session; session persistence disabled for this session");
+                    None
+                }
+            }
+        };
+
+        if let Some(log) = log {
+            acp_session_sink = Some(Arc::new(zeph_agent_persistence::SessionSink::new(
+                log, store, sid,
+            )));
+        }
+    }
+
     let mut agent = Box::pin(
         Agent::new_with_registry_arc(
             provider.clone(),
@@ -954,74 +1073,15 @@ async fn spawn_acp_agent(
         );
     }
 
-    // Session persistence (spec-068, #5343): reuse the ACP session_id directly as the
-    // zeph_common::SessionId — ACP already owns this session's identity/lifecycle, so no
-    // separate minting/reuse logic is needed here (unlike the CLI/TUI path in runner.rs, which
-    // has no pre-existing session identity to anchor to). `SessionStore::create` is idempotent
-    // (INSERT_IGNORE) and does not touch `conversation_id`, which ACP's own
-    // `create_acp_session_with_conversation` already manages — this call only ensures the row
-    // exists so `SessionStore::update_seq` has something to update.
-    if session_persistence_config.enabled {
-        let sid = zeph_common::SessionId::new(session_ctx.session_id.to_string());
-        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
-        if let Err(e) = store.create(sid.as_str()).await {
-            tracing::warn!(error = %e, session_id = %sid, "failed to create session-store row for ACP session");
-        }
-        let data_dir = std::path::PathBuf::from(&session_persistence_config.data_dir);
-        let session_path = zeph_session::session_dir(&data_dir, sid.as_str());
-
-        // D-10 (spec-068 §12.3/§13): route through the shared hydration pipeline (legacy
-        // bootstrap + ReplayEngine fold + INV-SP-3 reconcile) — the one pipeline every
-        // session-open path (ACP, CLI `sessions resume`, `/conv resume`) now shares, so they
-        // cannot silently diverge again (impl-critic finding C1). Bootstrap/reconcile need a
-        // linked `ConversationId`; when absent (store was unavailable at session creation —
-        // `with_memory` above was skipped too), fall back to a bare log open with no
-        // SQLite-touching steps, matching this edge case's pre-D-10 behavior.
-        // D-13 (spec-068 §8.1, N3): `hydrate_and_condense` additionally folds in resume-time
-        // durable condensation via the pre-built `d.resume_condenser`/`d.resume_token_counter`
-        // (see `SharedAgentDeps`'s doc comment for why they're built once at deps-construction
-        // time, not here).
-        let log = if let Some(cid) = session_ctx.conversation_id {
-            match zeph_agent_persistence::hydrate_and_condense(
-                &session_path,
-                &store,
-                sid.as_str(),
-                cid,
-                &memory,
-                None,
-                &d.resume_condenser,
-                d.resume_token_counter.as_ref(),
-                d.session_config.budget_tokens,
-            )
-            .await
-            {
-                Ok(hydrated) => {
-                    if !hydrated.messages.is_empty() {
-                        agent = agent.with_preloaded_messages(hydrated.messages);
-                    }
-                    Some(hydrated.log)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "session hydration failed; session persistence disabled for this session");
-                    None
-                }
-            }
-        } else {
-            match zeph_session::SessionEventLog::open(&session_path).await {
-                Ok(log) => Some(Arc::new(log)),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to open session event log for ACP session; session persistence disabled for this session");
-                    None
-                }
-            }
-        };
-
-        if let Some(log) = log {
-            let sink = Arc::new(zeph_agent_persistence::SessionSink::new(log, store, sid));
-            agent = agent
-                .with_session_sink(Some(sink))
-                .with_session_persistence_config(Some(session_persistence_config.clone()));
-        }
+    // Attach the session log/history computed above, before `channel` was moved into
+    // `Agent::new_with_registry_arc`.
+    if !preloaded_messages.is_empty() {
+        agent = agent.with_preloaded_messages(preloaded_messages);
+    }
+    if let Some(sink) = acp_session_sink {
+        agent = agent
+            .with_session_sink(Some(sink))
+            .with_session_persistence_config(Some(session_persistence_config.clone()));
     }
 
     if let Some(signal) = cancel_signal {

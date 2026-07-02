@@ -92,7 +92,13 @@ pub async fn hydrate_from_event_log(
     memory: &SemanticMemory,
     up_to: Option<u64>,
 ) -> Result<Hydrated, PersistenceError> {
-    let log = SessionEventLog::open(session_path).await?;
+    // #5487 fix 3: this is the single shared choke point every writer-owning session-open
+    // path (ACP resume, CLI `sessions resume`/default continuation, `/conv resume`, `zeph
+    // serve` reactivation) routes through (D-10) — taking the exclusive advisory lock here
+    // activates INV-D2 enforcement for all of them at once. Read-only tooling (`sessions
+    // show`/`export`, the ACP HTTP inspection endpoint) does not call this function; it opens
+    // the log directly via the still-lockless `SessionEventLog::open`.
+    let log = SessionEventLog::open_exclusive(session_path).await?;
 
     // Legacy session lazy-bootstrap (spec §18): no-op unless this session predates durable
     // event-log persistence (has SQLite history but an empty log). Soft-fail like

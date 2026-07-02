@@ -10992,6 +10992,7 @@ dependencies = [
 name = "zeph-session"
 version = "0.21.4"
 dependencies = [
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sqlx",

@@ -37,6 +37,19 @@ use zeph_core::channel::LoopbackChannel;
 
 use super::deps::ServeAgentDeps;
 
+/// Bounds the retry-on-`AlreadyLocked` loop in [`hydrate_session_sink`] (#5487 fix 3).
+///
+/// `evict_loop` (`src/serve/mod.rs`) removes an idle session from `LiveSessionRegistry` and
+/// cancels its actor *before* that actor's dedicated thread has necessarily finished dropping
+/// its `SessionEventLog` (and releasing the actor's flock) — a fast reactivation request for the
+/// same `session_id` can race the still-draining old actor and see a transient `AlreadyLocked`
+/// that is not a genuine second writer, just a slow release. Retrying a few times with a short
+/// backoff resolves this without restructuring `LiveSessionRegistry`/`evict_loop` to award the
+/// reactivation path direct visibility into the old actor's drain-completion signal.
+const REACTIVATION_LOCK_RETRY_ATTEMPTS: u32 = 5;
+/// Delay between retry attempts — see [`REACTIVATION_LOCK_RETRY_ATTEMPTS`].
+const REACTIVATION_LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Build a `build_agent` closure for [`zeph_core::serve::SessionActor::spawn`].
 ///
 /// Opens (and, for a reactivated session, replays) the session's durable event log — if
@@ -137,32 +150,54 @@ async fn hydrate_session_sink(
     // via the deps-level pre-built `resume_condenser`/`resume_token_counter` (see
     // `ServeAgentDeps::resume_condenser`'s doc comment for why they're built once at deps-
     // construction time, not here).
-    match zeph_agent_persistence::hydrate_and_condense(
-        &session_path,
-        &store,
-        session_id.as_str(),
-        conversation_id,
-        memory,
-        None,
-        resume_condenser,
-        resume_token_counter,
-        context_window,
-    )
-    .await
-    {
-        Ok(hydrated) => {
-            let sink = Arc::new(zeph_agent_persistence::SessionSink::new(
-                hydrated.log,
-                store,
-                session_id,
-            ));
-            (Some(sink), hydrated.messages)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "serve-sessions: session persistence disabled for this session");
-            (None, Vec::new())
+    //
+    // #5487 fix 3: `hydrate_and_condense` now opens the log exclusively (INV-D2). Retry a
+    // bounded number of times on `AlreadyLocked` — see `REACTIVATION_LOCK_RETRY_ATTEMPTS`'s doc
+    // comment for the eviction/reactivation race this closes. A non-transient `AlreadyLocked`
+    // (a genuinely still-live second writer) degrades to no persistence after the retry budget
+    // is exhausted, same as any other hydration failure — this function's contract is
+    // best-effort, not fail-fast, since the daemon has no synchronous caller to fail back to.
+    for attempt in 1..=REACTIVATION_LOCK_RETRY_ATTEMPTS {
+        match zeph_agent_persistence::hydrate_and_condense(
+            &session_path,
+            &store,
+            session_id.as_str(),
+            conversation_id,
+            memory,
+            None,
+            resume_condenser,
+            resume_token_counter,
+            context_window,
+        )
+        .await
+        {
+            Ok(hydrated) => {
+                let sink = Arc::new(zeph_agent_persistence::SessionSink::new(
+                    hydrated.log,
+                    store,
+                    session_id,
+                ));
+                return (Some(sink), hydrated.messages);
+            }
+            Err(zeph_agent_persistence::PersistenceError::Session(
+                zeph_session::SessionError::AlreadyLocked(lock_path),
+            )) if attempt < REACTIVATION_LOCK_RETRY_ATTEMPTS => {
+                tracing::debug!(
+                    lock_path,
+                    attempt,
+                    "serve-sessions: event log still locked by a draining prior actor; retrying reactivation"
+                );
+                tokio::time::sleep(REACTIVATION_LOCK_RETRY_DELAY).await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "serve-sessions: session persistence disabled for this session");
+                return (None, Vec::new());
+            }
         }
     }
+    unreachable!(
+        "the loop always returns: the last attempt's AlreadyLocked falls into the generic Err(e) arm"
+    )
 }
 
 #[cfg(test)]
@@ -302,5 +337,94 @@ mod tests {
             1,
             "reactivation must replay the session's prior turn, not start fresh"
         );
+    }
+
+    /// #5487 fix 3: `evict_loop` frees a session's registry slot before its actor's dedicated
+    /// thread has necessarily finished dropping the old `SessionEventLog` (and releasing its
+    /// flock) — a fast reactivation can see a transient `AlreadyLocked` that isn't a genuine
+    /// second writer. Simulates that race: a background task holds the exclusive lock for
+    /// longer than a couple of retry intervals, then releases it. `hydrate_session_sink` must
+    /// retry past the transient failures and still succeed.
+    #[tokio::test]
+    async fn hydrate_session_sink_retries_transient_already_locked_and_succeeds() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let session_id = zeph_common::SessionId::new("s1");
+        let session_path = zeph_session::session_dir(dir.path(), session_id.as_str());
+        let (condenser, token_counter) = make_test_condenser();
+
+        // Held past attempts 1-3 (t=0, 20, 40ms), released before attempt 4 (t=60ms).
+        let blocker = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .unwrap();
+        let release_handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(blocker);
+        });
+
+        let (sink, _) = hydrate_session_sink(
+            &config,
+            &memory,
+            session_id,
+            cid,
+            &condenser,
+            &token_counter,
+            0,
+        )
+        .await;
+
+        release_handle.await.unwrap();
+        assert!(
+            sink.is_some(),
+            "hydrate_session_sink must retry past a transient AlreadyLocked and eventually \
+             succeed once the draining actor releases its flock"
+        );
+    }
+
+    /// Counterpart to the retry-success test above: a genuinely still-live second writer (lock
+    /// held for the whole call, not just a drain race) must exhaust the retry budget and
+    /// gracefully degrade to no persistence, not panic or hang.
+    #[tokio::test]
+    async fn hydrate_session_sink_gives_up_after_retry_budget_exhausted() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let session_id = zeph_common::SessionId::new("s1");
+        let session_path = zeph_session::session_dir(dir.path(), session_id.as_str());
+        let (condenser, token_counter) = make_test_condenser();
+
+        // Held for the entire call — never released, unlike the transient-race test above.
+        let _blocker = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .unwrap();
+
+        let (sink, messages) = hydrate_session_sink(
+            &config,
+            &memory,
+            session_id,
+            cid,
+            &condenser,
+            &token_counter,
+            0,
+        )
+        .await;
+
+        assert!(
+            sink.is_none(),
+            "retry budget exhaustion against a genuinely still-locked session must degrade to \
+             no persistence, not panic or hang"
+        );
+        assert!(messages.is_empty());
     }
 }
