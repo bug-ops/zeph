@@ -13,6 +13,7 @@ use crate::agent_setup;
 use crate::bootstrap::{AppBuilder, create_mcp_registry};
 #[cfg(feature = "acp")]
 use zeph_core::agent::Agent;
+#[cfg(feature = "acp")]
 use zeph_core::channel::Channel;
 #[cfg(feature = "acp")]
 use zeph_tools::ErasedToolExecutor;
