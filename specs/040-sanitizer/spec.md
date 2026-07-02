@@ -383,7 +383,27 @@ let sanitized = sanitizer.sanitize(
 context.push_message(Role::Tool, sanitized.body);
 ```
 
-### 11.4 LLM Response Filtering
+### 11.4 Gateway Webhook Ingestion
+
+```rust
+// In forward_webhooks, spawned by spawn_gateway_server (src/gateway_spawn.rs)
+let sanitized = sanitizer.sanitize(
+    &payload,
+    ContentSource::new(ContentSourceKind::ChannelMessage),
+); // infallible — ContentSanitizer::sanitize never returns Result
+
+if agent_input_tx.send(ChannelMessage { text: sanitized.body, .. }).await.is_err() {
+    break; // agent input channel closed — stop forwarding
+}
+```
+
+`ChannelMessage` covers the primary message payload ingested from an external channel
+adapter (currently the HTTP gateway `/webhook` endpoint). A valid bearer token proves the
+sender knows the gateway's shared secret, not that the message content is safe — the
+source is classified `ExternalUntrusted`, the same tier as web scrapes, MCP responses, and
+A2A messages.
+
+### 11.5 LLM Response Filtering
 
 ```rust
 // Post-LLM, before adding to history

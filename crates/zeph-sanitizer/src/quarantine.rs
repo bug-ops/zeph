@@ -538,6 +538,7 @@ spotlight_untrusted = true
             ("a2a_message", ContentSourceKind::A2aMessage),
             ("memory_retrieval", ContentSourceKind::MemoryRetrieval),
             ("instruction_file", ContentSourceKind::InstructionFile),
+            ("channel_message", ContentSourceKind::ChannelMessage),
         ];
         for (s, expected) in cases {
             assert_eq!(

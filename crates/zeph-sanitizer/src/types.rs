@@ -85,6 +85,13 @@ pub enum ContentSourceKind {
     /// Treated as `LocalUntrusted` by default. Path-based trust inference (e.g. treating
     /// user-authored files as `Trusted`) is a Phase 2 concern.
     InstructionFile,
+    /// Primary message ingested from an external channel adapter (gateway webhook,
+    /// and potentially Telegram/Discord in the future).
+    ///
+    /// The sender only proves possession of a bearer token or channel credential, not
+    /// that the message content is safe — treated as `ExternalUntrusted` like any other
+    /// network-supplied text.
+    ChannelMessage,
 }
 
 impl ContentSourceKind {
@@ -105,9 +112,11 @@ impl ContentSourceKind {
     pub fn default_trust_level(self) -> ContentTrustLevel {
         match self {
             Self::ToolResult | Self::InstructionFile => ContentTrustLevel::LocalUntrusted,
-            Self::WebScrape | Self::McpResponse | Self::A2aMessage | Self::MemoryRetrieval => {
-                ContentTrustLevel::ExternalUntrusted
-            }
+            Self::WebScrape
+            | Self::McpResponse
+            | Self::A2aMessage
+            | Self::MemoryRetrieval
+            | Self::ChannelMessage => ContentTrustLevel::ExternalUntrusted,
         }
     }
 
@@ -119,6 +128,7 @@ impl ContentSourceKind {
             Self::A2aMessage => "a2a_message",
             Self::MemoryRetrieval => "memory_retrieval",
             Self::InstructionFile => "instruction_file",
+            Self::ChannelMessage => "channel_message",
         }
     }
 
@@ -148,6 +158,7 @@ impl ContentSourceKind {
             "a2a_message" => Some(Self::A2aMessage),
             "memory_retrieval" => Some(Self::MemoryRetrieval),
             "instruction_file" => Some(Self::InstructionFile),
+            "channel_message" => Some(Self::ChannelMessage),
             _ => None,
         }
     }
@@ -435,6 +446,7 @@ mod tests {
             (ContentSourceKind::A2aMessage, "a2a_message"),
             (ContentSourceKind::MemoryRetrieval, "memory_retrieval"),
             (ContentSourceKind::InstructionFile, "instruction_file"),
+            (ContentSourceKind::ChannelMessage, "channel_message"),
         ];
         for (kind, s) in &variants {
             assert_eq!(ContentSourceKind::from_str_opt(s), Some(*kind));
@@ -523,6 +535,7 @@ mod tests {
             ContentSourceKind::McpResponse,
             ContentSourceKind::A2aMessage,
             ContentSourceKind::MemoryRetrieval,
+            ContentSourceKind::ChannelMessage,
         ] {
             assert_eq!(
                 kind.default_trust_level(),

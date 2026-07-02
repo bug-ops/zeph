@@ -739,6 +739,10 @@ mod tests {
             ContentSourceKind::InstructionFile.as_str(),
             "instruction_file"
         );
+        assert_eq!(
+            ContentSourceKind::ChannelMessage.as_str(),
+            "channel_message"
+        );
     }
 
     #[test]
@@ -765,6 +769,10 @@ mod tests {
         );
         assert_eq!(
             ContentSourceKind::MemoryRetrieval.default_trust_level(),
+            ContentTrustLevel::ExternalUntrusted
+        );
+        assert_eq!(
+            ContentSourceKind::ChannelMessage.default_trust_level(),
             ContentTrustLevel::ExternalUntrusted
         );
     }

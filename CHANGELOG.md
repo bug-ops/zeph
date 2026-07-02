@@ -550,6 +550,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(gateway)`: `zeph-gateway`'s `/webhook` endpoint forwarded third-party payloads into the
+  agent's primary input queue as a plain `ChannelMessage` with only control-character stripping
+  applied — bypassing the `ContentTrustLevel::ExternalUntrusted` classification, spotlight
+  wrapping (`<external-data>`), and injection detection that `specs/040-sanitizer/spec.md` §3
+  mandates for external content (#5432). A valid bearer token proves the sender knows the
+  gateway's shared secret, not that the message content is safe. New
+  `ContentSourceKind::ChannelMessage` variant (`crates/zeph-sanitizer/src/types.rs`), classified
+  `ExternalUntrusted`, represents the primary message from an external channel adapter — no
+  existing variant fit without misusing `A2aMessage`/`McpResponse` (#5439).
+  New `forward_webhooks` (`src/gateway_spawn.rs`), spawned by `spawn_gateway_server` in place of
+  the previous inline forwarder closure, builds a `ContentSanitizer` from
+  `config.security.content_isolation` and sanitizes every payload with
+  `ContentSource::new(ContentSourceKind::ChannelMessage)` before wrapping it in a
+  `ChannelMessage`, mirroring the existing `AgentTaskProcessor` A2A sanitization pattern in
+  `src/daemon.rs`. `zeph-gateway` itself stays free of a `zeph-sanitizer` dependency — sanitization
+  happens at the point where the payload re-enters the `zeph` binary crate, the earliest point
+  where both the sanitizer and gateway config are available. The forwarder loop was extracted into
+  a named function specifically so an end-to-end regression test can drive a raw injection payload
+  through the real `webhook_tx`/`webhook_rx`/`agent_input_tx` channel chain and assert on the
+  spotlighted output, rather than only re-exercising an isolated sanitizer call (impl-critic
+  finding S1). Verified `crates/zeph-channels` (Telegram/Discord/Slack adapters) has zero
+  references to `ContentSanitizer`/`ContentSourceKind` — the same unsanitized-input gap exists
+  there; left unfixed here to keep scope tight (candidate follow-up issue).
 - `fix(session)`: resume-time durable condensation (D-11) only fired on `/conv resume`, not on
   the other three session-open paths — CLI `sessions resume`, ACP `spawn_acp_agent`, or `zeph
   serve` reactivation (impl-critic re-verify finding N3, architect ruling D-13). The original
