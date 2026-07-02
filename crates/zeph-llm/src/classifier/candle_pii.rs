@@ -13,9 +13,9 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Module, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::debertav2::{Config as DebertaConfig, DebertaV2NERModel};
+use candle_transformers::models::debertav2::{Config as DebertaConfig, DebertaV2Model};
 use tokenizers::Tokenizer;
 
 use crate::error::LlmError;
@@ -27,8 +27,75 @@ const MAX_CHUNK_TOKENS: usize = 448;
 /// Token overlap between adjacent chunks for NER.
 const CHUNK_OVERLAP_TOKENS: usize = 64;
 
+/// DeBERTa-v2 backbone plus a token-classification head, loaded with a bias term.
+///
+/// `candle_transformers::models::debertav2::DebertaV2NERModel` cannot be used directly:
+/// it builds its classifier layer with `candle_nn::linear_no_bias`, which silently skips
+/// the `classifier.bias` tensor present in real NER checkpoints (confirmed against
+/// `iiiorg/piiranha-v1-detect-personal-information`'s `model.safetensors`). Dropping a
+/// trained bias term corrupts every token's logits, so this type re-implements the same
+/// head using `candle_nn::linear` (with bias) instead to stay faithful to the checkpoint.
+///
+/// This fix is necessary for a faithful checkpoint load but not sufficient on its own to
+/// restore end-to-end detection: `real_model_detects_email` (see the test module) still
+/// fails after this change, with predictions confidently wrong rather than restored — the
+/// remaining gap is suspected to be a separate issue in the upstream relative-attention
+/// implementation and is tracked in #5457
+/// (<https://github.com/bug-ops/zeph/issues/5457>), not fixed by loading the bias tensor
+/// correctly.
+struct PiiNerHead {
+    deberta: DebertaV2Model,
+    dropout: candle_nn::Dropout,
+    classifier: candle_nn::Linear,
+}
+
+impl PiiNerHead {
+    /// Load the DeBERTa-v2 backbone under `vb` and a bias-including linear classifier
+    /// head at `vb`'s root `classifier.*` keys, mirroring the checkpoint layout that
+    /// `DebertaV2NERModel::load` targets internally.
+    ///
+    /// Trade-off versus the upstream `linear_no_bias`-based loader: a checkpoint whose
+    /// classifier head has no `classifier.bias` tensor now fails to load
+    /// (`candle_core::Error` from `candle_nn::linear`'s `vb.get_with_hints(.., "bias", ..)`)
+    /// instead of loading silently without it. This is intentional — fail loud on an
+    /// unsupported checkpoint shape rather than silently producing degraded predictions —
+    /// but it does narrow the set of `pii_model` repo IDs this classifier can load.
+    fn load(
+        vb: &VarBuilder,
+        config: &DebertaConfig,
+        id2label_len: usize,
+    ) -> candle_core::Result<Self> {
+        let deberta = DebertaV2Model::load(vb.clone(), config)?;
+        // Dropout probability precision loss from f64 -> f32 is immaterial here.
+        #[allow(clippy::cast_possible_truncation)]
+        let dropout = candle_nn::Dropout::new(config.hidden_dropout_prob as f32);
+        let classifier =
+            candle_nn::linear(config.hidden_size, id2label_len, vb.root().pp("classifier"))?;
+        Ok(Self {
+            deberta,
+            dropout,
+            classifier,
+        })
+    }
+
+    /// Run the backbone followed by the classification head, returning per-token logits
+    /// of shape `[batch, seq_len, num_labels]`.
+    fn forward(
+        &self,
+        input_ids: &Tensor,
+        token_type_ids: Option<Tensor>,
+        attention_mask: Option<Tensor>,
+    ) -> candle_core::Result<Tensor> {
+        let output = self
+            .deberta
+            .forward(input_ids, token_type_ids, attention_mask)?;
+        let output = self.dropout.forward(&output, false)?;
+        self.classifier.forward(&output)
+    }
+}
+
 struct CandlePiiInner {
-    model: DebertaV2NERModel,
+    model: PiiNerHead,
     tokenizer: Tokenizer,
     device: Device,
     /// Index → BIO label string (e.g. `0 → "O"`, `1 → "B-GIVENNAME"`).
@@ -124,15 +191,17 @@ impl CandlePiiClassifier {
             .map_err(|e| LlmError::ModelLoad(format!("failed to read DeBERTa config: {e}")))?;
         let config: DebertaConfig = serde_json::from_str(&config_str)?;
 
-        let id2label: Vec<String> = config.id2label.as_ref().map_or_else(
-            || vec!["O".into()],
-            |m| {
-                let mut sorted: Vec<(u32, String)> =
-                    m.iter().map(|(k, v)| (*k, v.clone())).collect();
-                sorted.sort_by_key(|(k, _)| *k);
-                sorted.into_iter().map(|(_, v)| v).collect()
-            },
-        );
+        let id2label_map = config.id2label.as_ref().ok_or_else(|| {
+            LlmError::ModelLoad(format!(
+                "config.json for {repo_id} is missing id2label; cannot size the NER classifier head"
+            ))
+        })?;
+        let id2label: Vec<String> = {
+            let mut sorted: Vec<(u32, String)> =
+                id2label_map.iter().map(|(k, v)| (*k, v.clone())).collect();
+            sorted.sort_by_key(|(k, _)| *k);
+            sorted.into_iter().map(|(_, v)| v).collect()
+        };
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| LlmError::ModelLoad(format!("failed to load tokenizer: {e}")))?;
@@ -145,7 +214,8 @@ impl CandlePiiClassifier {
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
 
         // HuggingFace DeBERTa v2/v3 safetensors store backbone weights under the deberta.* namespace
-        let model = DebertaV2NERModel::load(vb.pp("deberta"), &config, config.id2label.clone())
+        let deberta_vb = vb.pp("deberta");
+        let model = PiiNerHead::load(&deberta_vb, &config, id2label.len())
             .map_err(|e| LlmError::ModelLoad(format!("failed to load DeBERTa NER model: {e}")))?;
 
         let load_ms = load_t0.elapsed().as_millis();
@@ -259,7 +329,14 @@ impl CandlePiiClassifier {
     }
 }
 
-/// Extract BIO spans from per-token predictions.
+/// Extract PII spans from per-token predictions, decoding both BIO (`B-`/`I-`) and
+/// IO-only (`I-` only, no `B-` variant) label schemes.
+///
+/// Production NER models converted from datasets that don't distinguish entity-initial
+/// tokens (e.g. `iiiorg/piiranha-v1-detect-personal-information`) emit only `I-<TYPE>`
+/// labels with no `B-<TYPE>` counterpart. To support these, an `I-<TYPE>` token opens a
+/// new span whenever no span is currently open, or the open span is of a different
+/// entity type — not just when it matches an already-open span of the same type.
 ///
 /// CRITICAL: filters out special tokens ([CLS], [SEP], [PAD]) via `special_mask`
 /// before span extraction to avoid phantom PII spans at (0, 0) offsets.
@@ -317,7 +394,9 @@ fn extract_bio_spans(
             }
             current = Some((entity_type.to_owned(), tok_start, tok_end, score));
         } else if let Some(entity_type) = label.strip_prefix("I-") {
-            // Continue span if entity type matches.
+            // Extend the open span only if its entity type matches; otherwise this
+            // I-<TYPE> token starts a new span — covers both a type transition (BIO)
+            // and the very first token of an entity under an IO-only label scheme.
             if let Some((ref et, start, _, ref mut span_score)) = current {
                 if et == entity_type {
                     // Extend end, keep min score across the span.
@@ -325,7 +404,9 @@ fn extract_bio_spans(
                     current = Some((entity_type.to_owned(), start, tok_end, *span_score));
                 } else {
                     // Entity type mismatch — close previous, start new.
-                    let (et, start, end, span_score) = current.take().unwrap();
+                    let Some((et, start, end, span_score)) = current.take() else {
+                        unreachable!("current is Some in this branch")
+                    };
                     spans.push(PiiSpan {
                         entity_type: et,
                         start,
@@ -335,7 +416,8 @@ fn extract_bio_spans(
                     current = Some((entity_type.to_owned(), tok_start, tok_end, score));
                 }
             } else {
-                // Orphan I- without B- — start span anyway.
+                // No open span — start one (orphan I- in BIO, or any entity token
+                // under an IO-only scheme where no B- label variant exists at all).
                 current = Some((entity_type.to_owned(), tok_start, tok_end, score));
             }
         } else {
@@ -529,6 +611,45 @@ mod tests {
         let spans = extract_bio_spans(&predictions, &offsets, &special_mask, &id2label, 0.75);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].entity_type, "PHONE");
+    }
+
+    #[test]
+    fn bio_extraction_io_only_scheme_single_span() {
+        // IO-only label scheme (e.g. iiiorg/piiranha-v1-detect-personal-information):
+        // id2label has no B- variant at all, only I-<TYPE> and O.
+        // "at john@example.com for" → O I-EMAIL I-EMAIL O
+        let id2label = make_id2label(&["O", "I-EMAIL"]);
+        let predictions = vec![(0, 0.99), (1, 0.95), (1, 0.90), (0, 0.99)];
+        let offsets = vec![(0, 2), (3, 7), (7, 22), (23, 26)];
+        let special_mask = vec![0u32; 4];
+
+        let spans = extract_bio_spans(&predictions, &offsets, &special_mask, &id2label, 0.75);
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].entity_type, "EMAIL");
+        assert_eq!(spans[0].start, 3);
+        assert_eq!(spans[0].end, 22);
+    }
+
+    #[test]
+    fn bio_extraction_io_only_scheme_adjacent_different_types_not_merged() {
+        // IO-only scheme: two adjacent entities of different types with no O token
+        // (and no B- label) between them must produce two spans, not one merged span.
+        // "John Smith" → I-GIVENNAME I-SURNAME
+        let id2label = make_id2label(&["O", "I-GIVENNAME", "I-SURNAME"]);
+        let predictions = vec![(1, 0.92), (2, 0.88)];
+        let offsets = vec![(0, 4), (5, 10)];
+        let special_mask = vec![0u32; 2];
+
+        let spans = extract_bio_spans(&predictions, &offsets, &special_mask, &id2label, 0.75);
+
+        assert_eq!(spans.len(), 2, "different entity types must not merge");
+        assert_eq!(spans[0].entity_type, "GIVENNAME");
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, 4);
+        assert_eq!(spans[1].entity_type, "SURNAME");
+        assert_eq!(spans[1].start, 5);
+        assert_eq!(spans[1].end, 10);
     }
 
     #[test]
