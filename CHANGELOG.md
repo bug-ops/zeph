@@ -604,6 +604,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   architectural gap rather than a wiring fix — a shared, take-once MCP elicitation receiver would
   cross-wire concurrent ACP sessions' elicitation prompts if wired naively. Descoped from this fix
   pending a dedicated design pass; findings recorded on the issue.
+- `fix(memory)`: three dormant write paths in `zeph-memory` reactivated (#5555, #5539, #5533).
+
+  - **#5555** — `AdmissionControl::evaluate()`'s decisions were never persisted via
+    `SqliteStore::record_admission_training`, so the RL admission training table
+    (`admission_training_data`) stayed empty in production regardless of `admission_strategy`
+    — the prerequisite data collection for #2416/#5543's `Rl` scorer effort was scaffolding with
+    no caller. `SemanticMemory::remember`/`remember_with_parts`/`remember_tool_output`/
+    `remember_categorized` (`crates/zeph-memory/src/semantic/recall.rs`) now record every A-MAC
+    decision — admitted and rejected, including messages later dropped by the post-admission
+    quality gate — via a new best-effort `record_admission_sample` helper, avoiding survivorship
+    bias per the module's own design intent. Failures are logged at debug level and never
+    propagated, matching the existing `mark_training_recalled` fire-and-forget pattern already on
+    this path.
+  - **#5539** — `EntityLockManager::extend_lock` (`crates/zeph-memory/src/graph/entity_lock.rs`)
+    used `SQLite`-only `datetime(expires_at, ? || ' seconds')` to offset the stored `expires_at`
+    column, which has no `PostgreSQL` equivalent (`expires_at` is `TIMESTAMPTZ` there) — the
+    method would fail at runtime under the `postgres` feature. Split into a dialect-selected
+    expression (`expires_at + INTERVAL '1 second' * ?` on `PostgreSQL`), mirroring the pattern
+    already used by the sibling `try_acquire_once` method in the same file (PR #5537).
+  - **#5533** — `MemoryFacade::compact` for `SemanticMemory`
+    (`crates/zeph-memory/src/facade.rs`) reported `messages_compacted` as the *total* message
+    count fetched before summarization ran, not the number of messages `summarize()` actually
+    folded into the new summary — overcounting whenever the unsummarized range was smaller than
+    the conversation, and reporting a nonzero count even when `summarize()` was a no-op.
+    `SemanticMemory::summarize` (`crates/zeph-memory/src/semantic/summarization.rs`) now returns
+    a `SummarizeOutcome { summary_id, messages_folded }` instead of a bare summary id, and
+    `compact` derives `messages_compacted` from `messages_folded` (`0` when summarization is a
+    no-op). Updates the one other production caller
+    (`zeph_core::agent::persistence::store::enqueue_summarization_task`).
 
 - `fix(memory)`: clarify that `[memory.admission] admission_strategy = "rl"` is not silently a
   no-op (#5543) — `src/bootstrap/mod.rs::build_admission_control` already emits a startup

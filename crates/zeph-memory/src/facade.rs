@@ -356,14 +356,13 @@ impl MemoryFacade for crate::semantic::SemanticMemory {
 
     #[tracing::instrument(name = "memory.facade.compact", skip_all)]
     async fn compact(&self, ctx: &CompactionContext) -> Result<CompactionResult, MemoryError> {
-        let before = self.message_count(ctx.conversation_id).await?;
-        let messages_compacted = usize::try_from(before).unwrap_or(0);
         // Trigger a summarization pass to reduce context below the token budget.
         // The message_count parameter drives how many messages to summarize at once.
         // Approximate: 4 chars per token; produce a target message count that
         // keeps the resulting context under the token budget.
         let target_msgs = ctx.token_budget.checked_div(4).unwrap_or(512);
-        let _ = self.summarize(ctx.conversation_id, target_msgs).await?;
+        let outcome = self.summarize(ctx.conversation_id, target_msgs).await?;
+        let messages_compacted = outcome.map_or(0, |o| o.messages_folded);
         let summary = self
             .load_summaries(ctx.conversation_id)
             .await?

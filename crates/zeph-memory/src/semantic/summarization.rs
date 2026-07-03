@@ -27,6 +27,16 @@ pub struct Summary {
     pub token_estimate: i64,
 }
 
+/// Outcome of a successful [`SemanticMemory::summarize`] call.
+#[derive(Debug, Clone, Copy)]
+pub struct SummarizeOutcome {
+    /// Row id of the newly created summary.
+    pub summary_id: i64,
+    /// Number of messages actually folded into this summary (the size of the
+    /// unsummarized range consumed, not the `message_count` argument requested).
+    pub messages_folded: usize,
+}
+
 #[must_use]
 pub fn build_summarization_prompt(messages: &[(MessageId, String, String)]) -> String {
     let mut prompt = String::from(
@@ -85,6 +95,9 @@ impl SemanticMemory {
     /// Generate a summary of the oldest unsummarized messages.
     ///
     /// Returns `Ok(None)` if there are not enough messages to summarize.
+    /// [`SummarizeOutcome::messages_folded`] reflects the actual number of messages folded
+    /// into the new summary, which may be less than `message_count` when fewer unsummarized
+    /// messages exist.
     ///
     /// # Errors
     ///
@@ -94,7 +107,7 @@ impl SemanticMemory {
         &self,
         conversation_id: ConversationId,
         message_count: usize,
-    ) -> Result<Option<i64>, MemoryError> {
+    ) -> Result<Option<SummarizeOutcome>, MemoryError> {
         let total = self.sqlite.count_messages(conversation_id).await?;
 
         if total <= i64::try_from(message_count)? {
@@ -116,6 +129,7 @@ impl SemanticMemory {
             return Ok(None);
         }
 
+        let messages_folded = messages.len();
         let prompt = build_summarization_prompt(&messages);
         let chat_messages = vec![Message {
             role: Role::User,
@@ -183,7 +197,10 @@ impl SemanticMemory {
                 .await;
         }
 
-        Ok(Some(summary_id))
+        Ok(Some(SummarizeOutcome {
+            summary_id,
+            messages_folded,
+        }))
     }
 
     /// Call the LLM to produce a [`StructuredSummary`], falling back to plain text on parse error.

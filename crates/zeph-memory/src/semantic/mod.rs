@@ -76,7 +76,7 @@ pub use persona::{
     PersonaExtractionConfig, contains_self_referential_language, extract_persona_facts,
 };
 pub use recall::{EmbedContext, RecalledMessage};
-pub use summarization::{StructuredSummary, Summary, build_summarization_prompt};
+pub use summarization::{StructuredSummary, SummarizeOutcome, Summary, build_summarization_prompt};
 pub use trajectory::{TrajectoryEntry, TrajectoryExtractionConfig, extract_trajectory_entries};
 pub use tree_consolidation::{
     TreeConsolidationConfig, TreeConsolidationResult, run_tree_consolidation_sweep,

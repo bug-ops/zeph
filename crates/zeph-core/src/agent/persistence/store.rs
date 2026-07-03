@@ -197,32 +197,38 @@ impl<C: Channel> Agent<C> {
 
         let batch_size = self.services.memory.compaction.summarization_threshold / 2;
 
-        self.runtime.lifecycle.supervisor.spawn_summarization("summarization", async move {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                memory.summarize(cid, batch_size),
-            )
-            .await
-            {
-                Ok(Ok(Some(summary_id))) => {
-                    tracing::info!(
-                        "background summarization: created summary {summary_id} for conversation {cid}"
-                    );
-                    true
+        self.runtime
+            .lifecycle
+            .supervisor
+            .spawn_summarization("summarization", async move {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    memory.summarize(cid, batch_size),
+                )
+                .await
+                {
+                    Ok(Ok(Some(outcome))) => {
+                        tracing::info!(
+                            "background summarization: created summary {} for conversation {cid} \
+                         ({} messages folded)",
+                            outcome.summary_id,
+                            outcome.messages_folded
+                        );
+                        true
+                    }
+                    Ok(Ok(None)) => {
+                        tracing::debug!("background summarization: no summarization needed");
+                        false
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("background summarization failed: {e:#}");
+                        false
+                    }
+                    Err(_) => {
+                        tracing::warn!("background summarization timed out after 30s");
+                        false
+                    }
                 }
-                Ok(Ok(None)) => {
-                    tracing::debug!("background summarization: no summarization needed");
-                    false
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("background summarization failed: {e:#}");
-                    false
-                }
-                Err(_) => {
-                    tracing::warn!("background summarization timed out after 30s");
-                    false
-                }
-            }
-        });
+            });
     }
 }

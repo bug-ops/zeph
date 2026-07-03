@@ -191,12 +191,17 @@ async fn summarize_stores_summary() {
             .unwrap();
     }
 
-    let summary_id = memory.summarize(cid, 3).await.unwrap();
-    assert!(summary_id.is_some());
+    let outcome = memory.summarize(cid, 3).await.unwrap();
+    assert!(outcome.is_some());
+    let outcome = outcome.unwrap();
+    assert_eq!(
+        outcome.messages_folded, 3,
+        "must fold exactly message_count messages"
+    );
 
     let summaries = memory.load_summaries(cid).await.unwrap();
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].id, summary_id.unwrap());
+    assert_eq!(summaries[0].id, outcome.summary_id);
     assert!(!summaries[0].content.is_empty());
 }
 
@@ -393,12 +398,77 @@ async fn summarize_message_range_bounds() {
             .unwrap();
     }
 
-    let summary_id = memory.summarize(cid, 4).await.unwrap().unwrap();
+    let outcome = memory.summarize(cid, 4).await.unwrap().unwrap();
+    assert_eq!(
+        outcome.messages_folded, 4,
+        "must fold exactly message_count messages"
+    );
     let summaries = memory.load_summaries(cid).await.unwrap();
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].id, summary_id);
+    assert_eq!(summaries[0].id, outcome.summary_id);
     assert!(summaries[0].first_message_id >= Some(MessageId(1)));
     assert!(summaries[0].last_message_id >= summaries[0].first_message_id);
+}
+
+// ── MemoryFacade::compact messages_compacted accuracy (#5533) ──────────────────
+
+#[tokio::test]
+async fn compact_reports_actual_messages_folded_not_total_message_count() {
+    use crate::facade::{CompactionContext, MemoryFacade};
+
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    for i in 0..20 {
+        memory
+            .remember(cid, "user", &format!("msg {i}"), None)
+            .await
+            .unwrap();
+    }
+
+    // token_budget=40 -> target_msgs = 40/4 = 10, so summarize() folds only 10 of the 20
+    // unsummarized messages (capped by the range LIMIT), not the full conversation.
+    let result = memory
+        .compact(&CompactionContext {
+            conversation_id: cid,
+            token_budget: 40,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.messages_compacted, 10,
+        "messages_compacted must reflect what summarize() actually folded, not the total \
+         message count fetched before summarization"
+    );
+}
+
+#[tokio::test]
+async fn compact_reports_zero_when_summarize_is_noop() {
+    use crate::facade::{CompactionContext, MemoryFacade};
+
+    let memory = test_semantic_memory(false).await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    memory
+        .remember(cid, "user", "only one message", None)
+        .await
+        .unwrap();
+
+    // token_budget=4096 -> target_msgs=1024, far above the single message present, so
+    // summarize() is a no-op (total <= message_count) and returns None.
+    let result = memory
+        .compact(&CompactionContext {
+            conversation_id: cid,
+            token_budget: 4096,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.messages_compacted, 0,
+        "messages_compacted must be 0 when summarize() is a no-op"
+    );
 }
 
 #[tokio::test]
