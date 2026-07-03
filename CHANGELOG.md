@@ -582,6 +582,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sites from #5364; this was the last blocker on `run_episodic_consolidation_sweep` getting a real
   Postgres round-trip test (`postgres_integration.rs::episodic_consolidation_sweep_promotes_fact_postgres`,
   replacing a `NOTE` block left pending this fix).
+- `fix(memory)`: three independent zeph-memory gaps from the ongoing architecture rotation (#5497,
+  #5500, #5502). `generate_community_summary`'s `provider.chat` call (`graph/community.rs`) had no
+  call-site timeout, violating the mandatory Await Discipline rule — a hung LLM call could stall a
+  `detect_communities` `JoinSet` task indefinitely; now wraps the call in a 15s `tokio::time::timeout`
+  matching sibling call sites, warn-logging and yielding an empty summary on expiry. Closes #5502.
+  `GraphStore::qdrant_point_ids_for_entities` (`graph/store/mod.rs`) issued its per-chunk `fetch_all`
+  with no query-level timeout, silently defeating the documented per-step circuit breaker in
+  `hela_spreading_recall`; now wraps each chunk's query in the same 500ms `tokio::time::timeout`
+  pattern already used by its sibling `query_batch_edges`, converting a stalled query into a typed
+  `MemoryError::Timeout`. Closes #5500. `SqliteStore::message_by_id` (`store/messages/mod.rs`)
+  hardcoded `db_id` and `fidelity_tag` to `None` on every returned message instead of populating them
+  from the input parameter and the SQL row respectively, inconsistent with its own batch sibling
+  `messages_by_ids` and with `load_history`/`load_history_filtered`; both fields are now restored
+  using the existing conventions. Closes #5497.
 - `fix(orchestration)`: `TaskGraph::created_at`/`finished_at` timestamps could be corrupted with an
   invalid `month=00` ISO-8601 component. The hand-rolled `epoch_secs_to_datetime` Gregorian
   decomposition in `graph.rs` mis-computed the month for dates immediately preceding a leap year

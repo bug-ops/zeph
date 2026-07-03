@@ -203,6 +203,15 @@ async fn message_by_id_fetches_existing() {
     let msg = msg.unwrap();
     assert_eq!(msg.role, Role::User);
     assert_eq!(msg.content, "hello");
+    assert_eq!(
+        msg.metadata.db_id,
+        Some(msg_id.0),
+        "db_id must be populated from the input message_id"
+    );
+    assert_eq!(
+        msg.metadata.fidelity_tag, None,
+        "default DB value 0 must load as None (never-scored marker)"
+    );
 }
 
 #[tokio::test]
@@ -210,6 +219,26 @@ async fn message_by_id_returns_none_for_nonexistent() {
     let store = test_store().await;
     let msg = store.message_by_id(MessageId(999)).await.unwrap();
     assert!(msg.is_none());
+}
+
+#[tokio::test]
+async fn message_by_id_restores_fidelity_tag() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let msg_id = store.save_message(cid, "user", "hello").await.unwrap();
+
+    store
+        .update_fidelity_tags(&[(msg_id, zeph_common::ContextFidelity::Compressed as u8)])
+        .await
+        .unwrap();
+
+    let msg = store.message_by_id(msg_id).await.unwrap().unwrap();
+    assert_eq!(msg.metadata.db_id, Some(msg_id.0));
+    assert_eq!(
+        msg.metadata.fidelity_tag,
+        Some(zeph_common::ContextFidelity::Compressed),
+        "persisted Compressed must round-trip through message_by_id"
+    );
 }
 
 #[tokio::test]

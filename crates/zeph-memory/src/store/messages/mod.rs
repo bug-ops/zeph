@@ -602,6 +602,10 @@ impl SqliteStore {
 
     /// Fetch a single message by its ID.
     ///
+    /// Restores persisted `fidelity_tag` into [`MessageMetadata::fidelity_tag`].
+    /// A stored value of `0` maps to `None` (never scored / Full by default) so
+    /// messages written before CAM was enabled do not acquire a spurious floor.
+    ///
     /// # Errors
     ///
     /// Returns an error if the query fails.
@@ -611,33 +615,42 @@ impl SqliteStore {
     ) -> Result<Option<Message>, MemoryError> {
         let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
         let sql = zeph_db::rewrite_placeholders(&format!(
-            "SELECT role, content, {parts_select} AS parts, visibility FROM messages \
+            "SELECT role, content, {parts_select} AS parts, visibility, \
+                    CAST(fidelity_tag AS INTEGER) AS fidelity_tag FROM messages \
              WHERE id = ? AND deleted_at IS NULL"
         ));
-        let row: Option<(String, String, String, String)> =
+        let row: Option<(String, String, String, String, i32)> =
             zeph_db::query_as(sqlx::AssertSqlSafe(sql))
                 .bind(message_id)
                 .fetch_optional(&self.pool)
                 .await?;
 
-        Ok(row.map(|(role_str, content, parts_json, visibility_str)| {
-            let parts = parse_parts_json(&role_str, &parts_json);
-            Message {
-                role: parse_role(&role_str),
-                content,
-                parts,
-                metadata: MessageMetadata {
-                    visibility: MessageVisibility::from_db_str(&visibility_str),
-                    compacted_at: None,
-                    deferred_summary: None,
-                    focus_pinned: false,
-                    focus_marker_id: None,
-                    db_id: None,
-                    fidelity_tag: None,
-                    embedding: None,
-                },
-            }
-        }))
+        Ok(row.map(
+            |(role_str, content, parts_json, visibility_str, fidelity_raw)| {
+                let parts = parse_parts_json(&role_str, &parts_json);
+                Message {
+                    role: parse_role(&role_str),
+                    content,
+                    parts,
+                    metadata: MessageMetadata {
+                        visibility: MessageVisibility::from_db_str(&visibility_str),
+                        compacted_at: None,
+                        deferred_summary: None,
+                        focus_pinned: false,
+                        focus_marker_id: None,
+                        db_id: Some(message_id.0),
+                        fidelity_tag: if fidelity_raw == 0 {
+                            None
+                        } else {
+                            u8::try_from(fidelity_raw)
+                                .ok()
+                                .map(ContextFidelity::from_u8)
+                        },
+                        embedding: None,
+                    },
+                }
+            },
+        ))
     }
 
     /// Fetch messages by a list of IDs in a single query.
