@@ -601,6 +601,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MemoryError::Timeout` on expiry; `graph_recall_astar`'s existing fire-and-forget `if let Err`
   handling at the call site already logs and continues, so recall itself remains fail-open.
   Closes #5522.
+- `fix(llm)`: `gonka_live_chat_round_trip` (`crates/zeph-llm/tests/gonka_live.rs`) hard-failed
+  with an opaque `ApiError { status: 405 }` when its default node URL
+  (`http://node1.gonka.ai:8000`) or the repo-documented example (`https://node1.gonka.ai`)
+  were unreachable — indistinguishable from a real `GonkaProvider` regression (#5549). Neither
+  URL is a guaranteed-reachable testnet endpoint; investigation confirmed the `gonkagate`
+  OpenAI-compatible gateway (`https://api.gonkagate.com/v1`, the `--init` wizard's "gonkagate"
+  preset) reaches the same Gonka network and is currently live. Adds a second live-gated test,
+  `gonkagate_compatible_chat_round_trip`, exercising that path via `CompatibleProvider` and
+  gated on `ZEPH_COMPATIBLE_GONKAGATE_API_KEY` — a tolerated `LlmError::RateLimited` (HTTP
+  429/503, both mapped to the same variant by `send_with_retry`) is logged as a transient
+  condition rather than failing the test, without claiming it confirms reachability or auth
+  (only a real `Ok` response does). The native-path test's known-dead default node URL was
+  removed entirely rather than kept as a fallback: `ZEPH_GONKA_NODE_URL` is now required and
+  the test skips (mirroring the existing `ZEPH_GONKA_PRIVATE_KEY` skip convention) rather than
+  silently hitting a host already proven to serve an unrelated Cosmos explorer app. On a
+  genuine chat failure it now fails with a message clarifying that an unreachable node is an
+  infra/URL problem, not necessarily a provider-code regression, and points at the
+  compatible-path test as a network-reachability cross-check; both tests restore/keep a
+  `!response.is_empty()` assertion on success. The documented `https://node1.gonka.ai` URL
+  format itself was left unchanged — it is structurally correct (plain HTTPS base URL); only
+  the specific host's current reachability is in question, which this project does not
+  control.
 - `fix(memory)`: five `INTEGER`-as-`i64` decode mismatches (same defect class as #5538/#5544,
   fixed in #5560) surfaced outside that PR's touched functions: `compression_guidelines.rs`'s
   `load_compression_guidelines`/`load_compression_guidelines_by_category` decoded the `INTEGER`
