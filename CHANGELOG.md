@@ -32,6 +32,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per turn (cleared at turn boundaries); when present, the `Retrieve` branch degrades
   gracefully and lets the requested tool proceed instead of mandating another retrieval
   attempt. Closes #5584.
+- `fix(db)`: `zeph_db::sql!`'s `postgres`-feature expansion no longer leaks a fresh heap
+  allocation on every invocation. Previously each call rewrote `?`/`?N` placeholders to
+  `$N` and `Box::leak`ed the result unconditionally, so a query executed repeatedly (e.g.
+  inside a loop, or simply called many times over a long-running process) leaked one
+  allocation per execution rather than per call site as the doc comment claimed. Replaced
+  with a call-site-local `static LazyLock<String>`: macro expansion is textual, so each
+  `sql!(...)` call site gets its own `LazyLock` that computes the rewrite once and caches
+  it for the process lifetime. Verified no call site in the workspace passes a
+  runtime-varying `$query` (a `LazyLock` closure only runs once, so a non-constant
+  `$query` would silently freeze at its first-seen value) — all ~620 `sql!(` invocations
+  pass a string literal. Delivers the per-call-site caching acceptance criterion
+  originally stated but never implemented for #2387. Closes #5431.
 
 ### Added
 

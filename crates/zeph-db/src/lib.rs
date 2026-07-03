@@ -80,12 +80,15 @@ pub type ActiveDialect = <ActiveDriver as DatabaseDriver>::Dialect;
 ///
 /// `PostgreSQL`: rewrites `?` to `$1`, `$2`, ... and `?N` (`SQLite`'s numbered
 /// placeholder, e.g. `?1`) to `$N` using [`rewrite_placeholders`]. Repeated
-/// references to the same `?N` collapse to the same `$N`. The rewritten
-/// string is leaked via `Box::leak` to obtain `&'static str` —
-/// no caching: each call site leaks one allocation per unique SQL string.
-/// The set of unique SQL strings is bounded (call sites are fixed at compile
-/// time), so total leaked memory is bounded and acceptable for a long-running
-/// process. Do NOT wrap `PostgreSQL` JSONB queries using `?`/`?|`/`?&`
+/// references to the same `?N` collapse to the same `$N`. The rewrite runs at
+/// most once per call site: the result is memoized in a call-site-local
+/// `LazyLock<String>`, so a query executed in a loop or on a hot path incurs
+/// the rewrite cost once per process lifetime rather than once per execution.
+/// This requires `$query` to be a compile-time-constant expression (in
+/// practice, always a string literal at every call site in this workspace) —
+/// the closure passed to `LazyLock::new` captures `$query` and runs exactly
+/// once, so a runtime-varying `$query` would silently freeze at its
+/// first-seen value. Do NOT wrap `PostgreSQL` JSONB queries using `?`/`?|`/`?&`
 /// operators through this macro; use `$N` placeholders directly for those.
 ///
 /// # Example
@@ -108,11 +111,13 @@ macro_rules! sql {
 #[macro_export]
 macro_rules! sql {
     ($query:expr) => {{
-        // Leak the rewritten query string to obtain `&'static str`.
-        // The set of unique SQL strings in the application is finite, so total
-        // leaked memory is bounded and acceptable for a long-running process.
-        let s: String = $crate::rewrite_placeholders($query);
-        Box::leak(s.into_boxed_str()) as &'static str
+        // A `static` item inside a macro expansion is instantiated once per
+        // call site (macros expand textually), giving each call site its own
+        // `LazyLock`. The rewrite runs on first execution of this call site
+        // and is cached for the process lifetime — no per-execution leak.
+        static CACHE: ::std::sync::LazyLock<::std::string::String> =
+            ::std::sync::LazyLock::new(|| $crate::rewrite_placeholders($query));
+        CACHE.as_str()
     }};
 }
 

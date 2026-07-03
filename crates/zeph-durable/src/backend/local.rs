@@ -409,8 +409,9 @@ impl LocalBackend {
         for entry in entries {
             rows.push(self.prepare_row(entry)?);
         }
-        // Evaluate the dialect-rewritten statement once (the postgres `sql!` leaks on each call),
-        // then reuse it for every row in the batch.
+        // `sql!()` caches its postgres rewrite per call site (see #5431), so hoisting
+        // this out of the loop below is no longer required to avoid a leak — kept
+        // anyway since it reads the intent clearly and costs nothing.
         let insert = sql!(
             "INSERT INTO durable_journal
                 (execution_id, step_id, entry_kind, idem_key, effect_class, payload, payload_version, hmac, created_at)
