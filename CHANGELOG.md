@@ -87,6 +87,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `*_matches_active_dialect` CI name-filter scoping in `zeph-memory`'s postgres test job
   remains necessary and is not widened. That remains open follow-up work. Refs #5571.
 
+- `fix(core)`: `run_configured_acp_autostart` (`src/runner.rs`) failed to compile with the
+  `acp` feature enabled and `acp-http` disabled (`E0004`, non-exhaustive match). `AcpTransport`
+  (`zeph-config`) is `#[non_exhaustive]`, so matching it from outside its defining crate
+  requires an unconditional wildcard arm regardless of local variant coverage; the only
+  wildcard arm present was itself gated `#[cfg(feature = "acp-http")]`, leaving no catch-all
+  when that feature was off. Replaced it with a single unconditional `_` arm — covering only
+  genuinely-unknown future variants, since `Stdio`/`Http`/`Both` remain fully handled by the
+  existing explicit arms under every feature combination — that warns and falls back to
+  stdio, matching the convention already used for the TUI transport-selection match earlier
+  in the same file. Closes #5623.
 - `fix(tools,acp)`: ACP (`zeph --acp`) and the daemon (`zeph serve`) gated only the base
   tool chain (file/shell/scrape/cwd/diagnostics) behind `TrustGateExecutor`; `memory_save`,
   MCP-sourced tools, `load_skill`/`invoke_skill`, and `search_code` were composed outside

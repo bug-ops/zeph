@@ -350,8 +350,13 @@ async fn run_configured_acp_autostart(cli: &Cli, transport: AcpTransport) -> any
             ))
             .await
         }
-        #[cfg(feature = "acp-http")]
+        // AcpTransport is #[non_exhaustive]; this arm only reaches variants unknown to
+        // this build (Stdio/Http/Both are all handled above under every feature combination).
         _ => {
+            tracing::warn!(
+                transport = ?transport,
+                "ACP autostart requested with an unrecognized transport variant; falling back to stdio"
+            );
             Box::pin(run_acp_server(
                 config_path.as_deref(),
                 vault_backend.as_deref(),
