@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -614,7 +615,13 @@ async fn generate_community_summary(
     }
 
     let messages = [Message::from_legacy(Role::User, prompt)];
-    let response: String = provider.chat(&messages).await.map_err(MemoryError::Llm)?;
+    let response: String = tokio::time::timeout(Duration::from_secs(15), provider.chat(&messages))
+        .await
+        .map_err(|_| {
+            tracing::warn!("community summary generation: LLM call timed out after 15s");
+            MemoryError::Timeout("community summary: LLM call timed out after 15s".into())
+        })?
+        .map_err(MemoryError::Llm)?;
     Ok(response)
 }
 
@@ -991,6 +998,34 @@ mod tests {
         // floor_char_boundary(10) for 4-byte chars lands at 8 (2 full emojis = 8 bytes)
         assert_eq!(result.len(), 8 + 3, "2 emojis (8 bytes) + '...' (3 bytes)");
         assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    // ── timeout regression test (#5502) ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_generate_community_summary_times_out() {
+        tokio::time::pause();
+        let mock = zeph_llm::mock::MockProvider::default().with_delay(20_000);
+        let provider = AnyProvider::Mock(mock);
+        let fut = async move {
+            generate_community_summary(
+                &provider,
+                &["A".to_owned(), "B".to_owned()],
+                &["A relates B".to_owned()],
+                usize::MAX,
+            )
+            .await
+        };
+        let handle = tokio::spawn(fut); // EXEMPT: test-only tokio::time::pause harness
+        tokio::time::advance(Duration::from_secs(16)).await;
+        let result = handle.await.expect("task panicked");
+        match result {
+            Err(MemoryError::Timeout(msg)) => assert!(
+                msg.contains("community summary"),
+                "unexpected timeout message: {msg}"
+            ),
+            other => panic!("expected MemoryError::Timeout, got {other:?}"),
+        }
     }
 
     #[tokio::test]
