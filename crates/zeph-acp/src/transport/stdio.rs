@@ -97,6 +97,10 @@ pub(crate) async fn build_agent_state(
     if let Some(factory) = server_config.provider_factory {
         agent = agent.with_provider_factory(factory, server_config.available_models);
     }
+    #[cfg(feature = "unstable-llm-providers")]
+    {
+        agent = agent.with_provider_names(server_config.provider_names);
+    }
     if let Some(manager) = server_config.mcp_manager {
         agent = agent.with_mcp_manager(manager);
     }

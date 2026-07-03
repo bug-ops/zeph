@@ -190,6 +190,8 @@ struct SharedAgentDeps {
     /// Pre-built provider factory for ACP model switching.
     #[cfg(feature = "acp")]
     acp_provider_factory: Option<zeph_acp::ProviderFactory>,
+    /// Provider name + protocol pairs advertised via `providers/list` (#5448).
+    acp_provider_names: Vec<(String, zeph_acp::LlmProtocol)>,
     /// Project rule file paths to advertise in session `_meta`.
     acp_project_rules: Vec<PathBuf>,
     /// Allowlist of directories ACP clients may reference in session requests.
@@ -715,6 +717,7 @@ async fn build_acp_deps(
         },
         sqlite_path: crate::db_url::resolve_db_url(config).to_owned(),
         acp_provider_factory: Some(build_acp_provider_factory(config, app.secret_registry())),
+        acp_provider_names: acp_provider_names(config),
         acp_project_rules,
         acp_additional_directories: config.acp.additional_directories.clone(),
         acp_auth_methods: config.acp.auth_methods.clone(),
@@ -1531,6 +1534,29 @@ fn build_acp_provider_factory(
     })
 }
 
+/// Build the `(name, protocol)` list advertised via ACP `providers/list` (#5448).
+///
+/// Reuses the same `config.llm.providers` source of truth as [`build_acp_provider_factory`]
+/// and `discover_models_from_config`, so the advertised identity always matches the providers
+/// actually wired for model switching. Vault-resolved API keys are never included.
+#[cfg(feature = "acp")]
+fn acp_provider_names(config: &zeph_core::config::Config) -> Vec<(String, zeph_acp::LlmProtocol)> {
+    config
+        .llm
+        .providers
+        .iter()
+        .map(|entry| {
+            let protocol = match entry.provider_type {
+                zeph_core::config::ProviderKind::Claude => zeph_acp::LlmProtocol::Anthropic,
+                zeph_core::config::ProviderKind::OpenAi
+                | zeph_core::config::ProviderKind::Compatible => zeph_acp::LlmProtocol::OpenAi,
+                other => zeph_acp::LlmProtocol::Other(other.as_str().to_owned()),
+            };
+            (entry.effective_name(), protocol)
+        })
+        .collect()
+}
+
 /// Collect project rule file paths from `.claude/rules/*.md` and skill files.
 ///
 /// Rule files are resolved relative to the current working directory.
@@ -1637,6 +1663,7 @@ pub(crate) async fn run_acp_server(
         permission_file: deps.acp_permission_file.clone(),
         provider_factory: deps.acp_provider_factory.take(),
         available_models: std::sync::Arc::clone(&deps.acp_available_models),
+        provider_names: deps.acp_provider_names.clone(),
         mcp_manager: Some(mcp_manager_for_acp),
         auth_bearer_token: deps.acp_auth_bearer_token.clone(),
         discovery_enabled: deps.acp_discovery_enabled,
@@ -1718,6 +1745,7 @@ pub(crate) async fn run_acp_http_server(
                 app.config().acp.available_models.clone()
             },
         )),
+        provider_names: acp_provider_names(app.config()),
         mcp_manager: Some(Arc::clone(&mcp_manager_for_acp)),
         auth_bearer_token,
         discovery_enabled: app.config().acp.discovery_enabled,
@@ -1927,6 +1955,56 @@ mod tests {
             !matches!(provider, zeph_llm::any::AnyProvider::Masked(_)),
             "no registry supplied — factory output must be a plain passthrough"
         );
+    }
+
+    /// #5448 review follow-up: `acp_provider_names()` had zero direct test coverage — the
+    /// integration test only exercises a manually-constructed `LlmProtocol`, never these match arms.
+    #[test]
+    fn acp_provider_names_maps_known_protocols() {
+        let mut config = zeph_core::config::Config::default();
+        config.llm.providers = vec![
+            zeph_core::config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::Claude,
+                name: Some("claude".into()),
+                ..zeph_core::config::ProviderEntry::default()
+            },
+            zeph_core::config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::OpenAi,
+                name: Some("openai".into()),
+                ..zeph_core::config::ProviderEntry::default()
+            },
+            zeph_core::config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::Compatible,
+                name: Some("compat".into()),
+                ..zeph_core::config::ProviderEntry::default()
+            },
+            zeph_core::config::ProviderEntry {
+                provider_type: zeph_core::config::ProviderKind::Ollama,
+                name: Some("ollama".into()),
+                ..zeph_core::config::ProviderEntry::default()
+            },
+        ];
+
+        let names = acp_provider_names(&config);
+
+        assert_eq!(
+            names,
+            vec![
+                ("claude".to_owned(), zeph_acp::LlmProtocol::Anthropic),
+                ("openai".to_owned(), zeph_acp::LlmProtocol::OpenAi),
+                ("compat".to_owned(), zeph_acp::LlmProtocol::OpenAi),
+                (
+                    "ollama".to_owned(),
+                    zeph_acp::LlmProtocol::Other("ollama".to_owned())
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn acp_provider_names_empty_providers_returns_empty_vec() {
+        let config = zeph_core::config::Config::default();
+        assert!(acp_provider_names(&config).is_empty());
     }
 
     #[test]

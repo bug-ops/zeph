@@ -95,6 +95,11 @@ pub struct AcpServerConfig {
     pub provider_factory: Option<crate::agent::ProviderFactory>,
     /// Available model identifiers to advertise in `new_session` `config_options`.
     pub available_models: SharedAvailableModels,
+    /// Provider name + protocol pairs from `[[llm.providers]]`, advertised via `providers/list`.
+    ///
+    /// Vault-resolved API keys are never passed here — only the public routing identity.
+    #[cfg(feature = "unstable-llm-providers")]
+    pub provider_names: Vec<(String, agent_client_protocol_schema::v1::LlmProtocol)>,
     /// Optional shared MCP manager for `ext_method` add/remove/list.
     pub mcp_manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     /// Bearer token for HTTP and WebSocket transport authentication.
@@ -148,6 +153,8 @@ impl Clone for AcpServerConfig {
             permission_file: self.permission_file.clone(),
             provider_factory: self.provider_factory.clone(),
             available_models: self.available_models.clone(),
+            #[cfg(feature = "unstable-llm-providers")]
+            provider_names: self.provider_names.clone(),
             mcp_manager: self.mcp_manager.clone(),
             auth_bearer_token: self.auth_bearer_token.clone(),
             discovery_enabled: self.discovery_enabled,
@@ -177,6 +184,8 @@ impl Default for AcpServerConfig {
             permission_file: None,
             provider_factory: None,
             available_models: std::sync::Arc::new(parking_lot::RwLock::new(Vec::new())),
+            #[cfg(feature = "unstable-llm-providers")]
+            provider_names: Vec::new(),
             mcp_manager: None,
             auth_bearer_token: None,
             discovery_enabled: true,

@@ -98,6 +98,24 @@ fn test_config_with_models(name: &str, models: Vec<&str>) -> AcpServerConfig {
     }
 }
 
+/// Server config with provider identities for `providers/list` coverage (#5448).
+#[cfg(feature = "unstable-llm-providers")]
+fn test_config_with_provider_names(
+    name: &str,
+    providers: Vec<(&str, zeph_acp::LlmProtocol)>,
+) -> AcpServerConfig {
+    AcpServerConfig {
+        agent_name: name.to_owned(),
+        agent_version: "0.0.1".to_owned(),
+        max_sessions: 8,
+        provider_names: providers
+            .into_iter()
+            .map(|(n, p)| (n.to_owned(), p))
+            .collect(),
+        ..AcpServerConfig::default()
+    }
+}
+
 /// Creates an in-process duplex transport pair.
 /// Returns `(server_writer, server_reader, client_writer, client_reader)`.
 fn duplex_pair() -> (
@@ -269,6 +287,53 @@ async fn unknown_ext_method_returns_null() {
                 res = server_fut => panic!("server exited before client: {res:?}"),
                 result = client_fut => {
                     assert!(result.is_ok(), "ext_method failed: {result:?}");
+                }
+            }
+        })
+        .await;
+}
+
+/// #5448 regression: `providers/list` must reflect `AcpServerConfig::provider_names` as wired
+/// through `build_agent_state`, not always return an empty array.
+#[cfg(feature = "unstable-llm-providers")]
+#[tokio::test(flavor = "current_thread")]
+async fn providers_list_reflects_configured_provider_names() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (sw, sr, cw, cr) = duplex_pair();
+            let config = test_config_with_provider_names(
+                "test-agent",
+                vec![("openai", zeph_acp::LlmProtocol::OpenAi)],
+            );
+            let server_fut = serve_connection(noop_spawner(), config, sw, sr);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let raw_params =
+                    Arc::from(serde_json::value::RawValue::from_string("{}".to_owned()).unwrap());
+                let resp = cx
+                    .send_request(acp::schema::v1::ClientRequest::ExtMethodRequest(
+                        acp::schema::v1::ExtRequest::new("providers/list", raw_params),
+                    ))
+                    .block_task()
+                    .await?;
+
+                let body = resp.to_string();
+                assert!(
+                    body.contains("openai"),
+                    "providers/list must include the configured provider name, got: {body}"
+                );
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "providers/list ext_method failed: {result:?}");
                 }
             }
         })

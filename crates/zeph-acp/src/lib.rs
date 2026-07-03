@@ -98,3 +98,7 @@ pub use transport::{AcpServerConfig, serve_connection, serve_stdio};
 pub use agent::SendAgentSpawner;
 #[cfg(feature = "acp-http")]
 pub use transport::{AcpHttpState, acp_router};
+
+/// Wire protocol type for an LLM provider, used to populate [`AcpServerConfig::provider_names`].
+#[cfg(feature = "unstable-llm-providers")]
+pub use agent_client_protocol_schema::v1::LlmProtocol;

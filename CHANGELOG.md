@@ -586,6 +586,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   following the switch. Re-checks `apply_provider_override()` at the start of
   `process_user_message()`, the single call site every turn-dispatch branch funnels through, so a
   switch written mid-wait is picked up for the very next turn it affects. Closes #5548.
+- `fix(acp)`: ACP `providers/list` (the `unstable-llm-providers` ext surface) no longer always
+  returns an empty array regardless of configured `[[llm.providers]]` entries (#5448). Root cause:
+  `AcpServerConfig` had no `provider_names` field, so `build_agent_state` (the shared constructor
+  for both the stdio and HTTP ACP transports) had nothing to plumb into
+  `ZephAcpAgentState::with_provider_names(...)`. Added the field (gated
+  `#[cfg(feature = "unstable-llm-providers")]`, matching the existing gate on
+  `ZephAcpAgentState::provider_names`) and a new `acp_provider_names()` helper in `src/acp.rs`
+  that derives `(name, protocol)` pairs from `config.llm.providers` — the same source of truth
+  already used by `build_acp_provider_factory` and `discover_models_from_config`, so the
+  advertised provider identity always matches what model switching already exposes. The root
+  `acp` Cargo feature now also forwards `zeph-acp/unstable-llm-providers` explicitly, instead of
+  relying on it happening to sit in `zeph-acp`'s default feature set.
+
+  Note: a related issue, #5556 (`ElicitationBridge::elicit()` has zero call sites, making ACP
+  elicitation structurally unreachable), was investigated in the same pass and found to be an
+  architectural gap rather than a wiring fix — a shared, take-once MCP elicitation receiver would
+  cross-wire concurrent ACP sessions' elicitation prompts if wired naively. Descoped from this fix
+  pending a dedicated design pass; findings recorded on the issue.
+
 - `fix(memory)`: clarify that `[memory.admission] admission_strategy = "rl"` is not silently a
   no-op (#5543) — `src/bootstrap/mod.rs::build_admission_control` already emits a startup
   `tracing::warn!` when this variant is selected (added by #2485 for #2416, predating this issue),
