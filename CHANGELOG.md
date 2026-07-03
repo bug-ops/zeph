@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tui)`: the TUI command palette's `daemon:connect`, `daemon:disconnect`, and
+  `daemon:status` entries no longer collapse into one indistinguishable "not yet
+  implemented" toast. `daemon:status` now reports genuine connection state (connected to
+  the remote daemon URL passed via `--connect <URL>`, or local mode) via a new
+  `App.remote_daemon_url` field set at startup; `daemon:connect`/`daemon:disconnect` give
+  honest, differentiated guidance pointing to `--connect <URL>` and quitting the TUI,
+  since live in-session daemon attach/detach requires a runtime-swappable transport that
+  does not exist yet (the transport is fixed at TUI construction time). Closes #5509.
 - `fix(tools,core)`: live agent turns no longer stall indefinitely when Qdrant is
   unreachable (up to 240s observed, never dispatching the originally-requested tool). Two
   compounding defects: (1) `handle_tool_failure_outcomes` misclassified every structured

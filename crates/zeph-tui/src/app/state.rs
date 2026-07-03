@@ -113,6 +113,7 @@ impl App {
             mouse_enabled: false,
             last_layout: None,
             pending_mouse_capture: None,
+            remote_daemon_url: None,
         }
     }
 
@@ -584,6 +585,35 @@ impl App {
     pub fn with_tool_density(mut self, density: ToolDensity) -> Self {
         self.tool_density = density;
         self
+    }
+
+    /// Record the remote daemon URL this session was attached to via `--connect <URL>`.
+    ///
+    /// Set once at startup in `run_tui_remote`; there is no runtime mechanism to attach
+    /// to or detach from a daemon mid-session (#5509). Used by `daemon:status` to report
+    /// real connection state instead of a stub message.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_tui::App;
+    ///
+    /// let (user_tx, _) = mpsc::channel(64);
+    /// let (_, agent_rx) = mpsc::channel(64);
+    /// let app = App::new(user_tx, agent_rx).with_remote_daemon_url("http://localhost:8765");
+    /// ```
+    #[must_use]
+    pub fn with_remote_daemon_url(mut self, url: impl Into<String>) -> Self {
+        self.remote_daemon_url = Some(url.into());
+        self
+    }
+
+    /// Return the remote daemon URL this session was attached to at startup, if any.
+    ///
+    /// `None` means this is a local session (no `--connect <URL>` flag was used).
+    pub(crate) fn remote_daemon_url(&self) -> Option<&str> {
+        self.remote_daemon_url.as_deref()
     }
 
     /// Wire a [`TaskSupervisor`] into the `App` for the task registry panel.
@@ -1462,5 +1492,19 @@ mod tests {
         let (_, agent_rx) = mpsc::channel(1);
         let app = App::new(user_tx, agent_rx).with_theme_name("gruvbox-dark");
         assert_eq!(app.active_theme_name(), "gruvbox-dark");
+    }
+
+    #[test]
+    fn with_remote_daemon_url_builder_sets_url() {
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx).with_remote_daemon_url("http://localhost:8765");
+        assert_eq!(app.remote_daemon_url(), Some("http://localhost:8765"));
+    }
+
+    #[test]
+    fn remote_daemon_url_defaults_to_none() {
+        let app = make_app();
+        assert_eq!(app.remote_daemon_url(), None);
     }
 }

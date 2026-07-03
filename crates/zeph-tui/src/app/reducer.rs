@@ -730,11 +730,29 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                     );
                     return vec![];
                 }
-                TuiCommand::DaemonConnect
-                | TuiCommand::DaemonDisconnect
-                | TuiCommand::DaemonStatus => {
+                TuiCommand::DaemonStatus => {
+                    let msg = match app.remote_daemon_url() {
+                        Some(url) => format!("Connected to remote daemon at {url}"),
+                        None => "Running in local mode (not connected to a remote daemon).\n\
+                                 Use `zeph --tui --connect <URL>` to attach to a remote daemon."
+                            .to_owned(),
+                    };
+                    app.push_system_message_pub(msg);
+                    return vec![];
+                }
+                TuiCommand::DaemonConnect => {
                     app.push_system_message_pub(
-                        "Daemon commands are not yet implemented in this mode.".to_owned(),
+                        "Live in-session daemon attach is not supported yet.\n\
+                         To connect to a remote daemon, restart with:\n  zeph --tui --connect <URL>"
+                            .to_owned(),
+                    );
+                    return vec![];
+                }
+                TuiCommand::DaemonDisconnect => {
+                    app.push_system_message_pub(
+                        "There is no live daemon connection to tear down in this mode.\n\
+                         If you started with `--connect <URL>`, quit the TUI (q / Ctrl+C) to disconnect."
+                            .to_owned(),
                     );
                     return vec![];
                 }
@@ -1273,6 +1291,55 @@ mod tests {
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SecurityEvents));
         assert!(effects.is_empty());
         assert_eq!(app.sessions.current().messages.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_daemon_status_reports_local_mode_when_disconnected() {
+        let (mut app, _rx) = make_app();
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DaemonStatus));
+        assert!(effects.is_empty());
+        let msg = &app.sessions.current().messages.last().unwrap().content;
+        assert!(msg.contains("local mode"));
+        assert!(msg.contains("--connect"));
+    }
+
+    #[test]
+    fn dispatch_daemon_status_reports_connected_when_remote_url_set() {
+        let (mut app, _rx) = make_app();
+        app = app.with_remote_daemon_url("http://example.com:9000");
+        let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DaemonStatus));
+        assert!(effects.is_empty());
+        let msg = &app.sessions.current().messages.last().unwrap().content;
+        assert!(msg.contains("Connected"));
+        assert!(msg.contains("http://example.com:9000"));
+    }
+
+    #[test]
+    fn dispatch_daemon_connect_and_disconnect_give_distinct_messages() {
+        let (mut app, _rx) = make_app();
+        reduce(&mut app, Action::Dispatch(TuiCommand::DaemonConnect));
+        let connect_msg = app
+            .sessions
+            .current()
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .clone();
+
+        reduce(&mut app, Action::Dispatch(TuiCommand::DaemonDisconnect));
+        let disconnect_msg = app
+            .sessions
+            .current()
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .clone();
+
+        assert_ne!(connect_msg, disconnect_msg);
+        assert!(connect_msg.contains("--connect"));
+        assert!(disconnect_msg.contains("quit"));
     }
 
     // ── Group C tests ───────────────────────────────────────────────────────────

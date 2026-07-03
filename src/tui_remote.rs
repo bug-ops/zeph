@@ -26,6 +26,9 @@ pub(crate) async fn run_tui_remote(
         },
     );
 
+    // Cloned before `url` is moved into the `async move` SSE pump block below.
+    let remote_daemon_url = url.clone();
+
     // user_tx is passed to App; App sends user text through it.
     // We receive on user_rx and forward to the A2A SSE pump.
     let (user_tx, mut user_rx) = tokio::sync::mpsc::channel::<String>(32);
@@ -168,7 +171,8 @@ pub(crate) async fn run_tui_remote(
         .with_tool_density(config.tui.tool_density)
         .with_theme(tui_theme)
         .with_theme_name(tui_theme_name)
-        .with_effective_color_mode(tui_color_mode);
+        .with_effective_color_mode(tui_color_mode)
+        .with_remote_daemon_url(remote_daemon_url);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
 
     zeph_tui::run_tui(tui_app, event_rx).await?;

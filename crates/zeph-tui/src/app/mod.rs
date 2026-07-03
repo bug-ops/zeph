@@ -514,6 +514,12 @@ pub struct App {
     /// Drained by `tui_loop` in the shared post-select block (C2 — never
     /// inside an event arm to avoid ordering hazards).
     pub(crate) pending_mouse_capture: Option<bool>,
+
+    /// URL of the remote daemon this session was attached to via `--connect <URL>`, if any.
+    ///
+    /// Set once at startup by [`with_remote_daemon_url`](Self::with_remote_daemon_url) —
+    /// there is no runtime mechanism to attach/detach mid-session (#5509).
+    remote_daemon_url: Option<String>,
 }
 
 pub(crate) mod action;
