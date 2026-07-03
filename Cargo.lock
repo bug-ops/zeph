@@ -10292,6 +10292,7 @@ dependencies = [
  "zeph-agent-persistence",
  "zeph-bench",
  "zeph-channels",
+ "zeph-commands",
  "zeph-common",
  "zeph-config",
  "zeph-context",

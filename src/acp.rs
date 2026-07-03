@@ -166,6 +166,11 @@ struct SharedAgentDeps {
     /// reference per session.
     resume_condenser: zeph_session::LlmCondenser,
     resume_token_counter: std::sync::Arc<zeph_agent_context::memory_backend::TokenCounterAdapter>,
+    /// Snapshot of `[[llm.providers]]` entries, wired into each session's `Agent` via
+    /// `with_provider_pool` so `resolve_background_provider` (background-provider lookups such
+    /// as `memory.graph.extract_provider`) can find named providers (#5450).
+    provider_pool: Vec<zeph_core::config::ProviderEntry>,
+    provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
     trajectory_config: zeph_core::config::TrajectoryConfig,
@@ -608,6 +613,49 @@ async fn build_acp_deps(
     let (resume_condenser_built, resume_token_counter_built) =
         zeph_core::provider_factory::build_resume_condenser(config, &provider);
     let feedback_classifier = app.build_feedback_classifier(&provider);
+    // #5450: built once here, where the full `Config` is still in scope — mirrors
+    // `src/runner.rs`'s CLI-path snapshot construction, so ACP sessions get a populated
+    // `provider_pool` too (previously left empty, breaking `resolve_background_provider`).
+    let provider_config_snapshot = zeph_core::ProviderConfigSnapshot {
+        claude_api_key: config
+            .secrets
+            .claude_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        openai_api_key: config
+            .secrets
+            .openai_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        gemini_api_key: config
+            .secrets
+            .gemini_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        compatible_api_keys: config
+            .secrets
+            .compatible_api_keys
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expose().to_owned()))
+            .collect(),
+        llm_request_timeout_secs: config.timeouts.llm_request_timeout_secs,
+        embedding_model: config.llm.embedding_model.clone(),
+        gonka_private_key: config
+            .secrets
+            .gonka_private_key
+            .as_ref()
+            .map(|s| zeroize::Zeroizing::new(s.expose().to_owned())),
+        gonka_address: config
+            .secrets
+            .gonka_address
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        cocoon_access_hash: config
+            .secrets
+            .cocoon_access_hash
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+    };
 
     let deps = SharedAgentDeps {
         provider,
@@ -694,6 +742,8 @@ async fn build_acp_deps(
         session_persistence_config: config.session.clone(),
         resume_condenser: resume_condenser_built,
         resume_token_counter: resume_token_counter_built,
+        provider_pool: config.llm.providers.clone(),
+        provider_config_snapshot,
         focus_config: config.agent.focus.clone(),
         sidequest_config: config.memory.sidequest.clone(),
         trajectory_config: config.memory.trajectory.clone(),
@@ -814,6 +864,8 @@ async fn spawn_acp_agent(
     let guardrail_provider = d.guardrail_provider.clone();
     let session_config = d.session_config.clone();
     let session_persistence_config = d.session_persistence_config.clone();
+    let provider_pool = d.provider_pool.clone();
+    let provider_config_snapshot = d.provider_config_snapshot.clone();
     let managed_skills_dir = crate::bootstrap::managed_skills_dir();
     let skill_reload_tx = d.skill_reload_tx.clone();
     let config_reload_tx = d.config_reload_tx.clone();
@@ -1079,6 +1131,7 @@ async fn spawn_acp_agent(
         .with_mcp_shared_tools(mcp_shared_tools)
         .with_focus_and_sidequest_config(d.focus_config.clone(), d.sidequest_config.clone())
         .with_trajectory_and_category_config(d.trajectory_config.clone(), d.category_config.clone())
+        .with_provider_pool(provider_pool, provider_config_snapshot)
         .with_embedding_provider(d.embedding_provider.clone())
         .maybe_init_tool_schema_filter(tool_filter_config, provider.clone()),
     )

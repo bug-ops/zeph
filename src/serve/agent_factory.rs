@@ -107,7 +107,8 @@ pub(crate) async fn build_agent_factory(
             deps.summarization_threshold,
         )
         .with_session_sink(session_sink)
-        .with_session_persistence_config(Some(deps.session_persistence_config));
+        .with_session_persistence_config(Some(deps.session_persistence_config))
+        .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot);
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
         }
@@ -480,6 +481,8 @@ mod tests {
             session_persistence_config: zeph_config::SessionConfig::default(),
             resume_condenser: Arc::new(condenser),
             resume_token_counter: Arc::new(token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
         };
 
         let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
@@ -498,6 +501,63 @@ mod tests {
         assert!(
             has_timestamped_child,
             "DebugDumper::new must create a timestamped subdirectory under the session dir"
+        );
+    }
+
+    /// #5450 regression: `build_agent_factory` must call `Agent::with_provider_pool` so
+    /// `resolve_background_provider` (used by e.g. `memory.graph.extract_provider`) can resolve
+    /// named providers for `/sessions`-created agents — previously `ServeAgentDeps` carried the
+    /// pool but `build_agent_factory`'s builder chain never consumed it, so the pool was always
+    /// empty at runtime. `Agent` exposes no `pub` accessor for `provider_pool` directly, so this
+    /// drives the same observable surface the real `/provider` command uses
+    /// ([`zeph_commands::AgentAccess::handle_provider`] with an empty argument lists configured
+    /// providers) rather than reaching into private fields from outside `zeph-core`.
+    #[tokio::test]
+    async fn build_agent_factory_wires_provider_pool_for_background_resolution() {
+        use zeph_commands::traits::agent::AgentAccess as _;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("provider-pool-test-session");
+
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let deps = ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            max_active_skills: 5,
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            memory: Arc::clone(&memory),
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig::default(),
+            resume_condenser: Arc::new(condenser),
+            resume_token_counter: Arc::new(token_counter),
+            provider_pool: vec![zeph_core::config::ProviderEntry {
+                name: Some("named-test".into()),
+                model: Some("llama3.2".into()),
+                ..zeph_core::config::ProviderEntry::default()
+            }],
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+        };
+
+        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let mut agent = build_agent(channel);
+
+        let output = agent.handle_provider("").await;
+        assert!(
+            output.contains("named-test"),
+            "the pool entry configured on ServeAgentDeps must be visible through the built \
+             Agent's provider_pool; got: {output}"
         );
     }
 }

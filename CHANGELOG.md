@@ -16,12 +16,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   honest, differentiated guidance pointing to `--connect <URL>` and quitting the TUI,
   since live in-session daemon attach/detach requires a runtime-swappable transport that
   does not exist yet (the transport is fixed at TUI construction time). Closes #5509.
-
 - `fix(scheduler)`: `zeph-scheduler`'s test-only `test_pool()` helper hardcoded a
   `SqlitePool` constructor while its return type `DbPool` resolves to `Pool<Postgres>`
   when the `postgres` feature is enabled, causing an `E0308` compile failure under
   `--features postgres`. Now constructs the pool via `DbConfig::connect()`, mirroring
   the pattern already used by this crate's `store.rs` test_pool(). Closes #5595.
+- `fix(core)`: `Agent::resolve_background_provider` (used by ~20 background-provider lookups,
+  e.g. `memory.graph.extract_provider`, `memory.memcot.distill_provider`) silently fell back to
+  the primary provider — even for a name correctly declared in `[[llm.providers]]` — for every
+  `Agent` built via `zeph --acp`, `zeph serve-sessions`, or the A2A/gateway daemon, because
+  `AgentBuilder::with_provider_pool` was only ever called on the CLI single-session path
+  (`src/runner.rs`). The other three Agent-construction sites now build and wire the same
+  provider pool + config snapshot. Closes #5450.
+
+- `fix(core)`: `reformat_tool_call` (parameter-reformat retry, #5453) now leaves the original
+  tool error unchanged instead of silently retrying through the primary provider when
+  `tools.retry.parameter_reformat_provider` names a provider absent from `[[llm.providers]]` —
+  previously a stale/typo'd name would fall back to primary and could replace a clear "invalid
+  parameters" error with a plausible-but-wrong corrected result from the wrong model. Closes
+  #5478.
 
 - `fix(tools,core)`: live agent turns no longer stall indefinitely when Qdrant is
   unreachable (up to 240s observed, never dispatching the originally-requested tool). Two

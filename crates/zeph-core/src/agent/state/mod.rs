@@ -553,6 +553,10 @@ pub(crate) struct LifecycleState {
 ///
 /// Secrets are stored as plain strings because [`Secret`] intentionally does not implement
 /// `Clone`. They are re-wrapped in `Secret` when passed to `build_provider_for_switch`.
+///
+/// `Clone` so ACP/serve deps structs (built once per process) can hand each session its own
+/// owned copy via [`Agent::with_provider_pool`](crate::agent::Agent::with_provider_pool).
+#[derive(Clone, Default)]
 pub struct ProviderConfigSnapshot {
     pub claude_api_key: Option<String>,
     pub openai_api_key: Option<String>,

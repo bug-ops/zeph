@@ -593,6 +593,49 @@ pub(crate) async fn run_daemon(
     let plugin_dirs_supplier = app.plugin_dirs_supplier();
     let config_path_owned = app.config_path().to_owned();
     let session_config = zeph_core::AgentSessionConfig::from_config(config, budget_tokens);
+    // #5450: built here, where the full `Config` is still in scope — mirrors
+    // `src/runner.rs`'s CLI-path snapshot construction, so the daemon's agent gets a populated
+    // `provider_pool` too (previously left empty, breaking `resolve_background_provider`).
+    let provider_config_snapshot = zeph_core::ProviderConfigSnapshot {
+        claude_api_key: config
+            .secrets
+            .claude_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        openai_api_key: config
+            .secrets
+            .openai_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        gemini_api_key: config
+            .secrets
+            .gemini_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        compatible_api_keys: config
+            .secrets
+            .compatible_api_keys
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expose().to_owned()))
+            .collect(),
+        llm_request_timeout_secs: config.timeouts.llm_request_timeout_secs,
+        embedding_model: config.llm.embedding_model.clone(),
+        gonka_private_key: config
+            .secrets
+            .gonka_private_key
+            .as_ref()
+            .map(|s| zeroize::Zeroizing::new(s.expose().to_owned())),
+        gonka_address: config
+            .secrets
+            .gonka_address
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        cocoon_access_hash: config
+            .secrets
+            .cocoon_access_hash
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+    };
 
     let (loopback_channel, loopback_handle) = zeph_core::LoopbackChannel::pair(64);
 
@@ -669,6 +712,7 @@ pub(crate) async fn run_daemon(
             config.memory.category.clone(),
         )
         .with_embedding_provider(embedding_provider.clone())
+        .with_provider_pool(config.llm.providers.clone(), provider_config_snapshot)
         .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider),
     )
     .await;

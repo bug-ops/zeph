@@ -368,6 +368,7 @@ qdrant-client = { workspace = true, features = ["serde"] }
 serial_test.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
+zeph-commands.workspace = true
 zeph-core.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true

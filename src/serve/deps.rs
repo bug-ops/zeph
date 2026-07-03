@@ -52,6 +52,11 @@ pub(crate) struct ServeAgentDeps {
     /// wrapped so `ServeAgentDeps` stays cheaply `Clone` without requiring `LlmCondenser: Clone`.
     pub(crate) resume_condenser: Arc<zeph_session::LlmCondenser>,
     pub(crate) resume_token_counter: Arc<zeph_agent_context::memory_backend::TokenCounterAdapter>,
+    /// Snapshot of `[[llm.providers]]` entries, wired into each session's `Agent` via
+    /// `with_provider_pool` so `resolve_background_provider` (background-provider lookups such
+    /// as `memory.graph.extract_provider`) can find named providers (#5450).
+    pub(crate) provider_pool: Vec<zeph_core::config::ProviderEntry>,
+    pub(crate) provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -107,6 +112,49 @@ pub(crate) async fn build_serve_deps(
     // see `ServeAgentDeps::resume_condenser`'s doc comment.
     let (resume_condenser, resume_token_counter) =
         zeph_core::provider_factory::build_resume_condenser(config, &provider);
+    // #5450: built once here, where the full `Config` is still in scope — mirrors
+    // `src/runner.rs`'s CLI-path snapshot construction, so `/sessions`-created agents get a
+    // populated `provider_pool` too (previously left empty, breaking `resolve_background_provider`).
+    let provider_config_snapshot = zeph_core::ProviderConfigSnapshot {
+        claude_api_key: config
+            .secrets
+            .claude_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        openai_api_key: config
+            .secrets
+            .openai_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        gemini_api_key: config
+            .secrets
+            .gemini_api_key
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        compatible_api_keys: config
+            .secrets
+            .compatible_api_keys
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expose().to_owned()))
+            .collect(),
+        llm_request_timeout_secs: config.timeouts.llm_request_timeout_secs,
+        embedding_model: config.llm.embedding_model.clone(),
+        gonka_private_key: config
+            .secrets
+            .gonka_private_key
+            .as_ref()
+            .map(|s| zeroize::Zeroizing::new(s.expose().to_owned())),
+        gonka_address: config
+            .secrets
+            .gonka_address
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+        cocoon_access_hash: config
+            .secrets
+            .cocoon_access_hash
+            .as_ref()
+            .map(|s| s.expose().to_owned()),
+    };
 
     Ok((
         ServeAgentDeps {
@@ -124,6 +172,8 @@ pub(crate) async fn build_serve_deps(
             session_persistence_config,
             resume_condenser: Arc::new(resume_condenser),
             resume_token_counter,
+            provider_pool: config.llm.providers.clone(),
+            provider_config_snapshot,
         },
         auth_token,
     ))

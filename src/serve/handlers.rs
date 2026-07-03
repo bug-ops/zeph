@@ -503,6 +503,8 @@ mod tests {
             session_persistence_config: zeph_config::SessionConfig::default(),
             resume_condenser: Arc::new(resume_condenser),
             resume_token_counter: Arc::new(resume_token_counter),
+            provider_pool: Vec::new(),
+            provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
         };
         AppState {
             registry: Arc::new(LiveSessionRegistry::new()),
