@@ -627,6 +627,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Set whether the agent is running in `--bare` mode (#5551).
+    ///
+    /// Bare mode skips skill loading, memory init, MCP connections, scheduler startup, and
+    /// filesystem watchers at startup. This flag additionally gates all four shutdown-path
+    /// subsystems that can fire LLM calls after the run loop exits — autoDream consolidation
+    /// (`maybe_autodream`), skill trace-extraction (`maybe_extract_skills_from_trace`), the
+    /// shutdown summary (`maybe_store_shutdown_summary`), and the session digest
+    /// (`maybe_store_session_digest`) — so a bare-mode session never fires a shutdown LLM call.
+    /// Those subsystems are otherwise only gated on their own config flags, which bare mode's
+    /// still-attached in-memory `SemanticMemory` and `conversation_id` do not suppress.
+    #[must_use]
+    pub fn with_bare_mode(mut self, bare: bool) -> Self {
+        self.runtime.config.bare = bare;
+        self
+    }
+
     /// Configure channel identity for per-channel UX preference persistence (#3308, #4654).
     ///
     /// `channel_type` must match the active I/O channel name (`"cli"`, `"tui"`, `"telegram"`,

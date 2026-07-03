@@ -2833,6 +2833,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         config.memory.category.clone(),
     )
     .with_embedding_provider(embedding_provider.clone())
+    .with_bare_mode(exec_mode.bare)
     .maybe_init_tool_schema_filter(config.agent.tool_filter.clone(), embedding_provider)
     .await;
 

@@ -152,6 +152,7 @@ impl<C: Channel> Agent<C> {
     /// Generate and store a lightweight session summary at shutdown when no hard compaction fired.
     ///
     /// Guards:
+    /// - `self.runtime.config.bare` must be `false` (#5551 — bare mode never fires shutdown LLM calls)
     /// - `shutdown_summary` config must be enabled
     /// - `conversation_id` must be set (memory must be attached)
     /// - no existing session summary in the store (primary guard — resilient to failed Qdrant writes)
@@ -159,6 +160,9 @@ impl<C: Channel> Agent<C> {
     ///
     /// All errors are logged as warnings and swallowed — shutdown must never fail.
     pub(super) async fn maybe_store_shutdown_summary(&mut self) {
+        if self.runtime.config.bare {
+            return;
+        }
         if !self.services.memory.compaction.shutdown_summary {
             return;
         }

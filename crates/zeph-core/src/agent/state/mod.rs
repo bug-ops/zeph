@@ -314,6 +314,13 @@ pub(crate) struct RuntimeConfig {
     pub(crate) restoring_provider: bool,
     /// Goal lifecycle feature configuration.
     pub(crate) goals: GoalRuntimeConfig,
+    /// Set from the CLI `--bare` flag (#5551).
+    ///
+    /// Bare mode skips skill loading, memory init, MCP connections, scheduler startup, and
+    /// filesystem watchers at startup; this flag lets shutdown-path subsystems (autoDream
+    /// consolidation, skill trace-extraction, shutdown summary, session digest) apply the
+    /// same gating instead of firing unconditional LLM calls at session end.
+    pub(crate) bare: bool,
 }
 
 /// Groups feedback detection subsystems: correction detector, judge detector, and LLM classifier.
@@ -1242,6 +1249,7 @@ impl Default for RuntimeConfig {
             persist_provider_overrides_enabled: true,
             restoring_provider: false,
             goals: GoalRuntimeConfig::default(),
+            bare: false,
         }
     }
 }

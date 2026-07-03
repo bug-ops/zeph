@@ -67,6 +67,9 @@ impl<C: Channel> super::Agent<C> {
     /// Respects `max_iterations` as a safety bound via timeout.
     #[tracing::instrument(name = "core.agent.maybe_autodream", skip_all, level = "debug")]
     pub(super) async fn maybe_autodream(&mut self) {
+        if self.runtime.config.bare {
+            return;
+        }
         let cfg = self.services.memory.subsystems.autodream_config.clone();
         if !cfg.enabled {
             return;

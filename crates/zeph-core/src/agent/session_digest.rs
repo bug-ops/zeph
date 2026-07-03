@@ -203,8 +203,14 @@ fn recap_is_duplicate_impl(
 impl<C: Channel> Agent<C> {
     /// Generate and persist a session digest at shutdown when digest is enabled.
     ///
+    /// Skips entirely when `self.runtime.config.bare` is `true` (#5551 — bare mode never fires
+    /// shutdown LLM calls).
+    ///
     /// All errors are logged as warnings and swallowed — shutdown must never fail.
     pub(super) async fn maybe_store_session_digest(&mut self) {
+        if self.runtime.config.bare {
+            return;
+        }
         if !self.services.memory.compaction.digest_config.enabled {
             return;
         }

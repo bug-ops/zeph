@@ -118,6 +118,7 @@ fn make_runtime_config() -> RuntimeConfig {
         persist_provider_overrides_enabled: true,
         restoring_provider: false,
         goals: crate::agent::state::GoalRuntimeConfig::default(),
+        bare: false,
     }
 }
 

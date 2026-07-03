@@ -24,6 +24,9 @@ impl<C: Channel> super::Agent<C> {
     /// Reads `[skills.learning]` config via `learning_engine.config`. When
     /// `trace_extraction_enabled = false`, returns immediately without spawning a task.
     pub(super) async fn maybe_extract_skills_from_trace(&mut self) {
+        if self.runtime.config.bare {
+            return;
+        }
         let Some(ref learning_cfg) = self.services.learning_engine.config else {
             return;
         };
