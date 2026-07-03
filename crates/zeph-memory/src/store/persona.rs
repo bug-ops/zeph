@@ -63,7 +63,7 @@ impl DbStore {
              VALUES
                 (?, ?, ?, 1, ?, ?, {now})
              ON CONFLICT(category, content) DO UPDATE SET
-                evidence_count = evidence_count + 1,
+                evidence_count = persona_memory.evidence_count + 1,
                 confidence     = excluded.confidence,
                 supersedes_id  = COALESCE(excluded.supersedes_id, persona_memory.supersedes_id),
                 updated_at     = {now}
