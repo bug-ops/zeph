@@ -84,6 +84,8 @@ impl DbStore {
         // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project
         // both through `Dialect::select_as_text`, aliased back to their original names so
         // `#[derive(sqlx::FromRow)]` still binds them into the `String` fields below.
+        // `confidence` is `REAL` (`FLOAT4`) on Postgres but decodes into an `f64` field;
+        // `CAST(... AS DOUBLE PRECISION)` widens it (same idiom used elsewhere in this crate).
         let created_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let updated_at_sel =
@@ -91,8 +93,8 @@ impl DbStore {
         let rows: Vec<TrajectoryEntryRow> = if let Some(k) = kind {
             let raw = format!(
                 "SELECT id, conversation_id, turn_index, kind, intent, outcome,
-                    tools_used, confidence, {created_at_sel} AS created_at,
-                    {updated_at_sel} AS updated_at
+                    tools_used, CAST(confidence AS DOUBLE PRECISION) AS confidence,
+                    {created_at_sel} AS created_at, {updated_at_sel} AS updated_at
              FROM trajectory_memory
              WHERE kind = ?
              ORDER BY confidence DESC, trajectory_memory.created_at DESC
@@ -107,8 +109,8 @@ impl DbStore {
         } else {
             let raw = format!(
                 "SELECT id, conversation_id, turn_index, kind, intent, outcome,
-                    tools_used, confidence, {created_at_sel} AS created_at,
-                    {updated_at_sel} AS updated_at
+                    tools_used, CAST(confidence AS DOUBLE PRECISION) AS confidence,
+                    {created_at_sel} AS created_at, {updated_at_sel} AS updated_at
              FROM trajectory_memory
              ORDER BY confidence DESC, trajectory_memory.created_at DESC
              LIMIT ?"
