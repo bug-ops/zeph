@@ -2295,6 +2295,126 @@ mod tests {
         assert_eq!(count, 0, "dry-run must not increment extraction_count");
     }
 
+    /// Regression for #5467: `global_degrees` in `ingest_documents` must sum an entity's
+    /// per-document degree across *every* document in the batch, not just the last one —
+    /// this is exactly the accumulation that let an incidentally-mentioned language/tool
+    /// name balloon into a hub entity when it recurred across many documents in the corpus.
+    #[tokio::test]
+    async fn ingest_documents_hub_degree_accumulates_across_documents() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        use super::{GraphExtractionConfig, IngestBatchConfig};
+        use crate::graph::ingest::ImportBatchId;
+
+        let json1 = r#"{"entities":[{"name":"Widget","type":"tool","summary":null},{"name":"Foo","type":"concept","summary":null}],"edges":[{"source":"Widget","target":"Foo","relation":"depends_on","fact":"Widget depends on Foo","edge_type":"semantic"}]}"#;
+        let json2 = r#"{"entities":[{"name":"Widget","type":"tool","summary":null},{"name":"Bar","type":"concept","summary":null}],"edges":[{"source":"Widget","target":"Bar","relation":"depends_on","fact":"Widget depends on Bar","edge_type":"semantic"}]}"#;
+
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![
+            json1.to_owned(),
+            json2.to_owned(),
+        ]));
+        let memory = super::SemanticMemory::with_weights_and_pool_size(
+            ":memory:", "", None, provider, "", 0.7, 0.3, 1,
+        )
+        .await
+        .expect("SemanticMemory init");
+
+        let batch_id = ImportBatchId::new();
+        let doc1 = make_doc("Widget depends on Foo.", "task-hub-1", &batch_id);
+        let doc2 = make_doc("Widget depends on Bar.", "task-hub-2", &batch_id);
+        let config = IngestBatchConfig {
+            dry_run: true,
+            extraction: GraphExtractionConfig {
+                max_entities: 10,
+                max_edges: 10,
+                extraction_timeout_secs: 10,
+                ..GraphExtractionConfig::default()
+            },
+            ..IngestBatchConfig::default()
+        };
+
+        // concurrency=1: documents are processed in order, so MockProvider's queued
+        // responses (json1, json2) line up deterministically with (doc1, doc2).
+        let report = memory
+            .ingest_documents(vec![doc1, doc2], config, batch_id, 1, None, None)
+            .await
+            .expect("dry-run ingest should succeed");
+
+        assert!(report.dry_run);
+        assert_eq!(report.succeeded, 2, "both documents should be processed");
+
+        let widget = report
+            .hub_degree
+            .iter()
+            .find(|h| h.entity == "Widget")
+            .expect("Widget must be present in hub_degree");
+        assert_eq!(
+            widget.degree, 2,
+            "Widget's degree must accumulate across both documents (1 edge per doc)"
+        );
+        assert_eq!(
+            report.hub_degree[0].entity, "Widget",
+            "top-N must be sorted descending by accumulated degree"
+        );
+    }
+
+    /// Regression for #5467: `dry_run_hub_top_n` must truncate the projected hub-degree
+    /// list to the configured size, keeping only the highest-degree entities.
+    #[tokio::test]
+    async fn ingest_documents_hub_degree_respects_top_n_truncation() {
+        use super::{GraphExtractionConfig, IngestBatchConfig};
+        use crate::graph::ingest::ImportBatchId;
+
+        // Single document, 4 entities: A=3 (edges to B, C, D), B=2, C=2, D=1.
+        let extraction_json = r#"{"entities":[
+            {"name":"A","type":"concept","summary":null},
+            {"name":"B","type":"concept","summary":null},
+            {"name":"C","type":"concept","summary":null},
+            {"name":"D","type":"concept","summary":null}
+        ],"edges":[
+            {"source":"A","target":"B","relation":"depends_on","fact":"A depends on B","edge_type":"semantic"},
+            {"source":"A","target":"C","relation":"depends_on","fact":"A depends on C","edge_type":"semantic"},
+            {"source":"A","target":"D","relation":"depends_on","fact":"A depends on D","edge_type":"semantic"},
+            {"source":"B","target":"C","relation":"depends_on","fact":"B depends on C","edge_type":"semantic"}
+        ]}"#;
+        let memory = make_semantic_memory(Some(extraction_json)).await;
+
+        let batch_id = ImportBatchId::new();
+        let doc = make_doc("A depends on B, C, and D.", "task-hub-topn", &batch_id);
+        let config = IngestBatchConfig {
+            dry_run: true,
+            dry_run_hub_top_n: Some(2),
+            extraction: GraphExtractionConfig {
+                max_entities: 10,
+                max_edges: 10,
+                extraction_timeout_secs: 10,
+                ..GraphExtractionConfig::default()
+            },
+            ..IngestBatchConfig::default()
+        };
+
+        let report = memory
+            .ingest_documents(vec![doc], config, batch_id, 1, None, None)
+            .await
+            .expect("dry-run ingest should succeed");
+
+        assert_eq!(
+            report.hub_degree.len(),
+            2,
+            "hub_degree must be truncated to dry_run_hub_top_n"
+        );
+        assert_eq!(
+            report.hub_degree[0].entity, "A",
+            "the highest-degree entity must rank first"
+        );
+        assert_eq!(report.hub_degree[0].degree, 3);
+        assert_eq!(
+            report.hub_degree[1].degree, 2,
+            "second place is whichever of B/C ties at degree 2"
+        );
+    }
+
     #[tokio::test]
     async fn ingest_documents_collect_errors_and_continue() {
         use super::IngestBatchConfig;

@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: `knowledge ingest`'s hub-degree kill-criterion (spec-067 §7) reported a
+  24.3%-of-edges hub on the first live subagent-transcript extraction — the generic
+  language name `Python` collapsed 26 near-duplicate "hello-world" transcripts onto a
+  single hub node, well above the 15% threshold. `TECH_DOC_SYSTEM_PROMPT`
+  (`crates/zeph-memory/src/graph/ingest/prompt.rs`) had no rule anchoring extraction on the
+  specific artifact (e.g. `hello.py`) over the generic, incidentally-used language/tool name
+  when the document's primary subject was something else. Added a rule instructing the
+  extractor to prefer the specific file/script/command entity and mention the
+  language/tool inline in that entity's summary rather than creating a shared node and edge
+  for it, reserving a standalone language/tool entity for documents actually about that
+  language or tool. This eliminates the specific `Python` hub (24.3% → ~10% on re-measurement).
+  Also extracted the previously duplicated `15.0` literal in `src/commands/knowledge.rs`'s
+  `print_graph_ingest_report` into a single `HUB_DEGREE_THRESHOLD_PCT` constant. Note: the
+  gate still WARNs (15.9%-20.8% across live re-runs) on the only corpus measured so far, as
+  hub degree partially relocates onto anchor artifacts (e.g. `hello.py`) on highly
+  repetitive corpora; broader/diverse-corpus re-measurement is tracked separately
+  (see follow-up issue #5625 for broader corpus re-measurement). (#5467)
+
 - `fix(tools,acp)`: ACP (`zeph --acp`) and the daemon (`zeph serve`) gated only the base
   tool chain (file/shell/scrape/cwd/diagnostics) behind `TrustGateExecutor`; `memory_save`,
   MCP-sourced tools, `load_skill`/`invoke_skill`, and `search_code` were composed outside
