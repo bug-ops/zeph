@@ -131,6 +131,8 @@ impl SqliteStore {
     ) -> Result<(i64, String), MemoryError> {
         // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
         // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        // `version` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`, not `i64`;
+        // widened back to `i64` below to keep this function's public return type unchanged.
         let created_at_sel =
             <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let raw = format!(
@@ -141,12 +143,14 @@ impl SqliteStore {
              LIMIT 1"
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
-        let row = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(query_sql))
+        let row = zeph_db::query_as::<_, (i32, String)>(sqlx::AssertSqlSafe(query_sql))
             .bind(conversation_id.map(|c| c.0)) // lgtm[rust/cleartext-logging]
             .fetch_optional(&self.pool)
             .await?;
 
-        Ok(row.unwrap_or((0, String::new())))
+        Ok(row.map_or((0, String::new()), |(version, created_at)| {
+            (i64::from(version), created_at)
+        }))
     }
 
     /// Save a new version of the compression guidelines.

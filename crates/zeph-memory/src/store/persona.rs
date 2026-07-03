@@ -13,7 +13,7 @@ pub struct PersonaFactRow {
     pub category: String,
     pub content: String,
     pub confidence: f64,
-    pub evidence_count: i64,
+    pub evidence_count: i32,
     pub source_conversation_id: Option<i64>,
     pub supersedes_id: Option<i64>,
     pub created_at: String,

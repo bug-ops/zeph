@@ -1017,7 +1017,8 @@ impl SqliteStore {
     ) -> Result<Vec<crate::eviction::EvictionEntry>, crate::error::MemoryError> {
         // `created_at`/`last_accessed` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project
         // both through `Dialect::select_as_text` so they decode into the `String`/`Option<String>`
-        // fields below.
+        // fields below. `access_count` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`,
+        // not `i64`.
         let created_at_sel =
             <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let last_accessed_sel =
@@ -1027,7 +1028,7 @@ impl SqliteStore {
              FROM messages WHERE deleted_at IS NULL"
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
-        let rows: Vec<(MessageId, String, Option<String>, i64)> =
+        let rows: Vec<(MessageId, String, Option<String>, i32)> =
             zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
                 .fetch_all(&self.pool)
                 .await?;

@@ -18,7 +18,8 @@ pub struct LearnedPreferenceRow {
     pub updated_at: String,
 }
 
-type PreferenceTuple = (i64, String, String, f64, i64, String);
+// `evidence_count` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`, not `i64` (INT8).
+type PreferenceTuple = (i64, String, String, f64, i32, String);
 
 fn row_from_tuple(t: PreferenceTuple) -> LearnedPreferenceRow {
     LearnedPreferenceRow {
@@ -26,7 +27,7 @@ fn row_from_tuple(t: PreferenceTuple) -> LearnedPreferenceRow {
         preference_key: t.1,
         preference_value: t.2,
         confidence: t.3,
-        evidence_count: t.4,
+        evidence_count: i64::from(t.4),
         updated_at: t.5,
     }
 }

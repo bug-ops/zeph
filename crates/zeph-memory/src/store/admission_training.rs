@@ -154,6 +154,8 @@ impl SqliteStore {
         // `composite_score` is `REAL` (`FLOAT4`) on Postgres but the tuple decodes it as `f64`;
         // `CAST(... AS DOUBLE PRECISION)` widens it (same un-gated idiom already used for
         // `weight`/`confidence_fast`/`confidence_slow` in `graph/store/mod.rs`).
+        // `was_admitted`/`was_recalled` are `INTEGER` (`INT4`) on Postgres, so they decode as
+        // `i32`, not `i64` (INT8) — same rule as any other INTEGER/INT4 column in this crate.
         let created_at_sel =
             <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let raw = format!(
@@ -174,8 +176,8 @@ impl SqliteStore {
                 String,
                 String,
                 f64,
-                i64,
-                i64,
+                i32,
+                i32,
                 String,
                 String,
             ),

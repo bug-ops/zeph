@@ -63,6 +63,7 @@ impl SqliteStore {
     ) -> Result<Option<SessionDigest>, MemoryError> {
         // `updated_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
         // `Dialect::select_as_text` so it decodes into the `String` field below.
+        // `token_count` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`, not `i64`.
         let updated_at_sel =
             <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
         let raw = format!(
@@ -71,7 +72,7 @@ impl SqliteStore {
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
         let row =
-            zeph_db::query_as::<_, (i64, i64, String, i64, String)>(sqlx::AssertSqlSafe(query_sql))
+            zeph_db::query_as::<_, (i64, i64, String, i32, String)>(sqlx::AssertSqlSafe(query_sql))
                 .bind(conversation_id.0)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -81,7 +82,7 @@ impl SqliteStore {
                 id,
                 conversation_id: ConversationId(conv_id),
                 digest,
-                token_count,
+                token_count: i64::from(token_count),
                 updated_at,
             },
         ))

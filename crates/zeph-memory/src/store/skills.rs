@@ -57,16 +57,19 @@ pub struct SkillVersionRow {
     pub created_at: String,
 }
 
+// `version`/`success_count`/`failure_count` are `INTEGER` (`INT4`) on Postgres, so they decode
+// as `i32`, not `i64`; `is_active` is `BOOLEAN` on Postgres, so it decodes as `bool` directly,
+// not `i64`. Widened/converted back to `SkillVersionRow`'s field types in the function below.
 type SkillVersionTuple = (
     i64,
     String,
-    i64,
+    i32,
     String,
     String,
     String,
-    i64,
-    i64,
-    i64,
+    bool,
+    i32,
+    i32,
     String,
 );
 
@@ -74,13 +77,13 @@ fn skill_version_from_tuple(t: SkillVersionTuple) -> SkillVersionRow {
     SkillVersionRow {
         id: t.0,
         skill_name: t.1,
-        version: t.2,
+        version: i64::from(t.2),
         body: t.3,
         description: t.4,
         source: t.5,
-        is_active: t.6 != 0,
-        success_count: t.7,
-        failure_count: t.8,
+        is_active: t.6,
+        success_count: i64::from(t.7),
+        failure_count: i64::from(t.8),
         created_at: t.9,
     }
 }
@@ -122,6 +125,8 @@ impl SqliteStore {
     pub async fn load_skill_usage(&self) -> Result<Vec<SkillUsageRow>, MemoryError> {
         // `last_used_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
         // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        // `invocation_count` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`, not
+        // `i64`; widened back to `i64` below to keep `SkillUsageRow`'s field type unchanged.
         let last_used_at_sel =
             <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_used_at");
         let raw = format!(
@@ -129,7 +134,7 @@ impl SqliteStore {
              FROM skill_usage ORDER BY invocation_count DESC"
         );
         let query_sql = zeph_db::rewrite_placeholders(&raw);
-        let rows: Vec<(String, i64, String)> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+        let rows: Vec<(String, i32, String)> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
             .fetch_all(&self.pool)
             .await?;
 
@@ -138,7 +143,7 @@ impl SqliteStore {
             .map(
                 |(skill_name, invocation_count, last_used_at)| SkillUsageRow {
                     skill_name,
-                    invocation_count,
+                    invocation_count: i64::from(invocation_count),
                     last_used_at,
                 },
             )

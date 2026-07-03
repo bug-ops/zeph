@@ -717,15 +717,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session_digest,compression_guidelines,experiments,admission_training,memory_tree,skills,
   retrieval_failures}.rs`, `store/messages/mod.rs::get_eviction_candidates`, and the bulk of
   `graph/store/mod.rs`'s entity/edge/community/alias/episode queries (three new shared
-  `*_select_cols()` helpers replace ~20 duplicated inline column lists there). `experiments.rs`'s
-  3 result-listing functions and `admission_training.rs::get_training_batch` also needed
-  co-located `CAST(... AS BIGINT)`/`CAST(... AS DOUBLE PRECISION)` casts for `latency_ms`/
-  `tokens_used`/`composite_score` (`INT4`/`FLOAT4` on Postgres vs. `i64`/`f64` in the Rust tuple) —
-  without these the `TIMESTAMPTZ` fix in those 4 functions would have shipped as untested dead code
-  on Postgres, still failing on the next column over. New/extended Postgres integration tests were
-  added for all of the above but not yet run against a real Postgres instance this session (Docker
-  environment blocker); pending live verification before merge. Also
-  fixes `store/mem_scenes.rs::find_unscened_semantic_messages` (#5544), which bypassed the `sql!()`
+  `*_select_cols()` helpers replace ~20 duplicated inline column lists there). Several of the
+  same functions also had a *co-located, independent* `INTEGER`/`INT4`-vs-`i64` decode mismatch
+  in the very same tuple (`experiments.rs`'s `latency_ms`/`tokens_used`, `admission_training.rs`'s
+  `composite_score`/`was_admitted`/`was_recalled`, `persona.rs`'s `evidence_count`,
+  `preferences.rs`'s `evidence_count`, `session_digest.rs`'s `token_count`,
+  `compression_guidelines.rs`'s `version`, `skills.rs`'s `invocation_count`/`version`/
+  `success_count`/`failure_count` plus an `is_active` `BOOLEAN`-vs-`i64` mismatch in the same
+  tuple, `messages/mod.rs::get_eviction_candidates`'s `access_count`, `trust.rs`'s
+  `requires_trust_check`, and `graph/store/mod.rs`'s `EdgeRow.superseded_by`/`turn_index`) —
+  without these companion fixes the `TIMESTAMPTZ` fix in those functions would have shipped as
+  dead code on Postgres, still failing one column later. The `admission_training.rs` instance
+  was caught live by CI's Postgres integration job on this PR (`ColumnDecode` failure on
+  `was_admitted`); the rest were found by a follow-up audit of every `INTEGER`-typed column
+  against every touched decode site and fixed in the same pass. Also fixes
+  `store/mem_scenes.rs::find_unscened_semantic_messages` (#5544), which bypassed the `sql!()`
   macro, so its `LIMIT ?` was never rewritten to Postgres's `$N` syntax.
 - `fix(memory)`: three more Postgres-dialect defects in `zeph-memory`, same class as #5508/#5524
   (SQLite-only SQL surfacing incorrectly under Postgres, live-verified via Docker testcontainers).

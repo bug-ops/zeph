@@ -69,6 +69,7 @@ pub struct SkillTrustRow {
     pub requires_trust_check: bool,
 }
 
+// `requires_trust_check` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`, not `i64`.
 type TrustTuple = (
     String,
     String,
@@ -78,7 +79,7 @@ type TrustTuple = (
     String,
     String,
     Option<String>,
-    i64,
+    i32,
 );
 
 fn row_from_tuple(t: TrustTuple) -> SkillTrustRow {

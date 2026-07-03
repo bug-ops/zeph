@@ -2558,7 +2558,8 @@ struct EdgeRow {
     edge_type: String,
     retrieval_count: i32,
     last_retrieved_at: Option<i64>,
-    superseded_by: Option<i64>,
+    // `INTEGER` (`INT4`) on Postgres, so it decodes as `Option<i32>`, not `Option<i64>`.
+    superseded_by: Option<i32>,
     canonical_relation: Option<String>,
     supersedes: Option<i64>,
     // Hebbian reinforcement weight (HL-F1, #3344). SQLite REAL maps to f64 via sqlx.
@@ -2566,7 +2567,8 @@ struct EdgeRow {
     // SYNAPSE multi-timescale variables (#3709).
     confidence_fast: f64,
     confidence_slow: f64,
-    turn_index: Option<i64>,
+    // `INTEGER` (`INT4`) on Postgres, so it decodes as `Option<i32>`, not `Option<i64>`.
+    turn_index: Option<i32>,
 }
 
 /// `graph_edges` projection for [`EdgeRow`], dialect-cast for `TIMESTAMPTZ` columns.
@@ -2618,7 +2620,7 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         edge_type,
         retrieval_count: row.retrieval_count,
         last_retrieved_at: row.last_retrieved_at,
-        superseded_by: row.superseded_by,
+        superseded_by: row.superseded_by.map(i64::from),
         supersedes: row.supersedes,
         #[allow(clippy::cast_possible_truncation)]
         weight: row.weight as f32,
