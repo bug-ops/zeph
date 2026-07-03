@@ -346,11 +346,24 @@ impl<C: Channel> Agent<C> {
         self.rebuild_knowledge_block();
     }
 
-    /// Persist a tombstone `ToolResult` (`is_error=true`) for every tool call in `tool_calls`.
+    /// Persist a tombstone `ToolResult` (`is_error=true`) for every tool call in `tool_calls` that
+    /// does not already have one.
     ///
     /// Called on early-return cancellation paths where the assistant `ToolUse` message was already
     /// persisted but the matching user `ToolResult` message was not yet written. Without this, the
     /// DB contains an orphaned `ToolUse` that will trigger a Claude API 400 on the next session.
+    ///
+    /// Idempotency guard (#5513): skips any `tool_use_id` that already has a `ToolResult` (real or
+    /// tombstone) earlier in the *current turn*, so a caller that (mistakenly, or via a future
+    /// defect) invokes this more than once for the same batch cannot write duplicate/contradicting
+    /// results.
+    ///
+    /// The scan is scoped to messages from the current turn's assistant `ToolUse` message onward
+    /// (found as the most recent `Role::Assistant` message, mirroring
+    /// `shutdown::flush_orphaned_tool_use_on_shutdown`), not the whole history. Some providers
+    /// (e.g. Ollama, which assigns `tool_call` ids as `format!("call_{i}")` by batch index) reuse
+    /// the same `tool_use_id` across turns; scanning full history would treat an earlier turn's
+    /// legitimate result as covering this turn's call and wrongly skip its tombstone.
     #[tracing::instrument(
         name = "core.tool.persist_cancelled_tool_results",
         skip_all,
@@ -360,14 +373,36 @@ impl<C: Channel> Agent<C> {
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
     ) {
+        let turn_start = self
+            .msg
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::Assistant)
+            .unwrap_or(0);
+        let already_resolved: std::collections::HashSet<&str> = self.msg.messages[turn_start..]
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                    Some(tool_use_id.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         let result_parts: Vec<MessagePart> = tool_calls
             .iter()
+            .filter(|tc| !already_resolved.contains(tc.id.as_str()))
             .map(|tc| MessagePart::ToolResult {
                 tool_use_id: tc.id.clone(),
                 content: "[Cancelled]".to_owned(),
                 is_error: true,
             })
             .collect();
+        if result_parts.is_empty() {
+            return;
+        }
         let user_msg = Message::from_parts(Role::User, result_parts);
         self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
             .await;

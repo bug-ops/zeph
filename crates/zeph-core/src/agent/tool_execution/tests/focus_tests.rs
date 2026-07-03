@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role, ToolUseRequest};
 
 use crate::agent::Agent;
 use crate::agent::tests::agent_tests::{
@@ -106,4 +106,157 @@ fn select_messages_for_compression_excludes_pinned() {
             m.content
         );
     }
+}
+
+fn tool_use_request(id: &str) -> ToolUseRequest {
+    ToolUseRequest {
+        id: id.to_owned(),
+        name: "bash".to_owned().into(),
+        input: serde_json::json!({}),
+    }
+}
+
+fn push_tool_result(agent: &mut Agent<MockChannel>, id: &str, content: &str, is_error: bool) {
+    let part = MessagePart::ToolResult {
+        tool_use_id: id.to_owned(),
+        content: content.to_owned(),
+        is_error,
+    };
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: format!("[tool_result: {id}]\n{content}"),
+        parts: vec![part],
+        metadata: MessageMetadata::default(),
+    });
+}
+
+fn tool_result_count(agent: &Agent<MockChannel>, id: &str) -> usize {
+    agent
+        .msg
+        .messages
+        .iter()
+        .flat_map(|m| m.parts.iter())
+        .filter(|p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == id))
+        .count()
+}
+
+/// Regression test for #5513 item 5: `persist_cancelled_tool_results` must be a complete
+/// no-op — no new message pushed at all — when every `tool_use_id` in the batch already has
+/// a `ToolResult` (real or tombstone) in history. Before the idempotency guard was added, a
+/// caller invoking this a second time for the same batch (as the pre-fix `tier_loop.rs`
+/// cascading-cancellation bug did) would append a duplicate/contradicting `ToolResult`.
+#[tokio::test]
+async fn persist_cancelled_tool_results_is_noop_when_all_ids_already_resolved() {
+    let mut agent = make_agent();
+    push_tool_result(&mut agent, "call-1", "real output", false);
+    let message_count_before = agent.msg.messages.len();
+
+    agent
+        .persist_cancelled_tool_results(&[tool_use_request("call-1")])
+        .await;
+
+    assert_eq!(
+        agent.msg.messages.len(),
+        message_count_before,
+        "no new message must be pushed when the id is already resolved"
+    );
+    assert_eq!(
+        tool_result_count(&agent, "call-1"),
+        1,
+        "the original real ToolResult must not be duplicated"
+    );
+}
+
+/// Regression test for #5513 item 5: when a batch mixes already-resolved and unresolved
+/// `tool_use_id`s, `persist_cancelled_tool_results` must tombstone only the unresolved ones.
+#[tokio::test]
+async fn persist_cancelled_tool_results_only_tombstones_unresolved_ids() {
+    let mut agent = make_agent();
+    push_tool_result(&mut agent, "call-1", "real output", false);
+
+    agent
+        .persist_cancelled_tool_results(&[tool_use_request("call-1"), tool_use_request("call-2")])
+        .await;
+
+    assert_eq!(
+        tool_result_count(&agent, "call-1"),
+        1,
+        "already-resolved call-1 must not receive a second ToolResult"
+    );
+    assert_eq!(
+        tool_result_count(&agent, "call-2"),
+        1,
+        "unresolved call-2 must receive exactly one tombstone ToolResult"
+    );
+    let call2_is_tombstone = agent.msg.messages.iter().any(|m| {
+        m.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolResult { tool_use_id, content, is_error }
+                    if tool_use_id == "call-2" && content == "[Cancelled]" && *is_error
+            )
+        })
+    });
+    assert!(
+        call2_is_tombstone,
+        "call-2's ToolResult must be the [Cancelled] tombstone"
+    );
+}
+
+/// Regression test for #5513 item 5: with no pre-existing results at all, every id in the
+/// batch must still receive a tombstone (the guard must not become a universal no-op).
+#[tokio::test]
+async fn persist_cancelled_tool_results_tombstones_all_ids_when_none_resolved() {
+    let mut agent = make_agent();
+
+    agent
+        .persist_cancelled_tool_results(&[tool_use_request("call-1"), tool_use_request("call-2")])
+        .await;
+
+    assert_eq!(tool_result_count(&agent, "call-1"), 1);
+    assert_eq!(tool_result_count(&agent, "call-2"), 1);
+}
+
+/// Regression test for the Ollama id-reuse finding (impl-critic, verified against
+/// `crates/zeph-llm/src/ollama.rs:462`): Ollama assigns `tool_call` ids as `format!("call_{i}")`
+/// by batch index, so `call_0` legitimately recurs on *every* turn of a multi-turn tool
+/// conversation — unlike OpenAI/Claude/Gemini, which use globally unique per-call ids.
+///
+/// The item-5 idempotency guard (S1 fix) scopes its "already resolved" scan to messages from
+/// the current turn's assistant `ToolUse` message onward (the most recent `Role::Assistant`
+/// message), not the whole history — mirroring production, where
+/// `push_assistant_tool_use_message` always pushes that message before any cancellation path
+/// can call `persist_cancelled_tool_results`. So turn 1's resolved `call_0` no longer shadows
+/// turn 2's unrelated dispatch of the same id.
+#[tokio::test]
+async fn persist_cancelled_tool_results_writes_tombstone_for_id_reused_in_a_new_turn() {
+    let mut agent = make_agent();
+    // Turn 1: call_0 already resolved with a real result (Ollama-style id, batch index 0).
+    push_tool_result(&mut agent, "call_0", "turn-1 output", false);
+
+    // Turn 2: push_assistant_tool_use_message's effect — the current turn's assistant ToolUse
+    // message reusing the same id "call_0" (Ollama assigns ids by batch index, not globally).
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "[tool_use: bash(call_0)]".to_owned(),
+        parts: vec![MessagePart::ToolUse {
+            id: "call_0".to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+
+    // Turn 2's dispatch gets cancelled before completion.
+    agent
+        .persist_cancelled_tool_results(&[tool_use_request("call_0")])
+        .await;
+
+    assert_eq!(
+        tool_result_count(&agent, "call_0"),
+        2,
+        "turn 2's cancelled call_0 must still receive its own tombstone ToolResult, \
+         separate from turn 1's real result — the guard must not treat a new turn's \
+         id-reused call as already resolved"
+    );
 }

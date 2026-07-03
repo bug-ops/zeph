@@ -239,10 +239,130 @@ fn orphaned_tool_result_ids(msg: &Message, prev_msg: Option<&Message>) -> HashSe
         .collect()
 }
 
-/// Scan all messages and strip orphaned `ToolUse`/`ToolResult` parts from mid-history messages.
+/// Strips orphaned `ToolUse` parts from `messages[i]` (an assistant message) when unmatched by a
+/// `ToolResult` in the next non-system message. Returns `true` if the message was removed
+/// entirely (caller must not advance past `i`).
+fn strip_orphaned_tool_use_at(
+    messages: &mut Vec<Message>,
+    i: usize,
+    db_ids: &mut Vec<i64>,
+) -> bool {
+    let next_non_system = (i + 1..messages.len())
+        .find(|&j| messages[j].role != Role::System)
+        .and_then(|j| messages.get(j));
+    let orphaned_ids = orphaned_tool_use_ids(&messages[i], next_non_system);
+    if orphaned_ids.is_empty() {
+        return false;
+    }
+    tracing::warn!(
+        tool_ids = ?orphaned_ids,
+        index = i,
+        "stripping orphaned mid-history tool_use parts from assistant message"
+    );
+    messages[i]
+        .parts
+        .retain(|p| !matches!(p, MessagePart::ToolUse { id, .. } if orphaned_ids.contains(id)));
+    let is_empty = !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
+    if is_empty {
+        if let Some(db_id) = messages[i].metadata.db_id {
+            db_ids.push(db_id);
+        }
+        messages.remove(i);
+    }
+    is_empty
+}
+
+/// Strips orphaned and duplicate `ToolResult` parts from `messages[i]` (a user message).
+///
+/// A part is orphaned when unmatched by a `ToolUse` in the previous non-system message, or a
+/// **duplicate** (#5513) when its `tool_use_id` is already in `resolved_tool_use_ids` — i.e. a
+/// `tool_use_id` that already received a result (real or tombstone) earlier in history and shows
+/// up again later, e.g. from a cancellation-handling defect that wrote more than one tombstone for
+/// the same call. Either shape would trip the same "`tool_calls` must be followed by tool
+/// messages" provider error, so both are stripped.
+///
+/// Whatever `ToolResult` parts survive are added to `resolved_tool_use_ids`. Returns `true` if the
+/// message was removed entirely (caller must not advance past `i`).
+fn strip_tool_result_orphans_at(
+    messages: &mut Vec<Message>,
+    i: usize,
+    resolved_tool_use_ids: &mut HashSet<String>,
+    db_ids: &mut Vec<i64>,
+) -> bool {
+    let prev_non_system = (0..i)
+        .rev()
+        .find(|&j| messages[j].role != Role::System)
+        .and_then(|j| messages.get(j));
+    let orphaned_ids = orphaned_tool_result_ids(&messages[i], prev_non_system);
+    let duplicate_ids: HashSet<String> = messages[i]
+        .parts
+        .iter()
+        .filter_map(|p| {
+            if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                Some(tool_use_id.clone())
+            } else {
+                None
+            }
+        })
+        .filter(|id| resolved_tool_use_ids.contains(id))
+        .collect();
+    if !duplicate_ids.is_empty() {
+        tracing::warn!(
+            tool_use_ids = ?duplicate_ids,
+            index = i,
+            "stripping duplicate mid-history tool_result parts from user message"
+        );
+    }
+    if !orphaned_ids.is_empty() {
+        tracing::warn!(
+            tool_use_ids = ?orphaned_ids,
+            index = i,
+            "stripping orphaned mid-history tool_result parts from user message"
+        );
+    }
+    let strip_ids: HashSet<&str> = orphaned_ids
+        .iter()
+        .chain(duplicate_ids.iter())
+        .map(String::as_str)
+        .collect();
+    let mut removed = false;
+    if !strip_ids.is_empty() {
+        messages[i].parts.retain(|p| {
+            !matches!(p, MessagePart::ToolResult { tool_use_id, .. } if strip_ids.contains(tool_use_id.as_str()))
+        });
+        let is_empty =
+            !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
+        if is_empty {
+            if let Some(db_id) = messages[i].metadata.db_id {
+                db_ids.push(db_id);
+            }
+            messages.remove(i);
+            removed = true;
+        }
+    }
+    if !removed {
+        for p in &messages[i].parts {
+            if let MessagePart::ToolResult { tool_use_id, .. } = p {
+                resolved_tool_use_ids.insert(tool_use_id.clone());
+            }
+        }
+    }
+    removed
+}
+
+/// Scan all messages and strip orphaned `ToolUse`/`ToolResult` parts from mid-history messages,
+/// as well as **duplicate** `ToolResult` parts (#5513) — see [`strip_tool_result_orphans_at`].
+///
+/// `resolved_tool_use_ids` is scoped to the current open call window: whenever a `ToolUse(id)`
+/// is encountered, `id` is removed from the set first, since it is being re-opened. Some
+/// providers (e.g. Ollama, which assigns `tool_call` ids as `format!("call_{i}")` by batch
+/// index) legitimately reuse the same `tool_use_id` across turns; without this, a later turn's
+/// real `ToolResult` would be misdetected as a duplicate of an earlier turn's and stripped,
+/// orphaning the later turn's `ToolUse`.
 fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
     let mut removed = 0;
     let mut db_ids: Vec<i64> = Vec::new();
+    let mut resolved_tool_use_ids: HashSet<String> = HashSet::new();
     let mut i = 0;
     while i < messages.len() {
         if messages[i].role == Role::Assistant
@@ -251,29 +371,14 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
                 .iter()
                 .any(|p| matches!(p, MessagePart::ToolUse { .. }))
         {
-            let next_non_system = (i + 1..messages.len())
-                .find(|&j| messages[j].role != Role::System)
-                .and_then(|j| messages.get(j));
-            let orphaned_ids = orphaned_tool_use_ids(&messages[i], next_non_system);
-            if !orphaned_ids.is_empty() {
-                tracing::warn!(
-                    tool_ids = ?orphaned_ids,
-                    index = i,
-                    "stripping orphaned mid-history tool_use parts from assistant message"
-                );
-                messages[i].parts.retain(
-                    |p| !matches!(p, MessagePart::ToolUse { id, .. } if orphaned_ids.contains(id)),
-                );
-                let is_empty =
-                    !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
-                if is_empty {
-                    if let Some(db_id) = messages[i].metadata.db_id {
-                        db_ids.push(db_id);
-                    }
-                    messages.remove(i);
-                    removed += 1;
-                    continue;
+            for p in &messages[i].parts {
+                if let MessagePart::ToolUse { id, .. } = p {
+                    resolved_tool_use_ids.remove(id);
                 }
+            }
+            if strip_orphaned_tool_use_at(messages, i, &mut db_ids) {
+                removed += 1;
+                continue;
             }
         }
 
@@ -282,33 +387,10 @@ fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
                 .parts
                 .iter()
                 .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+            && strip_tool_result_orphans_at(messages, i, &mut resolved_tool_use_ids, &mut db_ids)
         {
-            let prev_non_system = (0..i)
-                .rev()
-                .find(|&j| messages[j].role != Role::System)
-                .and_then(|j| messages.get(j));
-            let orphaned_ids = orphaned_tool_result_ids(&messages[i], prev_non_system);
-            if !orphaned_ids.is_empty() {
-                tracing::warn!(
-                    tool_use_ids = ?orphaned_ids,
-                    index = i,
-                    "stripping orphaned mid-history tool_result parts from user message"
-                );
-                messages[i].parts.retain(|p| {
-                    !matches!(p, MessagePart::ToolResult { tool_use_id, .. } if orphaned_ids.contains(tool_use_id.as_str()))
-                });
-
-                let is_empty =
-                    !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
-                if is_empty {
-                    if let Some(db_id) = messages[i].metadata.db_id {
-                        db_ids.push(db_id);
-                    }
-                    messages.remove(i);
-                    removed += 1;
-                    continue;
-                }
-            }
+            removed += 1;
+            continue;
         }
 
         i += 1;
@@ -444,5 +526,215 @@ mod tests {
     #[test]
     fn has_meaningful_content_empty() {
         assert!(!has_meaningful_content(""));
+    }
+
+    /// Regression test for #5513 item 6 (turn-scoped, see S1 correction below):
+    /// `strip_mid_history_orphans` must track resolved `tool_use_id`s cumulatively *within one
+    /// open call window*, so a duplicate `ToolResult` several messages downstream of its
+    /// matching `ToolUse` (no intervening re-open) is still caught — see
+    /// `duplicate_tool_result_several_messages_downstream_is_stripped` for that shape.
+    ///
+    /// This test instead documents the corrected boundary: when a *second* `ToolUse` reuses the
+    /// same id (re-opening the call), `resolved_tool_use_ids` forgets the earlier resolution, so
+    /// the following `ToolResult` is evaluated as a fresh pairing, not a duplicate. An earlier
+    /// version of this test asserted the opposite (id reuse via a new `ToolUse` always means
+    /// duplicate) — that assumption was wrong: it is indistinguishable from legitimate
+    /// index-based id reuse (e.g. Ollama's `format!("call_{i}")`, see
+    /// `legitimate_id_reuse_across_turns_ollama_style_must_not_be_stripped`), and stripping it
+    /// unconditionally re-creates the #5513 corruption for those providers.
+    #[test]
+    fn tool_result_after_id_reopened_by_new_tool_use_is_not_a_duplicate() {
+        let tool_use = |id: &str| MessagePart::ToolUse {
+            id: id.to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        };
+        let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: content.to_owned(),
+            is_error: false,
+        };
+
+        let mut msgs = vec![
+            msg_with_parts(
+                Role::Assistant,
+                "[tool_use: bash(t1)]",
+                vec![tool_use("t1")],
+            ),
+            msg_with_parts(
+                Role::User,
+                "[tool_result: t1]\nfirst output",
+                vec![tool_result("t1", "first output")],
+            ),
+            // A second ToolUse legitimately re-opens the same id "t1".
+            msg_with_parts(
+                Role::Assistant,
+                "[tool_use: bash(t1)]",
+                vec![tool_use("t1")],
+            ),
+            msg_with_parts(
+                Role::User,
+                "[tool_result: t1]\nsecond output",
+                vec![tool_result("t1", "second output")],
+            ),
+        ];
+
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+
+        assert_eq!(
+            removed, 0,
+            "the second ToolResult for t1 must survive: it pairs with the second ToolUse, \
+             not a duplicate of the first"
+        );
+        let remaining_results: Vec<&str> = msgs
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { content, .. } = p {
+                    Some(content.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            remaining_results,
+            vec!["first output", "second output"],
+            "both results must survive intact"
+        );
+    }
+
+    /// Regression test for the Ollama id-reuse finding (impl-critic, verified against
+    /// `crates/zeph-llm/src/ollama.rs:462`): Ollama assigns `tool_call` ids as `format!("call_{i}")`
+    /// by batch index, so `call_0` legitimately recurs on *every* turn of a multi-turn tool
+    /// conversation — unlike OpenAI/Claude/Gemini, which use globally unique per-call ids.
+    ///
+    /// `resolved_tool_use_ids` is scoped to the current open call window (S1 fix): a `ToolUse(id)`
+    /// removes `id` from the set, so a later turn's legitimate `ToolUse(call_0) ->
+    /// ToolResult(call_0, real)` pair is evaluated fresh, not flagged as a duplicate of an
+    /// earlier turn's result.
+    #[test]
+    fn legitimate_id_reuse_across_turns_ollama_style_must_not_be_stripped() {
+        let tool_use = |id: &str| MessagePart::ToolUse {
+            id: id.to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        };
+        let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: content.to_owned(),
+            is_error: false,
+        };
+
+        let mut msgs = vec![
+            // Turn 1: ToolUse(call_0) -> ToolResult(call_0, real turn-1 output).
+            msg_with_parts(
+                Role::Assistant,
+                "[tool_use: bash(call_0)]",
+                vec![tool_use("call_0")],
+            ),
+            msg_with_parts(
+                Role::User,
+                "[tool_result: call_0]\nturn-1 output",
+                vec![tool_result("call_0", "turn-1 output")],
+            ),
+            // Turn 2 (Ollama-style id reuse, unrelated to turn 1): ToolUse(call_0) ->
+            // ToolResult(call_0, real turn-2 output). Both parts are legitimate — this is not
+            // a cancellation-cascade duplicate.
+            msg_with_parts(
+                Role::Assistant,
+                "[tool_use: bash(call_0)]",
+                vec![tool_use("call_0")],
+            ),
+            msg_with_parts(
+                Role::User,
+                "[tool_result: call_0]\nturn-2 output",
+                vec![tool_result("call_0", "turn-2 output")],
+            ),
+        ];
+
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+
+        assert_eq!(
+            removed, 0,
+            "turn 2's legitimate ToolResult(call_0) must not be stripped just because \
+             call_0 was already resolved in turn 1 (Ollama-style id reuse)"
+        );
+        let remaining_results: Vec<&str> = msgs
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { content, .. } = p {
+                    Some(content.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            remaining_results,
+            vec!["turn-1 output", "turn-2 output"],
+            "both turns' results must survive intact"
+        );
+    }
+
+    /// Regression test for #5513: the exact malformed shape from the issue's evidence dump —
+    /// a real `ToolResult` followed several turns later by a contradicting `[Cancelled]`
+    /// tombstone for the same `tool_use_id`, with unrelated messages in between. Even though
+    /// this shape was already caught by the pre-existing single-lookback "orphan" check (its
+    /// immediate predecessor is a plain non-tool message), this test locks in that end-to-end
+    /// behavior so a future refactor of the lookback logic cannot silently regress it.
+    #[test]
+    fn duplicate_tool_result_several_messages_downstream_is_stripped() {
+        let tool_use = |id: &str| MessagePart::ToolUse {
+            id: id.to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        };
+        let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: content.to_owned(),
+            is_error: false,
+        };
+
+        let mut msgs = vec![
+            msg_with_parts(
+                Role::Assistant,
+                "[tool_use: bash(t1)]",
+                vec![tool_use("t1")],
+            ),
+            msg_with_parts(
+                Role::User,
+                "[tool_result: t1]\nreal output",
+                vec![tool_result("t1", "real output")],
+            ),
+            msg(Role::User, "a follow-up question"),
+            msg(Role::Assistant, "a plain reply, no tool use"),
+            msg(Role::User, "another follow-up"),
+            msg_with_parts(
+                Role::User,
+                "[tool_result: t1]",
+                vec![tool_result("t1", "[Cancelled]")],
+            ),
+        ];
+
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+
+        assert_eq!(
+            removed, 1,
+            "the downstream duplicate ToolResult must be stripped"
+        );
+        let remaining_results: Vec<&str> = msgs
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { content, .. } = p {
+                    Some(content.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(remaining_results, vec!["real output"]);
     }
 }

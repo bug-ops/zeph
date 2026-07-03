@@ -1348,6 +1348,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.bind()` call since its `?2` placeholder was reused twice in the SQL text for one bound value.
   Added 5 new Postgres regression tests (`tests/postgres_integration.rs`, `test-utils` feature)
   covering previously-untested fixed call sites. Closes #5488, closes #5491.
+- `fix(core)`: cancelled or queued `tool_calls` could persist out of order, corrupting message
+  history and permanently breaking every subsequent turn with a 400 from strict-ordering providers
+  (`"An assistant message with 'tool_calls' must be followed by tool messages..."`) (#5513). Three
+  distinct control-flow bugs in `crates/zeph-core/src/agent/tool_execution/tier_loop.rs`'s
+  post-dispatch cancellation handling: (1) `handle_confirmation_phase`/`handle_retry_phase`/
+  `handle_reformat_phase` signalled cancellation via a plain `Ok(())`, indistinguishable from
+  "completed," so `run_post_dispatch_phases`'s `?`-chaining never short-circuited — each phase
+  independently re-detected the still-cancelled token and wrote a duplicate `[Cancelled]` tombstone
+  for the full tool-call batch (up to 3x per cancellation event); (2) `handle_native_tool_calls`
+  unconditionally called `process_tool_result_batch` after `run_post_dispatch_phases` returned,
+  appending a further duplicate result regardless of cancellation state; (3) the retry-phase's
+  backoff-sleep cancellation branch was the one checkpoint in the file that never wrote a tombstone
+  at all, leaving a genuinely orphaned `ToolUse` sent to the LLM on the very next turn of the same
+  live session. All three phases now return `Result<bool, AgentError>` (mirroring the
+  `TierLoopOutput`/`Option<TierLoopData>` pattern already used correctly elsewhere in the file) so
+  cancellation short-circuits the phase chain and skips the batch persist exactly once. Added an
+  idempotency guard to `persist_cancelled_tool_results`
+  (`crates/zeph-core/src/agent/tool_execution/focus.rs`) and extended
+  `strip_mid_history_orphans` (`crates/zeph-agent-persistence/src/sanitize.rs`) to also strip a
+  duplicate `ToolResult` for an already-resolved `tool_use_id`, both scoped to the current
+  turn/call window (not whole history) so providers like Ollama that legitimately reuse
+  batch-indexed tool-call ids (`call_0`, `call_1`, ...) across turns are unaffected. Closes #5513.
 
 - `fix(db)`: `zeph_db::sql!()`'s Postgres `rewrite_placeholders` did a naive per-character `?`→`$N`
   walk with no awareness of `SQLite`'s `?N` numbered-placeholder syntax, so wrapping `?1` in

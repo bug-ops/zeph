@@ -43,6 +43,11 @@ impl<C: Channel> Agent<C> {
         level = "debug",
         err
     )]
+    /// Runs the confirmation, retry, and parameter-reformat phases in sequence.
+    ///
+    /// Returns `Ok(true)` as soon as any phase reports that the user cancelled the turn, skipping
+    /// the remaining phases — each phase already persists its own `[Cancelled]` tombstone, so
+    /// running further phases after one reports cancellation would duplicate that write (#5513).
     async fn run_post_dispatch_phases(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -50,14 +55,26 @@ impl<C: Channel> Agent<C> {
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         max_retries: usize,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), crate::agent::error::AgentError> {
-        self.handle_confirmation_phase(tool_calls, calls, tool_results, cancel)
-            .await?;
-        self.handle_retry_phase(tool_calls, calls, tool_results, max_retries, cancel)
-            .await?;
-        self.handle_reformat_phase(tool_calls, calls, tool_results, cancel)
-            .await?;
-        Ok(())
+    ) -> Result<bool, crate::agent::error::AgentError> {
+        if self
+            .handle_confirmation_phase(tool_calls, calls, tool_results, cancel)
+            .await?
+        {
+            return Ok(true);
+        }
+        if self
+            .handle_retry_phase(tool_calls, calls, tool_results, max_retries, cancel)
+            .await?
+        {
+            return Ok(true);
+        }
+        if self
+            .handle_reformat_phase(tool_calls, calls, tool_results, cancel)
+            .await?
+        {
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     #[tracing::instrument(
@@ -66,13 +83,14 @@ impl<C: Channel> Agent<C> {
         level = "debug",
         err
     )]
+    /// Returns `Ok(true)` if the user cancelled the turn during this phase.
     async fn handle_confirmation_phase(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         calls: &[ToolCall],
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), crate::agent::error::AgentError> {
+    ) -> Result<bool, crate::agent::error::AgentError> {
         for idx in 0..tool_results.len() {
             if cancel.is_cancelled() {
                 self.tool_executor.set_skill_env(None);
@@ -80,7 +98,7 @@ impl<C: Channel> Agent<C> {
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
                 self.persist_cancelled_tool_results(tool_calls).await;
-                return Ok(());
+                return Ok(true);
             }
             let new_result =
                 if let Err(zeph_tools::ToolError::ConfirmationRequired { ref command }) =
@@ -124,9 +142,10 @@ impl<C: Channel> Agent<C> {
                 tool_results[idx] = result;
             }
         }
-        Ok(())
+        Ok(false)
     }
 
+    /// Returns `Ok(true)` if the user cancelled the turn during this phase.
     #[tracing::instrument(name = "core.tool.handle_retry_phase", skip_all, level = "debug", err)]
     async fn handle_retry_phase(
         &mut self,
@@ -135,9 +154,9 @@ impl<C: Channel> Agent<C> {
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         max_retries: usize,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), crate::agent::error::AgentError> {
+    ) -> Result<bool, crate::agent::error::AgentError> {
         if max_retries == 0 {
-            return Ok(());
+            return Ok(false);
         }
         let max_retry_duration_secs = self.tool_orchestrator.max_retry_duration_secs;
         let retry_base_ms = self.tool_orchestrator.retry_base_ms;
@@ -149,7 +168,7 @@ impl<C: Channel> Agent<C> {
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
                 self.persist_cancelled_tool_results(tool_calls).await;
-                return Ok(());
+                return Ok(true);
             }
             let is_transient = matches!(
                 tool_results[idx],
@@ -179,7 +198,7 @@ impl<C: Channel> Agent<C> {
                         self.update_metrics(|m| m.cancellations += 1);
                         self.channel.send("[Cancelled]").await?;
                         self.persist_cancelled_tool_results(tool_calls).await;
-                        return Ok(());
+                        return Ok(true);
                     }
                 };
                 match exec_result {
@@ -213,7 +232,8 @@ impl<C: Channel> Agent<C> {
                                 tracing::info!("retry backoff interrupted by cancellation");
                                 self.update_metrics(|m| m.cancellations += 1);
                                 self.channel.send("[Cancelled]").await?;
-                                return Ok(());
+                                self.persist_cancelled_tool_results(tool_calls).await;
+                                return Ok(true);
                             }
                         }
                         let _ = self.channel.send_status("").await;
@@ -224,9 +244,10 @@ impl<C: Channel> Agent<C> {
             };
             tool_results[idx] = result;
         }
-        Ok(())
+        Ok(false)
     }
 
+    /// Returns `Ok(true)` if the user cancelled the turn during this phase.
     #[tracing::instrument(
         name = "core.tool.handle_reformat_phase",
         skip_all,
@@ -239,13 +260,13 @@ impl<C: Channel> Agent<C> {
         calls: &[ToolCall],
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), crate::agent::error::AgentError> {
+    ) -> Result<bool, crate::agent::error::AgentError> {
         if self
             .tool_orchestrator
             .parameter_reformat_provider
             .is_empty()
         {
-            return Ok(());
+            return Ok(false);
         }
         // Budget covers the whole reformat phase (all tool calls needing reformat this round),
         // matching the retry phase's `retry_start`/`max_retry_duration_secs` accounting.
@@ -258,7 +279,7 @@ impl<C: Channel> Agent<C> {
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
                 self.persist_cancelled_tool_results(tool_calls).await;
-                return Ok(());
+                return Ok(true);
             }
             let needs_reformat = matches!(
                 tool_results[idx],
@@ -293,7 +314,7 @@ impl<C: Channel> Agent<C> {
                 self.update_metrics(|m| m.cancellations += 1);
                 self.channel.send("[Cancelled]").await?;
                 self.persist_cancelled_tool_results(tool_calls).await;
-                return Ok(());
+                return Ok(true);
             }
 
             if let Some(result) = new_result {
@@ -305,7 +326,7 @@ impl<C: Channel> Agent<C> {
                 tool_results[idx] = result;
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     /// LLM-based single-shot reformat-and-retry for a tool call that failed with an
@@ -722,9 +743,14 @@ impl<C: Channel> Agent<C> {
         }
 
         // Phases 2a / 2 / 3: confirmation, transient retry, parameter reformat.
-        // Each phase may return early on cancellation (Ok(())) or propagate channel errors.
-        self.run_post_dispatch_phases(tool_calls, &calls, &mut tool_results, max_retries, &cancel)
+        // Each phase may signal cancellation (Ok(true)), which already persisted its own
+        // tombstone — skip process_tool_result_batch below to avoid a duplicate batch write (#5513).
+        let post_dispatch_cancelled = self
+            .run_post_dispatch_phases(tool_calls, &calls, &mut tool_results, max_retries, &cancel)
             .await?;
+        if post_dispatch_cancelled {
+            return Ok(false);
+        }
 
         // Process results, persist messages, run LSP hooks, fire deferred reflection.
         // Also clears skill env and syncs cache counters after execution.
@@ -3772,6 +3798,250 @@ mod tests {
             assert_eq!(misses, 0);
             assert!(value["code"].as_str().unwrap().contains(tricky_secret));
             assert_eq!(value["list"][0], serde_json::json!(tricky_secret));
+        }
+    }
+
+    /// Regression tests for #5513: cancellation during the post-dispatch phases
+    /// (confirmation / retry / reformat) must write exactly one `[Cancelled]` tombstone
+    /// `ToolResult` per `tool_use_id` and must never leave a `ToolUse` orphaned or let the
+    /// batch persist run again afterward.
+    mod cancellation_regression_tests {
+        use super::*;
+        use crate::agent::agent_tests::*;
+
+        /// Always fails with a `Transient` error and is marked retryable, so
+        /// `handle_retry_phase` enters its backoff-sleep branch on every attempt.
+        struct AlwaysTransientExecutor;
+
+        impl zeph_tools::executor::ToolExecutor for AlwaysTransientExecutor {
+            fn execute(
+                &self,
+                _response: &str,
+            ) -> impl std::future::Future<
+                Output = Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > + Send {
+                std::future::ready(Ok(None))
+            }
+
+            fn execute_tool_call(
+                &self,
+                _call: &ToolCall,
+            ) -> impl std::future::Future<
+                Output = Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > + Send {
+                std::future::ready(Err(zeph_tools::ToolError::Execution(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "always transient",
+                ))))
+            }
+
+            fn is_tool_retryable(&self, _tool_id: &str) -> bool {
+                true
+            }
+        }
+
+        fn tool_result_ids(agent: &Agent<MockChannel>, id: &str) -> Vec<&'static str> {
+            agent
+                .msg
+                .messages
+                .iter()
+                .flat_map(|m| m.parts.iter())
+                .filter(|p| {
+                    matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == id)
+                })
+                .map(|_| "match")
+                .collect()
+        }
+
+        /// Bug A: a token already cancelled before `handle_confirmation_phase` runs must
+        /// short-circuit `run_post_dispatch_phases` after the first phase reports
+        /// cancellation, instead of cascading into `handle_retry_phase` and
+        /// `handle_reformat_phase` as well. Before the fix, each of the three phases
+        /// independently detected the same cancellation and wrote its own tombstone batch,
+        /// producing up to 3 duplicate `[Cancelled]` `ToolResult`s per `tool_use_id`.
+        #[tokio::test]
+        async fn cancelled_before_confirmation_phase_writes_one_tombstone_and_skips_later_phases() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = MockToolExecutor::no_tools();
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.max_tool_retries = 2;
+            agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
+
+            let tool_calls = vec![
+                zeph_llm::provider::ToolUseRequest {
+                    id: "id-1".to_owned(),
+                    name: "bash".to_owned().into(),
+                    input: serde_json::json!({}),
+                },
+                zeph_llm::provider::ToolUseRequest {
+                    id: "id-2".to_owned(),
+                    name: "bash".to_owned().into(),
+                    input: serde_json::json!({}),
+                },
+            ];
+            let calls = vec![
+                ToolCall {
+                    tool_id: zeph_common::ToolName::new("bash"),
+                    ..Default::default()
+                },
+                ToolCall {
+                    tool_id: zeph_common::ToolName::new("bash"),
+                    ..Default::default()
+                },
+            ];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Ok(None), Ok(None)];
+
+            let cancel = tokio_util::sync::CancellationToken::new();
+            cancel.cancel();
+
+            let cancelled = agent
+                .run_post_dispatch_phases(&tool_calls, &calls, &mut tool_results, 2, &cancel)
+                .await
+                .unwrap();
+
+            assert!(
+                cancelled,
+                "run_post_dispatch_phases must report cancellation"
+            );
+
+            for id in ["id-1", "id-2"] {
+                let matches = tool_result_ids(&agent, id);
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "tool_use_id {id} must have exactly one [Cancelled] tombstone, got {}",
+                    matches.len()
+                );
+            }
+        }
+
+        /// Bug C: cancellation landing specifically inside the retry-phase backoff-sleep
+        /// `tokio::select!` must still persist a tombstone `ToolResult` for the pending
+        /// `ToolUse`. Before the fix this was the only cancellation checkpoint in the file
+        /// that returned without calling `persist_cancelled_tool_results`, leaving the
+        /// `ToolUse` message genuinely orphaned (zero `ToolResult`s) for the rest of the
+        /// live session.
+        #[tokio::test]
+        async fn handle_retry_phase_cancelled_during_backoff_sleep_persists_tombstone() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = AlwaysTransientExecutor;
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.max_tool_retries = 3;
+            // Large, deterministic-enough backoff window so the spawned cancellation below
+            // (fired after a short real-time delay) lands during the sleep rather than after
+            // it — full-jitter backoff makes an exact guarantee impossible, but at this
+            // magnitude the chance of picking a delay under 200ms is negligible.
+            agent.tool_orchestrator.retry_base_ms = 600_000;
+            agent.tool_orchestrator.retry_max_ms = 600_000;
+            agent.tool_orchestrator.max_retry_duration_secs = 0;
+
+            let tool_calls = vec![zeph_llm::provider::ToolUseRequest {
+                id: "id-retry".to_owned(),
+                name: "bash".to_owned().into(),
+                input: serde_json::json!({}),
+            }];
+            let calls = vec![ToolCall {
+                tool_id: zeph_common::ToolName::new("bash"),
+                ..Default::default()
+            }];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(zeph_tools::ToolError::Execution(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "initial transient failure",
+            )))];
+
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let cancel_trigger = cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                cancel_trigger.cancel();
+            });
+
+            let cancelled = agent
+                .handle_retry_phase(&tool_calls, &calls, &mut tool_results, 3, &cancel)
+                .await
+                .unwrap();
+
+            assert!(cancelled, "handle_retry_phase must report cancellation");
+
+            let matches = tool_result_ids(&agent, "id-retry");
+            assert_eq!(
+                matches.len(),
+                1,
+                "cancellation during backoff sleep must still write exactly one tombstone \
+                 ToolResult, got {}",
+                matches.len()
+            );
+        }
+
+        /// Bug B + Bug C, exercised through the full `handle_native_tool_calls` entry point:
+        /// once `run_post_dispatch_phases` reports cancellation (here triggered during the
+        /// retry-phase backoff sleep), `handle_native_tool_calls` must return immediately and
+        /// must NOT call `process_tool_result_batch` afterward. Before the fix, the batch
+        /// persist ran unconditionally, appending a second (contradicting, non-cancelled)
+        /// `ToolResult` message right after the phases' own tombstone write.
+        #[tokio::test]
+        async fn handle_native_tool_calls_cancelled_during_retry_backoff_skips_batch_persist() {
+            let provider = mock_provider(vec![]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor = AlwaysTransientExecutor;
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+            agent.tool_orchestrator.max_tool_retries = 3;
+            agent.tool_orchestrator.retry_base_ms = 600_000;
+            agent.tool_orchestrator.retry_max_ms = 600_000;
+            agent.tool_orchestrator.max_retry_duration_secs = 0;
+
+            let tool_calls = vec![zeph_llm::provider::ToolUseRequest {
+                id: "id-e2e".to_owned(),
+                name: "bash".to_owned().into(),
+                input: serde_json::json!({"command": "echo hi"}),
+            }];
+
+            let cancel_trigger = agent.runtime.lifecycle.cancel_token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                cancel_trigger.cancel();
+            });
+
+            let window_exhausted = agent
+                .handle_native_tool_calls(None, &tool_calls)
+                .await
+                .unwrap();
+            assert!(
+                !window_exhausted,
+                "a cancelled turn must not report utility-window exhaustion"
+            );
+
+            let matches = tool_result_ids(&agent, "id-e2e");
+            assert_eq!(
+                matches.len(),
+                1,
+                "exactly one ToolResult must exist for id-e2e after cancellation, got {}",
+                matches.len()
+            );
+
+            // The tombstone must be the very last message — proving process_tool_result_batch
+            // did not run afterward and append a second, contradicting result.
+            let last = agent.msg.messages.last().expect("at least one message");
+            let has_tombstone = last.parts.iter().any(|p| {
+                matches!(
+                    p,
+                    MessagePart::ToolResult { tool_use_id, content, is_error }
+                        if tool_use_id == "id-e2e" && content == "[Cancelled]" && *is_error
+                )
+            });
+            assert!(
+                has_tombstone,
+                "last message must be the [Cancelled] tombstone for id-e2e, got: {last:?}"
+            );
         }
     }
 }
