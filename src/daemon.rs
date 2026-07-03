@@ -516,9 +516,27 @@ pub(crate) async fn run_daemon(
     .with_conversation(conversation_id.0);
     let skill_loader_executor =
         zeph_core::SkillLoaderExecutor::new(std::sync::Arc::clone(&registry));
-    let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
-        zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
-    );
+    let base_tool: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
+        let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
+            zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
+        );
+        let index_provider =
+            crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
+        if let Some(search_executor) = agent_setup::build_search_code_executor(
+            config,
+            app.qdrant_ops().cloned(),
+            index_provider,
+            memory.sqlite().pool().clone(),
+            Some(std::sync::Arc::clone(&mcp_manager)),
+        ) {
+            std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
+                zeph_tools::DynExecutor(base),
+                search_executor,
+            ))
+        } else {
+            base
+        }
+    };
     let tool_executor =
         zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,

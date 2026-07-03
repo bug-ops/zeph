@@ -1935,6 +1935,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_search_code_executor_exposes_search_code_tool() {
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        assert!(config.index.search_enabled, "expected default to be on");
+        let executor =
+            build_search_code_executor(&config, None, offline_provider(), pool, None).unwrap();
+        let defs = executor.tool_definitions();
+        assert!(defs.iter().any(|d| d.id == "search_code"));
+    }
+
+    /// Regression test for #5579: `search_code` was wired into `agent_setup.rs`'s
+    /// CLI/TUI tool chain and `acp.rs`, but never into `daemon.rs`'s composite chain,
+    /// so the `search_code` tool silently never appeared for the `zeph serve --a2a`
+    /// entry point. Mirrors the exact nesting shape used in `daemon.rs::run_daemon`
+    /// (`CompositeExecutor::new(DynExecutor(base), search_executor)`) and asserts the
+    /// tool definition survives the merge.
+    #[tokio::test]
+    async fn search_code_executor_reachable_through_daemon_composite_chain() {
+        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
+            std::sync::Arc::new(NoopExec);
+        let search_executor =
+            build_search_code_executor(&config, None, offline_provider(), pool, None).unwrap();
+        let composite =
+            zeph_tools::CompositeExecutor::new(zeph_tools::DynExecutor(base), search_executor);
+        let defs = composite.tool_definitions();
+        assert!(defs.iter().any(|d| d.id == "search_code"));
+    }
+
+    #[tokio::test]
     async fn apply_summary_provider_none_returns_agent_unchanged() {
         let agent = make_agent();
         let result = apply_summary_provider(agent, None);

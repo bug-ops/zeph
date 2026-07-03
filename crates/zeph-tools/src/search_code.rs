@@ -200,7 +200,13 @@ const fn default_max_results() -> usize {
 
 /// Maximum directory entries a single structural/grep walk may visit before it
 /// is truncated. Bounds `allowed_paths` resolving to a huge tree (e.g. `~`).
-const MAX_WALK_ENTRIES: usize = 5_000;
+///
+/// Large monorepos can exceed a few thousand entries in normal operation, so this is
+/// generous; `MAX_WALK_DURATION` is the real backstop against the original
+/// pathological-scope hang (e.g. `allowed_paths` resolving to `~`), since wall-clock
+/// time bounds the walk regardless of how many entries a given filesystem can visit
+/// per second.
+const MAX_WALK_ENTRIES: usize = 50_000;
 
 /// Maximum wall-clock time a single structural/grep walk may run before it is
 /// truncated, independent of entry count (guards against slow filesystems).
@@ -240,6 +246,15 @@ impl WalkBudget {
         }
         self.truncated
     }
+}
+
+/// Bundles the two pieces of walk-wide mutable state threaded through the
+/// structural/grep directory recursion: the [`WalkBudget`] and the symlink-cycle
+/// guard (canonical paths of directories on the *active* recursion path). Grouped
+/// into one struct so the walk functions stay under clippy's argument-count limit.
+struct WalkState<'a> {
+    budget: &'a mut WalkBudget,
+    ancestors: &'a mut Vec<PathBuf>,
 }
 
 pub struct SearchCodeExecutor {
@@ -399,6 +414,11 @@ impl SearchCodeExecutor {
         let mut hits = Vec::new();
         let mut budget = WalkBudget::new();
         for root in &self.allowed_paths {
+            let mut ancestors = Vec::new();
+            let mut state = WalkState {
+                budget: &mut budget,
+                ancestors: &mut ancestors,
+            };
             collect_grep_hits(
                 root,
                 root,
@@ -406,7 +426,7 @@ impl SearchCodeExecutor {
                 &regex,
                 &mut hits,
                 max_results,
-                &mut budget,
+                &mut state,
             )?;
             if hits.len() >= max_results || budget.truncated {
                 break;
@@ -467,13 +487,18 @@ fn collect_all_structural_hits(
     let symbol_lower = symbol.to_lowercase();
     let mut budget = WalkBudget::new();
     for root in allowed_paths {
+        let mut ancestors = Vec::new();
+        let mut state = WalkState {
+            budget: &mut budget,
+            ancestors: &mut ancestors,
+        };
         collect_structural_hits(
             root,
             root,
             matcher.as_ref(),
             &symbol_lower,
             &mut hits,
-            &mut budget,
+            &mut state,
         )?;
         if hits.len() >= max_results || budget.truncated {
             break;
@@ -594,35 +619,67 @@ fn format_hits(hits: &[SearchCodeHit], root: &Path) -> String {
         .join("\n\n")
 }
 
+/// Walks `current`, guarding against symlink cycles via `state.ancestors`: the
+/// canonical paths of directories on the *active* recursion path (not every
+/// directory ever visited). A symlinked directory is only skipped when following it
+/// would revisit one of those ancestors — an actual cycle. Legitimate symlinks that
+/// point elsewhere (a vendored dependency, a symlinked source file) are walked
+/// normally, still bounded by [`WalkBudget`] via `state.budget`.
 fn collect_structural_hits(
     root: &Path,
     current: &Path,
     matcher: Option<&glob::Pattern>,
     symbol_lower: &str,
     hits: &mut Vec<SearchCodeHit>,
-    budget: &mut WalkBudget,
+    state: &mut WalkState<'_>,
 ) -> Result<(), ToolError> {
-    if should_skip_path(current) || budget.truncated {
+    if should_skip_path(current) || state.budget.truncated {
         return Ok(());
     }
 
+    // A plain directory tree has no cycles on its own — only a symlink pointing back
+    // at an ancestor can create one — so canonicalizing once per directory entered
+    // (not per entry) and comparing against the active stack is enough to catch it.
+    let canonical = current
+        .canonicalize()
+        .unwrap_or_else(|_| current.to_path_buf());
+    if state.ancestors.contains(&canonical) {
+        return Ok(());
+    }
+    state.ancestors.push(canonical);
+    let result = collect_structural_hits_inner(root, current, matcher, symbol_lower, hits, state);
+    state.ancestors.pop();
+    result
+}
+
+fn collect_structural_hits_inner(
+    root: &Path,
+    current: &Path,
+    matcher: Option<&glob::Pattern>,
+    symbol_lower: &str,
+    hits: &mut Vec<SearchCodeHit>,
+    state: &mut WalkState<'_>,
+) -> Result<(), ToolError> {
     let entries = std::fs::read_dir(current).map_err(ToolError::Execution)?;
     for entry in entries {
-        if budget.tick() {
+        if state.budget.tick() {
             return Ok(());
         }
         let entry = entry.map_err(ToolError::Execution)?;
         let path = entry.path();
-        // Never follow symlinks: avoids symlink-loop hangs and matches the
-        // `symlink_metadata` convention used elsewhere in zeph-tools (file.rs).
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
         };
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
-            collect_structural_hits(root, &path, matcher, symbol_lower, hits, budget)?;
+        let is_dir = if meta.file_type().is_symlink() {
+            match std::fs::metadata(&path) {
+                Ok(target_meta) => target_meta.is_dir(),
+                Err(_) => continue, // broken symlink target
+            }
+        } else {
+            meta.is_dir()
+        };
+        if is_dir {
+            collect_structural_hits(root, &path, matcher, symbol_lower, hits, state)?;
             continue;
         }
         if !matches_pattern(root, &path, matcher) {
@@ -688,6 +745,7 @@ fn collect_structural_hits(
     Ok(())
 }
 
+/// Symlink cycle guard mirrors [`collect_structural_hits`]; see its docs.
 fn collect_grep_hits(
     root: &Path,
     current: &Path,
@@ -695,15 +753,36 @@ fn collect_grep_hits(
     regex: &regex::Regex,
     hits: &mut Vec<SearchCodeHit>,
     max_results: usize,
-    budget: &mut WalkBudget,
+    state: &mut WalkState<'_>,
 ) -> Result<(), ToolError> {
-    if hits.len() >= max_results || should_skip_path(current) || budget.truncated {
+    if hits.len() >= max_results || should_skip_path(current) || state.budget.truncated {
         return Ok(());
     }
 
+    let canonical = current
+        .canonicalize()
+        .unwrap_or_else(|_| current.to_path_buf());
+    if state.ancestors.contains(&canonical) {
+        return Ok(());
+    }
+    state.ancestors.push(canonical);
+    let result = collect_grep_hits_inner(root, current, matcher, regex, hits, max_results, state);
+    state.ancestors.pop();
+    result
+}
+
+fn collect_grep_hits_inner(
+    root: &Path,
+    current: &Path,
+    matcher: Option<&glob::Pattern>,
+    regex: &regex::Regex,
+    hits: &mut Vec<SearchCodeHit>,
+    max_results: usize,
+    state: &mut WalkState<'_>,
+) -> Result<(), ToolError> {
     let entries = std::fs::read_dir(current).map_err(ToolError::Execution)?;
     for entry in entries {
-        if budget.tick() {
+        if state.budget.tick() {
             return Ok(());
         }
         let entry = entry.map_err(ToolError::Execution)?;
@@ -711,11 +790,16 @@ fn collect_grep_hits(
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
         };
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
-            collect_grep_hits(root, &path, matcher, regex, hits, max_results, budget)?;
+        let is_dir = if meta.file_type().is_symlink() {
+            match std::fs::metadata(&path) {
+                Ok(target_meta) => target_meta.is_dir(),
+                Err(_) => continue, // broken symlink target
+            }
+        } else {
+            meta.is_dir()
+        };
+        if is_dir {
+            collect_grep_hits(root, &path, matcher, regex, hits, max_results, state)?;
             continue;
         }
         if !matches_pattern(root, &path, matcher) {
@@ -913,8 +997,8 @@ mod tests {
     }
 
     /// A directory cycle created via a symlink pointing back to an ancestor
-    /// must not send the walk into an infinite loop — symlinked directories
-    /// are never followed.
+    /// must not send the walk into an infinite loop, even though symlinks are
+    /// now followed in general (#5577).
     #[cfg(unix)]
     #[tokio::test]
     async fn search_code_does_not_follow_symlink_loop() {
@@ -943,6 +1027,159 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(out.summary.contains("retry_backoff_ms"));
+    }
+
+    /// Regression test for #5577 (critic finding M1 / tester coverage gap 1): a
+    /// symlink several directories deep pointing back at a non-root ancestor — not
+    /// a direct self-loop — must still be caught. This only works because *every*
+    /// directory entered (not just symlinked ones) is pushed onto the active
+    /// recursion stack; a design that only tracked symlinked directories would miss
+    /// this cycle, since `a` here is a plain directory, not a symlink.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn search_code_does_not_follow_indirect_symlink_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let c = a.join("b").join("c");
+        std::fs::create_dir_all(&c).unwrap();
+        std::fs::write(a.join("lib.rs"), "pub fn retry_backoff_ms() -> u64 { 0 }\n").unwrap();
+        let back_to_a = c.join("back_to_a");
+        std::os::unix::fs::symlink(&a, &back_to_a).unwrap();
+
+        let exec = SearchCodeExecutor::new(vec![dir.path().to_path_buf()]);
+        let call = ToolCall {
+            tool_id: "search_code".into(),
+            params: serde_json::json!({ "symbol": "retry_backoff_ms" })
+                .as_object()
+                .unwrap()
+                .clone(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
+            .await
+            .expect("search_code must not hang on an indirect symlink cycle several levels deep")
+            .unwrap()
+            .unwrap();
+        assert!(out.summary.contains("retry_backoff_ms"));
+    }
+
+    /// Regression test for #5577 (tester coverage gap 2): `collect_grep_hits`'s
+    /// cycle-detection logic is a hand-duplicated copy of
+    /// `collect_structural_hits`'s (see [`WalkState`] docs) and had zero direct
+    /// test coverage of its own loop-protection path — only the structural walk's
+    /// was exercised by `search_code_does_not_follow_symlink_loop`. Uses `query`
+    /// (no `symbol`, no semantic backend attached) so the search falls through to
+    /// `grep_fallback`, exactly like `search_code_uses_grep_fallback`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn search_code_grep_fallback_does_not_follow_symlink_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mod.rs");
+        std::fs::write(&file, "let retry_backoff_ms = 5;\n").unwrap();
+        let loop_link = dir.path().join("self_loop");
+        std::os::unix::fs::symlink(dir.path(), &loop_link).unwrap();
+
+        let exec = SearchCodeExecutor::new(vec![dir.path().to_path_buf()]);
+        let call = ToolCall {
+            tool_id: "search_code".into(),
+            params: serde_json::json!({ "query": "retry_backoff_ms" })
+                .as_object()
+                .unwrap()
+                .clone(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
+            .await
+            .expect("grep fallback must not hang on a symlink loop")
+            .unwrap()
+            .unwrap();
+        assert!(out.summary.contains("grep fallback"));
+    }
+
+    /// Regression test for #5577: a symlinked directory that does *not* create a
+    /// cycle (e.g. a vendored dependency symlinked into the tree) must still be
+    /// walked and searched, not blanket-skipped just because it is a symlink.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn search_code_follows_non_looping_symlinked_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        std::fs::write(
+            vendor.path().join("vendored.rs"),
+            "pub fn vendored_symbol_xyz() -> u64 { 0 }\n",
+        )
+        .unwrap();
+        let link = dir.path().join("vendor_link");
+        std::os::unix::fs::symlink(vendor.path(), &link).unwrap();
+
+        let exec = SearchCodeExecutor::new(vec![dir.path().to_path_buf()]);
+        let call = ToolCall {
+            tool_id: "search_code".into(),
+            params: serde_json::json!({ "symbol": "vendored_symbol_xyz" })
+                .as_object()
+                .unwrap()
+                .clone(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
+            .await
+            .expect("search_code must not hang")
+            .unwrap()
+            .unwrap();
+        assert!(
+            out.summary.contains("vendored_symbol_xyz"),
+            "expected symlinked directory to be walked, got: {}",
+            out.summary
+        );
+    }
+
+    /// Regression test for #5577: a symlinked source file (not a directory) must
+    /// still be searched, not skipped just because it is a symlink.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn search_code_follows_symlinked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = tempfile::tempdir().unwrap();
+        let target = real_file.path().join("real.rs");
+        std::fs::write(&target, "pub fn symlinked_file_symbol_xyz() -> u64 { 0 }\n").unwrap();
+        let link = dir.path().join("linked.rs");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let exec = SearchCodeExecutor::new(vec![dir.path().to_path_buf()]);
+        let call = ToolCall {
+            tool_id: "search_code".into(),
+            params: serde_json::json!({ "symbol": "symlinked_file_symbol_xyz" })
+                .as_object()
+                .unwrap()
+                .clone(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
+            .await
+            .expect("search_code must not hang")
+            .unwrap()
+            .unwrap();
+        assert!(
+            out.summary.contains("symlinked_file_symbol_xyz"),
+            "expected symlinked file to be searched, got: {}",
+            out.summary
+        );
     }
 
     #[test]
