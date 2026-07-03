@@ -22,6 +22,7 @@ pub mod http_middleware;
 pub mod math;
 pub mod memory;
 pub mod net;
+pub mod path_guard;
 pub mod patterns;
 pub mod policy;
 pub mod quarantine;

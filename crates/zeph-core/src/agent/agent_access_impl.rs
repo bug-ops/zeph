@@ -1031,17 +1031,25 @@ impl<C: Channel + Send + 'static> AgentAccess for Agent<C> {
         &'a mut self,
         path: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        use std::path::Component;
+        use zeph_common::path_guard::{PathRejection, classify_relative_path};
         use zeph_llm::provider::{ImageData, MessagePart};
 
-        let p = std::path::Path::new(path);
-        if p.is_absolute()
-            || path.starts_with('/')
-            || p.components().any(|c| c == Component::ParentDir)
-        {
-            return Box::pin(async move {
-                Ok("Invalid image path: path traversal not allowed".to_owned())
-            });
+        match classify_relative_path(path) {
+            PathRejection::Allowed => {}
+            PathRejection::Absolute => {
+                return Box::pin(async move {
+                    Ok(
+                        "Invalid image path: absolute paths are not supported, use a path \
+                        relative to the working directory"
+                            .to_owned(),
+                    )
+                });
+            }
+            PathRejection::Traversal => {
+                return Box::pin(async move {
+                    Ok("Invalid image path: path traversal ('..') is not allowed".to_owned())
+                });
+            }
         }
 
         let path_owned = path.to_owned();
@@ -2695,5 +2703,43 @@ path = "skill-second"
             result.starts_with("Resumed session s2"),
             "resuming into a different, unlocked session must still hydrate normally, got: {result}"
         );
+    }
+
+    // `AgentAccess::load_image` had zero direct coverage — only
+    // `Agent::handle_image_as_string` (slash_commands.rs) and `cli.rs`'s inline check
+    // were tested. These exercise the real `Agent<C>` impl via the trait.
+
+    #[tokio::test]
+    async fn load_image_rejects_absolute_path() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let result = AgentAccess::load_image(&mut agent, "/etc/passwd")
+            .await
+            .unwrap();
+        assert!(result.contains("absolute paths are not supported"));
+    }
+
+    #[tokio::test]
+    async fn load_image_rejects_parent_dir_traversal() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let result = AgentAccess::load_image(&mut agent, "../../etc/passwd")
+            .await
+            .unwrap();
+        assert!(result.contains("path traversal") && result.contains("not allowed"));
     }
 }

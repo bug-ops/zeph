@@ -339,17 +339,19 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Load an image and return a status string for use via [`AgentAccess::load_image`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn handle_image_as_string(&mut self, path: &str) -> String {
-        use std::path::Component;
+        use zeph_common::path_guard::{PathRejection, classify_relative_path};
         use zeph_llm::provider::{ImageData, MessagePart};
 
-        let p = std::path::Path::new(path);
-        // `is_absolute()` is false on Windows for Unix-style paths like `/etc/passwd`
-        // (no drive letter), so also check for a leading slash explicitly.
-        if p.is_absolute()
-            || path.starts_with('/')
-            || p.components().any(|c| c == Component::ParentDir)
-        {
-            return "Invalid image path: path traversal not allowed".to_owned();
+        match classify_relative_path(path) {
+            PathRejection::Allowed => {}
+            PathRejection::Absolute => {
+                return "Invalid image path: absolute paths are not supported, use a path \
+                    relative to the working directory"
+                    .to_owned();
+            }
+            PathRejection::Traversal => {
+                return "Invalid image path: path traversal ('..') is not allowed".to_owned();
+            }
         }
 
         let data = match std::fs::read(path) {

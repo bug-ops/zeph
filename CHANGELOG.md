@@ -44,6 +44,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ci`: widen the `build-postgres` job to also run
   `cargo check --workspace --all-targets --features postgres`, exercising the exact command
   that surfaced #5602 so this defect class is caught in CI going forward. Closes #5601.
+- `fix(core,channels)`: `/image <path>` now reports an accurate error instead of the
+  misleading `"path traversal not allowed"` for every absolute path, even a safe one
+  like `/tmp/screenshot.png` with no `..` component. The rejection check was duplicated
+  across three call sites — `handle_image_as_string`
+  (`crates/zeph-core/src/agent/slash_commands.rs`), the `AgentAccess::load_image` impl
+  (`crates/zeph-core/src/agent/agent_access_impl.rs`), and the CLI channel's own
+  `/image` handling (`crates/zeph-channels/src/cli.rs`) — all three now return a
+  distinct message for the absolute-path case (`"absolute paths are not supported, use
+  a path relative to the working directory"`) versus genuine `..` traversal
+  (`"path traversal ('..') is not allowed"`). All three now share a single
+  `zeph_common::path_guard::classify_relative_path` classifier instead of three
+  independently-maintained checks, which also fixes a latent Windows-only gap in the
+  CLI channel's check (it was missing the leading-`/` guard the other two already had).
+  The underlying restriction — relative paths only — is unchanged. Closes #5472.
 - `fix(tui)`: the TUI command palette's `daemon:connect`, `daemon:disconnect`, and
   `daemon:status` entries no longer collapse into one indistinguishable "not yet
   implemented" toast. `daemon:status` now reports genuine connection state (connected to

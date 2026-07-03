@@ -115,7 +115,7 @@ fn handle_image_command_absolute_path_is_rejected() {
 
     let result = agent.handle_image_as_string("/etc/passwd");
     assert!(agent.msg.pending_image_parts.is_empty());
-    assert!(result.contains("path traversal not allowed"));
+    assert!(result.contains("absolute paths are not supported"));
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn handle_image_command_parent_dir_traversal_is_rejected() {
 
     let result = agent.handle_image_as_string("../../etc/passwd");
     assert!(agent.msg.pending_image_parts.is_empty());
-    assert!(result.contains("path traversal not allowed"));
+    assert!(result.contains("path traversal") && result.contains("not allowed"));
 }
 
 #[test]

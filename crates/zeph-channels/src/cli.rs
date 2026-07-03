@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 use std::io::{BufReader, IsTerminal};
 
 use tokio::sync::mpsc;
+use zeph_common::path_guard::{PathRejection, classify_relative_path};
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
     ElicitationFieldType, ElicitationRequest, ElicitationResponse,
@@ -72,6 +73,24 @@ impl std::fmt::Debug for InputHistory {
     }
 }
 
+/// Format the `/image` rejection message for a [`PathRejection`], or `None` when the
+/// path is allowed.
+///
+/// Extracted as a pure function (rather than inlined `println!` calls) so the exact
+/// message text is directly unit-testable without capturing stdout.
+fn image_path_rejection_message(rejection: PathRejection) -> Option<&'static str> {
+    match rejection {
+        PathRejection::Allowed => None,
+        PathRejection::Absolute => Some(
+            "Zeph: Invalid image path: absolute paths are not supported, use a path \
+            relative to the working directory",
+        ),
+        PathRejection::Traversal => {
+            Some("Zeph: Invalid image path: path traversal ('..') is not allowed")
+        }
+    }
+}
+
 /// Process a raw line from stdin: handle exit commands, empty-line logic,
 /// `/image` commands. Returns `None` to continue the loop, `Some(msg)` to
 /// send a message, or `Err(())` to break out of the loop.
@@ -105,9 +124,8 @@ async fn process_line(
             return Ok(None);
         }
         let path_owned = path.to_owned();
-        let p = std::path::Path::new(&path_owned);
-        if p.is_absolute() || p.components().any(|c| c == std::path::Component::ParentDir) {
-            println!("Zeph: Invalid image path: path traversal not allowed");
+        if let Some(msg) = image_path_rejection_message(classify_relative_path(&path_owned)) {
+            println!("{msg}");
             return Ok(None);
         }
         match tokio::fs::read(&path_owned).await {
@@ -828,5 +846,26 @@ mod tests {
         .await;
         assert_matches!(result, Ok(None));
         assert!(pending.is_empty());
+    }
+
+    // `process_line`'s rejection messages go to stdout via `println!` rather than a
+    // return value, so `image_path_rejection_message` (the classifier->message wiring)
+    // is the directly-testable seam.
+
+    #[test]
+    fn image_path_rejection_message_absolute() {
+        let msg = image_path_rejection_message(PathRejection::Absolute).unwrap();
+        assert!(msg.contains("absolute paths are not supported"));
+    }
+
+    #[test]
+    fn image_path_rejection_message_traversal() {
+        let msg = image_path_rejection_message(PathRejection::Traversal).unwrap();
+        assert!(msg.contains("path traversal") && msg.contains("not allowed"));
+    }
+
+    #[test]
+    fn image_path_rejection_message_allowed_is_none() {
+        assert!(image_path_rejection_message(PathRejection::Allowed).is_none());
     }
 }
