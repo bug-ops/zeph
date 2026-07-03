@@ -639,6 +639,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `get_eviction_candidates`'s version/timestamp decode — both functions were already fixed by
   #5560 and lacked dedicated Postgres coverage for that fix; these tests close that gap as a
   bonus alongside this PR's own fixes. Closes #5567.
+- `test(memory)`: verified `store/skills.rs`'s `SkillVersionTuple` `INTEGER`-as-`i64` decode
+  (same defect class as #5538/#5544/#5567) was already fixed on `main` by #5560's broader sweep —
+  no source change needed. Closed the remaining test-coverage gap: strengthened
+  `skills_load_versions_decodes_timestamptz_column` (`postgres_integration.rs`) with explicit
+  `version`/`success_count`/`failure_count` assertions and added
+  `skills_predecessor_version_decodes_integer_columns` to cover `predecessor_version`, the third
+  call site sharing the tuple, previously untested. Closes #5573.
 - `fix(db,memory)`: `store/messages/mod.rs::replace_conversation`/`apply_tool_pair_summaries`
   bound a Rust-formatted epoch-seconds string directly into `messages.compacted_at`
   (`TIMESTAMPTZ` on Postgres), which Postgres's `timestamptz` parser rejects even under

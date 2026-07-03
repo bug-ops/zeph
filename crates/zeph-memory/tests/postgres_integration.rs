@@ -2222,11 +2222,40 @@ mod pg {
 
         let versions = store.load_skill_versions("git").await.unwrap();
         assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version, 1);
+        assert_eq!(versions[0].success_count, 0);
+        assert_eq!(versions[0].failure_count, 0);
         assert!(versions[0].is_active);
         assert!(!versions[0].created_at.is_empty());
 
         let active = store.active_skill_version("git").await.unwrap().unwrap();
         assert_eq!(active.id, v1);
+        assert_eq!(active.version, 1);
         assert!(!active.created_at.is_empty());
+    }
+
+    // Exercises `predecessor_version`, the third call site sharing `SkillVersionTuple` (#5573) —
+    // `skills_load_versions_decodes_timestamptz_column` above already covers the other two.
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn skills_predecessor_version_decodes_integer_columns() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        let v1 = store
+            .save_skill_version("git", 1, "body v1", "Git helper", "manual", None, None)
+            .await
+            .unwrap();
+        let v2 = store
+            .save_skill_version("git", 2, "body v2", "Git helper v2", "auto", None, Some(v1))
+            .await
+            .unwrap();
+        store.activate_skill_version("git", v2).await.unwrap();
+
+        let predecessor = store.predecessor_version(v2).await.unwrap().unwrap();
+        assert_eq!(predecessor.id, v1);
+        assert_eq!(predecessor.version, 1);
+        assert_eq!(predecessor.success_count, 0);
+        assert_eq!(predecessor.failure_count, 0);
     }
 }
