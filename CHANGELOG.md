@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools,acp)`: ACP (`zeph --acp`) and the daemon (`zeph serve`) gated only the base
+  tool chain (file/shell/scrape/cwd/diagnostics) behind `TrustGateExecutor`; `memory_save`,
+  MCP-sourced tools, `load_skill`/`invoke_skill`, and `search_code` were composed outside
+  that gate and never passed through trust enforcement at all. A `Quarantined` skill could
+  therefore still persist attacker-controlled content via `memory_save` or invoke any
+  MCP-sourced tool, even though the CLI (`src/runner.rs`) already blocked both. Fixed by
+  wrapping the FULLY composed executor tree — base chain, MCP, search, skill loader,
+  memory, overflow — in a single outermost `TrustGateExecutor`, matching the CLI. Extracted
+  the wrap into a shared `agent_setup::apply_common_tool_gating` helper (plus
+  `register_mcp_tool_ids`) so the CLI, ACP, and daemon entry points all gate through one
+  code path instead of three independent, divergence-prone inline constructions (partial
+  slice of #5610 — the shared helper covers trust-gate/permission-policy wiring only;
+  provider-pool wiring stays triplicated and is left for a future focused pass under the
+  same issue). **User-visible behavior change**: `memory_save`, `overflow`, and
+  `search_code` in ACP/daemon now also fall under the `Supervised`-mode `Ask` confirmation
+  default for tools with no explicit policy rule — previously they bypassed confirmation
+  entirely because no gate stood in front of them at all. This is intentional and brings
+  ACP/daemon in line with the CLI's existing, already-shipped behavior. Closes #5611.
+  Refs #5610.
 - `fix(ci)`: nextest flagged `zeph-index`'s `index_file_spawn_blocking_dedup_path` and
   `index_file_with_blocking_spawner` tests as `LEAK`. Both tests join their
   `tokio::task::spawn_blocking` handle before returning, but the `#[tokio::test]`
