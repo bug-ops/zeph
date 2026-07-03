@@ -1916,3 +1916,20 @@ async fn update_fidelity_tags_chunk_boundary() {
         "all {N} rows must be updated across chunk boundary"
     );
 }
+
+/// Pins the exact SQL fragment `replace_conversation`/`apply_tool_pair_summaries` bind
+/// into `compacted_at` for the dialect this test binary was compiled with. The `sqlite`
+/// and `postgres` features are additive on this crate (see `Cargo.toml`), so running with
+/// `--features postgres` exercises the branch that `cargo nextest run -p zeph-memory --lib`
+/// alone never reaches — a bare epoch-seconds bind here fails to parse against Postgres's
+/// `TIMESTAMPTZ` column at runtime (#5561), and only surfaces via a live-DB integration test
+/// or manual `psql` check without this pin.
+#[test]
+fn compacted_at_bind_expr_matches_active_dialect() {
+    let expr = compacted_at_bind_expr();
+    if cfg!(feature = "postgres") {
+        assert_eq!(expr, "to_timestamp(?::double precision)");
+    } else {
+        assert_eq!(expr, "?");
+    }
+}

@@ -228,8 +228,11 @@ jobs:
         # mutually-exclusive default), so default features stay on here — building
         # with --no-default-features would disable the "sqlite" feature and turn
         # unrelated sqlite-only test helpers into dead-code errors under -D warnings.
+        # --lib --bins (not just --tests) is required so cfg!(feature = "postgres")
+        # branches inside src/ (e.g. dialect-selected SQL literals) get archived too —
+        # see the "Run zeph-memory postgres unit tests" step below (#5540).
         if: matrix.os == 'ubuntu-latest'
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-memory --features test-utils --tests --archive-file nextest-archive-zeph-memory-postgres.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-memory --features test-utils --lib --bins --tests --archive-file nextest-archive-zeph-memory-postgres.tar.zst
       - name: Upload zeph-memory postgres test archive
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -344,6 +347,20 @@ jobs:
         # gives postgres cfg-priority for the whole crate; running crate-wide would
         # route those unrelated :memory: tests through connect_postgres and fail them.
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-memory-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(postgres_integration)'
+      - name: Run zeph-memory postgres unit tests (#5540)
+        # Runs the --lib/--bins portion of the same archive (built with --features
+        # postgres via test-utils, see the archive step in build-tests), so
+        # cfg!(feature = "postgres") branches inside src/ get unit-test coverage in
+        # CI, not just integration-test coverage that depends on happening to exercise
+        # the right code path. Scoped by name (not `kind(lib) + kind(bin)`) because the
+        # vast majority of zeph-memory's ~1500 lib unit tests open a `SqliteStore::new(
+        # ":memory:")` — under this postgres-featured build, DbConfig::connect has
+        # postgres cfg-priority for the whole crate (see the comment on the step above),
+        # so those unrelated tests would try to parse ":memory:" as a Postgres URL and
+        # fail. `_matches_active_dialect` is this codebase's established naming
+        # convention (see store/overflow.rs) for pure dialect-literal pinning tests that
+        # take no DB connection and are safe to run under either feature build.
+        run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-memory-postgres.tar.zst --workspace-remap . --profile ci -E 'kind(lib) and test(matches_active_dialect)'
       - name: Download zeph-index postgres test archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

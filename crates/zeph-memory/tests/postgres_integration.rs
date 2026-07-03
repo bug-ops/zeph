@@ -434,6 +434,108 @@ mod pg {
         assert_eq!(tags[1].1, 2);
     }
 
+    // ── messages: compacted_at write path (#5561) ───────────────────────────────
+    //
+    // `replace_conversation`/`apply_tool_pair_summaries` bind a Rust-formatted
+    // epoch-seconds `String` into `compacted_at` via `Dialect::timestamptz_from_epoch`
+    // (`to_timestamp(?::double precision)` on Postgres). A string-equality unit test on
+    // the emitted SQL fragment cannot catch a Postgres function-resolution error (e.g.
+    // `to_timestamp(text)` does not exist — only `to_timestamp(double precision)`); only
+    // executing the UPDATE against a real Postgres backend can. These two tests do that,
+    // then decode `compacted_at` back via `EXTRACT(EPOCH FROM ...)` to confirm the value
+    // round-trips to a sane epoch, not just that the statement didn't error.
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn replace_conversation_writes_compacted_at_on_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        let cid = store.create_conversation().await.unwrap();
+        let m1 = store.save_message(cid, "user", "one").await.unwrap();
+        let m2 = store.save_message(cid, "user", "two").await.unwrap();
+
+        let before = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+
+        store
+            .replace_conversation(cid, m1..=m2, "assistant", "compacted summary")
+            .await
+            .unwrap();
+
+        let (visibility, compacted_epoch): (String, i64) = sqlx::query_as(zeph_db::sql!(
+            "SELECT visibility, EXTRACT(EPOCH FROM compacted_at)::BIGINT FROM messages WHERE id = ?"
+        ))
+        .bind(m1)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(visibility, "user_only");
+        assert!(
+            (before - 60..=before + 60).contains(&compacted_epoch),
+            "compacted_at must round-trip to a value near 'now' ({before}), got {compacted_epoch}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn apply_tool_pair_summaries_writes_compacted_at_on_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        let cid = store.create_conversation().await.unwrap();
+        let tool_use = store
+            .save_message(cid, "assistant", "tool_use")
+            .await
+            .unwrap();
+        let tool_result = store
+            .save_message(cid, "user", "tool_result")
+            .await
+            .unwrap();
+
+        let before = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+
+        store
+            .apply_tool_pair_summaries(
+                cid,
+                &[tool_use.0, tool_result.0],
+                &["[tool summary] did the thing".to_string()],
+            )
+            .await
+            .unwrap();
+
+        let rows: Vec<(String, i64)> = sqlx::query_as(zeph_db::sql!(
+            "SELECT visibility, EXTRACT(EPOCH FROM compacted_at)::BIGINT FROM messages \
+             WHERE id IN (?, ?) ORDER BY id ASC"
+        ))
+        .bind(tool_use)
+        .bind(tool_result)
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        for (visibility, compacted_epoch) in rows {
+            assert_eq!(visibility, "user_only");
+            assert!(
+                (before - 60..=before + 60).contains(&compacted_epoch),
+                "compacted_at must round-trip to a value near 'now' ({before}), got {compacted_epoch}"
+            );
+        }
+    }
+
     // ── messages: forgetting sweep (downscale / replay / prune) ────────────────
 
     #[tokio::test]

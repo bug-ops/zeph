@@ -15,6 +15,17 @@ use super::SqliteStore;
 use crate::error::MemoryError;
 use crate::types::{ConversationId, MessageId};
 
+/// SQL fragment binding a `?` placeholder into `compacted_at` (`TEXT` on `SQLite`,
+/// `TIMESTAMPTZ` on `PostgreSQL`), dialect-selected.
+///
+/// `compacted_at` is written as a Rust-formatted epoch-seconds string, which has no
+/// valid `timestamptz` input syntax on Postgres — see
+/// [`zeph_db::dialect::Dialect::timestamptz_from_epoch`] for why a bare bind (or one
+/// under `TIMESTAMPTZ_CAST`) is insufficient there.
+fn compacted_at_bind_expr() -> String {
+    <ActiveDialect as zeph_db::dialect::Dialect>::timestamptz_from_epoch("?")
+}
+
 fn parse_role(s: &str) -> Role {
     match s {
         "assistant" => Role::Assistant,
@@ -477,16 +488,18 @@ impl SqliteStore {
 
         let mut tx = self.pool.begin().await?;
 
-        zeph_db::query(sql!(
-            "UPDATE messages SET visibility = 'user_only', compacted_at = ? \
+        let compacted_at_expr = compacted_at_bind_expr();
+        let update_sql = zeph_db::rewrite_placeholders(&format!(
+            "UPDATE messages SET visibility = 'user_only', compacted_at = {compacted_at_expr} \
              WHERE conversation_id = ? AND id >= ? AND id <= ?"
-        ))
-        .bind(&now)
-        .bind(conversation_id)
-        .bind(start_id)
-        .bind(end_id)
-        .execute(&mut *tx)
-        .await?;
+        ));
+        zeph_db::query(sqlx::AssertSqlSafe(update_sql))
+            .bind(&now)
+            .bind(conversation_id)
+            .bind(start_id)
+            .bind(end_id)
+            .execute(&mut *tx)
+            .await?;
 
         // importance_score uses schema DEFAULT 0.5 (neutral); compaction summaries are not scored at write time.
         let row: (MessageId,) = zeph_db::query_as(sql!(
@@ -532,14 +545,17 @@ impl SqliteStore {
 
         let mut tx = self.pool.begin().await?;
 
+        let compacted_at_expr = compacted_at_bind_expr();
+        let update_sql = zeph_db::rewrite_placeholders(&format!(
+            "UPDATE messages SET visibility = 'user_only', compacted_at = {compacted_at_expr} \
+             WHERE id = ?"
+        ));
         for &id in hide_ids {
-            zeph_db::query(sql!(
-                "UPDATE messages SET visibility = 'user_only', compacted_at = ? WHERE id = ?"
-            ))
-            .bind(&now)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+            zeph_db::query(sqlx::AssertSqlSafe(update_sql.clone()))
+                .bind(&now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
         }
 
         for summary in summaries {

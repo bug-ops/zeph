@@ -563,6 +563,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(db,memory)`: `store/messages/mod.rs::replace_conversation`/`apply_tool_pair_summaries`
+  bound a Rust-formatted epoch-seconds string directly into `messages.compacted_at`
+  (`TIMESTAMPTZ` on Postgres), which Postgres's `timestamptz` parser rejects even under
+  `Dialect::TIMESTAMPTZ_CAST` (no ISO-8601 syntax) — a write-path defect distinct from the
+  read-path `TIMESTAMPTZ`->`String` decode class. Adds `Dialect::timestamptz_from_epoch`, a new
+  `zeph-db` dialect primitive that wraps the bind placeholder in `to_timestamp({placeholder}::double
+  precision)` on Postgres (bare passthrough on SQLite, preserving existing behavior);
+  `compacted_at_bind_expr()` shares it between both write sites. The explicit `::double precision`
+  cast is required, not cosmetic: `sqlx` sends a bound `String`/`&str` with the `TEXT` type OID, and
+  `to_timestamp()` has no `text`-argument overload (only `to_timestamp(double precision)` and
+  `to_timestamp(text, text)`), so an uncast bind fails Postgres function resolution with
+  `ERROR 42883: function to_timestamp(text) does not exist` — caught by adversarial review, then
+  reproduced and fixed against a real local Postgres instance (not just testcontainers-gated CI).
+  Adds `replace_conversation_writes_compacted_at_on_postgres` and
+  `apply_tool_pair_summaries_writes_compacted_at_on_postgres` to
+  `tests/postgres_integration.rs`, which execute the UPDATE against a live Postgres and decode
+  `compacted_at` back via `EXTRACT(EPOCH FROM ...)` — a string-equality unit test on the dialect
+  fragment alone cannot catch a function-resolution error, only real execution can. Closes #5561.
+- `ci`: the `zeph-memory` postgres archive step (`.github/workflows/ci.yml`) only archived/ran
+  the `tests/` integration binaries (`--tests`), never `--lib --bins`, so no
+  `cfg!(feature = "postgres")` branch inside `crates/zeph-memory/src/` (e.g. dialect-selected SQL
+  literals) got unit-test coverage in CI. Adds `--lib --bins` to the archive step and a new
+  "Run zeph-memory postgres unit tests" step in the `integration` job, scoped to tests named
+  `*_matches_active_dialect` (this codebase's established naming convention for pure
+  dialect-literal pinning tests) to avoid routing the crate's ~1500 `SqliteStore::new(":memory:")`
+  unit tests through `connect_postgres` under this build's postgres cfg-priority. Closes #5540.
 - `fix(serve)`: sanitize `POST /sessions/:id/prompt` HTTP request bodies as `ExternalUntrusted`
   (`ContentSourceKind::ChannelMessage`) via `ContentSanitizer` before they reach the agent loopback
   queue — closes the same content-trust bypass already fixed for the gateway (#5459) and channel

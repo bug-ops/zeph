@@ -122,6 +122,35 @@ pub trait Dialect: Send + Sync + 'static {
     /// `SQLite`: `MIN`
     /// `PostgreSQL`: `LEAST`
     const LEAST_FN: &'static str;
+
+    /// Timestamp expression for binding a Unix epoch-seconds value into a
+    /// `TEXT`/`TIMESTAMPTZ` `compacted_at`-style column.
+    ///
+    /// Wraps the given bind-parameter placeholder (e.g. `?`, later rewritten to `$N`
+    /// by [`crate::rewrite_placeholders`]) in the backend-specific conversion from
+    /// Unix epoch seconds to the column's native timestamp representation.
+    ///
+    /// `SQLite` stores such columns as bare epoch-seconds `TEXT`, so the placeholder
+    /// passes through unchanged. `PostgreSQL` stores them as `TIMESTAMPTZ`; unlike an
+    /// ISO-8601 string, a bare epoch-seconds string has no valid `timestamptz` input
+    /// syntax — `'1735999999'::timestamptz` fails to parse even with
+    /// [`Self::TIMESTAMPTZ_CAST`] appended. The bound value must instead be routed
+    /// through `to_timestamp()`, which both performs the epoch conversion and yields a
+    /// `TIMESTAMPTZ` directly, so no additional cast is needed on the result.
+    ///
+    /// The placeholder itself still needs an explicit `::double precision` cast:
+    /// callers typically bind a Rust `String`/`&str` (the value is formatted with
+    /// `format!("{secs}")` before binding), which `sqlx` sends with the `TEXT` type OID.
+    /// `to_timestamp()` has only `to_timestamp(double precision)` and
+    /// `to_timestamp(text, text)` overloads — there is no implicit `text` ->
+    /// `double precision` cast, so an unqualified `to_timestamp({placeholder})` fails
+    /// function-argument resolution with `ERROR 42883: function to_timestamp(text) does
+    /// not exist`. The `::double precision` cast on the placeholder is what makes the
+    /// bound text resolve to the numeric overload.
+    ///
+    /// `SQLite`: `{placeholder}`
+    /// `PostgreSQL`: `to_timestamp({placeholder}::double precision)`
+    fn timestamptz_from_epoch(placeholder: &str) -> String;
 }
 
 /// `SQLite` dialect marker type.
@@ -150,6 +179,10 @@ impl Dialect for Sqlite {
     fn select_as_text(col: &str) -> String {
         col.to_string()
     }
+
+    fn timestamptz_from_epoch(placeholder: &str) -> String {
+        placeholder.to_string()
+    }
 }
 
 /// `PostgreSQL` dialect marker type.
@@ -177,6 +210,10 @@ impl Dialect for Postgres {
 
     fn select_as_text(col: &str) -> String {
         format!("{col}::text")
+    }
+
+    fn timestamptz_from_epoch(placeholder: &str) -> String {
+        format!("to_timestamp({placeholder}::double precision)")
     }
 }
 
@@ -246,6 +283,11 @@ mod tests {
         fn least_fn() {
             assert_eq!(Sqlite::LEAST_FN, "MIN");
         }
+
+        #[test]
+        fn timestamptz_from_epoch() {
+            assert_eq!(Sqlite::timestamptz_from_epoch("?"), "?");
+        }
     }
 
     #[cfg(feature = "postgres")]
@@ -309,6 +351,14 @@ mod tests {
         #[test]
         fn least_fn() {
             assert_eq!(Postgres::LEAST_FN, "LEAST");
+        }
+
+        #[test]
+        fn timestamptz_from_epoch() {
+            assert_eq!(
+                Postgres::timestamptz_from_epoch("?"),
+                "to_timestamp(?::double precision)"
+            );
         }
     }
 }
