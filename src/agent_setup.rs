@@ -557,11 +557,15 @@ pub(crate) async fn build_tool_setup(
     let shell_executor = Arc::new(shell_executor);
     let shell_executor_handle = Some(Arc::clone(&shell_executor));
     let cwd_executor = zeph_tools::SetCwdExecutor;
+    let diagnostics_executor = build_diagnostics_executor(config);
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(
             shell_executor,
-            zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
+            zeph_tools::CompositeExecutor::new(
+                scrape_executor,
+                zeph_tools::CompositeExecutor::new(cwd_executor, diagnostics_executor),
+            ),
         ),
     );
     let composite = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
@@ -1467,6 +1471,23 @@ pub(crate) fn build_search_code_executor(
     Some(executor)
 }
 
+/// Builds the `DiagnosticsExecutor` for the `diagnostics` tool, sandboxed to the same
+/// `tools.shell.allowed_paths` as `FileExecutor` and `SearchCodeExecutor`. Reuses
+/// `tools.shell.timeout` to bound the `cargo check`/`cargo clippy` subprocess — the same
+/// existing knob users already tune for long-running shell commands, rather than
+/// introducing a separate `tools.diagnostics.*` config surface for one field.
+pub(crate) fn build_diagnostics_executor(config: &Config) -> zeph_tools::DiagnosticsExecutor {
+    let allowed_paths = config
+        .tools
+        .shell
+        .allowed_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    zeph_tools::DiagnosticsExecutor::new(allowed_paths)
+        .with_timeout(std::time::Duration::from_secs(config.tools.shell.timeout))
+}
+
 fn resolve_search_lsp_server_id(config: &Config) -> Option<String> {
     config
         .mcp
@@ -1788,7 +1809,7 @@ mod tests {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::ollama::OllamaProvider;
     use zeph_skills::registry::SkillRegistry;
-    use zeph_tools::executor::{ToolError, ToolOutput};
+    use zeph_tools::executor::{ToolError, ToolExecutor, ToolOutput};
 
     use super::*;
 
@@ -1858,6 +1879,41 @@ mod tests {
         config.llm.providers = vec![entry];
         let result = apply_cost_tracker(agent, &config);
         drop(result);
+    }
+
+    #[test]
+    fn build_diagnostics_executor_exposes_diagnostics_tool() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let executor = build_diagnostics_executor(&config);
+        let defs = executor.tool_definitions();
+        assert!(defs.iter().any(|d| d.id == "diagnostics"));
+    }
+
+    /// Regression test for #5433: `DiagnosticsExecutor` was fully unit-tested in
+    /// `zeph-tools` but never constructed by any live entry point, so the `diagnostics`
+    /// tool never appeared in the LLM's tool list. This mirrors the exact composite
+    /// nesting shape used in `build_tool_setup`/`acp.rs`/`daemon.rs` and asserts the tool
+    /// definition survives the merge.
+    #[test]
+    fn diagnostics_executor_reachable_through_composite_chain() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let cwd_executor = zeph_tools::SetCwdExecutor;
+        let diagnostics_executor = build_diagnostics_executor(&config);
+        let base_executor = zeph_tools::CompositeExecutor::new(
+            file_executor,
+            zeph_tools::CompositeExecutor::new(
+                shell_executor,
+                zeph_tools::CompositeExecutor::new(
+                    scrape_executor,
+                    zeph_tools::CompositeExecutor::new(cwd_executor, diagnostics_executor),
+                ),
+            ),
+        );
+        let defs = base_executor.tool_definitions();
+        assert!(defs.iter().any(|d| d.id == "diagnostics"));
     }
 
     #[tokio::test]

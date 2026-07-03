@@ -414,11 +414,15 @@ async fn build_acp_deps(
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let shell_policy_handle = shell_executor.policy_handle();
     let cwd_executor = zeph_tools::SetCwdExecutor;
+    let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(config);
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(
             shell_executor,
-            zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
+            zeph_tools::CompositeExecutor::new(
+                scrape_executor,
+                zeph_tools::CompositeExecutor::new(cwd_executor, diagnostics_executor),
+            ),
         ),
     );
     let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());

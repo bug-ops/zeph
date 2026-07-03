@@ -380,6 +380,20 @@ mod tests {
         assert_matches!(result, Err(ToolError::Blocked { .. }));
     }
 
+    /// Regression test for #5433: `diagnostics` runs `cargo check`/`cargo clippy`, which
+    /// executes arbitrary code via `build.rs` scripts and proc-macros in the target
+    /// workspace — equivalent to `bash` for security purposes. Now that #5433 wires
+    /// `DiagnosticsExecutor` into the live, `TrustGateExecutor`-gated composite chain, it
+    /// must be quarantine-denied like `bash`.
+    #[tokio::test]
+    async fn quarantined_denies_diagnostics() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+
+        let result = gate.execute_tool_call(&make_call("diagnostics")).await;
+        assert_matches!(result, Err(ToolError::Blocked { .. }));
+    }
+
     #[tokio::test]
     async fn quarantined_allows_read() {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
@@ -633,6 +647,7 @@ mod tests {
         assert!(is_quarantine_denied("memory_save"));
         assert!(is_quarantine_denied("delete_path"));
         assert!(is_quarantine_denied("create_directory"));
+        assert!(is_quarantine_denied("diagnostics"));
     }
 
     #[test]

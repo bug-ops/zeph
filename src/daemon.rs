@@ -492,11 +492,15 @@ pub(crate) async fn run_daemon(
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let shell_policy_handle = shell_executor.policy_handle();
     let cwd_executor = zeph_tools::SetCwdExecutor;
+    let diagnostics_executor = agent_setup::build_diagnostics_executor(config);
     let base_executor = zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(
             shell_executor,
-            zeph_tools::CompositeExecutor::new(scrape_executor, cwd_executor),
+            zeph_tools::CompositeExecutor::new(
+                scrape_executor,
+                zeph_tools::CompositeExecutor::new(cwd_executor, diagnostics_executor),
+            ),
         ),
     );
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -11,6 +12,11 @@ use zeph_common::ToolName;
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use crate::file::expand_tilde;
 use crate::registry::{InvocationHint, ToolDef};
+
+/// Default bound on the `cargo check`/`cargo clippy` subprocess, mirroring
+/// `ShellConfig`'s default `timeout` (`zeph_config::tools::default_timeout`). A hostile
+/// or looping `build.rs`/proc-macro must not be able to hang the tool call indefinitely.
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// Cargo diagnostics level.
 #[derive(Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -39,6 +45,8 @@ pub struct DiagnosticsExecutor {
     allowed_paths: Vec<PathBuf>,
     /// Maximum number of diagnostics to return (default: 50)
     max_diagnostics: usize,
+    /// Bound on the `cargo check`/`cargo clippy` subprocess (default: 30s).
+    timeout: Duration,
 }
 
 impl DiagnosticsExecutor {
@@ -55,12 +63,24 @@ impl DiagnosticsExecutor {
                 .map(|p| p.canonicalize().unwrap_or(p))
                 .collect(),
             max_diagnostics: 50,
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
         }
     }
 
     #[must_use]
     pub fn with_max_diagnostics(mut self, max: usize) -> Self {
         self.max_diagnostics = max;
+        self
+    }
+
+    /// Overrides the default 30s bound on the `cargo check`/`cargo clippy` subprocess.
+    /// Callers wiring this into the live agent should pass the same value as
+    /// `tools.shell.timeout`, since it governs the same class of decision (how long a
+    /// subprocess is allowed to run) and cargo operations can legitimately exceed the
+    /// 30s default on larger workspaces.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
@@ -116,18 +136,34 @@ impl ToolExecutor for DiagnosticsExecutor {
 
         let cargo = which_cargo()?;
 
-        let output = tokio::process::Command::new(&cargo)
-            .arg(subcmd)
-            .arg("--message-format=json")
-            .current_dir(&work_dir)
-            .output()
-            .await
-            .map_err(|e| {
-                ToolError::Execution(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("failed to run cargo: {e}"),
-                ))
-            })?;
+        // kill_on_drop ensures a hostile/looping build.rs or proc-macro is killed rather
+        // than leaked when the timeout below fires and drops this future.
+        let output = tokio::time::timeout(
+            self.timeout,
+            tokio::process::Command::new(&cargo)
+                .arg(subcmd)
+                .arg("--message-format=json")
+                .current_dir(&work_dir)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                cmd = subcmd,
+                timeout_secs = self.timeout.as_secs(),
+                "cargo diagnostics subprocess timed out, killing child"
+            );
+            ToolError::Timeout {
+                timeout_secs: self.timeout.as_secs(),
+            }
+        })?
+        .map_err(|e| {
+            ToolError::Execution(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("failed to run cargo: {e}"),
+            ))
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let diagnostics = parse_cargo_json(&stdout, self.max_diagnostics);
@@ -257,6 +293,8 @@ pub(crate) fn parse_cargo_json(output: &str, max: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
 
     fn make_params(
@@ -339,6 +377,32 @@ mod tests {
         let input = "not json\n{\"reason\":\"build-script-executed\"}";
         let result = parse_cargo_json(input, 50);
         assert!(result.is_empty());
+    }
+
+    // --- timeout tests ---
+
+    /// Regression test for #5433 critic finding S1: the cargo subprocess had no
+    /// timeout, violating the project's mandatory Await Discipline rule (every external
+    /// `.await` must be bounded) and letting a hostile/looping `build.rs` or proc-macro
+    /// hang the tool call indefinitely. An unrealistically small timeout (1ns) makes the
+    /// timeout branch deterministic regardless of how fast the real `cargo` spawn is.
+    #[tokio::test]
+    async fn diagnostics_timeout_returns_timeout_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let exec = DiagnosticsExecutor::new(vec![dir.path().to_path_buf()])
+            .with_timeout(std::time::Duration::from_nanos(1));
+
+        let call = ToolCall {
+            tool_id: ToolName::new("diagnostics"),
+            params: make_params(&[("path", serde_json::json!(dir.path().to_str().unwrap()))]),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = exec.execute_tool_call(&call).await;
+        assert_matches!(result, Err(ToolError::Timeout { .. }));
     }
 
     // --- sandbox tests ---

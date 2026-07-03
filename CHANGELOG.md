@@ -589,6 +589,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `*_matches_active_dialect` (this codebase's established naming convention for pure
   dialect-literal pinning tests) to avoid routing the crate's ~1500 `SqliteStore::new(":memory:")`
   unit tests through `connect_postgres` under this build's postgres cfg-priority. Closes #5540.
+- `fix(tools)`: wire `DiagnosticsExecutor` (the `diagnostics` tool — runs `cargo check`/`cargo
+  clippy` and returns structured diagnostics) into every live agent entry point. It shipped with
+  full unit coverage in `zeph-tools` but was never constructed by `agent_setup::build_tool_setup`
+  (CLI/TUI), `src/daemon.rs`, or `src/acp.rs`, so it never appeared in the LLM's tool list in any
+  configuration. Adds `agent_setup::build_diagnostics_executor`, reusing the existing
+  `tools.shell.allowed_paths` sandbox (same as `FileExecutor`/`SearchCodeExecutor`, no new config
+  surface), and nests it into the base `CompositeExecutor` chain alongside `SetCwdExecutor` at all
+  three sites. Since making the tool reachable also makes it reachable to Quarantined skills,
+  this also adds `"diagnostics"` to `zeph_common::quarantine::QUARANTINE_DENIED` (running `cargo
+  check`/`clippy` executes arbitrary code via `build.rs`/proc-macros, equivalent to `bash`) and
+  bounds the `cargo` subprocess with a `tokio::time::timeout` (default 30s, reuses
+  `tools.shell.timeout`, `kill_on_drop(true)` to avoid leaking a hung child on timeout) — both
+  required so the newly-reachable tool doesn't reintroduce the unbounded-subprocess class of bug
+  #5434 just fixed for `search_code`. Closes #5433.
+- `fix(tools)`: bound the `search_code` tool's recursive directory walk. `collect_structural_hits`
+  and the `collect_grep_hits` fallback (`crates/zeph-tools/src/search_code.rs`) recursed every
+  `allowed_paths` root with no entry-count or wall-clock budget beyond skipping
+  `.git`/`target`/`node_modules`/`.zeph`, and followed symlinks with no loop protection —
+  discovered as a 90s+ hang when `allowed_paths = ["~"]` post-#5424's tilde expansion. Adds a
+  shared `WalkBudget` (`MAX_WALK_ENTRIES` = 5,000 entries, `MAX_WALK_DURATION` = 2s wall-clock,
+  whichever trips first) and stops following symlinked directories entirely (`symlink_metadata`
+  check, no loop possible). A truncated walk now returns partial results with a
+  `[search truncated: ...]` note in the summary and `"truncated": true` in `raw_response` instead
+  of silently returning partial or hanging indefinitely. No new config surface. Closes #5434.
 - `fix(serve)`: sanitize `POST /sessions/:id/prompt` HTTP request bodies as `ExternalUntrusted`
   (`ContentSourceKind::ChannelMessage`) via `ContentSanitizer` before they reach the agent loopback
   queue — closes the same content-trust bypass already fixed for the gateway (#5459) and channel

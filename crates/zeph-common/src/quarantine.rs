@@ -28,6 +28,10 @@ pub const QUARANTINE_DENIED: &[&str] = &[
     // Web access
     "web_scrape",
     "fetch",
+    // Runs `cargo check`/`cargo clippy`, which executes arbitrary code via build.rs
+    // scripts and proc-macros in the target workspace — equivalent to `bash` for
+    // security purposes.
+    "diagnostics",
     // Memory persistence
     "memory_save",
     // Skill body retrieval — denied for Quarantined active skills to prevent

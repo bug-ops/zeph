@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -197,6 +198,50 @@ const fn default_max_results() -> usize {
     10
 }
 
+/// Maximum directory entries a single structural/grep walk may visit before it
+/// is truncated. Bounds `allowed_paths` resolving to a huge tree (e.g. `~`).
+const MAX_WALK_ENTRIES: usize = 5_000;
+
+/// Maximum wall-clock time a single structural/grep walk may run before it is
+/// truncated, independent of entry count (guards against slow filesystems).
+const MAX_WALK_DURATION: Duration = Duration::from_secs(2);
+
+/// Safety net shared by the structural and grep-fallback directory walks.
+///
+/// `allowed_paths` is user/config controlled and may resolve to an
+/// unexpectedly broad root (e.g. `~`). Without a bound, a recursive walk over
+/// such a root can run indefinitely. `tick` caps both the number of entries
+/// visited and elapsed wall-clock time; once either limit is hit, the walk
+/// stops and reports partial results as truncated instead of hanging.
+struct WalkBudget {
+    started: Instant,
+    visited: usize,
+    truncated: bool,
+}
+
+impl WalkBudget {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            visited: 0,
+            truncated: false,
+        }
+    }
+
+    /// Records one visited directory entry; returns `true` once the walk
+    /// should stop because the budget is exhausted.
+    fn tick(&mut self) -> bool {
+        if self.truncated {
+            return true;
+        }
+        self.visited += 1;
+        if self.visited > MAX_WALK_ENTRIES || self.started.elapsed() > MAX_WALK_DURATION {
+            self.truncated = true;
+        }
+        self.truncated
+    }
+}
+
 pub struct SearchCodeExecutor {
     allowed_paths: Vec<PathBuf>,
     semantic_backend: Option<std::sync::Arc<dyn SemanticSearchBackend>>,
@@ -269,6 +314,7 @@ impl SearchCodeExecutor {
 
         let max_results = params.max_results.clamp(1, 50);
         let mut hits = Vec::new();
+        let mut walk_truncated = false;
 
         if let Some(query) = query
             && let Some(backend) = &self.semantic_backend
@@ -284,12 +330,13 @@ impl SearchCodeExecutor {
             let paths = self.allowed_paths.clone();
             let sym = symbol.to_owned();
             let pat = params.file_pattern.clone();
-            let structural_hits = tokio::task::spawn_blocking(move || {
+            let (structural_hits, structural_truncated) = tokio::task::spawn_blocking(move || {
                 collect_all_structural_hits(&paths, &sym, pat.as_deref(), max_results)
             })
             .await
             .map_err(|e| ToolError::Execution(e.into()))??;
             hits.extend(structural_hits);
+            walk_truncated |= structural_truncated;
 
             if let Some(backend) = &self.lsp_backend {
                 if let Ok(lsp_hits) = backend
@@ -310,11 +357,10 @@ impl SearchCodeExecutor {
 
         if hits.is_empty() {
             let fallback_term = symbol.or(query).unwrap_or_default();
-            hits.extend(self.grep_fallback(
-                fallback_term,
-                params.file_pattern.as_deref(),
-                max_results,
-            )?);
+            let (grep_hits, grep_truncated) =
+                self.grep_fallback(fallback_term, params.file_pattern.as_deref(), max_results)?;
+            hits.extend(grep_hits);
+            walk_truncated |= grep_truncated;
         }
 
         let merged = dedupe_hits(hits, max_results);
@@ -322,45 +368,21 @@ impl SearchCodeExecutor {
             .allowed_paths
             .first()
             .map_or(Path::new("."), PathBuf::as_path);
-        let summary = format_hits(&merged, root);
-        let locations = merged
-            .iter()
-            .map(|hit| hit.file_path.clone())
-            .collect::<Vec<_>>();
-        let raw_response = serde_json::json!({
-            "results": merged.iter().map(|hit| {
-                serde_json::json!({
-                    "file_path": hit.file_path,
-                    "line_start": hit.line_start,
-                    "line_end": hit.line_end,
-                    "snippet": hit.snippet,
-                    "source": hit.source.label(),
-                    "score": hit.score,
-                    "symbol_name": hit.symbol_name,
-                })
-            }).collect::<Vec<_>>()
-        });
-
-        Ok(Some(ToolOutput {
-            tool_name: ToolName::new("search_code"),
-            summary,
-            blocks_executed: 1,
-            filter_stats: None,
-            diff: None,
-            streamed: false,
-            terminal_id: None,
-            locations: Some(locations),
-            raw_response: Some(raw_response),
-            claim_source: Some(ClaimSource::CodeSearch),
-        }))
+        Ok(Some(build_search_code_output(
+            &merged,
+            root,
+            walk_truncated,
+        )))
     }
 
+    /// Returns the collected hits alongside whether the walk was cut short by
+    /// [`WalkBudget`].
     fn grep_fallback(
         &self,
         pattern: &str,
         file_pattern: Option<&str>,
         max_results: usize,
-    ) -> Result<Vec<SearchCodeHit>, ToolError> {
+    ) -> Result<(Vec<SearchCodeHit>, bool), ToolError> {
         let matcher = file_pattern
             .map(glob::Pattern::new)
             .transpose()
@@ -375,13 +397,22 @@ impl SearchCodeExecutor {
                 message: e.to_string(),
             })?;
         let mut hits = Vec::new();
+        let mut budget = WalkBudget::new();
         for root in &self.allowed_paths {
-            collect_grep_hits(root, root, matcher.as_ref(), &regex, &mut hits, max_results)?;
-            if hits.len() >= max_results {
+            collect_grep_hits(
+                root,
+                root,
+                matcher.as_ref(),
+                &regex,
+                &mut hits,
+                max_results,
+                &mut budget,
+            )?;
+            if hits.len() >= max_results || budget.truncated {
                 break;
             }
         }
-        Ok(hits)
+        Ok((hits, budget.truncated))
     }
 }
 
@@ -417,12 +448,15 @@ impl ToolExecutor for SearchCodeExecutor {
 ///
 /// Extracted as a free function so callers can run it inside
 /// `tokio::task::spawn_blocking` without borrowing `self`.
+///
+/// Returns the collected hits alongside whether the walk was cut short by
+/// [`WalkBudget`] (see its docs for why the bound exists).
 fn collect_all_structural_hits(
     allowed_paths: &[PathBuf],
     symbol: &str,
     file_pattern: Option<&str>,
     max_results: usize,
-) -> Result<Vec<SearchCodeHit>, ToolError> {
+) -> Result<(Vec<SearchCodeHit>, bool), ToolError> {
     let matcher = file_pattern
         .map(glob::Pattern::new)
         .transpose()
@@ -431,13 +465,21 @@ fn collect_all_structural_hits(
         })?;
     let mut hits = Vec::new();
     let symbol_lower = symbol.to_lowercase();
+    let mut budget = WalkBudget::new();
     for root in allowed_paths {
-        collect_structural_hits(root, root, matcher.as_ref(), &symbol_lower, &mut hits)?;
-        if hits.len() >= max_results {
+        collect_structural_hits(
+            root,
+            root,
+            matcher.as_ref(),
+            &symbol_lower,
+            &mut hits,
+            &mut budget,
+        )?;
+        if hits.len() >= max_results || budget.truncated {
             break;
         }
     }
-    Ok(hits)
+    Ok((hits, budget.truncated))
 }
 
 fn dedupe_hits(mut hits: Vec<SearchCodeHit>, max_results: usize) -> Vec<SearchCodeHit> {
@@ -475,6 +517,57 @@ fn dedupe_hits(mut hits: Vec<SearchCodeHit>, max_results: usize) -> Vec<SearchCo
     merged
 }
 
+/// Assembles the final `search_code` [`ToolOutput`] from merged hits.
+///
+/// `walk_truncated` reports whether any directory walk (structural or grep
+/// fallback) was cut short by [`WalkBudget`] — surfaced both as a note in the
+/// summary text and as a `truncated` field in `raw_response` so callers can
+/// detect incomplete results programmatically.
+fn build_search_code_output(
+    hits: &[SearchCodeHit],
+    root: &Path,
+    walk_truncated: bool,
+) -> ToolOutput {
+    let mut summary = format_hits(hits, root);
+    if walk_truncated {
+        summary.push_str(
+            "\n\n[search truncated: directory walk exceeded the safety budget; \
+             results may be incomplete — narrow `allowed_paths` or `file_pattern`]",
+        );
+    }
+    let locations = hits
+        .iter()
+        .map(|hit| hit.file_path.clone())
+        .collect::<Vec<_>>();
+    let raw_response = serde_json::json!({
+        "results": hits.iter().map(|hit| {
+            serde_json::json!({
+                "file_path": hit.file_path,
+                "line_start": hit.line_start,
+                "line_end": hit.line_end,
+                "snippet": hit.snippet,
+                "source": hit.source.label(),
+                "score": hit.score,
+                "symbol_name": hit.symbol_name,
+            })
+        }).collect::<Vec<_>>(),
+        "truncated": walk_truncated,
+    });
+
+    ToolOutput {
+        tool_name: ToolName::new("search_code"),
+        summary,
+        blocks_executed: 1,
+        filter_stats: None,
+        diff: None,
+        streamed: false,
+        terminal_id: None,
+        locations: Some(locations),
+        raw_response: Some(raw_response),
+        claim_source: Some(ClaimSource::CodeSearch),
+    }
+}
+
 fn format_hits(hits: &[SearchCodeHit], root: &Path) -> String {
     if hits.is_empty() {
         return "No code matches found.".into();
@@ -507,17 +600,29 @@ fn collect_structural_hits(
     matcher: Option<&glob::Pattern>,
     symbol_lower: &str,
     hits: &mut Vec<SearchCodeHit>,
+    budget: &mut WalkBudget,
 ) -> Result<(), ToolError> {
-    if should_skip_path(current) {
+    if should_skip_path(current) || budget.truncated {
         return Ok(());
     }
 
     let entries = std::fs::read_dir(current).map_err(ToolError::Execution)?;
     for entry in entries {
+        if budget.tick() {
+            return Ok(());
+        }
         let entry = entry.map_err(ToolError::Execution)?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_structural_hits(root, &path, matcher, symbol_lower, hits)?;
+        // Never follow symlinks: avoids symlink-loop hangs and matches the
+        // `symlink_metadata` convention used elsewhere in zeph-tools (file.rs).
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            collect_structural_hits(root, &path, matcher, symbol_lower, hits, budget)?;
             continue;
         }
         if !matches_pattern(root, &path, matcher) {
@@ -590,17 +695,27 @@ fn collect_grep_hits(
     regex: &regex::Regex,
     hits: &mut Vec<SearchCodeHit>,
     max_results: usize,
+    budget: &mut WalkBudget,
 ) -> Result<(), ToolError> {
-    if hits.len() >= max_results || should_skip_path(current) {
+    if hits.len() >= max_results || should_skip_path(current) || budget.truncated {
         return Ok(());
     }
 
     let entries = std::fs::read_dir(current).map_err(ToolError::Execution)?;
     for entry in entries {
+        if budget.tick() {
+            return Ok(());
+        }
         let entry = entry.map_err(ToolError::Execution)?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_grep_hits(root, &path, matcher, regex, hits, max_results)?;
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            collect_grep_hits(root, &path, matcher, regex, hits, max_results, budget)?;
             continue;
         }
         if !matches_pattern(root, &path, matcher) {
@@ -742,6 +857,92 @@ mod tests {
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
         assert!(out.summary.contains("grep fallback"));
+    }
+
+    #[test]
+    fn walk_budget_truncates_after_entry_limit() {
+        let mut budget = WalkBudget::new();
+        for _ in 0..MAX_WALK_ENTRIES {
+            assert!(!budget.tick(), "budget must not trip before the limit");
+        }
+        assert!(
+            budget.tick(),
+            "budget must trip once entries exceed MAX_WALK_ENTRIES"
+        );
+        assert!(budget.truncated);
+    }
+
+    /// Regression test for the hang reported against a broad `allowed_paths`
+    /// scope (e.g. `~`): a directory containing far more entries than
+    /// `MAX_WALK_ENTRIES` must not be walked exhaustively — the search
+    /// returns promptly with a truncation indicator instead of hanging.
+    #[tokio::test]
+    async fn search_code_bounds_wide_directory_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..(MAX_WALK_ENTRIES + 200) {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), "").unwrap();
+        }
+        let exec = SearchCodeExecutor::new(vec![dir.path().to_path_buf()]);
+        let call = ToolCall {
+            tool_id: "search_code".into(),
+            params: serde_json::json!({ "symbol": "nonexistent_symbol_xyz" })
+                .as_object()
+                .unwrap()
+                .clone(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let out = tokio::time::timeout(
+            Duration::from_secs(MAX_WALK_DURATION.as_secs() + 10),
+            exec.execute_tool_call(&call),
+        )
+        .await
+        .expect("search_code must return within the walk budget, not hang")
+        .unwrap()
+        .unwrap();
+        assert!(
+            out.summary.contains("truncated"),
+            "expected truncation note in summary, got: {}",
+            out.summary
+        );
+        let raw = out.raw_response.unwrap();
+        assert_eq!(raw["truncated"], serde_json::json!(true));
+    }
+
+    /// A directory cycle created via a symlink pointing back to an ancestor
+    /// must not send the walk into an infinite loop — symlinked directories
+    /// are never followed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn search_code_does_not_follow_symlink_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, "pub fn retry_backoff_ms() -> u64 { 0 }\n").unwrap();
+        let loop_link = dir.path().join("self_loop");
+        std::os::unix::fs::symlink(dir.path(), &loop_link).unwrap();
+
+        let exec = SearchCodeExecutor::new(vec![dir.path().to_path_buf()]);
+        let call = ToolCall {
+            tool_id: "search_code".into(),
+            params: serde_json::json!({ "symbol": "retry_backoff_ms" })
+                .as_object()
+                .unwrap()
+                .clone(),
+            caller_id: None,
+            context: None,
+
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
+            .await
+            .expect("search_code must not hang on a symlink loop")
+            .unwrap()
+            .unwrap();
+        assert!(out.summary.contains("retry_backoff_ms"));
     }
 
     #[test]
