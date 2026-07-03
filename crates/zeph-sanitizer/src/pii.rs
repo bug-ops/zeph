@@ -82,15 +82,19 @@ static CREDIT_CARD_RE: LazyLock<Regex> =
 ///   segments (e.g. `Smith-Jones`) so a hyphenated surname is captured as a single token instead
 ///   of splitting into two separate matches that would otherwise leave the second half
 ///   unredacted (#5530 review S3).
-/// - `[A-Z]'[A-Z][a-z]+` — a single leading capital immediately followed by an apostrophe and a
-///   second capitalized segment (e.g. `O'Brien`, `D'Angelo`), for surnames with no lowercase
-///   letters before the apostrophe.
+/// - `[A-Z]'[A-Z][a-z]+(?:['-][A-Z][a-z]*)*` — a single leading capital immediately followed by
+///   an apostrophe and a second capitalized segment (e.g. `O'Brien`, `D'Angelo`), for surnames
+///   with no lowercase letters before the apostrophe. This branch carries the same
+///   apostrophe/hyphen compound-continuation group as the primary branch, so a surname that is
+///   both apostrophe-prefixed and hyphenated (e.g. `O'Brien-Doyle`) is captured as a single
+///   token instead of splitting at the hyphen and leaking the second half in the clear (#5530
+///   review S3, compound case).
 ///
 /// Anchored on word boundaries so it never matches inside a larger mixed-case token (e.g.
 /// `iPhone`, `McDonald`) and never matches ALL-CAPS acronyms (e.g. `API`, `URL`) or bare single
 /// letters, since both branches require at least one lowercase letter in the token.
 static CAPITALIZED_WORD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[A-Z](?:[a-z]+(?:['-][A-Z][a-z]*)*|'[A-Z][a-z]+)\b")
+    Regex::new(r"\b[A-Z](?:[a-z]+(?:['-][A-Z][a-z]*)*|'[A-Z][a-z]+(?:['-][A-Z][a-z]*)*)\b")
         .expect("valid CAPITALIZED_WORD_RE")
 });
 
@@ -1140,6 +1144,37 @@ mod tests {
         assert!(!result.contains("Smith-Jones"), "raw name must not remain");
         assert!(
             !result.contains("Jones"),
+            "surname fragment must not leak: {result}"
+        );
+    }
+
+    #[test]
+    fn scrubs_compound_apostrophe_hyphen_surname_without_leaking_fragment() {
+        // Regression test for #5530 review S3 (round 2): the apostrophe-initial branch of
+        // CAPITALIZED_WORD_RE lacked the compound-continuation group that the plain branch had,
+        // so a surname that is both apostrophe-prefixed and hyphenated ("O'Brien-Doyle") matched
+        // only as far as "O'Brien", leaking "-Doyle" unredacted right next to the marker.
+        let f = filter_all();
+        let text = "Mary O'Brien-Doyle is the CEO.";
+        let result = f.scrub(text);
+        assert!(
+            result.contains("[PII:name]"),
+            "compound apostrophe/hyphen surname must be scrubbed: {result}"
+        );
+        assert!(
+            !result.contains("O'Brien-Doyle"),
+            "raw name must not remain"
+        );
+        assert!(
+            !result.contains("Brien"),
+            "surname fragment must not leak: {result}"
+        );
+        assert!(
+            !result.contains("Doyle"),
+            "surname fragment must not leak: {result}"
+        );
+        assert!(
+            !result.contains("-Doyle"),
             "surname fragment must not leak: {result}"
         );
     }
