@@ -333,24 +333,22 @@ impl<C: Channel> Agent<C> {
     /// `InvalidParameters`/`TypeMismatch` error (issue #5453).
     ///
     /// Resolves `tools.retry.parameter_reformat_provider` from `[[llm.providers]]` via
-    /// [`Agent::resolve_background_provider`], asks it for corrected arguments given the tool's
-    /// JSON schema, the originally-submitted arguments, and the error message, then re-dispatches
-    /// the tool call once with the corrected arguments.
+    /// [`Agent::resolve_pool_entry_provider`]. Unlike most other background-provider call sites
+    /// (which use [`Agent::resolve_background_provider`] and fall back to the primary provider
+    /// on any resolution failure), a *configured* name — one the provider-pool registry was
+    /// actually wired to recognize — must not silently substitute the primary provider when it
+    /// fails to resolve: that would mask the original tool error behind a "corrected" call made
+    /// with the wrong model (#5600, #5478). This method no-ops instead (keeps the original tool
+    /// error) whenever the registry is wired but the name is absent from `provider_pool`, the
+    /// matched entry fails to build, or no `provider_config_snapshot` is available. It only
+    /// falls back to [`Agent::resolve_background_provider`]'s legacy convention when the
+    /// provider-pool registry itself was never wired for this `Agent` at all — which
+    /// `zeph_config::providers::validate_pool` guarantees cannot happen for a real, fully
+    /// constructed production agent (see [`Agent::resolve_pool_entry_provider`]'s doc comment).
     ///
-    /// This method is only ever called with a non-empty `parameter_reformat_provider`
-    /// (`handle_reformat_phase` returns early on the empty-name case before calling it). Unlike
-    /// `resolve_background_provider`'s other callers, a configured-but-unresolvable name (absent
-    /// from `[[llm.providers]]`) is not silently retried against the primary provider here
-    /// (#5478): a guard checks pool membership before resolution is attempted and returns `None`
-    /// on a miss, since a masked misconfiguration could otherwise replace a clear "invalid
-    /// parameters" error with a plausible-but-wrong result from the wrong model. This guard only
-    /// covers the name-absent-from-pool case — `resolve_background_provider` itself can still
-    /// fall back to primary for a name that IS in the pool if `provider_config_snapshot` is
-    /// unset or provider construction fails (tracked separately as #5600).
-    ///
-    /// Returns `None` when the provider name is unresolvable, the provider call fails, times
-    /// out, or returns arguments that do not parse as a JSON object — the caller keeps the
-    /// original error result unchanged.
+    /// Returns `None` when the provider is unresolvable, the provider call fails, times out, or
+    /// returns arguments that do not parse as a JSON object — the caller keeps the original error
+    /// result unchanged.
     async fn reformat_tool_call(
         &mut self,
         call: &ToolCall,
@@ -376,27 +374,20 @@ impl<C: Channel> Agent<C> {
         };
 
         let provider_name = self.tool_orchestrator.parameter_reformat_provider.clone();
-        // #5478: unlike `resolve_background_provider`'s other ~19 call sites, an unresolvable
-        // name here must be a true no-op (keep the original tool error unchanged), not a
-        // silent fallback to primary — reformatting replaces `tool_results[idx]` with whatever
-        // the resolved provider proposes and re-dispatches it, so falling back to primary on a
-        // misconfigured name would mask the operator's config error behind plausible-but-wrong
-        // corrected arguments instead of surfacing the original, clear validation error.
-        if !self
-            .runtime
-            .providers
-            .provider_pool
-            .iter()
-            .any(|e| e.effective_name().eq_ignore_ascii_case(&provider_name))
-        {
-            tracing::warn!(
-                tool = %tc.name,
-                provider = %provider_name,
-                "parameter reformat: configured provider not found in [[llm.providers]], skipping reformat"
-            );
-            return None;
-        }
-        let provider = self.resolve_background_provider(&provider_name);
+        let provider = match self.resolve_pool_entry_provider(&provider_name) {
+            super::super::learning::PoolProviderResolution::Resolved(p) => *p,
+            super::super::learning::PoolProviderResolution::RegistryNotWired => {
+                self.resolve_background_provider(&provider_name)
+            }
+            super::super::learning::PoolProviderResolution::Unresolvable => {
+                tracing::warn!(
+                    tool = %tc.name,
+                    provider = %provider_name,
+                    "parameter reformat: configured provider unresolvable, keeping original error"
+                );
+                return None;
+            }
+        };
 
         let original_args = serde_json::Value::Object(call.params.clone());
         let prompt = format!(
@@ -3607,18 +3598,6 @@ mod tests {
             }
         }
 
-        /// Registers `name` in `provider_pool` so the #5478 pool-membership guard in
-        /// `reformat_tool_call` lets these tests reach the actual reformat logic. No
-        /// `provider_config_snapshot` is set, so `resolve_background_provider` still falls back
-        /// to the primary (mock) provider once the guard passes — preserving these tests' original
-        /// intent of exercising the primary provider's canned responses.
-        fn register_pool_entry(agent: &mut Agent<MockChannel>, name: &str) {
-            agent.runtime.providers.provider_pool = vec![crate::config::ProviderEntry {
-                name: Some(name.to_owned()),
-                ..Default::default()
-            }];
-        }
-
         #[tokio::test]
         async fn retries_with_corrected_arguments_on_success() {
             let provider = mock_provider(vec![r#"{"arguments":{"path":"/corrected"}}"#.into()]);
@@ -3639,7 +3618,6 @@ mod tests {
             .with_definitions(vec![test_tool_def()]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
             agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
-            register_pool_entry(&mut agent, "fast");
 
             let tool_calls = vec![tool_use_request()];
             let calls = vec![bad_tool_call()];
@@ -3669,7 +3647,6 @@ mod tests {
                 MockToolExecutor::new(vec![Ok(None)]).with_definitions(vec![test_tool_def()]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
             agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
-            register_pool_entry(&mut agent, "fast");
 
             let tool_calls = vec![tool_use_request()];
             let calls = vec![bad_tool_call()];
@@ -3701,7 +3678,6 @@ mod tests {
             let executor = MockToolExecutor::new(vec![Ok(None)]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
             agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
-            register_pool_entry(&mut agent, "fast");
 
             let tool_calls = vec![tool_use_request()];
             let calls = vec![bad_tool_call()];
@@ -3755,16 +3731,16 @@ mod tests {
             );
         }
 
-        /// #5478 regression: a non-empty `parameter_reformat_provider` name that is not
-        /// registered in `provider_pool` must be a true no-op (original error preserved), not a
-        /// silent fallback to the primary provider. The primary provider here is set up to
-        /// return a *successful* corrected-arguments response — if the pool-membership guard in
-        /// `reformat_tool_call` were missing (pre-#5478 behavior), `resolve_background_provider`
-        /// would fall back to this primary provider, the tool would be retried successfully, and
-        /// `tool_results[0]` would be replaced — masking the original validation error behind a
-        /// plausible-but-wrong "fix" driven by a misconfigured provider name.
+        // Regression test: when the provider-pool registry was never wired for this `Agent`
+        // (empty `provider_pool`, no `provider_config_snapshot` — the state of a lightweight
+        // test/bootstrap agent that never called `with_provider_pool`, never a real production
+        // agent since `validate_pool` rejects an empty `[[llm.providers]]` list at config-load
+        // time), `reformat_tool_call` still falls back to the primary provider, matching every
+        // other `resolve_background_provider` call site (e.g. `compress_provider`). Only once
+        // the registry IS wired does an unresolvable name become a real misconfiguration (see
+        // `is_a_noop_when_registry_wired_but_name_absent_from_pool` below).
         #[tokio::test]
-        async fn is_a_noop_when_provider_name_is_unresolvable() {
+        async fn falls_back_to_primary_when_registry_never_wired() {
             let provider = mock_provider(vec![r#"{"arguments":{"path":"/corrected"}}"#.into()]);
             let channel = MockChannel::new(vec![]);
             let registry = create_test_registry();
@@ -3782,9 +3758,67 @@ mod tests {
             }))])
             .with_definitions(vec![test_tool_def()]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-            // Non-empty but never registered — provider_pool stays empty (default).
-            agent.tool_orchestrator.parameter_reformat_provider =
-                "unregistered-provider".to_owned();
+            // Non-empty name, but provider_pool is empty — name cannot resolve.
+            agent.tool_orchestrator.parameter_reformat_provider = "unregistered".to_owned();
+
+            let tool_calls = vec![tool_use_request()];
+            let calls = vec![bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            let output = tool_results
+                .remove(0)
+                .expect("reformat should run using the primary provider fallback")
+                .expect("tool output should be present");
+            assert_eq!(output.summary, "done");
+        }
+
+        /// Minimal `ProviderConfigSnapshot` fixture shared by the registry-wired regression
+        /// tests below — all `None`/empty since the fields under test don't need real secrets.
+        fn empty_snapshot() -> crate::agent::state::ProviderConfigSnapshot {
+            crate::agent::state::ProviderConfigSnapshot {
+                claude_api_key: None,
+                openai_api_key: None,
+                gemini_api_key: None,
+                compatible_api_keys: std::collections::HashMap::new(),
+                llm_request_timeout_secs: 30,
+                embedding_model: String::new(),
+                gonka_private_key: None,
+                gonka_address: None,
+                cocoon_access_hash: None,
+            }
+        }
+
+        // Regression test for #5478: once the provider-pool registry IS wired (non-empty
+        // `provider_pool`, the state every real production `Agent` is in per #5450), a
+        // configured `parameter_reformat_provider` name that does not match any entry is a real
+        // misconfiguration and must no-op (keep the original tool error) rather than silently
+        // reformatting with the primary provider.
+        #[tokio::test]
+        async fn is_a_noop_when_registry_wired_but_name_absent_from_pool() {
+            let provider = mock_provider(vec![r#"{"arguments":{"path":"/corrected"}}"#.into()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor =
+                MockToolExecutor::new(vec![Ok(None)]).with_definitions(vec![test_tool_def()]);
+
+            // The pool is wired (non-empty), but registers a different name than the one
+            // configured below, so "unregistered" still cannot resolve.
+            let other_entry = crate::config::ProviderEntry {
+                provider_type: crate::config::ProviderKind::Ollama,
+                name: Some("other".into()),
+                ..Default::default()
+            };
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+                .with_provider_pool(vec![other_entry], empty_snapshot());
+            agent.tool_orchestrator.parameter_reformat_provider = "unregistered".to_owned();
 
             let tool_calls = vec![tool_use_request()];
             let calls = vec![bad_tool_call()];
@@ -3803,8 +3837,53 @@ mod tests {
                     tool_results[0],
                     Err(zeph_tools::ToolError::InvalidParams { .. })
                 ),
-                "an unresolvable parameter_reformat_provider name must not fall back to primary; \
-                 the original error must be preserved"
+                "reformat must no-op when the registry is wired but the configured name is \
+                 absent from the pool, not silently fall back to the primary provider"
+            );
+        }
+
+        // Regression test for #5600: a configured `parameter_reformat_provider` name that IS
+        // present in `provider_pool` but whose provider construction fails (e.g. a required
+        // secret is missing from the config snapshot) must no-op — unlike the registry-not-wired
+        // case above, this must not silently fall back to the primary provider.
+        #[tokio::test]
+        async fn is_a_noop_when_registry_wired_but_provider_build_fails() {
+            let provider = mock_provider(vec![r#"{"arguments":{"path":"/corrected"}}"#.into()]);
+            let channel = MockChannel::new(vec![]);
+            let registry = create_test_registry();
+            let executor =
+                MockToolExecutor::new(vec![Ok(None)]).with_definitions(vec![test_tool_def()]);
+
+            // "broken" is present in provider_pool, but is a Claude entry with no API key in
+            // the snapshot, so `build_provider_for_switch` fails at resolve time.
+            let broken_entry = crate::config::ProviderEntry {
+                provider_type: crate::config::ProviderKind::Claude,
+                name: Some("broken".into()),
+                ..Default::default()
+            };
+            let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+                .with_provider_pool(vec![broken_entry], empty_snapshot());
+            agent.tool_orchestrator.parameter_reformat_provider = "broken".to_owned();
+
+            let tool_calls = vec![tool_use_request()];
+            let calls = vec![bad_tool_call()];
+            let mut tool_results: Vec<
+                Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+            > = vec![Err(invalid_params_error())];
+            let cancel = tokio_util::sync::CancellationToken::new();
+
+            agent
+                .handle_reformat_phase(&tool_calls, &calls, &mut tool_results, &cancel)
+                .await
+                .unwrap();
+
+            assert!(
+                matches!(
+                    tool_results[0],
+                    Err(zeph_tools::ToolError::InvalidParams { .. })
+                ),
+                "reformat must no-op when the in-pool provider fails to build, not silently \
+                 fall back to the primary provider"
             );
         }
 
@@ -3822,7 +3901,6 @@ mod tests {
             .with_definitions(vec![test_tool_def()]);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
             agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
-            register_pool_entry(&mut agent, "fast");
 
             let tool_calls = vec![tool_use_request()];
             let calls = vec![bad_tool_call()];
@@ -3881,7 +3959,6 @@ mod tests {
             .with_delay(1_100);
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
             agent.tool_orchestrator.parameter_reformat_provider = "fast".to_owned();
-            register_pool_entry(&mut agent, "fast");
             agent.tool_orchestrator.max_retry_duration_secs = 1;
 
             let tool_calls = vec![tool_use_request(), tool_use_request()];

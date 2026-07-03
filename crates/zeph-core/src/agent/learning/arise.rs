@@ -5,6 +5,20 @@ use super::super::{Agent, Channel, Role};
 use super::background::AriseTaskArgs;
 use zeph_llm::provider::MessagePart;
 
+/// Outcome of [`Agent::resolve_pool_entry_provider`]. See that method's doc comment for the
+/// rationale behind each variant.
+pub(crate) enum PoolProviderResolution {
+    /// The provider-pool registry was never wired for this `Agent` (empty pool, no config
+    /// snapshot) or `provider_name` was empty — the caller may fall back to
+    /// [`Agent::resolve_background_provider`]'s existing convention.
+    RegistryNotWired,
+    /// The registry IS wired, but `provider_name` does not resolve to a usable provider
+    /// (absent from `provider_pool`, no config snapshot, or construction failed).
+    Unresolvable,
+    /// `provider_name` resolved to a distinct, usable provider.
+    Resolved(Box<zeph_llm::any::AnyProvider>),
+}
+
 impl<C: Channel> Agent<C> {
     /// Resolve a named provider from the pool, falling back to the primary provider.
     /// Returns a clone of the primary provider if the name is empty, unknown, or resolution fails.
@@ -41,6 +55,65 @@ impl<C: Channel> Agent<C> {
             Err(e) => {
                 tracing::warn!("failed to build provider '{provider_name}': {e:#}, using primary");
                 self.provider.clone()
+            }
+        }
+    }
+
+    /// Attempt to build the provider registered under `provider_name` in `provider_pool`,
+    /// without ever substituting the primary provider for a real misconfiguration.
+    ///
+    /// Distinguishes three outcomes a caller like `reformat_tool_call` (#5600, follow-up to
+    /// #5478) must not conflate:
+    ///
+    /// - [`PoolProviderResolution::RegistryNotWired`]: `provider_name` is empty, or
+    ///   `provider_pool`/`provider_config_snapshot` were never populated for this `Agent` at
+    ///   all. `zeph_config::providers::validate_pool` rejects an empty `[[llm.providers]]` list
+    ///   at config-validation time, so a genuinely empty pool never occurs for a fully
+    ///   constructed production `Agent` (#5450 populates it on every construction path) — this
+    ///   only happens for lightweight test/bootstrap agents that skip provider-pool wiring
+    ///   entirely. Falling back to [`Agent::resolve_background_provider`]'s existing convention
+    ///   is safe here since there is no registry to have misconfigured against.
+    /// - [`PoolProviderResolution::Unresolvable`]: the registry IS wired (non-empty pool) but
+    ///   `provider_name` does not match any entry, or the matched entry fails to build, or no
+    ///   `provider_config_snapshot` is available. This is a real misconfiguration: silently
+    ///   substituting the primary provider would mask the original error behind a "corrected"
+    ///   call made with the wrong model.
+    /// - [`PoolProviderResolution::Resolved`]: the name matched and the provider built
+    ///   successfully.
+    pub(crate) fn resolve_pool_entry_provider(
+        &self,
+        provider_name: &str,
+    ) -> PoolProviderResolution {
+        if provider_name.is_empty() {
+            return PoolProviderResolution::RegistryNotWired;
+        }
+        let registry_wired = !self.runtime.providers.provider_pool.is_empty()
+            || self.runtime.providers.provider_config_snapshot.is_some();
+        if !registry_wired {
+            return PoolProviderResolution::RegistryNotWired;
+        }
+        let Some(entry) = self
+            .runtime
+            .providers
+            .provider_pool
+            .iter()
+            .find(|e| e.effective_name().eq_ignore_ascii_case(provider_name))
+            .cloned()
+        else {
+            return PoolProviderResolution::Unresolvable;
+        };
+        let Some(ref snapshot) = self.runtime.providers.provider_config_snapshot else {
+            return PoolProviderResolution::Unresolvable;
+        };
+        match crate::provider_factory::build_provider_for_switch(
+            &entry,
+            snapshot,
+            self.services.security.secret_registry.as_ref(),
+        ) {
+            Ok(p) => PoolProviderResolution::Resolved(Box::new(p)),
+            Err(e) => {
+                tracing::warn!("failed to build provider '{provider_name}': {e:#}");
+                PoolProviderResolution::Unresolvable
             }
         }
     }

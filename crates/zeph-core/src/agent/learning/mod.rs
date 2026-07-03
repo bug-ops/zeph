@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod arise;
+pub(crate) use arise::PoolProviderResolution;
 mod background;
 mod d2skill;
 mod erl;
