@@ -258,6 +258,14 @@ mod tests {
     /// 1. `make_durable_promise` returns a fresh promise + seat on first call.
     /// 2. `resolve_durable_promise` stores the payload via the seat's token.
     /// 3. `await_durable_subagent` on a resumed context returns the stored `SubagentResult`.
+    //
+    // Opens a real `LocalBackend` pool via `:memory:`, which is SQLite-specific: under
+    // `--features postgres` (reachable here through workspace-level feature unification, even
+    // though this crate has no `postgres` feature of its own — zeph-scheduler/zeph-orchestration's
+    // `postgres` features enable `zeph-db/postgres` directly), `DbConfig::connect()` takes
+    // cfg-priority and routes `:memory:` into `connect_postgres`, which fails to parse it as a
+    // Postgres URL. See #5608.
+    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
     #[tokio::test]
     async fn durable_promise_resolve_and_await_roundtrip() {
         use std::sync::Arc;

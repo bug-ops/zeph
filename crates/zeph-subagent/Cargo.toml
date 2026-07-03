@@ -12,6 +12,11 @@ publish.workspace = true
 description = "Subagent management: spawning, grants, transcripts, and lifecycle hooks for Zeph"
 readme = "README.md"
 
+[features]
+sqlite = ["zeph-durable/sqlite", "zeph-sanitizer/sqlite", "zeph-skills/sqlite", "zeph-tools/sqlite"]
+postgres = ["zeph-durable/postgres", "zeph-sanitizer/postgres", "zeph-skills/postgres", "zeph-tools/postgres"]
+default = ["sqlite"]
+
 [dependencies]
 dirs.workspace = true
 regex.workspace = true

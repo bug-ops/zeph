@@ -964,7 +964,10 @@ impl Scheduler {
     }
 }
 
-#[cfg(test)]
+// Every test in this module opens a real connection pool via the `:memory:` sentinel, which is
+// SQLite-specific: under `--features postgres`, `DbConfig::connect()` takes cfg-priority and routes
+// `:memory:` into `connect_postgres`, which fails to parse it as a Postgres URL. See #5608.
+#[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]
 mod tests {
     use std::pin::Pin;
     use std::sync::Arc;

@@ -291,30 +291,8 @@ fn find_budget_snapshot(entries: Vec<zeph_durable::JournalEntry>) -> Option<Repl
 
 #[cfg(test)]
 mod tests {
-    use zeph_durable::{DurableBackendEnum, DurableConfig, JournalWriter, LocalBackend};
-
     use super::*;
     use crate::graph::GraphId;
-
-    fn test_config() -> DurableConfig {
-        DurableConfig {
-            enabled: true,
-            encrypt_payload: false,
-            journal_flush_interval_ms: 1,
-            journal_ack_timeout_ms: 1000,
-            ..DurableConfig::default()
-        }
-    }
-
-    async fn make_backend() -> (Arc<DurableBackendEnum>, JournalWriterHandle) {
-        let local = LocalBackend::open(":memory:", 1_048_576).await.unwrap();
-        local.init().await.unwrap();
-        let local = Arc::new(local);
-        let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
-        let (writer, handle) = JournalWriter::new(local, &test_config());
-        tokio::spawn(async move { writer.run().await }); // EXEMPT: test-only helper
-        (backend, handle)
-    }
 
     #[test]
     fn snapshot_serde_round_trip() {
@@ -372,49 +350,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn journal_then_restore_returns_snapshot() {
-        let (backend, writer) = make_backend().await;
-        let config = test_config();
-        let graph_id = GraphId::new();
-        let generation: u32 = 0;
-
-        let snap = ReplanBudgetSnapshot {
-            global_replan_count: 7,
-            task_replan_counts: [(TaskId(0), 3)].into(),
-            ..Default::default()
-        };
-
-        journal_budget(
-            &graph_id,
-            generation,
-            backend.clone(),
-            writer.clone(),
-            &config,
-            snap.clone(),
-        )
-        .await
-        .unwrap();
-        // flush ensures the buffered step result is persisted before we read it back.
-        writer.flush().await.unwrap();
-
-        let restored = restore_budget(&graph_id, generation, backend)
-            .await
-            .unwrap();
-        let restored = restored.expect("snapshot should be present");
-        assert_eq!(restored.global_replan_count, 7);
-        assert_eq!(*restored.task_replan_counts.get(&TaskId(0)).unwrap(), 3);
-    }
-
-    #[tokio::test]
-    async fn restore_returns_none_when_no_snapshot() {
-        let (backend, _writer) = make_backend().await;
-        let graph_id = GraphId::new();
-
-        let result = restore_budget(&graph_id, 0, backend).await.unwrap();
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
     async fn generation_counter_produces_distinct_exec_ids() {
         let graph_id = GraphId::new();
         let id0 = budget_exec_id(&graph_id, 0);
@@ -425,54 +360,128 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn restore_picks_latest_generation() {
-        let (backend, writer) = make_backend().await;
-        let config = test_config();
-        let graph_id = GraphId::new();
+    // These tests open a real `LocalBackend` pool via `:memory:`, which is SQLite-specific
+    // (mirroring `zeph-durable`'s `writer.rs`/`local.rs` test modules): under `--features postgres`
+    // `DbConfig::connect()` takes cfg-priority and routes `:memory:` into `connect_postgres`, which
+    // fails to parse it as a Postgres URL. See #5608.
+    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    mod with_backend {
+        use zeph_durable::{DurableBackendEnum, DurableConfig, JournalWriter, LocalBackend};
 
-        // First pause: global_replan_count = 1
-        let snap0 = ReplanBudgetSnapshot {
-            global_replan_count: 1,
-            ..Default::default()
-        };
-        journal_budget(
-            &graph_id,
-            0,
-            backend.clone(),
-            writer.clone(),
-            &config,
-            snap0,
-        )
-        .await
-        .unwrap();
+        use super::*;
 
-        // Second pause (after resume): global_replan_count = 2
-        let snap1 = ReplanBudgetSnapshot {
-            global_replan_count: 2,
-            ..Default::default()
-        };
-        journal_budget(
-            &graph_id,
-            1,
-            backend.clone(),
-            writer.clone(),
-            &config,
-            snap1,
-        )
-        .await
-        .unwrap();
-        // flush ensures all buffered writes are persisted before reading back.
-        writer.flush().await.unwrap();
+        fn test_config() -> DurableConfig {
+            DurableConfig {
+                enabled: true,
+                encrypt_payload: false,
+                journal_flush_interval_ms: 1,
+                journal_ack_timeout_ms: 1000,
+                ..DurableConfig::default()
+            }
+        }
 
-        // restore_budget with generation=1 should return snap1
-        let restored = restore_budget(&graph_id, 1, backend)
+        async fn make_backend() -> (Arc<DurableBackendEnum>, JournalWriterHandle) {
+            let local = LocalBackend::open(":memory:", 1_048_576).await.unwrap();
+            local.init().await.unwrap();
+            let local = Arc::new(local);
+            let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
+            let (writer, handle) = JournalWriter::new(local, &test_config());
+            tokio::spawn(async move { writer.run().await }); // EXEMPT: test-only helper
+            (backend, handle)
+        }
+
+        #[tokio::test]
+        async fn journal_then_restore_returns_snapshot() {
+            let (backend, writer) = make_backend().await;
+            let config = test_config();
+            let graph_id = GraphId::new();
+            let generation: u32 = 0;
+
+            let snap = ReplanBudgetSnapshot {
+                global_replan_count: 7,
+                task_replan_counts: [(TaskId(0), 3)].into(),
+                ..Default::default()
+            };
+
+            journal_budget(
+                &graph_id,
+                generation,
+                backend.clone(),
+                writer.clone(),
+                &config,
+                snap.clone(),
+            )
             .await
-            .unwrap()
-            .expect("snapshot must be present");
-        assert_eq!(
-            restored.global_replan_count, 2,
-            "restore should pick the latest generation"
-        );
+            .unwrap();
+            // flush ensures the buffered step result is persisted before we read it back.
+            writer.flush().await.unwrap();
+
+            let restored = restore_budget(&graph_id, generation, backend)
+                .await
+                .unwrap();
+            let restored = restored.expect("snapshot should be present");
+            assert_eq!(restored.global_replan_count, 7);
+            assert_eq!(*restored.task_replan_counts.get(&TaskId(0)).unwrap(), 3);
+        }
+
+        #[tokio::test]
+        async fn restore_returns_none_when_no_snapshot() {
+            let (backend, _writer) = make_backend().await;
+            let graph_id = GraphId::new();
+
+            let result = restore_budget(&graph_id, 0, backend).await.unwrap();
+            assert!(result.is_none());
+        }
+
+        #[tokio::test]
+        async fn restore_picks_latest_generation() {
+            let (backend, writer) = make_backend().await;
+            let config = test_config();
+            let graph_id = GraphId::new();
+
+            // First pause: global_replan_count = 1
+            let snap0 = ReplanBudgetSnapshot {
+                global_replan_count: 1,
+                ..Default::default()
+            };
+            journal_budget(
+                &graph_id,
+                0,
+                backend.clone(),
+                writer.clone(),
+                &config,
+                snap0,
+            )
+            .await
+            .unwrap();
+
+            // Second pause (after resume): global_replan_count = 2
+            let snap1 = ReplanBudgetSnapshot {
+                global_replan_count: 2,
+                ..Default::default()
+            };
+            journal_budget(
+                &graph_id,
+                1,
+                backend.clone(),
+                writer.clone(),
+                &config,
+                snap1,
+            )
+            .await
+            .unwrap();
+            // flush ensures all buffered writes are persisted before reading back.
+            writer.flush().await.unwrap();
+
+            // restore_budget with generation=1 should return snap1
+            let restored = restore_budget(&graph_id, 1, backend)
+                .await
+                .unwrap()
+                .expect("snapshot must be present");
+            assert_eq!(
+                restored.global_replan_count, 2,
+                "restore should pick the latest generation"
+            );
+        }
     }
 }

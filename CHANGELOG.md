@@ -33,6 +33,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the CLI, ACP, and daemon entry points, all calling a new shared
   `agent_setup::build_base_executor_chain` helper so the test chain cannot drift from
   the production wiring it is meant to guard. Closes #5578.
+- `fix(scheduler,orchestration,subagent)`: four remaining test-only `:memory:` pool sites
+  that `#5603`/PR `#5607` didn't cover still opened a real connection pool without gating
+  on the postgres-priority dual-backend cfg model, so `--features postgres` routed
+  `:memory:` into `connect_postgres` and failed at runtime with
+  `Configuration(RelativeUrlWithoutBase)` (a `cargo check` could not catch it — only running
+  the tests could). `zeph-scheduler`'s `store.rs` and `scheduler.rs` test modules (100% of
+  their tests depend on the shared pool) are now gated at the module level via
+  `#[cfg(all(test, feature = "sqlite", not(feature = "postgres")))]`. `zeph-orchestration`'s
+  `durable.rs` moved its three backend-dependent tests into a `with_backend` submodule gated
+  by `#[cfg(all(feature = "sqlite", not(feature = "postgres")))]`, keeping its two
+  backend-independent tests ungated. `zeph-subagent`'s single backend-dependent test gained
+  the same `#[cfg(...)]` directly on the function; since `zeph-subagent` had no `sqlite`/
+  `postgres` features of its own, the gate would otherwise never trigger, so this crate now
+  declares both features, forwarding to every dependency (`zeph-durable`, `zeph-sanitizer`,
+  `zeph-skills`, `zeph-tools`) that needs coordinated backend selection. Closes #5608.
 - `fix(db)`: fix 25 `E0308` compile errors across `zeph-core`, `zeph-tools`, and the `zeph`
   binary under `cargo check --workspace --all-targets --features postgres`. Test helpers
   hardcoded `SqlitePool`/`SqlitePoolOptions` construction where the surrounding code expects
