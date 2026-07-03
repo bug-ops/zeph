@@ -948,6 +948,7 @@ async fn build_acp_deps(
 /// Deliberately omits the lock path: it is an absolute filesystem path (leaks the server's
 /// home-directory prefix/OS username) and this session may be reached over an unauthenticated,
 /// non-loopback ACP HTTP transport (security review finding, #5487).
+#[cfg(feature = "acp")]
 const SESSION_LOCK_DEGRADED_MESSAGE: &str =
     "Session persistence unavailable: another process already holds this session's write lock.";
 
@@ -960,6 +961,7 @@ const SESSION_LOCK_DEGRADED_MESSAGE: &str =
 /// (#5519). Falls back to `channel.send_status` when no notifier is available (e.g.
 /// `acp_ctx` is `None`, as for non-ACP callers of `spawn_acp_agent`) — that path is still
 /// only flushed to the client on the session's next prompt-response drain.
+#[cfg(feature = "acp")]
 async fn notify_lock_degraded(
     status_notifier: Option<&zeph_acp::SessionStatusNotifier>,
     channel: &mut zeph_core::channel::LoopbackChannel,
@@ -978,6 +980,7 @@ async fn notify_lock_degraded(
 /// `AlreadyLocked` trigger that doesn't require a full `SharedAgentDeps`/`Agent` to reach — so
 /// `notify_lock_degraded`'s real trigger path (genuine file-lock contention, not a mocked
 /// error) is covered by a lightweight integration test (#5519 review S2).
+#[cfg(feature = "acp")]
 async fn open_session_log_or_notify_locked(
     session_path: &std::path::Path,
     status_notifier: Option<&zeph_acp::SessionStatusNotifier>,
