@@ -7,6 +7,13 @@
 # Integration tests are in separate test binaries (tests/*_integration.rs)
 # and can be run explicitly with --test flag or using the ci profile
 
+[[profile.default.overrides]]
+# tokio::task::spawn_blocking worker-thread teardown can outlast the default
+# leak-timeout under load even though the handle is joined before the test
+# returns (false-positive LEAK, see #5425).
+filter = 'package(zeph-index) & (test(index_file_spawn_blocking_dedup_path) | test(index_file_with_blocking_spawner))'
+leak-timeout = "1s"
+
 [profile.ci]
 # CI profile that runs ALL tests including integration tests
 # Override with: cargo nextest run --profile ci
@@ -51,6 +58,13 @@ test-threads = 8
 # Warn (but don't fail) if any test exceeds 30s — surfaces slow tests early.
 filter = "all()"
 slow-timeout = { period = "30s" }
+
+[[profile.ci-partition.overrides]]
+# tokio::task::spawn_blocking worker-thread teardown can outlast the default
+# leak-timeout under load even though the handle is joined before the test
+# returns (false-positive LEAK, see #5425).
+filter = 'package(zeph-index) & (test(index_file_spawn_blocking_dedup_path) | test(index_file_with_blocking_spawner))'
+leak-timeout = "1s"
 
 [profile.ci-partition.junit]
 path = "target/nextest/ci/junit.xml"

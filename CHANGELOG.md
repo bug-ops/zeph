@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(ci)`: nextest flagged `zeph-index`'s `index_file_spawn_blocking_dedup_path` and
+  `index_file_with_blocking_spawner` tests as `LEAK`. Both tests join their
+  `tokio::task::spawn_blocking` handle before returning, but the `#[tokio::test]`
+  runtime's drop can wait on the blocking-pool worker thread's OS-level teardown
+  longer than nextest's default leak-timeout under load — a false positive, not an
+  orphaned resource. Added a `leak-timeout = "1s"` override for these two tests in
+  `.github/nextest.toml`, mirrored across the `default` and `ci-partition` profiles.
+  Closes #5425.
 - `fix(tools)`: `TrustGateExecutor`'s `Supervised`-mode confirmation check no longer
   blanket-skips every tool without an explicit policy rule. The prior condition treated
   "no rule configured" as license to bypass confirmation, which silently let
