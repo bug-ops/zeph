@@ -1299,38 +1299,30 @@ impl SemanticMemory {
         );
     }
 
-    /// Recall messages using query-aware routing.
-    ///
-    /// Delegates to FTS5-only, vector-only, or hybrid search based on the router decision,
-    /// then runs the shared merge and ranking pipeline.
-    ///
-    /// * `goal_entity_id` — optional goal entity for causal distance scoring; when `None`, the
-    ///   causal distance signal contribution is zero (FR-006).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any underlying search or database operation fails.
-    #[cfg_attr(
-        feature = "profiling",
-        tracing::instrument(name = "memory.recall", skip_all, fields(query_len = %query.len(), result_count = tracing::field::Empty))
-    )]
-    pub async fn recall_routed(
+    /// Routed search stage: dispatch to keyword-only, vector-only, or hybrid retrieval
+    /// per `route`, returning the raw `(keyword, vector)` pair for the shared
+    /// merge-and-rank pipeline. Shared by [`Self::recall_routed`] and
+    /// [`Self::recall_routed_async`] — those differ only in how `route` is obtained
+    /// (sync `MemoryRouter::route` vs async `AsyncMemoryRouter::route_async`).
+    async fn recall_by_route(
         &self,
+        route: crate::router::MemoryRoute,
         query: &str,
         limit: usize,
-        filter: Option<SearchFilter>,
-        router: &dyn crate::router::MemoryRouter,
-        goal_entity_id: Option<i64>,
-    ) -> Result<Vec<RecalledMessage>, MemoryError> {
+        filter: Option<crate::embedding_store::SearchFilter>,
+    ) -> Result<
+        (
+            Vec<(crate::types::MessageId, f64)>,
+            Vec<crate::embedding_store::SearchResult>,
+        ),
+        MemoryError,
+    > {
         use crate::router::MemoryRoute;
-
-        let route = router.route(query);
-        tracing::debug!(?route, query_len = query.len(), "memory routing decision");
 
         let conversation_id = filter.as_ref().and_then(|f| f.conversation_id);
 
-        let (keyword_results, vector_results): (
-            Vec<(MessageId, f64)>,
+        let results: (
+            Vec<(crate::types::MessageId, f64)>,
             Vec<crate::embedding_store::SearchResult>,
         ) = match route {
             MemoryRoute::Keyword => {
@@ -1400,6 +1392,37 @@ impl SemanticMemory {
                 (Vec::new(), vr)
             }
         };
+        Ok(results)
+    }
+
+    /// Recall messages using query-aware routing.
+    ///
+    /// Delegates to FTS5-only, vector-only, or hybrid search based on the router decision,
+    /// then runs the shared merge and ranking pipeline.
+    ///
+    /// * `goal_entity_id` — optional goal entity for causal distance scoring; when `None`, the
+    ///   causal distance signal contribution is zero (FR-006).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any underlying search or database operation fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.recall", skip_all, fields(query_len = %query.len(), result_count = tracing::field::Empty))
+    )]
+    pub async fn recall_routed(
+        &self,
+        query: &str,
+        limit: usize,
+        filter: Option<SearchFilter>,
+        router: &dyn crate::router::MemoryRouter,
+        goal_entity_id: Option<i64>,
+    ) -> Result<Vec<RecalledMessage>, MemoryError> {
+        let route = router.route(query);
+        tracing::debug!(?route, query_len = query.len(), "memory routing decision");
+
+        let (keyword_results, vector_results) =
+            self.recall_by_route(route, query, limit, filter).await?;
 
         tracing::debug!(
             keyword_count = keyword_results.len(),
@@ -1436,8 +1459,6 @@ impl SemanticMemory {
         router: &dyn crate::router::AsyncMemoryRouter,
         goal_entity_id: Option<i64>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
-        use crate::router::MemoryRoute;
-
         let decision = router.route_async(query).await;
         let route = decision.route;
         tracing::debug!(
@@ -1447,63 +1468,8 @@ impl SemanticMemory {
             "memory routing decision (async)"
         );
 
-        let conversation_id = filter.as_ref().and_then(|f| f.conversation_id);
-
-        let (keyword_results, vector_results): (
-            Vec<(crate::types::MessageId, f64)>,
-            Vec<crate::embedding_store::SearchResult>,
-        ) = match route {
-            MemoryRoute::Keyword => {
-                let kw = self.recall_fts5_raw(query, limit, conversation_id).await?;
-                (kw, Vec::new())
-            }
-            MemoryRoute::Hybrid => {
-                let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!("FTS5 keyword search failed: {e:#}");
-                        Vec::new()
-                    }
-                };
-                let vr = self.recall_vectors_raw(query, limit, filter).await?;
-                (kw, vr)
-            }
-            MemoryRoute::Episodic => {
-                let range = crate::router::resolve_temporal_range(query, chrono::Utc::now());
-                let cleaned = crate::router::strip_temporal_keywords(query);
-                let search_query = if cleaned.is_empty() { query } else { &cleaned };
-                let kw = if let Some(ref r) = range {
-                    self.sqlite
-                        .keyword_search_with_time_range(
-                            search_query,
-                            limit,
-                            conversation_id,
-                            r.after.as_deref(),
-                            r.before.as_deref(),
-                        )
-                        .await?
-                } else {
-                    self.recall_fts5_raw(search_query, limit, conversation_id)
-                        .await?
-                };
-                (kw, Vec::new())
-            }
-            MemoryRoute::Graph => {
-                let kw = match self.recall_fts5_raw(query, limit, conversation_id).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!("FTS5 keyword search failed (graph→hybrid fallback): {e:#}");
-                        Vec::new()
-                    }
-                };
-                let vr = self.recall_vectors_raw(query, limit, filter).await?;
-                (kw, vr)
-            }
-            _ => {
-                let vr = self.recall_vectors_raw(query, limit, filter).await?;
-                (Vec::new(), vr)
-            }
-        };
+        let (keyword_results, vector_results) =
+            self.recall_by_route(route, query, limit, filter).await?;
 
         tracing::debug!(
             keyword_count = keyword_results.len(),
