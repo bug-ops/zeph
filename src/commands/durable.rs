@@ -24,18 +24,45 @@ use crate::cli::DurableCommand;
 const REVEAL_WARNING: &str =
     "WARNING: --reveal decrypts and prints payload bytes in cleartext. Do not share this output.";
 
-/// Resolve the dedicated `durable.db` path: a sibling of the main database file.
+/// Resolve the dedicated durable journal path: a sibling of the main database file.
 ///
 /// The durable journal lives in its own file on its own pool (INV-14), next to `memory.sqlite_path`.
 /// Shared with the TUI durable poll task so both target the same file.
+///
+/// The journal file name is namespaced by the main DB's full file name (e.g. `zeph.db.durable.db`
+/// for `zeph.db`) rather than a bare `durable.db`, so two distinct memory databases living in the
+/// same directory never share a journal file — sharing one previously made a fresh conversation
+/// in one DB collide with an unrelated `ExecutionId` from the other DB's journal, since both
+/// databases' first-ever conversation gets the same small-integer `ConversationId` (#5553). The
+/// full file name (not just the stem) is used so that same-stem, different-extension DBs (e.g.
+/// `zeph.db` and `zeph.sqlite`) also resolve to distinct journal files.
+///
+/// A pre-existing bare `durable.db` in the directory is still preferred when present, so an
+/// upgrade does not orphan that *file*. Note this does not make old in-flight P1 agent-turn
+/// executions inside it resumable — the `ExecutionId` derivation also changed (folds in
+/// `sqlite_path`, see `durable_bootstrap.rs`), so a pre-upgrade execution simply is not found and
+/// a fresh one starts; this is a one-time, low-impact effect at the upgrade boundary only.
 pub(crate) fn resolve_durable_db_url(config: &Config) -> String {
     let main = config.memory.sqlite_path.as_str();
-    match Path::new(main).parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => {
-            dir.join("durable.db").to_string_lossy().into_owned()
-        }
-        _ => "durable.db".to_owned(),
+    let Some(dir) = Path::new(main)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+    else {
+        return "durable.db".to_owned();
+    };
+
+    let legacy = dir.join("durable.db");
+    if legacy.exists() {
+        return legacy.to_string_lossy().into_owned();
     }
+
+    let file_name = Path::new(main).file_name().map_or_else(
+        || "zeph.db".to_owned(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    dir.join(format!("{file_name}.durable.db"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Format a Unix-epoch-millisecond timestamp as a readable UTC string, falling back to the raw value.
@@ -344,10 +371,137 @@ mod tests {
     use serial_test::serial;
 
     #[test]
-    fn durable_db_is_sibling_of_sqlite_path() {
+    fn durable_db_is_filename_namespaced_sibling_of_sqlite_path() {
         let mut config = Config::default();
         config.memory.sqlite_path = "/data/zeph/zeph.db".to_owned();
-        assert_eq!(resolve_durable_db_url(&config), "/data/zeph/durable.db");
+        assert_eq!(
+            resolve_durable_db_url(&config),
+            "/data/zeph/zeph.db.durable.db"
+        );
+    }
+
+    /// Regression for #5553: distinct memory databases sharing a directory must resolve to
+    /// distinct journal files, or their fresh conversations collide on `ExecutionId`.
+    #[test]
+    fn distinct_sqlite_stems_resolve_to_distinct_durable_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config_a = Config::default();
+        config_a.memory.sqlite_path = dir.path().join("alpha.db").to_string_lossy().into_owned();
+        let mut config_b = Config::default();
+        config_b.memory.sqlite_path = dir.path().join("beta.db").to_string_lossy().into_owned();
+
+        assert_ne!(
+            resolve_durable_db_url(&config_a),
+            resolve_durable_db_url(&config_b)
+        );
+    }
+
+    /// Regression for critic finding F1 on #5553: `file_stem()`-only namespacing would collapse
+    /// same-stem, different-extension DBs (e.g. `zeph.db` and `zeph.sqlite`) onto the same journal
+    /// file, reproducing the exact shared-journal condition the fix is meant to close.
+    #[test]
+    fn same_stem_different_extension_resolves_to_distinct_durable_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config_a = Config::default();
+        config_a.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+        let mut config_b = Config::default();
+        config_b.memory.sqlite_path = dir
+            .path()
+            .join("zeph.sqlite")
+            .to_string_lossy()
+            .into_owned();
+
+        assert_ne!(
+            resolve_durable_db_url(&config_a),
+            resolve_durable_db_url(&config_b)
+        );
+    }
+
+    /// Regression for #5553: an already-existing bare `durable.db` (the pre-fix layout) must
+    /// keep resolving to itself so upgrading deployments do not orphan their journal history.
+    #[test]
+    fn preexisting_legacy_durable_db_is_preferred() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("durable.db"), []).unwrap();
+        let mut config = Config::default();
+        config.memory.sqlite_path = dir.path().join("zeph.db").to_string_lossy().into_owned();
+
+        assert_eq!(
+            resolve_durable_db_url(&config),
+            dir.path().join("durable.db").to_string_lossy()
+        );
+    }
+
+    /// End-to-end regression for #5553: two distinct `memory.sqlite_path` databases in the same
+    /// directory, each opening its P1 durable backend for its first-ever conversation, must land
+    /// in genuinely distinct journal files on disk and must not collide on `ExecutionId` — the
+    /// full composition of `resolve_durable_db_url` (file separation) and the `ExecutionId`
+    /// derivation fold (defense in depth), exercised against real `LocalBackend` instances rather
+    /// than `:memory:` stand-ins.
+    #[tokio::test]
+    async fn distinct_databases_do_not_collide_on_shared_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite_a = dir.path().join("alpha.db").to_string_lossy().into_owned();
+        let sqlite_b = dir.path().join("beta.db").to_string_lossy().into_owned();
+
+        let mut config_a = Config::default();
+        config_a.memory.sqlite_path = sqlite_a.clone();
+        let mut config_b = Config::default();
+        config_b.memory.sqlite_path = sqlite_b.clone();
+
+        let url_a = resolve_durable_db_url(&config_a);
+        let url_b = resolve_durable_db_url(&config_b);
+        assert_ne!(
+            url_a, url_b,
+            "the two databases must resolve to distinct journal files"
+        );
+
+        let backend_a = LocalBackend::open(&url_a, 1_000_000).await.unwrap();
+        backend_a.init().await.unwrap();
+        let backend_b = LocalBackend::open(&url_b, 1_000_000).await.unwrap();
+        backend_b.init().await.unwrap();
+
+        assert!(
+            Path::new(&url_a).exists() && Path::new(&url_b).exists(),
+            "both journal files must actually exist on disk"
+        );
+        assert_ne!(
+            std::fs::canonicalize(&url_a).unwrap(),
+            std::fs::canonicalize(&url_b).unwrap(),
+            "the two journal files must be genuinely distinct files, not the same file via aliasing"
+        );
+
+        // Mirrors the P1 fold in `ensure_session_durable_ctx`: ConversationId(1)'s fixed-width
+        // bytes plus the owning database's `sqlite_path`.
+        let conv_one = 1u64.to_le_bytes();
+        let fold = |sqlite_path: &str| {
+            let mut payload = conv_one.to_vec();
+            payload.extend_from_slice(sqlite_path.as_bytes());
+            ExecutionId::derive(b"zeph.agent_turn.v1", &payload)
+        };
+        let exec_a = fold(&sqlite_a);
+        let exec_b = fold(&sqlite_b);
+        assert_ne!(exec_a, exec_b);
+
+        let resumed_a = backend_a
+            .open_execution(exec_a, zeph_durable::ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        let resumed_b = backend_b
+            .open_execution(exec_b, zeph_durable::ExecutionKind::AgentTurn)
+            .await
+            .unwrap();
+        assert!(
+            !resumed_a && !resumed_b,
+            "each database's first conversation must open a fresh execution, not resume the other's"
+        );
+
+        let executions_a = backend_a.list_executions(None, None, 10).await.unwrap();
+        let executions_b = backend_b.list_executions(None, None, 10).await.unwrap();
+        assert_eq!(executions_a.len(), 1);
+        assert_eq!(executions_b.len(), 1);
+        assert_eq!(executions_a[0].execution_id, exec_a);
+        assert_eq!(executions_b[0].execution_id, exec_b);
     }
 
     #[test]

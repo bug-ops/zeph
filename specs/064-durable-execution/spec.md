@@ -148,8 +148,12 @@ the divergence was detected.
 
 **INV-14 — `durable.db` is a dedicated SQLite file (SQLite mode only); migrations live in
 `zeph-db`.**
-`zeph-durable` owns its own `DbPool` instance on a separate database file (default:
-`{data_dir}/durable.db`). This eliminates cross-writer `BEGIN IMMEDIATE` contention with the main
+`zeph-durable` owns its own `DbPool` instance on a separate database file, namespaced by the main
+DB's full file name so two distinct memory databases sharing a directory never collide on one
+journal file (default: `{data_dir}/{main_db_file_name}.durable.db`, e.g. `zeph.db.durable.db` for
+`memory.sqlite_path = zeph.db`; a pre-existing bare `{data_dir}/durable.db` from before this
+namespacing was introduced is preferred when present, so upgrades do not orphan it — see #5553).
+This eliminates cross-writer `BEGIN IMMEDIATE` contention with the main
 DB's five hot writers (messages, graph blob, jobs, memory, audit). However, `zeph-durable` NEVER
 owns migrations: all durable schema (the four `durable_*` tables) is added as numbered `.sql`
 files in `zeph-db/migrations/sqlite/` and `zeph-db/migrations/postgres/` (matching file counts,

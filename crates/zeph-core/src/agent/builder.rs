@@ -2122,17 +2122,25 @@ impl<C: Channel> Agent<C> {
     /// the first durable-gated call, once the real `TaskSupervisor` is attached
     /// (see [`Self::with_task_supervisor`]).
     ///
-    /// `db_url` is the same `durable.db` connection string as [`Self::with_durable_orchestration`]
-    /// — both P1 and P2 adapters share the same journal file when both are enabled.
+    /// `db_url` is the same durable journal connection string as
+    /// [`Self::with_durable_orchestration`] — both P1 and P2 adapters share the same journal
+    /// file when both are enabled.
+    ///
+    /// `sqlite_path` is `config.memory.sqlite_path`, folded into the P1 [`ExecutionId`](zeph_durable::ExecutionId)
+    /// derivation alongside `ConversationId` (see `durable_bootstrap.rs`) so that even if a
+    /// future config override ever pointed two different memory databases at the same journal
+    /// `db_url`, their executions still would not collide (#5553).
     #[must_use]
     pub fn with_durable_agent_turns(
         mut self,
         config: zeph_config::DurableConfig,
         db_url: String,
+        sqlite_path: String,
         cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
     ) -> Self {
         self.services.session.durable_agent_turns_config = Some(config);
         self.services.session.durable_agent_turns_db_url = Some(db_url);
+        self.services.session.durable_agent_turns_sqlite_path = Some(sqlite_path);
         self.services.session.durable_agent_turns_cipher = cipher;
         self
     }

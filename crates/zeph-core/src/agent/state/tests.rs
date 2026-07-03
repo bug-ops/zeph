@@ -77,6 +77,7 @@ fn make_session_state() -> SessionState {
         durable_turn_replayed: false,
         durable_agent_turns_config: None,
         durable_agent_turns_db_url: None,
+        durable_agent_turns_sqlite_path: None,
         durable_agent_turns_cipher: None,
         durable_ctx_init_attempted: false,
         durable_writer: None,

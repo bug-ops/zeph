@@ -849,6 +849,11 @@ pub(crate) struct SessionState {
     /// Sibling companion to [`Self::durable_agent_turns_config`]: the `durable.db` connection
     /// string resolved at bootstrap.
     pub(crate) durable_agent_turns_db_url: Option<String>,
+    /// Sibling companion to [`Self::durable_agent_turns_config`]: `config.memory.sqlite_path`,
+    /// folded into the P1 `ExecutionId` derivation alongside `ConversationId` so distinct memory
+    /// databases never collide on execution identity even if they ever shared a journal
+    /// `db_url` (#5553).
+    pub(crate) durable_agent_turns_sqlite_path: Option<String>,
     /// Sibling companion to [`Self::durable_agent_turns_config`]: the AEAD cipher to attach to
     /// the backend, `None` when `encrypt_payload = false` (development mode only).
     pub(crate) durable_agent_turns_cipher: Option<std::sync::Arc<dyn zeph_durable::PayloadCipher>>,
@@ -1259,6 +1264,7 @@ impl SessionState {
             durable_turn_replayed: false,
             durable_agent_turns_config: None,
             durable_agent_turns_db_url: None,
+            durable_agent_turns_sqlite_path: None,
             durable_agent_turns_cipher: None,
             durable_ctx_init_attempted: false,
             durable_writer: None,

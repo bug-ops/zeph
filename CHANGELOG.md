@@ -575,6 +575,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   enum variant, `rl_min_samples` / `rl_retrain_interval_secs` config fields, and the
   `admission_training_data` / `admission_rl_weights` storage tables are unchanged and remain
   scaffolding for a future RL wiring effort.
+
+- `fix(durable)`: distinct memory SQLite databases sharing a directory no longer collide on the
+  P1 agent-turn adapter's `ExecutionId`, which previously caused every fresh conversation's first
+  turn to spuriously diverge (#5553). `resolve_durable_db_url` (`src/commands/durable.rs`) now
+  namespaces the journal file by the main DB's full file name (e.g. `zeph.db.durable.db` for
+  `zeph.db`) instead of a bare `durable.db`, so two databases in the same directory — including
+  same-stem, different-extension pairs like `zeph.db` and `zeph.sqlite` — get distinct journal
+  files. A pre-existing bare `durable.db` is still preferred when present, so an upgrade does not
+  orphan that journal *file*; note this does not make pre-upgrade in-flight P1 agent-turn
+  executions inside it resumable, since the `ExecutionId` derivation changed too (see below) — a
+  one-time, low-impact effect at the upgrade boundary only. As defense in depth, the P1
+  `ExecutionId` derivation (`durable_bootstrap.rs::ensure_session_durable_ctx`) now also folds in
+  `config.memory.sqlite_path` alongside `ConversationId`, so even two databases that ever ended up
+  sharing one journal `db_url` (e.g. via a future config override) still could not collide.
+
 - `fix(memory)`: three more Postgres-dialect defects in `zeph-memory`, same class as #5508/#5524
   (SQLite-only SQL surfacing incorrectly under Postgres, live-verified via Docker testcontainers).
   `datetime('now')` (SQLite-only, no Postgres equivalent) was embedded as a literal in production

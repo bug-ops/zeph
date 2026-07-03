@@ -87,6 +87,12 @@ impl<C: Channel> Agent<C> {
         let Some(db_url) = self.services.session.durable_agent_turns_db_url.clone() else {
             return;
         };
+        let sqlite_path = self
+            .services
+            .session
+            .durable_agent_turns_sqlite_path
+            .clone()
+            .unwrap_or_default();
         let Some(conversation_id) = self.services.memory.persistence.conversation_id else {
             tracing::warn!(
                 "durable agent_turns: no conversation_id at bootstrap; degrading to non-durable"
@@ -119,10 +125,15 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
-        let exec_id = zeph_durable::ExecutionId::derive(
-            b"zeph.agent_turn.v1",
-            &conversation_id.0.to_le_bytes(),
-        );
+        // Fold `sqlite_path` in alongside the fixed-width `ConversationId` bytes so that even if
+        // two distinct memory databases were ever configured to share the same durable journal
+        // `db_url`, their first-ever conversation (always `ConversationId(1)`) still cannot
+        // derive the same `ExecutionId` (#5553). The journal-file-per-database fix in
+        // `resolve_durable_db_url` already prevents the collision in the common case; this is
+        // defense in depth for that derivation.
+        let mut exec_payload = conversation_id.0.to_le_bytes().to_vec();
+        exec_payload.extend_from_slice(sqlite_path.as_bytes());
+        let exec_id = zeph_durable::ExecutionId::derive(b"zeph.agent_turn.v1", &exec_payload);
         tracing::debug!("durable agent_turns: open_execution start");
         let open_execution_result = local_backend
             .open_execution(exec_id, zeph_durable::ExecutionKind::AgentTurn)
@@ -332,6 +343,113 @@ mod tests {
         assert_ne!(
             first_exec_id, second_exec_id,
             "a conversation switch must rebind the P1 execution to the new conversation_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn distinct_sqlite_paths_do_not_collide_on_first_conversation() {
+        // Regression test for #5553: two agents pointed at different memory databases (but
+        // sharing the same durable `db_url`, e.g. via directory collision) must not derive the
+        // same `ExecutionId` for their respective first-ever `ConversationId(1)`.
+        async fn exec_id_for(sqlite_path: &str) -> zeph_durable::ExecutionId {
+            let mut agent = agent_with_conversation();
+            agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+                enabled: true,
+                agent_turns: true,
+                ..zeph_config::DurableConfig::default()
+            });
+            agent.services.session.durable_agent_turns_db_url = Some(":memory:".to_owned());
+            agent.services.session.durable_agent_turns_sqlite_path = Some(sqlite_path.to_owned());
+
+            agent.ensure_session_durable_ctx().await;
+            agent
+                .services
+                .session
+                .durable_ctx
+                .as_ref()
+                .expect("durable_ctx should be populated")
+                .execution_id()
+        }
+
+        let a = Box::pin(exec_id_for("/data/alpha/zeph.db")).await;
+        let b = Box::pin(exec_id_for("/data/beta/zeph.db")).await;
+
+        assert_ne!(
+            a, b,
+            "two databases' first conversation must not derive the same ExecutionId"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_shared_durable_db_upgrade_path_does_not_collide() {
+        // Regression for #5553's "upgrade" scenario: a directory already has a legacy bare
+        // `durable.db` (the pre-fix layout), so `resolve_durable_db_url` (src/commands/durable.rs)
+        // deliberately keeps every database in that directory pointed at the *same* legacy file
+        // rather than namespacing it — this is the one path where the file-separation half of the
+        // fix does NOT kick in. The `ExecutionId` fold over `sqlite_path` (the defense-in-depth
+        // half, exercised here through the real production code path) is the only thing that
+        // still prevents a second database's first-ever conversation from colliding with the
+        // first database's execution already journaled in that shared file.
+        async fn bootstrap(
+            legacy_db_url: &str,
+            sqlite_path: &str,
+        ) -> crate::agent::Agent<MockChannel> {
+            let mut agent = agent_with_conversation();
+            agent.services.session.durable_agent_turns_config = Some(zeph_config::DurableConfig {
+                enabled: true,
+                agent_turns: true,
+                ..zeph_config::DurableConfig::default()
+            });
+            agent.services.session.durable_agent_turns_db_url = Some(legacy_db_url.to_owned());
+            agent.services.session.durable_agent_turns_sqlite_path = Some(sqlite_path.to_owned());
+            agent.ensure_session_durable_ctx().await;
+            agent
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let sqlite_a = dir.path().join("alpha.db").to_string_lossy().into_owned();
+        let sqlite_b = dir.path().join("beta.db").to_string_lossy().into_owned();
+
+        // DB A runs first, journaling its first-conversation execution into the legacy file.
+        let agent_a = Box::pin(bootstrap(&legacy_db_url, &sqlite_a)).await;
+        let exec_a = agent_a
+            .services
+            .session
+            .durable_ctx
+            .as_ref()
+            .expect("DB A's durable_ctx should be populated")
+            .execution_id();
+
+        // DB B is a distinct database but, per the legacy-preferred branch of
+        // `resolve_durable_db_url`, resolves to the SAME shared journal file.
+        let agent_b = Box::pin(bootstrap(&legacy_db_url, &sqlite_b)).await;
+        let exec_b = agent_b
+            .services
+            .session
+            .durable_ctx
+            .as_ref()
+            .expect("DB B's durable_ctx should be populated")
+            .execution_id();
+
+        assert_ne!(
+            exec_a, exec_b,
+            "DB B's first conversation must not collide with DB A's execution in the shared legacy journal"
+        );
+
+        // Confirm both landed as two genuinely distinct rows in the shared file, not one
+        // execution spuriously "resumed" by the other.
+        let backend = zeph_durable::LocalBackend::open(&legacy_db_url, 1_000_000)
+            .await
+            .expect("legacy journal file must be openable after both bootstraps");
+        let executions = backend
+            .list_executions(None, None, 10)
+            .await
+            .expect("list_executions must succeed");
+        assert_eq!(
+            executions.len(),
+            2,
+            "the shared legacy journal must contain two distinct executions, not a collapsed one"
         );
     }
 }
