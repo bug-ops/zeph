@@ -15,7 +15,7 @@ use crate::{DbPool, error::DbError};
 /// # Errors
 ///
 /// Returns [`DbError::Migration`] if any migration fails.
-#[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+#[cfg(feature = "sqlite")]
 #[tracing::instrument(name = "db.migrate.run", skip_all, err)]
 pub async fn run_migrations(pool: &DbPool) -> Result<(), DbError> {
     sqlx::migrate!("./migrations/sqlite")

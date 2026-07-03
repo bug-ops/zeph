@@ -33,18 +33,9 @@ impl DbConfig {
     /// # Errors
     ///
     /// Returns [`DbError`] if connection or migration fails.
-    // `postgres` takes cfg-priority over `sqlite` when both are enabled on a crate
-    // (documented in this crate's Cargo.toml `[features]` comment). This is safe for
-    // `zeph-db` in isolation, but a downstream crate that enables both (e.g. via a
-    // `test-utils` feature that adds `postgres` on top of a default `sqlite`) will have
-    // every `SqliteStore::new(":memory:")` call silently routed through
-    // `connect_postgres`, which fails to parse the bare `:memory:` string as a Postgres
-    // URL. See #5377: this bit `zeph-memory`/`zeph-index`'s crate-wide
-    // `--features test-utils --ignored` test runs; the fix there was to scope test
-    // execution to the Postgres-only test binary rather than changing this priority.
     #[tracing::instrument(name = "db.pool.connect", skip_all, err)]
     pub async fn connect(&self) -> Result<DbPool, DbError> {
-        #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+        #[cfg(feature = "sqlite")]
         {
             Self::connect_sqlite(&self.url, self.max_connections, self.pool_size).await
         }
@@ -54,7 +45,7 @@ impl DbConfig {
         }
     }
 
-    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    #[cfg(feature = "sqlite")]
     async fn connect_sqlite(
         path: &str,
         max_connections: u32,
@@ -219,7 +210,7 @@ mod tests {
         assert!(redact_url(url).is_none());
     }
 
-    #[cfg(all(unix, feature = "sqlite", not(feature = "postgres")))]
+    #[cfg(all(unix, feature = "sqlite"))]
     #[tokio::test]
     async fn sqlite_precreated_with_0600() {
         use std::os::unix::fs::PermissionsExt as _;

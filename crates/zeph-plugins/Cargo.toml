@@ -37,5 +37,13 @@ zeph-tools.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock.workspace = true
 
+[features]
+# `zeph-skills`/`zeph-tools` (and transitively `zeph-db`) require a backend to compile;
+# default to `sqlite` so this crate builds in isolation, and expose `postgres` for
+# PostgreSQL deployments (#4956).
+default = ["sqlite"]
+sqlite = ["zeph-skills/sqlite", "zeph-tools/sqlite"]
+postgres = ["zeph-skills/postgres", "zeph-tools/postgres"]
+
 [lints]
 workspace = true

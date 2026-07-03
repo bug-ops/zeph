@@ -61,8 +61,8 @@ wiremock.workspace = true
 
 [features]
 profiling = []
-sqlite = ["zeph-db/sqlite"]
-postgres = ["zeph-db/postgres"]
+sqlite = ["zeph-db/sqlite", "zeph-sanitizer/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-sanitizer/postgres"]
 default = ["sqlite"]
 # Gates Linux-only landlock + seccompiler deps. macOS backend compiles unconditionally.
 sandbox = ["dep:landlock", "dep:seccompiler"]

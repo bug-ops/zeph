@@ -30,5 +30,14 @@ zeph-sanitizer.workspace = true
 zeph-skills.workspace = true
 zeph-tools.workspace = true
 
+[features]
+# `zeph-mcp`/`zeph-orchestration`/`zeph-sanitizer`/`zeph-skills`/`zeph-tools`/
+# `zeph-agent-persistence` (and transitively `zeph-db`) require a backend to compile;
+# default to `sqlite` so this crate builds in isolation, and expose `postgres` for
+# PostgreSQL deployments (#4956).
+default = ["sqlite"]
+sqlite = ["zeph-mcp/sqlite", "zeph-orchestration/sqlite", "zeph-sanitizer/sqlite", "zeph-skills/sqlite", "zeph-tools/sqlite", "zeph-agent-persistence/sqlite"]
+postgres = ["zeph-mcp/postgres", "zeph-orchestration/postgres", "zeph-sanitizer/postgres", "zeph-skills/postgres", "zeph-tools/postgres", "zeph-agent-persistence/postgres"]
+
 [lints]
 workspace = true

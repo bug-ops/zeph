@@ -224,15 +224,15 @@ jobs:
           path: nextest-archive-zeph-db-postgres.tar.zst
           retention-days: 1
       - name: Build and archive zeph-memory postgres integration tests
-        # zeph-memory's sqlite/postgres features are additive (unlike zeph-db's
-        # mutually-exclusive default), so default features stay on here — building
-        # with --no-default-features would disable the "sqlite" feature and turn
-        # unrelated sqlite-only test helpers into dead-code errors under -D warnings.
+        # sqlite and postgres are mutually exclusive (zeph-db's compile_error!
+        # fires if both are active), so default features (which include "sqlite")
+        # must be disabled here; "jsonschema" is re-added explicitly since it was
+        # previously pulled in via zeph-memory's default feature set.
         # --lib --bins (not just --tests) is required so cfg!(feature = "postgres")
         # branches inside src/ (e.g. dialect-selected SQL literals) get archived too —
         # see the "Run zeph-memory postgres unit tests" step below (#5540).
         if: matrix.os == 'ubuntu-latest'
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-memory --features test-utils --lib --bins --tests --archive-file nextest-archive-zeph-memory-postgres.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-memory --no-default-features --features test-utils,jsonschema --lib --bins --tests --archive-file nextest-archive-zeph-memory-postgres.tar.zst
       - name: Upload zeph-memory postgres test archive
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -241,8 +241,10 @@ jobs:
           path: nextest-archive-zeph-memory-postgres.tar.zst
           retention-days: 1
       - name: Build and archive zeph-index postgres integration tests
+        # sqlite and postgres are mutually exclusive; default features (which
+        # include "sqlite") must be disabled so only postgres is active.
         if: matrix.os == 'ubuntu-latest'
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-index --features test-utils --tests --archive-file nextest-archive-zeph-index-postgres.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci -p zeph-index --no-default-features --features test-utils --tests --archive-file nextest-archive-zeph-index-postgres.tar.zst
       - name: Upload zeph-index postgres test archive
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -342,24 +344,25 @@ jobs:
       - name: Run zeph-memory postgres integration tests (testcontainers)
         # Scoped to the postgres_integration binary: zeph-memory's archive also
         # contains hela_spreading_activation.rs (SQLite `:memory:` ignored tests,
-        # unrelated to postgres). Both sqlite and postgres are enabled in this
-        # archive (see the archive step's comment in build-tests), so DbConfig::connect
-        # gives postgres cfg-priority for the whole crate; running crate-wide would
-        # route those unrelated :memory: tests through connect_postgres and fail them.
+        # unrelated to postgres). This archive is built postgres-only (sqlite is
+        # disabled, see the archive step's comment in build-tests) — the vast
+        # majority of zeph-memory's tests use a `SqliteStore::new(":memory:")`
+        # fixture unconditionally (not gated on `#[cfg(feature = "sqlite")]`), so
+        # they'd try to parse ":memory:" as a Postgres URL and fail; running
+        # crate-wide would hit those unrelated failures.
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-memory-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(postgres_integration)'
       - name: Run zeph-memory postgres unit tests (#5540)
-        # Runs the --lib/--bins portion of the same archive (built with --features
-        # postgres via test-utils, see the archive step in build-tests), so
+        # Runs the --lib/--bins portion of the same archive (built postgres-only
+        # via test-utils, see the archive step in build-tests), so
         # cfg!(feature = "postgres") branches inside src/ get unit-test coverage in
         # CI, not just integration-test coverage that depends on happening to exercise
         # the right code path. Scoped by name (not `kind(lib) + kind(bin)`) because the
         # vast majority of zeph-memory's ~1500 lib unit tests open a `SqliteStore::new(
-        # ":memory:")` — under this postgres-featured build, DbConfig::connect has
-        # postgres cfg-priority for the whole crate (see the comment on the step above),
-        # so those unrelated tests would try to parse ":memory:" as a Postgres URL and
-        # fail. `_matches_active_dialect` is this codebase's established naming
-        # convention (see store/overflow.rs) for pure dialect-literal pinning tests that
-        # take no DB connection and are safe to run under either feature build.
+        # ":memory:")` fixture unconditionally — under this postgres-only build, those
+        # unrelated tests would try to parse ":memory:" as a Postgres URL and fail.
+        # `_matches_active_dialect` is this codebase's established naming convention
+        # (see store/overflow.rs) for pure dialect-literal pinning tests that take no
+        # DB connection and are safe to run under either feature build.
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-memory-postgres.tar.zst --workspace-remap . --profile ci -E 'kind(lib) and test(matches_active_dialect)'
       - name: Download zeph-index postgres test archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -524,10 +527,37 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: "ci"
-      - name: Check postgres build (zeph-db)
-        run: cargo check -p zeph-db --no-default-features --features postgres
+      - name: Verify sqlite+postgres compile_error guard
+        # Intentionally attempts the forbidden both-enabled combination and asserts it
+        # fails with the expected compile_error! message. Guards against a future
+        # accidental deletion of the mutual-exclusivity guard in zeph-db/src/lib.rs —
+        # this exact regression (guard silently dropped for #5377) is how #5571 happened.
+        # `cargo check` here is EXPECTED to fail (exit 101, the compile_error firing).
+        # GitHub Actions runs `run:` blocks under `bash -eo pipefail`, so piping that
+        # exit code directly into `grep` would poison the pipeline status regardless of
+        # whether grep matches — `|| true` swallows the expected failure so only the
+        # grep result (checked separately against the redirected log) determines pass/fail.
+        run: |
+          cargo check -p zeph-db --features postgres > /tmp/guard.log 2>&1 || true
+          if grep -q "mutually exclusive for \`zeph-db\`" /tmp/guard.log; then
+            echo "guard fired as expected"
+          else
+            echo "::error::compile_error! guard did not fire — sqlite+postgres both-enabled regression"
+            cat /tmp/guard.log
+            exit 1
+          fi
       - name: Check postgres build (workspace)
-        run: cargo check --workspace --all-targets --features postgres
+        # `full` is backend-agnostic (does not include sqlite or postgres); the default
+        # sqlite feature must be disabled explicitly since Cargo features are
+        # additive-only and cannot "override" an already-active default. Every
+        # "sqlite"/"postgres"-gated crate's workspace-dependency entry in the root
+        # Cargo.toml has `default-features = false` (with explicit forwarding through
+        # each crate's own `sqlite`/`postgres` feature) precisely so this cascades
+        # cleanly instead of silently pulling in a conflicting default via a
+        # `foo.workspace = true` edge somewhere in the graph.
+        run: cargo check --workspace --all-targets --no-default-features --features full,postgres
+      - name: Check sqlite build (workspace, no-default-features parity)
+        run: cargo check --workspace --all-targets --no-default-features --features full,sqlite
 
   rustdoc:
     name: Rustdoc

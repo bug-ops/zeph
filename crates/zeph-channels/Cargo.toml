@@ -16,6 +16,12 @@ readme = "README.md"
 profiling = []
 discord = ["dep:tokio-tungstenite", "dep:futures"]
 slack = ["dep:hmac", "dep:sha2", "dep:subtle"]
+# `zeph-core`/`zeph-tools` (and transitively `zeph-db`) require a backend to compile;
+# default to `sqlite` so this crate builds in isolation, and expose `postgres` for
+# PostgreSQL deployments (#4956).
+default = ["sqlite"]
+sqlite = ["zeph-core/sqlite", "zeph-tools/sqlite"]
+postgres = ["zeph-core/postgres", "zeph-tools/postgres"]
 
 [dependencies]
 axum = { workspace = true }

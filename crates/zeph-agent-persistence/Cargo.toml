@@ -27,7 +27,7 @@ zeph-session = { workspace = true, default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true
-zeph-db = { workspace = true, default-features = false, features = ["sqlite"] }
+zeph-db.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 
 [features]

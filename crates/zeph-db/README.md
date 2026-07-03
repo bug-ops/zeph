@@ -3,7 +3,7 @@
 Database abstraction layer for [Zeph](https://github.com/bug-ops/zeph) — unified SQLite and PostgreSQL backends with compile-time backend selection, automatic migrations, dialect-aware SQL helpers, and FTS support.
 
 **Important:**
-> Exactly one of the `sqlite` or `postgres` features must be enabled. The default is `sqlite`. Enabling both simultaneously triggers a `compile_error!`. Using `--all-features` is intentionally unsupported — use `--features full` or `--features full,postgres` instead.
+> Exactly one of the `sqlite` or `postgres` features must be enabled. The default is `sqlite`, so plain `cargo build`/`cargo build --features full` (no `--no-default-features`) always produce a working sqlite build. Enabling both simultaneously triggers a `compile_error!`. Using `--all-features` is intentionally unsupported. For a PostgreSQL build, disable default features explicitly — `cargo build --no-default-features --features full,postgres` — since the default sqlite backend cannot be "overridden" by additively requesting postgres on top of it.
 
 ## Features
 

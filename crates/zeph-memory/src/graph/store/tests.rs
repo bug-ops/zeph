@@ -1088,6 +1088,7 @@ async fn migration_024_backfill_preserves_entities_and_edges() {
     assert_edges_survived(conn).await;
 }
 
+#[cfg(feature = "sqlite")]
 async fn create_pre_023_schema(pool: &sqlx::SqlitePool) {
     sqlx::query(sql!(
         "CREATE TABLE graph_entities (
@@ -1160,6 +1161,7 @@ async fn create_pre_023_schema(pool: &sqlx::SqlitePool) {
     .unwrap();
 }
 
+#[cfg(feature = "sqlite")]
 async fn seed_pre_023_fixtures(pool: &sqlx::SqlitePool) -> (i64, i64) {
     let alice_id: i64 = sqlx::query_scalar(sql!(
         "INSERT INTO graph_entities (name, entity_type) VALUES ('Alice', 'person') RETURNING id"
@@ -1192,6 +1194,7 @@ async fn seed_pre_023_fixtures(pool: &sqlx::SqlitePool) -> (i64, i64) {
 ///
 /// Must use a single connection so `PRAGMA foreign_keys = OFF` takes effect on the same
 /// connection that executes DROP TABLE (PRAGMA is per-connection, not per-transaction).
+#[cfg(feature = "sqlite")]
 #[allow(clippy::too_many_lines)]
 async fn apply_migration_024(conn: &mut sqlx::SqliteConnection) {
     sqlx::query(sql!("PRAGMA foreign_keys = OFF"))
@@ -1302,6 +1305,7 @@ async fn apply_migration_024(conn: &mut sqlx::SqliteConnection) {
         .unwrap();
 }
 
+#[cfg(feature = "sqlite")]
 async fn assert_canonical_names_backfilled(conn: &mut sqlx::SqliteConnection, ids: (i64, i64)) {
     let (alice_id, rust_id) = ids;
     let alice_canon: String = sqlx::query_scalar(sql!(
@@ -1329,6 +1333,7 @@ async fn assert_canonical_names_backfilled(conn: &mut sqlx::SqliteConnection, id
     );
 }
 
+#[cfg(feature = "sqlite")]
 async fn assert_aliases_seeded(conn: &mut sqlx::SqliteConnection, alice_id: i64) {
     let alice_aliases: Vec<String> = sqlx::query_scalar(sql!(
         "SELECT alias_name FROM graph_entity_aliases WHERE entity_id = ?1"
@@ -1343,6 +1348,7 @@ async fn assert_aliases_seeded(conn: &mut sqlx::SqliteConnection, alice_id: i64)
     );
 }
 
+#[cfg(feature = "sqlite")]
 async fn assert_edges_survived(conn: &mut sqlx::SqliteConnection) {
     let edge_count: i64 = sqlx::query_scalar(sql!("SELECT COUNT(*) FROM graph_edges"))
         .fetch_one(&mut *conn)

@@ -52,8 +52,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 zeph-llm = { workspace = true, features = ["testing"] }
 
 [features]
-sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
-postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
+sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite", "zeph-tools/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-memory/postgres", "zeph-tools/postgres"]
 default = ["sqlite"]
 # Enables test utilities and testcontainers for PostgreSQL integration tests.
 test-utils = ["dep:testcontainers", "dep:testcontainers-modules", "postgres"]

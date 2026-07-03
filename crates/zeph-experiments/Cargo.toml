@@ -27,7 +27,7 @@ tracing.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-llm.workspace = true
-zeph-memory = { workspace = true, features = ["sqlite"] }
+zeph-memory.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -38,5 +38,10 @@ zeph-llm.workspace = true
 zeph-memory = { workspace = true, features = ["testing"] }
 
 [features]
-default = []
+# `zeph-memory` (and transitively `zeph-db`) requires a backend to compile; default to
+# `sqlite` so this crate builds in isolation, and expose `postgres` for PostgreSQL
+# deployments (#4956).
+default = ["sqlite"]
+sqlite = ["zeph-memory/sqlite"]
+postgres = ["zeph-memory/postgres"]
 mock = []

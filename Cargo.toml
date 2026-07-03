@@ -152,35 +152,35 @@ uuid = "1.23.4"
 walkdir = "2.5"
 wiremock = "0.6.5"
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.21.4" }
-zeph-acp = { path = "crates/zeph-acp", version = "0.21.4" }
-zeph-agent-context = { path = "crates/zeph-agent-context", version = "0.21.4" }
+zeph-acp = { path = "crates/zeph-acp", default-features = false, version = "0.21.4" }
+zeph-agent-context = { path = "crates/zeph-agent-context", default-features = false, version = "0.21.4" }
 zeph-agent-feedback = { path = "crates/zeph-agent-feedback", version = "0.21.4" }
-zeph-agent-persistence = { path = "crates/zeph-agent-persistence", version = "0.21.4" }
-zeph-agent-tools = { path = "crates/zeph-agent-tools", version = "0.21.4" }
-zeph-bench = { path = "crates/zeph-bench", version = "0.21.4" }
-zeph-channels = { path = "crates/zeph-channels", version = "0.21.4" }
+zeph-agent-persistence = { path = "crates/zeph-agent-persistence", default-features = false, version = "0.21.4" }
+zeph-agent-tools = { path = "crates/zeph-agent-tools", default-features = false, version = "0.21.4" }
+zeph-bench = { path = "crates/zeph-bench", default-features = false, version = "0.21.4" }
+zeph-channels = { path = "crates/zeph-channels", default-features = false, version = "0.21.4" }
 zeph-commands = { path = "crates/zeph-commands", version = "0.21.4" }
 zeph-common = { path = "crates/zeph-common", version = "0.21.4" }
 zeph-config = { path = "crates/zeph-config", version = "0.21.4" }
 zeph-context = { path = "crates/zeph-context", version = "0.21.4" }
-zeph-core = { path = "crates/zeph-core", version = "0.21.4" }
+zeph-core = { path = "crates/zeph-core", default-features = false, version = "0.21.4" }
 zeph-db = { path = "crates/zeph-db", default-features = false, version = "0.21.4" }
 zeph-durable = { path = "crates/zeph-durable", default-features = false, version = "0.21.4" }
-zeph-experiments = { path = "crates/zeph-experiments", version = "0.21.4" }
+zeph-experiments = { path = "crates/zeph-experiments", default-features = false, version = "0.21.4" }
 zeph-gateway = { path = "crates/zeph-gateway", version = "0.21.4" }
-zeph-index = { path = "crates/zeph-index", version = "0.21.4" }
+zeph-index = { path = "crates/zeph-index", default-features = false, version = "0.21.4" }
 zeph-llm = { path = "crates/zeph-llm", version = "0.21.4" }
-zeph-mcp = { path = "crates/zeph-mcp", version = "0.21.4" }
+zeph-mcp = { path = "crates/zeph-mcp", default-features = false, version = "0.21.4" }
 zeph-memory = { path = "crates/zeph-memory", default-features = false, version = "0.21.4" }
-zeph-orchestration = { path = "crates/zeph-orchestration", version = "0.21.4" }
-zeph-plugins = { path = "crates/zeph-plugins", version = "0.21.4" }
-zeph-sanitizer = { path = "crates/zeph-sanitizer", version = "0.21.4" }
-zeph-scheduler = { path = "crates/zeph-scheduler", version = "0.21.4" }
+zeph-orchestration = { path = "crates/zeph-orchestration", default-features = false, version = "0.21.4" }
+zeph-plugins = { path = "crates/zeph-plugins", default-features = false, version = "0.21.4" }
+zeph-sanitizer = { path = "crates/zeph-sanitizer", default-features = false, version = "0.21.4" }
+zeph-scheduler = { path = "crates/zeph-scheduler", default-features = false, version = "0.21.4" }
 zeph-session = { path = "crates/zeph-session", default-features = false, version = "0.21.4" }
-zeph-skills = { path = "crates/zeph-skills", version = "0.21.4" }
-zeph-subagent = { path = "crates/zeph-subagent", version = "0.21.4" }
-zeph-tools = { path = "crates/zeph-tools", version = "0.21.4" }
-zeph-tui = { path = "crates/zeph-tui", version = "0.21.4" }
+zeph-skills = { path = "crates/zeph-skills", default-features = false, version = "0.21.4" }
+zeph-subagent = { path = "crates/zeph-subagent", default-features = false, version = "0.21.4" }
+zeph-tools = { path = "crates/zeph-tools", default-features = false, version = "0.21.4" }
+zeph-tui = { path = "crates/zeph-tui", default-features = false, version = "0.21.4" }
 zeph-worktree = { path = "crates/zeph-worktree", version = "0.21.4" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.21.4" }
 zeroize = { version = "1.9.0", default-features = false }
@@ -215,7 +215,7 @@ ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus", "session"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "sandbox", "gonka", "cocoon", "sqlite", "testing"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "sandbox", "gonka", "cocoon", "testing"]
 testing = ["zeph-llm/testing"]
 sandbox    = ["zeph-tools/sandbox"]
 bench      = ["dep:zeph-bench"]
@@ -257,9 +257,18 @@ profiling = [
 ]
 profiling-alloc = ["profiling", "zeph-core/profiling-alloc"]
 profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
-# Database backend selection — mutually exclusive. Default includes sqlite.
+# Database backend selection — mutually exclusive. Default includes sqlite, so plain
+# `cargo build`/`cargo build --features full` (no --no-default-features) always get a
+# working sqlite build. `full` itself does NOT include a backend — it is
+# backend-agnostic so it can be combined with either.
 # NOTE: --all-features activates both, triggering compile_error! in zeph-db.
-# Use --features full or --features full,postgres instead.
+# For a PostgreSQL build, default features must be disabled (the plain default
+# always includes sqlite, and Cargo features are additive-only — sqlite cannot be
+# "overridden" by requesting postgres on top of it):
+#   cargo build --no-default-features --features full,postgres
+# For the equivalent explicit sqlite build:
+#   cargo build --no-default-features --features full,sqlite
+# Or simply `cargo build --features full` to rely on the default sqlite backend.
 gonka = ["zeph-llm/gonka", "zeph-core/gonka"]
 cocoon = ["zeph-llm/cocoon", "zeph-core/cocoon", "zeph-tui?/cocoon"]
 index = ["zeph-core/index"]
@@ -275,6 +284,14 @@ sqlite = [
     "zeph-durable/sqlite",
     "zeph-session/sqlite",
     "zeph-agent-persistence/sqlite",
+    "zeph-agent-context/sqlite",
+    "zeph-sanitizer/sqlite",
+    "zeph-skills/sqlite",
+    "zeph-subagent/sqlite",
+    "zeph-acp?/sqlite",
+    "zeph-bench?/sqlite",
+    "zeph-tui?/sqlite",
+    "zeph-experiments/sqlite",
 ]
 postgres = [
     "zeph-db/postgres",
@@ -288,6 +305,14 @@ postgres = [
     "zeph-durable/postgres",
     "zeph-session/postgres",
     "zeph-agent-persistence/postgres",
+    "zeph-agent-context/postgres",
+    "zeph-sanitizer/postgres",
+    "zeph-skills/postgres",
+    "zeph-subagent/postgres",
+    "zeph-acp?/postgres",
+    "zeph-bench?/postgres",
+    "zeph-tui?/postgres",
+    "zeph-experiments/postgres",
 ]
 
 [dependencies]

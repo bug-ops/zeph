@@ -22,11 +22,11 @@ cocoon = ["zeph-llm/cocoon", "zeph-commands/cocoon"]
 index = ["zeph-agent-context/index"]
 metal = ["zeph-llm/metal"]
 mock = ["zeph-vault/mock"]
-postgres = ["zeph-db/postgres", "zeph-agent-context/postgres", "zeph-agent-persistence/postgres", "zeph-durable/postgres", "zeph-session/postgres"]
+postgres = ["zeph-db/postgres", "zeph-agent-context/postgres", "zeph-agent-persistence/postgres", "zeph-durable/postgres", "zeph-session/postgres", "zeph-index/postgres", "zeph-mcp/postgres", "zeph-memory/postgres", "zeph-orchestration/postgres", "zeph-sanitizer/postgres", "zeph-skills/postgres", "zeph-subagent/postgres", "zeph-tools/postgres", "zeph-experiments/postgres"]
 profiling = ["dep:tracing-subscriber", "zeph-commands/profiling"]
 profiling-alloc = ["profiling"]
 scheduler  = []
-sqlite = ["zeph-db/sqlite", "zeph-agent-context/sqlite", "zeph-agent-persistence/sqlite", "zeph-durable/sqlite", "zeph-session/sqlite"]
+sqlite = ["zeph-db/sqlite", "zeph-agent-context/sqlite", "zeph-agent-persistence/sqlite", "zeph-durable/sqlite", "zeph-session/sqlite", "zeph-index/sqlite", "zeph-mcp/sqlite", "zeph-memory/sqlite", "zeph-orchestration/sqlite", "zeph-sanitizer/sqlite", "zeph-skills/sqlite", "zeph-subagent/sqlite", "zeph-tools/sqlite", "zeph-experiments/sqlite"]
 sysinfo = ["dep:sysinfo"]
 
 [dependencies]
@@ -78,7 +78,7 @@ zeph-index.workspace = true
 zeph-llm.workspace = true
 zeph-mcp.workspace = true
 zeph-memory.workspace = true
-zeph-orchestration.workspace = true
+zeph-orchestration = { workspace = true, features = ["llm-planning"] }
 zeph-plugins.workspace = true
 zeph-sanitizer.workspace = true
 zeph-session = { workspace = true, default-features = false }

@@ -14,8 +14,8 @@ readme = "README.md"
 
 [features]
 profiling = []
-sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite"]
-postgres = ["zeph-db/postgres", "zeph-memory/postgres"]
+sqlite = ["zeph-db/sqlite", "zeph-memory/sqlite", "zeph-tools/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-memory/postgres", "zeph-tools/postgres"]
 default = ["sqlite"]
 mock = []
 

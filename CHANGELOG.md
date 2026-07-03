@@ -36,6 +36,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repetitive corpora; broader/diverse-corpus re-measurement is tracked separately
   (see follow-up issue #5625 for broader corpus re-measurement). (#5467)
 
+- `fix(db)`: restore the `sqlite`/`postgres` mutual-exclusivity `compile_error!` in
+  `zeph-db` (spec-031 §4.2). A prior change for #5377 left only the "neither enabled"
+  guard in place, so a build with both features active silently fell through to a
+  cfg-based "postgres wins" resolution instead of failing to compile. Since `zeph-memory`'s
+  and `zeph-index`'s `postgres`/`test-utils` features are additive on top of their own
+  `default = ["sqlite", ...]`, every CI/local invocation that added `--features
+  test-utils` (or `postgres`) without also passing `--no-default-features` silently
+  compiled both backends in and routed every `SqliteStore::new(":memory:")` fixture
+  through `connect_postgres`, breaking ~55% of `zeph-memory`'s unit test suite
+  (676/827 failing) under `cargo test --features postgres -p zeph-memory --lib`.
+  Restored the hard `compile_error!` for both-enabled and removed the now-dead
+  `not(feature = "postgres")` exclusions in `zeph-db`'s per-item `#[cfg]` guards (they
+  were only needed to avoid duplicate-definition errors under the old silent-priority
+  behavior). Updated the `build-tests` CI job to build `zeph-db`, `zeph-memory`, and
+  `zeph-index` with `--no-default-features --features test-utils[,jsonschema]` so only
+  `postgres` is active.
+
+  Restoring the hard `compile_error!` also broke the documented PostgreSQL production
+  build path (`--features full,postgres`), which previously "worked" only because the
+  old silent-priority behavior tolerated both features being nominally active at once.
+  `full` itself is now backend-agnostic (no longer hardcodes `sqlite`), and every
+  workspace crate that transitively depends on `zeph-db`/`zeph-memory` now has
+  `default-features = false` set on its workspace-dependency entry plus explicit
+  `sqlite`/`postgres` forwarding through its own `[features]` (~20 crates total,
+  matching the pre-existing `zeph-db`/`zeph-durable`/`zeph-memory`/`zeph-session`
+  pattern), so `cargo check --workspace --no-default-features --features full,postgres`
+  now compiles cleanly end-to-end, alongside the unaffected default/`--features full`
+  sqlite path. The `build-postgres` CI job's workspace-level check is restored (no
+  longer scoped down to 3 crates) and gains a dedicated regression-guard step that
+  intentionally triggers the forbidden both-enabled combination and asserts the
+  `compile_error!` fires — the exact silent regression class that turned #5377 into
+  #5571. Root `Cargo.toml`'s feature-selection comment, `crates/zeph-db/README.md`, and
+  `specs/031-database-abstraction/spec.md` §4.2 are updated to state the actual working
+  invocation (`--no-default-features` is required for a PostgreSQL build; it cannot be
+  omitted, since Cargo features are additive-only and cannot override the default
+  `sqlite`).
+
+  **Breaking**: compiling `zeph-db` (or anything depending on it, including the full
+  workspace) with both `sqlite` and `postgres` features enabled simultaneously is no
+  longer supported and is now a compile error. A PostgreSQL build requires
+  `--no-default-features --features full,postgres` (or `postgres`/`test-utils` for a
+  single crate) — plain `--features full,postgres` without `--no-default-features` still
+  fails intentionally, since the default `sqlite` feature stays active otherwise.
+
+  **Scope note**: this fix restores compile-time build correctness (the mutual
+  exclusivity invariant and the documented production build path) but does not address
+  #5571's originally-stated runtime-routing goal — `DbConfig::connect()` still resolves
+  the backend purely from compiled features, not from the connection string, so the
+  `*_matches_active_dialect` CI name-filter scoping in `zeph-memory`'s postgres test job
+  remains necessary and is not widened. That remains open follow-up work. Refs #5571.
+
 - `fix(tools,acp)`: ACP (`zeph --acp`) and the daemon (`zeph serve`) gated only the base
   tool chain (file/shell/scrape/cwd/diagnostics) behind `TrustGateExecutor`; `memory_save`,
   MCP-sourced tools, `load_skill`/`invoke_skill`, and `search_code` were composed outside

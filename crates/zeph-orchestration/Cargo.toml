@@ -42,8 +42,8 @@ zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true
 
 [features]
-sqlite = ["zeph-db/sqlite"]
-postgres = ["zeph-db/postgres"]
+sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite", "zeph-subagent/sqlite"]
+postgres = ["zeph-db/postgres", "zeph-durable/postgres", "zeph-subagent/postgres"]
 llm-planning = ["dep:zeph-llm"]
 default = ["sqlite", "llm-planning"]
 

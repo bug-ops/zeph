@@ -34,8 +34,8 @@ zeph-skills.workspace = true
 tokio-util.workspace = true
 
 [features]
-sqlite = ["zeph-memory/sqlite"]
-postgres = ["zeph-memory/postgres"]
+sqlite = ["zeph-memory/sqlite", "zeph-sanitizer/sqlite", "zeph-skills/sqlite"]
+postgres = ["zeph-memory/postgres", "zeph-sanitizer/postgres", "zeph-skills/postgres"]
 default = ["sqlite"]
 # Enables `zeph-index` integration via `IndexAccess` in context assembly views.
 index = ["dep:zeph-index"]

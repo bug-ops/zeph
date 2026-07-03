@@ -13,7 +13,7 @@ description = "Database abstraction layer for Zeph (SQLite and PostgreSQL backen
 readme = "README.md"
 
 [features]
-# sqlite and postgres are mutually exclusive; when both are enabled, postgres takes priority.
+# sqlite and postgres are mutually exclusive; enabling both is a compile_error! (see src/lib.rs).
 # default = ["sqlite"] ensures standalone `cargo check -p zeph-db` and rust-analyzer work.
 # The root workspace Cargo.toml also enables sqlite via its own default feature set.
 default = ["sqlite"]

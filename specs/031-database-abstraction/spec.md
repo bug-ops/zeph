@@ -191,8 +191,16 @@ zeph-db (Layer 0)
 The root `Cargo.toml` `default` feature explicitly includes `zeph-db/sqlite`. This
 avoids the problem where `cargo test --all-features` or `cargo clippy --all-features`
 would fail: with both features activated, the `compile_error!` fires intentionally.
-`--all-features` is not a supported build mode for this workspace; use `--features full`
-or `--features full,postgres` instead. This is documented in CI configuration.
+`--all-features` is not a supported build mode for this workspace. `full` itself is
+backend-agnostic (does not include `sqlite` or `postgres`); use plain `--features full`
+(relies on the default `sqlite`) for a SQLite build, or `--no-default-features --features
+full,postgres` for a PostgreSQL build — default features must be disabled explicitly for
+PostgreSQL because Cargo features are additive-only, so the default `sqlite` cannot be
+"overridden" by requesting `postgres` on top of it. This is documented in CI
+configuration (see also §4.2 amendment at line ~1129 on the `--no-default-features`
+requirement, and the full-workspace `default-features = false` audit required across
+every crate transitively depending on `zeph-db`/`zeph-memory` for this to compile
+cleanly).
 
 ```toml
 # zeph-db/Cargo.toml
@@ -207,9 +215,11 @@ postgres = ["sqlx/postgres"]
 # Root Cargo.toml
 [features]
 default = ["bundled-skills", "scheduler", "guardrail", "zeph-db/sqlite"]
+full = [...]  # backend-agnostic; does not include sqlite or postgres
 postgres = ["zeph-db/postgres"]
 # NOTE: --all-features activates both sqlite and postgres, triggering compile_error!.
-# This is intentional. CI and developers must use --features full or --features full,postgres.
+# This is intentional. Use --features full (sqlite, via default) or
+# --no-default-features --features full,postgres.
 ```
 
 **Mutual exclusivity**: `sqlite` and `postgres` are mutually exclusive at compile
