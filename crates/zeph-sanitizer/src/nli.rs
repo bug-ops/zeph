@@ -44,46 +44,19 @@ use tracing::{Instrument as _, debug, info_span, warn};
 use zeph_llm::LlmProviderDyn;
 use zeph_llm::provider::{Message, Role};
 
+/// Configuration for the SONAR NLI sanitization stage, nested under
+/// `[security.content_isolation.nli]` in the agent config file.
+///
+/// Re-exported from `zeph-config` (matches the [`crate::causal_ipi::CausalIpiConfig`] pattern)
+/// so the deserialized TOML config can be passed to [`NliSanitizer::new`] without a
+/// field-by-field conversion layer.
+pub use zeph_config::NliConfig;
+
 /// Number of consecutive timeouts before the circuit breaker opens.
 const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 
 /// Seconds to wait after the circuit breaker opens before re-attempting NLI checks.
 const CIRCUIT_BREAKER_COOLDOWN_SECS: u64 = 60;
-
-/// Maximum content length (chars) sent to the NLI provider.
-///
-/// Content is truncated to this length before being embedded in the NLI prompt.
-const DEFAULT_MAX_CONTENT_LEN: usize = 2048;
-
-/// Configuration for the SONAR NLI sanitization stage.
-///
-/// Nested under `[security.content_isolation.nli]` in the agent config file.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NliConfig {
-    /// Enable NLI entailment check (default: false — opt-in).
-    pub enabled: bool,
-    /// Provider name from `[[llm.providers]]` to use for NLI inference.
-    /// Empty string means fall back to the default provider.
-    pub provider: String,
-    /// Entailment score threshold above which content is flagged as injected.
-    pub threshold: f32,
-    /// Maximum milliseconds to wait for the NLI provider response.
-    pub timeout_ms: u64,
-    /// Maximum content characters sent to the NLI provider (truncated if longer).
-    pub max_content_len: usize,
-}
-
-impl Default for NliConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            provider: String::new(),
-            threshold: 0.75,
-            timeout_ms: 5000,
-            max_content_len: DEFAULT_MAX_CONTENT_LEN,
-        }
-    }
-}
 
 /// Result of an NLI entailment check.
 #[derive(Debug, Clone, PartialEq)]

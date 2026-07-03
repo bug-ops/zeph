@@ -76,7 +76,7 @@ pub fn create_embedding_provider(config: &Config, primary: &AnyProvider) -> AnyP
         return primary.clone();
     };
 
-    match crate::bootstrap::build_provider_from_entry(entry, config) {
+    match crate::bootstrap::build_provider_from_entry(entry, config, None) {
         Ok(p) => {
             tracing::debug!(
                 provider = entry.effective_name(),

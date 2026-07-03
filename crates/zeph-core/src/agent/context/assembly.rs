@@ -222,6 +222,9 @@ impl<C: Channel> Agent<C> {
         }
         let digest_config = self.services.memory.compaction.digest_config.clone();
         let memory = self.services.memory.persistence.memory.clone();
+        // PAAC secret masking (#5437) is structural at the provider boundary — `self.provider`
+        // is already wrapped via `Agent::with_secret_registry`, so the cloned handle passed into
+        // this detached task masks registered secrets transparently.
         let provider = self.provider.clone();
         let tc = self.runtime.metrics.token_counter.clone();
         let sanitizer = self.services.security.sanitizer.clone();
@@ -789,6 +792,9 @@ impl<C: Channel> Agent<C> {
                     zeph_llm::provider::Role::User,
                     prompt,
                 )];
+                // PAAC secret masking (#5437) is structural at the provider boundary —
+                // `rewrite_provider` (via `resolve_background_provider`) masks registered
+                // secrets from `messages` transparently before this dispatch.
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     rewrite_provider.chat(&messages).instrument(span),

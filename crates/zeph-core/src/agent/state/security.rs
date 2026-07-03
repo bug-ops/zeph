@@ -44,6 +44,8 @@ impl Default for SecurityState {
                 zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
             ),
             guardrail: None,
+            nli_sanitizer: None,
+            secret_registry: None,
             response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier::new(
                 zeph_config::ResponseVerificationConfig::default(),
             ),

@@ -1094,6 +1094,107 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Attach the SONAR NLI entailment-based injection detection stage.
+    ///
+    /// Observe-only: flagged verdicts raise a [`zeph_common::SecurityEventCategory::InjectionFlag`]
+    /// event but never block content (see `sanitize_tool_output`).
+    #[must_use]
+    pub fn with_nli_sanitizer(mut self, nli: zeph_sanitizer::nli::NliSanitizer) -> Self {
+        self.services.security.nli_sanitizer = Some(nli);
+        self.update_metrics(|m| m.nli_enabled = true);
+        self
+    }
+
+    /// Attach the PAAC secret placeholder masking registry.
+    ///
+    /// The registry is populated by `SecretResolver::resolve_secrets` at bootstrap time and
+    /// shared (via `Arc`) with the tool-dispatch boundary (unmasking).
+    ///
+    /// Structural masking (#5437 round-3): wraps every already-set `AnyProvider` field
+    /// (`provider`, `embedding_provider`, and every optional dedicated provider — summary,
+    /// judge, probe, compress, planner, verify, orchestrator, predicate) via
+    /// [`zeph_llm::any::AnyProvider::masked`] so every outbound `chat`/`chat_with_tools`/
+    /// `chat_stream` call made through any of them masks registered secrets by construction.
+    /// This is a structural choke point, not a per-call-site opt-in — no call site needs to
+    /// remember to mask.
+    ///
+    /// **Call this last** in the builder chain, after every `with_*_provider` call — fields set
+    /// after `with_secret_registry` would not be retroactively wrapped. Providers resolved at
+    /// runtime after the `Agent` is built (`/provider` switch, `resolve_background_provider`,
+    /// `build_supervisor`, autodream, magic docs) are covered separately: they call
+    /// `build_provider_for_switch` directly with `self.services.security.secret_registry`.
+    #[must_use]
+    pub fn with_secret_registry(
+        mut self,
+        registry: std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>,
+    ) -> Self {
+        // M5 (#5437 critique): report how many secrets were actually registered at bootstrap,
+        // not just whether masking is on.
+        let registration_count = registry.len() as u64;
+        let masker = std::sync::Arc::clone(&registry)
+            as std::sync::Arc<dyn zeph_llm::masking::OutboundMasker>;
+
+        self.provider = self.provider.masked(std::sync::Arc::clone(&masker));
+        self.embedding_provider = self
+            .embedding_provider
+            .masked(std::sync::Arc::clone(&masker));
+        self.runtime.providers.summary_provider = self
+            .runtime
+            .providers
+            .summary_provider
+            .take()
+            .map(|p| p.masked(std::sync::Arc::clone(&masker)));
+        self.runtime.providers.judge_provider = self
+            .runtime
+            .providers
+            .judge_provider
+            .take()
+            .map(|p| p.masked(std::sync::Arc::clone(&masker)));
+        self.runtime.providers.probe_provider = self
+            .runtime
+            .providers
+            .probe_provider
+            .take()
+            .map(|p| p.masked(std::sync::Arc::clone(&masker)));
+        self.runtime.providers.compress_provider = self
+            .runtime
+            .providers
+            .compress_provider
+            .take()
+            .map(|p| p.masked(std::sync::Arc::clone(&masker)));
+        self.services.orchestration.planner_provider = self
+            .services
+            .orchestration
+            .planner_provider
+            .take()
+            .map(|p| p.masked(std::sync::Arc::clone(&masker)));
+        self.services.orchestration.verify_provider = self
+            .services
+            .orchestration
+            .verify_provider
+            .take()
+            .map(|p| p.masked(std::sync::Arc::clone(&masker)));
+        self.services.orchestration.orchestrator_provider = self
+            .services
+            .orchestration
+            .orchestrator_provider
+            .take()
+            .map(|p| p.masked(std::sync::Arc::clone(&masker)));
+        self.services.orchestration.predicate_provider = self
+            .services
+            .orchestration
+            .predicate_provider
+            .take()
+            .map(|p| p.masked(masker));
+
+        self.services.security.secret_registry = Some(registry);
+        self.update_metrics(|m| {
+            m.secret_masking_enabled = true;
+            m.secret_mask_registrations = registration_count;
+        });
+        self
+    }
+
     /// Attach an audit logger for pre-execution verifier blocks.
     #[must_use]
     pub fn with_audit_logger(mut self, logger: std::sync::Arc<zeph_tools::AuditLogger>) -> Self {

@@ -168,6 +168,7 @@ impl<C: Channel> super::Agent<C> {
     ///
     /// Spawns a `tokio::task` that runs concurrently with the next user turn.
     /// No-op when `MagicDocs` is disabled, no docs are registered, or update is not due.
+    #[allow(clippy::too_many_lines)] // inline masked provider resolution (#5437) crosses the 100-line limit
     pub(super) fn maybe_update_magic_docs(&mut self) {
         let cfg = self.services.memory.subsystems.magic_docs_config.clone();
         if !cfg.enabled
@@ -215,16 +216,19 @@ impl<C: Channel> super::Agent<C> {
                 .find(|e| e.name.as_deref() == Some(cfg.update_provider.as_str())),
             self.runtime.providers.provider_config_snapshot.as_ref(),
         ) {
-            crate::provider_factory::build_provider_for_switch(entry, snapshot).unwrap_or_else(
-                |e| {
-                    tracing::warn!(
-                        provider = cfg.update_provider.as_str(),
-                        error = %e,
-                        "magic_docs: failed to build update_provider, falling back"
-                    );
-                    self.provider.clone()
-                },
+            crate::provider_factory::build_provider_for_switch(
+                entry,
+                snapshot,
+                self.services.security.secret_registry.as_ref(),
             )
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    provider = cfg.update_provider.as_str(),
+                    error = %e,
+                    "magic_docs: failed to build update_provider, falling back"
+                );
+                self.provider.clone()
+            })
         } else {
             self.provider.clone()
         };
@@ -314,7 +318,8 @@ async fn update_magic_doc(
         parts: vec![MessagePart::Text { text: prompt }],
         metadata: zeph_llm::provider::MessageMetadata::default(),
     }];
-
+    // PAAC secret masking (#5437) is structural at the provider boundary — `provider` masks
+    // registered secrets from `messages` (which embeds raw doc file content) transparently.
     let updated = provider.chat(&messages).await?;
 
     if !updated.is_empty() && updated.contains(MAGIC_DOC_HEADER) {

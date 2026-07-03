@@ -89,7 +89,6 @@ impl<C: Channel> super::Agent<C> {
             .memory
             .as_ref()
             .map(|m| m.sqlite().pool().clone());
-
         tracing::info!(
             interval_hours,
             threshold,
@@ -305,6 +304,9 @@ async fn evaluate_skill(
 
     let raw_response = {
         let span = tracing::info_span!("skills.heuristic_promotion.llm_call", skill = skill_name);
+        // PAAC secret masking (#5437) is structural at the provider boundary — `provider` (the
+        // Agent's own, wrapped via `Agent::with_secret_registry`) masks registered secrets from
+        // `messages` (which embeds raw SKILL.md file content) transparently before dispatch.
         match tokio::time::timeout(
             Duration::from_secs(LLM_TIMEOUT_SECS),
             provider.chat(&messages).instrument(span),

@@ -311,6 +311,8 @@ impl<C: Channel> Agent<C> {
             },
         ];
 
+        // PAAC secret masking (#5437) is structural at the provider boundary — `self.provider`
+        // masks registered secrets from `messages` transparently before this dispatch.
         self.provider.chat(&messages).await.map_err(Into::into)
     }
 

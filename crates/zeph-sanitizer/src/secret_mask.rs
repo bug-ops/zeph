@@ -242,6 +242,30 @@ impl SecretMaskRegistry {
         result
     }
 
+    /// Return `true` if any registered secret appears verbatim in `text`.
+    ///
+    /// A cheap, allocation-free pre-check (no `String` construction, unlike [`Self::mask`]).
+    /// Callers on a hot path should use this to decide whether the more expensive clone-and-mask
+    /// pass over a batch of text is needed at all, instead of unconditionally cloning and masking
+    /// every candidate — most turns contain no registered secret.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::secret_mask::{SecretCategory, SecretMaskRegistry};
+    ///
+    /// let registry = SecretMaskRegistry::new();
+    /// registry.register("KEY", "supersecretvalue1", SecretCategory::ApiKey);
+    ///
+    /// assert!(registry.would_mask("value is supersecretvalue1"));
+    /// assert!(!registry.would_mask("nothing sensitive here"));
+    /// ```
+    #[must_use]
+    pub fn would_mask(&self, text: &str) -> bool {
+        let pairs = self.sorted_pairs.read();
+        pairs.iter().any(|(secret, _)| text.contains(secret))
+    }
+
     /// Replace all placeholder tokens in `text` with their original secret values.
     ///
     /// Used only at the tool-execution boundary (shell commands, HTTP headers).
@@ -292,6 +316,22 @@ impl SecretMaskRegistry {
     #[must_use]
     pub fn nonce(&self) -> &str {
         &self.nonce
+    }
+}
+
+impl zeph_llm::masking::OutboundMasker for SecretMaskRegistry {
+    /// Adapts [`SecretMaskRegistry::mask`] to the provider-boundary [`zeph_llm::masking::OutboundMasker`]
+    /// capability (#5437) — this is what lets `AnyProvider::masked` wrap a live provider with
+    /// this registry via `Arc<dyn OutboundMasker>`, without `zeph-llm` depending on
+    /// `zeph-sanitizer` (masking is applied structurally at the provider boundary, so every
+    /// `chat`/`chat_with_tools`/`chat_stream` call is covered by construction, not per-call-site
+    /// enumeration).
+    fn mask(&self, text: &str) -> Option<String> {
+        if self.would_mask(text) {
+            Some(self.mask(text))
+        } else {
+            None
+        }
     }
 }
 
@@ -480,6 +520,37 @@ mod tests {
         let r = SecretMaskRegistry::new();
         assert_eq!(r.mask("any text"), "any text");
         assert_eq!(r.unmask("any text"), "any text");
+    }
+
+    // --- would_mask cheap pre-check ---
+
+    #[test]
+    fn would_mask_true_when_secret_present() {
+        let r = registry_with(&[("KEY", "supersecretvalue1", SecretCategory::ApiKey)]);
+        assert!(r.would_mask("prefix supersecretvalue1 suffix"));
+    }
+
+    #[test]
+    fn would_mask_false_when_no_secret_present() {
+        let r = registry_with(&[("KEY", "supersecretvalue1", SecretCategory::ApiKey)]);
+        assert!(!r.would_mask("nothing sensitive in this text"));
+    }
+
+    #[test]
+    fn would_mask_false_on_empty_registry() {
+        let r = SecretMaskRegistry::new();
+        assert!(!r.would_mask("supersecretvalue1"));
+    }
+
+    #[test]
+    fn would_mask_matches_mask_outcome() {
+        // would_mask must never disagree with whether mask() actually changes the text.
+        let r = registry_with(&[("KEY", "supersecretvalue1", SecretCategory::ApiKey)]);
+        for text in ["supersecretvalue1 here", "nothing here", ""] {
+            let predicted = r.would_mask(text);
+            let actual_changed = r.mask(text) != text;
+            assert_eq!(predicted, actual_changed, "mismatch for text: {text:?}");
+        }
     }
 
     // --- TOCTOU regression (#4280): after register() returns, concurrent mask() must never

@@ -162,7 +162,9 @@ impl SemanticStateAccumulator {
                     zeph_llm::provider::Role::User,
                     prompt,
                 )];
-
+                // PAAC secret masking (#5437) is structural at the provider boundary — the
+                // `provider` moved into this detached task is already wrapped (the caller passes
+                // the Agent's own, masked provider), so no explicit masking step is needed here.
                 let timeout = Duration::from_secs(cfg.distill_timeout_secs);
                 let result = tokio::time::timeout(timeout, provider.chat(&msgs)).await;
 

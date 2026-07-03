@@ -396,7 +396,8 @@ impl<C: Channel> Agent<C> {
         let prompt = self.services.sidequest.build_eviction_prompt();
         let max_eviction_ratio = self.services.sidequest.config.max_eviction_ratio;
         let n_cursors = self.services.sidequest.tool_output_cursors.len();
-        // Clone the provider so the spawn closure owns it without borrowing self.
+        // Clone the provider so the spawn closure owns it without borrowing self. PAAC secret
+        // masking (#5437) is structural at the provider boundary — this clone is already masked.
         let provider = self.summary_or_primary_provider().clone();
 
         let eviction_future = async move {

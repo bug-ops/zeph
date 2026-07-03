@@ -93,6 +93,9 @@ pub struct AppBuilder {
     /// Overlay resolved from installed plugins at startup. Available for TUI and CLI diagnostics.
     #[allow(dead_code)]
     resolved_overlay: zeph_plugins::ResolvedOverlay,
+    /// PAAC secret mask registry, populated during `resolve_secrets_masked` when
+    /// `security.content_isolation.secret_masking.enabled = true`. `None` when disabled.
+    secret_registry: Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
 }
 
 /// CLI-level vault arguments parsed from flags and config before the vault provider is constructed.
@@ -197,7 +200,15 @@ impl AppBuilder {
             }
         };
 
-        config.resolve_secrets(vault.as_ref()).await?;
+        let secret_registry = config
+            .security
+            .content_isolation
+            .secret_masking
+            .enabled
+            .then(|| Arc::new(zeph_sanitizer::secret_mask::SecretMaskRegistry::new()));
+        config
+            .resolve_secrets_masked(vault.as_ref(), secret_registry.as_ref())
+            .await?;
 
         run_plugin_auto_updates(&config).await;
 
@@ -235,7 +246,17 @@ impl AppBuilder {
             age_vault,
             qdrant_ops,
             resolved_overlay,
+            secret_registry,
         })
+    }
+
+    /// Return the shared PAAC secret mask registry, when secret masking is enabled.
+    ///
+    /// The same `Arc` is shared across the outbound LLM masking boundary and the
+    /// tool-dispatch unmasking boundary, so all secrets registered during vault resolution
+    /// are visible everywhere the registry is passed.
+    pub fn secret_registry(&self) -> Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>> {
+        self.secret_registry.clone()
     }
 
     /// Return the `QdrantOps` client if the vector backend is Qdrant.
@@ -1193,7 +1214,7 @@ impl AppBuilder {
     pub fn build_summary_provider(&self) -> Option<AnyProvider> {
         // Structured config takes precedence over the string-based summary_model.
         if let Some(ref entry) = self.config.llm.summary_provider {
-            return match build_provider_from_entry(entry, &self.config) {
+            return match build_provider_from_entry(entry, &self.config, None) {
                 Ok(sp) => {
                     tracing::info!(
                         provider_type = ?entry.provider_type,
@@ -1870,6 +1891,7 @@ impl AppBuilder {
             age_vault: None,
             qdrant_ops: None,
             resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+            secret_registry: None,
         }
     }
 

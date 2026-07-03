@@ -150,7 +150,8 @@ pub(super) async fn generate_and_store_digest(
         parts: vec![],
         metadata: zeph_llm::provider::MessageMetadata::default(),
     }];
-
+    // PAAC secret masking (#5437) is structural at the provider boundary — the caller passes an
+    // already-masked `provider` (the Agent's own, wrapped via `Agent::with_secret_registry`).
     let timeout = Duration::from_secs(30);
     let digest_text = tokio::select! {
         () = async { tokio::time::sleep(timeout).await } => {
@@ -256,6 +257,8 @@ impl<C: Channel> Agent<C> {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }];
+        // PAAC secret masking (#5437) is structural at the provider boundary — `self.provider`
+        // masks registered secrets from `chat_messages` transparently before this dispatch.
 
         let _ = self
             .channel
@@ -453,7 +456,9 @@ impl<C: Channel> Agent<C> {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }];
-
+        // PAAC secret masking (#5437) is structural at the provider boundary —
+        // `resolve_background_provider` returns an already-masked provider (registry threaded
+        // through `build_provider_for_switch`, or the already-masked primary as fallback).
         let provider =
             self.resolve_background_provider(self.runtime.config.recap_config.provider.as_str());
 

@@ -292,6 +292,24 @@ pub struct MetricsSnapshot {
     pub guardrail_enabled: bool,
     /// `true` when guardrail is in warn-only mode (action = warn).
     pub guardrail_warn_mode: bool,
+    /// `true` when the SONAR NLI entailment stage is attached for this session.
+    pub nli_enabled: bool,
+    /// Number of NLI entailment checks performed (excludes circuit-breaker skips).
+    pub nli_checks: u64,
+    /// Number of NLI checks that returned a flagged verdict (observe-only, never blocks).
+    pub nli_flags: u64,
+    /// `true` when the PAAC secret masking registry is active for this session.
+    pub secret_masking_enabled: bool,
+    /// Number of vault secrets registered for masking this session.
+    pub secret_mask_registrations: u64,
+    /// Number of outbound LLM chat calls (across every dispatch site, not just the primary
+    /// turn-loop call) that had at least one secret masked.
+    pub secret_mask_applied: u64,
+    /// Number of secret placeholder tokens in tool arguments that failed to unmask (S1): the
+    /// model did not reproduce a `<SECRET:...>` token byte-for-byte, so the affected tool call
+    /// ran with the literal placeholder text instead of the real secret. Fail-safe (no leak),
+    /// but a non-zero count indicates a legitimate tool flow silently broke.
+    pub secret_unmask_misses: u64,
     pub sub_agents: Vec<SubAgentMetrics>,
     pub skill_confidence: Vec<SkillConfidence>,
     /// Scheduled task summaries: `[name, kind, mode, next_run]`.

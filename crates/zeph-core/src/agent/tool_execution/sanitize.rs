@@ -134,9 +134,48 @@ impl<C: Channel> Agent<C> {
         }
 
         let body = self.scrub_pii_union(&sanitized.body, tool_name).await;
+        self.record_nli_verdict(&body, tool_name).await;
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
         (body, has_injection_flags)
+    }
+
+    /// Run the SONAR NLI entailment check on tool output and record a flagged verdict.
+    ///
+    /// Observe-only: unlike the ML classifier (which can block on `enforcement_mode=block`),
+    /// a flagged NLI verdict only raises a `SecurityEventCategory::InjectionFlag` event and
+    /// increments metrics — the body returned by `sanitize_tool_output` is never altered here.
+    /// No-op when the NLI stage is disabled, inactive (no provider), or the circuit breaker
+    /// has tripped (in which case `check` returns `None`).
+    ///
+    /// Also called from `pre_process_security` (user input boundary) with `tool_name` set to
+    /// a synthetic source label — this is the shared observe-only NLI entry point.
+    pub(crate) async fn record_nli_verdict(&mut self, body: &str, tool_name: &str) {
+        let verdict = match self.services.security.nli_sanitizer.as_ref() {
+            Some(nli) if nli.is_active() => nli.check(body).await,
+            _ => None,
+        };
+        let Some(verdict) = verdict else {
+            return;
+        };
+        self.update_metrics(|m| m.nli_checks += 1);
+        if !verdict.flagged {
+            return;
+        }
+        tracing::warn!(
+            tool = %tool_name,
+            score = verdict.injection_score,
+            "NLI entailment check flagged tool output as likely injection"
+        );
+        self.update_metrics(|m| m.nli_flags += 1);
+        self.push_security_event(
+            zeph_common::SecurityEventCategory::InjectionFlag,
+            tool_name,
+            format!(
+                "NLI entailment score {:.2} exceeded threshold",
+                verdict.injection_score
+            ),
+        );
     }
 
     /// Record injection-flag metrics and security events for a sanitized output.

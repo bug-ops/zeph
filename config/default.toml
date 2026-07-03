@@ -862,6 +862,31 @@ sources = ["web_scrape", "a2a_message"]
 # (e.g. "claude", "ollama", "openai", or a compatible entry name)
 model = "claude"
 
+[security.content_isolation.nli]
+# SONAR NLI entailment check: probabilistic injection detection stage, complements the
+# regex-based sanitizer above. Observe-only — flagged content is never blocked, only logged
+# and recorded as a security event (default: false)
+enabled = false
+# Provider name from [[llm.providers]] used for NLI inference. Empty string falls back to
+# the session's primary provider. Prefer a fast/cheap model — this runs on every tool output.
+provider = ""
+# Entailment score threshold above which content is flagged as injected (default: 0.75)
+threshold = 0.75
+# Maximum milliseconds to wait for the NLI provider response (default: 5000)
+timeout_ms = 5000
+# Maximum content characters sent to the NLI provider, truncated if longer (default: 2048)
+max_content_len = 2048
+
+[security.content_isolation.secret_masking]
+# PAAC secret placeholder masking: substitutes vault-resolved secrets (API keys, tokens,
+# database URLs, etc.) with opaque per-session placeholders before any outbound LLM call,
+# preventing plaintext secret disclosure to third-party providers. Placeholders are resolved
+# back to real values only at tool-execution time (shell env, HTTP headers) (default: false)
+enabled = false
+# Minimum secret byte length eligible for masking — shorter values are skipped to avoid
+# false-positive substitutions on common short strings (default: 8)
+min_secret_len = 8
+
 [security.trajectory]
 # Exponential decay factor applied to signal scores each turn (default: 0.85)
 decay_per_turn = 0.85

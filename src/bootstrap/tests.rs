@@ -439,6 +439,7 @@ fn skill_paths_includes_managed_dir() {
         age_vault: None,
         qdrant_ops: None,
         resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+        secret_registry: None,
     };
     let paths = builder.skill_paths_for_registry();
     let managed = managed_skills_dir();
@@ -460,6 +461,7 @@ fn skill_paths_does_not_duplicate_managed_dir() {
         age_vault: None,
         qdrant_ops: None,
         resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+        secret_registry: None,
     };
     let paths = builder.skill_paths_for_registry();
     let count = paths.iter().filter(|p| p == &&managed).count();
@@ -479,6 +481,7 @@ fn skill_paths_for_watcher_includes_plugins_root() {
         age_vault: None,
         qdrant_ops: None,
         resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+        secret_registry: None,
     };
     let paths = builder.skill_paths_for_watcher();
     let plugins_root = plugins_dir();
@@ -568,6 +571,7 @@ fn make_builder_with_detector_mode(mode: zeph_core::config::DetectorMode) -> App
         age_vault: None,
         qdrant_ops: None,
         resolved_overlay: zeph_plugins::ResolvedOverlay::default(),
+        secret_registry: None,
     }
 }
 

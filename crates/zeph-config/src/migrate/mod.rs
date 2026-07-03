@@ -609,19 +609,19 @@ use steps::{
     MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
     MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
     MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig,
-    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
+    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
     MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
     MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
     MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
-    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
-    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
-    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
-    MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
+    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
+    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
+    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
+    MigrateTuiThemeDefaults, MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–71).
+/// Ordered registry of all sequential migration steps (steps 1–73).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -746,6 +746,10 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateSessionPersistenceConfig),
             // Step 71 — add [serve] advisory block for `zeph serve` (spec-068 §9, #5343)
             Box::new(MigrateServeConfig),
+            // Step 72 — add [security.content_isolation.nli] advisory block (#5438)
+            Box::new(MigrateNliConfig),
+            // Step 73 — add [security.content_isolation.secret_masking] advisory block (#5437)
+            Box::new(MigrateSecretMaskingConfig),
         ]
     });
 

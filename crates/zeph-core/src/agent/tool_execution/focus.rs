@@ -236,6 +236,9 @@ impl<C: Channel> Agent<C> {
 
         let compress_total = to_compress.len();
         let summary_messages = build_compression_prompt(&to_compress);
+        // PAAC secret masking (#5437) is structural at the provider boundary — `compress_provider`
+        // (or the primary provider fallback) masks registered secrets from `summary_messages`
+        // transparently before this dispatch leaves the process.
         let compress_provider = self
             .runtime
             .providers

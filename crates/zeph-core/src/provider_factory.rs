@@ -57,9 +57,15 @@ pub enum BootstrapError {
 
 /// Build an `AnyProvider` from a `ProviderEntry` using a runtime config snapshot.
 ///
-/// Called by the `/provider <name>` slash command to switch providers at runtime without
-/// requiring the full `Config`. Router and Orchestrator provider kinds are not supported
-/// for runtime switching — they require the full provider pool to be re-initialized.
+/// Called by the `/provider <name>` slash command, and by other runtime provider-resolution
+/// paths (`Agent::resolve_background_provider`, `Agent::build_supervisor`, autodream, magic
+/// docs) to switch providers at runtime without requiring the full `Config`. Router and
+/// Orchestrator provider kinds are not supported for runtime switching — they require the
+/// full provider pool to be re-initialized.
+///
+/// `secret_registry`, when `Some`, wraps the built provider so every outbound `chat*` call
+/// masks registered secrets from message text (#5437) — pass the live agent's
+/// `self.services.security.secret_registry.as_ref()` from any runtime call site.
 ///
 /// # Errors
 ///
@@ -68,6 +74,7 @@ pub enum BootstrapError {
 pub fn build_provider_for_switch(
     entry: &ProviderEntry,
     snapshot: &ProviderConfigSnapshot,
+    secret_registry: Option<&std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
 ) -> Result<AnyProvider, BootstrapError> {
     use zeph_common::secret::Secret;
     // Reconstruct a minimal Config from the snapshot so we can reuse build_provider_from_entry.
@@ -93,7 +100,7 @@ pub fn build_provider_for_switch(
         .llm
         .embedding_model
         .clone_from(&snapshot.embedding_model);
-    build_provider_from_entry(entry, &config)
+    build_provider_from_entry(entry, &config, secret_registry)
 }
 
 /// Build an `AnyProvider` from a unified `ProviderEntry` (new `[[llm.providers]]` format).
@@ -101,11 +108,33 @@ pub fn build_provider_for_switch(
 /// All provider-specific fields come from `entry`; the global `config` is used only for
 /// secrets and timeout settings.
 ///
+/// `secret_registry`, when `Some`, wraps the built provider via [`AnyProvider::masked`] so
+/// every outbound `chat*`/`chat_with_tools*` call masks registered secrets from message text
+/// before the request leaves the process (#5437) — this is the single construction-time choke
+/// point for every `AnyProvider` the bootstrap/runtime layer builds. Bootstrap-time callers
+/// (the `AppBuilder::build_*_provider` family) pass `None` here and rely on
+/// `Agent::with_secret_registry` to retroactively wrap every already-set provider field once
+/// the registry is known; runtime callers that resolve/switch providers on a live `Agent`
+/// (`build_provider_for_switch`) pass the live registry directly since it is already known.
+///
 /// # Errors
 ///
 /// Returns `BootstrapError::Provider` when a required secret is missing or an entry is
 /// misconfigured (e.g. compatible provider without a name).
 pub fn build_provider_from_entry(
+    entry: &ProviderEntry,
+    config: &Config,
+    secret_registry: Option<&std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+) -> Result<AnyProvider, BootstrapError> {
+    let provider = build_provider_from_entry_inner(entry, config)?;
+    Ok(match secret_registry {
+        Some(registry) => provider.masked(std::sync::Arc::clone(registry)
+            as std::sync::Arc<dyn zeph_llm::masking::OutboundMasker>),
+        None => provider,
+    })
+}
+
+fn build_provider_from_entry_inner(
     entry: &ProviderEntry,
     config: &Config,
 ) -> Result<AnyProvider, BootstrapError> {
@@ -150,6 +179,10 @@ pub fn build_provider_from_entry(
 /// — e.g. resume-time condensation at CLI/ACP/`zeph serve` construction sites (spec-068
 /// architect ruling D-13, spec §8.1). Fresh-build cost is a non-issue here: this only runs on
 /// session resume, not the hot per-turn path.
+///
+/// Runs before any `Agent`/`SecretMaskRegistry` exists, so the built provider is never
+/// masked (#5437 residual gap — session-resume condensation is not on the hot per-turn path;
+/// tracked as a known limitation rather than blocking this construction-time choke point).
 #[must_use]
 pub fn resolve_named_provider(config: &Config, primary: &AnyProvider, name: &str) -> AnyProvider {
     if name.is_empty() {
@@ -167,7 +200,7 @@ pub fn resolve_named_provider(config: &Config, primary: &AnyProvider, name: &str
         );
         return primary.clone();
     };
-    match build_provider_from_entry(entry, config) {
+    match build_provider_from_entry(entry, config, None) {
         Ok(provider) => provider,
         Err(e) => {
             tracing::warn!(error = %e, provider = name, "failed to build named provider, falling back to primary");
@@ -792,7 +825,7 @@ mod tests {
         fn build_gonka_provider_missing_key_returns_error() {
             let entry = gonka_entry_with_nodes(valid_nodes());
             let config = Config::default();
-            let result = build_provider_from_entry(&entry, &config);
+            let result = build_provider_from_entry(&entry, &config, None);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(
@@ -806,7 +839,7 @@ mod tests {
             let entry = gonka_entry_with_nodes(vec![]);
             let mut config = Config::default();
             config.secrets.gonka_private_key = Some(Secret::new(VALID_PRIV_KEY));
-            let result = build_provider_from_entry(&entry, &config);
+            let result = build_provider_from_entry(&entry, &config, None);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(
@@ -822,7 +855,7 @@ mod tests {
             config.secrets.gonka_private_key = Some(Secret::new(VALID_PRIV_KEY));
             config.secrets.gonka_address =
                 Some(Secret::new("gonka1wrongaddress000000000000000000000000000"));
-            let result = build_provider_from_entry(&entry, &config);
+            let result = build_provider_from_entry(&entry, &config, None);
             assert!(result.is_err());
             let msg = result.unwrap_err().to_string();
             assert!(
@@ -836,7 +869,7 @@ mod tests {
             let entry = gonka_entry_with_nodes(valid_nodes());
             let mut config = Config::default();
             config.secrets.gonka_private_key = Some(Secret::new(VALID_PRIV_KEY));
-            let result = build_provider_from_entry(&entry, &config);
+            let result = build_provider_from_entry(&entry, &config, None);
             assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
             let provider = result.unwrap();
             assert_eq!(provider.name(), "gonka");
@@ -925,7 +958,7 @@ mod tests {
         fn cocoon_access_hash_gate_vault_miss_errors() {
             let entry = cocoon_entry(Some(""));
             let config = Config::default(); // secrets.cocoon_access_hash = None
-            let result = build_provider_from_entry(&entry, &config);
+            let result = build_provider_from_entry(&entry, &config, None);
             assert!(
                 result.is_err(),
                 "expected error when vault key is absent but sentinel is set"
@@ -942,7 +975,7 @@ mod tests {
         fn cocoon_no_access_hash_gate_succeeds_without_vault() {
             let entry = cocoon_entry(None);
             let config = Config::default();
-            let result = build_provider_from_entry(&entry, &config);
+            let result = build_provider_from_entry(&entry, &config, None);
             assert!(
                 result.is_ok(),
                 "expected success when no access hash requested: {:?}",

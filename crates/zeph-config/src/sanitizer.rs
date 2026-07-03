@@ -197,7 +197,7 @@ impl Default for NliConfig {
 }
 
 /// Configuration for PAAC secret placeholder masking, nested under
-/// `[security.secret_masking]` in the agent config file.
+/// `[security.content_isolation.secret_masking]` in the agent config file.
 ///
 /// When `enabled = false` (the default), vault secrets are not masked.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

@@ -762,12 +762,49 @@ impl<C: Channel> Agent<C> {
 
     /// Apply any pending LLM provider override from ACP `set_session_config_option`.
     fn apply_provider_override(&mut self) {
-        if let Some(ref slot) = self.runtime.providers.provider_override
-            && let Some(new_provider) = slot.write().take()
-        {
+        let taken = self
+            .runtime
+            .providers
+            .provider_override
+            .as_ref()
+            .and_then(|slot| slot.write().take());
+        if let Some(new_provider) = taken {
             tracing::debug!(provider = new_provider.name(), "ACP model override applied");
-            self.provider = new_provider;
+            self.set_provider(new_provider);
         }
+    }
+
+    /// The single guarded path for reassigning `self.provider` after construction (#5437,
+    /// recurrence guard — S1/M1 of the round-3 critique).
+    ///
+    /// Every runtime provider swap (`/provider` switch, ACP `set_session_config_option` via
+    /// [`Agent::apply_provider_override`], and any future one) **must** go through this method
+    /// instead of assigning `self.provider` directly. `Agent::with_secret_registry` masks
+    /// `self.provider` once at construction time, but that one-time wrap cannot cover providers
+    /// swapped in later — this method re-applies masking on every swap if it's missing, so a
+    /// new call site literally cannot ship an unmasked provider by forgetting a step: it would
+    /// have to bypass this method and assign the field directly, which is what the `debug_assert`
+    /// below catches in every debug/test build.
+    ///
+    /// A caller that already resolved `provider` through a registry-aware path (e.g.
+    /// `build_provider_for_switch` with the registry threaded in) passes an already-`Masked`
+    /// value here; wrapping is skipped in that case (`AnyProvider::masked` nesting would be
+    /// harmless but wasteful).
+    fn set_provider(&mut self, provider: AnyProvider) {
+        let provider = match self.services.security.secret_registry.clone() {
+            Some(registry) if !matches!(provider, AnyProvider::Masked(_)) => {
+                provider.masked(registry as Arc<dyn zeph_llm::masking::OutboundMasker>)
+            }
+            _ => provider,
+        };
+        debug_assert!(
+            self.services.security.secret_registry.is_none()
+                || matches!(provider, AnyProvider::Masked(_)),
+            "set_provider invariant violated: secret masking is enabled but the new provider \
+             is not wrapped via AnyProvider::masked — every self.provider reassignment must go \
+             through Agent::set_provider, never assign the field directly"
+        );
+        self.provider = provider;
     }
 
     /// Poll all event sources and return the next [`LoopEvent`].
@@ -1557,6 +1594,10 @@ impl<C: Channel> Agent<C> {
                 _ => {}
             }
         }
+
+        // SONAR NLI: probabilistic entailment check at the user input boundary. Observe-only —
+        // never blocks, mirrors the tool-output check in `sanitize_tool_output`.
+        self.record_nli_verdict(trimmed, "user_input").await;
 
         // ML classifier: lightweight injection detection on user input boundary.
         // Runs after guardrail (LLM-based) to layer defenses. On detection, blocks and returns.

@@ -30,7 +30,9 @@
 //! step 68 adds `mouse = false` advisory comment under `[tui]` (#5103);
 //! step 69 adds `default_asset_sensitivity` advisory comment under `[orchestration]` (spec-068, #3934);
 //! step 70 adds session-persistence keys and a `[session.condense]` advisory block (spec-068, #5343);
-//! step 71 adds a `[serve]` advisory block for `zeph serve` (spec-068 §9, #5343).
+//! step 71 adds a `[serve]` advisory block for `zeph serve` (spec-068 §9, #5343);
+//! step 72 adds a `[security.content_isolation.nli]` advisory block (#5438);
+//! step 73 adds a `[security.content_isolation.secret_masking]` advisory block (#5437).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -52,22 +54,22 @@ use super::{
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_memory_retrieval_query_bias, migrate_microcompact_config,
+    migrate_memory_retrieval_query_bias, migrate_microcompact_config, migrate_nli_config,
     migrate_orchestration_asset_sensitivity, migrate_orchestration_orchestrator_provider,
     migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
     migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_serve_config,
-    migrate_session_persist_provider_overrides, migrate_session_persistence_config,
-    migrate_session_provider_persistence, migrate_session_recap_config,
-    migrate_shell_checkpoints_config, migrate_shell_transactional, migrate_stt_to_provider,
-    migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
-    migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
-    migrate_tui_theme_defaults, migrate_vigil_config, migrate_worktree_config,
-    migrate_worktree_git_timeout,
+    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_secret_masking_config,
+    migrate_serve_config, migrate_session_persist_provider_overrides,
+    migrate_session_persistence_config, migrate_session_provider_persistence,
+    migrate_session_recap_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
+    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
+    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
+    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults, migrate_vigil_config,
+    migrate_worktree_config, migrate_worktree_git_timeout,
 };
 
-// ── Wrapper structs for all 69 sequential migration steps ───────────────────────────────────────
+// ── Wrapper structs for all 73 sequential migration steps ───────────────────────────────────────
 
 pub(super) struct MigrateSttToProvider;
 impl Migration for MigrateSttToProvider {
@@ -852,5 +854,31 @@ impl Migration for MigrateServeConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_serve_config(toml_src)
+    }
+}
+
+/// Step 72 — add a `[security.content_isolation.nli]` advisory block for the SONAR NLI
+/// entailment check stage (#5438).
+pub(super) struct MigrateNliConfig;
+impl Migration for MigrateNliConfig {
+    fn name(&self) -> &'static str {
+        "migrate_nli_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_nli_config(toml_src)
+    }
+}
+
+/// Step 73 — add a `[security.content_isolation.secret_masking]` advisory block for the PAAC
+/// secret placeholder masking registry (#5437).
+pub(super) struct MigrateSecretMaskingConfig;
+impl Migration for MigrateSecretMaskingConfig {
+    fn name(&self) -> &'static str {
+        "migrate_secret_masking_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_secret_masking_config(toml_src)
     }
 }

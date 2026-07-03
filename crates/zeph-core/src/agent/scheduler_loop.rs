@@ -615,6 +615,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// interactive-session machinery (channel sends, doom-loop detection, summarization,
     /// learning engine, sanitizer, metrics). Inline tasks are short-lived orchestration
     /// sub-tasks that run synchronously inside the scheduler tick loop.
+    #[allow(clippy::too_many_lines)] // per-iteration secret masking (#5437) crossed the 100-line limit
     pub(super) async fn run_inline_tool_loop(
         &mut self,
         prompt: &str,
@@ -641,6 +642,9 @@ impl<C: crate::channel::Channel> Agent<C> {
         let mut last_text = String::new();
 
         for iteration in 0..max_iterations {
+            // PAAC secret masking (#5437) is structural at the provider boundary — this loop is
+            // explicitly stripped of interactive-session machinery (sanitizer, PII scrub), but
+            // `self.provider` still masks registered secrets transparently before dispatch.
             let response = self.provider.chat_with_tools(&messages, &tool_defs).await?;
 
             match response {

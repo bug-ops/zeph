@@ -341,6 +341,44 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
         }
     }
 
+    {
+        state.nli_enabled = Confirm::new()
+            .with_prompt(
+                "Enable SONAR NLI entailment check? (probabilistic injection detection via LLM entailment scoring on tool output; observe-only, never blocks — complements the regex sanitizer)",
+            )
+            .default(false)
+            .interact()?;
+
+        if state.nli_enabled {
+            let provider_options = &[
+                "(primary provider)",
+                "ollama",
+                "claude",
+                "openai",
+                "compatible",
+            ];
+            let provider_idx = Select::new()
+                .with_prompt("NLI provider (prefer a fast/cheap model — runs on every tool output)")
+                .items(provider_options)
+                .default(0)
+                .interact()?;
+            state.nli_provider = if provider_idx == 0 {
+                String::new()
+            } else {
+                provider_options[provider_idx].to_owned()
+            };
+        }
+    }
+
+    {
+        state.secret_masking_enabled = Confirm::new()
+            .with_prompt(
+                "Enable secret placeholder masking? (substitutes vault-resolved secrets — API keys, tokens, DB URLs — with opaque per-session placeholders before outbound LLM calls; resolved back only at tool execution)",
+            )
+            .default(false)
+            .interact()?;
+    }
+
     #[cfg(feature = "classifiers")]
     {
         state.classifiers_enabled = Confirm::new()

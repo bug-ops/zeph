@@ -29,12 +29,14 @@ use crate::compatible::CompatibleProvider;
 use crate::gemini::GeminiProvider;
 #[cfg(feature = "gonka")]
 use crate::gonka::GonkaProvider;
+use crate::masking::{MaskedProvider, OutboundMasker};
 #[cfg(any(test, feature = "testing"))]
 use crate::mock::MockProvider;
 use crate::ollama::OllamaProvider;
 use crate::openai::OpenAiProvider;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use std::sync::Arc;
 
 use crate::provider::{
     ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx,
@@ -63,6 +65,12 @@ macro_rules! delegate_provider {
             AnyProvider::Cocoon($p) => $expr,
             #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock($p) => $expr,
+            // #5437: masking is structural — every `LlmProvider` trait method (chat, chat_with_tools,
+            // chat_stream, chat_with_extras, debug_request_json, embed, name, ...) routes through
+            // this single macro arm, so `MaskedProvider`'s own `LlmProvider` impl (which masks
+            // outbound messages before delegating to its inner provider) covers all of them for
+            // free — no per-method or per-call-site enumeration needed.
+            AnyProvider::Masked($p) => $expr,
         }
     };
 }
@@ -104,9 +112,53 @@ pub enum AnyProvider {
     /// Only available with the `testing` feature or in `#[cfg(test)]` contexts.
     #[cfg(any(test, feature = "testing"))]
     Mock(MockProvider),
+    /// Wraps another provider so every outbound `chat*` call masks registered secrets from
+    /// message text before the request leaves the process (#5437).
+    ///
+    /// Constructed via [`AnyProvider::masked`], injected once at the point an `AnyProvider` is
+    /// built (`zeph_core::provider_factory::build_provider_from_entry`) — this is a structural
+    /// choke point, not a per-call-site opt-in.
+    Masked(Box<MaskedProvider>),
 }
 
 impl AnyProvider {
+    /// Wrap `self` so every outbound `chat*`/`chat_with_tools*` call masks message text via
+    /// `masker` before the request reaches the inner provider.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::sync::Arc;
+    /// use zeph_llm::any::AnyProvider;
+    /// use zeph_llm::masking::OutboundMasker;
+    /// use zeph_llm::ollama::OllamaProvider;
+    ///
+    /// #[derive(Debug)]
+    /// struct NoopMasker;
+    /// impl OutboundMasker for NoopMasker {
+    ///     fn mask(&self, _text: &str) -> Option<String> { None }
+    /// }
+    ///
+    /// let provider = AnyProvider::Ollama(OllamaProvider::new("http://localhost:11434", "m".into(), "e".into()));
+    /// let masked = provider.masked(Arc::new(NoopMasker));
+    /// assert!(matches!(masked, AnyProvider::Masked(_)));
+    /// ```
+    #[must_use]
+    pub fn masked(self, masker: Arc<dyn OutboundMasker>) -> Self {
+        Self::Masked(Box::new(MaskedProvider::new(self, masker)))
+    }
+
+    /// Number of outbound calls that had at least one secret masked, or `None` when this
+    /// provider is not wrapped via [`AnyProvider::masked`]. Exposed for the
+    /// `secret_mask_applied` observability metric.
+    #[must_use]
+    pub fn masked_call_count(&self) -> Option<u64> {
+        match self {
+            Self::Masked(p) => Some(p.applied_count()),
+            _ => None,
+        }
+    }
+
     /// Set the MAR memory recall confidence for the current turn.
     ///
     /// Delegates to [`RouterProvider::set_memory_confidence`] when the inner provider is
@@ -115,14 +167,16 @@ impl AnyProvider {
     /// Prefer importing [`RouterAware`][crate::router::RouterAware] for explicit dispatch
     /// at call sites that always work with a known router provider.
     pub fn set_memory_confidence(&self, confidence: Option<f32>) {
-        if let AnyProvider::Router(r) = self {
-            r.set_memory_confidence(confidence);
-        } else {
-            tracing::trace!(
-                provider_variant = self.name(),
-                confidence = ?confidence,
-                "set_memory_confidence: no-op (non-router provider; MAR signal requires RouterProvider)"
-            );
+        match self {
+            AnyProvider::Router(r) => r.set_memory_confidence(confidence),
+            AnyProvider::Masked(p) => p.inner().set_memory_confidence(confidence),
+            _ => {
+                tracing::trace!(
+                    provider_variant = self.name(),
+                    confidence = ?confidence,
+                    "set_memory_confidence: no-op (non-router provider; MAR signal requires RouterProvider)"
+                );
+            }
         }
     }
 
@@ -205,6 +259,9 @@ impl AnyProvider {
             AnyProvider::Cocoon(_) => Ok(vec![]),
             #[cfg(any(test, feature = "testing"))]
             AnyProvider::Mock(p) => Ok(p.models.clone()),
+            // Model discovery is not message content — recurse into the inner provider
+            // unmasked, no secrets involved.
+            AnyProvider::Masked(p) => Box::pin(p.inner().list_models_remote()).await,
         }
     }
 
@@ -214,13 +271,17 @@ impl AnyProvider {
     /// [`tokio::task::spawn_blocking`]. No-op for all other provider variants.
     #[tracing::instrument(name = "llm.any.save_router_state", skip_all)]
     pub async fn save_router_state(&self) {
-        if let Self::Router(p) = self {
-            // Run all three saves concurrently — each is independent I/O.
-            tokio::join!(
-                p.save_thompson_state(),
-                p.save_reputation_state(),
-                p.save_bandit_state(),
-            );
+        match self {
+            Self::Router(p) => {
+                // Run all three saves concurrently — each is independent I/O.
+                tokio::join!(
+                    p.save_thompson_state(),
+                    p.save_reputation_state(),
+                    p.save_bandit_state(),
+                );
+            }
+            Self::Masked(p) => Box::pin(p.inner().save_router_state()).await,
+            _ => {}
         }
     }
 
@@ -250,6 +311,7 @@ impl AnyProvider {
             // Cocoon is a metered TEE network — treat as cloud for cost tracking.
             #[cfg(feature = "cocoon")]
             Self::Cocoon(_) => "cloud",
+            Self::Masked(p) => p.inner().provider_kind_str(),
             _ => "cloud",
         }
     }
@@ -270,6 +332,14 @@ impl AnyProvider {
     ) -> Result<crate::sse::ToolSseStream, crate::LlmError> {
         match self {
             AnyProvider::Claude(p) => p.chat_with_tools_stream(messages, tools).await,
+            AnyProvider::Masked(p) => {
+                let masked = p.mask_messages(messages);
+                Box::pin(
+                    p.inner()
+                        .chat_with_tools_stream(masked.as_deref().unwrap_or(messages), tools),
+                )
+                .await
+            }
             _ => Err(crate::LlmError::Unavailable),
         }
     }
@@ -283,15 +353,17 @@ impl AnyProvider {
     /// Must only be called for semantic failures (bad tool arguments, parse errors),
     /// never for network errors or transient failures.
     pub fn record_quality_outcome(&self, provider_name: &str, success: bool) {
-        if let Self::Router(p) = self {
-            p.record_quality_outcome(provider_name, success);
-        } else {
-            tracing::trace!(
-                provider_name,
-                success,
-                provider_variant = self.name(),
-                "record_quality_outcome: no-op (non-router provider; quality signals require RouterProvider)"
-            );
+        match self {
+            Self::Router(p) => p.record_quality_outcome(provider_name, success),
+            Self::Masked(p) => p.inner().record_quality_outcome(provider_name, success),
+            _ => {
+                tracing::trace!(
+                    provider_name,
+                    success,
+                    provider_variant = self.name(),
+                    "record_quality_outcome: no-op (non-router provider; quality signals require RouterProvider)"
+                );
+            }
         }
     }
 
@@ -300,10 +372,10 @@ impl AnyProvider {
     /// Returns an empty vec for non-router providers or EMA strategy.
     #[must_use]
     pub fn router_thompson_stats(&self) -> Vec<(String, f64, f64)> {
-        if let Self::Router(p) = self {
-            p.thompson_stats()
-        } else {
-            vec![]
+        match self {
+            Self::Router(p) => p.thompson_stats(),
+            Self::Masked(p) => p.inner().router_thompson_stats(),
+            _ => vec![],
         }
     }
 
@@ -334,6 +406,14 @@ impl AnyProvider {
                 tracing::warn!("generation overrides not supported for this provider variant");
                 self
             }
+            Self::Masked(p) => {
+                let inner = p.inner().clone();
+                let masker = Arc::clone(&p.masker);
+                Self::Masked(Box::new(MaskedProvider::new(
+                    inner.with_generation_overrides(overrides),
+                    masker,
+                )))
+            }
         }
     }
 
@@ -353,6 +433,10 @@ impl AnyProvider {
     pub fn with_prompt_cache_disabled(&self) -> Self {
         match self {
             Self::Claude(p) => Self::Claude(p.clone().with_cache_user_messages(false)),
+            Self::Masked(p) => Self::Masked(Box::new(MaskedProvider::new(
+                p.inner().with_prompt_cache_disabled(),
+                Arc::clone(&p.masker),
+            ))),
             // OpenAI: no request-body opt-out for server-side automatic caching; no-op clone.
             // Cache separation is achieved via distinct system prompts (Proposer ≠ Checker).
             other => other.clone(),
@@ -372,6 +456,7 @@ impl AnyProvider {
         match self {
             Self::OpenAi(p) => p.set_reasoning_effort(effort),
             Self::Compatible(p) => p.set_reasoning_effort(effort),
+            Self::Masked(p) => p.inner.set_reasoning_effort(effort),
             _ => {}
         }
     }
@@ -410,6 +495,9 @@ impl AnyProvider {
             }
             #[cfg(any(test, feature = "testing"))]
             Self::Mock(_) => {}
+            Self::Masked(p) => {
+                p.inner.set_status_tx(tx);
+            }
         }
     }
 }

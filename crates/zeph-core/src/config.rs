@@ -75,6 +75,38 @@ pub trait SecretResolver {
         &mut self,
         vault: &dyn VaultProvider,
     ) -> impl std::future::Future<Output = Result<(), ConfigError>> + Send;
+
+    /// Same as [`resolve_secrets`](Self::resolve_secrets), but additionally registers every
+    /// successfully resolved secret value with `registry` for outbound LLM masking (#5437).
+    ///
+    /// When `registry` is `None` (secret masking disabled), behaves identically to
+    /// `resolve_secrets`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault backend fails.
+    fn resolve_secrets_masked(
+        &mut self,
+        vault: &dyn VaultProvider,
+        registry: Option<&std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    ) -> impl std::future::Future<Output = Result<(), ConfigError>> + Send;
+}
+
+/// Registers a resolved secret with the PAAC mask registry, when one is attached.
+///
+/// No-op when `registry` is `None` (secret masking disabled or not yet bootstrapped).
+fn register_masked_secret(
+    registry: Option<&std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    key_name: &str,
+    value: &str,
+) {
+    if let Some(registry) = registry {
+        registry.register(
+            key_name,
+            value,
+            zeph_sanitizer::secret_mask::SecretCategory::from_key_name(key_name),
+        );
+    }
 }
 
 fn log_gonka_credential_status(has_key: bool, has_address: bool) {
@@ -95,22 +127,39 @@ fn log_gonka_credential_status(has_key: bool, has_address: bool) {
 // here so every consumer (qdrant client, claude, openai, etc.) sees a clean value.
 impl SecretResolver for Config {
     async fn resolve_secrets(&mut self, vault: &dyn VaultProvider) -> Result<(), ConfigError> {
+        self.resolve_secrets_masked(vault, None).await
+    }
+
+    #[allow(clippy::too_many_lines)] // one branch per vault key, each 2-4 lines — flat by design
+    async fn resolve_secrets_masked(
+        &mut self,
+        vault: &dyn VaultProvider,
+        registry: Option<&std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    ) -> Result<(), ConfigError> {
         if let Some(val) = vault.get_secret("ZEPH_CLAUDE_API_KEY").await? {
+            register_masked_secret(registry, "ZEPH_CLAUDE_API_KEY", &val);
             self.secrets.claude_api_key = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_OPENAI_API_KEY").await? {
+            register_masked_secret(registry, "ZEPH_OPENAI_API_KEY", &val);
             self.secrets.openai_api_key = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_GEMINI_API_KEY").await? {
+            register_masked_secret(registry, "ZEPH_GEMINI_API_KEY", &val);
             self.secrets.gemini_api_key = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_GONKA_PRIVATE_KEY").await? {
+            register_masked_secret(registry, "ZEPH_GONKA_PRIVATE_KEY", &val);
             self.secrets.gonka_private_key = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_GONKA_ADDRESS").await? {
+            // M1 (#5437 critique): a wallet address is a public identifier, not a secret —
+            // masking it would only suppress legitimate model reasoning about it, with no
+            // confidentiality benefit.
             self.secrets.gonka_address = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_COCOON_ACCESS_HASH").await? {
+            register_masked_secret(registry, "ZEPH_COCOON_ACCESS_HASH", &val);
             self.secrets.cocoon_access_hash = Some(Secret::new(val));
         }
         log_gonka_credential_status(
@@ -120,9 +169,11 @@ impl SecretResolver for Config {
         if let Some(val) = vault.get_secret("ZEPH_TELEGRAM_TOKEN").await?
             && let Some(tg) = self.telegram.as_mut()
         {
+            register_masked_secret(registry, "ZEPH_TELEGRAM_TOKEN", &val);
             tg.token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_A2A_AUTH_TOKEN").await? {
+            register_masked_secret(registry, "ZEPH_A2A_AUTH_TOKEN", &val);
             self.a2a.auth_token = Some(val);
         }
         for entry in &self.llm.providers {
@@ -136,6 +187,7 @@ impl SecretResolver for Config {
                     .collect();
                 let env_key = format!("ZEPH_COMPATIBLE_{normalized}_API_KEY");
                 if let Some(val) = vault.get_secret(&env_key).await? {
+                    register_masked_secret(registry, &env_key, &val);
                     self.secrets
                         .compatible_api_keys
                         .insert(name.clone(), Secret::new(val));
@@ -143,38 +195,47 @@ impl SecretResolver for Config {
             }
         }
         if let Some(val) = vault.get_secret("ZEPH_HF_TOKEN").await? {
+            register_masked_secret(registry, "ZEPH_HF_TOKEN", &val);
             self.classifiers.hf_token = Some(val.clone());
             if let Some(candle) = self.llm.candle.as_mut() {
                 candle.hf_token = Some(val);
             }
         }
         if let Some(val) = vault.get_secret("ZEPH_GATEWAY_TOKEN").await? {
+            register_masked_secret(registry, "ZEPH_GATEWAY_TOKEN", &val);
             self.gateway.auth_token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_DATABASE_URL").await? {
+            register_masked_secret(registry, "ZEPH_DATABASE_URL", &val);
             self.memory.database_url = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_QDRANT_API_KEY").await? {
+            register_masked_secret(registry, "ZEPH_QDRANT_API_KEY", &val);
             self.memory.qdrant_api_key = Some(Secret::new(val));
         }
         if let Some(val) = vault.get_secret("ZEPH_DISCORD_TOKEN").await?
             && let Some(dc) = self.discord.as_mut()
         {
+            register_masked_secret(registry, "ZEPH_DISCORD_TOKEN", &val);
             dc.token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_DISCORD_APP_ID").await?
             && let Some(dc) = self.discord.as_mut()
         {
+            // M1 (#5437 critique): the Discord application ID is a public snowflake, not a
+            // secret — masking it would only suppress legitimate model reasoning about it.
             dc.application_id = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_SLACK_BOT_TOKEN").await?
             && let Some(sl) = self.slack.as_mut()
         {
+            register_masked_secret(registry, "ZEPH_SLACK_BOT_TOKEN", &val);
             sl.bot_token = Some(val);
         }
         if let Some(val) = vault.get_secret("ZEPH_SLACK_SIGNING_SECRET").await?
             && let Some(sl) = self.slack.as_mut()
         {
+            register_masked_secret(registry, "ZEPH_SLACK_SIGNING_SECRET", &val);
             sl.signing_secret = Some(val);
         }
         for key in vault.list_keys() {
@@ -186,6 +247,7 @@ impl SecretResolver for Config {
                 // are normalized to `_` so that ZEPH_SECRET_MY-KEY and ZEPH_SECRET_MY_KEY
                 // both map to "my_key", matching SKILL.md requires-secrets parsing.
                 let normalized = custom_name.to_lowercase().replace('-', "_");
+                register_masked_secret(registry, &key, &val);
                 self.secrets.custom.insert(normalized, Secret::new(val));
             }
         }
@@ -253,5 +315,68 @@ mod tests {
 
         assert!(config.secrets.gonka_private_key.is_some());
         assert!(config.secrets.gonka_address.is_none());
+    }
+
+    // --- resolve_secrets_masked / PAAC secret mask registry (#5437) ---
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_masked_registers_values_with_registry() {
+        use crate::vault::MockVaultProvider;
+        use std::sync::Arc;
+        use zeph_sanitizer::secret_mask::SecretMaskRegistry;
+
+        let vault = MockVaultProvider::new()
+            .with_secret("ZEPH_CLAUDE_API_KEY", "sk-claude-secret-value-1234")
+            .with_secret("ZEPH_OPENAI_API_KEY", "sk-openai-secret-value-5678");
+
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        let registry = Arc::new(SecretMaskRegistry::new());
+        config
+            .resolve_secrets_masked(&vault, Some(&registry))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.len(),
+            2,
+            "both resolved secrets must be registered"
+        );
+        let masked = registry.mask("token: sk-claude-secret-value-1234");
+        assert!(!masked.contains("sk-claude-secret-value-1234"));
+        assert!(masked.contains("<SECRET:api_key:"));
+    }
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_masked_none_registry_behaves_like_resolve_secrets() {
+        use crate::vault::MockVaultProvider;
+
+        let vault = MockVaultProvider::new().with_secret("ZEPH_CLAUDE_API_KEY", "sk-test-123");
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.resolve_secrets_masked(&vault, None).await.unwrap();
+
+        assert_eq!(
+            config.secrets.claude_api_key.as_ref().unwrap().expose(),
+            "sk-test-123",
+            "None registry must not change resolution behavior"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(any(test, feature = "mock"))]
+    async fn resolve_secrets_plain_delegates_without_registering() {
+        use crate::vault::MockVaultProvider;
+
+        // Plain resolve_secrets() (used by every call site except bootstrap) must still work
+        // unchanged — it delegates to resolve_secrets_masked with registry = None.
+        let vault = MockVaultProvider::new().with_secret("ZEPH_OPENAI_API_KEY", "sk-openai-abc");
+        let mut config = Config::load(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+        config.resolve_secrets(&vault).await.unwrap();
+
+        assert_eq!(
+            config.secrets.openai_api_key.as_ref().unwrap().expose(),
+            "sk-openai-abc"
+        );
     }
 }

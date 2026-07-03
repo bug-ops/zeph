@@ -245,7 +245,12 @@ impl<C: Channel> Agent<C> {
                     .iter()
                     .find(|e| e.name.as_deref() == Some(n))
                     .and_then(|entry| {
-                        crate::provider_factory::build_provider_for_switch(entry, snap).ok()
+                        crate::provider_factory::build_provider_for_switch(
+                            entry,
+                            snap,
+                            self.services.security.secret_registry.as_ref(),
+                        )
+                        .ok()
                     })
                     .unwrap_or_else(|| self.provider.clone()),
                 _ => self.provider.clone(),

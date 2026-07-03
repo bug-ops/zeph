@@ -90,7 +90,6 @@ impl<C: Channel> Agent<C> {
                 Some(acc) => acc.current_state().await,
                 None => None,
             };
-        let dump_id = self.prepare_chat_debug_dump(tool_defs, memcot_state_for_dump.as_deref());
 
         // RuntimeLayer before_chat hooks (MVP: empty vec = zero iterations).
         if let Some(sc) = self.run_before_chat_layers(tool_defs).await? {
@@ -131,6 +130,12 @@ impl<C: Channel> Agent<C> {
             provider = self.provider.name(),
         );
 
+        // PAAC secret masking (#5437) is a structural choke point at the provider boundary
+        // (`AnyProvider::masked`/`MaskedProvider` in `zeph-llm`), not a per-call-site concern —
+        // `self.provider` masks registered secrets from `messages` transparently before every
+        // `chat*`/`debug_request_json` call, so no explicit masking step is needed here.
+        let dump_id = self.prepare_chat_debug_dump(tool_defs, memcot_state_for_dump.as_deref());
+
         let Some(result) = self
             .dispatch_chat_with_tools(tool_defs, llm_timeout, llm_span)
             .await?
@@ -138,6 +143,7 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         };
 
+        self.sync_secret_mask_metric();
         self.record_chat_metrics_and_compact(start, &result).await?;
 
         // Accumulate LLM chat latency into the per-turn timing accumulator (#2820).
@@ -286,26 +292,54 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Update the `secret_mask_applied` metric from the primary provider's running total
+    /// (#5437). Masking is a structural choke point at the provider boundary now
+    /// (`AnyProvider::masked_call_count`), so this mirrors that counter into the metrics
+    /// snapshot rather than incrementing per-call-site — `masked_call_count` returns `None`
+    /// for an unwrapped (unmasked) provider, in which case the metric stays at 0.
+    pub(crate) fn sync_secret_mask_metric(&mut self) {
+        if let Some(count) = self.provider.masked_call_count() {
+            self.update_metrics(|m| m.secret_mask_applied = count);
+        }
+    }
+
     fn prepare_chat_debug_dump(
         &self,
         tool_defs: &[ToolDefinition],
         memcot_state: Option<&str>,
     ) -> Option<u32> {
+        // `self.provider.debug_request_json` masks registered secrets internally when wrapped
+        // via `AnyProvider::masked` (#5437) — but `RequestDebugDump.messages` is ALSO serialized
+        // directly by `json_dump`/`raw_dump` (independent of `provider_request`, for providers
+        // whose wire format doesn't carry a full messages array or for the JSON dump's own
+        // "messages" field), so it needs its own masked view; the provider abstraction can't
+        // cover this since it's a local file-serialization concern, not an outbound wire call.
+        // Computed lazily inside the `debug_dumper.is_some()` branch below — `debug_dumper` is
+        // `None` in ordinary production runs, and `mask_messages` is not free even with its own
+        // non-cloning pre-scan (it still walks every message's text), so this must not run on
+        // every dispatch when there is no dump to build.
         self.runtime
             .debug
             .debug_dumper
             .as_ref()
             .map(|d: &crate::debug_dump::DebugDumper| {
+                let masked_for_dump = self
+                    .services
+                    .security
+                    .secret_registry
+                    .as_deref()
+                    .and_then(|r| zeph_llm::mask_messages(r, &self.msg.messages));
+                let messages_for_dump = masked_for_dump.as_deref().unwrap_or(&self.msg.messages);
                 // Skip expensive serialization when Trace format returns early without using it.
                 let provider_request = if d.is_trace_format() {
                     serde_json::Value::Null
                 } else {
                     self.provider
-                        .debug_request_json(&self.msg.messages, tool_defs, false) // lgtm[rust/cleartext-logging]
+                        .debug_request_json(messages_for_dump, tool_defs, false) // lgtm[rust/cleartext-logging]
                 };
                 d.dump_request(&crate::debug_dump::RequestDebugDump {
                     model_name: &self.runtime.config.model_name,
-                    messages: &self.msg.messages,
+                    messages: messages_for_dump,
                     tools: tool_defs,
                     provider_request,
                     memcot_state,

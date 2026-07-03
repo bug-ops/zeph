@@ -454,12 +454,16 @@ impl<C: Channel> Agent<C> {
             return "Provider switching unavailable (config snapshot missing).".to_owned();
         };
 
-        match crate::provider_factory::build_provider_for_switch(&entry, snapshot) {
+        match crate::provider_factory::build_provider_for_switch(
+            &entry,
+            snapshot,
+            self.services.security.secret_registry.as_ref(),
+        ) {
             Ok(new_provider) => {
                 let model_name = entry.effective_model();
                 let configured_name = entry.effective_name();
 
-                self.provider = new_provider;
+                self.set_provider(new_provider);
                 self.runtime.config.model_name.clone_from(&model_name);
                 self.runtime
                     .config
@@ -589,7 +593,7 @@ mod tests {
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let snapshot = ollama_snapshot();
         let new_provider =
-            crate::provider_factory::build_provider_for_switch(&entry, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry, &snapshot, None).unwrap();
 
         let mut agent = Agent::new(new_provider, channel, registry, None, 5, executor);
         agent.runtime.providers.provider_pool = vec![entry];
@@ -617,7 +621,7 @@ mod tests {
         let entry = make_entry("ollama", ProviderKind::Ollama, Some("qwen3:8b"));
         let snapshot = ollama_snapshot();
         let provider =
-            crate::provider_factory::build_provider_for_switch(&entry, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry, &snapshot, None).unwrap();
 
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -646,7 +650,7 @@ mod tests {
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
         let provider_a =
-            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot, None).unwrap();
 
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
@@ -710,7 +714,7 @@ mod tests {
 
         // Build a real Ollama provider for entry_b to switch to.
         let provider_b =
-            crate::provider_factory::build_provider_for_switch(&entry_b, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry_b, &snapshot, None).unwrap();
 
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
         // embedding_provider defaults to provider.clone() (mock). After switch the chat
@@ -743,7 +747,7 @@ mod tests {
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
         let provider_a =
-            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot, None).unwrap();
 
         // embed_provider is a MockProvider — name() returns "mock", which differs from
         // any Ollama provider's name() ("ollama").
@@ -777,11 +781,12 @@ mod tests {
         let entry_b = make_entry("ollama2", ProviderKind::Ollama, Some("llama3.2"));
         let snapshot = ollama_snapshot();
         let provider_a =
-            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry_a, &snapshot, None).unwrap();
 
         let entry_embed = make_entry("embed", ProviderKind::Ollama, Some("nomic-embed-text"));
         let embed_provider =
-            crate::provider_factory::build_provider_for_switch(&entry_embed, &snapshot).unwrap();
+            crate::provider_factory::build_provider_for_switch(&entry_embed, &snapshot, None)
+                .unwrap();
 
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();

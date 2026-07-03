@@ -23,6 +23,8 @@
 //! | 6 | [`exfiltration::ExfiltrationGuard`] | Outbound channel guards (markdown images, tool URLs) |
 //! | 7 | [`memory_validation::MemoryWriteValidator`] | Structural write guards for the memory store |
 //! | 8 | [`causal_ipi::TurnCausalAnalyzer`] | Behavioral deviation detection at tool-return boundaries |
+//! | 9 | [`nli::NliSanitizer`] | Probabilistic NLI entailment check for injected instructions |
+//! | 10 | [`secret_mask::SecretMaskRegistry`] | Vault-secret placeholder masking at the LLM boundary |
 //!
 //! # Quick Start
 //!
@@ -76,7 +78,9 @@ pub mod shadow_memory;
 pub mod types;
 
 pub use ipi_filter::{IpiFilter, IpiVerdict};
+pub use nli::{NliConfig, NliSanitizer, NliVerdict};
 pub use sanitizer::ContentSanitizer;
+pub use secret_mask::{SecretCategory, SecretMaskRegistry};
 pub use shadow_memory::{GoalDriftResult, ShadowEvent, ShadowMemory, classify_tool_permission};
 pub use types::{
     ContentSource, ContentSourceKind, ContentTrustLevel, InjectionFlag, MemorySourceHint,

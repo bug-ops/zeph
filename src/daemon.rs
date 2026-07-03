@@ -730,7 +730,18 @@ pub(crate) async fn run_daemon(
     let agent = agent_setup::apply_three_class_classifier(agent, config);
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_classifier(agent, config);
-    let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
+    let agent = agent_setup::apply_causal_analyzer(
+        agent,
+        provider.clone(),
+        config,
+        app.secret_registry().as_ref(),
+    );
+    let agent = agent_setup::apply_nli_sanitizer(
+        agent,
+        provider.clone(),
+        config,
+        app.secret_registry().as_ref(),
+    );
     let agent = agent_setup::apply_vigil(agent, &config.security.vigil);
 
     let judge_provider = app.build_judge_provider();
@@ -739,6 +750,11 @@ pub(crate) async fn run_daemon(
     } else {
         agent
     };
+    // #5437 round-3: apply_secret_masking must run after every with_*_provider call above —
+    // it retroactively wraps each already-set AnyProvider field via AnyProvider::masked so
+    // masking is structural, not per-call-site. judge_provider is the last provider setter in
+    // this chain, so secret masking is wired here, not earlier alongside the other classifiers.
+    let agent = agent_setup::apply_secret_masking(agent, app.secret_registry());
     let agent = if let Some(fc) = app.build_feedback_classifier(&provider) {
         agent.with_llm_classifier(fc)
     } else {

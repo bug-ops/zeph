@@ -164,6 +164,8 @@ impl<C: Channel> Agent<C> {
             .memcot_config
             .distill_provider
             .as_str();
+        // PAAC secret masking (#5437) is structural at the provider boundary —
+        // `resolve_background_provider` returns an already-masked provider.
         let provider = self.resolve_background_provider(distill_provider_name);
 
         let content = assistant_content.to_owned();

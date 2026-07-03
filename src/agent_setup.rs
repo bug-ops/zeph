@@ -1004,6 +1004,7 @@ pub(crate) fn apply_causal_analyzer<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     provider: zeph_llm::any::AnyProvider,
     config: &Config,
+    secret_registry: Option<&Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
 ) -> zeph_core::agent::Agent<C> {
     let resolved = config
         .security
@@ -1027,24 +1028,41 @@ pub(crate) fn apply_causal_analyzer<C: Channel>(
                 }
             },
         );
-    apply_causal_analyzer_with_cfg(agent, provider, resolved, &config.security.causal_ipi)
+    apply_causal_analyzer_with_cfg(
+        agent,
+        provider,
+        resolved,
+        &config.security.causal_ipi,
+        secret_registry,
+    )
 }
 
 /// Wire the `TurnCausalAnalyzer` into the agent's security config (takes `CausalIpiConfig` directly).
 ///
 /// `resolved_provider` is an already-resolved named provider from `[[llm.providers]]` for probe
 /// calls. When `None`, `provider` (the session's primary) is used as fallback.
+///
+/// `secret_registry`, when `Some`, wraps the probe provider so its outbound `.chat()` calls
+/// mask registered secrets (#5437) — this analyzer is constructed and stored independently of
+/// the Agent's own provider fields, so it is not covered by `Agent::with_secret_registry`'s
+/// retroactive wrap and must be masked explicitly here.
 pub(crate) fn apply_causal_analyzer_with_cfg<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     provider: zeph_llm::any::AnyProvider,
     resolved_provider: Option<zeph_llm::any::AnyProvider>,
     causal_config: &zeph_sanitizer::causal_ipi::CausalIpiConfig,
+    secret_registry: Option<&Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
 ) -> zeph_core::agent::Agent<C> {
     let agent = agent.with_shadow_memory_config(&causal_config.shadow_memory);
     if !causal_config.enabled {
         return agent;
     }
     let probe_provider = resolved_provider.unwrap_or(provider);
+    let probe_provider = match secret_registry {
+        Some(registry) => probe_provider
+            .masked(Arc::clone(registry) as Arc<dyn zeph_llm::masking::OutboundMasker>),
+        None => probe_provider,
+    };
     let analyzer =
         zeph_sanitizer::causal_ipi::TurnCausalAnalyzer::new(probe_provider, causal_config);
     tracing::info!(
@@ -1053,6 +1071,91 @@ pub(crate) fn apply_causal_analyzer_with_cfg<C: Channel>(
         "causal IPI analyzer attached"
     );
     agent.with_causal_analyzer(analyzer)
+}
+
+/// Wire the SONAR `NliSanitizer` into the agent's security config.
+///
+/// Resolves `security.content_isolation.nli.provider` from `[[llm.providers]]`, falling back to
+/// the session's primary provider when unset or resolution fails (mirrors
+/// [`apply_causal_analyzer`]).
+pub(crate) fn apply_nli_sanitizer<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    provider: zeph_llm::any::AnyProvider,
+    config: &Config,
+    secret_registry: Option<&Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+) -> zeph_core::agent::Agent<C> {
+    let nli_config = &config.security.content_isolation.nli;
+    let resolved = nli_config.provider.as_non_empty().and_then(|name| {
+        match crate::bootstrap::create_named_provider(name, config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "NLI dedicated provider configured");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "NLI provider resolution failed, falling back to primary"
+                );
+                None
+            }
+        }
+    });
+    apply_nli_sanitizer_with_cfg(agent, provider, resolved, nli_config, secret_registry)
+}
+
+/// Wire the SONAR `NliSanitizer` into the agent's security config (takes `NliConfig` directly).
+///
+/// `resolved_provider` is an already-resolved named provider from `[[llm.providers]]` for NLI
+/// entailment calls. When `None`, `provider` (the session's primary) is used as fallback.
+/// No-op when `nli_config.enabled` is `false`.
+///
+/// `secret_registry`, when `Some`, wraps the NLI provider so its outbound entailment calls
+/// mask registered secrets (#5437) — like the causal analyzer, this sanitizer holds its own
+/// provider handle outside the Agent's provider fields and needs an explicit wrap here.
+pub(crate) fn apply_nli_sanitizer_with_cfg<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    provider: zeph_llm::any::AnyProvider,
+    resolved_provider: Option<zeph_llm::any::AnyProvider>,
+    nli_config: &zeph_sanitizer::nli::NliConfig,
+    secret_registry: Option<&Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+) -> zeph_core::agent::Agent<C> {
+    if !nli_config.enabled {
+        return agent;
+    }
+    let nli_provider = resolved_provider.unwrap_or(provider);
+    let nli_provider = match secret_registry {
+        Some(registry) => {
+            nli_provider.masked(Arc::clone(registry) as Arc<dyn zeph_llm::masking::OutboundMasker>)
+        }
+        None => nli_provider,
+    };
+    let dyn_provider: Arc<dyn zeph_llm::LlmProviderDyn> = Arc::new(nli_provider);
+    let sanitizer = zeph_sanitizer::nli::NliSanitizer::new(nli_config.clone(), Some(dyn_provider));
+    tracing::info!(
+        threshold = nli_config.threshold,
+        timeout_ms = nli_config.timeout_ms,
+        "NLI sanitizer attached"
+    );
+    agent.with_nli_sanitizer(sanitizer)
+}
+
+/// Wire the PAAC `SecretMaskRegistry` into the agent's security config.
+///
+/// The registry is created once at bootstrap (gated on
+/// `security.content_isolation.secret_masking.enabled`) and shared across the outbound LLM
+/// masking boundary (`llm_dispatch.rs`) and the tool-dispatch unmasking boundary
+/// (`tier_loop.rs`). No-op when `registry` is `None` (masking disabled).
+pub(crate) fn apply_secret_masking<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    registry: Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+) -> zeph_core::agent::Agent<C> {
+    if let Some(registry) = registry {
+        tracing::info!("secret mask registry attached");
+        agent.with_secret_registry(registry)
+    } else {
+        agent
+    }
 }
 
 pub(crate) async fn apply_code_indexer(
@@ -1999,6 +2102,69 @@ mod tests {
         assert!(
             !result.has_code_retriever(),
             "mcp_enabled must leave retriever None"
+        );
+    }
+
+    // --- apply_nli_sanitizer_with_cfg (#5438) ---
+
+    #[tokio::test]
+    async fn apply_nli_sanitizer_disabled_does_not_set_metrics_flag() {
+        let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+        let agent = make_agent().with_metrics(tx);
+        let nli_config = zeph_sanitizer::nli::NliConfig {
+            enabled: false,
+            ..zeph_sanitizer::nli::NliConfig::default()
+        };
+        let result =
+            apply_nli_sanitizer_with_cfg(agent, offline_provider(), None, &nli_config, None);
+        drop(result);
+        assert!(
+            !rx.borrow().nli_enabled,
+            "disabled config must not attach the NLI sanitizer"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_nli_sanitizer_enabled_attaches_and_sets_metrics_flag() {
+        let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+        let agent = make_agent().with_metrics(tx);
+        let nli_config = zeph_sanitizer::nli::NliConfig {
+            enabled: true,
+            ..zeph_sanitizer::nli::NliConfig::default()
+        };
+        let result =
+            apply_nli_sanitizer_with_cfg(agent, offline_provider(), None, &nli_config, None);
+        drop(result);
+        assert!(
+            rx.borrow().nli_enabled,
+            "enabled config must attach the NLI sanitizer and flip the metrics flag"
+        );
+    }
+
+    // --- apply_secret_masking (#5437) ---
+
+    #[tokio::test]
+    async fn apply_secret_masking_none_does_not_set_metrics_flag() {
+        let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+        let agent = make_agent().with_metrics(tx);
+        let result = apply_secret_masking(agent, None);
+        drop(result);
+        assert!(
+            !rx.borrow().secret_masking_enabled,
+            "None registry must not attach secret masking"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_secret_masking_some_attaches_and_sets_metrics_flag() {
+        let (tx, rx) = tokio::sync::watch::channel(zeph_core::metrics::MetricsSnapshot::default());
+        let agent = make_agent().with_metrics(tx);
+        let registry = std::sync::Arc::new(zeph_sanitizer::secret_mask::SecretMaskRegistry::new());
+        let result = apply_secret_masking(agent, Some(registry));
+        drop(result);
+        assert!(
+            rx.borrow().secret_masking_enabled,
+            "Some(registry) must attach secret masking and flip the metrics flag"
         );
     }
 }

@@ -809,11 +809,15 @@ impl<C: Channel> Agent<C> {
             .then(|| self.services.skill.active_skill_names.clone())
     }
 
+    #[allow(clippy::too_many_lines)] // unmask-miss telemetry aggregation (#5437 S1) crossed the 100-line limit
     fn prepare_tool_dispatch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
     ) -> ToolDispatchContext {
         let tafc_enabled = self.tool_orchestrator.tafc.enabled;
+        // PAAC secret unmasking (#5437): resolved once per dispatch batch (Arc clone, cheap)
+        // so the closure below doesn't need to re-borrow `self` for every tool call.
+        let secret_registry = self.services.security.secret_registry.clone();
         // When the orchestration scheduler has set a named execution environment for the
         // current task, inject it into every ToolCall so ShellExecutor::resolve_context
         // uses the right env/cwd without the LLM having to supply it.
@@ -828,6 +832,12 @@ impl<C: Channel> Agent<C> {
             .map(|_| uuid::Uuid::new_v4().to_string())
             .collect();
 
+        // S1: unmask-miss telemetry (#5437) — counts string leaves that still carry a
+        // `<SECRET:` prefix after `unmask_json_value`, meaning the model failed to reproduce a
+        // placeholder byte-for-byte. Aggregated across the whole batch and reported once below.
+        let mut unmask_misses = 0usize;
+        let mut unmask_miss_tools: Vec<String> = Vec::new();
+
         let calls: Vec<ToolCall> = tool_calls
             .iter()
             .enumerate()
@@ -838,6 +848,19 @@ impl<C: Channel> Agent<C> {
                     } else {
                         serde_json::Map::new()
                     };
+                // Unmask secret placeholders in tool arguments before dispatch (e.g. the model
+                // echoing a masked value it saw in a prior tool result back into a shell `code`
+                // or HTTP header argument). No-op when secret masking is disabled/empty.
+                if let Some(registry) = secret_registry.as_deref() {
+                    let mut tc_misses = 0usize;
+                    for value in params.values_mut() {
+                        tc_misses += unmask_json_value(value, registry);
+                    }
+                    if tc_misses > 0 {
+                        unmask_misses += tc_misses;
+                        unmask_miss_tools.push(tc.name.to_string());
+                    }
+                }
                 if tafc_enabled && strip_tafc_fields(&mut params, tc.name.as_str()).is_err() {
                     // Model produced only think fields — skip this tool call.
                     return None;
@@ -852,6 +875,17 @@ impl<C: Channel> Agent<C> {
                 })
             })
             .collect();
+
+        if unmask_misses > 0 {
+            tracing::warn!(
+                misses = unmask_misses,
+                tools = ?unmask_miss_tools,
+                "secret placeholder(s) in tool arguments did not resolve — the model likely \
+                 mangled a <SECRET:...> token (whitespace/truncation); the affected tool call(s) \
+                 will run with the literal placeholder text, not the real secret"
+            );
+            self.update_metrics(|m| m.secret_unmask_misses += unmask_misses as u64);
+        }
         // Timestamps filled just before each tier's join_all so audit reflects actual start.
         let tool_started_ats = vec![std::time::Instant::now(); tool_calls.len()];
 
@@ -2463,6 +2497,44 @@ impl<C: Channel> Agent<C> {
     }
 }
 
+/// Recursively unmask PAAC secret placeholders in a JSON value's string leaves, in place.
+///
+/// Applied to tool-call parameters at the dispatch boundary (`prepare_tool_dispatch`) so a
+/// model-emitted placeholder (e.g. one copied verbatim from a prior masked tool result into a
+/// shell `code` or HTTP header argument) resolves to the real secret only at execution time —
+/// never during LLM-facing context assembly. `unmask` is nonce-scoped and passthrough-on-miss,
+/// so a placeholder the model could not have legitimately seen is left untouched (#5437).
+///
+/// Returns the number of string leaves that still contain a `<SECRET:` prefix after unmasking
+/// (S1: unmask-miss telemetry). A non-zero count means the model failed to reproduce a
+/// placeholder byte-for-byte (LLMs routinely normalize/space-break long opaque tokens) — the
+/// tool call proceeds with the literal placeholder text (fail-safe: no leak, but the flow that
+/// depended on the real secret will likely fail). Callers should log a `tracing::warn!` and
+/// increment a metric so operators can detect this class of silent breakage.
+fn unmask_json_value(
+    value: &mut serde_json::Value,
+    registry: &zeph_sanitizer::secret_mask::SecretMaskRegistry,
+) -> usize {
+    match value {
+        serde_json::Value::String(s) => {
+            let unmasked = registry.unmask(s);
+            let still_masked = usize::from(unmasked.contains("<SECRET:"));
+            if unmasked != *s {
+                *s = unmasked;
+            }
+            still_masked
+        }
+        serde_json::Value::Array(arr) => {
+            arr.iter_mut().map(|v| unmask_json_value(v, registry)).sum()
+        }
+        serde_json::Value::Object(map) => map
+            .values_mut()
+            .map(|v| unmask_json_value(v, registry))
+            .sum(),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 0,
+    }
+}
+
 async fn recv_elicitation(
     rx: &mut Option<tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>>,
 ) -> Option<zeph_mcp::ElicitationEvent> {
@@ -3557,6 +3629,149 @@ mod tests {
                 "second call must be skipped once the whole-phase budget is exhausted by the \
                  first call's real elapsed time"
             );
+        }
+    }
+
+    // --- PAAC tool-dispatch unmasking: unmask_json_value (#5437) ---
+
+    mod unmask_json_value_tests {
+        use super::unmask_json_value;
+        use zeph_sanitizer::secret_mask::{SecretCategory, SecretMaskRegistry};
+
+        #[test]
+        fn unmasks_top_level_string() {
+            let registry = SecretMaskRegistry::new();
+            registry.register("KEY", "hunter2password", SecretCategory::Password);
+            let masked = registry.mask("hunter2password");
+            let mut value = serde_json::Value::String(masked);
+            unmask_json_value(&mut value, &registry);
+            assert_eq!(value, serde_json::json!("hunter2password"));
+        }
+
+        #[test]
+        fn unmasks_string_nested_in_object_and_array() {
+            let registry = SecretMaskRegistry::new();
+            registry.register("KEY", "supersecretvalue1", SecretCategory::ApiKey);
+            let masked_placeholder = registry.mask("supersecretvalue1");
+            let mut value = serde_json::json!({
+                "code": format!("curl -H 'Authorization: Bearer {masked_placeholder}'"),
+                "headers": [masked_placeholder.clone(), "plain-value"],
+                "nested": {"token": masked_placeholder},
+            });
+            unmask_json_value(&mut value, &registry);
+            assert!(
+                value["code"]
+                    .as_str()
+                    .unwrap()
+                    .contains("supersecretvalue1")
+            );
+            assert_eq!(value["headers"][0], serde_json::json!("supersecretvalue1"));
+            assert_eq!(value["headers"][1], serde_json::json!("plain-value"));
+            assert_eq!(
+                value["nested"]["token"],
+                serde_json::json!("supersecretvalue1")
+            );
+        }
+
+        /// Placeholder-injection safety (#5437): a model-crafted placeholder that was never
+        /// issued by this registry (wrong/foreign nonce) must be left verbatim — `unmask` is
+        /// nonce-scoped and passthrough-on-miss, so a model cannot forge a placeholder to
+        /// exfiltrate a secret it never legitimately saw.
+        #[test]
+        fn foreign_placeholder_is_left_untouched() {
+            let registry = SecretMaskRegistry::new();
+            registry.register("KEY", "realsecretvalue1", SecretCategory::ApiKey);
+            let forged = "<SECRET:api_key:0000000000000000:0>".to_owned();
+            let mut value = serde_json::Value::String(forged.clone());
+            unmask_json_value(&mut value, &registry);
+            assert_eq!(
+                value,
+                serde_json::Value::String(forged),
+                "a placeholder this registry never issued must pass through unchanged"
+            );
+        }
+
+        #[test]
+        fn non_string_values_are_untouched() {
+            let registry = SecretMaskRegistry::new();
+            registry.register("KEY", "somesecretvalue1", SecretCategory::Generic);
+            let mut value =
+                serde_json::json!({"count": 3, "enabled": true, "ratio": 1.5, "n": null});
+            let before = value.clone();
+            unmask_json_value(&mut value, &registry);
+            assert_eq!(value, before);
+        }
+
+        // --- S1: unmask-miss telemetry (#5437 critique) ---
+
+        #[test]
+        fn mangled_placeholder_returns_a_miss_and_is_left_verbatim() {
+            let registry = SecretMaskRegistry::new();
+            registry.register("KEY", "realsecretvalue1", SecretCategory::ApiKey);
+            let masked = registry.mask("realsecretvalue1");
+            // Simulate an LLM inserting a space into the opaque token — a real, observed
+            // failure mode for long tokens (S1).
+            let mangled = masked.replacen(':', ": ", 1);
+            let mut value = serde_json::Value::String(mangled.clone());
+            let misses = unmask_json_value(&mut value, &registry);
+            assert_eq!(
+                misses, 1,
+                "a mangled placeholder must be reported as a miss"
+            );
+            assert_eq!(
+                value,
+                serde_json::Value::String(mangled),
+                "mangled placeholder is left verbatim (fail-safe, no leak)"
+            );
+        }
+
+        #[test]
+        fn successful_unmask_reports_zero_misses() {
+            let registry = SecretMaskRegistry::new();
+            registry.register("KEY", "realsecretvalue1", SecretCategory::ApiKey);
+            let masked = registry.mask("realsecretvalue1");
+            let mut value = serde_json::Value::String(masked);
+            let misses = unmask_json_value(&mut value, &registry);
+            assert_eq!(misses, 0);
+            assert_eq!(value, serde_json::json!("realsecretvalue1"));
+        }
+
+        #[test]
+        fn miss_count_aggregates_across_nested_structure() {
+            let registry = SecretMaskRegistry::new();
+            registry.register("KEY", "realsecretvalue1", SecretCategory::ApiKey);
+            let masked = registry.mask("realsecretvalue1");
+            let mangled = masked.replacen(':', ": ", 1);
+            let mut value = serde_json::json!({
+                "ok": masked,
+                "nested": {"a": mangled.clone(), "b": mangled},
+                "plain": "no placeholder here",
+            });
+            let misses = unmask_json_value(&mut value, &registry);
+            assert_eq!(
+                misses, 2,
+                "both mangled leaves must be counted, the valid one must not"
+            );
+        }
+
+        // --- secret values containing JSON/regex-special characters ---
+
+        #[test]
+        fn secret_with_json_and_regex_special_chars_roundtrips() {
+            let registry = SecretMaskRegistry::new();
+            let tricky_secret = r#"p@ss"w0rd\n{[(.*+?)]}$^|\}"#;
+            registry.register("KEY", tricky_secret, SecretCategory::Password);
+            let masked = registry.mask(tricky_secret);
+            assert!(!masked.contains(tricky_secret));
+
+            let mut value = serde_json::json!({
+                "code": format!("echo '{masked}'"),
+                "list": [masked.clone()],
+            });
+            let misses = unmask_json_value(&mut value, &registry);
+            assert_eq!(misses, 0);
+            assert!(value["code"].as_str().unwrap().contains(tricky_secret));
+            assert_eq!(value["list"][0], serde_json::json!(tricky_secret));
         }
     }
 }

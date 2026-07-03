@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        71,
-        "MIGRATIONS registry must contain all 71 sequential steps"
+        73,
+        "MIGRATIONS registry must contain all 73 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 71);
+    assert_eq!(MIGRATIONS.len(), 73);
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–71).
+    // Names must follow the documented step order (steps 1–73).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1757,6 +1757,8 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_orchestration_asset_sensitivity",
         "migrate_session_persistence_config",
         "migrate_serve_config",
+        "migrate_nli_config",
+        "migrate_secret_masking_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -3111,6 +3113,98 @@ fn step_71_idempotent_on_own_output() {
     let first = migrate_serve_config(src).expect("first migrate");
     assert_eq!(first.changed_count, 1);
     let second = migrate_serve_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+// ── migrate_nli_config tests (step 72, #5438) ────────────────────────────
+
+#[test]
+fn step_72_adds_nli_block_when_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_nli_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# [security.content_isolation.nli]"));
+    assert!(result.output.contains("# enabled = false"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["security.content_isolation.nli".to_owned()]
+    );
+}
+
+#[test]
+fn step_72_noop_when_nli_section_already_active() {
+    let src = "[security.content_isolation.nli]\nenabled = true\n";
+    let result = migrate_nli_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_72_noop_when_nli_comment_already_present() {
+    let src = "# [security.content_isolation.nli]\n# enabled = false\n";
+    let result = migrate_nli_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_72_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let first = migrate_nli_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_nli_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+// ── migrate_secret_masking_config tests (step 73, #5437) ─────────────────
+
+#[test]
+fn step_73_adds_secret_masking_block_when_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_secret_masking_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result
+            .output
+            .contains("# [security.content_isolation.secret_masking]")
+    );
+    assert!(result.output.contains("# enabled = false"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["security.content_isolation.secret_masking".to_owned()]
+    );
+}
+
+#[test]
+fn step_73_noop_when_secret_masking_section_already_active() {
+    let src = "[security.content_isolation.secret_masking]\nenabled = true\n";
+    let result = migrate_secret_masking_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_73_noop_when_secret_masking_comment_already_present() {
+    let src = "# [security.content_isolation.secret_masking]\n# enabled = false\n";
+    let result = migrate_secret_masking_config(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_73_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let first = migrate_secret_masking_config(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_secret_masking_config(&first.output).expect("second migrate");
     assert_eq!(second.changed_count, 0, "second run must be a no-op");
     assert_eq!(
         second.output, first.output,

@@ -597,6 +597,106 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   private `store_impl` helper parameterized by a `StoreExtra` enum carrying each variant's
   differing payload fields (tool metadata, category, or none); the three public methods'
   signatures are unchanged.
+- `fix(security)`: wire the PAAC `SecretMaskRegistry` (#5437) — fully implemented and
+  unit-tested but never constructed at runtime, so vault-resolved secrets (API keys, tokens,
+  database URLs) reached third-party LLM providers in plaintext whenever their value appeared in
+  message content. `SecretResolver::resolve_secrets_masked` (new sibling of `resolve_secrets`)
+  registers every vault-resolved value with a shared `Arc<SecretMaskRegistry>` created once in
+  `AppBuilder::new`, gated on `security.content_isolation.secret_masking.enabled` (default
+  `false`). The registry is attached to the agent via `with_secret_registry`/
+  `apply_secret_masking` at all three assembly sites (`runner.rs`, `acp.rs`, `daemon.rs`).
+  **Masking is a structural choke point at the provider boundary, not an enumerated set of call
+  sites.** `zeph-llm` gained a new `masking` module: `OutboundMasker` (a minimal,
+  sanitizer-agnostic trait — `zeph-llm` cannot depend on `zeph-sanitizer`) and `MaskedProvider`,
+  a wrapper implementing `LlmProvider` that masks message text before delegating every
+  `chat`/`chat_with_tools`/`chat_stream`/`chat_with_extras`/`debug_request_json` call to the
+  inner provider. `AnyProvider` gained a `Masked(Box<MaskedProvider>)` variant and a
+  `.masked(masker)` constructor; `SecretMaskRegistry` implements `OutboundMasker` directly
+  (`zeph-sanitizer`). The wrapper is applied once, at construction, inside
+  `zeph_core::provider_factory::build_provider_from_entry` (the single leaf that constructs
+  every `AnyProvider` variant — Router/Triage/CoE pool providers all bottom out here too) and at
+  `build_provider_for_switch` (the runtime `/provider`-switch and background-provider-resolution
+  path). `Agent::with_secret_registry` additionally retroactively wraps every already-set
+  `AnyProvider` field (primary, embedding, summary, judge, probe, compress, planner, verify,
+  orchestrator, predicate providers) so bootstrap-time providers built before the registry was
+  attached are covered too — this closes gaps the previous per-call-site approach missed
+  entirely: the `ShadowSentinel` safety probe (`LlmSafetyProbe`, live via
+  `ShadowSentinel::check_tool_call` → `ProbeGate` in the tool-dispatch chain, whose prompts embed
+  tool arguments *after* they have already been unmasked back to real values for execution — the
+  most severe of the newly-closed gaps), the MARCH self-check `SelfCheckPipeline` (`quality/`),
+  the causal-IPI `TurnCausalAnalyzer` and NLI sanitizer's dedicated probe providers, and
+  `GoalSupervisor`/`shutdown.rs`'s session-summary provider (both resolved via
+  `Agent::resolve_background_provider`, now registry-aware) — all previously held provider
+  handles outside the enumerated dispatch call sites and leaked real secret values on every
+  outbound call regardless of the round-2 per-call-site masking. **Correction (post-review)**:
+  the structural rework initially shipped `zeph_llm::masking::mask_messages` cloning every
+  `Message` in the outbound slice unconditionally before checking whether anything needed
+  masking — the `would_mask` cheap pre-scan this paragraph originally claimed was wired in was
+  not actually called from `mask_messages`, so every masked-provider dispatch deep-cloned the
+  full conversation history even when nothing matched, contradicting the mandatory Await
+  Discipline hot-path rule. Fixed: `mask_messages` now runs a non-cloning pre-scan over borrowed
+  text first (via `OutboundMasker::mask(text).is_some()`, which for `SecretMaskRegistry` starts
+  with `would_mask` internally) and returns `None` immediately when nothing matches, before any
+  `Message`/`MessagePart` clone. `prepare_chat_debug_dump` (`llm_dispatch.rs`) had a related
+  bug — it computed the masked debug-dump view unconditionally even when no debug dumper was
+  attached (the common case); the computation is now lazy inside the `debug_dumper.is_some()`
+  branch. Masking now also covers `MessagePart::ToolOutput.body`/`ToolResult.content`/
+  `Compaction.summary` (previously only the five plain-text part variants were covered) while
+  never touching `ThinkingBlock`/`RedactedThinkingBlock` (would invalidate signature
+  verification) or `ToolUse.input`. The chat debug dump now reflects the actual masked wire
+  payload (`debug_request_json` masks before serializing; previously it always serialized the
+  unmasked history, defeating the point of inspecting it). Placeholders are resolved back to
+  real values only at the tool-dispatch boundary
+  (`prepare_tool_dispatch`/`unmask_json_value`, `crates/zeph-core`), never during LLM-facing
+  context assembly — `unmask` is nonce-scoped and passthrough-on-miss, so a model-crafted fake
+  placeholder cannot be used to exfiltrate a secret it never legitimately saw. A tool argument
+  containing an unresolved `<SECRET:` placeholder (the model failed to reproduce the opaque
+  token byte-for-byte) is now logged and counted via a new `secret_unmask_misses` metric instead
+  of failing silently. Public identifiers (Gonka wallet address, Discord application ID) are no
+  longer registered as secrets. New `[security.content_isolation.secret_masking]` config block,
+  `--migrate-config` step 73, and `--init` wizard prompt. **Correction**: the provider-boundary
+  wrapper covers every `chat*` *call site* by construction, but does not by itself make an
+  unmasked provider *assignment* impossible — `self.provider` can still be reassigned later
+  (runtime provider switches) through a path that builds a fresh, unwrapped provider. Two rounds
+  of this fix each missed one such reassignment site; the last was the ACP
+  `set_session_config_option` provider override (`Agent::apply_provider_override`), which set
+  `self.provider` directly from an `Arc<RwLock<Option<AnyProvider>>>` slot populated by
+  `zeph-acp` without ever touching the secret registry. Fixed by introducing
+  `Agent::set_provider` — the single guarded path every `self.provider` reassignment after
+  construction now goes through (both `apply_provider_override` and the CLI `/provider` switch
+  handler) — which re-wraps the incoming provider if masking is enabled and the value isn't
+  already `AnyProvider::Masked`, and `debug_assert!`s the invariant on every call so a future
+  bypass fails a debug/test build instead of silently shipping unmasked in production. A second
+  leak in the same area was found while verifying the fix: `src/acp.rs`'s
+  `build_acp_provider_factory` constructs raw `AnyProvider` variants directly (a separate path
+  from `provider_factory::build_provider_from_entry`), and its output is consumed not only via
+  the now-guarded `provider_override` slot but also directly by the ACP session-title-generation
+  background task, which calls `.chat()` on the factory's output without ever touching
+  `provider_override` — so `set_provider`'s guard alone did not cover it. Fixed at the source:
+  `build_acp_provider_factory` now takes the secret registry and wraps every provider it
+  produces via `.masked(...)` before returning it, covering both consumers structurally.
+- `fix(security)`: wire the SONAR `NliSanitizer` entailment-based injection detection stage
+  (#5438) — fully implemented and unit-tested but never constructed at runtime, so deployments
+  that set `[security.content_isolation.nli] enabled = true` had no active NLI stage and no
+  indication of the gap (fail-open-by-design makes it invisible at runtime). `apply_nli_sanitizer`/
+  `apply_nli_sanitizer_with_cfg` (`src/agent_setup.rs`) resolve the configured
+  `[[llm.providers]]` entry (falling back to the session's primary provider) and attach the
+  sanitizer via `Agent::with_nli_sanitizer` at all three assembly sites. Observe-only: a flagged
+  verdict from `sanitize_tool_output` (tool-output boundary) or `pre_process_security`
+  (user-input boundary) raises a `SecurityEventCategory::InjectionFlag` event and increments
+  `nli_flags`/`nli_checks` metrics but never blocks content, matching the module's
+  fail-open/circuit-breaker contract. Deduplicated `zeph_sanitizer::nli::NliConfig` with the
+  existing `zeph_config::NliConfig` (mirroring the `causal_ipi` precedent) instead of keeping two
+  parallel structs. New `[security.content_isolation.nli]` config block, `--migrate-config` step
+  72, and `--init` wizard prompt. Also fixed a doc-comment path mismatch on `SecretMaskingConfig`
+  (`[security.secret_masking]` → the actual `[security.content_isolation.secret_masking]`).
+  **LLM Serialization Gate live-verified**: a live session against real Ollama and OpenAI
+  providers confirmed no raw secret ever reaches an LLM request, a masked round-trip completes
+  normally, and a tool call needing a real secret is correctly unmasked at the execution boundary;
+  NLI injection detection fires observably without blocking a turn. One scenario — masking
+  continuity across an ACP mid-session model switch — was inconclusive in that live pass (no leak
+  observed either way; the switch itself did not visibly take effect on the immediately-following
+  turn in the test harness) and is tracked as a follow-up (#5531).
 - `fix(session)`: two `init_session_sink`/resume hydration bugs found during code review of
   PR #5454 (default CLI continuation hydration fix). `init_session_sink` (`src/runner.rs`)
   resolved whether a session was already linked to the conversation via

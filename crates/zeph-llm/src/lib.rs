@@ -91,6 +91,7 @@ pub mod gemini;
 #[cfg(feature = "gonka")]
 pub mod gonka;
 pub mod http;
+pub mod masking;
 #[cfg(any(test, feature = "testing"))]
 pub mod mock;
 pub mod model_cache;
@@ -113,6 +114,7 @@ pub use classifier::metrics::{ClassifierMetrics, ClassifierMetricsSnapshot, Task
 pub use compatible::CompatibleConfig;
 pub use error::LlmError;
 pub use extractor::Extractor;
+pub use masking::{MaskedProvider, OutboundMasker, mask_messages};
 pub use openai::{CompletionTokensParam, OpenAiConfig};
 pub use provider::{ChatExtras, ChatStream, LlmProvider, StreamChunk, ThinkingBlock};
 pub use provider_dyn::LlmProviderDyn;

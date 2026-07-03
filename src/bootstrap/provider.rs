@@ -126,20 +126,20 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
         // fall back to the first non-embed provider
         pool.iter()
             .find(|e| !e.embed)
-            .and_then(|e| build_provider_from_entry(e, config).ok())
+            .and_then(|e| build_provider_from_entry(e, config, None).ok())
     } else {
         pool.iter()
             .find(|e| e.effective_name() == coe_cfg.secondary_provider.as_str())
-            .and_then(|e| build_provider_from_entry(e, config).ok())
+            .and_then(|e| build_provider_from_entry(e, config, None).ok())
     };
     let embed = if coe_cfg.embedding_provider.is_empty() {
         pool.iter()
             .find(|e| e.embed)
-            .and_then(|e| build_provider_from_entry(e, config).ok())
+            .and_then(|e| build_provider_from_entry(e, config, None).ok())
     } else {
         pool.iter()
             .find(|e| e.effective_name() == coe_cfg.embedding_provider.as_str())
-            .and_then(|e| build_provider_from_entry(e, config).ok())
+            .and_then(|e| build_provider_from_entry(e, config, None).ok())
     };
     if let (Some(sec), Some(emb)) = (secondary, embed) {
         let intra = validate_coe_threshold("intra_threshold", coe_cfg.intra_threshold);
@@ -216,7 +216,7 @@ pub fn create_named_provider(
         .ok_or_else(|| {
             BootstrapError::Provider(format!("provider '{name}' not found in [[llm.providers]]"))
         })?;
-    build_provider_from_entry(entry, config)
+    build_provider_from_entry(entry, config, None)
 }
 
 /// Resolve the embedding provider for the code indexer and retriever.
@@ -283,7 +283,7 @@ pub fn create_summary_provider(
         .iter()
         .find(|e| e.effective_name() == model_spec || e.provider_type.as_str() == model_spec)
     {
-        return build_provider_from_entry(entry, config);
+        return build_provider_from_entry(entry, config, None);
     }
 
     // Handle `type/model` shorthand: override the model on a matching provider.
@@ -299,7 +299,7 @@ pub fn create_summary_provider(
         cloned.model = Some(model.to_owned());
         // Cap summary max_tokens at 4096 — summaries are short.
         cloned.max_tokens = Some(cloned.max_tokens.unwrap_or(4096).min(4096));
-        return build_provider_from_entry(&cloned, config);
+        return build_provider_from_entry(&cloned, config, None);
     }
 
     Err(BootstrapError::Provider(format!(
@@ -409,7 +409,7 @@ fn create_provider_from_pool(config: &Config) -> Result<AnyProvider, BootstrapEr
                 .iter()
                 .find(|e| e.effective_name() == bandit_cfg.embedding_provider.as_str())
             {
-                match build_provider_from_entry(entry, config) {
+                match build_provider_from_entry(entry, config, None) {
                     Ok(p) => Some(p),
                     Err(e) => {
                         tracing::warn!(
@@ -455,7 +455,7 @@ fn build_all_pool_providers(
         if entry.embed {
             continue;
         }
-        match build_provider_from_entry(entry, config) {
+        match build_provider_from_entry(entry, config, None) {
             Ok(p) => providers.push(p),
             Err(e) => {
                 tracing::warn!(
@@ -578,7 +578,7 @@ pub(crate) fn build_single_provider_from_pool(
         .or_else(|| pool.iter().position(|e| !e.embed))
         .unwrap_or(0);
     let primary = &pool[primary_idx];
-    match build_provider_from_entry(primary, config) {
+    match build_provider_from_entry(primary, config, None) {
         Ok(p) => Ok(p),
         Err(e) => {
             let name = primary.name.as_deref().unwrap_or("primary");
@@ -587,7 +587,7 @@ pub(crate) fn build_single_provider_from_pool(
                 if i == primary_idx {
                     continue;
                 }
-                match build_provider_from_entry(entry, config) {
+                match build_provider_from_entry(entry, config, None) {
                     Ok(p) => return Ok(p),
                     Err(e2) => {
                         tracing::warn!(

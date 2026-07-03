@@ -414,3 +414,9 @@ fn anomaly_detector_5_of_20_errors_no_critical_alert() {
         "5/20 errors must not trigger any alert, got: {result:?}"
     );
 }
+
+// PAAC outbound secret masking (#5437) is now a structural choke point at the provider boundary
+// (`AnyProvider::masked`/`MaskedProvider` in `zeph-llm`), not an `Agent` method — see
+// `crates/zeph-llm/src/masking.rs`'s test module for the masking-behavior coverage that used to
+// live here (flat content, structured-part masking + `rebuild_content` resync, no-match fast
+// path, `ToolResult`/`ToolOutput` part coverage, `ThinkingBlock` exclusion).

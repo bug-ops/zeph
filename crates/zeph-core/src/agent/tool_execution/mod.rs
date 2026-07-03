@@ -208,7 +208,9 @@ impl<C: Channel> Agent<C> {
             parts: vec![],
             metadata: MessageMetadata::default(),
         }];
-
+        // PAAC secret masking (#5437) is structural at the provider boundary — whichever
+        // provider `summary_or_primary_provider()` resolves to masks registered secrets from
+        // `messages` transparently, whether that's the primary or a dedicated summary provider.
         let llm_timeout = std::time::Duration::from_secs(self.runtime.config.timeouts.llm_seconds);
         let result = tokio::time::timeout(
             llm_timeout,

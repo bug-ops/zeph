@@ -2584,6 +2584,18 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     }
                 }
             };
+            // #5437 round-3: ShadowSentinel's LlmSafetyProbe is a live outbound `.chat()` call
+            // site that sits downstream of `prepare_tool_dispatch`'s `unmask_json_value` —
+            // by the time a high-risk tool call reaches the probe, its args have already been
+            // unmasked back to real secret values (needed for tool execution), so the probe's
+            // own prompt embeds them verbatim. Wrapping its provider here closes that leak
+            // structurally: every `.chat()` call this probe makes re-masks before the request
+            // leaves the process, regardless of what already-unmasked content it was given.
+            let probe_provider = match app.secret_registry() {
+                Some(registry) => probe_provider
+                    .masked(registry as std::sync::Arc<dyn zeph_llm::masking::OutboundMasker>),
+                None => probe_provider,
+            };
             let llm_probe = zeph_core::agent::shadow_sentinel::LlmSafetyProbe::new(
                 std::sync::Arc::new(probe_provider),
                 sentinel_cfg.probe_timeout_ms,
@@ -3077,7 +3089,18 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_pii_classifier(agent, config);
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_ner_classifier(agent, config);
-    let agent = agent_setup::apply_causal_analyzer(agent, provider.clone(), config);
+    let agent = agent_setup::apply_causal_analyzer(
+        agent,
+        provider.clone(),
+        config,
+        app.secret_registry().as_ref(),
+    );
+    let agent = agent_setup::apply_nli_sanitizer(
+        agent,
+        provider.clone(),
+        config,
+        app.secret_registry().as_ref(),
+    );
     let agent = agent_setup::apply_vigil(agent, &config.security.vigil);
 
     let (_index_watcher, index_progress_rx) = if exec_mode.bare {
@@ -3240,6 +3263,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
+    // #5437 round-3: apply_secret_masking must run after every with_*_provider call above —
+    // it retroactively wraps each already-set AnyProvider field via AnyProvider::masked so
+    // masking is structural, not per-call-site. judge_provider is the last provider setter in
+    // this chain, so secret masking is wired here, not earlier alongside the other classifiers.
+    let agent = agent_setup::apply_secret_masking(agent, app.secret_registry());
     let agent = if let Some(fc) = app.build_feedback_classifier(&provider) {
         agent.with_llm_classifier(fc)
     } else {
@@ -3749,10 +3777,20 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     };
 
     let agent = {
+        // #5437 round-3: SelfCheckPipeline clones `provider` for its own Proposer/Checker
+        // roles rather than reading it off the (already-masked) Agent, so it needs its own
+        // explicit wrap here — it is not covered by `with_secret_registry`'s retroactive
+        // wrap of the Agent's own provider fields.
+        let quality_provider = match app.secret_registry() {
+            Some(registry) => provider
+                .clone()
+                .masked(registry as std::sync::Arc<dyn zeph_llm::masking::OutboundMasker>),
+            None => provider.clone(),
+        };
         let pipeline = if config.quality.self_check {
             zeph_core::quality::SelfCheckPipeline::build(
                 &zeph_core::quality::QualityConfig::from(&config.quality),
-                &provider,
+                &quality_provider,
             )
             .map_err(|e| anyhow::anyhow!("self-check pipeline init failed: {e}"))
             .ok()

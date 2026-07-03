@@ -131,6 +131,9 @@ struct SharedAgentDeps {
     classifiers_config: zeph_core::config::ClassifiersConfig,
     causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig,
     causal_provider: Option<zeph_llm::any::AnyProvider>,
+    nli_config: zeph_sanitizer::nli::NliConfig,
+    nli_provider: Option<zeph_llm::any::AnyProvider>,
+    secret_registry: Option<std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
     vigil_config: zeph_config::VigilConfig,
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
@@ -643,6 +646,28 @@ async fn build_acp_deps(
                     None
                 }
             }),
+        nli_config: config.security.content_isolation.nli.clone(),
+        nli_provider: config
+            .security
+            .content_isolation
+            .nli
+            .provider
+            .as_non_empty()
+            .and_then(|name| match crate::bootstrap::create_named_provider(name, config) {
+                Ok(p) => {
+                    tracing::info!(provider = %name, "NLI dedicated provider configured (acp)");
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %name,
+                        error = %e,
+                        "NLI provider resolution failed, falling back to primary (acp)"
+                    );
+                    None
+                }
+            }),
+        secret_registry: app.secret_registry(),
         vigil_config: config.security.vigil.clone(),
         probe_provider: app.build_probe_provider(),
         planner_provider: app.build_planner_provider(),
@@ -689,7 +714,7 @@ async fn build_acp_deps(
             )
         },
         sqlite_path: crate::db_url::resolve_db_url(config).to_owned(),
-        acp_provider_factory: Some(build_acp_provider_factory(config)),
+        acp_provider_factory: Some(build_acp_provider_factory(config, app.secret_registry())),
         acp_project_rules,
         acp_additional_directories: config.acp.additional_directories.clone(),
         acp_auth_methods: config.acp.auth_methods.clone(),
@@ -761,6 +786,9 @@ async fn spawn_acp_agent(
     let classifiers_config = d.classifiers_config.clone();
     let causal_ipi_config = d.causal_ipi_config.clone();
     let causal_provider = d.causal_provider.clone();
+    let nli_config = d.nli_config.clone();
+    let nli_provider = d.nli_provider.clone();
+    let secret_registry = d.secret_registry.clone();
     let vigil_config = d.vigil_config.clone();
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
@@ -1146,7 +1174,16 @@ async fn spawn_acp_agent(
         provider.clone(),
         causal_provider,
         &causal_ipi_config,
+        secret_registry.as_ref(),
     );
+    agent = agent_setup::apply_nli_sanitizer_with_cfg(
+        agent,
+        provider.clone(),
+        nli_provider,
+        &nli_config,
+        secret_registry.as_ref(),
+    );
+    agent = agent_setup::apply_secret_masking(agent, secret_registry);
     agent = agent_setup::apply_vigil(agent, &vigil_config);
 
     if debug_config.enabled {
@@ -1304,9 +1341,19 @@ async fn warm_model_caches(
 ///
 /// Each available model key is `"{provider_name}:{model}"`.
 /// The factory creates a provider by parsing that key and overriding the model in a clone.
+///
+/// `secret_registry`, when `Some`, wraps every provider this factory produces via
+/// [`zeph_llm::any::AnyProvider::masked`] (#5437) — this is the single construction point for
+/// every ACP-switched/primed provider (`prime_provider_override`, `/model` switch, session-title
+/// generation), so wrapping here structurally covers all of them, including the session-title
+/// background task that dispatches directly on the factory's output and never touches the
+/// `provider_override` slot that `Agent::apply_provider_override`/`set_provider` guard.
 #[cfg(feature = "acp")]
 #[allow(clippy::too_many_lines)]
-fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::ProviderFactory {
+fn build_acp_provider_factory(
+    config: &zeph_core::config::Config,
+    secret_registry: Option<std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+) -> zeph_acp::ProviderFactory {
     // Collect snapshots for providers that have secrets already resolved.
     #[derive(Clone)]
     enum ProviderSnapshot {
@@ -1396,8 +1443,19 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
         }
     }
 
+    let masker: Option<std::sync::Arc<dyn zeph_llm::masking::OutboundMasker>> =
+        secret_registry.map(|r| r as std::sync::Arc<dyn zeph_llm::masking::OutboundMasker>);
     let snapshots = std::sync::Arc::new(snapshots);
     std::sync::Arc::new(move |key: &str| {
+        // #5437: wrap every provider this factory produces so it's masked regardless of which
+        // consumer dispatches on it (`provider_override` slot or the session-title generation
+        // task, which calls `.chat()` directly on the factory's output).
+        let wrap = |p: zeph_llm::any::AnyProvider| -> zeph_llm::any::AnyProvider {
+            match &masker {
+                Some(m) => p.masked(std::sync::Arc::clone(m)),
+                None => p,
+            }
+        };
         let (provider_name, model) = key.split_once(':')?;
         let model = model.to_owned();
         for snapshot in snapshots.as_ref() {
@@ -1411,19 +1469,19 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                         embed.clone(),
                     );
                     p.set_context_window(0);
-                    return Some(zeph_llm::any::AnyProvider::Ollama(p));
+                    return Some(wrap(zeph_llm::any::AnyProvider::Ollama(p)));
                 }
                 ProviderSnapshot::Claude {
                     api_key,
                     max_tokens,
                 } if provider_name == "claude" => {
-                    return Some(zeph_llm::any::AnyProvider::Claude(
+                    return Some(wrap(zeph_llm::any::AnyProvider::Claude(
                         zeph_llm::claude::ClaudeProvider::new(
                             api_key.clone(),
                             model.clone(),
                             *max_tokens,
                         ),
-                    ));
+                    )));
                 }
                 ProviderSnapshot::OpenAi {
                     api_key,
@@ -1432,7 +1490,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                     embed,
                     reasoning_effort,
                 } if provider_name == "openai" => {
-                    return Some(zeph_llm::any::AnyProvider::OpenAi(
+                    return Some(wrap(zeph_llm::any::AnyProvider::OpenAi(
                         zeph_llm::openai::OpenAiProvider::new(zeph_llm::openai::OpenAiConfig {
                             api_key: api_key.clone(),
                             base_url: base_url.clone(),
@@ -1443,7 +1501,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                             context_window: None,
                             completion_tokens_param: None,
                         }),
-                    ));
+                    )));
                 }
                 ProviderSnapshot::Compatible {
                     api_key,
@@ -1452,7 +1510,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                     embed,
                     name,
                 } if provider_name == name => {
-                    return Some(zeph_llm::any::AnyProvider::Compatible(
+                    return Some(wrap(zeph_llm::any::AnyProvider::Compatible(
                         zeph_llm::compatible::CompatibleProvider::new(
                             zeph_llm::compatible::CompatibleConfig {
                                 provider_name: name.clone(),
@@ -1464,7 +1522,7 @@ fn build_acp_provider_factory(config: &zeph_core::config::Config) -> zeph_acp::P
                                 completion_tokens_param: None,
                             },
                         ),
-                    ));
+                    )));
                 }
                 _ => {}
             }
@@ -1649,7 +1707,10 @@ pub(crate) async fn run_acp_http_server(
         max_sessions: app.config().acp.max_sessions,
         session_idle_timeout_secs: app.config().acp.session_idle_timeout_secs,
         permission_file: app.config().acp.permission_file.clone(),
-        provider_factory: Some(build_acp_provider_factory(app.config())),
+        provider_factory: Some(build_acp_provider_factory(
+            app.config(),
+            app.secret_registry(),
+        )),
         available_models: std::sync::Arc::new(parking_lot::RwLock::new(
             if app.config().acp.available_models.is_empty() {
                 discover_models_from_config(app.config()).await
@@ -1824,6 +1885,48 @@ mod tests {
         std::env::set_current_dir(orig).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], skill_file);
+    }
+
+    /// #5437 (S1, third recurrence): `build_acp_provider_factory` constructs raw `AnyProvider`
+    /// variants directly (not via `provider_factory::build_provider_from_entry`), and its output
+    /// is consumed both via the `provider_override` slot (already guarded by
+    /// `Agent::set_provider`) and directly by the ACP session-title generation background task,
+    /// which never touches that slot. Wrapping here is the single point that covers both.
+    #[test]
+    fn build_acp_provider_factory_masks_when_registry_present() {
+        let mut config = zeph_core::config::Config::default();
+        config.llm.providers = vec![zeph_core::config::ProviderEntry {
+            provider_type: zeph_core::config::ProviderKind::Ollama,
+            name: Some("ollama".into()),
+            model: Some("qwen3:8b".into()),
+            ..zeph_core::config::ProviderEntry::default()
+        }];
+        let registry = std::sync::Arc::new(zeph_sanitizer::secret_mask::SecretMaskRegistry::new());
+
+        let factory = build_acp_provider_factory(&config, Some(std::sync::Arc::clone(&registry)));
+        let provider = factory("ollama:qwen3:8b").expect("factory must resolve a known model key");
+        assert!(
+            matches!(provider, zeph_llm::any::AnyProvider::Masked(_)),
+            "factory output must be wrapped when a secret registry is supplied"
+        );
+    }
+
+    #[test]
+    fn build_acp_provider_factory_unmasked_when_registry_absent() {
+        let mut config = zeph_core::config::Config::default();
+        config.llm.providers = vec![zeph_core::config::ProviderEntry {
+            provider_type: zeph_core::config::ProviderKind::Ollama,
+            name: Some("ollama".into()),
+            model: Some("qwen3:8b".into()),
+            ..zeph_core::config::ProviderEntry::default()
+        }];
+
+        let factory = build_acp_provider_factory(&config, None);
+        let provider = factory("ollama:qwen3:8b").expect("factory must resolve a known model key");
+        assert!(
+            !matches!(provider, zeph_llm::any::AnyProvider::Masked(_)),
+            "no registry supplied — factory output must be a plain passthrough"
+        );
     }
 
     #[test]

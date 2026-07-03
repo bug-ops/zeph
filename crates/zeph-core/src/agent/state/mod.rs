@@ -367,6 +367,11 @@ pub(crate) struct SecurityState {
     pub(crate) memory_validator: zeph_sanitizer::memory_validation::MemoryWriteValidator,
     /// LLM-based prompt injection pre-screener (opt-in).
     pub(crate) guardrail: Option<zeph_sanitizer::guardrail::GuardrailFilter>,
+    /// SONAR NLI entailment-based injection detection stage (opt-in, observe-only).
+    pub(crate) nli_sanitizer: Option<zeph_sanitizer::nli::NliSanitizer>,
+    /// PAAC secret placeholder masking registry (opt-in). Shared with the bootstrap layer so
+    /// vault-resolved secrets registered during config load are masked at the LLM boundary.
+    pub(crate) secret_registry: Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
     /// Post-LLM response verification layer.
     pub(crate) response_verifier: zeph_sanitizer::response_verifier::ResponseVerifier,
     /// Temporal causal IPI analyzer (opt-in, disabled when `None`).

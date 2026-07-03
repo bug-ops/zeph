@@ -181,16 +181,19 @@ impl<C: Channel> super::Agent<C> {
                 .find(|e| e.name.as_deref() == Some(name)),
             self.runtime.providers.provider_config_snapshot.as_ref(),
         ) {
-            crate::provider_factory::build_provider_for_switch(entry, snapshot).unwrap_or_else(
-                |e| {
-                    tracing::warn!(
-                        provider = name,
-                        error = %e,
-                        "autoDream: failed to build consolidation_provider, falling back"
-                    );
-                    self.provider.clone()
-                },
+            crate::provider_factory::build_provider_for_switch(
+                entry,
+                snapshot,
+                self.services.security.secret_registry.as_ref(),
             )
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    provider = name,
+                    error = %e,
+                    "autoDream: failed to build consolidation_provider, falling back"
+                );
+                self.provider.clone()
+            })
         } else {
             self.provider.clone()
         }

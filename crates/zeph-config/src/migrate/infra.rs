@@ -621,3 +621,79 @@ pub fn migrate_durable_config(toml_src: &str) -> Result<MigrationResult, Migrate
         sections_changed: vec!["durable".to_owned()],
     })
 }
+
+/// Adds a commented-out `[security.content_isolation.nli]` section to configs that predate the
+/// SONAR NLI entailment check stage (#5438). Idempotent: no-op when the real or commented
+/// `[security.content_isolation.nli]` header is already present, so running `--migrate-config`
+/// twice does not duplicate it. Existing configs gain the section as comments (no behavior
+/// change — `enabled = false`).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_nli_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let commented_present = toml_src
+        .lines()
+        .any(|l| l.trim() == "# [security.content_isolation.nli]");
+    if section_header_present(toml_src, "security.content_isolation.nli") || commented_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let _doc = toml_src.parse::<DocumentMut>()?;
+
+    let block = "\n# SONAR NLI entailment check: probabilistic injection detection, observe-only\n\
+         # (never blocks). Complements the regex sanitizer above (#5438). Opt-in, default-off.\n\
+         # [security.content_isolation.nli]\n\
+         # enabled = false\n\
+         # provider = \"\"\n\
+         # threshold = 0.75\n\
+         # timeout_ms = 5000\n\
+         # max_content_len = 2048\n";
+    let output = format!("{}{}", toml_src.trim_end(), block);
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["security.content_isolation.nli".to_owned()],
+    })
+}
+
+/// Adds a commented-out `[security.content_isolation.secret_masking]` section to configs that
+/// predate the PAAC secret placeholder masking registry (#5437). Idempotent: no-op when the
+/// real or commented `[security.content_isolation.secret_masking]` header is already present.
+/// Existing configs gain the section as comments (no behavior change — `enabled = false`).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_secret_masking_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let commented_present = toml_src
+        .lines()
+        .any(|l| l.trim() == "# [security.content_isolation.secret_masking]");
+    if section_header_present(toml_src, "security.content_isolation.secret_masking")
+        || commented_present
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let _doc = toml_src.parse::<DocumentMut>()?;
+
+    let block = "\n# PAAC secret placeholder masking: substitutes vault-resolved secrets with opaque\n\
+         # per-session placeholders before outbound LLM calls (#5437). Opt-in, default-off.\n\
+         # [security.content_isolation.secret_masking]\n\
+         # enabled = false\n\
+         # min_secret_len = 8\n";
+    let output = format!("{}{}", toml_src.trim_end(), block);
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["security.content_isolation.secret_masking".to_owned()],
+    })
+}

@@ -163,6 +163,12 @@ pub(crate) struct WizardState {
     pub(crate) guardrail_model: String,
     pub(crate) guardrail_action: String,
     pub(crate) guardrail_timeout_ms: u64,
+    /// SONAR NLI entailment check stage (#5438).
+    pub(crate) nli_enabled: bool,
+    /// Provider name from `[[llm.providers]]` for NLI inference; empty = primary provider.
+    pub(crate) nli_provider: String,
+    /// PAAC secret placeholder masking registry (#5437).
+    pub(crate) secret_masking_enabled: bool,
     #[cfg(feature = "classifiers")]
     pub(crate) classifiers_enabled: bool,
     #[cfg(feature = "classifiers")]
@@ -423,6 +429,9 @@ impl Default for WizardState {
             guardrail_model: "llama-guard-3:1b".to_owned(),
             guardrail_action: "block".to_owned(),
             guardrail_timeout_ms: 500,
+            nli_enabled: false,
+            nli_provider: String::new(),
+            secret_masking_enabled: false,
             #[cfg(feature = "classifiers")]
             classifiers_enabled: false,
             #[cfg(feature = "classifiers")]
@@ -1141,6 +1150,14 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             _ => zeph_sanitizer::guardrail::GuardrailAction::Block,
         };
         config.security.guardrail.timeout_ms = state.guardrail_timeout_ms;
+    }
+    if state.nli_enabled {
+        config.security.content_isolation.nli.enabled = true;
+        config.security.content_isolation.nli.provider =
+            zeph_config::ProviderName::new(state.nli_provider.as_str());
+    }
+    if state.secret_masking_enabled {
+        config.security.content_isolation.secret_masking.enabled = true;
     }
     {
         config.tools.policy.enabled = state.policy_enforcer_enabled;
