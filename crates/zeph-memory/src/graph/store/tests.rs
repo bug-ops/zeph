@@ -3760,6 +3760,67 @@ async fn qdrant_point_ids_for_entities_times_out_on_pool_starvation() {
     );
 }
 
+// ── Regression: #5522 hot-path write timeouts ───────────────────────────────
+
+/// Regression test for #5522: `record_edge_retrieval` must return
+/// `MemoryError::Timeout` instead of hanging when its pool has no idle connection
+/// available past the method's internal 500ms deadline, since it is called
+/// unconditionally at the end of `graph_recall_astar` on the hot recall path.
+///
+/// Mirrors `qdrant_point_ids_for_entities_times_out_on_pool_starvation`'s
+/// single-connection pool-starvation setup.
+#[tokio::test]
+async fn record_edge_retrieval_times_out_on_pool_starvation() {
+    let store = SqliteStore::with_pool_size(":memory:", 1).await.unwrap();
+    let gs = GraphStore::new(store.pool().clone());
+
+    let conn = store.pool().acquire().await.expect("sole connection");
+    let holder = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        drop(conn);
+    });
+
+    let result = gs.record_edge_retrieval(&[1]).await;
+    holder.await.expect("holder task");
+
+    assert!(
+        matches!(
+            result,
+            Err(crate::error::MemoryError::Timeout(ref msg))
+                if msg == "record_edge_retrieval: write timed out after 500ms"
+        ),
+        "expected Timeout(\"record_edge_retrieval: write timed out after 500ms\"), got: {result:?}"
+    );
+}
+
+/// Regression test for #5522: `apply_hebbian_increment` must return
+/// `MemoryError::Timeout` instead of hanging under the same pool-starvation
+/// conditions, since it is also called unconditionally at the end of
+/// `graph_recall_astar`.
+#[tokio::test]
+async fn apply_hebbian_increment_times_out_on_pool_starvation() {
+    let store = SqliteStore::with_pool_size(":memory:", 1).await.unwrap();
+    let gs = GraphStore::new(store.pool().clone());
+
+    let conn = store.pool().acquire().await.expect("sole connection");
+    let holder = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        drop(conn);
+    });
+
+    let result = gs.apply_hebbian_increment(&[1], 0.5_f32).await;
+    holder.await.expect("holder task");
+
+    assert!(
+        matches!(
+            result,
+            Err(crate::error::MemoryError::Timeout(ref msg))
+                if msg == "apply_hebbian_increment: write timed out after 500ms"
+        ),
+        "expected Timeout(\"apply_hebbian_increment: write timed out after 500ms\"), got: {result:?}"
+    );
+}
+
 // ── GAAMA episode tests ────────────────────────────────────────────────────────
 
 /// Insert a conversation row and return its id (satisfies `FK` in `graph_episodes`).

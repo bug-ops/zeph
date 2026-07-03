@@ -563,6 +563,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: `SemanticMemory::spawn_graph_extraction` stored the in-flight background
+  graph-extraction task's `CancellationToken` in a single-slot `Mutex<Option<CancellationToken>>`,
+  so calling it again before the previous extraction finished silently overwrote the earlier
+  token — `cancel_graph_extraction()` could then only ever cancel the most recently spawned task,
+  leaving earlier ones unreachable and running until their own timeout. `graph_cancel` is now a
+  `Mutex<Vec<CancellationToken>>`: every spawn pushes its token instead of overwriting, and
+  `cancel_graph_extraction()` drains and cancels all currently-tracked tokens. Already-finished
+  tasks self-cancel their own token at the end of `run_graph_extraction_task`, and each spawn
+  prunes cancelled tokens from the vec so it does not grow unbounded across the process lifetime.
+  Closes #5564.
+- `fix(memory)`: `GraphStore::record_edge_retrieval` and `GraphStore::apply_hebbian_increment`
+  awaited their `UPDATE` writes with no timeout guard, unlike sibling DB writes in the same file
+  (e.g. `qdrant_point_ids_for_entities`), even though both are called unconditionally at the end
+  of every `graph_recall_astar` invocation — i.e. on the hot memory-recall path, not a background
+  job. A stuck connection pool could turn a single recall into an indefinite hang. Both writes are
+  now wrapped in the crate's existing 500ms `tokio::time::timeout` convention, returning
+  `MemoryError::Timeout` on expiry; `graph_recall_astar`'s existing fire-and-forget `if let Err`
+  handling at the call site already logs and continues, so recall itself remains fail-open.
+  Closes #5522.
 - `fix(memory)`: five `INTEGER`-as-`i64` decode mismatches (same defect class as #5538/#5544,
   fixed in #5560) surfaced outside that PR's touched functions: `compression_guidelines.rs`'s
   `load_compression_guidelines`/`load_compression_guidelines_by_category` decoded the `INTEGER`

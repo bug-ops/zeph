@@ -1390,10 +1390,13 @@ impl GraphStore {
     ///
     /// Fire-and-forget: errors are logged but not propagated. Caller should log the warning.
     /// Batched with `MAX_BATCH = 490` to stay safely under `SQLite` bind variable limit.
+    /// Each chunk's write is bounded by a 500ms timeout (matching
+    /// [`Self::qdrant_point_ids_for_entities`]) so a stuck pool surfaces as a typed
+    /// [`MemoryError::Timeout`] instead of hanging the `graph_recall_astar` hot path.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database query fails.
+    /// Returns an error if the database query fails or a chunk write times out.
     #[tracing::instrument(name = "memory.graph.store.record_edge_retrieval", skip_all, fields(count = edge_ids.len()))]
     pub async fn record_edge_retrieval(&self, edge_ids: &[i64]) -> Result<(), MemoryError> {
         const MAX_BATCH: usize = 490;
@@ -1410,7 +1413,13 @@ impl GraphStore {
             for id in chunk {
                 q = q.bind(*id);
             }
-            q.execute(&self.pool).await?;
+            tokio::time::timeout(std::time::Duration::from_millis(500), q.execute(&self.pool))
+                .await
+                .map_err(|_| {
+                    MemoryError::Timeout(
+                        "record_edge_retrieval: write timed out after 500ms".into(),
+                    )
+                })??;
         }
         Ok(())
     }
@@ -1423,9 +1432,13 @@ impl GraphStore {
     ///
     /// No-op when `edge_ids` is empty or `delta == 0.0`.
     ///
+    /// Each chunk's write is bounded by a 500ms timeout (matching
+    /// [`Self::qdrant_point_ids_for_entities`]) so a stuck pool surfaces as a typed
+    /// [`MemoryError::Timeout`] instead of hanging the `graph_recall_astar` hot path.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the underlying `UPDATE` fails.
+    /// Returns an error if the underlying `UPDATE` fails or a chunk write times out.
     #[tracing::instrument(
         name = "memory.graph.hebbian_increment",
         skip_all,
@@ -1455,7 +1468,13 @@ impl GraphStore {
             for id in chunk {
                 q = q.bind(*id);
             }
-            q.execute(&self.pool).await?;
+            tokio::time::timeout(std::time::Duration::from_millis(500), q.execute(&self.pool))
+                .await
+                .map_err(|_| {
+                    MemoryError::Timeout(
+                        "apply_hebbian_increment: write timed out after 500ms".into(),
+                    )
+                })??;
         }
         Ok(())
     }
