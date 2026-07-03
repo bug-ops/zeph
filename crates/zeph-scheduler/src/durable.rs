@@ -194,11 +194,6 @@ fn fingerprint(job_name: &str, slot_ms: i64) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    use zeph_durable::config::DurableConfig;
-    use zeph_durable::{DurableBackendEnum, JournalWriter, LocalBackend};
-
     use super::*;
 
     #[test]
@@ -236,90 +231,104 @@ mod tests {
         );
     }
 
-    fn fast_config() -> DurableConfig {
-        DurableConfig {
-            journal_flush_interval_ms: 5,
-            journal_ack_timeout_ms: 2000,
-            ..DurableConfig::default()
-        }
-    }
-
-    async fn make_adapter() -> (SchedulerDurableAdapter, tokio::task::JoinHandle<()>) {
-        let local = Arc::new(LocalBackend::open(":memory:", 1_048_576).await.unwrap());
-        local.init().await.unwrap();
-        let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
-        let cfg = Arc::new(fast_config());
-        let (writer, handle) = JournalWriter::new(local, &cfg);
-        let task = tokio::spawn(writer.run()); // EXEMPT: test-only helper
-        (SchedulerDurableAdapter::new(backend, handle, cfg), task)
-    }
-
-    /// First fire executes the closure and journals the result.
-    /// Second call (same job+slot, same execution) replays without invoking the closure.
-    #[tokio::test]
-    async fn fire_with_durable_replays_without_reinvocation() {
-        let (adapter, _task) = make_adapter().await;
-        let count = Arc::new(AtomicU32::new(0));
-
-        // First fire — closure must run.
-        let c = count.clone();
-        fire_with_durable(&adapter, "test-job", 1_000, move || async move {
-            c.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        })
-        .await
-        .unwrap();
-        assert_eq!(count.load(Ordering::Relaxed), 1, "first fire must execute");
-
-        // Second fire — same (job, slot) — closure must NOT run again.
-        let c = count.clone();
-        fire_with_durable(&adapter, "test-job", 1_000, move || async move {
-            c.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        })
-        .await
-        .unwrap();
-        assert_eq!(
-            count.load(Ordering::Relaxed),
-            1,
-            "replay must not re-invoke the closure"
-        );
-    }
-
-    /// A different slot derives a different execution — the closure runs again.
-    #[tokio::test]
-    async fn fire_with_durable_different_slot_runs_again() {
-        let (adapter, _task) = make_adapter().await;
-        let count = Arc::new(AtomicU32::new(0));
-
-        let c = count.clone();
-        fire_with_durable(&adapter, "test-job", 1_000, move || async move {
-            c.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        })
-        .await
-        .unwrap();
-
-        let c = count.clone();
-        fire_with_durable(&adapter, "test-job", 2_000, move || async move {
-            c.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(
-            count.load(Ordering::Relaxed),
-            2,
-            "different slot_ms must produce a separate execution and run"
-        );
-    }
-
     /// When durable is not configured (no `with_durable`), the scheduler calls the handler directly.
     #[test]
     fn no_adapter_means_no_durable_overhead() {
         // The Scheduler struct's `durable` field defaults to None; this is a structural check only.
         // The property is validated indirectly by the scheduler_init_and_tick test in scheduler.rs.
         assert!(derive_execution_id("job", 0) != derive_execution_id("other", 0));
+    }
+
+    // These tests open a real `LocalBackend` pool via `:memory:`, which is SQLite-specific
+    // (mirroring `zeph-durable`'s `writer.rs`/`local.rs` test modules): under `--features postgres`
+    // `DbConfig::connect()` takes cfg-priority and routes `:memory:` into `connect_postgres`, which
+    // fails to parse it as a Postgres URL. See #5603.
+    #[cfg(all(feature = "sqlite", not(feature = "postgres")))]
+    mod with_backend {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        use zeph_durable::config::DurableConfig;
+        use zeph_durable::{DurableBackendEnum, JournalWriter, LocalBackend};
+
+        use super::*;
+
+        fn fast_config() -> DurableConfig {
+            DurableConfig {
+                journal_flush_interval_ms: 5,
+                journal_ack_timeout_ms: 2000,
+                ..DurableConfig::default()
+            }
+        }
+
+        async fn make_adapter() -> (SchedulerDurableAdapter, tokio::task::JoinHandle<()>) {
+            let local = Arc::new(LocalBackend::open(":memory:", 1_048_576).await.unwrap());
+            local.init().await.unwrap();
+            let backend = Arc::new(DurableBackendEnum::Local(local.clone()));
+            let cfg = Arc::new(fast_config());
+            let (writer, handle) = JournalWriter::new(local, &cfg);
+            let task = tokio::spawn(writer.run()); // EXEMPT: test-only helper
+            (SchedulerDurableAdapter::new(backend, handle, cfg), task)
+        }
+
+        /// First fire executes the closure and journals the result.
+        /// Second call (same job+slot, same execution) replays without invoking the closure.
+        #[tokio::test]
+        async fn fire_with_durable_replays_without_reinvocation() {
+            let (adapter, _task) = make_adapter().await;
+            let count = Arc::new(AtomicU32::new(0));
+
+            // First fire — closure must run.
+            let c = count.clone();
+            fire_with_durable(&adapter, "test-job", 1_000, move || async move {
+                c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(count.load(Ordering::Relaxed), 1, "first fire must execute");
+
+            // Second fire — same (job, slot) — closure must NOT run again.
+            let c = count.clone();
+            fire_with_durable(&adapter, "test-job", 1_000, move || async move {
+                c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                count.load(Ordering::Relaxed),
+                1,
+                "replay must not re-invoke the closure"
+            );
+        }
+
+        /// A different slot derives a different execution — the closure runs again.
+        #[tokio::test]
+        async fn fire_with_durable_different_slot_runs_again() {
+            let (adapter, _task) = make_adapter().await;
+            let count = Arc::new(AtomicU32::new(0));
+
+            let c = count.clone();
+            fire_with_durable(&adapter, "test-job", 1_000, move || async move {
+                c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+            let c = count.clone();
+            fire_with_durable(&adapter, "test-job", 2_000, move || async move {
+                c.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(
+                count.load(Ordering::Relaxed),
+                2,
+                "different slot_ms must produce a separate execution and run"
+            );
+        }
     }
 }

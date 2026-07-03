@@ -55,6 +55,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `changed_count` and de-duplicates `sections_changed` across every named step plus the
   final pass. Closes #5429.
 
+- `fix(scheduler,durable)`: `zeph-scheduler`'s `durable.rs` test module opened a
+  `LocalBackend` over the `:memory:` sentinel without gating on the postgres-priority
+  dual-backend cfg model, so `--features postgres` routed `:memory:` into
+  `connect_postgres` and failed at runtime with `Configuration(RelativeUrlWithoutBase)`
+  (a `cargo check` could not catch it — only running the tests could). The two
+  backend-dependent tests now live in a `with_backend` submodule gated by
+  `#[cfg(all(feature = "sqlite", not(feature = "postgres")))]`, mirroring the pattern
+  already used by `zeph-durable`'s `writer.rs`/`replay.rs`/`backend/local.rs`/`handle.rs`
+  test modules (which were already correctly gated). `zeph-durable`'s `tests/nfr_gates.rs`
+  integration test shared the same unguarded `:memory:` pattern and is now gated the same
+  way at the file level. Closes #5603.
+
 - `fix(tools,core)`: live agent turns no longer stall indefinitely when Qdrant is
   unreachable (up to 240s observed, never dispatching the originally-requested tool). Two
   compounding defects: (1) `handle_tool_failure_outcomes` misclassified every structured

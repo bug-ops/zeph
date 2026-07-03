@@ -7,6 +7,12 @@
 //! collects wall-clock samples, discards a warm-up prefix, computes a percentile, and asserts it
 //! against the spec bound. If a gate proves flaky on a noisy CI runner, mark it `#[ignore]` and
 //! document in the PR — do NOT loosen the spec bounds.
+//!
+//! Every gate opens a real `LocalBackend` pool via `:memory:`, which is SQLite-specific (mirroring
+//! the `src/`-side `with_backend` test modules): under `--features postgres`, `DbConfig::connect()`
+//! takes cfg-priority and routes `:memory:` into `connect_postgres`, which fails to parse it as a
+//! Postgres URL. See #5603.
+#![cfg(all(feature = "sqlite", not(feature = "postgres")))]
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
