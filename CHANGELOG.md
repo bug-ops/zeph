@@ -563,6 +563,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: three `INTEGER`-as-`i64` decode mismatches (same defect class as #5538/#5544,
+  fixed in #5560) surfaced outside that PR's touched functions: `compression_guidelines.rs`'s
+  `load_compression_guidelines`/`load_compression_guidelines_by_category` decoded the `INTEGER`
+  `version` column directly into an `i64` tuple field, and `messages/mod.rs::find_promotion_candidates`
+  decoded the `INTEGER` `session_count` column the same way (mirrors the sibling
+  `message_access_counts`: `CAST(... AS BIGINT)` in the `SELECT`). All three throw `ColumnDecode`
+  ("Rust type i64 (as SQL type INT8) is not compatible with SQL type INT4") on Postgres, though
+  SQLite's dynamic typing masked it. Adds Postgres-gated regression tests
+  (`postgres_integration.rs`, requires Docker) for `load_compression_guidelines_meta`'s and
+  `get_eviction_candidates`'s version/timestamp decode — both functions were already fixed by
+  #5560 and lacked dedicated Postgres coverage for that fix; these tests close that gap as a
+  bonus alongside this PR's own three fixes. Closes #5567.
 - `fix(db,memory)`: `store/messages/mod.rs::replace_conversation`/`apply_tool_pair_summaries`
   bound a Rust-formatted epoch-seconds string directly into `messages.compacted_at`
   (`TIMESTAMPTZ` on Postgres), which Postgres's `timestamptz` parser rejects even under

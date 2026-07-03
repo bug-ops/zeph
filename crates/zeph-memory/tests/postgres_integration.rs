@@ -597,6 +597,49 @@ mod pg {
         assert!(is_deleted, "pruned message must be soft-deleted");
     }
 
+    // ── messages: get_eviction_candidates INT4/TIMESTAMPTZ decode ──────────────
+    //
+    // Bonus regression coverage for a fix already merged in PR #5560: `get_eviction_candidates`
+    // used to decode `created_at` (`TIMESTAMPTZ` on Postgres, migrations/postgres/001_init.sql)
+    // and `last_accessed` (`TIMESTAMPTZ`, migrations/postgres/020_eviction_columns.sql) directly
+    // into `String`/`Option<String>`, which `sqlx-postgres` rejects outright (`ColumnDecode`) —
+    // the function could not run against Postgres at all. That defect (and the co-located
+    // `access_count` INT4-as-i64 mismatch) was already fixed by #5560, but shipped without
+    // dedicated Postgres coverage for this function; this test closes that gap. It accesses a
+    // message (populating `last_accessed`, which is `NULL` until first access) and asserts the
+    // full row decodes with non-empty `created_at`/`last_accessed` and the expected
+    // `access_count`.
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn messages_get_eviction_candidates_decodes_timestamps_and_access_count_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        let cid = store.create_conversation().await.unwrap();
+        let msg = store.save_message(cid, "user", "hello").await.unwrap();
+        store.increment_access_counts(&[msg]).await.unwrap();
+        store.increment_access_counts(&[msg]).await.unwrap();
+
+        let candidates = store.get_eviction_candidates().await.unwrap();
+        let entry = candidates
+            .iter()
+            .find(|e| e.id == msg)
+            .expect("saved message must appear among eviction candidates");
+
+        assert!(
+            !entry.created_at.is_empty(),
+            "created_at must decode as non-empty text, not error with ColumnDecode"
+        );
+        assert!(
+            entry.last_accessed.as_ref().is_some_and(|s| !s.is_empty()),
+            "last_accessed must decode as non-empty text after access, not error with ColumnDecode"
+        );
+        assert_eq!(
+            entry.access_count, 2,
+            "access_count must decode as the full INTEGER value, not truncate/zero"
+        );
+    }
+
     // ── messages: consolidation-source insert (Pattern B) ───────────────────────
 
     #[tokio::test]
@@ -881,6 +924,47 @@ mod pg {
 
         let after = store.count_unused_failure_pairs().await.unwrap();
         assert_eq!(after, 0, "both failure pairs must be marked used");
+    }
+
+    // ── compression_guidelines: load_compression_guidelines_meta INT4/TIMESTAMPTZ
+    //    decode ─────────────────────────────────────────────────────────────────
+    //
+    // Bonus regression coverage for a fix already merged in PR #5560:
+    // `load_compression_guidelines_meta` used to decode `version` (`INTEGER`/`INT4` on Postgres)
+    // directly into `i64` and `created_at` (`TIMESTAMPTZ` on Postgres) directly into `String`,
+    // both of which `sqlx-postgres` rejects with a `ColumnDecode` mismatch (`String`/`i64` are
+    // only compatible with `TEXT`/`INT8`-family OIDs). That defect was already fixed by #5560,
+    // but shipped without dedicated Postgres
+    // coverage for this function; this test closes that gap. A `SQLite`-only unit test cannot
+    // catch either mismatch: `SQLite` is dynamically typed, so the same decode succeeds there
+    // regardless of the fix. This test saves two versions and asserts the second (non-zero, so a
+    // truncated/zeroed `i32`-as-`i64` misread would be caught) round-trips correctly against a
+    // real Postgres instance, with a non-empty `created_at`.
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn compression_guidelines_meta_decodes_version_and_created_at_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        store
+            .save_compression_guidelines("first guideline", 4, None)
+            .await
+            .unwrap();
+        let v2 = store
+            .save_compression_guidelines("second guideline", 8, None)
+            .await
+            .unwrap();
+        assert_eq!(v2, 2, "second save must produce version 2");
+
+        let (version, created_at) = store.load_compression_guidelines_meta(None).await.unwrap();
+        assert_eq!(
+            version, 2,
+            "version must decode as the latest INTEGER value, not truncate/zero"
+        );
+        assert!(
+            !created_at.is_empty(),
+            "created_at must decode as non-empty text, not error with ColumnDecode"
+        );
     }
 
     // ── mem_scenes: member insert loop (Pattern B) ──────────────────────────────

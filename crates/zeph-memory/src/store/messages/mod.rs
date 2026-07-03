@@ -1252,8 +1252,11 @@ impl SqliteStore {
     ) -> Result<Vec<PromotionCandidate>, MemoryError> {
         let limit = i64::try_from(batch_size).unwrap_or(i64::MAX);
         let min = i64::from(min_sessions);
+        // `session_count` is `INTEGER` (`INT4`) on Postgres, so it must be cast to `BIGINT`
+        // to decode into the `i64` tuple field below (mirrors `message_access_counts`).
         let rows: Vec<(MessageId, ConversationId, String, i64, f64)> = zeph_db::query_as(sql!(
-            "SELECT id, conversation_id, content, session_count, importance_score \
+            "SELECT id, conversation_id, content, \
+                    CAST(session_count AS BIGINT) AS session_count, importance_score \
              FROM messages \
              WHERE tier = 'episodic' AND session_count >= ? AND deleted_at IS NULL \
              ORDER BY session_count DESC, importance_score DESC \

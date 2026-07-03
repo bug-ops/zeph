@@ -96,7 +96,9 @@ impl SqliteStore {
         &self,
         conversation_id: Option<ConversationId>,
     ) -> Result<(i64, String), MemoryError> {
-        let row = zeph_db::query_as::<_, (i64, String)>(sql!(
+        // `version` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`, not `i64`;
+        // widened back to `i64` below to keep this function's public return type unchanged.
+        let row = zeph_db::query_as::<_, (i32, String)>(sql!(
             // When conversation_id is Some(cid): `conversation_id = cid` matches
             // conversation-specific rows; `conversation_id IS NULL` matches global rows.
             // The CASE ensures conversation-specific rows sort before global ones.
@@ -112,7 +114,9 @@ impl SqliteStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.unwrap_or((0, String::new())))
+        Ok(row.map_or((0, String::new()), |(version, guidelines)| {
+            (i64::from(version), guidelines)
+        }))
     }
 
     /// Load only the version and creation timestamp of the latest active compression guidelines.
@@ -350,7 +354,9 @@ impl SqliteStore {
         category: &str,
         conversation_id: Option<ConversationId>,
     ) -> Result<(i64, String), MemoryError> {
-        let row = zeph_db::query_as::<_, (i64, String)>(sql!(
+        // `version` is `INTEGER` (`INT4`) on Postgres, so it decodes as `i32`, not `i64`;
+        // widened back to `i64` below to keep this function's public return type unchanged.
+        let row = zeph_db::query_as::<_, (i32, String)>(sql!(
             "SELECT version, guidelines FROM compression_guidelines \
              WHERE category = ? \
              AND (conversation_id = ? OR conversation_id IS NULL) \
@@ -363,7 +369,9 @@ impl SqliteStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.unwrap_or((0, String::new())))
+        Ok(row.map_or((0, String::new()), |(version, guidelines)| {
+            (i64::from(version), guidelines)
+        }))
     }
 
     /// Save a new version of compression guidelines for a specific category.
