@@ -648,6 +648,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   check, no loop possible). A truncated walk now returns partial results with a
   `[search truncated: ...]` note in the summary and `"truncated": true` in `raw_response` instead
   of silently returning partial or hanging indefinitely. No new config surface. Closes #5434.
+- `fix(tools)`: three adversarial-review follow-ups to the `search_code` walk-budget/symlink fix
+  above. `src/daemon.rs` never wired `SearchCodeExecutor` into its composite tool chain, unlike
+  `src/agent_setup.rs` (CLI/TUI) and `src/acp.rs` (ACP) — a silent cross-mode tool-availability
+  gap, now wired identically to the other two entry points. The blanket "stop following symlinked
+  directories entirely" fix from #5434 also silently dropped legitimate non-looping symlinks
+  (vendored directories, monorepo packages, symlinked source files); replaced with active-
+  recursion-stack cycle detection (`crates/zeph-tools/src/search_code.rs`) that canonicalizes the
+  current directory and checks/pushes/pops it against the directories on the active walk path, so
+  a symlink is only treated as a loop if it points back into an already-visited ancestor —
+  including indirect cycles through a plain (non-symlinked) intermediate ancestor several levels
+  deep, and mutual A↔B symlink cycles. `MAX_WALK_ENTRIES` raised from 5,000 to 50,000, since the
+  2s wall-clock `MAX_WALK_DURATION` budget already backstops the original pathological-scope hang
+  independently of entry count, avoiding silent result truncation on large but legitimate
+  monorepos. No new config surface. Closes #5579, #5577, #5576. Filed #5588 to track the
+  now-test-covered but still hand-duplicated cycle-detection logic between the structural and
+  grep-fallback search paths as a fast-follow.
 - `fix(serve)`: sanitize `POST /sessions/:id/prompt` HTTP request bodies as `ExternalUntrusted`
   (`ContentSourceKind::ChannelMessage`) via `ContentSanitizer` before they reach the agent loopback
   queue — closes the same content-trust bypass already fixed for the gateway (#5459) and channel
