@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `perf(build)`: parallel agent teams building the workspace across multiple git
+  worktrees each got a full independent `target/`, and with 21 crates the combined
+  footprint reached 100+ GB, dominated by dependency debuginfo and per-worktree
+  duplication of intermediate artifacts. Set `[profile.dev] debug = "line-tables-only"`
+  in the root `Cargo.toml` (dependencies already built with `debug = false` via
+  `[profile.dev.package."*"]`) since agent-driven builds only consume compiler
+  diagnostics and test output, not full debuginfo. Also set `opt-level = 1` for
+  `[profile.dev.package."*"]` so dependency code runs faster during test execution,
+  at negligible extra compile cost over `opt-level = 0`. Added `.cargo/config.toml` with
+  `[build] build-dir = "{cargo-cache-home}/build/{workspace-path-hash}"` (Cargo's
+  build-dir/target-dir split, stable since 1.91) so intermediate compilation artifacts
+  from all worktrees live under one shared cache root instead of being duplicated
+  per-worktree, while `rustc-wrapper = "sccache"` lets identical dependency builds
+  across worktrees hit the same object cache. Also set `incremental = false` for local
+  builds, matching the CI profile, since incremental caches are dead weight for
+  one-shot agent builds. Fixes a doc/reality mismatch where
+  `book/src/development/sccache.md` already documented a `.cargo/config.toml` with
+  sccache pre-configured that did not actually exist in the repo. (#5627)
+
 ### Fixed
 
 - `fix(memory)`: `knowledge ingest`'s hub-degree kill-criterion (spec-067 §7) reported a

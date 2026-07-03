@@ -1,0 +1,4 @@
+[build]
+build-dir = "{cargo-cache-home}/build/{workspace-path-hash}"
+rustc-wrapper = "sccache"
+incremental = false

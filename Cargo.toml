@@ -381,10 +381,12 @@ zeph-skills.workspace = true
 workspace = true
 
 [profile.dev]
+debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
 debug = false
+opt-level = 1
 
 [profile.release]
 opt-level = "z"
