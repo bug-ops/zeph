@@ -97,6 +97,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing explicit arms under every feature combination — that warns and falls back to
   stdio, matching the convention already used for the TUI transport-selection match earlier
   in the same file. Closes #5623.
+- `test(subagent)`: `supervised_subagent_task_is_visible_in_supervisor`
+  (`crates/zeph-subagent/src/manager/tests.rs`) relied on a single `tokio::task::yield_now()`
+  to observe a spawned subagent task in the `TaskSupervisor` snapshot before it completed and
+  was reaped — `RunOnce` entries are removed from supervisor state in the same lock update
+  that marks them `Completed`, so under CI scheduling pressure the near-instant mock provider
+  response could finish and get reaped before the single yield resumed the test, leaving the
+  snapshot empty. Switched to a `MockProvider` with an explicit 50ms response delay so the
+  task is deterministically still `Running` when the snapshot is taken, and dropped the racy
+  yield.
 - `fix(tools,acp)`: ACP (`zeph --acp`) and the daemon (`zeph serve`) gated only the base
   tool chain (file/shell/scrape/cwd/diagnostics) behind `TrustGateExecutor`; `memory_save`,
   MCP-sourced tools, `load_skill`/`invoke_skill`, and `search_code` were composed outside

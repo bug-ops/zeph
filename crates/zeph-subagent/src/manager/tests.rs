@@ -3574,10 +3574,23 @@ async fn supervised_subagent_task_is_visible_in_supervisor() {
     mgr.set_task_supervisor(supervisor.clone());
     mgr.definitions.push(sample_def());
 
-    let task_id = do_spawn(&mut mgr, "bot", "supervised work").await.unwrap();
-
-    // Yield so the spawn_oneshot future has a chance to register in supervisor state.
-    tokio::task::yield_now().await;
+    // A delayed response keeps the background task in the Running state long enough to
+    // observe: spawn_oneshot registers synchronously, but with an instant mock response
+    // the task can complete and get reaped before this test ever inspects the snapshot.
+    let provider =
+        AnyProvider::Mock(MockProvider::with_responses(vec!["done".into()]).with_delay(50));
+    let task_id = mgr
+        .spawn(
+            "bot",
+            "supervised work",
+            provider,
+            noop_executor(),
+            None,
+            &SubAgentConfig::default(),
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
 
     let snaps = supervisor.snapshot();
     let found = snaps.iter().any(|s| {
