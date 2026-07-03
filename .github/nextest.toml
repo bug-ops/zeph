@@ -22,6 +22,22 @@ test-threads = 8
 filter = "binary(~integration)"
 retries = { backoff = "exponential", count = 2, delay = "10s", jitter = true }
 
+[test-groups.postgres-containers]
+# postgres_integration binaries (zeph-db, zeph-index, zeph-memory) each spin up
+# their own Postgres testcontainer per test with no shared coordination. At the
+# default test-threads = 8, dozens of containers can start concurrently, which
+# overloads Docker Desktop and trips testcontainers-rs 0.27.3's startup-timeout
+# leak (see #5546/#5547 — that crate version has no Ryuk reaper, so a timed-out
+# container is never cleaned up). Capping concurrency here is cheaper than
+# annotating ~40 individual tests with #[serial]. `test-threads` is not a valid
+# per-override key (nextest silently ignores it there) — a test-group with
+# max-threads is the correct mechanism.
+max-threads = 2
+
+[[profile.ci.overrides]]
+filter = "binary(postgres_integration)"
+test-group = "postgres-containers"
+
 [profile.ci.junit]
 # Store JUnit XML report for CI
 path = "target/nextest/ci/junit.xml"

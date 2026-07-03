@@ -590,6 +590,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `config.memory.sqlite_path` alongside `ConversationId`, so even two databases that ever ended up
   sharing one journal `db_url` (e.g. via a future config override) still could not collide.
 
+- `fix(testing)`: mitigate orphaned `postgres:11-alpine` testcontainers persisting across CI/local
+  test runs (#5546, #5547). Root cause: `testcontainers` 0.27.3 (the pinned version) has **no
+  Ryuk-based reaper at all**, unlike testcontainers-java/go/node — cleanup relies solely on (a)
+  `Drop`, which is bypassed by `SIGKILL`/abrupt process termination, and (b) a leak-by-design gap
+  where a container that hits `WaitContainerError::StartupTimeout` during `start()` is cancelled
+  and dropped *before* it is ever wrapped in a `Drop`-guarded `ContainerAsync`, so nothing ever
+  calls `rm` on it. Mitigated with three complementary changes (none of which close the gap
+  entirely — it is a crate-level defect, not a workspace misconfiguration): enabled the crate's
+  opt-in `watchdog` feature (`zeph-db`, `zeph-index`, `zeph-memory` `Cargo.toml`) to reap on
+  `SIGTERM`/`SIGINT`/`SIGQUIT` (does not cover `SIGKILL` or the `StartupTimeout` leak); raised
+  `Postgres::default()`'s startup timeout from the 60s default to 120s in the three
+  `postgres_integration.rs` test helpers (`zeph-db`, `zeph-index`, `zeph-memory`) to reduce how
+  often the timeout is hit under concurrent Docker load; capped `postgres_integration` binaries to
+  2 concurrent threads via a new `.github/nextest.toml` `[test-groups.postgres-containers]`
+  (`max-threads = 2`, referenced from a `[profile.ci]` override) to reduce concurrent container
+  starts (~40 tests across the three crates previously ran up to 8-wide). Added an `if: always()`
+  `docker rm -f` cleanup step to the `integration` job in `.github/workflows/ci.yml` so containers
+  that leak past the mitigations above are still reaped in CI. **This is a mitigation, not a full
+  fix**: neither leak path is eliminated (the `watchdog` feature only covers
+  `SIGTERM`/`SIGINT`/`SIGQUIT`, not `SIGKILL` or the `StartupTimeout` leak itself; the timeout and
+  concurrency changes only lower how often the `StartupTimeout` leak triggers). **Re-check on any
+  future `testcontainers` crate version bump** — this `StartupTimeout` leak-on-cancel path is a
+  known upstream limitation, not something fixable from this workspace alone.
 - `fix(memory)`: three more Postgres-dialect defects in `zeph-memory`, same class as #5508/#5524
   (SQLite-only SQL surfacing incorrectly under Postgres, live-verified via Docker testcontainers).
   `datetime('now')` (SQLite-only, no Postgres equivalent) was embedded as a literal in production

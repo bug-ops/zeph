@@ -26,7 +26,7 @@ test-utils = ["dep:testcontainers", "dep:testcontainers-modules", "postgres"]
 regex = { workspace = true }
 # "macros" required for sqlx::migrate! in driver implementations.
 sqlx = { workspace = true, features = ["macros", "migrate", "runtime-tokio", "tls-rustls"] }
-testcontainers = { workspace = true, optional = true }
+testcontainers = { workspace = true, features = ["watchdog"], optional = true }
 testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }

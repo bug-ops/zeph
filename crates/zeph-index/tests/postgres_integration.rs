@@ -11,14 +11,20 @@
 
 #[cfg(feature = "test-utils")]
 mod pg {
+    use std::time::Duration;
+
+    use testcontainers::ImageExt as _;
     use testcontainers::runners::AsyncRunner as _;
     use testcontainers_modules::postgres::Postgres;
     use zeph_db::DbConfig;
     use zeph_index::store::CodeStore;
     use zeph_memory::QdrantOps;
 
+    // Generous startup timeout: under concurrent CI load (see #5546/#5547), the
+    // default 60s can elapse before Postgres is ready, and testcontainers-rs 0.27.3
+    // leaks the container on a startup-timeout cancel (no Drop guard is ever created).
     async fn start_pg() -> (zeph_db::DbPool, impl Drop) {
-        let image = Postgres::default();
+        let image = Postgres::default().with_startup_timeout(Duration::from_mins(2));
         let container = image.start().await.expect("docker must be available");
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();

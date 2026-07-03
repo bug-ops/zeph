@@ -20,7 +20,7 @@ notify-debouncer-mini.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-testcontainers = { workspace = true, optional = true }
+testcontainers = { workspace = true, features = ["watchdog"], optional = true }
 testcontainers-modules = { workspace = true, features = ["postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "rt"] }

@@ -352,6 +352,12 @@ jobs:
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive-zeph-index-postgres.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(postgres_integration)'
       - name: Run Qdrant integration tests (testcontainers)
         run: cargo nextest run --config-file .github/nextest.toml --archive-file nextest-archive.tar.zst --workspace-remap . --profile ci --run-ignored ignored-only -E 'binary(qdrant_integration)'
+      - name: Reap orphaned testcontainers
+        # Defense-in-depth, not a fix: testcontainers-rs 0.27.3 (pinned) has no Ryuk
+        # reaper and can leak containers on SIGKILL or a StartupTimeout cancel under
+        # concurrent load (#5546, #5547). Runs even if a prior step failed/timed out.
+        if: always()
+        run: docker ps -aq --filter "label=org.testcontainers.managed-by=testcontainers" | xargs -r docker rm -f
 
   coverage:
     name: Coverage

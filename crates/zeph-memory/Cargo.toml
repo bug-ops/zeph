@@ -66,7 +66,7 @@ criterion.workspace = true
 insta.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
-testcontainers.workspace = true
+testcontainers = { workspace = true, features = ["watchdog"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 toml.workspace = true
 tracing-test.workspace = true
