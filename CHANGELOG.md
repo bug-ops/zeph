@@ -563,6 +563,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(core)`: `--bare` mode no longer fires shutdown-path LLM calls. `Agent::maybe_autodream`,
+  `maybe_extract_skills_from_trace`, `maybe_store_shutdown_summary`, and
+  `maybe_store_session_digest` only checked their own subsystem config flags, not
+  `exec_mode.bare`; bare mode still attaches an in-memory `SemanticMemory` and
+  `conversation_id`, so all four config gates passed and a `--bare` invocation fired extra LLM
+  round-trips at session end, defeating the documented "useful for scripting and CI pipelines"
+  purpose. Adds a `bare` flag to `RuntimeConfig`, set via `Agent::with_bare_mode()` from the CLI
+  `--bare` flag, and an early return in all four subsystems when set. Closes #5551.
+- `fix(core)`: ACP `session/set_config_option` model switches no longer lag one turn behind the
+  response's `currentValue`. `Agent::apply_provider_override()` ran once per run-loop iteration,
+  before the iteration blocked on `next_event()`; a switch written to the shared
+  `provider_override` slot while the iteration was already parked waiting for the next message
+  could not retrigger that check, so it only applied on the turn after the one immediately
+  following the switch. Re-checks `apply_provider_override()` at the start of
+  `process_user_message()`, the single call site every turn-dispatch branch funnels through, so a
+  switch written mid-wait is picked up for the very next turn it affects. Closes #5548.
 - `fix(memory)`: clarify that `[memory.admission] admission_strategy = "rl"` is not silently a
   no-op (#5543) — `src/bootstrap/mod.rs::build_admission_control` already emits a startup
   `tracing::warn!` when this variant is selected (added by #2485 for #2416, predating this issue),
