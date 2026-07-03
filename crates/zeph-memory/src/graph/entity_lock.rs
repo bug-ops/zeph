@@ -132,17 +132,28 @@ impl EntityLockManager {
         entity_name: &str,
         extra_secs: i64,
     ) -> Result<bool, MemoryError> {
-        let affected = query(sql!(
+        // Offsets the stored `expires_at` column value (not `'now'`), so this needs the same
+        // dialect split as `try_acquire_once`'s `expires_at_expr`: `SQLite`'s
+        // `datetime(expires_at, ? || ' seconds')` has no `PostgreSQL` equivalent — `expires_at`
+        // is `TIMESTAMPTZ` there and `datetime()` does not exist.
+        let expires_at_expr = if cfg!(feature = "postgres") {
+            "expires_at + INTERVAL '1 second' * ?"
+        } else {
+            "datetime(expires_at, ? || ' seconds')"
+        };
+        let raw = format!(
             "UPDATE entity_advisory_locks
-             SET expires_at = datetime(expires_at, ? || ' seconds')
+             SET expires_at = {expires_at_expr}
              WHERE entity_name = ? AND session_id = ?"
-        ))
-        .bind(extra_secs.to_string())
-        .bind(entity_name)
-        .bind(self.session_id.as_str())
-        .execute(self.pool())
-        .await?
-        .rows_affected();
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let affected = query(sqlx::AssertSqlSafe(query_sql))
+            .bind(extra_secs)
+            .bind(entity_name)
+            .bind(self.session_id.as_str())
+            .execute(self.pool())
+            .await?
+            .rows_affected();
 
         Ok(affected > 0)
     }

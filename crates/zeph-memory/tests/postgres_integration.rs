@@ -56,6 +56,16 @@
 //! the last blocker on the full `run_episodic_consolidation_sweep` pipeline (`fetch_candidates`
 //! → `compute_cognitive_weight` → ... → `mark_consolidated`) getting real Postgres round-trip
 //! coverage — see `episodic_consolidation_sweep_promotes_fact_postgres` below.
+//!
+//! Regression coverage for issue #5539: `graph/entity_lock.rs::extend_lock` built its
+//! `expires_at` offset expression with `SQLite`-only `datetime(expires_at, ? || ' seconds')`
+//! syntax, which is invalid against Postgres's `TIMESTAMPTZ` column (no `datetime()`
+//! function). The existing unit tests in `entity_lock.rs` only run against `SQLite` and
+//! assert the boolean return value, so they could not catch the syntax mismatch. The tests
+//! below exercise `extend_lock` (and the sibling `try_acquire_once`, fixed earlier in
+//! PR #5537 with the same dialect-split pattern but never covered here either) against a
+//! live Postgres instance and assert the actual `expires_at` column value moved, not just
+//! that the call succeeded.
 
 #[cfg(feature = "test-utils")]
 mod pg {
@@ -70,6 +80,7 @@ mod pg {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_memory::db_vector_store::DbVectorStore;
+    use zeph_memory::graph::EntityLockManager;
     use zeph_memory::graph::activation::ActivatedFact;
     use zeph_memory::graph::belief::{BeliefMemConfig, BeliefStore};
     use zeph_memory::graph::implicit_conflict;
@@ -1686,5 +1697,71 @@ mod pg {
         .unwrap();
         assert_eq!(fidelity, "SummaryOnly");
         assert_eq!(content, "one-line summary");
+    }
+
+    // ── entity_lock: extend_lock + try_acquire dialect-split SQL (#5539) ───────
+
+    /// Fetch `entity_advisory_locks.expires_at` as a Unix epoch (seconds), via the same
+    /// `Dialect::epoch_from_col` cast used in production code (`semantic::recall`'s
+    /// `created_at_map` fetch, `five_signal_consolidation_promotes_fresh_fact` above) to
+    /// decode a `TIMESTAMPTZ` column without requiring sqlx's `chrono` feature.
+    async fn fetch_lock_expires_at_epoch(pool: &zeph_db::DbPool, entity_name: &str) -> i64 {
+        let epoch_expr =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::epoch_from_col("expires_at");
+        let raw = format!("SELECT {epoch_expr} FROM entity_advisory_locks WHERE entity_name = ?");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(zeph_db::rewrite_placeholders(&raw)))
+            .bind(entity_name)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn entity_lock_extend_lock_advances_expiry_postgres() {
+        let (pool, _container) = start_pg().await;
+        let mgr = EntityLockManager::new(pool.clone(), "session-pg-ext");
+
+        assert!(
+            mgr.try_acquire("entity::PgExt").await.unwrap(),
+            "initial acquire must succeed"
+        );
+        let before = fetch_lock_expires_at_epoch(&pool, "entity::PgExt").await;
+
+        let extended = mgr.extend_lock("entity::PgExt", 3600).await.unwrap();
+        assert!(
+            extended,
+            "extend_lock must succeed against a live Postgres instance \
+             (regression check for #5539: SQLite-only datetime() syntax used to fail here)"
+        );
+
+        let after = fetch_lock_expires_at_epoch(&pool, "entity::PgExt").await;
+        assert_eq!(
+            after - before,
+            3600,
+            "expires_at must advance by exactly extra_secs via \
+             `expires_at + INTERVAL '1 second' * ?`"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn entity_lock_try_acquire_postgres() {
+        let (pool, _container) = start_pg().await;
+        let mgr = EntityLockManager::new(pool.clone(), "session-pg-acq");
+
+        // Exercises `try_acquire_once`'s `NOW() + INTERVAL 'N seconds'` Postgres branch
+        // (the sibling fix from PR #5537, previously uncovered by any Postgres test).
+        assert!(
+            mgr.try_acquire("entity::PgAcq").await.unwrap(),
+            "try_acquire must succeed against a live Postgres instance"
+        );
+
+        let now_epoch = chrono::Utc::now().timestamp();
+        let expires_epoch = fetch_lock_expires_at_epoch(&pool, "entity::PgAcq").await;
+        assert!(
+            expires_epoch > now_epoch,
+            "newly acquired lock must expire in the future (TTL applied via NOW() + INTERVAL)"
+        );
     }
 }
