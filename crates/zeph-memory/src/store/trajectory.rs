@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_db::{query, query_as, query_scalar, sql};
+use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
 use super::DbStore;
 use crate::error::MemoryError;
@@ -159,17 +159,20 @@ impl DbStore {
         conversation_id: i64,
         message_id: i64,
     ) -> Result<(), MemoryError> {
-        query(sql!(
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let raw = format!(
             "INSERT INTO trajectory_meta (conversation_id, last_extracted_message_id, updated_at)
-             VALUES (?, ?, datetime('now'))
+             VALUES (?, ?, {now})
              ON CONFLICT(conversation_id) DO UPDATE SET
                  last_extracted_message_id = excluded.last_extracted_message_id,
-                 updated_at = datetime('now')"
-        ))
-        .bind(conversation_id)
-        .bind(message_id)
-        .execute(self.pool())
-        .await?;
+                 updated_at = {now}"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        query(sqlx::AssertSqlSafe(query_sql))
+            .bind(conversation_id)
+            .bind(message_id)
+            .execute(self.pool())
+            .await?;
 
         Ok(())
     }

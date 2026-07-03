@@ -134,11 +134,23 @@ impl SqliteStore {
         // `SessionStore::update_seq` on every turn flush per INV-SP-1) replaces the subquery
         // against `acp_session_events`, which the P1 write cutover leaves permanently empty for
         // post-cutover sessions.
-        let rows = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, s.event_count AS message_count \
+        // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project
+        // both through `Dialect::select_as_text` so they decode into the `String` fields below,
+        // mirroring `agent_sessions.rs::list_agent_sessions`'s fix for the same mismatch.
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let updated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT s.id, s.title, s.{created_at_sel}, s.{updated_at_sel}, \
+             s.event_count AS message_count \
              FROM acp_sessions s \
              ORDER BY s.updated_at DESC \
-             LIMIT ?",
+             LIMIT ?"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
+            sqlx::AssertSqlSafe(query_sql),
         )
         .bind(sql_limit)
         .fetch_all(&self.pool)
@@ -171,10 +183,20 @@ impl SqliteStore {
     ) -> Result<Option<AcpSessionInfo>, MemoryError> {
         // spec-068 §12.3 / D-2: see `list_acp_sessions` — `event_count` replaces the emptied
         // `acp_session_events` subquery.
-        let row = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, s.event_count AS message_count \
+        // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres — see `list_acp_sessions`.
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let updated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT s.id, s.title, s.{created_at_sel}, s.{updated_at_sel}, \
+             s.event_count AS message_count \
              FROM acp_sessions s \
-             WHERE s.id = ?",
+             WHERE s.id = ?"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row = zeph_db::query_as::<_, (String, Option<String>, String, String, i64)>(
+            sqlx::AssertSqlSafe(query_sql),
         )
         .bind(session_id)
         .fetch_optional(&self.pool)

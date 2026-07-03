@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_db::{query, query_as, query_scalar, sql};
+use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
 use super::DbStore;
 use crate::error::MemoryError;
@@ -55,26 +55,29 @@ impl DbStore {
             }
         };
 
-        let (id,): (i64,) = query_as(sql!(
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let raw = format!(
             "INSERT INTO persona_memory
                 (category, content, confidence, evidence_count, source_conversation_id,
                  supersedes_id, updated_at)
              VALUES
-                (?, ?, ?, 1, ?, ?, datetime('now'))
+                (?, ?, ?, 1, ?, ?, {now})
              ON CONFLICT(category, content) DO UPDATE SET
                 evidence_count = evidence_count + 1,
                 confidence     = excluded.confidence,
                 supersedes_id  = COALESCE(excluded.supersedes_id, persona_memory.supersedes_id),
-                updated_at     = datetime('now')
+                updated_at     = {now}
              RETURNING id"
-        ))
-        .bind(category)
-        .bind(content)
-        .bind(confidence)
-        .bind(safe_source_id)
-        .bind(supersedes_id)
-        .fetch_one(self.pool())
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let (id,): (i64,) = query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(category)
+            .bind(content)
+            .bind(confidence)
+            .bind(safe_source_id)
+            .bind(supersedes_id)
+            .fetch_one(self.pool())
+            .await?;
 
         Ok(id)
     }
@@ -164,14 +167,17 @@ impl DbStore {
         &self,
         message_id: i64,
     ) -> Result<(), MemoryError> {
-        query(sql!(
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let raw = format!(
             "UPDATE persona_meta
-             SET last_extracted_message_id = ?, updated_at = datetime('now')
+             SET last_extracted_message_id = ?, updated_at = {now}
              WHERE id = 1"
-        ))
-        .bind(message_id)
-        .execute(self.pool())
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        query(sqlx::AssertSqlSafe(query_sql))
+            .bind(message_id)
+            .execute(self.pool())
+            .await?;
 
         Ok(())
     }

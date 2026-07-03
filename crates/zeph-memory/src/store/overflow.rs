@@ -8,6 +8,19 @@ use zeph_db::sql;
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 
+/// `now() - N seconds` expression, dialect-selected at compile time.
+///
+/// `SQLite`'s `datetime('now', printf('-%d seconds', ?))` has no `PostgreSQL` equivalent —
+/// `NOW() - INTERVAL '1 second' * ?` is the established substitution (mirrors the
+/// `NOW() - INTERVAL '1 day' * ?` idiom already used in `store/skills.rs`).
+fn now_minus_seconds_expr() -> &'static str {
+    if cfg!(feature = "postgres") {
+        "NOW() - INTERVAL '1 second' * ?"
+    } else {
+        "datetime('now', printf('-%d seconds', ?))"
+    }
+}
+
 impl SqliteStore {
     /// Save overflow content associated with a conversation, returning the generated UUID.
     ///
@@ -93,14 +106,17 @@ impl SqliteStore {
     ///
     /// Returns an error if the database delete fails.
     pub async fn cleanup_overflow(&self, max_age_secs: u64) -> Result<u64, MemoryError> {
-        let result = zeph_db::query(sql!(
+        let now_minus = now_minus_seconds_expr();
+        let raw = format!(
             "DELETE FROM tool_overflow \
              WHERE archive_type = 'overflow' \
-             AND created_at < datetime('now', printf('-%d seconds', ?))"
-        ))
-        .bind(max_age_secs.cast_signed())
-        .execute(&self.pool)
-        .await?;
+             AND created_at < {now_minus}"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let result = zeph_db::query(sqlx::AssertSqlSafe(query_sql))
+            .bind(max_age_secs.cast_signed())
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected())
     }
 
@@ -123,6 +139,31 @@ impl SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the exact SQL fragment emitted by `now_minus_seconds_expr` for the dialect this
+    /// test binary was compiled with. The `sqlite` and `postgres` features are additive on this
+    /// crate (see `Cargo.toml`), so running with `--features postgres` exercises the branch that
+    /// `cargo nextest run -p zeph-memory --lib` alone never reaches — a typo in the Postgres
+    /// literal would otherwise only surface via a live-DB integration test or manual `psql` check.
+    #[test]
+    fn now_minus_seconds_expr_matches_active_dialect() {
+        let expr = now_minus_seconds_expr();
+        if cfg!(feature = "postgres") {
+            assert_eq!(expr, "NOW() - INTERVAL '1 second' * ?");
+        } else {
+            assert_eq!(expr, "datetime('now', printf('-%d seconds', ?))");
+        }
+    }
+
+    /// `now() - N days` literal, dialect-selected at compile time (see
+    /// `now_minus_seconds_expr` above for the same idiom with a bound parameter).
+    fn now_minus_days_literal(days: u32) -> String {
+        if cfg!(feature = "postgres") {
+            format!("NOW() - INTERVAL '{days} days'")
+        } else {
+            format!("datetime('now', '-{days} days')")
+        }
+    }
 
     async fn make_store() -> (SqliteStore, i64) {
         let store = SqliteStore::new(":memory:")
@@ -213,17 +254,20 @@ mod tests {
         let (store, cid) = make_store().await;
         // Insert a row with an old timestamp.
         let id = Uuid::new_v4().to_string();
-        zeph_db::query(sql!(
+        let raw = format!(
             "INSERT INTO tool_overflow (id, conversation_id, content, byte_size, created_at) \
-             VALUES (?, ?, ?, ?, datetime('now', '-2 days'))"
-        ))
-        .bind(&id)
-        .bind(cid)
-        .bind(b"old data".as_slice())
-        .bind(8i64)
-        .execute(store.pool())
-        .await
-        .expect("insert old row");
+             VALUES (?, ?, ?, ?, {})",
+            now_minus_days_literal(2)
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        zeph_db::query(sqlx::AssertSqlSafe(query_sql))
+            .bind(&id)
+            .bind(cid)
+            .bind(b"old data".as_slice())
+            .bind(8i64)
+            .execute(store.pool())
+            .await
+            .expect("insert old row");
 
         // Insert a fresh row.
         let fresh_id = store.save_overflow(cid, b"fresh").await.expect("fresh");
@@ -275,33 +319,39 @@ mod tests {
         let (store, cid) = make_store().await;
         // Insert a very old archive-type row directly.
         let archive_id = Uuid::new_v4().to_string();
-        zeph_db::query(sql!(
+        let archive_raw = format!(
             "INSERT INTO tool_overflow \
              (id, conversation_id, content, byte_size, archive_type, created_at) \
-             VALUES (?, ?, ?, ?, 'archive', datetime('now', '-30 days'))"
-        ))
-        .bind(&archive_id)
-        .bind(cid)
-        .bind(b"old archive".as_slice())
-        .bind(11i64)
-        .execute(store.pool())
-        .await
-        .expect("insert old archive");
+             VALUES (?, ?, ?, ?, 'archive', {})",
+            now_minus_days_literal(30)
+        );
+        let archive_sql = zeph_db::rewrite_placeholders(&archive_raw);
+        zeph_db::query(sqlx::AssertSqlSafe(archive_sql))
+            .bind(&archive_id)
+            .bind(cid)
+            .bind(b"old archive".as_slice())
+            .bind(11i64)
+            .execute(store.pool())
+            .await
+            .expect("insert old archive");
 
         // Insert an old overflow-type row — this should be cleaned up.
         let overflow_id = Uuid::new_v4().to_string();
-        zeph_db::query(sql!(
+        let overflow_raw = format!(
             "INSERT INTO tool_overflow \
              (id, conversation_id, content, byte_size, archive_type, created_at) \
-             VALUES (?, ?, ?, ?, 'overflow', datetime('now', '-30 days'))"
-        ))
-        .bind(&overflow_id)
-        .bind(cid)
-        .bind(b"old overflow".as_slice())
-        .bind(12i64)
-        .execute(store.pool())
-        .await
-        .expect("insert old overflow");
+             VALUES (?, ?, ?, ?, 'overflow', {})",
+            now_minus_days_literal(30)
+        );
+        let overflow_sql = zeph_db::rewrite_placeholders(&overflow_raw);
+        zeph_db::query(sqlx::AssertSqlSafe(overflow_sql))
+            .bind(&overflow_id)
+            .bind(cid)
+            .bind(b"old overflow".as_slice())
+            .bind(12i64)
+            .execute(store.pool())
+            .await
+            .expect("insert old overflow");
 
         let deleted = store.cleanup_overflow(86400).await.expect("cleanup");
         assert_eq!(deleted, 1, "only the overflow-type row should be deleted");

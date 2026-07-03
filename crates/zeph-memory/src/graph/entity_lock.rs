@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tokio::time::sleep;
 use zeph_common::SessionId;
-use zeph_db::{DbPool, query, query_scalar, sql};
+use zeph_db::{ActiveDialect, DbPool, query, query_scalar, sql};
 
 use crate::error::MemoryError;
 
@@ -81,28 +81,38 @@ impl EntityLockManager {
         // condition requires a WHERE clause that INSERT OR IGNORE cannot express.
         // We use a two-statement approach in a transaction for atomicity.
 
-        let acquired: bool = query_scalar(sql!(
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        // `LOCK_TTL_SECS` is a compile-time constant, so the "now + TTL" expiry expression is
+        // interpolated as a literal rather than bound — `datetime('now', 'N seconds')`
+        // (`SQLite`) has no equivalent syntax to `NOW() + INTERVAL 'N seconds'` (`PostgreSQL`).
+        let expires_at_expr = if cfg!(feature = "postgres") {
+            format!("NOW() + INTERVAL '{LOCK_TTL_SECS} seconds'")
+        } else {
+            format!("datetime('now', '{LOCK_TTL_SECS} seconds')")
+        };
+        let raw = format!(
             "INSERT INTO entity_advisory_locks (entity_name, session_id, acquired_at, expires_at)
-             VALUES (?, ?, datetime('now'), datetime('now', ? || ' seconds'))
+             VALUES (?, ?, {now}, {expires_at_expr})
              ON CONFLICT(entity_name) DO UPDATE SET
                  session_id  = excluded.session_id,
                  acquired_at = excluded.acquired_at,
                  expires_at  = excluded.expires_at
              WHERE
                  -- reclaim if expired
-                 entity_advisory_locks.expires_at < datetime('now')
+                 entity_advisory_locks.expires_at < {now}
                  OR
                  -- refresh if same session
                  entity_advisory_locks.session_id = excluded.session_id
              RETURNING (session_id = ?) AS acquired"
-        ))
-        .bind(entity_name)
-        .bind(self.session_id.as_str())
-        .bind(LOCK_TTL_SECS.to_string())
-        .bind(self.session_id.as_str())
-        .fetch_optional(self.pool())
-        .await?
-        .unwrap_or(false);
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let acquired: bool = query_scalar(sqlx::AssertSqlSafe(query_sql))
+            .bind(entity_name)
+            .bind(self.session_id.as_str())
+            .bind(self.session_id.as_str())
+            .fetch_optional(self.pool())
+            .await?
+            .unwrap_or(false);
 
         Ok(acquired)
     }

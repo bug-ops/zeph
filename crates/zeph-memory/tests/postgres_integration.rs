@@ -47,13 +47,25 @@
 //! `mark_consolidated`, `graph/belief.rs::mark_promoted`/`apply_evidence_update`), which
 //! has no Postgres equivalent and fails at runtime. Fixed by interpolating
 //! `<ActiveDialect as Dialect>::EPOCH_NOW` via `format!()` before `rewrite_placeholders`.
+//!
+//! Regression coverage for issue #5525: `episodic_consolidation.rs::compute_cognitive_weight`'s
+//! `SELECT COALESCE(SUM(CASE ... THEN 1.0 ... END), 0.0)` decoded directly into `f64`, but
+//! Postgres types a `SUM()` over decimal literals as `NUMERIC`, which sqlx cannot decode into
+//! `f64` without an explicit cast. Fixed with `CAST(... AS DOUBLE PRECISION)`, the same idiom
+//! already used at the 14 `EdgeRow`-projecting call sites referenced above (#5364). This was
+//! the last blocker on the full `run_episodic_consolidation_sweep` pipeline (`fetch_candidates`
+//! → `compute_cognitive_weight` → ... → `mark_consolidated`) getting real Postgres round-trip
+//! coverage — see `episodic_consolidation_sweep_promotes_fact_postgres` below.
 
 #[cfg(feature = "test-utils")]
 mod pg {
     use testcontainers::runners::AsyncRunner as _;
     use testcontainers_modules::postgres::Postgres;
     use zeph_common::SessionId;
+    use zeph_common::types::ProviderName;
     use zeph_db::DbConfig;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
     use zeph_memory::db_vector_store::DbVectorStore;
     use zeph_memory::graph::activation::ActivatedFact;
     use zeph_memory::graph::belief::{BeliefMemConfig, BeliefStore};
@@ -65,7 +77,7 @@ mod pg {
         SqliteStore,
     };
     use zeph_memory::types::MessageId;
-    use zeph_memory::{VectorStore, episodic_graph, snapshot};
+    use zeph_memory::{VectorStore, episodic_consolidation, episodic_graph, snapshot};
 
     async fn start_pg() -> (zeph_db::DbPool, impl Drop) {
         let image = Postgres::default();
@@ -811,6 +823,43 @@ mod pg {
         assert_eq!(linked_cid.0, Some(cid.0));
     }
 
+    // ── acp_sessions: list_acp_sessions / get_acp_session_info (#5527) ──────────
+    //
+    // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite);
+    // `AcpSessionInfo` binds plain `String`s. Regression coverage for issue #5527:
+    // both queries now project through `Dialect::select_as_text`, mirroring the
+    // `agent_sessions.rs::list_agent_sessions` fix for #5524.
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn acp_sessions_list_and_get_include_timestamps_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        store.create_acp_session("sess-ts-1").await.unwrap();
+
+        let list = store.list_acp_sessions(10).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "sess-ts-1");
+        assert!(
+            !list[0].created_at.is_empty(),
+            "created_at must decode as non-empty text"
+        );
+        assert!(
+            !list[0].updated_at.is_empty(),
+            "updated_at must decode as non-empty text"
+        );
+
+        let info = store
+            .get_acp_session_info("sess-ts-1")
+            .await
+            .unwrap()
+            .expect("session must exist");
+        assert_eq!(info.id, "sess-ts-1");
+        assert!(!info.created_at.is_empty());
+        assert!(!info.updated_at.is_empty());
+    }
+
     // ── acp_sessions: session_config snapshot (#5373/#5384) ─────────────────────
     //
     // `thinking_enabled` is `INTEGER` on SQLite vs `BOOLEAN` on Postgres (migration
@@ -1390,24 +1439,96 @@ mod pg {
         assert!(none_active.is_empty());
     }
 
-    // NOTE (found live, unrelated to issues #5524/#5508): a Postgres regression test for the
-    // full `episodic_consolidation.rs` sweep (`run_episodic_consolidation_sweep`, which chains
-    // `fetch_candidates` → `compute_cognitive_weight` → ... → `mark_consolidated`) was attempted
-    // here and is omitted. `fetch_candidates`'s `unixepoch()` fix (issue #5508) is confirmed
-    // structurally sound — the SELECT executes and returns the mature candidate row without
-    // error — but the very next step, `compute_cognitive_weight`'s
-    // `SELECT COALESCE(SUM(CASE ... THEN 1.0 ... END), 0.0)`, fails to decode: Postgres types an
-    // aggregate `SUM()` over decimal literals as `NUMERIC`, and sqlx cannot decode `NUMERIC` into
-    // the declared `f64` without an explicit cast — `ColumnDecode { source: "mismatched types;
-    // Rust type \`f64\` (as SQL type \`FLOAT8\`) is not compatible with SQL type \`NUMERIC\`" }`.
-    // This is the exact same REAL/NUMERIC-decode defect class already fixed at 14 other
-    // `EdgeRow`-projecting queries elsewhere in this file (see the module docstring), just missed
-    // at this call site — `compute_cognitive_weight` does not call `unixepoch()` itself and was
-    // not touched by this PR's #5508 fix. Because it always runs before `mark_consolidated` is
-    // ever reached, `mark_consolidated`'s `EPOCH_NOW`-based UPDATE (also part of #5508) cannot get
-    // real Postgres round-trip coverage until `compute_cognitive_weight` gets an explicit
-    // `CAST(... AS DOUBLE PRECISION)`, matching the established idiom. File a follow-up issue for
-    // the `compute_cognitive_weight` decode bug before attempting this coverage again.
+    // ── episodic_consolidation: full sweep (fetch_candidates → compute_cognitive_weight →
+    // extract_facts_via_llm → mark_consolidated), Postgres ─────────────────────────────────
+    //
+    // Regression coverage for issue #5525 (see module docstring). Exercises the full
+    // `run_episodic_consolidation_sweep` pipeline end-to-end against real Postgres, closing the
+    // coverage gap left by #5508's `fetch_candidates`/`mark_consolidated` fix.
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn episodic_consolidation_sweep_promotes_fact_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool.clone());
+        let session_id = SessionId::new("sess-consolidation-1");
+
+        let cid = store.create_conversation().await.unwrap();
+        let message_id = store
+            .save_message(cid, "user", "Alice uses Rust for systems programming")
+            .await
+            .unwrap();
+
+        // Inserted directly (rather than via `episodic_graph::store_events`, which always
+        // stamps `created_at` at insert time) so `created_at` is safely in the past —
+        // `fetch_candidates` requires `created_at < NOW() - min_age_secs`, and a
+        // server-timestamped row risks landing in the same second as the sweep's query.
+        let created_at = chrono::Utc::now().timestamp() - 600;
+        let event_id: i64 = sqlx::query_scalar(zeph_db::sql!(
+            "INSERT INTO episodic_events (session_id, message_id, event_type, summary, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             RETURNING id"
+        ))
+        .bind(session_id.as_str())
+        .bind(message_id)
+        .bind("tool_call")
+        .bind("Alice prefers Rust")
+        .bind(created_at)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let llm_response = format!(
+            r#"[{{"fact":"Alice uses Rust for systems programming","source_event_ids":[{event_id}]}}]"#
+        );
+        let mut mock = MockProvider::default();
+        mock.default_response = llm_response;
+        let provider = AnyProvider::Mock(mock);
+
+        let config = episodic_consolidation::EpisodicConsolidationConfig {
+            enabled: true,
+            consolidation_provider: ProviderName::default(),
+            interval_secs: 1800,
+            batch_size: 30,
+            min_age_secs: 0,
+            dedup_jaccard_threshold: 0.6,
+        };
+
+        let result = episodic_consolidation::run_episodic_consolidation_sweep(
+            pool.clone(),
+            &provider,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.events_processed, 1);
+        assert_eq!(
+            result.facts_promoted, 1,
+            "compute_cognitive_weight's NUMERIC->f64 decode must succeed for the sweep to reach \
+             fact promotion (#5525)"
+        );
+
+        let count: i64 =
+            sqlx::query_scalar(zeph_db::sql!("SELECT COUNT(*) FROM consolidated_facts"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "one fact must be persisted to consolidated_facts");
+
+        let consolidated_at: Option<i64> = sqlx::query_scalar(zeph_db::sql!(
+            "SELECT consolidated_at FROM episodic_events WHERE id = ?1"
+        ))
+        .bind(event_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            consolidated_at.is_some(),
+            "event must be marked consolidated after sweep"
+        );
+    }
 
     // ── belief: record_evidence (apply_evidence_update) + mark_promoted (Postgres) ──
     // Regression coverage for issue #5508. `mark_promoted` and `apply_evidence_update` had

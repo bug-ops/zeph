@@ -394,12 +394,17 @@ async fn compute_cognitive_weight(
     session_id: &str,
     created_at: i64,
 ) -> Result<f64, MemoryError> {
+    // `SUM()` over decimal literals aggregates to `NUMERIC` on Postgres, which sqlx cannot
+    // decode into `f64` without an explicit cast — `CAST(... AS DOUBLE PRECISION)` matches
+    // the idiom already used at the other `EdgeRow`-projecting call sites (see the
+    // `postgres_integration.rs` module docstring for issue #5364). `DOUBLE PRECISION`
+    // resolves to `SQLite`'s REAL affinity too, so this cast is dialect-neutral.
     let weight: f64 = zeph_db::query_scalar(sql!(
-        "SELECT COALESCE(SUM(CASE
+        "SELECT CAST(COALESCE(SUM(CASE
              WHEN outcome = 'success' THEN 1.0
              WHEN outcome = 'error'   THEN -0.5
              ELSE 0.0
-         END), 0.0)
+         END), 0.0) AS DOUBLE PRECISION)
          FROM experience_nodes
          WHERE session_id = ?
            AND created_at BETWEEN ? - 30 AND ? + 30"

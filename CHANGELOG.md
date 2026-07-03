@@ -563,6 +563,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: three more Postgres-dialect defects in `zeph-memory`, same class as #5508/#5524
+  (SQLite-only SQL surfacing incorrectly under Postgres, live-verified via Docker testcontainers).
+  `datetime('now')` (SQLite-only, no Postgres equivalent) was embedded as a literal in production
+  SQL across `graph/entity_lock.rs`, `store/trajectory.rs`, `store/persona.rs`,
+  `store/memory_tree.rs`, and `store/overflow.rs` (#5526) — replaced with
+  `<ActiveDialect as Dialect>::NOW` interpolated via `format!()`, matching the established
+  `EPOCH_NOW` idiom; the two `datetime('now', <offset>)` call sites (`entity_lock.rs`'s advisory
+  lock TTL, `overflow.rs`'s age-based cleanup) needed a small dialect-selected
+  `NOW() +/- INTERVAL '...'` expression alongside it, mirroring the existing
+  `NOW() - INTERVAL '1 day' * ?` idiom in `store/skills.rs`. `store/acp_sessions.rs`'s
+  `list_acp_sessions`/`get_acp_session_info` decoded `created_at`/`updated_at` (`TIMESTAMPTZ` on
+  Postgres) directly into `String` with no cast and no `sql!()` placeholder rewrite (#5527) — fixed
+  with `Dialect::select_as_text`, mirroring the `agent_sessions.rs::list_agent_sessions` fix for
+  #5524. `episodic_consolidation.rs::compute_cognitive_weight`'s `SELECT COALESCE(SUM(...), 0.0)`
+  decoded a Postgres `NUMERIC` aggregate into `f64` with no cast (#5525) — fixed with
+  `CAST(... AS DOUBLE PRECISION)`, the same idiom used at the 14 other `EdgeRow`-projecting call
+  sites from #5364; this was the last blocker on `run_episodic_consolidation_sweep` getting a real
+  Postgres round-trip test (`postgres_integration.rs::episodic_consolidation_sweep_promotes_fact_postgres`,
+  replacing a `NOTE` block left pending this fix).
 - `fix(orchestration)`: `TaskGraph::created_at`/`finished_at` timestamps could be corrupted with an
   invalid `month=00` ISO-8601 component. The hand-rolled `epoch_secs_to_datetime` Gregorian
   decomposition in `graph.rs` mis-computed the month for dates immediately preceding a leap year

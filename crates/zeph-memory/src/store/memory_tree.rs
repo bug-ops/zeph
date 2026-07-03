@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_db::{query, query_as, query_scalar, sql};
+use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
 use super::DbStore;
 use crate::error::MemoryError;
@@ -60,19 +60,22 @@ impl DbStore {
         source_ids: &str,
         token_count: i64,
     ) -> Result<i64, MemoryError> {
-        let (id,): (i64,) = query_as(sql!(
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let raw = format!(
             "INSERT INTO memory_tree
                 (level, parent_id, content, source_ids, token_count, consolidated_at)
-             VALUES (?, ?, ?, ?, ?, datetime('now'))
+             VALUES (?, ?, ?, ?, ?, {now})
              RETURNING id"
-        ))
-        .bind(level)
-        .bind(parent_id)
-        .bind(content)
-        .bind(source_ids)
-        .bind(token_count)
-        .fetch_one(self.pool())
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let (id,): (i64,) = query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(level)
+            .bind(parent_id)
+            .bind(content)
+            .bind(source_ids)
+            .bind(token_count)
+            .fetch_one(self.pool())
+            .await?;
 
         Ok(id)
     }
@@ -190,16 +193,19 @@ impl DbStore {
 
         let mut tx = self.pool().begin().await?;
 
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let raw = format!(
+            "UPDATE memory_tree
+             SET parent_id = ?, consolidated_at = {now}
+             WHERE id = ? AND parent_id IS NULL"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
         for &child_id in child_ids {
-            query(sql!(
-                "UPDATE memory_tree
-                 SET parent_id = ?, consolidated_at = datetime('now')
-                 WHERE id = ? AND parent_id IS NULL"
-            ))
-            .bind(parent_id)
-            .bind(child_id)
-            .execute(&mut *tx)
-            .await?;
+            query(sqlx::AssertSqlSafe(query_sql.as_str()))
+                .bind(parent_id)
+                .bind(child_id)
+                .execute(&mut *tx)
+                .await?;
         }
 
         tx.commit().await?;
@@ -234,29 +240,34 @@ impl DbStore {
 
         let mut tx = self.pool().begin().await?;
 
-        let (parent_id,): (i64,) = zeph_db::query_as(zeph_db::sql!(
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let insert_raw = format!(
             "INSERT INTO memory_tree
                 (level, content, source_ids, token_count, consolidated_at)
-             VALUES (?, ?, ?, ?, datetime('now'))
+             VALUES (?, ?, ?, ?, {now})
              RETURNING id"
-        ))
-        .bind(level)
-        .bind(summary)
-        .bind(source_ids_json)
-        .bind(token_count)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        for &child_id in child_ids {
-            zeph_db::query(zeph_db::sql!(
-                "UPDATE memory_tree
-                 SET parent_id = ?, consolidated_at = datetime('now')
-                 WHERE id = ? AND parent_id IS NULL"
-            ))
-            .bind(parent_id)
-            .bind(child_id)
-            .execute(&mut *tx)
+        );
+        let insert_sql = zeph_db::rewrite_placeholders(&insert_raw);
+        let (parent_id,): (i64,) = zeph_db::query_as(sqlx::AssertSqlSafe(insert_sql))
+            .bind(level)
+            .bind(summary)
+            .bind(source_ids_json)
+            .bind(token_count)
+            .fetch_one(&mut *tx)
             .await?;
+
+        let update_raw = format!(
+            "UPDATE memory_tree
+             SET parent_id = ?, consolidated_at = {now}
+             WHERE id = ? AND parent_id IS NULL"
+        );
+        let update_sql = zeph_db::rewrite_placeholders(&update_raw);
+        for &child_id in child_ids {
+            zeph_db::query(sqlx::AssertSqlSafe(update_sql.as_str()))
+                .bind(parent_id)
+                .bind(child_id)
+                .execute(&mut *tx)
+                .await?;
         }
 
         tx.commit().await?;
@@ -269,15 +280,18 @@ impl DbStore {
     ///
     /// Returns an error if the query fails.
     pub async fn increment_tree_consolidation_count(&self) -> Result<(), MemoryError> {
-        query(sql!(
+        let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
+        let raw = format!(
             "UPDATE memory_tree_meta
              SET total_consolidations = total_consolidations + 1,
-                 last_consolidation_at = datetime('now'),
-                 updated_at = datetime('now')
+                 last_consolidation_at = {now},
+                 updated_at = {now}
              WHERE id = 1"
-        ))
-        .execute(self.pool())
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        query(sqlx::AssertSqlSafe(query_sql))
+            .execute(self.pool())
+            .await?;
 
         Ok(())
     }
