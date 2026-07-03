@@ -35,6 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   previously a stale/typo'd name would fall back to primary and could replace a clear "invalid
   parameters" error with a plausible-but-wrong corrected result from the wrong model. Closes
   #5478.
+- `fix(config)`: `zeph migrate-config` (`--diff` and `--in-place`) no longer under-reports its
+  summary line. The final "Migration would add N entries (M sections)" / "Config migrated
+  in-place: ... (N entries added, sections: ...)" text previously counted only the last
+  catch-all `ConfigMigrator` pass, ignoring every change made by the numbered `MIGRATIONS`
+  steps that run first — a config fully migrated by named steps alone printed "0 entries
+  added" even though the per-step lines above it listed real changes. The summary now sums
+  `changed_count` and de-duplicates `sections_changed` across every named step plus the
+  final pass. Closes #5429.
 
 - `fix(tools,core)`: live agent turns no longer stall indefinitely when Qdrant is
   unreachable (up to 240s observed, never dispatching the originally-requested tool). Two

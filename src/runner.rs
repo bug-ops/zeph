@@ -782,7 +782,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }) => {
             let resolved =
                 resolve_config_path(migrate_config_path.as_deref().or(cli.config.as_deref()));
-            return crate::commands::migrate::handle_migrate_config(&resolved, in_place, diff);
+            return crate::commands::migrate::handle_migrate_config(&resolved, in_place, diff)
+                .map(|_summary| ());
         }
         Some(Command::Classifiers { command: clf_cmd }) => {
             let config_path = resolve_config_path(cli.config.as_deref());
