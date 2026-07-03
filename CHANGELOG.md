@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   honest, differentiated guidance pointing to `--connect <URL>` and quitting the TUI,
   since live in-session daemon attach/detach requires a runtime-swappable transport that
   does not exist yet (the transport is fixed at TUI construction time). Closes #5509.
+
+- `fix(scheduler)`: `zeph-scheduler`'s test-only `test_pool()` helper hardcoded a
+  `SqlitePool` constructor while its return type `DbPool` resolves to `Pool<Postgres>`
+  when the `postgres` feature is enabled, causing an `E0308` compile failure under
+  `--features postgres`. Now constructs the pool via `DbConfig::connect()`, mirroring
+  the pattern already used by this crate's `store.rs` test_pool(). Closes #5595.
+
 - `fix(tools,core)`: live agent turns no longer stall indefinitely when Qdrant is
   unreachable (up to 240s observed, never dispatching the originally-requested tool). Two
   compounding defects: (1) `handle_tool_failure_outcomes` misclassified every structured
