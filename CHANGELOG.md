@@ -694,6 +694,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(memory)`: `store/skills.rs`'s deactivate-old/activate-new skill-version-switch
+  SQL pair was copy-pasted across `save_and_activate_skill_version`, `activate_skill_version`,
+  and `ensure_skill_version_exists`. Extracted into a shared `switch_active_skill_version`
+  transaction helper. Closes #5496.
+- `refactor(memory)`: `semantic/recall.rs`'s `MemoryRoute` dispatch match was duplicated
+  between `recall_routed` and `recall_routed_async`, and had already drifted — the async
+  path was missing the Episodic arm's debug trace. Extracted into a shared `recall_by_route`
+  helper and unified the trace onto both paths. Closes #5495.
 - `refactor(orchestration)`: `dag::propagate_failure`'s trailing wildcard match arm on
   `FailureStrategy` no longer silently falls back to `Abort`-equivalent behavior with no signal.
   The wildcard arm is required for compilation because `FailureStrategy` is `#[non_exhaustive]`
