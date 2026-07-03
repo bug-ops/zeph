@@ -546,13 +546,135 @@ pub(crate) async fn run_daemon(
                 ),
             ),
         )));
-    // #5611: gate the FULLY composed tree (base chain + mcp + search + skill loader +
-    // memory + overflow) behind one outermost TrustGateExecutor, matching runner.rs and
-    // ACP (`src/acp.rs`). Previously only the base chain was gated here, so a Quarantined
-    // skill could still reach `memory_save` and any MCP-sourced tool.
-    let (tool_executor, mcp_ids_handle) =
+    // Gate the FULLY composed tree (base chain + mcp + search + skill loader + memory +
+    // overflow) behind one outermost TrustGateExecutor, matching runner.rs and ACP
+    // (`src/acp.rs`). Previously only the base chain was gated here, so a Quarantined skill
+    // could still reach `memory_save` and any MCP-sourced tool.
+    let (trust_gated, mcp_ids_handle) =
         agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
     agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
+    // Wire the same PolicyGateExecutor / AdversarialPolicyGateExecutor stack the CLI
+    // path (src/runner.rs) applies around its full tool composite, so declarative
+    // (`[tools.policy]`/`[tools.authorization]`) and LLM-based (`[tools.adversarial_policy]`)
+    // enforcement covers the daemon (A2A) entry point too — previously tool calls dispatched
+    // through the daemon bypassed both gates entirely regardless of config. Wiring order
+    // (outermost first): PolicyGateExecutor -> AdversarialPolicyGateExecutor -> TrustGateExecutor
+    // -> inner_executor.
+    let adversarial_gated: zeph_tools::DynExecutor = if config.tools.adversarial_policy.enabled {
+        let adv_cfg = &config.tools.adversarial_policy;
+        let policies: Vec<String> = if let Some(ref path) = adv_cfg.policy_file {
+            // SEC-01: canonicalize + boundary check matching load_policy_file() in policy.rs,
+            // mirroring runner.rs — prevents symlink attacks exfiltrating arbitrary files via
+            // the policy LLM.
+            let path_owned = path.clone();
+            let load_result =
+                tokio::task::spawn_blocking(move || -> Result<Vec<String>, std::io::Error> {
+                    let p = std::path::Path::new(&path_owned);
+                    let canonical = std::fs::canonicalize(p)?;
+                    let canonical_base = std::env::current_dir().and_then(std::fs::canonicalize)?;
+                    if !canonical.starts_with(&canonical_base) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "adversarial policy file escapes project root",
+                        ));
+                    }
+                    let content = std::fs::read_to_string(&canonical)?;
+                    Ok(zeph_tools::parse_policy_lines(&content))
+                })
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+            match load_result {
+                Ok(lines) => lines,
+                Err(e) => {
+                    tracing::error!(
+                        path = %path,
+                        "adversarial policy: failed to load policy file: {e}"
+                    );
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        };
+
+        if policies.is_empty() {
+            tracing::warn!("adversarial policy enabled but no policies loaded; gate is a no-op");
+        }
+
+        let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+            policies,
+            std::time::Duration::from_millis(adv_cfg.timeout_ms),
+            adv_cfg.fail_open,
+            adv_cfg.exempt_tools.clone(),
+        ));
+
+        let policy_provider = if adv_cfg.policy_provider.is_empty() {
+            provider.clone()
+        } else {
+            match crate::bootstrap::create_named_provider(adv_cfg.policy_provider.as_str(), config)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %adv_cfg.policy_provider,
+                        error = %e,
+                        "adversarial policy provider resolution failed, using primary"
+                    );
+                    provider.clone()
+                }
+            }
+        };
+
+        let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
+            std::sync::Arc::new(agent_setup::AdversarialPolicyLlmAdapter {
+                provider: policy_provider,
+            });
+
+        let mut gate =
+            zeph_tools::AdversarialPolicyGateExecutor::new(trust_gated, validator, llm_client);
+        if let Some(ref audit) = daemon_audit_logger {
+            gate = gate.with_audit(std::sync::Arc::clone(audit));
+        }
+        zeph_tools::DynExecutor(std::sync::Arc::new(gate))
+    } else {
+        trust_gated
+    };
+
+    // Merge authorization rules into policy: policy.rules evaluated first (first-match-wins),
+    // then authorization.rules appended after, mirroring runner.rs.
+    let effective_policy =
+        if config.tools.authorization.enabled && !config.tools.authorization.rules.is_empty() {
+            let mut merged = config.tools.policy.clone();
+            merged
+                .rules
+                .extend(config.tools.authorization.rules.clone());
+            merged.enabled = true;
+            merged
+        } else {
+            config.tools.policy.clone()
+        };
+    let tool_executor = if effective_policy.enabled {
+        match zeph_tools::PolicyEnforcer::compile(&effective_policy) {
+            Ok(enforcer) => {
+                let policy_context = std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
+                    trust_level: zeph_common::SkillTrustLevel::Trusted,
+                    env: std::env::vars().collect(),
+                }));
+                let gate = zeph_tools::PolicyGateExecutor::new(
+                    adversarial_gated,
+                    std::sync::Arc::new(enforcer),
+                    policy_context,
+                );
+                zeph_tools::DynExecutor(std::sync::Arc::new(gate))
+            }
+            Err(e) => {
+                tracing::error!("failed to compile policy rules, policy enforcement disabled: {e}");
+                adversarial_gated
+            }
+        }
+    } else {
+        adversarial_gated
+    };
 
     let mcp_embed_provider = {
         let discovery = &config.mcp.tool_discovery;
@@ -1225,6 +1347,242 @@ mod tests {
         assert!(
             read_result.is_ok(),
             "readonly native tool must remain reachable under Quarantine, got {read_result:?}"
+        );
+    }
+
+    /// Regression test confirming `PolicyGateExecutor` is reachable through the daemon
+    /// composite chain: `run_daemon` previously built its full tool composite (skill
+    /// loader/memory/overflow/base+MCP+search) with no declarative policy gate wired in at
+    /// all, unlike the CLI path (`src/runner.rs`), so a configured `[tools.policy]` deny
+    /// rule was silently ignored for every daemon-dispatched tool call. Reconstructs the
+    /// same `base_executor` chain `run_daemon` builds (file/shell/scrape/diagnostics,
+    /// wrapped in `TrustGateExecutor`) and layers `PolicyGateExecutor` on top exactly as
+    /// `run_daemon` now does, asserting a deny rule for `diagnostics` is actually enforced.
+    #[tokio::test]
+    async fn policy_gate_denies_tool_in_daemon_composite_chain() {
+        use zeph_tools::executor::ToolExecutor;
+
+        let config = Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = agent_setup::build_diagnostics_executor(&config);
+        let base_executor = agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let base_executor = zeph_tools::TrustGateExecutor::new(base_executor, policy);
+
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "diagnostics".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap();
+        let policy_context = std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
+            trust_level: zeph_common::SkillTrustLevel::Trusted,
+            env: std::collections::HashMap::new(),
+        }));
+        let gated = zeph_tools::PolicyGateExecutor::new(
+            base_executor,
+            std::sync::Arc::new(enforcer),
+            policy_context,
+        );
+
+        let call = zeph_tools::ToolCall {
+            tool_id: "diagnostics".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = gated.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from PolicyGateExecutor deny rule, got {result:?}"
+        );
+    }
+
+    /// Combined regression test proving `PolicyGateExecutor` and `TrustGateExecutor`
+    /// (`Quarantine` enforcement via `apply_common_tool_gating`) both enforce independently
+    /// in the same composite chain: reconstructs the full production wiring order (outermost
+    /// first) `PolicyGateExecutor -> TrustGateExecutor -> composite` and asserts that a
+    /// declarative policy deny rule AND `TrustGateExecutor`'s Quarantine enforcement both
+    /// survive being stacked together — neither gate silently swallows or bypasses the
+    /// other, and a tool denied by neither still dispatches normally.
+    #[tokio::test]
+    async fn policy_and_quarantine_trust_gate_both_enforce_in_daemon_composite_chain() {
+        use zeph_tools::executor::ToolExecutor;
+
+        let mcp_tool = zeph_mcp::McpTool {
+            server_id: "mcp".to_owned(),
+            name: "write_file".to_owned(),
+            description: String::new(),
+            input_schema: serde_json::Value::Null,
+            output_schema: None,
+            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
+        };
+
+        let base_tool = zeph_tools::CompositeExecutor::new(
+            DaemonTaggedMock("read"),
+            DaemonTaggedMock("mcp_write_file"),
+        );
+        let inner_executor =
+            zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
+                DaemonTaggedMock("load_skill"),
+                zeph_tools::CompositeExecutor::new(
+                    DaemonTaggedMock("memory_save"),
+                    zeph_tools::CompositeExecutor::new(
+                        DaemonTaggedMock("overflow_flush"),
+                        base_tool,
+                    ),
+                ),
+            )));
+
+        // TrustGateExecutor (innermost gate), Quarantined trust.
+        let (trust_gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+            inner_executor,
+            &zeph_tools::PermissionPolicy::default(),
+        );
+        agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
+        zeph_tools::ToolExecutor::set_effective_trust(
+            &trust_gated,
+            zeph_common::SkillTrustLevel::Quarantined,
+        );
+
+        // PolicyGateExecutor (outermost gate), denying a tool Quarantine does not itself
+        // target by name, to prove the declarative gate's own deny logic isn't shadowed.
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "overflow_flush".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap();
+        let policy_context = std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
+            trust_level: zeph_common::SkillTrustLevel::Trusted,
+            env: std::collections::HashMap::new(),
+        }));
+        let gated = zeph_tools::PolicyGateExecutor::new(
+            trust_gated,
+            std::sync::Arc::new(enforcer),
+            policy_context,
+        );
+
+        // Policy-denied tool: blocked by PolicyGateExecutor before reaching TrustGate.
+        let policy_denied = gated
+            .execute_tool_call(&daemon_test_call("overflow_flush"))
+            .await;
+        assert!(
+            matches!(policy_denied, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from PolicyGateExecutor's own deny rule, got {policy_denied:?}"
+        );
+
+        // Quarantine-denied tool (policy allows it by default): must still be blocked by
+        // TrustGateExecutor's Quarantine check — proves TrustGate isn't shadowed by the
+        // outer PolicyGate.
+        let quarantine_denied = gated
+            .execute_tool_call(&daemon_test_call("load_skill"))
+            .await;
+        assert!(
+            matches!(
+                quarantine_denied,
+                Err(zeph_tools::ToolError::Blocked { .. })
+            ),
+            "expected Blocked from TrustGateExecutor's Quarantine enforcement, got {quarantine_denied:?}"
+        );
+
+        // Neither gate denies "read": must still dispatch successfully through the full
+        // merged stack.
+        let allowed = gated.execute_tool_call(&daemon_test_call("read")).await;
+        assert!(
+            allowed.is_ok(),
+            "expected read to dispatch normally through the merged gate stack, got {allowed:?}"
+        );
+    }
+
+    /// Regression test confirming `AdversarialPolicyGateExecutor` is reachable through the
+    /// daemon composite chain: `run_daemon` never wired this gate in either, so
+    /// `[tools.adversarial_policy]` (LLM-based tool review) had no effect on daemon-dispatched
+    /// calls even when enabled. Same reconstructed `base_executor` chain as the sibling test
+    /// above, layered with `AdversarialPolicyGateExecutor` driven by a fake `PolicyLlmClient`
+    /// that always returns `DENY`, asserting the deny path is reached.
+    #[tokio::test]
+    async fn adversarial_policy_gate_denies_tool_in_daemon_composite_chain() {
+        use zeph_tools::executor::ToolExecutor;
+
+        struct AlwaysDenyLlm;
+        impl zeph_tools::PolicyLlmClient for AlwaysDenyLlm {
+            fn chat<'a>(
+                &'a self,
+                _messages: &'a [zeph_tools::PolicyMessage],
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>,
+            > {
+                Box::pin(async move { Ok("DENY: test policy".to_owned()) })
+            }
+        }
+
+        let config = Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = agent_setup::build_diagnostics_executor(&config);
+        let base_executor = agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let base_executor = zeph_tools::TrustGateExecutor::new(base_executor, policy);
+
+        let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+            vec!["never allow diagnostics".to_owned()],
+            std::time::Duration::from_millis(500),
+            false,
+            vec![],
+        ));
+        let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
+            std::sync::Arc::new(AlwaysDenyLlm);
+        let gated =
+            zeph_tools::AdversarialPolicyGateExecutor::new(base_executor, validator, llm_client);
+
+        let call = zeph_tools::ToolCall {
+            tool_id: "diagnostics".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = gated.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from AdversarialPolicyGateExecutor deny decision, got {result:?}"
         );
     }
 

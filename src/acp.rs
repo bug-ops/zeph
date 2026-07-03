@@ -102,13 +102,31 @@ struct SharedAgentDeps {
     /// involves copying in-memory embedding vectors only for the `InMemory` variant.
     matcher: Option<zeph_skills::matcher::SkillMatcherBackend>,
     max_active_skills: usize,
-    /// Ungated base+MCP+search executor tree. Per-session state (skill loader, memory,
-    /// overflow) is composed on top in `spawn_acp_agent`, which wraps the FULL result in one
-    /// outermost `TrustGateExecutor` via `agent_setup::apply_common_tool_gating` (#5611) —
+    /// Base tool composite (file/shell/scrape/diagnostics + MCP + `search_code`), *not*
+    /// wrapped in any gate. `spawn_acp_agent` composites this further with `skill_loader`/
+    /// `memory`/`overflow`/ACP-native fs/shell per session, then wraps the FULL per-session
+    /// result in `PolicyGateExecutor -> AdversarialPolicyGateExecutor -> TrustGateExecutor`
+    /// (outermost first) via `policy_enforcer`/`adversarial_policy_validator`/
+    /// `adversarial_policy_llm_client` below and `agent_setup::apply_common_tool_gating` —
     /// so this field must never be dispatched to directly without that wrap.
     tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor>,
-    /// Shared permission policy, threaded into `spawn_acp_agent`'s trust gate (#5611).
+    /// Shared permission policy, threaded into `spawn_acp_agent`'s `TrustGateExecutor` wrap
+    /// (via `apply_common_tool_gating`).
     permission_policy: zeph_tools::PermissionPolicy,
+    /// Pre-built declarative policy enforcer (`[tools.policy]` merged with
+    /// `[tools.authorization]`), compiled once per connection since it depends only on static
+    /// config. `None` when disabled or compilation failed. `spawn_acp_agent` wraps the
+    /// per-session composite in a fresh `PolicyGateExecutor` (fresh `PolicyContext` per
+    /// session) using this shared enforcer.
+    policy_enforcer: Option<std::sync::Arc<zeph_tools::PolicyEnforcer>>,
+    /// Pre-built adversarial (LLM-based) policy validator (`[tools.adversarial_policy]`),
+    /// built once per connection — policy file load + provider resolution are static config,
+    /// safe to share. Paired with `adversarial_policy_llm_client`. `None` when disabled.
+    adversarial_policy_validator: Option<std::sync::Arc<zeph_tools::PolicyValidator>>,
+    /// LLM client paired with `adversarial_policy_validator`. Kept separate (rather than
+    /// baked into a pre-built gate) because `AdversarialPolicyGateExecutor` itself must be
+    /// constructed fresh per session, wrapping that session's specific composite.
+    adversarial_policy_llm_client: Option<std::sync::Arc<dyn zeph_tools::PolicyLlmClient>>,
     skill_paths: Vec<PathBuf>,
     memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     history_limit: u32,
@@ -440,7 +458,7 @@ async fn build_acp_deps(
         diagnostics_executor,
     );
     let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
-    let tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
+    let inner_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
             zeph_tools::CompositeExecutor::new(base_executor, mcp_executor),
         );
@@ -458,6 +476,117 @@ async fn build_acp_deps(
         } else {
             base
         }
+    };
+    let tool_executor = inner_executor;
+    // Pre-build the pieces `PolicyGateExecutor`/`AdversarialPolicyGateExecutor` need — this
+    // depends only on static config (policy file contents, provider resolution), so it is
+    // safe and more efficient to build once per connection rather than per session. The
+    // gates themselves are constructed fresh per session in `spawn_acp_agent`, wrapping that
+    // session's full composite (skill_loader/memory/overflow/base/MCP/search/ACP-native
+    // fs/shell) — not just this connection-scoped `tool_executor` — matching runner.rs's
+    // full-stack coverage instead of gating only a subset of the tool surface.
+    let (adversarial_policy_validator, adversarial_policy_llm_client) = if config
+        .tools
+        .adversarial_policy
+        .enabled
+    {
+        let adv_cfg = &config.tools.adversarial_policy;
+        let policies: Vec<String> = if let Some(ref path) = adv_cfg.policy_file {
+            // SEC-01: canonicalize + boundary check matching load_policy_file() in policy.rs,
+            // mirroring runner.rs — prevents symlink attacks exfiltrating arbitrary files via
+            // the policy LLM.
+            let path_owned = path.clone();
+            let load_result =
+                tokio::task::spawn_blocking(move || -> Result<Vec<String>, std::io::Error> {
+                    let p = std::path::Path::new(&path_owned);
+                    let canonical = std::fs::canonicalize(p)?;
+                    let canonical_base = std::env::current_dir().and_then(std::fs::canonicalize)?;
+                    if !canonical.starts_with(&canonical_base) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "adversarial policy file escapes project root",
+                        ));
+                    }
+                    let content = std::fs::read_to_string(&canonical)?;
+                    Ok(zeph_tools::parse_policy_lines(&content))
+                })
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+            match load_result {
+                Ok(lines) => lines,
+                Err(e) => {
+                    tracing::error!(
+                        path = %path,
+                        "adversarial policy: failed to load policy file: {e}"
+                    );
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        };
+
+        if policies.is_empty() {
+            tracing::warn!("adversarial policy enabled but no policies loaded; gate is a no-op");
+        }
+
+        let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+            policies,
+            std::time::Duration::from_millis(adv_cfg.timeout_ms),
+            adv_cfg.fail_open,
+            adv_cfg.exempt_tools.clone(),
+        ));
+
+        let policy_provider = if adv_cfg.policy_provider.is_empty() {
+            provider.clone()
+        } else {
+            match crate::bootstrap::create_named_provider(adv_cfg.policy_provider.as_str(), config)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %adv_cfg.policy_provider,
+                        error = %e,
+                        "adversarial policy provider resolution failed, using primary"
+                    );
+                    provider.clone()
+                }
+            }
+        };
+
+        let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
+            std::sync::Arc::new(agent_setup::AdversarialPolicyLlmAdapter {
+                provider: policy_provider,
+            });
+
+        (Some(validator), Some(llm_client))
+    } else {
+        (None, None)
+    };
+
+    // Merge authorization rules into policy: policy.rules evaluated first (first-match-wins),
+    // then authorization.rules appended after, mirroring runner.rs.
+    let effective_policy =
+        if config.tools.authorization.enabled && !config.tools.authorization.rules.is_empty() {
+            let mut merged = config.tools.policy.clone();
+            merged
+                .rules
+                .extend(config.tools.authorization.rules.clone());
+            merged.enabled = true;
+            merged
+        } else {
+            config.tools.policy.clone()
+        };
+    let policy_enforcer = if effective_policy.enabled {
+        match zeph_tools::PolicyEnforcer::compile(&effective_policy) {
+            Ok(enforcer) => Some(std::sync::Arc::new(enforcer)),
+            Err(e) => {
+                tracing::error!("failed to compile policy rules, policy enforcement disabled: {e}");
+                None
+            }
+        }
+    } else {
+        None
     };
 
     let mcp_registry = create_mcp_registry(
@@ -670,6 +799,9 @@ async fn build_acp_deps(
         max_active_skills: config.skills.max_active_skills.get(),
         tool_executor,
         permission_policy,
+        policy_enforcer,
+        adversarial_policy_validator,
+        adversarial_policy_llm_client,
         skill_paths,
         skill_reload_tx,
         config_reload_tx,
@@ -926,84 +1058,120 @@ async fn spawn_acp_agent(
         ex
     };
     let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
-    let (tool_executor, cancel_signal, provider_override, parent_tool_use_id) =
-        if let Some(ctx) = acp_ctx {
-            let cancel_signal = Arc::clone(&ctx.cancel_signal);
-            let provider_override = Arc::clone(&ctx.provider_override);
-            let parent_tool_use_id = ctx.parent_tool_use_id.clone();
-            // Link adapter_cancel to session cancel_signal so the broadcast forwarding task
-            // exits when the ACP session is cancelled (eviction, shutdown, or completion).
-            let adapter_cancel_clone = adapter_cancel.clone();
-            let cancel_signal_clone = Arc::clone(&cancel_signal);
-            tokio::spawn(async move {
-                // EXEMPT(#5144): per-session cancel bridge; self-terminating single await; name collision risk under spawn
-                cancel_signal_clone.notified().await;
-                adapter_cancel_clone.cancel();
-            });
-            let mut base: Arc<dyn ErasedToolExecutor> = Arc::clone(&tool_executor) as Arc<_>;
-            if let Some(fs) = ctx.file_executor {
-                // Suppress FileExecutor's read/write/glob when AcpFileExecutor is active.
-                // edit and grep remain available from FileExecutor (no ACP equivalents yet).
-                let filtered = zeph_tools::ToolFilter::new(
-                    zeph_tools::DynExecutor(base),
-                    &["read", "write", "glob"],
-                );
-                base = Arc::new(zeph_tools::CompositeExecutor::new(fs, filtered));
-            }
-            if let Some(shell) = ctx.shell_executor {
-                base = Arc::new(zeph_tools::CompositeExecutor::new(
-                    shell,
-                    zeph_tools::DynExecutor(base),
-                ));
-            }
+    let (base_composite, cancel_signal, provider_override, parent_tool_use_id): (
+        Arc<dyn ErasedToolExecutor>,
+        _,
+        _,
+        _,
+    ) = if let Some(ctx) = acp_ctx {
+        let cancel_signal = Arc::clone(&ctx.cancel_signal);
+        let provider_override = Arc::clone(&ctx.provider_override);
+        let parent_tool_use_id = ctx.parent_tool_use_id.clone();
+        // Link adapter_cancel to session cancel_signal so the broadcast forwarding task
+        // exits when the ACP session is cancelled (eviction, shutdown, or completion).
+        let adapter_cancel_clone = adapter_cancel.clone();
+        let cancel_signal_clone = Arc::clone(&cancel_signal);
+        tokio::spawn(async move {
+            // EXEMPT(#5144): per-session cancel bridge; self-terminating single await; name collision risk under spawn
+            cancel_signal_clone.notified().await;
+            adapter_cancel_clone.cancel();
+        });
+        let mut base: Arc<dyn ErasedToolExecutor> = Arc::clone(&tool_executor) as Arc<_>;
+        if let Some(fs) = ctx.file_executor {
+            // Suppress FileExecutor's read/write/glob when AcpFileExecutor is active.
+            // edit and grep remain available from FileExecutor (no ACP equivalents yet).
+            let filtered = zeph_tools::ToolFilter::new(
+                zeph_tools::DynExecutor(base),
+                &["read", "write", "glob"],
+            );
+            base = Arc::new(zeph_tools::CompositeExecutor::new(fs, filtered));
+        }
+        if let Some(shell) = ctx.shell_executor {
             base = Arc::new(zeph_tools::CompositeExecutor::new(
-                skill_loader_executor,
-                zeph_tools::CompositeExecutor::new(
-                    memory_executor,
-                    zeph_tools::CompositeExecutor::new(
-                        overflow_executor,
-                        zeph_tools::DynExecutor(base),
-                    ),
-                ),
-            ));
-            // #5611: gate the FULLY composed tree (skill loader + memory + overflow +
-            // base/mcp/search, plus any ACP-provided fs/shell overrides) behind one
-            // outermost TrustGateExecutor, matching runner.rs. Previously only the base
-            // chain carried a gate, so memory/MCP/skill-loader tools composed outside it
-            // bypassed Quarantine/Blocked entirely.
-            let (gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+                shell,
                 zeph_tools::DynExecutor(base),
-                &permission_policy,
-            );
-            crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
-            (
-                gated,
-                Some(cancel_signal),
-                Some(provider_override),
-                parent_tool_use_id,
-            )
-        } else {
-            // No AcpContext: the adapter forwarding tasks (skill reload, config reload, and
-            // scheduler receivers) run until adapter_cancel.cancel() is called explicitly at
-            // function end (line below), or until the mpsc sender is dropped.
-            let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
-                skill_loader_executor,
-                zeph_tools::CompositeExecutor::new(
-                    memory_executor,
-                    zeph_tools::CompositeExecutor::new(
-                        overflow_executor,
-                        zeph_tools::DynExecutor(Arc::clone(&tool_executor) as Arc<_>),
-                    ),
-                ),
             ));
-            // #5611: same outermost gate as the `Some(ctx)` branch above.
-            let (gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
-                zeph_tools::DynExecutor(base),
-                &permission_policy,
-            );
-            crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
-            (gated, None, None, None)
-        };
+        }
+        base = Arc::new(zeph_tools::CompositeExecutor::new(
+            skill_loader_executor,
+            zeph_tools::CompositeExecutor::new(
+                memory_executor,
+                zeph_tools::CompositeExecutor::new(
+                    overflow_executor,
+                    zeph_tools::DynExecutor(base),
+                ),
+            ),
+        ));
+        (
+            base,
+            Some(cancel_signal),
+            Some(provider_override),
+            parent_tool_use_id,
+        )
+    } else {
+        // No AcpContext: the adapter forwarding tasks (skill reload, config reload, and
+        // scheduler receivers) run until adapter_cancel.cancel() is called explicitly at
+        // function end (line below), or until the mpsc sender is dropped.
+        let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
+            skill_loader_executor,
+            zeph_tools::CompositeExecutor::new(
+                memory_executor,
+                zeph_tools::CompositeExecutor::new(
+                    overflow_executor,
+                    zeph_tools::DynExecutor(Arc::clone(&tool_executor) as Arc<_>),
+                ),
+            ),
+        ));
+        (base, None, None, None)
+    };
+
+    // Gate the FULLY composed per-session tree (skill_loader/memory/overflow/base/mcp/search,
+    // plus any ACP-provided fs/shell overrides) behind one outermost TrustGateExecutor,
+    // matching runner.rs. Previously only the base chain carried a gate, so memory/MCP/
+    // skill-loader tools composed outside it bypassed Quarantine/Blocked entirely.
+    let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+        zeph_tools::DynExecutor(base_composite),
+        &permission_policy,
+    );
+    crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
+
+    // Wire AdversarialPolicyGateExecutor / PolicyGateExecutor around the trust-gated
+    // per-session composite, using the enforcer/validator/LLM client pre-built once per
+    // connection in `build_acp_deps` — previously these gates wrapped only the
+    // connection-scoped base/MCP/search subset, so skill_loader/memory/overflow/ACP-native
+    // fs/shell calls bypassed both. Wiring order (outermost first): PolicyGateExecutor ->
+    // AdversarialPolicyGateExecutor -> TrustGateExecutor -> composite, matching runner.rs.
+    let adversarial_gated: zeph_tools::DynExecutor = if let (Some(validator), Some(llm_client)) = (
+        d.adversarial_policy_validator.as_ref(),
+        d.adversarial_policy_llm_client.as_ref(),
+    ) {
+        let mut gate = zeph_tools::AdversarialPolicyGateExecutor::new(
+            trust_gated,
+            Arc::clone(validator),
+            Arc::clone(llm_client),
+        );
+        if let Some(ref audit) = d.audit_logger {
+            gate = gate.with_audit(Arc::clone(audit));
+        }
+        zeph_tools::DynExecutor(Arc::new(gate))
+    } else {
+        trust_gated
+    };
+    let tool_executor: zeph_tools::DynExecutor = if let Some(enforcer) = d.policy_enforcer.as_ref()
+    {
+        let policy_context = Arc::new(RwLock::new(zeph_tools::PolicyContext {
+            trust_level: zeph_common::SkillTrustLevel::Trusted,
+            env: std::env::vars().collect(),
+        }));
+        let gate = zeph_tools::PolicyGateExecutor::new(
+            adversarial_gated,
+            Arc::clone(enforcer),
+            policy_context,
+        );
+        zeph_tools::DynExecutor(Arc::new(gate))
+    } else {
+        adversarial_gated
+    };
 
     // Session persistence (spec-068, #5343): reuse the ACP session_id directly as the
     // zeph_common::SessionId — ACP already owns this session's identity/lifecycle, so no
@@ -1947,6 +2115,7 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+    use std::sync::Arc;
     use tempfile::TempDir;
     use zeph_tools::executor::ToolExecutor;
 
@@ -2220,6 +2389,444 @@ mod tests {
             read_result.is_ok(),
             "readonly native tool must remain reachable under Quarantine, got {read_result:?}"
         );
+    }
+
+    /// Regression test confirming `PolicyGateExecutor` is reachable through the ACP composite
+    /// chain: `build_acp_deps` previously built its tool composite (base+MCP+search) with no
+    /// declarative policy gate wired in at all, unlike the CLI path (`src/runner.rs`), so a
+    /// configured `[tools.policy]` deny rule was silently ignored for every ACP-dispatched
+    /// tool call. Reconstructs the same `base_executor` chain `build_acp_deps` builds
+    /// (file/shell/scrape/diagnostics, wrapped in `TrustGateExecutor`) and layers
+    /// `PolicyGateExecutor` on top exactly as `build_acp_deps` now does, asserting a deny rule
+    /// for `diagnostics` is enforced.
+    #[tokio::test]
+    async fn policy_gate_denies_tool_in_acp_composite_chain() {
+        let config = zeph_core::config::Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(&config);
+        let base_executor = crate::agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let base_executor = zeph_tools::TrustGateExecutor::new(base_executor, policy);
+
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "diagnostics".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap();
+        let policy_context = std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
+            trust_level: zeph_common::SkillTrustLevel::Trusted,
+            env: std::collections::HashMap::new(),
+        }));
+        let gated = zeph_tools::PolicyGateExecutor::new(
+            base_executor,
+            std::sync::Arc::new(enforcer),
+            policy_context,
+        );
+
+        let call = zeph_tools::ToolCall {
+            tool_id: "diagnostics".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = gated.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from PolicyGateExecutor deny rule, got {result:?}"
+        );
+    }
+
+    /// Regression test confirming `AdversarialPolicyGateExecutor` is reachable through the
+    /// ACP composite chain: `build_acp_deps` never wired this gate in either, so
+    /// `[tools.adversarial_policy]` (LLM-based tool review) had no effect on ACP-dispatched
+    /// calls even when enabled. Same reconstructed `base_executor` chain as the sibling test
+    /// above, layered with `AdversarialPolicyGateExecutor` driven by a fake `PolicyLlmClient`
+    /// that always returns `DENY`, asserting the deny path is reached.
+    #[tokio::test]
+    async fn adversarial_policy_gate_denies_tool_in_acp_composite_chain() {
+        struct AlwaysDenyLlm;
+        impl zeph_tools::PolicyLlmClient for AlwaysDenyLlm {
+            fn chat<'a>(
+                &'a self,
+                _messages: &'a [zeph_tools::PolicyMessage],
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>,
+            > {
+                Box::pin(async move { Ok("DENY: test policy".to_owned()) })
+            }
+        }
+
+        let config = zeph_core::config::Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(&config);
+        let base_executor = crate::agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let base_executor = zeph_tools::TrustGateExecutor::new(base_executor, policy);
+
+        let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+            vec!["never allow diagnostics".to_owned()],
+            std::time::Duration::from_millis(500),
+            false,
+            vec![],
+        ));
+        let llm_client: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> =
+            std::sync::Arc::new(AlwaysDenyLlm);
+        let gated =
+            zeph_tools::AdversarialPolicyGateExecutor::new(base_executor, validator, llm_client);
+
+        let call = zeph_tools::ToolCall {
+            tool_id: "diagnostics".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = gated.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from AdversarialPolicyGateExecutor deny decision, got {result:?}"
+        );
+    }
+
+    /// Combined regression test proving `PolicyGateExecutor` and `TrustGateExecutor`
+    /// (`Quarantine` enforcement via `apply_common_tool_gating`) both enforce independently
+    /// in the same composite chain: reconstructs the production wiring order (outermost
+    /// first) `PolicyGateExecutor -> TrustGateExecutor -> composite` and asserts that a
+    /// declarative policy deny rule AND `TrustGateExecutor`'s Quarantine enforcement both
+    /// survive being stacked together — neither gate silently swallows or bypasses the
+    /// other, and a tool denied by neither still dispatches normally.
+    #[tokio::test]
+    async fn policy_and_quarantine_trust_gate_both_enforce_in_acp_composite_chain() {
+        use zeph_tools::executor::ToolExecutor;
+
+        let mcp_tool = zeph_mcp::McpTool {
+            server_id: "mcp".to_owned(),
+            name: "write_file".to_owned(),
+            description: String::new(),
+            input_schema: serde_json::Value::Null,
+            output_schema: None,
+            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
+        };
+
+        let base_tool = zeph_tools::CompositeExecutor::new(
+            AcpTaggedMock("read"),
+            AcpTaggedMock("mcp_write_file"),
+        );
+        let inner_executor =
+            zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
+                AcpTaggedMock("load_skill"),
+                zeph_tools::CompositeExecutor::new(
+                    AcpTaggedMock("memory_save"),
+                    zeph_tools::CompositeExecutor::new(AcpTaggedMock("overflow_flush"), base_tool),
+                ),
+            )));
+
+        // TrustGateExecutor (innermost gate), Quarantined trust.
+        let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+            inner_executor,
+            &zeph_tools::PermissionPolicy::default(),
+        );
+        crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
+        zeph_tools::ToolExecutor::set_effective_trust(
+            &trust_gated,
+            zeph_common::SkillTrustLevel::Quarantined,
+        );
+
+        // PolicyGateExecutor (outermost gate), denying a tool Quarantine does not itself
+        // target by name, to prove the declarative gate's own deny logic isn't shadowed.
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "overflow_flush".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer = zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap();
+        let policy_context = std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
+            trust_level: zeph_common::SkillTrustLevel::Trusted,
+            env: std::collections::HashMap::new(),
+        }));
+        let gated = zeph_tools::PolicyGateExecutor::new(
+            trust_gated,
+            std::sync::Arc::new(enforcer),
+            policy_context,
+        );
+
+        // Policy-denied tool: blocked by PolicyGateExecutor before reaching TrustGate.
+        let policy_denied = gated
+            .execute_tool_call(&acp_test_call("overflow_flush"))
+            .await;
+        assert!(
+            matches!(policy_denied, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected Blocked from PolicyGateExecutor's own deny rule, got {policy_denied:?}"
+        );
+
+        // Quarantine-denied tool (policy allows it by default): must still be blocked by
+        // TrustGateExecutor's Quarantine check — proves TrustGate isn't shadowed by the
+        // outer PolicyGate.
+        let quarantine_denied = gated.execute_tool_call(&acp_test_call("load_skill")).await;
+        assert!(
+            matches!(
+                quarantine_denied,
+                Err(zeph_tools::ToolError::Blocked { .. })
+            ),
+            "expected Blocked from TrustGateExecutor's Quarantine enforcement, got {quarantine_denied:?}"
+        );
+
+        // Neither gate denies "read": must still dispatch successfully through the full
+        // merged stack.
+        let allowed = gated.execute_tool_call(&acp_test_call("read")).await;
+        assert!(
+            allowed.is_ok(),
+            "expected read to dispatch normally through the merged gate stack, got {allowed:?}"
+        );
+    }
+
+    /// Trivial stand-in for `AcpFileExecutor`/`AcpShellExecutor` in tests: the real types need
+    /// a live `acp::ConnectionTo<acp::Client>` (an IDE transport) to construct, which isn't
+    /// available in a unit test. This exposes the same tool ids the real executors use
+    /// (`write_file` for `AcpFileExecutor`, `bash` for `AcpShellExecutor` — see
+    /// `crates/zeph-acp/src/fs.rs`/`terminal.rs`) so tests can occupy the identical composite
+    /// slot and prove the gate intercepts calls there, without needing the real network-backed
+    /// implementation — the gate only cares about `tool_id`, not which concrete type serves it.
+    #[derive(Debug)]
+    struct AcpNativeStandIn {
+        tool_id: &'static str,
+    }
+    impl ToolExecutor for AcpNativeStandIn {
+        async fn execute(
+            &self,
+            _response: &str,
+        ) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+            Ok(None)
+        }
+        async fn execute_tool_call(
+            &self,
+            call: &zeph_tools::ToolCall,
+        ) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+            if call.tool_id != self.tool_id {
+                return Ok(None);
+            }
+            panic!(
+                "AcpNativeStandIn({}) reached — gate did not intercept",
+                self.tool_id
+            );
+        }
+    }
+
+    /// Builds the full per-session composite `spawn_acp_agent` assembles when the IDE supplies
+    /// an `AcpContext` (the primary ACP embedding case) — `ToolFilter`-wrapped base composed
+    /// with `AcpNativeStandIn` fs/shell stand-ins (occupying the same slot as
+    /// `AcpFileExecutor`/`AcpShellExecutor`), then `skill_loader`/`memory`/`overflow` layered
+    /// outside, matching `spawn_acp_agent`'s exact nesting order.
+    async fn build_full_acp_session_composite_with_native_fs_shell() -> Arc<dyn ErasedToolExecutor>
+    {
+        let registry = Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty()));
+        let skill_loader_executor = zeph_core::SkillLoaderExecutor::new(Arc::clone(&registry));
+
+        let mock_provider =
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        let memory = Arc::new(
+            zeph_memory::semantic::SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                mock_provider,
+                "test",
+            )
+            .await
+            .unwrap(),
+        );
+        let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
+            Arc::clone(&memory),
+            zeph_memory::ConversationId(0),
+            zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
+                zeph_core::config::Config::default()
+                    .security
+                    .memory_validation
+                    .clone(),
+            ),
+        );
+        let overflow_executor =
+            zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()));
+
+        // Mirrors spawn_acp_agent's `Some(ctx)` branch: base -> ToolFilter (suppress
+        // read/write/glob) -> composite with the fs stand-in -> composite with the shell
+        // stand-in -> skill_loader/memory/overflow layered outside.
+        let mut base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::FileExecutor::new(vec![]));
+        let filtered =
+            zeph_tools::ToolFilter::new(zeph_tools::DynExecutor(base), &["read", "write", "glob"]);
+        base = Arc::new(zeph_tools::CompositeExecutor::new(
+            AcpNativeStandIn {
+                tool_id: "write_file",
+            },
+            filtered,
+        ));
+        base = Arc::new(zeph_tools::CompositeExecutor::new(
+            AcpNativeStandIn { tool_id: "bash" },
+            zeph_tools::DynExecutor(base),
+        ));
+        base = Arc::new(zeph_tools::CompositeExecutor::new(
+            skill_loader_executor,
+            zeph_tools::CompositeExecutor::new(
+                memory_executor,
+                zeph_tools::CompositeExecutor::new(
+                    overflow_executor,
+                    zeph_tools::DynExecutor(base),
+                ),
+            ),
+        ));
+        base
+    }
+
+    /// Regression test closing the gap found in review: the sibling `policy_gate_denies_tool_in_acp_composite_chain`
+    /// test above only reconstructs `build_base_executor_chain` (file/shell/scrape/diagnostics)
+    /// + `TrustGateExecutor` — the connection-scoped subset `build_acp_deps` wires. It gives no
+    /// evidence that `PolicyGateExecutor` reaches `skill_loader`/`memory`/ACP-native fs-shell
+    /// tool calls, which `spawn_acp_agent` composites in *per session*, outside that
+    /// connection-scoped subset. Reconstructs the exact nesting shape `spawn_acp_agent` builds
+    /// for the primary IDE-embedding case (`AcpContext` present: `ToolFilter`-wrapped base +
+    /// ACP-native fs/shell stand-ins, then `skill_loader`/`memory`/`overflow` layered outside),
+    /// wrapped in `PolicyGateExecutor` the same way `spawn_acp_agent` now wraps its full
+    /// per-session composite, and asserts a deny rule blocks `load_skill` (`skill_loader`),
+    /// `memory_search` (memory), `write_file`, and `bash` (ACP-native fs/shell stand-ins) —
+    /// not just calls into the `base` chain.
+    #[tokio::test]
+    async fn policy_gate_denies_skill_and_memory_tools_in_full_acp_session_composite() {
+        let session_composite = build_full_acp_session_composite_with_native_fs_shell().await;
+
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: ["load_skill", "memory_search", "write_file", "bash"]
+                .into_iter()
+                .map(|tool| zeph_tools::PolicyRuleConfig {
+                    effect: zeph_tools::PolicyEffect::Deny,
+                    tool: tool.into(),
+                    paths: vec![],
+                    env: vec![],
+                    trust_level: None,
+                    args_match: None,
+                    capabilities: vec![],
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let enforcer = zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap();
+        let policy_context = Arc::new(RwLock::new(zeph_tools::PolicyContext {
+            trust_level: zeph_common::SkillTrustLevel::Trusted,
+            env: std::collections::HashMap::new(),
+        }));
+        let gated = zeph_tools::PolicyGateExecutor::new(
+            zeph_tools::DynExecutor(session_composite),
+            Arc::new(enforcer),
+            policy_context,
+        );
+
+        for tool_id in ["load_skill", "memory_search", "write_file", "bash"] {
+            let call = zeph_tools::ToolCall {
+                tool_id: tool_id.into(),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            };
+            let result = gated.execute_tool_call(&call).await;
+            assert!(
+                matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+                "expected Blocked for {tool_id} from PolicyGateExecutor wrapping the full \
+                 per-session composite (including ACP-native fs/shell), got {result:?}"
+            );
+        }
+    }
+
+    /// Adversarial-policy companion to `policy_gate_denies_skill_and_memory_tools_in_full_acp_session_composite`:
+    /// same full per-session composite shape (including the ACP-native fs/shell stand-ins),
+    /// wrapped in `AdversarialPolicyGateExecutor` driven by a fake `PolicyLlmClient` that always
+    /// returns `DENY`, asserting `load_skill`, `memory_search`, `write_file`, and `bash` calls
+    /// are all blocked before reaching their respective inner executors.
+    #[tokio::test]
+    async fn adversarial_policy_gate_denies_skill_and_memory_tools_in_full_acp_session_composite() {
+        struct AlwaysDenyLlm;
+        impl zeph_tools::PolicyLlmClient for AlwaysDenyLlm {
+            fn chat<'a>(
+                &'a self,
+                _messages: &'a [zeph_tools::PolicyMessage],
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>,
+            > {
+                Box::pin(async move { Ok("DENY: test policy".to_owned()) })
+            }
+        }
+
+        let session_composite = build_full_acp_session_composite_with_native_fs_shell().await;
+
+        let validator = Arc::new(zeph_tools::PolicyValidator::new(
+            vec!["never allow load_skill, memory_search, write_file, or bash".to_owned()],
+            std::time::Duration::from_millis(500),
+            false,
+            vec![],
+        ));
+        let llm_client: Arc<dyn zeph_tools::PolicyLlmClient> = Arc::new(AlwaysDenyLlm);
+        let gated = zeph_tools::AdversarialPolicyGateExecutor::new(
+            zeph_tools::DynExecutor(session_composite),
+            validator,
+            llm_client,
+        );
+
+        for tool_id in ["load_skill", "memory_search", "write_file", "bash"] {
+            let call = zeph_tools::ToolCall {
+                tool_id: tool_id.into(),
+                params: serde_json::Map::new(),
+                caller_id: None,
+                context: None,
+                tool_call_id: String::new(),
+                skill_name: None,
+            };
+            let result = gated.execute_tool_call(&call).await;
+            assert!(
+                matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+                "expected Blocked for {tool_id} from AdversarialPolicyGateExecutor wrapping the \
+                 full per-session composite (including ACP-native fs/shell), got {result:?}"
+            );
+        }
     }
 
     /// #5437 (S1, third recurrence): `build_acp_provider_factory` constructs raw `AnyProvider`

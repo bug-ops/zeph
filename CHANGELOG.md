@@ -27,6 +27,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   entirely because no gate stood in front of them at all. This is intentional and brings
   ACP/daemon in line with the CLI's existing, already-shipped behavior. Closes #5611.
   Refs #5610.
+- `fix(acp,daemon)`: `PolicyGateExecutor` (declarative `[tools.policy]`/`[tools.authorization]`
+  deny rules) and `AdversarialPolicyGateExecutor` (LLM-based `[tools.adversarial_policy]` gate)
+  were constructed only in `src/runner.rs` (CLI/TUI path) — `src/acp.rs` and `src/daemon.rs`
+  built their composite tool chain with no policy gate at all, so both were silently unenforced
+  for `zeph --acp` and `zeph serve` sessions regardless of config. Same defect class already
+  fixed for `DiagnosticsExecutor` (#5433/PR #5574) and `search_code` (#5579). Wires both gates
+  into `acp.rs`'s `spawn_acp_agent` and `daemon.rs`'s `run_daemon`, wrapping each entry point's
+  *full* per-session tool composite (skill loader/memory/overflow/base/MCP/search, plus
+  ACP-native fs/shell overrides when present) — matching `runner.rs`'s full-stack coverage.
+  (First pass wired the gates in `acp.rs`'s `build_acp_deps` instead, covering only the
+  connection-scoped base+MCP+search subset; review caught that `spawn_acp_agent` composites
+  skill_loader/memory/overflow/ACP-native fs/shell *outside* that subset, so a "deny shell"
+  policy was silently bypassed for exactly the highest-risk ACP tools. Moved the gate
+  construction into `spawn_acp_agent`, wrapping the full per-session composite; the
+  policy-file load, `PolicyEnforcer` compile, and adversarial-policy provider resolution stay
+  in `build_acp_deps` and are shared read-only across sessions via new `SharedAgentDeps`
+  fields — `policy_enforcer`, `adversarial_policy_validator`, `adversarial_policy_llm_client`
+  — since none of that depends on per-session state; only the gate *instances* themselves,
+  each with a private `PolicyContext`, are built fresh per session.) Mirrors `runner.rs`'s
+  construction (policy-file canonicalize + boundary check, authorization-rules merge, provider
+  resolution) and wrapping order (outermost first: `PolicyGateExecutor ->
+  AdversarialPolicyGateExecutor -> ...`). Moved `AdversarialPolicyLlmAdapter` from `runner.rs`
+  into `agent_setup.rs` (`pub(crate)`) so all three entry points share one adapter instead of
+  duplicating it. Added `agent_setup::tests::policy_gate_executor_reachable_through_composite_chain`
+  and `adversarial_policy_gate_executor_reachable_through_composite_chain` (generic gate-nesting
+  checks), plus per-entry-point regression tests reconstructing the real `build_base_executor_chain`
+  + `TrustGateExecutor` chain (mirroring the #5433/#5578 precedent): `acp::tests::policy_gate_denies_tool_in_acp_composite_chain`,
+  `acp::tests::adversarial_policy_gate_denies_tool_in_acp_composite_chain`,
+  `daemon::tests::policy_gate_denies_tool_in_daemon_composite_chain`, and
+  `daemon::tests::adversarial_policy_gate_denies_tool_in_daemon_composite_chain`. Also added
+  `acp::tests::policy_gate_denies_skill_and_memory_tools_in_full_acp_session_composite` and
+  `acp::tests::adversarial_policy_gate_denies_skill_and_memory_tools_in_full_acp_session_composite`,
+  which reconstruct the exact `skill_loader`+`memory`+`overflow`+base nesting `spawn_acp_agent`
+  builds (using a real `SkillRegistry`/`SemanticMemory`, not mocks) and assert both `load_skill`
+  and `memory_search` calls are blocked — closing the false-confidence gap where the original
+  ACP tests only exercised the base+MCP+search subset. Both tests were further extended to
+  reconstruct the primary IDE-embedding case exactly: a `ToolFilter`-wrapped base composed
+  with `AcpFileExecutor`/`AcpShellExecutor` stand-ins (the real types need a live
+  `acp::ConnectionTo<acp::Client>` to construct, so a trivial `AcpNativeStandIn` exposing
+  their real tool ids — `write_file`, `bash` — occupies that slot instead; the gate only
+  inspects `tool_id`, so this proves reachability without the network-backed implementation,
+  and the stand-in `panic!`s if ever actually dispatched into). Both tests now assert
+  `load_skill`, `memory_search`, `write_file`, and `bash` are all blocked. Rebased onto and
+  reconciled with #5621's `agent_setup::apply_common_tool_gating` (`TrustGateExecutor`/
+  Quarantine, same defect class, same composite-wrap point): final wiring order (outermost
+  first) is `PolicyGateExecutor -> AdversarialPolicyGateExecutor -> TrustGateExecutor ->
+  composite` in both `acp.rs` and `daemon.rs`, matching `runner.rs` exactly. Added one
+  combined regression test per entry point —
+  `acp::tests::policy_and_quarantine_trust_gate_both_enforce_in_acp_composite_chain` and
+  `daemon::tests::policy_and_quarantine_trust_gate_both_enforce_in_daemon_composite_chain` —
+  asserting a declarative policy deny rule AND `TrustGateExecutor`'s Quarantine enforcement
+  both survive being stacked together, and that a tool denied by neither still dispatches.
+  All assert a deny verdict actually blocks the call through the reconstructed composite
+  chain. Closes #5615.
 - `fix(ci)`: nextest flagged `zeph-index`'s `index_file_spawn_blocking_dedup_path` and
   `index_file_with_blocking_spawner` tests as `LEAK`. Both tests join their
   `tokio::task::spawn_blocking` handle before returning, but the `#[tokio::test]`

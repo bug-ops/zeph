@@ -14,6 +14,42 @@ use zeph_tools::{
     LspSearchBackend, SearchCodeExecutor, SearchCodeHit, SearchCodeSource, SemanticSearchBackend,
 };
 
+/// Adapter that bridges `PolicyLlmClient` to `AnyProvider::chat`.
+///
+/// Defined in the binary crate to keep `zeph-tools` decoupled from `zeph-llm`. Shared by
+/// all three live entry points that construct an `AdversarialPolicyGateExecutor` (CLI's
+/// `runner.rs`, `acp.rs`'s `spawn_acp_agent`, `daemon.rs`'s `run_daemon`).
+pub(crate) struct AdversarialPolicyLlmAdapter {
+    pub(crate) provider: zeph_llm::any::AnyProvider,
+}
+
+impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
+    fn chat<'a>(
+        &'a self,
+        messages: &'a [zeph_tools::PolicyMessage],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let llm_messages: Vec<zeph_llm::provider::Message> = messages
+                .iter()
+                .map(|m| {
+                    zeph_llm::provider::Message::from_legacy(
+                        match m.role {
+                            zeph_tools::PolicyRole::System => zeph_llm::provider::Role::System,
+                            _ => zeph_llm::provider::Role::User,
+                        },
+                        m.content.clone(),
+                    )
+                })
+                .collect();
+
+            let result: Result<String, zeph_llm::LlmError> =
+                zeph_llm::provider::LlmProvider::chat(&self.provider, &llm_messages).await;
+            result.map_err(|e| e.to_string())
+        })
+    }
+}
+
 pub(crate) struct ToolSetup {
     pub(crate) executor: zeph_tools::DynExecutor,
     /// TACO compressor handle for `maybe_autodream` hit-count flushing. `None` when disabled.
@@ -2117,6 +2153,99 @@ mod tests {
             zeph_tools::CompositeExecutor::new(zeph_tools::DynExecutor(base), search_executor);
         let defs = composite.tool_definitions();
         assert!(defs.iter().any(|d| d.id == "search_code"));
+    }
+
+    /// Regression test confirming `PolicyGateExecutor` composes correctly around a nested
+    /// composite executor: `PolicyGateExecutor` used to be constructed only in `runner.rs`
+    /// (CLI path) — `acp.rs` and `daemon.rs` built their composite tool chain with no
+    /// declarative policy gate at all, so `[tools.policy]` deny rules were silently
+    /// unenforced for ACP and daemon (A2A) sessions regardless of config. Mirrors the
+    /// wrapping position both entry points now use (the gate wraps the full assembled
+    /// composite chain) and asserts a deny rule still blocks the call when the inner
+    /// executor is itself a nested composite.
+    #[tokio::test]
+    async fn policy_gate_executor_reachable_through_composite_chain() {
+        let inner = zeph_tools::CompositeExecutor::new(NoopExec, NoopExec);
+        let policy_config = zeph_tools::PolicyConfig {
+            enabled: true,
+            default_effect: zeph_tools::DefaultEffect::Allow,
+            rules: vec![zeph_tools::PolicyRuleConfig {
+                effect: zeph_tools::PolicyEffect::Deny,
+                tool: "shell".into(),
+                paths: vec![],
+                env: vec![],
+                trust_level: None,
+                args_match: None,
+                capabilities: vec![],
+            }],
+            ..Default::default()
+        };
+        let enforcer =
+            std::sync::Arc::new(zeph_tools::PolicyEnforcer::compile(&policy_config).unwrap());
+        let context = std::sync::Arc::new(RwLock::new(zeph_tools::PolicyContext {
+            trust_level: zeph_common::SkillTrustLevel::Trusted,
+            env: std::collections::HashMap::new(),
+        }));
+        let gate = zeph_tools::PolicyGateExecutor::new(inner, enforcer, context);
+        let call = zeph_tools::ToolCall {
+            tool_id: "shell".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = gate.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected PolicyGateExecutor to block a denied tool call even when the inner \
+             executor is a nested composite (mirrors acp.rs/daemon.rs wiring), got {result:?}"
+        );
+    }
+
+    /// Regression test confirming `AdversarialPolicyGateExecutor` composes correctly around
+    /// a nested composite executor: this gate used to be constructed only in `runner.rs`
+    /// (CLI path) — `acp.rs` and `daemon.rs` never wired the LLM-based
+    /// `[tools.adversarial_policy]` gate at all. Mirrors the same nested-composite
+    /// wrapping shape as the declarative gate test above and asserts a "DENY" verdict
+    /// from the policy LLM still blocks the call.
+    #[tokio::test]
+    async fn adversarial_policy_gate_executor_reachable_through_composite_chain() {
+        struct DenyLlm;
+        impl zeph_tools::PolicyLlmClient for DenyLlm {
+            fn chat<'a>(
+                &'a self,
+                _messages: &'a [zeph_tools::PolicyMessage],
+            ) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+            {
+                Box::pin(async move { Ok("DENY: blocked by test policy".to_owned()) })
+            }
+        }
+
+        let inner = zeph_tools::CompositeExecutor::new(NoopExec, NoopExec);
+        let validator = std::sync::Arc::new(zeph_tools::PolicyValidator::new(
+            vec!["test policy".to_owned()],
+            std::time::Duration::from_millis(500),
+            false,
+            Vec::new(),
+        ));
+        let llm: std::sync::Arc<dyn zeph_tools::PolicyLlmClient> = std::sync::Arc::new(DenyLlm);
+        let gate = zeph_tools::AdversarialPolicyGateExecutor::new(inner, validator, llm);
+        let call = zeph_tools::ToolCall {
+            tool_id: "shell".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = gate.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "expected AdversarialPolicyGateExecutor to block a DENY verdict even when the \
+             inner executor is a nested composite (mirrors acp.rs/daemon.rs wiring), got \
+             {result:?}"
+        );
     }
 
     #[tokio::test]
