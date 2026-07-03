@@ -1123,6 +1123,12 @@ impl<C: Channel> Agent<C> {
         text: String,
         image_parts: Vec<zeph_llm::provider::MessagePart>,
     ) -> Result<(), error::AgentError> {
+        // Re-check for a pending provider override (#5548): the loop-top check in `run()`
+        // happens before the potentially long block on `next_event()`, so an ACP
+        // `session/set_config_option` model switch written while this iteration was
+        // parked would otherwise miss this turn and only apply on the next one.
+        self.apply_provider_override();
+
         let input = turn::TurnInput::new(text, image_parts);
         let mut t = self.begin_turn(input);
 

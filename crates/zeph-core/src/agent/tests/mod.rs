@@ -18,6 +18,8 @@ mod pre_execution_audit_tests;
 #[cfg(test)]
 mod provider_override_masking_tests;
 #[cfg(test)]
+mod provider_override_timing_tests;
+#[cfg(test)]
 mod secret_reason_truncation;
 #[cfg(test)]
 mod shutdown_summary_tests;
