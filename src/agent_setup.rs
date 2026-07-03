@@ -906,24 +906,42 @@ pub(crate) fn apply_pii_ner_classifier<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     config: &Config,
 ) -> zeph_core::agent::Agent<C> {
-    if !config.classifiers.enabled || !config.security.pii_filter.enabled {
+    apply_pii_ner_classifier_with_cfg(
+        agent,
+        &config.classifiers,
+        config.security.pii_filter.enabled,
+    )
+}
+
+/// Wire the `CandleNerClassifier` into the PII union merge pipeline (takes `ClassifiersConfig`
+/// and the `security.pii_filter.enabled` flag directly).
+///
+/// Only active when `classifiers.enabled = true` AND `pii_filter_enabled = true`.
+/// Uses `classifiers.ner_model` as the NER model repo ID.
+#[cfg(feature = "classifiers")]
+pub(crate) fn apply_pii_ner_classifier_with_cfg<C: Channel>(
+    agent: zeph_core::agent::Agent<C>,
+    classifiers: &zeph_core::config::ClassifiersConfig,
+    pii_filter_enabled: bool,
+) -> zeph_core::agent::Agent<C> {
+    if !classifiers.enabled || !pii_filter_enabled {
         return agent;
     }
     let mut ner_classifier =
-        zeph_llm::classifier::ner::CandleNerClassifier::new(config.classifiers.pii_model.as_str());
-    if let Some(token) = &config.classifiers.hf_token {
+        zeph_llm::classifier::ner::CandleNerClassifier::new(classifiers.pii_model.as_str());
+    if let Some(token) = &classifiers.hf_token {
         ner_classifier = ner_classifier.with_hf_token(token.as_str());
     }
     let backend = std::sync::Arc::new(ner_classifier);
     tracing::info!(
-        repo_id = %config.classifiers.pii_model,
+        repo_id = %classifiers.pii_model,
         "NER PII classifier attached for union merge pipeline (model loads lazily on first use)"
     );
     agent.with_pii_ner_classifier(
         backend,
-        config.classifiers.timeout_ms,
-        config.classifiers.pii_ner_max_chars,
-        config.classifiers.pii_ner_circuit_breaker,
+        classifiers.timeout_ms,
+        classifiers.pii_ner_max_chars,
+        classifiers.pii_ner_circuit_breaker,
     )
 }
 

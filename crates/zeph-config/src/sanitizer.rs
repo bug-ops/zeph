@@ -421,6 +421,16 @@ pub struct PiiFilterConfig {
     /// Scrub credit card numbers (16-digit patterns).
     #[serde(default = "default_true")]
     pub filter_credit_card: bool,
+    /// Scrub personal names via a capitalized-word-sequence heuristic: 2+ consecutive
+    /// ASCII Titlecase tokens excluding a stoplist of common capitalized non-name words.
+    /// Compensating control for weak NER-model recall on free-text names (#5530).
+    ///
+    /// Defaults to `false` (opt-in), unlike the other `filter_*` flags: this is a high-recall,
+    /// lower-precision heuristic that also flags common two-word technical/product terms (e.g.
+    /// `"Docker Compose"`, `"Pull Request"`, `"New York"`) as candidate names, so it is not
+    /// force-enabled for existing `pii_filter.enabled = true` deployments.
+    #[serde(default)]
+    pub filter_names: bool,
     /// Custom regex patterns to add on top of the built-ins.
     #[serde(default)]
     pub custom_patterns: Vec<CustomPiiPattern>,
@@ -434,6 +444,7 @@ impl Default for PiiFilterConfig {
             filter_phone: true,
             filter_ssn: true,
             filter_credit_card: true,
+            filter_names: false,
             custom_patterns: Vec::new(),
         }
     }

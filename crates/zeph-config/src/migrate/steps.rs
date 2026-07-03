@@ -32,7 +32,9 @@
 //! step 70 adds session-persistence keys and a `[session.condense]` advisory block (spec-068, #5343);
 //! step 71 adds a `[serve]` advisory block for `zeph serve` (spec-068 §9, #5343);
 //! step 72 adds a `[security.content_isolation.nli]` advisory block (#5438);
-//! step 73 adds a `[security.content_isolation.secret_masking]` advisory block (#5437).
+//! step 73 adds a `[security.content_isolation.secret_masking]` advisory block (#5437);
+//! step 74 adds a commented `filter_names = false` advisory to an existing
+//! `[security.pii_filter]` table (#5530).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -56,17 +58,18 @@ use super::{
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_microcompact_config, migrate_nli_config,
     migrate_orchestration_asset_sensitivity, migrate_orchestration_orchestrator_provider,
-    migrate_orchestration_persistence, migrate_otel_filter, migrate_planner_model_to_provider,
-    migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
-    migrate_qdrant_api_key, migrate_quality_config, migrate_sandbox_config,
-    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_secret_masking_config,
-    migrate_serve_config, migrate_session_persist_provider_overrides,
-    migrate_session_persistence_config, migrate_session_provider_persistence,
-    migrate_session_recap_config, migrate_shell_checkpoints_config, migrate_shell_transactional,
-    migrate_stt_to_provider, migrate_supervisor_config, migrate_telemetry_config,
-    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
-    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults, migrate_vigil_config,
-    migrate_worktree_config, migrate_worktree_git_timeout,
+    migrate_orchestration_persistence, migrate_otel_filter, migrate_pii_filter_names,
+    migrate_planner_model_to_provider, migrate_policy_provider_and_utility_window,
+    migrate_provider_max_concurrent, migrate_qdrant_api_key, migrate_quality_config,
+    migrate_sandbox_config, migrate_sandbox_egress_filter, migrate_scheduler_daemon_config,
+    migrate_secret_masking_config, migrate_serve_config,
+    migrate_session_persist_provider_overrides, migrate_session_persistence_config,
+    migrate_session_provider_persistence, migrate_session_recap_config,
+    migrate_shell_checkpoints_config, migrate_shell_transactional, migrate_stt_to_provider,
+    migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
+    migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
+    migrate_tui_theme_defaults, migrate_vigil_config, migrate_worktree_config,
+    migrate_worktree_git_timeout,
 };
 
 // ── Wrapper structs for all 73 sequential migration steps ───────────────────────────────────────
@@ -880,5 +883,19 @@ impl Migration for MigrateSecretMaskingConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_secret_masking_config(toml_src)
+    }
+}
+
+/// Step 74 — add a commented `filter_names = false` advisory to an existing active
+/// `[security.pii_filter]` table (compensating name-detection heuristic for weak NER-model
+/// recall, opt-in by design, #5530).
+pub(super) struct MigratePiiFilterNames;
+impl Migration for MigratePiiFilterNames {
+    fn name(&self) -> &'static str {
+        "migrate_pii_filter_names"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_pii_filter_names(toml_src)
     }
 }

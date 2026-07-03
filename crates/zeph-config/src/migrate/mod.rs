@@ -610,18 +610,19 @@ use steps::{
     MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
     MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMicrocompactConfig,
     MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationPersistence,
-    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePlannerModelToProvider,
-    MigratePolicyProviderAndUtilityWindow, MigrateProviderMaxConcurrent, MigrateQdrantApiKey,
-    MigrateQualityConfig, MigrateSandboxConfig, MigrateSandboxEgressFilter, MigrateSchedulerDaemon,
-    MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
-    MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
-    MigrateShellCheckpointsConfig, MigrateShellTransactional, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelemetryConfig, MigrateToolsCompressionConfig,
-    MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig,
-    MigrateTuiThemeDefaults, MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateOrchestratorProvider, MigrateOtelFilter, MigratePiiFilterNames,
+    MigratePlannerModelToProvider, MigratePolicyProviderAndUtilityWindow,
+    MigrateProviderMaxConcurrent, MigrateQdrantApiKey, MigrateQualityConfig, MigrateSandboxConfig,
+    MigrateSandboxEgressFilter, MigrateSchedulerDaemon, MigrateSecretMaskingConfig,
+    MigrateServeConfig, MigrateSessionPersistProviderOverrides, MigrateSessionPersistenceConfig,
+    MigrateSessionProviderPersistence, MigrateSessionRecapConfig, MigrateShellCheckpointsConfig,
+    MigrateShellTransactional, MigrateSttToProvider, MigrateSupervisorConfig,
+    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
+    MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
 };
 
-/// Ordered registry of all sequential migration steps (steps 1–73).
+/// Ordered registry of all sequential migration steps (steps 1–74).
 ///
 /// Each entry wraps the corresponding free function and is evaluated lazily at first access.
 /// The ordering is chronological; the dispatch loop in `src/commands/migrate.rs` iterates
@@ -750,6 +751,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateNliConfig),
             // Step 73 — add [security.content_isolation.secret_masking] advisory block (#5437)
             Box::new(MigrateSecretMaskingConfig),
+            // Step 74 — add a commented `filter_names = false` advisory to an existing
+            // [security.pii_filter] table (#5530)
+            Box::new(MigratePiiFilterNames),
         ]
     });
 

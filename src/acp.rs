@@ -129,6 +129,10 @@ struct SharedAgentDeps {
     feedback_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
     #[cfg(feature = "classifiers")]
     classifiers_config: zeph_core::config::ClassifiersConfig,
+    /// `security.pii_filter.enabled` — gates the NER union-merge PII layer (#5463),
+    /// mirroring the check in `agent_setup::apply_pii_ner_classifier`.
+    #[cfg(feature = "classifiers")]
+    pii_filter_enabled: bool,
     causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig,
     causal_provider: Option<zeph_llm::any::AnyProvider>,
     nli_config: zeph_sanitizer::nli::NliConfig,
@@ -631,6 +635,8 @@ async fn build_acp_deps(
         feedback_classifier,
         #[cfg(feature = "classifiers")]
         classifiers_config: config.classifiers.clone(),
+        #[cfg(feature = "classifiers")]
+        pii_filter_enabled: config.security.pii_filter.enabled,
         causal_ipi_config: config.security.causal_ipi.clone(),
         causal_provider: config
             .security
@@ -791,6 +797,8 @@ async fn spawn_acp_agent(
     let feedback_classifier = d.feedback_classifier.clone();
     #[cfg(feature = "classifiers")]
     let classifiers_config = d.classifiers_config.clone();
+    #[cfg(feature = "classifiers")]
+    let pii_filter_enabled = d.pii_filter_enabled;
     let causal_ipi_config = d.causal_ipi_config.clone();
     let causal_provider = d.causal_provider.clone();
     let nli_config = d.nli_config.clone();
@@ -1175,6 +1183,11 @@ async fn spawn_acp_agent(
         }
         agent = agent_setup::apply_three_class_classifier_with_cfg(agent, &classifiers_config);
         agent = agent_setup::apply_pii_classifier_with_cfg(agent, &classifiers_config);
+        agent = agent_setup::apply_pii_ner_classifier_with_cfg(
+            agent,
+            &classifiers_config,
+            pii_filter_enabled,
+        );
     }
     agent = agent_setup::apply_causal_analyzer_with_cfg(
         agent,

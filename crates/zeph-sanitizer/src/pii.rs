@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! PII filter: regex-based scrubber for email, phone, SSN, and credit card numbers.
+//! PII filter: regex-based scrubber for email, phone, SSN, credit card numbers, and (opt-in)
+//! a capitalized-word-sequence personal-name heuristic.
 //!
 //! Applied to tool outputs before they enter LLM context and before debug dumps are written.
 //! Configured under `[security.pii_filter]` in the agent config file.
@@ -27,6 +28,7 @@
 //! ```
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use regex::{Regex, RegexBuilder};
@@ -65,6 +67,145 @@ pub(crate) static SSN_RE: LazyLock<Regex> =
 /// Credit card number: 16 digits in groups of 4 (space or dash separated, or bare).
 static CREDIT_CARD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d{4}[-\s]?){3}\d{4}\b").expect("valid CREDIT_CARD_RE"));
+
+// ---------------------------------------------------------------------------
+// Name heuristic (#5530): compensating control for weak NER-model recall on
+// free-text personal names.
+// ---------------------------------------------------------------------------
+
+/// Titlecase word, ASCII-only (English-language scope; accented and non-Latin names such as
+/// `José` or Cyrillic/CJK names are not matched — a known, accepted limitation of this
+/// heuristic, not a bug). Two shapes are matched:
+///
+/// - `[A-Z][a-z]+(?:['-][A-Z][a-z]*)*` — a leading capital followed by one or more lowercase
+///   letters (e.g. `John`, `Smith`), optionally extended by apostrophe/hyphen-joined compound
+///   segments (e.g. `Smith-Jones`) so a hyphenated surname is captured as a single token instead
+///   of splitting into two separate matches that would otherwise leave the second half
+///   unredacted (#5530 review S3).
+/// - `[A-Z]'[A-Z][a-z]+` — a single leading capital immediately followed by an apostrophe and a
+///   second capitalized segment (e.g. `O'Brien`, `D'Angelo`), for surnames with no lowercase
+///   letters before the apostrophe.
+///
+/// Anchored on word boundaries so it never matches inside a larger mixed-case token (e.g.
+/// `iPhone`, `McDonald`) and never matches ALL-CAPS acronyms (e.g. `API`, `URL`) or bare single
+/// letters, since both branches require at least one lowercase letter in the token.
+static CAPITALIZED_WORD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[A-Z](?:[a-z]+(?:['-][A-Z][a-z]*)*|'[A-Z][a-z]+)\b")
+        .expect("valid CAPITALIZED_WORD_RE")
+});
+
+/// Common capitalized words that are not personal names: sentence-initial function
+/// words, calendar terms, and common acronyms/abbreviations that happen to be
+/// Titlecase. Matched case-sensitively against the exact token text.
+static NAME_STOPLIST: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "The",
+        "This",
+        "That",
+        "These",
+        "Those",
+        "There",
+        "Here",
+        "It",
+        "A",
+        "An",
+        "If",
+        "When",
+        "While",
+        "After",
+        "Before",
+        "Since",
+        "Because",
+        "Although",
+        "However",
+        "Therefore",
+        "Moreover",
+        "Furthermore",
+        "Meanwhile",
+        "Otherwise",
+        "Please",
+        "Note",
+        "Warning",
+        "Error",
+        "Example",
+        "Yes",
+        "No",
+        "Ok",
+        "Okay",
+        "Thanks",
+        "Hello",
+        "Hi",
+        "Dear",
+        "Sincerely",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+    .into_iter()
+    .collect()
+});
+
+/// Detect personal-name-shaped spans: runs of 2+ consecutive Titlecase tokens (separated by
+/// exactly one space, nothing else) that are not stoplisted.
+///
+/// Sentence-initial non-name capitalization (e.g. `"The quick brown fox"`) is excluded purely
+/// via [`NAME_STOPLIST`] membership of the leading word, not by position — an earlier revision
+/// unconditionally dropped the leading token of any sentence-initial run, which silently
+/// defeated the heuristic for the extremely common `"<FirstName> <LastName> is/does ..."`
+/// sentence shape (e.g. `"John Smith is the CEO."` redacted nothing, since "John" is not
+/// stoplisted; #5530 review S2). Relying solely on the stoplist preserves the false-positive
+/// avoidance for real non-name sentence starters without that false-negative.
+///
+/// Single first names alone (e.g. `"Reach out to Marcus"`) are never flagged — this heuristic
+/// only fires on 2+-token runs, by design (mitigates, does not eliminate, the underlying
+/// NER-recall gap on free-text names).
+///
+/// This is an additive, non-ML compensating control for the confirmed weak spot in the
+/// NER PII model's free-text name recall (#5530) — it runs independently of any NER
+/// backend and unions its spans in the same way `EMAIL`/`PHONE`/`SSN`/`CREDIT_CARD` spans do.
+fn detect_name_spans(text: &str) -> Vec<PiiSpan> {
+    let matches: Vec<regex::Match<'_>> = CAPITALIZED_WORD_RE
+        .find_iter(text)
+        .filter(|m| !NAME_STOPLIST.contains(m.as_str()))
+        .collect();
+
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < matches.len() {
+        let mut j = i;
+        while j + 1 < matches.len()
+            && text.get(matches[j].end()..matches[j + 1].start()) == Some(" ")
+        {
+            j += 1;
+        }
+        // Run is matches[i..=j].
+        if j > i {
+            spans.push(PiiSpan {
+                label: "name".to_owned(),
+                start: matches[i].start(),
+                end: matches[j].end(),
+            });
+        }
+        i = j + 1;
+    }
+    spans
+}
 
 // ---------------------------------------------------------------------------
 // Internal pattern record
@@ -179,6 +320,8 @@ pub struct PiiFilter {
     builtin: Vec<PiiPattern>,
     /// User-defined patterns from `custom_patterns`.
     custom: Vec<CustomPiiPatternCompiled>,
+    /// Whether the capitalized-word-sequence name heuristic (#5530) is active.
+    filter_names: bool,
 }
 
 impl PiiFilter {
@@ -245,7 +388,14 @@ impl PiiFilter {
             enabled: config.enabled,
             builtin,
             custom,
+            filter_names: config.filter_names,
         }
+    }
+
+    /// Returns `true` when no active detector (builtin, custom, or name heuristic) is
+    /// configured — the shared early-return condition for `detect_spans`/`scrub`/`has_pii`.
+    fn has_no_active_detectors(&self) -> bool {
+        self.builtin.is_empty() && self.custom.is_empty() && !self.filter_names
     }
 
     /// Detect PII spans in `text` and return their byte offsets without replacing.
@@ -254,10 +404,13 @@ impl PiiFilter {
     /// Offsets are byte offsets (same unit as `regex::Match::start()`/`end()`).
     #[must_use]
     pub fn detect_spans(&self, text: &str) -> Vec<PiiSpan> {
-        if !self.enabled || (self.builtin.is_empty() && self.custom.is_empty()) {
+        if !self.enabled || self.has_no_active_detectors() {
             return vec![];
         }
         let mut spans = Vec::new();
+        if self.filter_names {
+            spans.extend(detect_name_spans(text));
+        }
         for p in &self.builtin {
             let label = p
                 .replacement
@@ -299,11 +452,18 @@ impl PiiFilter {
     /// When the filter is disabled, always returns `Cow::Borrowed(text)`.
     #[must_use]
     pub fn scrub<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        if !self.enabled || (self.builtin.is_empty() && self.custom.is_empty()) {
+        if !self.enabled || self.has_no_active_detectors() {
             return Cow::Borrowed(text);
         }
 
         let mut result: Option<String> = None;
+
+        if self.filter_names {
+            let name_spans = detect_name_spans(text);
+            if !name_spans.is_empty() {
+                result = Some(redact_spans(text, &merge_spans(name_spans)));
+            }
+        }
 
         for p in &self.builtin {
             let current: &str = result.as_deref().unwrap_or(text);
@@ -337,12 +497,13 @@ impl PiiFilter {
         }
         self.builtin.iter().any(|p| p.regex.is_match(text))
             || self.custom.iter().any(|p| p.regex.is_match(text))
+            || (self.filter_names && !detect_name_spans(text).is_empty())
     }
 
     /// Returns `true` if the filter is enabled and has at least one active pattern.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        self.enabled && (!self.builtin.is_empty() || !self.custom.is_empty())
+        self.enabled && !self.has_no_active_detectors()
     }
 }
 
@@ -356,8 +517,11 @@ mod tests {
     use std::assert_matches;
 
     fn filter_all() -> PiiFilter {
+        // filter_names defaults to false (opt-in, #5530 review S1) — explicitly enable it here
+        // so "all" actually means all detector categories for the tests that use this helper.
         PiiFilter::new(PiiFilterConfig {
             enabled: true,
+            filter_names: true,
             ..PiiFilterConfig::default()
         })
     }
@@ -511,6 +675,7 @@ mod tests {
             filter_phone: false,
             filter_ssn: false,
             filter_credit_card: false,
+            filter_names: false,
             custom_patterns: vec![CustomPiiPattern {
                 name: "employee_id".to_owned(),
                 pattern: r"EMP-\d{6}".to_owned(),
@@ -605,6 +770,7 @@ mod tests {
             filter_phone: false,
             filter_ssn: false,
             filter_credit_card: false,
+            filter_names: false,
             custom_patterns: vec![],
         });
         assert!(!f.is_enabled());
@@ -620,6 +786,7 @@ mod tests {
             filter_phone: false,
             filter_ssn: false,
             filter_credit_card: false,
+            filter_names: false,
             custom_patterns: vec![],
         });
         let result = f.scrub("user@example.com and 555-867-5309");
@@ -640,6 +807,7 @@ mod tests {
             filter_phone: false,
             filter_ssn: false,
             filter_credit_card: false,
+            filter_names: false,
             custom_patterns: vec![CustomPiiPattern {
                 name: "token".to_owned(),
                 pattern: r"TOKEN-\d+".to_owned(),
@@ -859,6 +1027,7 @@ mod tests {
             filter_email: false,
             filter_phone: false,
             filter_credit_card: false,
+            filter_names: false,
             custom_patterns: vec![],
         });
         // A date like 12-01-2024 has the form DDD-DD-DDDD but \b\d{3}-\d{2}-\d{4}\b
@@ -866,5 +1035,209 @@ mod tests {
         let text = "date 12-01-2024 passed";
         let result = f.scrub(text);
         assert_eq!(result, text, "date DD-MM-YYYY must not be detected as SSN");
+    }
+
+    // --- name heuristic (#5530): compensating control for weak NER free-text name recall ---
+
+    #[test]
+    fn scrubs_name_not_at_sentence_start() {
+        // Regression test for #5530: the NER model alone yields no confident span for
+        // "John Smith" here (see `free_text_names_yield_no_confident_span` in candle_pii.rs).
+        // This heuristic is a separate, additive layer that does not depend on any NER backend.
+        let f = filter_all();
+        let text = "Contact John Smith at john@example.com for details.";
+        let result = f.scrub(text);
+        assert!(
+            result.contains("[PII:name]"),
+            "name must be scrubbed: {result}"
+        );
+        assert!(
+            !result.contains("John Smith"),
+            "raw name must not remain: {result}"
+        );
+        assert!(
+            result.contains("[PII:email]"),
+            "email must also be scrubbed: {result}"
+        );
+    }
+
+    #[test]
+    fn detect_name_spans_standalone_without_other_detectors() {
+        // Exercises the heuristic directly, with every other detector (including any NER
+        // backend, which PiiFilter never depends on) disabled — proves it works standalone.
+        // "Reach"/"out"/"to" break the run before "John" (lowercase words in between), so the
+        // detected span is exactly "John Smith", not the whole sentence-initial phrase.
+        let f = PiiFilter::new(PiiFilterConfig {
+            enabled: true,
+            filter_email: false,
+            filter_phone: false,
+            filter_ssn: false,
+            filter_credit_card: false,
+            filter_names: true,
+            custom_patterns: vec![],
+        });
+        let text = "Reach out to John Smith at john@example.com for details.";
+        let spans = f.detect_spans(text);
+        let name_span = spans
+            .iter()
+            .find(|s| s.label == "name")
+            .expect("name span must be detected");
+        assert_eq!(&text[name_span.start..name_span.end], "John Smith");
+    }
+
+    #[test]
+    fn scrubs_sentence_initial_full_name() {
+        // Regression test for #5530 review S2: an earlier revision unconditionally dropped the
+        // leading token of any sentence-initial run, which silently left a name entirely
+        // unredacted when the name itself opened the sentence — one of the most common name
+        // mention shapes in chat/tool output. "John" is not stoplisted, so it must stay in the
+        // run and the full name must be redacted.
+        let f = filter_all();
+        let text = "John Smith is the CEO.";
+        let result = f.scrub(text);
+        assert!(
+            result.contains("[PII:name]"),
+            "sentence-initial full name must be scrubbed: {result}"
+        );
+        assert!(!result.contains("John Smith"), "raw name must not remain");
+        assert!(
+            !result.contains("John "),
+            "first name fragment must not remain"
+        );
+    }
+
+    #[test]
+    fn scrubs_apostrophe_surname_without_leaking_fragment() {
+        // Regression test for #5530 review S3: the old regex ended a token at an internal
+        // apostrophe when the next character was uppercase (`O'` then a separate `Brien` token
+        // with no space between them), so the run broke and "Brien" leaked in the clear right
+        // next to the redaction marker. The whole surname must now stay inside one token.
+        let f = filter_all();
+        let text = "Please contact Mary O'Brien now.";
+        let result = f.scrub(text);
+        assert!(
+            result.contains("[PII:name]"),
+            "apostrophe surname must be scrubbed: {result}"
+        );
+        assert!(!result.contains("O'Brien"), "raw name must not remain");
+        assert!(
+            !result.contains("Brien"),
+            "surname fragment must not leak: {result}"
+        );
+    }
+
+    #[test]
+    fn scrubs_hyphenated_surname_without_leaking_fragment() {
+        // Regression test for #5530 review S3, hyphen variant: the old regex broke the run at
+        // the hyphen ("Smith-" then a separate "Jones" token), leaking "Jones".
+        let f = filter_all();
+        let text = "Loop in John Smith-Jones on this thread.";
+        let result = f.scrub(text);
+        assert!(
+            result.contains("[PII:name]"),
+            "hyphenated surname must be scrubbed: {result}"
+        );
+        assert!(!result.contains("Smith-Jones"), "raw name must not remain");
+        assert!(
+            !result.contains("Jones"),
+            "surname fragment must not leak: {result}"
+        );
+    }
+
+    #[test]
+    fn filter_names_defaults_to_false() {
+        // #5530 review S1: the heuristic also flags common two-word technical/product terms
+        // (e.g. "Docker Compose", "Pull Request") as candidate names, so it must be opt-in
+        // rather than default-on for every existing `pii_filter.enabled = true` deployment.
+        assert!(!PiiFilterConfig::default().filter_names);
+    }
+
+    #[test]
+    fn flags_two_consecutive_capitalized_words_mid_sentence() {
+        let f = filter_all();
+        let text = "Please loop in Sarah Connor on this thread.";
+        let result = f.scrub(text);
+        assert!(
+            result.contains("[PII:name]"),
+            "mid-sentence name run must be scrubbed: {result}"
+        );
+        assert!(!result.contains("Sarah Connor"));
+    }
+
+    #[test]
+    fn does_not_flag_sentence_initial_capitalization() {
+        let f = filter_all();
+        let text = "The quick brown fox jumps.";
+        let result = f.scrub(text);
+        assert_eq!(
+            result, text,
+            "ordinary sentence-initial capitalization must not be flagged"
+        );
+    }
+
+    #[test]
+    fn does_not_flag_single_capitalized_word() {
+        let f = filter_all();
+        let text = "We use Docker for deployment.";
+        let result = f.scrub(text);
+        assert_eq!(
+            result, text,
+            "a lone capitalized word must not trigger the heuristic"
+        );
+    }
+
+    #[test]
+    fn does_not_flag_all_caps_acronym_run() {
+        let f = filter_all();
+        let text = "Send the request via HTTP API now.";
+        let result = f.scrub(text);
+        assert_eq!(
+            result, text,
+            "ALL-CAPS acronyms must not be flagged as names"
+        );
+    }
+
+    #[test]
+    fn does_not_flag_stoplisted_calendar_words() {
+        let f = filter_all();
+        let text = "Please review this on Monday in January.";
+        let result = f.scrub(text);
+        assert_eq!(
+            result, text,
+            "stoplisted capitalized words must not be flagged"
+        );
+    }
+
+    #[test]
+    fn name_heuristic_disabled_by_config() {
+        let f = PiiFilter::new(PiiFilterConfig {
+            enabled: true,
+            filter_email: false,
+            filter_phone: false,
+            filter_ssn: false,
+            filter_credit_card: false,
+            filter_names: false,
+            custom_patterns: vec![],
+        });
+        let text = "Please loop in Sarah Connor on this thread.";
+        let result = f.scrub(text);
+        assert_eq!(
+            result, text,
+            "filter_names = false must leave names untouched"
+        );
+    }
+
+    #[test]
+    fn is_enabled_true_when_only_names_active() {
+        let f = PiiFilter::new(PiiFilterConfig {
+            enabled: true,
+            filter_email: false,
+            filter_phone: false,
+            filter_ssn: false,
+            filter_credit_card: false,
+            filter_names: true,
+            custom_patterns: vec![],
+        });
+        assert!(f.is_enabled());
     }
 }

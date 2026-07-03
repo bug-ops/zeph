@@ -1635,6 +1635,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new `agent_sessions_upsert_and_list_postgres` regression test (insert, conflict-update, and
   both filtered/unfiltered list branches). Closes #5524, closes #5508.
 
+- `fix(sanitizer)`: harden PII detection (#5530, #5463). The NER union-merge PII classifier
+  (`apply_pii_ner_classifier`) was only ever wired in the CLI runner — `zeph --daemon` and
+  `zeph --acp` silently ran a strictly weaker single-layer PII stack for the same config. Added
+  `apply_pii_ner_classifier_with_cfg` (mirroring the existing `apply_pii_classifier`/`_with_cfg`
+  split) and wired it into `daemon.rs` and `acp.rs` (new `pii_filter_enabled` field on
+  `SharedAgentDeps`), so all three entry points now produce identical PII detection behavior.
+  Separately, the piiranha NER checkpoint is confirmed weak at recognizing free-text personal
+  names in casual sentences, while structured PII (email/phone/SSN/credit card) already has a
+  regex compensating control via `PiiFilter` — names had none. Added a capitalized-word-sequence
+  heuristic (new `filter_names` field on `PiiFilterConfig`, **opt-in, default `false`**): flags
+  runs of 2+ consecutive ASCII Titlecase tokens excluding a stoplist of common capitalized
+  non-name words, unioned into `PiiFilter::detect_spans`/`scrub`/`has_pii` the same way the
+  existing EMAIL/PHONE/SSN/CREDIT_CARD regex spans are — no NER dependency, works standalone.
+  Defaults off because it also flags common two-word technical/product terms (e.g. "Docker
+  Compose", "Pull Request") as candidate names; `--migrate-config` step 74
+  (`migrate_pii_filter_names`) surfaces it as a commented advisory on existing active
+  `[security.pii_filter]` tables rather than force-enabling it. Two further defects found in
+  review before merge: a sentence-initial real name (e.g. "John Smith is the CEO.") was silently
+  left completely unredacted (the leading token of any sentence-initial run was unconditionally
+  dropped instead of relying on the stoplist alone); and apostrophe/hyphen-joined surnames (e.g.
+  "Mary O'Brien", "Smith-Jones") were partially redacted, leaking the surname fragment after the
+  apostrophe/hyphen in the clear — both fixed by simplifying the run-detection to rely solely on
+  `NAME_STOPLIST` membership (no position-based dropping) and extending `CAPITALIZED_WORD_RE` to
+  keep an apostrophe/hyphen-joined compound name inside a single token. Closes #5530, closes
+  #5463.
+
 ### Changed
 
 - `build(db)`: upgrade `sqlx` 0.8.6 → 0.9.0. The `runtime-tokio-rustls` feature was split into

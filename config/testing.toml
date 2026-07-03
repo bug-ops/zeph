@@ -246,6 +246,7 @@ filter_email = true
 filter_phone = true
 filter_ssn = true
 filter_credit_card = true
+filter_names = true
 
 [security.exfiltration_guard]
 block_markdown_images = true

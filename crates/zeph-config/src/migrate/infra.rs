@@ -697,3 +697,65 @@ pub fn migrate_secret_masking_config(toml_src: &str) -> Result<MigrationResult, 
         sections_changed: vec!["security.content_isolation.secret_masking".to_owned()],
     })
 }
+
+/// Adds a commented `# filter_names = false` advisory line to an existing active
+/// `[security.pii_filter]` table that lacks the field: a capitalized-word-sequence heuristic
+/// that compensates for weak NER-model recall on free-text personal names (#5530).
+///
+/// Opt-in by design (defaults to `false`) — unlike the other `pii_filter` flags, this heuristic
+/// also flags common two-word technical/product terms (e.g. `"Docker Compose"`, `"Pull
+/// Request"`) as candidate names, so it is surfaced as a commented advisory rather than
+/// force-enabled on existing installs (#5530 review S1). No-op when `[security.pii_filter]` is
+/// absent, or `filter_names` (active or commented) is already present.
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the source is not valid TOML.
+pub fn migrate_pii_filter_names(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Anchored multiline pattern: matches `[security.pii_filter]` with optional inline comment,
+    // followed by LF or CRLF. Does NOT match subtables so the replacement target stays aligned.
+    static PII_FILTER_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?m)^[ \t]*\[security\.pii_filter\][ \t]*(?:#[^\r\n]*)?\r?\n")
+            .expect("static pattern")
+    });
+
+    if !section_header_present(toml_src, "security.pii_filter") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let already_present = toml_src.lines().any(|l| {
+        let t = l.trim().trim_start_matches('#').trim();
+        t.starts_with("filter_names")
+    });
+    if already_present || !PII_FILTER_HEADER_RE.is_match(toml_src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# filter_names = false  # capitalized-word-sequence name heuristic \
+        (opt-in; also flags technical/product terms like \"Docker Compose\", #5530)\n";
+    let output = PII_FILTER_HEADER_RE
+        .replacen(toml_src, 1, |caps: &regex::Captures| {
+            format!("{}{comment}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["security.pii_filter".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}

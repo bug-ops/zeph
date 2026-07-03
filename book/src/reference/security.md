@@ -519,7 +519,13 @@ Shell commands executed by the agent run in a scrubbed environment. Variables ma
 
 ### PII Protection
 
-A configurable NER-based PII detection system can identify and redact personally identifiable information in tool outputs before they enter the LLM context. A circuit breaker protects against runaway cost from paginated reads that trigger repeated PII scans.
+PII detection unions three independent layers before redacting tool outputs, so a gap in one layer is covered by the others:
+
+- **Regex filter** (`[security.pii_filter]`): email, phone, SSN, and credit card patterns, plus an opt-in (`filter_names`, default `false`) capitalized-word-sequence heuristic that flags runs of 2+ consecutive ASCII Titlecase tokens as candidate personal names — a compensating control for cases the NER model misses in free-text prose. This heuristic is high-recall but lower-precision: it also flags common two-word technical/product terms (e.g. "Docker Compose", "Pull Request"), so it defaults off and is not force-enabled on existing installs by `--migrate-config`.
+- **NER classifier** (`[classifiers]`, `pii_enabled`): a configurable `Candle`/DeBERTa-backed model (default `iiiorg/piiranha-v1-detect-personal-information`) that identifies structured and unstructured PII entities. A circuit breaker protects against runaway cost from paginated reads that trigger repeated PII scans.
+- **NER union-merge classifier** (`[classifiers]`, gated on `classifiers.enabled` and `security.pii_filter.enabled`): a second NER pass whose spans are merged with the regex filter's spans before redaction.
+
+All three layers are wired identically across every entry point — CLI, daemon (`zeph --daemon`), and ACP/IDE sessions — so PII coverage does not silently degrade depending on how the agent is launched.
 
 ## Code Security
 

@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        73,
-        "MIGRATIONS registry must contain all 73 sequential steps"
+        74,
+        "MIGRATIONS registry must contain all 74 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1645,7 +1645,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 73);
+    assert_eq!(MIGRATIONS.len(), 74);
 }
 
 #[test]
@@ -1684,7 +1684,7 @@ fn registry_is_idempotent_on_empty_input() {
 
 #[test]
 fn registry_preserves_order_matches_dispatch() {
-    // Names must follow the documented step order (steps 1–73).
+    // Names must follow the documented step order (steps 1–74).
     let expected = [
         "migrate_stt_to_provider",
         "migrate_planner_model_to_provider",
@@ -1759,6 +1759,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_serve_config",
         "migrate_nli_config",
         "migrate_secret_masking_config",
+        "migrate_pii_filter_names",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -3205,6 +3206,61 @@ fn step_73_idempotent_on_own_output() {
     let first = migrate_secret_masking_config(src).expect("first migrate");
     assert_eq!(first.changed_count, 1);
     let second = migrate_secret_masking_config(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output unchanged on second run"
+    );
+}
+
+// ── migrate_pii_filter_names tests (step 74, #5530) ──────────────────────
+
+#[test]
+fn step_74_adds_commented_advisory_when_pii_filter_active_and_missing_field() {
+    let src = "[security.pii_filter]\nenabled = true\nfilter_email = true\n";
+    let result = migrate_pii_filter_names(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    // Advisory only — must NOT force-activate the noisy heuristic for existing installs (S1).
+    assert!(result.output.contains("# filter_names = false"));
+    assert!(!result.output.contains("\nfilter_names ="));
+    assert!(result.output.contains("enabled = true"));
+    assert!(result.output.contains("filter_email = true"));
+    assert_eq!(
+        result.sections_changed,
+        vec!["security.pii_filter".to_owned()]
+    );
+}
+
+#[test]
+fn step_74_noop_when_filter_names_already_present() {
+    let src = "[security.pii_filter]\nenabled = true\nfilter_names = false\n";
+    let result = migrate_pii_filter_names(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_74_noop_when_filter_names_comment_already_present() {
+    let src = "[security.pii_filter]\nenabled = true\n# filter_names = false\n";
+    let result = migrate_pii_filter_names(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_74_noop_when_pii_filter_section_absent() {
+    let src = "[agent]\nname = \"zeph\"\n";
+    let result = migrate_pii_filter_names(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_74_idempotent_on_own_output() {
+    let src = "[security.pii_filter]\nenabled = true\n";
+    let first = migrate_pii_filter_names(src).expect("first migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_pii_filter_names(&first.output).expect("second migrate");
     assert_eq!(second.changed_count, 0, "second run must be a no-op");
     assert_eq!(
         second.output, first.output,
