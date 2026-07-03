@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools)`: `TrustGateExecutor`'s `Supervised`-mode confirmation check no longer
+  blanket-skips every tool without an explicit policy rule. The prior condition treated
+  "no rule configured" as license to bypass confirmation, which silently let
+  code-executing tools like `diagnostics` (runs `cargo check`/`cargo clippy`, executing
+  arbitrary `build.rs`/proc-macro code) proceed without a prompt. The skip is now scoped
+  to two existing, already-audited categories: tools registered as MCP-sourced
+  (`is_mcp_tool`, also covers LSP tools exposed via `mcpls`) or native read-only tools
+  (`permissions::is_readonly_tool`, reusing the existing `READONLY_TOOLS` allowlist).
+  Everything else (`bash`, `diagnostics`, `write`, `edit`, ...) now correctly falls
+  through to the `Ask` default. Also wires `TrustGateExecutor` into the ACP (`zeph
+  --acp`) and daemon (`zeph serve`) entry points, which previously built their tool
+  chain with no trust gate at all — `ConfirmationRequired` there reached
+  `LoopbackChannel::confirm()`, which unconditionally auto-approves, so the fix would
+  otherwise have been CLI-only. Closes #5575.
+- `fix(tools)`: `search_code`'s structural and grep-fallback directory walks each
+  hand-duplicated the same symlink-cycle-detection logic. Extracted into one shared
+  `enters_symlink_cycle` helper so the two walk modes cannot silently diverge. No
+  behavior change. Closes #5588.
+- `test`: the `diagnostics` tool reachability tests added for #5433 only asserted the
+  tool appears in `tool_definitions()`, never that a dispatched `ToolCall` actually
+  reaches `DiagnosticsExecutor` through the full composite chain. Added dispatch-level
+  tests (asserting `SandboxViolation`, a signal only `DiagnosticsExecutor` produces) for
+  the CLI, ACP, and daemon entry points, all calling a new shared
+  `agent_setup::build_base_executor_chain` helper so the test chain cannot drift from
+  the production wiring it is meant to guard. Closes #5578.
 - `fix(db)`: fix 25 `E0308` compile errors across `zeph-core`, `zeph-tools`, and the `zeph`
   binary under `cargo check --workspace --all-targets --features postgres`. Test helpers
   hardcoded `SqlitePool`/`SqlitePoolOptions` construction where the surrounding code expects

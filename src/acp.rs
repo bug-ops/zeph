@@ -337,11 +337,10 @@ async fn build_acp_deps(
     } else {
         zeph_tools::OutputFilterRegistry::new(false)
     };
+    let permission_policy =
+        zeph_tools::build_permission_policy(&config.tools, config.security.autonomy_level);
     let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-        .with_permissions(zeph_tools::build_permission_policy(
-            &config.tools,
-            config.security.autonomy_level,
-        ))
+        .with_permissions(permission_policy.clone())
         .with_output_filters(filter_registry)
         .with_task_supervisor((*acp_mem_supervisor).clone());
     if config.tools.sandbox.enabled {
@@ -422,18 +421,29 @@ async fn build_acp_deps(
     let mcp_executor =
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let shell_policy_handle = shell_executor.policy_handle();
-    let cwd_executor = zeph_tools::SetCwdExecutor;
     let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(config);
-    let base_executor = zeph_tools::CompositeExecutor::new(
+    let base_executor = crate::agent_setup::build_base_executor_chain(
         file_executor,
-        zeph_tools::CompositeExecutor::new(
-            shell_executor,
-            zeph_tools::CompositeExecutor::new(
-                scrape_executor,
-                zeph_tools::CompositeExecutor::new(cwd_executor, diagnostics_executor),
-            ),
-        ),
+        shell_executor,
+        scrape_executor,
+        diagnostics_executor,
     );
+    // #5575: gate the base chain (file/shell/scrape/cwd/diagnostics) behind the same
+    // TrustGateExecutor the CLI path uses (src/runner.rs), so Supervised-mode
+    // confirmation for unconfigured, non-MCP/non-readonly tools (e.g. `diagnostics`)
+    // is enforced here too — previously this chain had no trust gate at all.
+    let base_executor =
+        zeph_tools::TrustGateExecutor::new(base_executor, permission_policy.clone());
+    // Register MCP tool IDs so TrustGateExecutor can recognize genuinely MCP-sourced
+    // tools for the Supervised-mode skip (see is_mcp_tool in trust_gate.rs) and block
+    // ALL MCP tools for Quarantined skills, mirroring runner.rs.
+    {
+        let ids: std::collections::HashSet<String> = mcp_tools
+            .iter()
+            .map(zeph_mcp::McpTool::sanitized_id)
+            .collect();
+        *base_executor.mcp_tool_ids_handle().write() = ids;
+    }
     let index_provider = crate::bootstrap::resolve_index_embed_provider(config, provider.clone());
     let tool_executor: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = {
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> = std::sync::Arc::new(
@@ -1925,6 +1935,7 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
+    use zeph_tools::executor::ToolExecutor;
 
     fn make_rules_dir(dir: &std::path::Path, files: &[&str]) {
         let rules = dir.join(".claude").join("rules");
@@ -1983,6 +1994,100 @@ mod tests {
         std::env::set_current_dir(orig).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], skill_file);
+    }
+
+    /// Regression test for #5578 (dispatch-level companion to #5433's reachability
+    /// test): calls the same `agent_setup::build_base_executor_chain` helper used by
+    /// `spawn_acp_agent` above, wrapped in the same `TrustGateExecutor` (see #5575),
+    /// and asserts a `diagnostics` `ToolCall` actually reaches `DiagnosticsExecutor` —
+    /// not just that it appears in `tool_definitions()`. `Full` autonomy bypasses the
+    /// trust gate's confirmation prompt so the call proceeds to the inner executor,
+    /// exercising the trust gate's pass-through path rather than #5575's Ask path.
+    #[tokio::test]
+    async fn diagnostics_tool_call_dispatches_through_acp_composite_chain() {
+        let config = zeph_core::config::Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(&config);
+        let base_executor = crate::agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let base_executor = zeph_tools::TrustGateExecutor::new(base_executor, policy);
+
+        // Must exist on disk (DiagnosticsExecutor canonicalizes before the sandbox
+        // check) while staying outside `allowed_paths` (defaults to cwd). Assumes
+        // `TMPDIR`/temp_dir() is not itself under the repo/cwd, true in normal
+        // environments.
+        let outside = std::env::temp_dir();
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "path".into(),
+            serde_json::Value::String(outside.display().to_string()),
+        );
+        let call = zeph_tools::ToolCall {
+            tool_id: "diagnostics".into(),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = base_executor.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::SandboxViolation { .. })),
+            "expected SandboxViolation from DiagnosticsExecutor, got {result:?}"
+        );
+    }
+
+    /// Regression test for #5575's ACP gap found in review: `spawn_acp_agent` built
+    /// the base chain with NO `TrustGateExecutor` at all, so `diagnostics` (and any
+    /// other unconfigured, non-MCP/non-readonly tool) reached `LoopbackChannel::confirm`
+    /// — which unconditionally returns `Ok(true)` — instead of ever producing
+    /// `ConfirmationRequired`. Now that `spawn_acp_agent` wraps the chain in
+    /// `TrustGateExecutor` (mirroring `runner.rs`), the default `Supervised` autonomy
+    /// must require confirmation for `diagnostics` here too.
+    #[tokio::test]
+    async fn diagnostics_requires_confirmation_in_acp_composite_chain() {
+        let config = zeph_core::config::Config::default();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = crate::agent_setup::build_diagnostics_executor(&config);
+        let base_executor = crate::agent_setup::build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+        // Default PermissionPolicy: Supervised autonomy, no explicit rules configured —
+        // the exact real-world "user never set tools.permissions" scenario #5575 covers.
+        let base_executor = zeph_tools::TrustGateExecutor::new(
+            base_executor,
+            zeph_tools::PermissionPolicy::default(),
+        );
+
+        let call = zeph_tools::ToolCall {
+            tool_id: "diagnostics".into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = base_executor.execute_tool_call(&call).await;
+        assert!(
+            matches!(
+                result,
+                Err(zeph_tools::ToolError::ConfirmationRequired { .. })
+            ),
+            "expected ConfirmationRequired for diagnostics under Supervised autonomy, got {result:?}"
+        );
     }
 
     /// #5437 (S1, third recurrence): `build_acp_provider_factory` constructs raw `AnyProvider`

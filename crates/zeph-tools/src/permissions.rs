@@ -10,6 +10,11 @@ pub(crate) use zeph_config::tools::{
 };
 
 /// Read-only tool allowlist (available in `ReadOnly` autonomy mode).
+///
+/// Also used, via [`is_readonly_tool`], to bypass the `Supervised`-mode confirmation
+/// default for unconfigured tools — see #5575. A tool added here is trusted to run
+/// without confirmation in *both* modes; do not add anything that mutates state or
+/// executes code.
 const READONLY_TOOLS: &[&str] = &[
     "read",
     "find_path",
@@ -20,6 +25,16 @@ const READONLY_TOOLS: &[&str] = &[
     "load_skill",
     "invoke_skill",
 ];
+
+/// Returns `true` if `tool_id` is a native read-only tool.
+///
+/// Reuses the same [`READONLY_TOOLS`] allowlist that gates `ReadOnly` autonomy mode, so
+/// `Supervised` mode's unconfigured-tool bypass (`TrustGateExecutor::check_trust`) cannot
+/// silently diverge from it — see #5575.
+#[must_use]
+pub(crate) fn is_readonly_tool(tool_id: &str) -> bool {
+    READONLY_TOOLS.contains(&tool_id)
+}
 
 /// Tool permission policy: maps `tool_id` → ordered list of rules.
 /// First matching rule wins; default is `Ask`.
@@ -298,6 +313,16 @@ mod tests {
     #[test]
     fn autonomy_level_default_is_supervised() {
         assert_eq!(AutonomyLevel::default(), AutonomyLevel::Supervised);
+    }
+
+    #[test]
+    fn is_readonly_tool_matches_allowlist() {
+        for tool in READONLY_TOOLS {
+            assert!(is_readonly_tool(tool), "{tool} should be a readonly tool");
+        }
+        assert!(!is_readonly_tool("bash"));
+        assert!(!is_readonly_tool("diagnostics"));
+        assert!(!is_readonly_tool("write"));
     }
 
     #[test]

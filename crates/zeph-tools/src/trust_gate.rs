@@ -122,11 +122,18 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         }
 
         // PermissionPolicy was designed for the bash tool. In Supervised mode, tools
-        // without explicit rules default to Ask, which incorrectly blocks MCP/LSP tools.
-        // Skip the policy check for such tools — trust-level enforcement above is sufficient.
+        // without explicit rules default to Ask, which incorrectly blocks MCP/LSP tools
+        // and native read-only tools (both are already categorized elsewhere: MCP/LSP
+        // tools via `mcp_tool_ids`, read-only native tools via `permissions::READONLY_TOOLS`).
+        // Skip the policy check only for tools that fall into one of those two known-safe
+        // categories — trust-level enforcement above is sufficient for them. Any other
+        // unconfigured tool (e.g. `diagnostics`, which runs cargo check/clippy and can
+        // execute arbitrary code via build.rs/proc-macros) falls through to the Ask
+        // default below; see #5575.
         // ReadOnly mode is excluded: its allowlist is enforced inside policy.check().
         if self.policy.autonomy_level() == AutonomyLevel::Supervised
             && self.policy.rules().get(tool_id).is_none()
+            && (self.is_mcp_tool(tool_id) || crate::permissions::is_readonly_tool(tool_id))
         {
             return Ok(());
         }
@@ -317,13 +324,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trusted_allows_all() {
+    async fn supervised_readonly_native_tool_without_rule_allowed() {
+        // "read" is a native read-only tool (permissions::READONLY_TOOLS) — it must
+        // still bypass the Ask default in Supervised mode even without an explicit rule.
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
+
+        let result = gate.execute_tool_call(&make_call("read")).await;
+        assert!(result.is_ok());
+    }
+
+    /// Regression test for #5575: `bash` has no explicit policy rule and is neither an
+    /// MCP tool nor a native read-only tool, so it must NOT bypass confirmation in
+    /// Supervised mode — the prior blanket skip incorrectly allowed this.
+    #[tokio::test]
+    async fn supervised_unconfigured_non_mcp_non_readonly_tool_requires_confirmation() {
         let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
         gate.set_effective_trust(SkillTrustLevel::Trusted);
 
         let result = gate.execute_tool_call(&make_call("bash")).await;
-        // Default policy has no rules for bash => skip policy check => Ok
-        assert!(result.is_ok());
+        assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
+    }
+
+    /// Regression test for #5575: `diagnostics` runs `cargo check`/`cargo clippy`, which
+    /// executes arbitrary code via `build.rs` scripts and proc-macros — it must require
+    /// confirmation in Supervised mode when no explicit rule is configured, not bypass it
+    /// via the (now-removed) blanket "no rule => Ok" skip.
+    #[tokio::test]
+    async fn supervised_unconfigured_diagnostics_requires_confirmation() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        gate.set_effective_trust(SkillTrustLevel::Trusted);
+
+        let result = gate.execute_tool_call(&make_call("diagnostics")).await;
+        assert_matches!(result, Err(ToolError::ConfirmationRequired { .. }));
     }
 
     #[tokio::test]
@@ -407,12 +440,24 @@ mod tests {
 
     #[tokio::test]
     async fn quarantined_allows_file_read() {
-        let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
+        // "file_read" is not in the quarantine-denied list, but (unlike "read") it is also
+        // not in `permissions::READONLY_TOOLS`, so an explicit Allow rule is required here
+        // to isolate this test from the Supervised-mode Ask default (see #5575) and keep it
+        // focused on quarantine-denial behavior only.
+        let mut rules = std::collections::HashMap::new();
+        rules.insert(
+            "file_read".to_owned(),
+            vec![crate::permissions::PermissionRule {
+                pattern: "*".to_owned(),
+                action: PermissionAction::Allow,
+            }],
+        );
+        let policy = crate::permissions::PermissionPolicy::new(rules);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 
         let result = gate.execute_tool_call(&make_call("file_read")).await;
-        // file_read is not in quarantine denied list, and policy has no rules for file_read => Ok
+        // file_read is not in quarantine denied list, and the explicit rule allows it => Ok
         assert!(result.is_ok());
     }
 
@@ -547,10 +592,15 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_tool_supervised_no_rules_allows() {
-        // MCP tool with Supervised mode + from_legacy policy (no rules for MCP tool) => Ok
+        // MCP tool with Supervised mode + from_legacy policy (no rules for MCP tool) => Ok.
+        // Registered via `mcp_tool_ids_handle` so `is_mcp_tool` recognizes it as genuinely
+        // MCP-sourced — see #5575 (the skip is no longer a blanket "no rule => Ok").
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(SkillTrustLevel::Trusted);
+        gate.mcp_tool_ids_handle()
+            .write()
+            .insert("mcp_filesystem__read_file".to_owned());
 
         let mut params = serde_json::Map::new();
         params.insert(
@@ -710,7 +760,21 @@ mod tests {
 
     #[tokio::test]
     async fn quarantined_allows_mcp_read_file() {
-        let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
+        // Deliberately NOT registered in `mcp_tool_ids`: a tool registered there is
+        // denied outright under Quarantine regardless of read/write (see
+        // `mcp_tool_ids` field docs), so this test isolates a different case — a
+        // tool that merely looks MCP-like by name but isn't quarantine-denied by
+        // `is_quarantine_denied`. An explicit Allow rule keeps it decoupled from the
+        // Supervised-mode Ask default for unconfigured tools (see #5575).
+        let mut rules = std::collections::HashMap::new();
+        rules.insert(
+            "filesystem_read_file".to_owned(),
+            vec![crate::permissions::PermissionRule {
+                pattern: "*".to_owned(),
+                action: PermissionAction::Allow,
+            }],
+        );
+        let policy = crate::permissions::PermissionPolicy::new(rules);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
 

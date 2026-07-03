@@ -257,6 +257,30 @@ struct WalkState<'a> {
     ancestors: &'a mut Vec<PathBuf>,
 }
 
+/// Canonicalizes `current` and checks it against the active recursion stack in
+/// `ancestors` — the canonical paths of directories on the *active* recursion path
+/// (not every directory ever visited). A symlinked directory is only a cycle when
+/// following it would revisit one of those ancestors; legitimate symlinks that point
+/// elsewhere (a vendored dependency, a symlinked source file) are not cycles.
+///
+/// Returns `true` when `current` would revisit an ancestor — the caller must stop
+/// without recursing further. Otherwise pushes `current`'s canonical path onto
+/// `ancestors` and returns `false`; the caller **must** pop it (`ancestors.pop()`)
+/// once the recursive body for `current` returns.
+///
+/// Shared by [`collect_structural_hits`] and [`collect_grep_hits`] so the two walk
+/// modes cannot silently diverge (#5588).
+fn enters_symlink_cycle(ancestors: &mut Vec<PathBuf>, current: &Path) -> bool {
+    let canonical = current
+        .canonicalize()
+        .unwrap_or_else(|_| current.to_path_buf());
+    if ancestors.contains(&canonical) {
+        return true;
+    }
+    ancestors.push(canonical);
+    false
+}
+
 pub struct SearchCodeExecutor {
     allowed_paths: Vec<PathBuf>,
     semantic_backend: Option<std::sync::Arc<dyn SemanticSearchBackend>>,
@@ -619,12 +643,8 @@ fn format_hits(hits: &[SearchCodeHit], root: &Path) -> String {
         .join("\n\n")
 }
 
-/// Walks `current`, guarding against symlink cycles via `state.ancestors`: the
-/// canonical paths of directories on the *active* recursion path (not every
-/// directory ever visited). A symlinked directory is only skipped when following it
-/// would revisit one of those ancestors — an actual cycle. Legitimate symlinks that
-/// point elsewhere (a vendored dependency, a symlinked source file) are walked
-/// normally, still bounded by [`WalkBudget`] via `state.budget`.
+/// Walks `current`, guarding against symlink cycles via [`enters_symlink_cycle`], still
+/// bounded by [`WalkBudget`] via `state.budget`.
 fn collect_structural_hits(
     root: &Path,
     current: &Path,
@@ -637,16 +657,9 @@ fn collect_structural_hits(
         return Ok(());
     }
 
-    // A plain directory tree has no cycles on its own — only a symlink pointing back
-    // at an ancestor can create one — so canonicalizing once per directory entered
-    // (not per entry) and comparing against the active stack is enough to catch it.
-    let canonical = current
-        .canonicalize()
-        .unwrap_or_else(|_| current.to_path_buf());
-    if state.ancestors.contains(&canonical) {
+    if enters_symlink_cycle(state.ancestors, current) {
         return Ok(());
     }
-    state.ancestors.push(canonical);
     let result = collect_structural_hits_inner(root, current, matcher, symbol_lower, hits, state);
     state.ancestors.pop();
     result
@@ -745,7 +758,7 @@ fn collect_structural_hits_inner(
     Ok(())
 }
 
-/// Symlink cycle guard mirrors [`collect_structural_hits`]; see its docs.
+/// Symlink cycle guard mirrors [`collect_structural_hits`] via [`enters_symlink_cycle`].
 fn collect_grep_hits(
     root: &Path,
     current: &Path,
@@ -759,13 +772,9 @@ fn collect_grep_hits(
         return Ok(());
     }
 
-    let canonical = current
-        .canonicalize()
-        .unwrap_or_else(|_| current.to_path_buf());
-    if state.ancestors.contains(&canonical) {
+    if enters_symlink_cycle(state.ancestors, current) {
         return Ok(());
     }
-    state.ancestors.push(canonical);
     let result = collect_grep_hits_inner(root, current, matcher, regex, hits, max_results, state);
     state.ancestors.pop();
     result
@@ -1027,6 +1036,35 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(out.summary.contains("retry_backoff_ms"));
+    }
+
+    /// Unit-level regression test for #5588: `enters_symlink_cycle` is the single
+    /// shared implementation of the cycle-detection logic previously duplicated
+    /// between `collect_structural_hits` and `collect_grep_hits`.
+    #[test]
+    fn enters_symlink_cycle_detects_repeated_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ancestors = Vec::new();
+
+        assert!(!enters_symlink_cycle(&mut ancestors, dir.path()));
+        assert_eq!(ancestors.len(), 1);
+
+        // Re-entering the same (canonicalized) path is a cycle.
+        assert!(enters_symlink_cycle(&mut ancestors, dir.path()));
+        // A cycle must not push a duplicate entry.
+        assert_eq!(ancestors.len(), 1);
+    }
+
+    #[test]
+    fn enters_symlink_cycle_allows_distinct_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let mut ancestors = Vec::new();
+
+        assert!(!enters_symlink_cycle(&mut ancestors, dir.path()));
+        assert!(!enters_symlink_cycle(&mut ancestors, &child));
+        assert_eq!(ancestors.len(), 2);
     }
 
     /// Regression test for #5577 (critic finding M1 / tester coverage gap 1): a

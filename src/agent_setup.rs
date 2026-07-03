@@ -556,17 +556,12 @@ pub(crate) async fn build_tool_setup(
     let shell_policy_handle = shell_executor.policy_handle();
     let shell_executor = Arc::new(shell_executor);
     let shell_executor_handle = Some(Arc::clone(&shell_executor));
-    let cwd_executor = zeph_tools::SetCwdExecutor;
     let diagnostics_executor = build_diagnostics_executor(config);
-    let base_executor = zeph_tools::CompositeExecutor::new(
+    let base_executor = build_base_executor_chain(
         file_executor,
-        zeph_tools::CompositeExecutor::new(
-            shell_executor,
-            zeph_tools::CompositeExecutor::new(
-                scrape_executor,
-                zeph_tools::CompositeExecutor::new(cwd_executor, diagnostics_executor),
-            ),
-        ),
+        shell_executor,
+        scrape_executor,
+        diagnostics_executor,
     );
     let composite = zeph_tools::CompositeExecutor::new(base_executor, mcp_executor);
     let (executor, taco_compressor) =
@@ -1506,6 +1501,61 @@ pub(crate) fn build_diagnostics_executor(config: &Config) -> zeph_tools::Diagnos
         .with_timeout(std::time::Duration::from_secs(config.tools.shell.timeout))
 }
 
+/// Assembles the `file -> shell -> scrape -> cwd -> diagnostics` composite tool chain
+/// shared by all three live entry points (CLI's [`build_tool_setup`], `acp.rs`'s
+/// `spawn_acp_agent`, `daemon.rs`'s `run_daemon`) and the #5578 dispatch-reachability
+/// tests. Pinning the nesting order in one function means a future reorder or drop of
+/// one of these executors in production is caught by every caller — including the
+/// tests — instead of a hand-copied test chain silently going stale.
+///
+/// Generic over the shell/scrape/file executor types so each entry point can pass in
+/// its own already-customized executors (audit logging, OS sandbox, task supervisor,
+/// egress config, etc. attached via their builder methods beforehand) without this
+/// function needing to know about any of that; the tests pass in bare/default ones.
+#[expect(
+    clippy::type_complexity,
+    reason = "concrete nested CompositeExecutor chain type mirrors the production wiring \
+              exactly; the whole point of this helper is pinning down that exact static \
+              chain shape, so hiding it behind a boxed/dyn return would defeat it"
+)]
+pub(crate) fn build_base_executor_chain<F, S, W>(
+    file_executor: F,
+    shell_executor: S,
+    scrape_executor: W,
+    diagnostics_executor: zeph_tools::DiagnosticsExecutor,
+) -> zeph_tools::CompositeExecutor<
+    F,
+    zeph_tools::CompositeExecutor<
+        S,
+        zeph_tools::CompositeExecutor<
+            W,
+            zeph_tools::CompositeExecutor<
+                zeph_tools::SetCwdExecutor,
+                zeph_tools::DiagnosticsExecutor,
+            >,
+        >,
+    >,
+>
+where
+    F: zeph_tools::ToolExecutor,
+    S: zeph_tools::ToolExecutor,
+    W: zeph_tools::ToolExecutor,
+{
+    zeph_tools::CompositeExecutor::new(
+        file_executor,
+        zeph_tools::CompositeExecutor::new(
+            shell_executor,
+            zeph_tools::CompositeExecutor::new(
+                scrape_executor,
+                zeph_tools::CompositeExecutor::new(
+                    zeph_tools::SetCwdExecutor,
+                    diagnostics_executor,
+                ),
+            ),
+        ),
+    )
+}
+
 fn resolve_search_lsp_server_id(config: &Config) -> Option<String> {
     config
         .mcp
@@ -1953,6 +2003,54 @@ mod tests {
         );
         let defs = base_executor.tool_definitions();
         assert!(defs.iter().any(|d| d.id == "diagnostics"));
+    }
+
+    /// Regression test for #5578: prior reachability tests for #5433 only asserted
+    /// `diagnostics` appears in `tool_definitions()`, never that a `ToolCall` for it
+    /// actually reaches `DiagnosticsExecutor` through the full composite chain — an
+    /// earlier executor silently swallowing the call would have gone unnoticed. Uses
+    /// the same `build_base_executor_chain` helper the CLI/ACP/daemon entry points
+    /// call, so a future reorder or drop of `diagnostics` in production wiring is
+    /// caught here too — a hand-copied chain could not. Dispatches a call with a path
+    /// outside `allowed_paths` and asserts `SandboxViolation`, a signal that can only
+    /// originate from `DiagnosticsExecutor`.
+    #[tokio::test]
+    async fn diagnostics_tool_call_dispatches_through_composite_chain() {
+        let config = Config::load(Path::new("/nonexistent")).unwrap();
+        let file_executor = zeph_tools::FileExecutor::new(vec![]);
+        let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell);
+        let scrape_executor = zeph_tools::WebScrapeExecutor::new(&config.tools.scrape);
+        let diagnostics_executor = build_diagnostics_executor(&config);
+        let base_executor = build_base_executor_chain(
+            file_executor,
+            shell_executor,
+            scrape_executor,
+            diagnostics_executor,
+        );
+
+        // Must exist on disk (DiagnosticsExecutor canonicalizes before the sandbox
+        // check) while staying outside `allowed_paths` (defaults to cwd). Assumes
+        // `TMPDIR`/temp_dir() is not itself under the repo/cwd, true in normal
+        // environments.
+        let outside = std::env::temp_dir();
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "path".into(),
+            serde_json::Value::String(outside.display().to_string()),
+        );
+        let call = zeph_tools::ToolCall {
+            tool_id: "diagnostics".into(),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        };
+        let result = base_executor.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(zeph_tools::ToolError::SandboxViolation { .. })),
+            "expected SandboxViolation from DiagnosticsExecutor, got {result:?}"
+        );
     }
 
     #[tokio::test]
