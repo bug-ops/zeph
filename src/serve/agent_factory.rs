@@ -74,7 +74,7 @@ pub(crate) async fn build_agent_factory(
         hydrate_session_sink(
             &deps.session_persistence_config,
             &deps.memory,
-            session_id,
+            session_id.clone(),
             conversation_id,
             &deps.resume_condenser,
             deps.resume_token_counter.as_ref(),
@@ -86,6 +86,9 @@ pub(crate) async fn build_agent_factory(
     };
 
     move |channel| {
+        // Capture before apply_session_config consumes deps.session_config (mirrors
+        // spawn_acp_agent's debug_config capture in src/acp.rs).
+        let debug_config = deps.session_config.debug_config.clone();
         let mut agent = Agent::new_with_registry_arc(
             deps.provider,
             deps.embedding_provider,
@@ -107,6 +110,18 @@ pub(crate) async fn build_agent_factory(
         .with_session_persistence_config(Some(deps.session_persistence_config));
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
+        }
+        if debug_config.enabled {
+            // Session-id subdirectory prefix (I2, matches spawn_acp_agent) so concurrent
+            // `/sessions` agents never share the same timestamped dump directory.
+            let session_dump_dir = debug_config.output_dir.join(session_id.as_str());
+            match zeph_core::debug_dump::DebugDumper::new(
+                session_dump_dir.as_path(),
+                debug_config.format,
+            ) {
+                Ok(dumper) => agent = agent.with_debug_dumper(dumper),
+                Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
+            }
         }
         agent
     }
@@ -426,5 +441,63 @@ mod tests {
              no persistence, not panic or hang"
         );
         assert!(messages.is_empty());
+    }
+
+    /// #5566 regression: `build_agent_factory` must wire a `DebugDumper` when `[debug] enabled =
+    /// true`, the same way `spawn_acp_agent` (`src/acp.rs`) and the CLI path (`src/runner.rs`)
+    /// already do. `Agent` exposes no public accessor for its internal `debug_dumper` state, so
+    /// this asserts the documented, directly observable side effect instead:
+    /// `DebugDumper::new` creates its timestamped subdirectory synchronously on construction.
+    #[tokio::test]
+    async fn build_agent_factory_wires_debug_dumper_when_enabled() {
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dump_dir = tempfile::tempdir().unwrap();
+        let session_id = zeph_common::SessionId::new("debug-test-session");
+
+        let mut config = zeph_core::config::Config::default();
+        config.debug.enabled = true;
+        config.debug.output_dir = dump_dir.path().to_path_buf();
+        config.debug.format = zeph_config::DumpFormat::Raw;
+
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+
+        let deps = ServeAgentDeps {
+            provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            embedding_provider: AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            registry: Arc::new(parking_lot::RwLock::new(
+                zeph_skills::registry::SkillRegistry::empty(),
+            )),
+            matcher: None,
+            max_active_skills: 5,
+            tool_executor: Arc::new(zeph_tools::SetCwdExecutor),
+            memory: Arc::clone(&memory),
+            history_limit: 10,
+            recall_limit: 5,
+            summarization_threshold: 1000,
+            session_config,
+            session_persistence_config: zeph_config::SessionConfig::default(),
+            resume_condenser: Arc::new(condenser),
+            resume_token_counter: Arc::new(token_counter),
+        };
+
+        let build_agent = build_agent_factory(deps, session_id.clone(), cid).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let _agent = build_agent(channel);
+
+        let session_dump_dir = dump_dir.path().join(session_id.as_str());
+        assert!(
+            session_dump_dir.is_dir(),
+            "debug dump session subdirectory must be created when [debug] enabled = true"
+        );
+        let has_timestamped_child = std::fs::read_dir(&session_dump_dir)
+            .unwrap()
+            .next()
+            .is_some();
+        assert!(
+            has_timestamped_child,
+            "DebugDumper::new must create a timestamped subdirectory under the session dir"
+        );
     }
 }

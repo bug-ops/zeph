@@ -636,6 +636,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the prompt content is safe. `LoopbackChannel::requires_input_sanitization()` stays `false`, since
   the queue is shared with the gateway/A2A producers which already sanitize upstream of it.
   Closes #5474.
+- `fix(serve,daemon)`: wire `[debug] enabled = true` into the two remaining agent-construction
+  paths that silently ignored it — `zeph serve-sessions` (`src/serve/agent_factory.rs`) and
+  gateway/`--daemon` mode (`src/daemon.rs`) — matching the CLI (`src/runner.rs`) and ACP
+  (`src/acp.rs`) paths, which already called `DebugDumper::new` + `Agent::with_debug_dumper`.
+  `build_agent_factory`'s returned closure now wires a session-id-scoped dump directory (same
+  rationale as `spawn_acp_agent`, so concurrent `/sessions`-created agents never collide on a
+  timestamped directory); `run_daemon` wires a single dump directory directly, matching the
+  CLI's non-flag fallback. `src/gateway_spawn.rs` itself builds no `Agent` (it only forwards
+  sanitized webhook payloads into an existing input queue), so the actual gateway-side gap was in
+  `daemon.rs`'s agent-construction chain. Closes #5566.
 - `fix(core)`: `--bare` mode no longer fires shutdown-path LLM calls. `Agent::maybe_autodream`,
   `maybe_extract_skills_from_trace`, `maybe_store_shutdown_summary`, and
   `maybe_store_session_digest` only checked their own subsystem config flags, not

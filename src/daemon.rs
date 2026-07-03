@@ -783,6 +783,19 @@ pub(crate) async fn run_daemon(
         .with_document_config(config.memory.documents.clone())
         .with_hooks_config(&config.hooks);
 
+    // #5566: daemon mode (the process that actually serves `[gateway]` long-lived, since
+    // `spawn_gateway_server` only forwards webhooks into an already-built agent) never wired
+    // `[debug]`, unlike the CLI (src/runner.rs) and ACP (src/acp.rs) agent-construction paths.
+    if config.debug.enabled {
+        match zeph_core::debug_dump::DebugDumper::new(
+            config.debug.output_dir.as_path(),
+            config.debug.format,
+        ) {
+            Ok(dumper) => agent = agent.with_debug_dumper(dumper),
+            Err(e) => tracing::warn!(error = %e, "debug dump initialization failed"),
+        }
+    }
+
     agent.load_history().await?;
     agent
         .check_vector_store_health(config.memory.vector_backend.as_str())
