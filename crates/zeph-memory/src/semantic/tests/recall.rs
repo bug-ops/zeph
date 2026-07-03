@@ -649,6 +649,119 @@ async fn admission_without_dedicated_provider_uses_embed_provider() {
     );
 }
 
+// ── A-MAC admission training data collection tests (#5555) ───────────────────
+//
+// Regression coverage for issue #5555: `record_admission_sample` (the private helper
+// wired into all 4 `remember*` methods) had no test asserting it actually writes to
+// `admission_training_data`, nor that `message_id`/`was_admitted` are correct for each
+// of the three possible outcomes. The existing A-MAC tests above only assert the
+// `remember()` return value and `messages` table state — they would not catch
+// `record_admission_sample` silently never being called, or being called with the
+// wrong `message_id`.
+
+#[tokio::test]
+async fn rejected_by_amac_records_training_sample_with_no_message_id() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_reject_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember(cid, "user", "this message will be rejected", None)
+        .await
+        .unwrap();
+    assert!(result.is_none());
+
+    assert_eq!(
+        memory.sqlite.count_training_records().await.unwrap(),
+        1,
+        "A-MAC rejection must still be recorded as a training sample"
+    );
+    let batch = memory.sqlite.get_training_batch(10).await.unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(
+        batch[0].message_id, None,
+        "rejected message was never persisted, so message_id must be None"
+    );
+    assert!(
+        !batch[0].was_admitted,
+        "training record must reflect the rejection"
+    );
+}
+
+#[tokio::test]
+async fn admitted_and_persisted_records_training_sample_with_message_id() {
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_admit_admission());
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let message_id = memory
+        .remember(cid, "user", "important factual content", None)
+        .await
+        .unwrap()
+        .expect("admitted message must return Some(id)");
+
+    assert_eq!(memory.sqlite.count_training_records().await.unwrap(), 1);
+    let batch = memory.sqlite.get_training_batch(10).await.unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(
+        batch[0].message_id,
+        Some(message_id.0),
+        "admitted-and-persisted training record must carry the real message_id"
+    );
+    assert!(
+        batch[0].was_admitted,
+        "training record must reflect the admission"
+    );
+}
+
+#[tokio::test]
+async fn admitted_then_quality_gate_rejected_records_training_sample_with_no_message_id() {
+    // Quality gate config matching `gate_rejects_pronoun_only_at_low_threshold` in
+    // quality_gate.rs, which reliably rejects pronoun-heavy content as IncompleteReference.
+    let gate_config = crate::quality_gate::QualityGateConfig {
+        enabled: true,
+        threshold: 0.75,
+        reference_completeness_weight: 0.9,
+        information_value_weight: 0.05,
+        contradiction_weight: 0.05,
+        ..crate::quality_gate::QualityGateConfig::default()
+    };
+    let memory = test_semantic_memory(false)
+        .await
+        .with_admission_control(make_always_admit_admission())
+        .with_quality_gate(Arc::new(crate::quality_gate::QualityGate::new(gate_config)));
+
+    let cid = memory.sqlite.create_conversation().await.unwrap();
+    let result = memory
+        .remember(cid, "user", "yeah he confirmed it they said so", None)
+        .await
+        .unwrap();
+    assert!(
+        result.is_none(),
+        "quality gate must reject this pronoun-heavy content after A-MAC admits it"
+    );
+
+    assert_eq!(
+        memory.sqlite.count_training_records().await.unwrap(),
+        1,
+        "A-MAC-admitted-but-quality-gate-rejected message must still be recorded, to \
+         avoid survivorship bias in the training set"
+    );
+    let batch = memory.sqlite.get_training_batch(10).await.unwrap();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(
+        batch[0].message_id, None,
+        "message was never persisted (quality gate rejected it after admission), \
+         so message_id must be None"
+    );
+    assert!(
+        batch[0].was_admitted,
+        "was_admitted reflects the A-MAC decision, not the downstream quality-gate outcome"
+    );
+}
+
 // ── effective_depth tests (MM-F1, #3340) ──────────────────────────────────────
 
 #[tokio::test]

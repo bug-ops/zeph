@@ -63,9 +63,10 @@ fn chunk_text(text: &str) -> Vec<&str> {
     chunks
 }
 
-use crate::admission::log_admission_decision;
+use crate::admission::{AdmissionDecision, log_admission_decision};
 use crate::embedding_store::{MessageKind, SearchFilter};
 use crate::error::MemoryError;
+use crate::store::admission_training::AdmissionTrainingInput;
 use crate::types::{ConversationId, MessageId};
 
 use super::SemanticMemory;
@@ -348,6 +349,7 @@ impl SemanticMemory {
         goal_text: Option<&str>,
     ) -> Result<Option<MessageId>, MemoryError> {
         // A-MAC admission gate.
+        let mut admission_decision = None;
         if let Some(ref admission) = self.admission_control {
             let decision = admission
                 .evaluate(
@@ -361,8 +363,11 @@ impl SemanticMemory {
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
             if !decision.admitted {
+                self.record_admission_sample(conversation_id, role, content, &decision, None)
+                    .await;
                 return Ok(None);
             }
+            admission_decision = Some(decision);
         }
 
         if let Some(gate) = &self.quality_gate
@@ -371,6 +376,10 @@ impl SemanticMemory {
                 .await
                 .is_some()
         {
+            if let Some(decision) = &admission_decision {
+                self.record_admission_sample(conversation_id, role, content, decision, None)
+                    .await;
+            }
             return Ok(None);
         }
 
@@ -378,6 +387,17 @@ impl SemanticMemory {
             .sqlite
             .save_message(conversation_id, role, content)
             .await?;
+
+        if let Some(decision) = &admission_decision {
+            self.record_admission_sample(
+                conversation_id,
+                role,
+                content,
+                decision,
+                Some(message_id),
+            )
+            .await;
+        }
 
         self.embed_and_store_regular(message_id, conversation_id, role, content);
 
@@ -405,6 +425,7 @@ impl SemanticMemory {
         goal_text: Option<&str>,
     ) -> Result<(Option<MessageId>, bool), MemoryError> {
         // A-MAC admission gate.
+        let mut admission_decision = None;
         if let Some(ref admission) = self.admission_control {
             let decision = admission
                 .evaluate(
@@ -418,8 +439,11 @@ impl SemanticMemory {
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
             if !decision.admitted {
+                self.record_admission_sample(conversation_id, role, content, &decision, None)
+                    .await;
                 return Ok((None, false));
             }
+            admission_decision = Some(decision);
         }
 
         if let Some(gate) = &self.quality_gate
@@ -428,6 +452,10 @@ impl SemanticMemory {
                 .await
                 .is_some()
         {
+            if let Some(decision) = &admission_decision {
+                self.record_admission_sample(conversation_id, role, content, decision, None)
+                    .await;
+            }
             return Ok((None, false));
         }
 
@@ -435,6 +463,17 @@ impl SemanticMemory {
             .sqlite
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
+
+        if let Some(decision) = &admission_decision {
+            self.record_admission_sample(
+                conversation_id,
+                role,
+                content,
+                decision,
+                Some(message_id),
+            )
+            .await;
+        }
 
         let embedding_stored =
             self.embed_and_store_regular(message_id, conversation_id, role, content);
@@ -465,6 +504,7 @@ impl SemanticMemory {
         parts_json: &str,
         embed_ctx: EmbedContext,
     ) -> Result<(Option<MessageId>, bool), MemoryError> {
+        let mut admission_decision = None;
         if let Some(ref admission) = self.admission_control {
             let decision = admission
                 .evaluate(
@@ -478,14 +518,28 @@ impl SemanticMemory {
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
             if !decision.admitted {
+                self.record_admission_sample(conversation_id, role, content, &decision, None)
+                    .await;
                 return Ok((None, false));
             }
+            admission_decision = Some(decision);
         }
 
         let message_id = self
             .sqlite
             .save_message_with_parts(conversation_id, role, content, parts_json)
             .await?;
+
+        if let Some(decision) = &admission_decision {
+            self.record_admission_sample(
+                conversation_id,
+                role,
+                content,
+                decision,
+                Some(message_id),
+            )
+            .await;
+        }
 
         let embedding_stored = self.embed_chunks_with_tool_context(
             message_id,
@@ -520,6 +574,7 @@ impl SemanticMemory {
         category: Option<&str>,
         goal_text: Option<&str>,
     ) -> Result<Option<MessageId>, MemoryError> {
+        let mut admission_decision = None;
         if let Some(ref admission) = self.admission_control {
             let decision = admission
                 .evaluate(
@@ -533,8 +588,11 @@ impl SemanticMemory {
             let preview: String = content.chars().take(100).collect();
             log_admission_decision(&decision, &preview, role, admission.threshold());
             if !decision.admitted {
+                self.record_admission_sample(conversation_id, role, content, &decision, None)
+                    .await;
                 return Ok(None);
             }
+            admission_decision = Some(decision);
         }
 
         let message_id = self
@@ -542,9 +600,59 @@ impl SemanticMemory {
             .save_message_with_category(conversation_id, role, content, category)
             .await?;
 
+        if let Some(decision) = &admission_decision {
+            self.record_admission_sample(
+                conversation_id,
+                role,
+                content,
+                decision,
+                Some(message_id),
+            )
+            .await;
+        }
+
         self.embed_and_store_with_category(message_id, conversation_id, role, content, category);
 
         Ok(Some(message_id))
+    }
+
+    /// Record an A-MAC admission decision as an RL training sample.
+    ///
+    /// Best-effort: failures are logged at debug level and never propagated, since training
+    /// data collection must not affect the write path it observes. Records both admitted and
+    /// rejected decisions so the training set avoids survivorship bias (see
+    /// `crate::store::admission_training` module docs). `message_id` is `None` when the
+    /// message was rejected (by A-MAC or a downstream quality gate) and never persisted.
+    async fn record_admission_sample(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        decision: &AdmissionDecision,
+        message_id: Option<MessageId>,
+    ) {
+        let features_json = match serde_json::to_string(&decision.factors) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::debug!(error = %e, "admission training: failed to serialize factors");
+                return;
+            }
+        };
+        if let Err(e) = self
+            .sqlite
+            .record_admission_training(AdmissionTrainingInput {
+                message_id,
+                conversation_id,
+                content,
+                role,
+                composite_score: decision.composite_score,
+                was_admitted: decision.admitted,
+                features_json: &features_json,
+            })
+            .await
+        {
+            tracing::debug!(error = %e, "admission training: failed to record sample (non-fatal)");
+        }
     }
 
     /// Recall messages filtered by category.
