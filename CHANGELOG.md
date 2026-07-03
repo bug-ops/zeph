@@ -563,6 +563,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(serve)`: sanitize `POST /sessions/:id/prompt` HTTP request bodies as `ExternalUntrusted`
+  (`ContentSourceKind::ChannelMessage`) via `ContentSanitizer` before they reach the agent loopback
+  queue — closes the same content-trust bypass already fixed for the gateway (#5459) and channel
+  adapters/A2A (#5460). A valid bearer token proves the caller knows the shared secret, not that
+  the prompt content is safe. `LoopbackChannel::requires_input_sanitization()` stays `false`, since
+  the queue is shared with the gateway/A2A producers which already sanitize upstream of it.
+  Closes #5474.
 - `fix(core)`: `--bare` mode no longer fires shutdown-path LLM calls. `Agent::maybe_autodream`,
   `maybe_extract_skills_from_trace`, `maybe_store_shutdown_summary`, and
   `maybe_store_session_digest` only checked their own subsystem config flags, not

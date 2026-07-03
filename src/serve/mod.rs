@@ -80,6 +80,13 @@ pub(crate) struct AppState {
     pub(crate) deps: ServeAgentDeps,
     pub(crate) mailbox_capacity: usize,
     pub(crate) max_sessions: usize,
+    /// Sanitizes `POST /sessions/:id/prompt` bodies as `ExternalUntrusted` before they reach the
+    /// agent loopback queue — a valid bearer token proves the caller knows the shared secret, not
+    /// that the prompt content is safe (#5474). Same `ExternalUntrusted` tier as the gateway's
+    /// `forward_webhooks` (`ContentSourceKind::ChannelMessage`, `src/gateway_spawn.rs`) and A2A's
+    /// `AgentTaskProcessor` (`ContentSourceKind::A2aMessage`, `src/daemon.rs`) — this handler uses
+    /// `ChannelMessage`, matching the gateway's kind, not A2A's.
+    pub(crate) sanitizer: zeph_core::ContentSanitizer,
 }
 
 /// Run `zeph serve-sessions` until a shutdown signal (SIGTERM/Ctrl-C) is received.
@@ -157,6 +164,7 @@ pub(crate) async fn handle_serve_sessions_command(
         deps,
         mailbox_capacity: serve_config.max_queued_prompts,
         max_sessions,
+        sanitizer: zeph_core::ContentSanitizer::new(&config.security.content_isolation),
     };
 
     let idle_ttl = Duration::from_secs(serve_config.session_idle_ttl_secs);
