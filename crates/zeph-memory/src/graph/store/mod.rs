@@ -729,9 +729,9 @@ impl GraphStore {
             query = query.bind(et.as_str());
         }
 
-        // Wrap pool.acquire() + query execution in a short timeout to prevent the outer
-        // tokio::time::timeout (in SemanticMemory recall) from cancelling a mid-acquire
-        // future, which causes sqlx 0.8 semaphore count drift and permanent pool starvation.
+        // Bound worst-case per-chunk blocking on pool.acquire() + query execution: a
+        // stuck pool turns into a typed MemoryError::Timeout instead of an indefinite
+        // hang, so the caller (SemanticMemory recall) can fail fast and proceed.
         let rows: Vec<EdgeRow> = tokio::time::timeout(
             std::time::Duration::from_millis(500),
             query.fetch_all(&self.pool),
@@ -1517,7 +1517,16 @@ impl GraphStore {
             for id in chunk {
                 q = q.bind(*id);
             }
-            let rows = q.fetch_all(&self.pool).await?;
+            // Bound worst-case per-chunk blocking on pool.acquire() + query execution: a
+            // stuck pool turns into a typed MemoryError::Timeout instead of an indefinite
+            // hang, so callers (e.g. hela_spreading_recall's per-step circuit breaker) can
+            // fail fast and proceed.
+            let rows: Vec<(i64, String)> = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                q.fetch_all(&self.pool),
+            )
+            .await
+            .map_err(|_| MemoryError::Timeout("qdrant_point_ids_for_entities".into()))??;
             for (entity_id, point_id) in rows {
                 result.insert(entity_id, point_id);
             }

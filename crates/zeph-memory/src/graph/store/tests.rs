@@ -3723,6 +3723,43 @@ async fn pool_isolation_independent_pools_do_not_starve() {
     assert!(result.unwrap().is_ok(), "pool B query must succeed");
 }
 
+// ── Regression: #5500 qdrant_point_ids_for_entities timeout ─────────────────
+
+/// Regression test for #5500: `qdrant_point_ids_for_entities` must return
+/// `MemoryError::Timeout` instead of hanging when its pool has no idle connection
+/// available past the method's internal 500ms deadline.
+///
+/// Uses a single-connection pool (same construction as
+/// `migration_024_backfill_preserves_entities_and_edges` above) and holds the sole
+/// connection for 800ms via a spawned task, matching the `#2591` pool-starvation
+/// test's real-time hold/timeout ratio. The connection is acquired synchronously
+/// before spawning so there is no race for who gets it first.
+#[tokio::test]
+async fn qdrant_point_ids_for_entities_times_out_on_pool_starvation() {
+    let store = SqliteStore::with_pool_size(":memory:", 1).await.unwrap();
+    let gs = GraphStore::new(store.pool().clone());
+
+    // Grab the pool's sole connection synchronously, then release it after 800ms —
+    // longer than the method's internal 500ms timeout — so `fetch_all`'s implicit
+    // pool.acquire() never completes in time.
+    let conn = store.pool().acquire().await.expect("sole connection");
+    let holder = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        drop(conn);
+    });
+
+    let result = gs.qdrant_point_ids_for_entities(&[1]).await;
+    holder.await.expect("holder task");
+
+    assert!(
+        matches!(
+            result,
+            Err(crate::error::MemoryError::Timeout(ref msg)) if msg == "qdrant_point_ids_for_entities"
+        ),
+        "expected Timeout(\"qdrant_point_ids_for_entities\"), got: {result:?}"
+    );
+}
+
 // ── GAAMA episode tests ────────────────────────────────────────────────────────
 
 /// Insert a conversation row and return its id (satisfies `FK` in `graph_episodes`).
