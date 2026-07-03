@@ -50,6 +50,58 @@ async fn agent_recovers_from_context_length_exceeded_and_produces_response() {
     );
 }
 
+/// Regression test for #5572: the `/compact` command's user-facing response must surface
+/// the actual number of messages folded into the summary rather than the generic
+/// "Context compacted successfully." string, so the fix landed for #5533/#5568 (which made
+/// `MemoryFacade::compact`'s `messages_compacted` count correct) is also observable through
+/// the live `/compact` command path, not just in dormant `zeph-memory` scaffolding.
+#[tokio::test]
+async fn compact_context_command_reports_folded_message_count() {
+    // 11 messages total (1 seeded system prompt + 10 pushed) minus preserve_tail (4) leaves
+    // a compact_end of 7; to_compact = messages[1..7] (system message at index 0 is never
+    // compacted) = 6 messages. Assert the exact count, not just "some digit" — a regression
+    // to the total message count (11 or 10) instead of the folded subset must fail this test,
+    // matching the rigor of zeph-memory's
+    // `compact_reports_actual_messages_folded_not_total_message_count`.
+    const TOTAL_SEEDED_MESSAGES: usize = 10;
+    const EXPECTED_FOLDED_COUNT: usize = 6;
+    // Compile-time sanity check: the folded count fixture must be a strict subset of seeded
+    // messages, otherwise this test cannot distinguish "folded subset" from "total message
+    // count".
+    const { assert!(EXPECTED_FOLDED_COUNT < TOTAL_SEEDED_MESSAGES) };
+
+    let provider = mock_provider(vec!["summary text".into()]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+        .with_context_budget(200_000, 0.20, 0.80, 4, 0);
+
+    // Seed enough messages to exceed compaction_preserve_tail (4) + 1.
+    for i in 0..TOTAL_SEEDED_MESSAGES {
+        let role = if i % 2 == 0 {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        agent.msg.messages.push(Message {
+            role,
+            content: format!("message {i}"),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        });
+    }
+
+    let result = agent.compact_context_command().await.unwrap();
+
+    assert_eq!(
+        result,
+        format!("Context compacted: {EXPECTED_FOLDED_COUNT} message(s) folded into summary."),
+        "response must report the exact number of messages folded into the summary; got: {result}"
+    );
+}
+
 /// E2E test: spawn sub-agent in background, verify it runs and produces output.
 ///
 /// Scope: spawn → text response → collect (`MockProvider` only supports text responses).

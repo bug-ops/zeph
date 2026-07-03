@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(core)`: the `/compact` command's response now reports the actual number of messages
+  folded into the summary (e.g. "Context compacted: 6 message(s) folded into summary.")
+  instead of the generic "Context compacted successfully." string. `CompactionOutcome::
+  Compacted`/`CompactedWithPersistError` (`zeph-agent-context`) now carry a `compacted_count`
+  field sourced from the same counter already used for the `compacted_count` debug log line,
+  and `Agent::compact_context_command` surfaces it to the caller. Note: `MemoryFacade::
+  compact()` in `zeph-memory` (fixed by #5568/#5533) remains unwired scaffolding for a future
+  `Arc<dyn MemoryFacade>` migration (see `crates/zeph-memory/src/facade.rs` module docs) — it
+  is not the code path this command uses; #5533/#5568 fixed the message-count logic of that
+  dormant path only, not the live `/compact` command, which this change addresses separately.
+  Closes #5572.
 - `fix(tools)`: `TrustGateExecutor`'s `Supervised`-mode confirmation check no longer
   blanket-skips every tool without an explicit policy rule. The prior condition treated
   "no rule configured" as license to bypass confirmation, which silently let

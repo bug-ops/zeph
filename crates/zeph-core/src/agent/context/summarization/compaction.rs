@@ -68,23 +68,29 @@ impl<C: Channel> Agent<C> {
         if self.msg.messages.len() <= self.context_manager.compaction_preserve_tail + 1 {
             return Ok("Nothing to compact.".to_owned());
         }
-        match self
+        let outcome = self
             .compact_context()
             .await
-            .map_err(|e| zeph_commands::CommandError::new(e.to_string()))?
-        {
-            CompactionOutcome::Compacted { .. } | CompactionOutcome::NoChange => {
-                Ok("Context compacted successfully.".to_owned())
-            }
-            CompactionOutcome::CompactedWithPersistError { .. } => {
-                Ok("Context compacted, but persistence to storage failed (see logs).".to_owned())
-            }
+            .map_err(|e| zeph_commands::CommandError::new(e.to_string()))?;
+        match outcome {
+            CompactionOutcome::Compacted {
+                compacted_count, ..
+            } => Ok(format!(
+                "Context compacted: {compacted_count} message(s) folded into summary."
+            )),
+            CompactionOutcome::CompactedWithPersistError {
+                compacted_count, ..
+            } => Ok(format!(
+                "Context compacted: {compacted_count} message(s) folded into summary, \
+                 but persistence to storage failed (see logs)."
+            )),
             CompactionOutcome::ProbeRejected => {
                 Ok("Compaction rejected: summary quality below threshold. \
                  Original context preserved."
                     .to_owned())
             }
-            _ => Ok("Context compacted successfully.".to_owned()),
+            // `NoChange` and any future non-exhaustive variant share the generic message.
+            CompactionOutcome::NoChange | _ => Ok("Context compacted successfully.".to_owned()),
         }
     }
 

@@ -220,9 +220,15 @@ pub(crate) async fn compact_context(
     }
 
     if persist_failed {
-        Ok(CompactionOutcome::CompactedWithPersistError { qdrant_future })
+        Ok(CompactionOutcome::CompactedWithPersistError {
+            qdrant_future,
+            compacted_count,
+        })
     } else {
-        Ok(CompactionOutcome::Compacted { qdrant_future })
+        Ok(CompactionOutcome::Compacted {
+            qdrant_future,
+            compacted_count,
+        })
     }
 }
 

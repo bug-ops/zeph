@@ -477,12 +477,16 @@ pub enum CompactionOutcome {
     Compacted {
         /// Optional Qdrant write future to dispatch via the supervisor.
         qdrant_future: Option<QdrantPersistFuture>,
+        /// Number of messages folded into the summary.
+        compacted_count: usize,
     },
     /// Messages were drained and replaced with a summary, but synchronous `SQLite` persistence
     /// reported failure. The in-memory state is correct; only persistence failed.
     CompactedWithPersistError {
         /// Optional Qdrant write future to dispatch via the supervisor.
         qdrant_future: Option<QdrantPersistFuture>,
+        /// Number of messages folded into the summary.
+        compacted_count: usize,
     },
     /// Probe rejected the summary — original messages are preserved.
     /// Caller must NOT check `freed_tokens` or transition to `Exhausted`.
@@ -510,13 +514,21 @@ impl PartialEq for CompactionOutcome {
 impl std::fmt::Debug for CompactionOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Compacted { qdrant_future } => f
+            Self::Compacted {
+                qdrant_future,
+                compacted_count,
+            } => f
                 .debug_struct("Compacted")
                 .field("qdrant_future", &qdrant_future.as_ref().map(|_| "<future>"))
+                .field("compacted_count", compacted_count)
                 .finish(),
-            Self::CompactedWithPersistError { qdrant_future } => f
+            Self::CompactedWithPersistError {
+                qdrant_future,
+                compacted_count,
+            } => f
                 .debug_struct("CompactedWithPersistError")
                 .field("qdrant_future", &qdrant_future.as_ref().map(|_| "<future>"))
+                .field("compacted_count", compacted_count)
                 .finish(),
             Self::ProbeRejected => write!(f, "ProbeRejected"),
             Self::NoChange => write!(f, "NoChange"),
@@ -532,8 +544,8 @@ impl CompactionOutcome {
     /// future through `BackgroundSupervisor::spawn_summarization`.
     pub fn qdrant_future_take(&mut self) -> Option<QdrantPersistFuture> {
         match self {
-            Self::Compacted { qdrant_future }
-            | Self::CompactedWithPersistError { qdrant_future } => qdrant_future.take(),
+            Self::Compacted { qdrant_future, .. }
+            | Self::CompactedWithPersistError { qdrant_future, .. } => qdrant_future.take(),
             _ => None,
         }
     }
@@ -545,6 +557,21 @@ impl CompactionOutcome {
             self,
             Self::Compacted { .. } | Self::CompactedWithPersistError { .. }
         )
+    }
+
+    /// Returns the number of messages folded into the summary, or `None` when no
+    /// compaction occurred (`ProbeRejected` / `NoChange`).
+    #[must_use]
+    pub fn compacted_count(&self) -> Option<usize> {
+        match self {
+            Self::Compacted {
+                compacted_count, ..
+            }
+            | Self::CompactedWithPersistError {
+                compacted_count, ..
+            } => Some(*compacted_count),
+            _ => None,
+        }
     }
 }
 
