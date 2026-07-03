@@ -1425,6 +1425,57 @@ impl<C: Channel> Agent<C> {
         Ok(commits)
     }
 
+    /// Handles `UtilityAction::Retrieve` — either mandates a context-retrieval-then-retry
+    /// round, or, when a prior retrieval attempt this turn already failed with a
+    /// retryable/network-class error (e.g. Qdrant unreachable), lets the originally
+    /// requested tool proceed directly instead of demanding another doomed retry (#5584).
+    async fn handle_retrieve_action(
+        &mut self,
+        idx: usize,
+        tc: &zeph_llm::provider::ToolUseRequest,
+        pending_system_hints: &mut Vec<String>,
+    ) -> Result<Option<(usize, ToolExecFut)>, crate::agent::error::AgentError> {
+        if self.tool_orchestrator.has_retryable_failure_this_turn() {
+            let _ = self
+                .channel
+                .send_status(&format!(
+                    "Utility action: Retrieve skipped, context unavailable ({})",
+                    tc.name
+                ))
+                .await;
+            pending_system_hints.push(format!(
+                "[utility:retrieve] Context retrieval failed and appears unavailable. \
+                 Proceed with the '{}' tool call using the best information already \
+                 available rather than retrying the failed retrieval.",
+                tc.name
+            ));
+            return Ok(None);
+        }
+        let _ = self
+            .channel
+            .send_status(&format!("Utility action: Retrieve ({})", tc.name))
+            .await;
+        // Inject a system message directing the LLM to retrieve context first (#2620).
+        pending_system_hints.push(format!(
+            "[utility:retrieve] Before executing the '{}' tool, retrieve \
+             relevant context via memory_search or a related lookup to ensure \
+             the call is well-targeted. After retrieving context, you MUST call \
+             the '{}' tool again with the same arguments.",
+            tc.name, tc.name
+        ));
+        Ok(Some(ready_fut(
+            idx,
+            skipped_output(
+                tc.name.clone(),
+                format!(
+                    "[skipped] Tool call to {} skipped — utility policy recommends \
+                     retrieving additional context first.",
+                    tc.name
+                ),
+            ),
+        )))
+    }
+
     async fn handle_utility_gate(
         &mut self,
         idx: usize,
@@ -1451,29 +1502,8 @@ impl<C: Channel> Agent<C> {
                 )))
             }
             zeph_tools::UtilityAction::Retrieve => {
-                let _ = self
-                    .channel
-                    .send_status(&format!("Utility action: Retrieve ({})", tc.name))
-                    .await;
-                // Inject a system message directing the LLM to retrieve context first (#2620).
-                pending_system_hints.push(format!(
-                    "[utility:retrieve] Before executing the '{}' tool, retrieve \
-                     relevant context via memory_search or a related lookup to ensure \
-                     the call is well-targeted. After retrieving context, you MUST call \
-                     the '{}' tool again with the same arguments.",
-                    tc.name, tc.name
-                ));
-                Ok(Some(ready_fut(
-                    idx,
-                    skipped_output(
-                        tc.name.clone(),
-                        format!(
-                            "[skipped] Tool call to {} skipped — utility policy recommends \
-                             retrieving additional context first.",
-                            tc.name
-                        ),
-                    ),
-                )))
+                self.handle_retrieve_action(idx, tc, pending_system_hints)
+                    .await
             }
             zeph_tools::UtilityAction::Verify => {
                 let _ = self
@@ -3382,6 +3412,128 @@ mod tests {
         } else {
             panic!("expected ToolResult part");
         }
+    }
+
+    // Regression guard for #5584: when a retryable failure (e.g. Qdrant unreachable) was
+    // already recorded this turn, handle_retrieve_action must not mandate another doomed
+    // retry — it should let the originally-requested tool call proceed (Ok(None)) and inject
+    // a graceful-degradation hint instead of the "you MUST call again" hint.
+    #[tokio::test]
+    async fn handle_retrieve_action_skips_mandatory_retry_after_retryable_failure() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_skills::registry::SkillRegistry;
+        use zeph_tools::error_taxonomy::ToolErrorCategory;
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent
+            .tool_orchestrator
+            .last_tool_error
+            .insert("memory_search".to_owned(), ToolErrorCategory::NetworkError);
+
+        let tc = make_tool_req("bash");
+        let mut hints = Vec::new();
+        let result = agent
+            .handle_retrieve_action(0, &tc, &mut hints)
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_none(),
+            "must return None so the originally-requested tool proceeds to dispatch"
+        );
+        assert_eq!(hints.len(), 1);
+        assert!(
+            hints[0].contains("Proceed with the 'bash' tool call"),
+            "hint must direct graceful degradation, got: {}",
+            hints[0]
+        );
+        assert!(
+            !hints[0].contains("you MUST call"),
+            "must not mandate another retry, got: {}",
+            hints[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_retrieve_action_mandates_retry_without_prior_failure() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_skills::registry::SkillRegistry;
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let tc = make_tool_req("bash");
+        let mut hints = Vec::new();
+        let result = agent
+            .handle_retrieve_action(0, &tc, &mut hints)
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_some(),
+            "without a prior failure, the tool call is skipped pending retrieval"
+        );
+        assert_eq!(hints.len(), 1);
+        assert!(
+            hints[0].contains("you MUST call the 'bash' tool again"),
+            "hint must mandate a retry, got: {}",
+            hints[0]
+        );
+    }
+
+    // Regression guard for critic-flagged S3 (#5584 follow-up): a retryable failure of an
+    // UNRELATED tool (e.g. web_fetch) must not suppress the Retrieve mandatory-retry hint
+    // for the rest of the turn — only a failure of memory_search, the retrieval tool the
+    // Retrieve branch's hint actually recommends, should trigger graceful degradation.
+    #[tokio::test]
+    async fn handle_retrieve_action_mandates_retry_when_only_unrelated_tool_failed() {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_skills::registry::SkillRegistry;
+        use zeph_tools::error_taxonomy::ToolErrorCategory;
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent
+            .tool_orchestrator
+            .last_tool_error
+            .insert("web_fetch".to_owned(), ToolErrorCategory::NetworkError);
+
+        let tc = make_tool_req("bash");
+        let mut hints = Vec::new();
+        let result = agent
+            .handle_retrieve_action(0, &tc, &mut hints)
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_some(),
+            "an unrelated tool's stale retryable failure must not suppress Retrieve"
+        );
+        assert_eq!(hints.len(), 1);
+        assert!(
+            hints[0].contains("you MUST call the 'bash' tool again"),
+            "hint must still mandate a retry, got: {}",
+            hints[0]
+        );
     }
 
     mod reformat_phase_tests {

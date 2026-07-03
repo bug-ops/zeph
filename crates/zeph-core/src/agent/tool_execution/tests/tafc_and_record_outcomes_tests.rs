@@ -420,6 +420,170 @@ async fn native_tool_executor_error_does_not_panic() {
     );
 }
 
+// R-NTP-4b: executor Err classified as a retryable NetworkError must record a "tool_failure"
+// skill outcome, not "success" — regression guard for #5584 (a stale substring check in
+// handle_tool_failure_outcomes never recognized the structured "[tool_error]" format, so every
+// classified Err was silently recorded as a skill success, spamming reflection).
+#[tokio::test]
+async fn native_tool_network_error_records_tool_failure_not_success() {
+    use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
+    use zeph_memory::semantic::SemanticMemory;
+
+    struct NetworkErrorExecutor;
+    impl ToolExecutor for NetworkErrorExecutor {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn execute_tool_call(
+            &self,
+            _call: &ToolCall,
+        ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+            std::future::ready(Err(ToolError::Execution(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "connection refused",
+            ))))
+        }
+    }
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+        "test-model",
+    )
+    .await
+    .unwrap();
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    let mut agent =
+        crate::agent::Agent::new(provider, channel, registry, None, 5, NetworkErrorExecutor)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 50);
+    agent
+        .services
+        .skill
+        .active_skill_names
+        .push("test-skill".into());
+
+    let tool_calls = vec![make_tool_use_request("id-net-err", "memory_search")];
+    agent
+        .handle_native_tool_calls(None, &tool_calls)
+        .await
+        .unwrap();
+
+    let last = agent.msg.messages.last().unwrap();
+    assert!(
+        last.content.contains("[tool_error]"),
+        "sanity check: result must use the structured tool_error format: {}",
+        last.content
+    );
+
+    let mem = agent.services.memory.persistence.memory.as_ref().unwrap();
+    let row: Option<(String,)> = zeph_db::query_as(
+        "SELECT outcome FROM skill_outcomes WHERE skill_name = 'test-skill' LIMIT 1",
+    )
+    .fetch_optional(mem.sqlite().pool())
+    .await
+    .unwrap();
+
+    assert!(row.is_some(), "skill outcome must be recorded in DB");
+    assert_eq!(
+        row.unwrap().0,
+        "tool_failure",
+        "a classified Err tool result must record tool_failure, not success"
+    );
+}
+
+// Regression guard for a critic-flagged follow-up to #5584: record_gate_feedback must not
+// reset UtilityScorer::consecutive_low, the counter note_action owns for the utility_window
+// cross-iteration hard-break. Gate-intercepted (Respond/Retrieve/Verify/Stop) results are
+// synthetic Ok(Some(out)) outputs that always classify is_error = false, and every one of
+// them is routed through process_one_tool_result -> record_gate_feedback just like a real
+// dispatched result. Before the fix, record_gate_feedback fed that same "success" signal
+// into consecutive_low, silently defeating the window for utility_window >= 2.
+#[tokio::test]
+async fn skipped_output_processing_does_not_reset_cross_iteration_utility_window() {
+    use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = FixedOutputExecutor {
+        summary: String::new(),
+        is_err: false,
+    };
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+    agent.tool_orchestrator.utility_scorer =
+        zeph_tools::UtilityScorer::new(zeph_tools::UtilityScoringConfig {
+            enabled: true,
+            utility_window: 3,
+            ..zeph_tools::UtilityScoringConfig::default()
+        });
+
+    let tc = make_tool_use_request("id-skip", "bash");
+    let skipped = zeph_tools::ToolOutput {
+        tool_name: "bash".into(),
+        summary: "[skipped] Tool call to bash skipped — utility policy recommends \
+                  retrieving additional context first."
+            .into(),
+        blocks_executed: 0,
+        filter_stats: None,
+        diff: None,
+        streamed: false,
+        terminal_id: None,
+        locations: None,
+        raw_response: None,
+        claim_source: None,
+    };
+
+    // Two LLM iterations, each: note_action records a non-ToolCall (Retrieve)
+    // recommendation, then the gate-skipped result is processed exactly like a real
+    // dispatched result would be. Neither call should fire yet, and — this is the
+    // regression guard — the second `process_one_tool_result` call must not reset the
+    // counter that the two `note_action` calls are accumulating.
+    for _ in 0..2 {
+        assert!(
+            !agent
+                .tool_orchestrator
+                .utility_scorer
+                .note_action(&zeph_tools::UtilityAction::Retrieve)
+        );
+        agent
+            .process_one_tool_result(
+                &tc,
+                "id-skip",
+                &std::time::Instant::now(),
+                Ok(Some(skipped.clone())),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut false,
+                &mut None,
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+    }
+
+    // Third note_action call must trip the utility_window=3 hard-break — proving the two
+    // intervening process_one_tool_result calls above did not reset consecutive_low.
+    assert!(
+        agent
+            .tool_orchestrator
+            .utility_scorer
+            .note_action(&zeph_tools::UtilityAction::Retrieve),
+        "utility_window hard-break must still fire across iterations even when gate-\
+         skipped results are processed in between"
+    );
+}
+
 // R-NTP-6: injection pattern in tool output populates flagged_urls and emits security event.
 // Verifies that handle_native_tool_calls() routes output through sanitize_tool_output().
 #[tokio::test]

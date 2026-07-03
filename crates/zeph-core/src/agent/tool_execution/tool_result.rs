@@ -142,6 +142,33 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Remembers the post-execution error category for the utility gate's `Retrieve`
+    /// branch, so a subsequent `Retrieve` decision can detect a just-failed retryable
+    /// dependency (e.g. `memory_search` hitting a down Qdrant) instead of mandating
+    /// another doomed retry (#5584).
+    ///
+    /// This is called for every processed result, including gate-intercepted
+    /// (`Respond`/`Retrieve`/`Verify`/`Stop`) synthetic outputs, which always classify as
+    /// `is_error = false`. It deliberately does NOT touch
+    /// `UtilityScorer`'s `consecutive_low` counter — that counter is owned exclusively by
+    /// `note_action`'s pre-dispatch cross-iteration accounting, and mixing a second
+    /// reset/increment source into it silently defeated the `utility_window` hard-break
+    /// (every gate-intercepted result reset the counter before it could accumulate).
+    ///
+    /// Skips exempt tools (`invoke_skill`, `load_skill`, ...) — the pre-dispatch scoring
+    /// pass never scores them either, so they must not affect gate state.
+    fn record_gate_feedback(
+        &mut self,
+        tool_name: &str,
+        tool_err_category: Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
+    ) {
+        if self.tool_orchestrator.utility_scorer.is_exempt(tool_name) {
+            return;
+        }
+        self.tool_orchestrator
+            .record_tool_outcome_for_gate(tool_name, tool_err_category);
+    }
+
     fn record_tool_execution_telemetry(
         &mut self,
         tool_name: &str,
@@ -173,12 +200,13 @@ impl<C: Channel> Agent<C> {
     fn handle_tool_failure_outcomes(
         &mut self,
         output: &str,
+        is_error: bool,
         tool_err_category: &mut Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
         is_quality_failure: bool,
         pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
         pending_reflection: &mut Option<String>,
     ) -> bool {
-        if output.contains("[error]") || output.contains("[exit code") {
+        if is_error || output.contains("[error]") || output.contains("[exit code") {
             let kind = tool_err_category
                 .take()
                 .map_or_else(|| FailureKind::from_error(output), FailureKind::from);
@@ -206,6 +234,32 @@ impl<C: Channel> Agent<C> {
             false
         } else {
             true
+        }
+    }
+
+    /// Pushes the terminal skill outcome (`SecurityBlocked` or `success`) once vigil and
+    /// tool-failure classification have both been resolved, and records the quality
+    /// signal for successful dispatches.
+    fn record_final_skill_outcome(
+        &mut self,
+        vigil_blocked: bool,
+        tool_succeeded: bool,
+        pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
+    ) {
+        if vigil_blocked {
+            pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
+                outcome: FailureKind::SecurityBlocked.as_str().into(),
+                error_context: Some("VIGIL blocked tool output".into()),
+                outcome_detail: None,
+            });
+        } else if tool_succeeded {
+            pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
+                outcome: "success".into(),
+                error_context: None,
+                outcome_detail: None,
+            });
+            self.provider
+                .record_quality_outcome(self.provider.name(), true);
         }
     }
 
@@ -336,9 +390,11 @@ impl<C: Channel> Agent<C> {
         } = self.classify_tool_result(tc, tool_result);
 
         self.record_tool_execution_telemetry(tc.name.as_str(), started_at, is_error, &output);
+        self.record_gate_feedback(tc.name.as_str(), tool_err_category);
 
         let tool_succeeded = self.handle_tool_failure_outcomes(
             &output,
+            is_error,
             &mut tool_err_category,
             is_quality_failure,
             pending_outcomes,
@@ -396,21 +452,7 @@ impl<C: Channel> Agent<C> {
             lsp_tool_calls.push((tc.name.to_string(), tc.input.clone(), llm_content.clone()));
         }
 
-        if vigil_blocked {
-            pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
-                outcome: FailureKind::SecurityBlocked.as_str().into(),
-                error_context: Some("VIGIL blocked tool output".into()),
-                outcome_detail: None,
-            });
-        } else if tool_succeeded {
-            pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
-                outcome: "success".into(),
-                error_context: None,
-                outcome_detail: None,
-            });
-            self.provider
-                .record_quality_outcome(self.provider.name(), true);
-        }
+        self.record_final_skill_outcome(vigil_blocked, tool_succeeded, pending_outcomes);
 
         self.record_tool_experience(
             tc.name.as_str(),

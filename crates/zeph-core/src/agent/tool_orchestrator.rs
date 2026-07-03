@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use zeph_tools::{
@@ -64,6 +64,11 @@ pub(crate) struct ToolOrchestrator {
     /// Maximum `PreToolUse` hook blocks per turn before the turn is ended with a warning.
     /// Matches `HooksConfig::hook_block_cap`. 0 = no cap.
     pub(super) hook_block_cap: usize,
+    /// Error category of the most recent failed execution per tool name, used by the
+    /// utility gate's `Retrieve` branch to detect a just-failed retryable call and avoid
+    /// re-issuing a mandatory retry hint against a dependency that is still down.
+    /// Cleared alongside `recent_tool_calls` at the start of each user turn.
+    pub(super) last_tool_error: HashMap<String, zeph_tools::error_taxonomy::ToolErrorCategory>,
 }
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
@@ -107,6 +112,7 @@ impl ToolOrchestrator {
             max_tool_calls_per_session: None,
             hook_block_count: 0,
             hook_block_cap: 8,
+            last_tool_error: HashMap::new(),
         }
     }
 
@@ -216,6 +222,43 @@ impl ToolOrchestrator {
     /// Reset the repeat-detection sliding window between user turns.
     pub(super) fn clear_recent_tool_calls(&mut self) {
         self.recent_tool_calls.clear();
+        self.last_tool_error.clear();
+    }
+
+    /// Record the outcome of a dispatched tool call for `last_tool_error` tracking.
+    ///
+    /// On failure, remembers the error category so the utility gate's `Retrieve` branch
+    /// can detect a just-failed retryable call for the same tool. On success, clears any
+    /// previously recorded failure so a subsequent unrelated failure isn't masked by a
+    /// stale entry.
+    pub(super) fn record_tool_outcome_for_gate(
+        &mut self,
+        tool_name: &str,
+        error_category: Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
+    ) {
+        match error_category {
+            Some(category) => {
+                self.last_tool_error.insert(tool_name.to_owned(), category);
+            }
+            None => {
+                self.last_tool_error.remove(tool_name);
+            }
+        }
+    }
+
+    /// Returns `true` when `memory_search` — the retrieval tool the `Retrieve` branch's
+    /// hint recommends — most recently failed this turn with a retryable/network-class
+    /// error (e.g. a down Qdrant).
+    ///
+    /// Scoped to `memory_search` specifically rather than "any tool this turn": an
+    /// unrelated tool's transient retryable failure (e.g. a `web_fetch` 503) must not
+    /// suppress the `Retrieve` optimization for the rest of the turn once the actual
+    /// retrieval dependency is healthy or was never involved.
+    #[must_use]
+    pub(super) fn has_retryable_failure_this_turn(&self) -> bool {
+        self.last_tool_error
+            .get("memory_search")
+            .is_some_and(|c| c.is_retryable())
     }
 
     /// Returns `true` if the last `DOOM_LOOP_WINDOW` hashes are identical.

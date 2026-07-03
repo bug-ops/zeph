@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fix(tools,core)`: live agent turns no longer stall indefinitely when Qdrant is
+  unreachable (up to 240s observed, never dispatching the originally-requested tool). Two
+  compounding defects: (1) `handle_tool_failure_outcomes` misclassified every structured
+  `[tool_error]` tool failure as skill outcome `"success"` — a stale substring check
+  (`"[error]"` / `"[exit code"`) written before the error-taxonomy refactor never matched
+  the newer `[tool_error]\ncategory: ...` format, so a failed `memory_search` spuriously
+  triggered repeated `spawn_erl_reflection`/`spawn_arise_trace_improvement` reflection
+  sweeps instead of being recorded as a failure; `handle_tool_failure_outcomes` now uses
+  the authoritative `is_error` flag additively. (2) the utility gate's `Retrieve` branch
+  unconditionally re-injected a mandatory "call the tool again" hint even after
+  `memory_search` had already failed this turn with a retryable network-class error, so
+  the LLM kept retrying a hard-down Qdrant instead of dispatching the originally-requested
+  tool. `ToolOrchestrator` now tracks the most recent retryable failure of `memory_search`
+  per turn (cleared at turn boundaries); when present, the `Retrieve` branch degrades
+  gracefully and lets the requested tool proceed instead of mandating another retrieval
+  attempt. Closes #5584.
+
 ### Added
 
 - `feat(session)`: add the `zeph-session` crate foundation (spec-068 P0, #5343) — an append-only
