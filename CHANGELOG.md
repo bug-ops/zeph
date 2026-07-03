@@ -710,6 +710,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   concurrency changes only lower how often the `StartupTimeout` leak triggers). **Re-check on any
   future `testcontainers` crate version bump** — this `StartupTimeout` leak-on-cancel path is a
   known upstream limitation, not something fixable from this workspace alone.
+- `fix(memory)`: full-crate sweep for the `TIMESTAMPTZ`->`String` decode defect (#5538), same
+  class as #5524/#5527/#5525 — extends `Dialect::select_as_text` (and, where a Rust-formatted
+  timestamp is bound against a `TIMESTAMPTZ` column, `Dialect::TIMESTAMPTZ_CAST`) to ~50
+  previously-unfixed call sites across `store/{corrections,trust,preferences,persona,trajectory,
+  session_digest,compression_guidelines,experiments,admission_training,memory_tree,skills,
+  retrieval_failures}.rs`, `store/messages/mod.rs::get_eviction_candidates`, and the bulk of
+  `graph/store/mod.rs`'s entity/edge/community/alias/episode queries (three new shared
+  `*_select_cols()` helpers replace ~20 duplicated inline column lists there). `experiments.rs`'s
+  3 result-listing functions and `admission_training.rs::get_training_batch` also needed
+  co-located `CAST(... AS BIGINT)`/`CAST(... AS DOUBLE PRECISION)` casts for `latency_ms`/
+  `tokens_used`/`composite_score` (`INT4`/`FLOAT4` on Postgres vs. `i64`/`f64` in the Rust tuple) —
+  without these the `TIMESTAMPTZ` fix in those 4 functions would have shipped as untested dead code
+  on Postgres, still failing on the next column over. New/extended Postgres integration tests were
+  added for all of the above but not yet run against a real Postgres instance this session (Docker
+  environment blocker); pending live verification before merge. Also
+  fixes `store/mem_scenes.rs::find_unscened_semantic_messages` (#5544), which bypassed the `sql!()`
+  macro, so its `LIMIT ?` was never rewritten to Postgres's `$N` syntax.
 - `fix(memory)`: three more Postgres-dialect defects in `zeph-memory`, same class as #5508/#5524
   (SQLite-only SQL surfacing incorrectly under Postgres, live-verified via Docker testcontainers).
   `datetime('now')` (SQLite-only, no Postgres equivalent) was embedded as a literal in production

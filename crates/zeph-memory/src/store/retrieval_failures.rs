@@ -153,12 +153,17 @@ impl SqliteStore {
             (chrono::Utc::now() - chrono::Duration::days(i64::from(retention_days)))
                 .format("%Y-%m-%d %H:%M:%S")
         );
-        let rows = zeph_db::query(sql!(
-            "DELETE FROM memory_retrieval_failures WHERE created_at < ?"
-        ))
-        .bind(cutoff)
-        .execute(self.pool())
-        .await?;
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); Postgres has no
+        // implicit text->timestamptz cast for a bound (non-literal) parameter, so an explicit
+        // `TIMESTAMPTZ_CAST` is required — mirrors `agent_sessions.rs`'s fix for the same
+        // class of mismatch.
+        let ts_cast = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::TIMESTAMPTZ_CAST;
+        let raw = format!("DELETE FROM memory_retrieval_failures WHERE created_at < ?{ts_cast}");
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows = zeph_db::query(sqlx::AssertSqlSafe(query_sql))
+            .bind(cutoff)
+            .execute(self.pool())
+            .await?;
         Ok(rows.rows_affected())
     }
 }

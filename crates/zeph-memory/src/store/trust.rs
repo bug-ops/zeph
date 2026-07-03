@@ -182,14 +182,20 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<SkillTrustRow>, MemoryError> {
-        let row: Option<TrustTuple> = zeph_db::query_as(sql!(
+        // `updated_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` field below.
+        let updated_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
             "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
-             blake3_hash, updated_at, git_hash, requires_trust_check \
+             blake3_hash, {updated_at_sel}, git_hash, requires_trust_check \
              FROM skill_trust WHERE skill_name = ?"
-        ))
-        .bind(skill_name)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row: Option<TrustTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(skill_name)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(row_from_tuple))
     }
 
@@ -200,13 +206,18 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     #[tracing::instrument(name = "memory.trust.load_all", skip_all)]
     pub async fn load_all_skill_trust(&self) -> Result<Vec<SkillTrustRow>, MemoryError> {
-        let rows: Vec<TrustTuple> = zeph_db::query_as(sql!(
+        // `updated_at` is `TIMESTAMPTZ` on Postgres — see `load_skill_trust`.
+        let updated_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
             "SELECT skill_name, trust_level, source_kind, source_url, source_path, \
-             blake3_hash, updated_at, git_hash, requires_trust_check \
+             blake3_hash, {updated_at_sel}, git_hash, requires_trust_check \
              FROM skill_trust ORDER BY skill_name"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<TrustTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
     }
 

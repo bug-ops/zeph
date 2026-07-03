@@ -1015,12 +1015,22 @@ impl SqliteStore {
     pub async fn get_eviction_candidates(
         &self,
     ) -> Result<Vec<crate::eviction::EvictionEntry>, crate::error::MemoryError> {
-        let rows: Vec<(MessageId, String, Option<String>, i64)> = zeph_db::query_as(sql!(
-            "SELECT id, created_at, last_accessed, access_count \
+        // `created_at`/`last_accessed` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project
+        // both through `Dialect::select_as_text` so they decode into the `String`/`Option<String>`
+        // fields below.
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let last_accessed_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_accessed");
+        let raw = format!(
+            "SELECT id, {created_at_sel}, {last_accessed_sel}, access_count \
              FROM messages WHERE deleted_at IS NULL"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<(MessageId, String, Option<String>, i64)> =
+            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(rows
             .into_iter()

@@ -148,6 +148,23 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<AdmissionTrainingRecord>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        // `ORDER BY` is table-qualified so it sorts on the native timestamp, not the cast text.
+        // `composite_score` is `REAL` (`FLOAT4`) on Postgres but the tuple decodes it as `f64`;
+        // `CAST(... AS DOUBLE PRECISION)` widens it (same un-gated idiom already used for
+        // `weight`/`confidence_fast`/`confidence_slow` in `graph/store/mod.rs`).
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
+            "SELECT id, message_id, conversation_id, content_hash, role, \
+                    CAST(composite_score AS DOUBLE PRECISION) AS composite_score, \
+                    was_admitted, was_recalled, features_json, {created_at_sel} \
+             FROM admission_training_data \
+             ORDER BY admission_training_data.created_at ASC \
+             LIMIT ?"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
         let rows = zeph_db::query_as::<
             _,
             (
@@ -162,13 +179,7 @@ impl SqliteStore {
                 String,
                 String,
             ),
-        >(sql!(
-            "SELECT id, message_id, conversation_id, content_hash, role, \
-                    composite_score, was_admitted, was_recalled, features_json, created_at \
-             FROM admission_training_data \
-             ORDER BY created_at ASC \
-             LIMIT ?"
-        ))
+        >(sqlx::AssertSqlSafe(query_sql))
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;

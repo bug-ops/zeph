@@ -162,25 +162,38 @@ impl SqliteStore {
         session_id: Option<&str>,
         limit: u32,
     ) -> Result<Vec<ExperimentResultRow>, MemoryError> {
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        // `latency_ms`/`tokens_used` are `INTEGER` (`INT4`) on Postgres but the tuple decodes
+        // them as `i64`; `CAST(... AS BIGINT)` widens them (same un-gated idiom already used
+        // for `weight`/`confidence_fast`/`confidence_slow` in `graph/store/mod.rs`).
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let rows: Vec<ResultTuple> = if let Some(sid) = session_id {
-            zeph_db::query_as(sql!(
+            let raw = format!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
-                 delta, latency_ms, tokens_used, accepted, source, created_at \
+                 delta, CAST(latency_ms AS BIGINT) AS latency_ms, \
+                 CAST(tokens_used AS BIGINT) AS tokens_used, accepted, source, {created_at_sel} \
                  FROM experiment_results WHERE session_id = ? ORDER BY id DESC LIMIT ?"
-            ))
-            .bind(sid)
-            .bind(i64::from(limit))
-            .fetch_all(&self.pool)
-            .await?
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+                .bind(sid)
+                .bind(i64::from(limit))
+                .fetch_all(&self.pool)
+                .await?
         } else {
-            zeph_db::query_as(sql!(
+            let raw = format!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
-                 delta, latency_ms, tokens_used, accepted, source, created_at \
+                 delta, CAST(latency_ms AS BIGINT) AS latency_ms, \
+                 CAST(tokens_used AS BIGINT) AS tokens_used, accepted, source, {created_at_sel} \
                  FROM experiment_results ORDER BY id DESC LIMIT ?"
-            ))
-            .bind(i64::from(limit))
-            .fetch_all(&self.pool)
-            .await?
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+                .bind(i64::from(limit))
+                .fetch_all(&self.pool)
+                .await?
         };
         Ok(rows.into_iter().map(row_from_tuple).collect())
     }
@@ -194,25 +207,36 @@ impl SqliteStore {
         &self,
         parameter: Option<&str>,
     ) -> Result<Option<ExperimentResultRow>, MemoryError> {
+        // `created_at` is `TIMESTAMPTZ` on Postgres — see `list_experiment_results`.
+        // `latency_ms`/`tokens_used` need the same `CAST(... AS BIGINT)` widening — see
+        // `list_experiment_results`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
         let row: Option<ResultTuple> = if let Some(param) = parameter {
-            zeph_db::query_as(sql!(
+            let raw = format!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
-                 delta, latency_ms, tokens_used, accepted, source, created_at \
+                 delta, CAST(latency_ms AS BIGINT) AS latency_ms, \
+                 CAST(tokens_used AS BIGINT) AS tokens_used, accepted, source, {created_at_sel} \
                  FROM experiment_results \
                  WHERE accepted = TRUE AND parameter = ? ORDER BY delta DESC LIMIT 1"
-            ))
-            .bind(param)
-            .fetch_optional(&self.pool)
-            .await?
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+                .bind(param)
+                .fetch_optional(&self.pool)
+                .await?
         } else {
-            zeph_db::query_as(sql!(
+            let raw = format!(
                 "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
-                 delta, latency_ms, tokens_used, accepted, source, created_at \
+                 delta, CAST(latency_ms AS BIGINT) AS latency_ms, \
+                 CAST(tokens_used AS BIGINT) AS tokens_used, accepted, source, {created_at_sel} \
                  FROM experiment_results \
                  WHERE accepted = TRUE ORDER BY delta DESC LIMIT 1"
-            ))
-            .fetch_optional(&self.pool)
-            .await?
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+                .fetch_optional(&self.pool)
+                .await?
         };
         Ok(row.map(row_from_tuple))
     }
@@ -228,14 +252,27 @@ impl SqliteStore {
         since: &str,
     ) -> Result<Vec<ExperimentResultRow>, MemoryError> {
         validate_timestamp(since)?;
-        let rows: Vec<ResultTuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite): the output projects
+        // through `Dialect::select_as_text` to decode into the `String` tuple field below, and
+        // the `since` bind parameter needs an explicit `TIMESTAMPTZ_CAST` — Postgres has no
+        // implicit text->timestamptz cast for a bound (non-literal) parameter — mirroring
+        // `agent_sessions.rs::upsert_agent_session`'s fix for the same class of mismatch.
+        // `latency_ms`/`tokens_used` need the same `CAST(... AS BIGINT)` widening — see
+        // `list_experiment_results`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let ts_cast = <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::TIMESTAMPTZ_CAST;
+        let raw = format!(
             "SELECT id, session_id, parameter, value_json, baseline_score, candidate_score, \
-             delta, latency_ms, tokens_used, accepted, source, created_at \
-             FROM experiment_results WHERE created_at >= ? ORDER BY id DESC LIMIT 10000"
-        ))
-        .bind(since)
-        .fetch_all(&self.pool)
-        .await?;
+             delta, CAST(latency_ms AS BIGINT) AS latency_ms, \
+             CAST(tokens_used AS BIGINT) AS tokens_used, accepted, source, {created_at_sel} \
+             FROM experiment_results WHERE created_at >= ?{ts_cast} ORDER BY id DESC LIMIT 10000"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<ResultTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(since)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
     }
 

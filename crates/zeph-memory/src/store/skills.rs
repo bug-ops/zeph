@@ -120,12 +120,18 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     #[tracing::instrument(skip_all, name = "memory.skills.load_skill_usage")]
     pub async fn load_skill_usage(&self) -> Result<Vec<SkillUsageRow>, MemoryError> {
-        let rows: Vec<(String, i64, String)> = zeph_db::query_as(sql!(
-            "SELECT skill_name, invocation_count, last_used_at \
+        // `last_used_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        let last_used_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_used_at");
+        let raw = format!(
+            "SELECT skill_name, invocation_count, {last_used_at_sel} \
              FROM skill_usage ORDER BY invocation_count DESC"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<(String, i64, String)> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -411,14 +417,20 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<SkillVersionRow>, MemoryError> {
-        let row: Option<SkillVersionTuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, skill_name, version, body, description, source, \
-                 is_active, success_count, failure_count, created_at \
+                 is_active, success_count, failure_count, {created_at_sel} \
                  FROM skill_versions WHERE skill_name = ? AND is_active = TRUE LIMIT 1"
-        ))
-        .bind(skill_name)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row: Option<SkillVersionTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(skill_name)
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(row.map(skill_version_from_tuple))
     }
@@ -480,14 +492,19 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Option<String>, MemoryError> {
-        let row: Option<(String,)> = zeph_db::query_as(sql!(
-            "SELECT created_at FROM skill_versions \
+        // `created_at` is `TIMESTAMPTZ` on Postgres — see `active_skill_version`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
+            "SELECT {created_at_sel} FROM skill_versions \
              WHERE skill_name = ? AND source = 'auto' \
              ORDER BY id DESC LIMIT 1"
-        ))
-        .bind(skill_name)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row: Option<(String,)> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(skill_name)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -558,14 +575,19 @@ impl SqliteStore {
         &self,
         skill_name: &str,
     ) -> Result<Vec<SkillVersionRow>, MemoryError> {
-        let rows: Vec<SkillVersionTuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres — see `active_skill_version`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, skill_name, version, body, description, source, \
-                 is_active, success_count, failure_count, created_at \
+                 is_active, success_count, failure_count, {created_at_sel} \
                  FROM skill_versions WHERE skill_name = ? ORDER BY version ASC"
-        ))
-        .bind(skill_name)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<SkillVersionTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(skill_name)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.into_iter().map(skill_version_from_tuple).collect())
     }
@@ -664,14 +686,19 @@ impl SqliteStore {
             return Ok(None);
         };
 
-        let row: Option<SkillVersionTuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres — see `active_skill_version`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, skill_name, version, body, description, source, \
-                 is_active, success_count, failure_count, created_at \
+                 is_active, success_count, failure_count, {created_at_sel} \
                  FROM skill_versions WHERE id = ?"
-        ))
-        .bind(pid)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row: Option<SkillVersionTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(pid)
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(row.map(skill_version_from_tuple))
     }

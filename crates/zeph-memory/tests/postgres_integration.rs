@@ -86,12 +86,16 @@ mod pg {
     use zeph_memory::graph::implicit_conflict;
     use zeph_memory::graph::store::GraphStore;
     use zeph_memory::graph::types::{EdgeType, EntityType};
+    use zeph_memory::store::admission_training::AdmissionTrainingInput;
     use zeph_memory::store::{
         AcpSessionConfigSnapshot, AgentSessionRow, SessionChannel, SessionKind, SessionStatus,
         SqliteStore,
     };
     use zeph_memory::types::MessageId;
-    use zeph_memory::{VectorStore, episodic_consolidation, episodic_graph, snapshot};
+    use zeph_memory::{
+        NewExperimentResult, RetrievalFailureRecord, RetrievalFailureType, VectorStore,
+        episodic_consolidation, episodic_graph, snapshot,
+    };
 
     // Generous startup timeout: under concurrent CI load (see #5546/#5547), the
     // default 60s can elapse before Postgres is ready, and testcontainers-rs 0.27.3
@@ -890,6 +894,29 @@ mod pg {
         let cid = store.create_conversation().await.unwrap();
         let m1 = store.save_message(cid, "user", "a").await.unwrap();
         let m2 = store.save_message(cid, "user", "b").await.unwrap();
+        let m3 = store.save_message(cid, "user", "c").await.unwrap();
+
+        // Promote all three to the semantic tier so `find_unscened_semantic_messages`
+        // (#5544's fix target) can see them.
+        for id in [m1, m2, m3] {
+            sqlx::query(zeph_db::sql!(
+                "UPDATE messages SET tier = 'semantic' WHERE id = ?"
+            ))
+            .bind(id.0)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // Bound `LIMIT ?` exercises the exact placeholder-rewrite path #5544 fixes: the
+        // function previously passed a raw string straight to `query_as`, bypassing
+        // `sql!()`'s rewrite of `?` to Postgres's `$1`.
+        let unscened = store.find_unscened_semantic_messages(2).await.unwrap();
+        assert_eq!(
+            unscened.len(),
+            2,
+            "LIMIT bind must be honored under Postgres"
+        );
 
         let scene_id = store
             .insert_mem_scene("label", "profile", &[m1, m2])
@@ -904,6 +931,11 @@ mod pg {
         .await
         .unwrap();
         assert_eq!(member_count, 2, "both members must be linked to the scene");
+
+        // After assigning m1/m2 to a scene, only m3 remains unscened.
+        let remaining = store.find_unscened_semantic_messages(100).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].0, m3);
     }
 
     // ── acp_sessions: create (Pattern B) ─────────────────────────────────────────
@@ -1865,5 +1897,252 @@ mod pg {
             expires_epoch > now_epoch,
             "newly acquired lock must expire in the future (TTL applied via NOW() + INTERVAL)"
         );
+    }
+
+    // ── Regression coverage for #5538: TIMESTAMPTZ->String decode defect + the paired
+    // TIMESTAMPTZ_CAST-on-bind defect, found during a full-crate dialect sweep. Each test
+    // below exercises a call site that decodes a `TIMESTAMPTZ` column into a `String` field
+    // and/or binds a Rust-formatted timestamp string against one, neither of which had
+    // Postgres coverage before. ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn graph_store_edges_at_timestamp_filters_and_decodes() {
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+
+        let a = graph
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
+            .await
+            .unwrap();
+        let b = graph
+            .upsert_entity("Bob", "bob", EntityType::Person, None, None)
+            .await
+            .unwrap();
+        graph
+            .insert_edge(a.0, b.0, "knows", "Alice knows Bob", 0.5, None, None)
+            .await
+            .unwrap();
+
+        // A future timestamp must still find the still-active edge (valid_to IS NULL),
+        // exercising both the `TIMESTAMPTZ_CAST` bind and the `EdgeRow` decode together.
+        let edges = graph
+            .edges_at_timestamp(a.0, "2099-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(
+            edges.len(),
+            1,
+            "active edge must be found at a future timestamp"
+        );
+        assert_eq!(edges[0].fact, "Alice knows Bob");
+        assert!(
+            !edges[0].valid_from.is_empty(),
+            "valid_from must decode to a non-empty string"
+        );
+
+        // A timestamp before the edge existed must find nothing.
+        let edges_before = graph
+            .edges_at_timestamp(a.0, "2000-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(
+            edges_before.is_empty(),
+            "edge must not be valid before its valid_from"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn graph_store_communities_decode_timestamps() {
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+
+        let a = graph
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
+            .await
+            .unwrap();
+        let community_id = graph
+            .upsert_community("team-a", "Alice's team", &[a.0], None)
+            .await
+            .unwrap();
+
+        let all = graph.all_communities().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(
+            !all[0].created_at.is_empty() && !all[0].updated_at.is_empty(),
+            "created_at/updated_at must decode to non-empty strings"
+        );
+
+        let found = graph
+            .find_community_by_id(community_id)
+            .await
+            .unwrap()
+            .expect("community must be found by id");
+        assert_eq!(found.name, "team-a");
+        assert!(!found.created_at.is_empty() && !found.updated_at.is_empty());
+    }
+
+    // `experiments::experiment_results_since`/`list_experiment_results`/`best_experiment_result`
+    // and `admission_training::get_training_batch` were also fixed for the `TIMESTAMPTZ`->
+    // `String` decode defect, but a co-located, pre-existing column type mismatch
+    // (`experiment_results.latency_ms`/`tokens_used` are `INTEGER`/`INT4` vs. the tuple's `i64`;
+    // `admission_training_data.composite_score` is `REAL`/`FLOAT4` vs. the tuple's `f64`) made
+    // that fix unreachable on Postgres until the co-located `CAST(... AS BIGINT)`/
+    // `CAST(... AS DOUBLE PRECISION)` casts below were folded in. These tests exercise both the
+    // `TIMESTAMPTZ` decode/bind-cast and the widening casts together.
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn experiments_list_best_and_since_decode_on_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        store
+            .insert_experiment_result(&NewExperimentResult {
+                session_id: "sess-1",
+                parameter: "temperature",
+                value_json: r#"{"type":"Float","value":0.7}"#,
+                baseline_score: 7.0,
+                candidate_score: 8.0,
+                delta: 1.0,
+                latency_ms: 500,
+                tokens_used: 100,
+                accepted: true,
+                source: "manual",
+            })
+            .await
+            .unwrap();
+
+        let listed = store
+            .list_experiment_results(Some("sess-1"), 10)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].latency_ms, 500);
+        assert_eq!(listed[0].tokens_used, 100);
+        assert!(!listed[0].created_at.is_empty());
+
+        let best = store.best_experiment_result(None).await.unwrap().unwrap();
+        assert_eq!(best.latency_ms, 500);
+        assert_eq!(best.tokens_used, 100);
+
+        let since = store
+            .experiment_results_since("2000-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert_eq!(since.len(), 1);
+        assert_eq!(since[0].tokens_used, 100);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn admission_training_get_training_batch_decodes_on_postgres() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+        let cid = store.create_conversation().await.unwrap();
+
+        store
+            .record_admission_training(AdmissionTrainingInput {
+                message_id: None,
+                conversation_id: cid,
+                content: "content",
+                role: "user",
+                composite_score: 0.5,
+                was_admitted: false,
+                features_json: "[]",
+            })
+            .await
+            .unwrap();
+
+        let batch = store.get_training_batch(10).await.unwrap();
+        assert_eq!(batch.len(), 1);
+        assert!((batch[0].composite_score - 0.5).abs() < 1e-6);
+        assert!(!batch[0].created_at.is_empty());
+    }
+
+    // ── retrieval_failures: bind-cast DELETE (#5538) ────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn retrieval_failures_purge_old_deletes_by_timestamptz_cutoff() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool.clone());
+
+        store
+            .record_retrieval_failure(&RetrievalFailureRecord {
+                conversation_id: None,
+                turn_index: 0,
+                failure_type: RetrievalFailureType::NoHit,
+                retrieval_strategy: "semantic".to_owned(),
+                query_text: "query".to_owned(),
+                query_len: 5,
+                top_score: None,
+                confidence_threshold: None,
+                result_count: 0,
+                latency_ms: 10,
+                edge_types: None,
+                error_context: None,
+            })
+            .await
+            .unwrap();
+
+        // Backdate `created_at` well past any retention window so the bind-cast DELETE
+        // (`WHERE created_at < ?::timestamptz`) actually matches the row.
+        sqlx::query(zeph_db::sql!(
+            "UPDATE memory_retrieval_failures SET created_at = NOW() - INTERVAL '30 days'"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let deleted = store.purge_old_retrieval_failures(7).await.unwrap();
+        assert_eq!(
+            deleted, 1,
+            "row older than the retention cutoff must be purged"
+        );
+    }
+
+    // ── persona: `AS`-alias `#[derive(FromRow)]` projection (#5538) ─────────────
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn persona_load_facts_decodes_timestamptz_columns() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        store
+            .upsert_persona_fact("preference", "prefers dark mode", 0.9, None, None)
+            .await
+            .unwrap();
+
+        let facts = store.load_persona_facts(0.0).await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].content, "prefers dark mode");
+        assert!(!facts[0].created_at.is_empty());
+        assert!(!facts[0].updated_at.is_empty());
+    }
+
+    // ── skills: tuple-decode cluster (#5538) ─────────────────────────────────────
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn skills_load_versions_decodes_timestamptz_column() {
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool);
+
+        let v1 = store
+            .save_skill_version("git", 1, "body v1", "Git helper", "manual", None, None)
+            .await
+            .unwrap();
+        store.activate_skill_version("git", v1).await.unwrap();
+
+        let versions = store.load_skill_versions("git").await.unwrap();
+        assert_eq!(versions.len(), 1);
+        assert!(versions[0].is_active);
+        assert!(!versions[0].created_at.is_empty());
+
+        let active = store.active_skill_version("git").await.unwrap().unwrap();
+        assert_eq!(active.id, v1);
+        assert!(!active.created_at.is_empty());
     }
 }

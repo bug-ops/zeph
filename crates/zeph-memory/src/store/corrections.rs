@@ -78,16 +78,22 @@ impl SqliteStore {
         skill_name: &str,
         limit: u32,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` field below.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, session_id, original_output, correction_text, \
-             skill_name, correction_kind, created_at \
+             skill_name, correction_kind, {created_at_sel} \
              FROM user_corrections WHERE skill_name = ? \
              ORDER BY id DESC LIMIT ?"
-        ))
-        .bind(skill_name)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(skill_name)
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
     }
 
@@ -100,14 +106,19 @@ impl SqliteStore {
         &self,
         limit: u32,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres — see `load_corrections_for_skill`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, session_id, original_output, correction_text, \
-             skill_name, correction_kind, created_at \
+             skill_name, correction_kind, {created_at_sel} \
              FROM user_corrections ORDER BY id DESC LIMIT ?"
-        ))
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
     }
 
@@ -120,14 +131,19 @@ impl SqliteStore {
         &self,
         id: i64,
     ) -> Result<Vec<UserCorrectionRow>, MemoryError> {
-        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres — see `load_corrections_for_skill`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, session_id, original_output, correction_text, \
-             skill_name, correction_kind, created_at \
+             skill_name, correction_kind, {created_at_sel} \
              FROM user_corrections WHERE id = ?"
-        ))
-        .bind(id)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<CorrectionTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
     }
 }

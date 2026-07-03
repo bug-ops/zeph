@@ -89,17 +89,27 @@ impl DbStore {
         &self,
         limit: usize,
     ) -> Result<Vec<MemoryTreeRow>, MemoryError> {
-        let rows: Vec<MemoryTreeRow> = query_as(sql!(
+        // `consolidated_at`/`created_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite);
+        // project both through `Dialect::select_as_text`, aliased back to their original
+        // names so `#[derive(sqlx::FromRow)]` still binds them into the `String`/`Option<String>`
+        // fields below. `ORDER BY` is table-qualified so it sorts on the native timestamp.
+        let consolidated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("consolidated_at");
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, level, parent_id, content, source_ids, token_count,
-                    consolidated_at, created_at
+                    {consolidated_at_sel} AS consolidated_at, {created_at_sel} AS created_at
              FROM memory_tree
              WHERE level = 0 AND parent_id IS NULL
-             ORDER BY created_at ASC
+             ORDER BY memory_tree.created_at ASC
              LIMIT ?"
-        ))
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(self.pool())
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<MemoryTreeRow> = query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(self.pool())
+            .await?;
 
         Ok(rows)
     }
@@ -114,18 +124,26 @@ impl DbStore {
         level: i64,
         limit: usize,
     ) -> Result<Vec<MemoryTreeRow>, MemoryError> {
-        let rows: Vec<MemoryTreeRow> = query_as(sql!(
+        // `consolidated_at`/`created_at` are `TIMESTAMPTZ` on Postgres — see
+        // `load_tree_leaves_unconsolidated`.
+        let consolidated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("consolidated_at");
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, level, parent_id, content, source_ids, token_count,
-                    consolidated_at, created_at
+                    {consolidated_at_sel} AS consolidated_at, {created_at_sel} AS created_at
              FROM memory_tree
              WHERE level = ? AND parent_id IS NULL
-             ORDER BY created_at ASC
+             ORDER BY memory_tree.created_at ASC
              LIMIT ?"
-        ))
-        .bind(level)
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(self.pool())
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<MemoryTreeRow> = query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(level)
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(self.pool())
+            .await?;
 
         Ok(rows)
     }
@@ -146,16 +164,25 @@ impl DbStore {
         let mut result = Vec::new();
         let mut current_id = leaf_id;
 
+        // `consolidated_at`/`created_at` are `TIMESTAMPTZ` on Postgres — see
+        // `load_tree_leaves_unconsolidated`.
+        let consolidated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("consolidated_at");
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
+            "SELECT id, level, parent_id, content, source_ids, token_count,
+                    {consolidated_at_sel} AS consolidated_at, {created_at_sel} AS created_at
+             FROM memory_tree
+             WHERE id = ?"
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+
         for _ in 0..=max_level {
-            let row: Option<MemoryTreeRow> = query_as(sql!(
-                "SELECT id, level, parent_id, content, source_ids, token_count,
-                        consolidated_at, created_at
-                 FROM memory_tree
-                 WHERE id = ?"
-            ))
-            .bind(current_id)
-            .fetch_optional(self.pool())
-            .await?;
+            let row: Option<MemoryTreeRow> = query_as(sqlx::AssertSqlSafe(query_sql.clone()))
+                .bind(current_id)
+                .fetch_optional(self.pool())
+                .await?;
 
             match row {
                 None => break,

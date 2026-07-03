@@ -129,16 +129,22 @@ impl SqliteStore {
         &self,
         conversation_id: Option<ConversationId>,
     ) -> Result<(i64, String), MemoryError> {
-        let row = zeph_db::query_as::<_, (i64, String)>(sql!(
-            "SELECT version, created_at FROM compression_guidelines \
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
+            "SELECT version, {created_at_sel} FROM compression_guidelines \
              WHERE conversation_id = ? OR conversation_id IS NULL \
              ORDER BY CASE WHEN conversation_id IS NOT NULL THEN 0 ELSE 1 END, \
                       version DESC \
              LIMIT 1"
-        ))
-        .bind(conversation_id.map(|c| c.0)) // lgtm[rust/cleartext-logging]
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(query_sql))
+            .bind(conversation_id.map(|c| c.0)) // lgtm[rust/cleartext-logging]
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(row.unwrap_or((0, String::new())))
     }
@@ -226,13 +232,22 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<CompressionFailurePair>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(sql!(
-            "SELECT id, conversation_id, compressed_context, failure_reason, category, created_at \
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` tuple field below.
+        // `ORDER BY` is table-qualified so it sorts on the native timestamp, not the cast text.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
+            "SELECT id, conversation_id, compressed_context, failure_reason, category, {created_at_sel} \
              FROM compression_failure_pairs \
              WHERE used_in_update = FALSE \
-             ORDER BY created_at ASC \
+             ORDER BY compression_failure_pairs.created_at ASC \
              LIMIT ?"
-        ))
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(
+            sqlx::AssertSqlSafe(query_sql),
+        )
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -265,13 +280,20 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<CompressionFailurePair>, MemoryError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(sql!(
-            "SELECT id, conversation_id, compressed_context, failure_reason, category, created_at \
+        // `created_at` is `TIMESTAMPTZ` on Postgres — see `get_unused_failure_pairs`.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
+            "SELECT id, conversation_id, compressed_context, failure_reason, category, {created_at_sel} \
              FROM compression_failure_pairs \
              WHERE used_in_update = FALSE AND category = ? \
-             ORDER BY created_at ASC \
+             ORDER BY compression_failure_pairs.created_at ASC \
              LIMIT ?"
-        ))
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows = zeph_db::query_as::<_, (i64, i64, String, String, String, String)>(
+            sqlx::AssertSqlSafe(query_sql),
+        )
         .bind(category)
         .bind(limit)
         .fetch_all(&self.pool)

@@ -95,9 +95,17 @@ impl DbStore {
     ) -> Result<Vec<PersonaFactRow>, MemoryError> {
         // Facts that appear in any other row's supersedes_id column are excluded:
         // they have been replaced by a newer, contradicting fact.
-        let rows: Vec<PersonaFactRow> = query_as(sql!(
+        // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project
+        // both through `Dialect::select_as_text`, aliased back to their original names so
+        // `#[derive(sqlx::FromRow)]` still binds them into the `String` fields below.
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let updated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
             "SELECT id, category, content, confidence, evidence_count,
-                    source_conversation_id, supersedes_id, created_at, updated_at
+                    source_conversation_id, supersedes_id,
+                    {created_at_sel} AS created_at, {updated_at_sel} AS updated_at
              FROM persona_memory
              WHERE confidence >= ?
                AND id NOT IN (
@@ -105,10 +113,12 @@ impl DbStore {
                    WHERE supersedes_id IS NOT NULL
                )
              ORDER BY confidence DESC"
-        ))
-        .bind(min_confidence)
-        .fetch_all(self.pool())
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<PersonaFactRow> = query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(min_confidence)
+            .fetch_all(self.pool())
+            .await?;
 
         Ok(rows)
     }

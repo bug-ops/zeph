@@ -92,13 +92,19 @@ impl SqliteStore {
     ///
     /// Returns an error if the query fails.
     pub async fn load_learned_preferences(&self) -> Result<Vec<LearnedPreferenceRow>, MemoryError> {
-        let rows: Vec<PreferenceTuple> = zeph_db::query_as(sql!(
-            "SELECT id, preference_key, preference_value, confidence, evidence_count, updated_at \
+        // `updated_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` field below.
+        let updated_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT id, preference_key, preference_value, confidence, evidence_count, {updated_at_sel} \
              FROM learned_preferences \
              ORDER BY confidence DESC"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<PreferenceTuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(row_from_tuple).collect())
     }
 
@@ -127,17 +133,23 @@ impl SqliteStore {
             String,
         );
 
-        let rows: Vec<Tuple> = zeph_db::query_as(sql!(
+        // `created_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` field below.
+        let created_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let raw = format!(
             "SELECT id, session_id, original_output, correction_text, \
-             skill_name, correction_kind, created_at \
+             skill_name, correction_kind, {created_at_sel} \
              FROM user_corrections \
              WHERE id > ? \
              ORDER BY id ASC LIMIT ?"
-        ))
-        .bind(after_id)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let rows: Vec<Tuple> = zeph_db::query_as(sqlx::AssertSqlSafe(query_sql))
+            .bind(after_id)
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows
             .into_iter()

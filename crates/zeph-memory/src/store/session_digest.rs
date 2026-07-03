@@ -61,13 +61,20 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
     ) -> Result<Option<SessionDigest>, MemoryError> {
-        let row = zeph_db::query_as::<_, (i64, i64, String, i64, String)>(sql!(
-            "SELECT id, conversation_id, digest, token_count, updated_at \
+        // `updated_at` is `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project through
+        // `Dialect::select_as_text` so it decodes into the `String` field below.
+        let updated_at_sel =
+            <zeph_db::ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let raw = format!(
+            "SELECT id, conversation_id, digest, token_count, {updated_at_sel} \
              FROM session_digest WHERE conversation_id = ?"
-        ))
-        .bind(conversation_id.0)
-        .fetch_optional(&self.pool)
-        .await?;
+        );
+        let query_sql = zeph_db::rewrite_placeholders(&raw);
+        let row =
+            zeph_db::query_as::<_, (i64, i64, String, i64, String)>(sqlx::AssertSqlSafe(query_sql))
+                .bind(conversation_id.0)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(row.map(
             |(id, conv_id, digest, token_count, updated_at)| SessionDigest {

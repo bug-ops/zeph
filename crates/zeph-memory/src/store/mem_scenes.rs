@@ -27,17 +27,15 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<(MessageId, String)>, MemoryError> {
         let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows: Vec<(i64, String)> = zeph_db::query_as(
-            r"
-            SELECT m.id, m.content
-            FROM messages m
-            WHERE m.tier = 'semantic'
-              AND m.deleted_at IS NULL
-              AND m.id NOT IN (SELECT message_id FROM mem_scene_members)
-            ORDER BY m.id ASC
-            LIMIT ?
-            ",
-        )
+        let rows: Vec<(i64, String)> = zeph_db::query_as(sql!(
+            "SELECT m.id, m.content
+             FROM messages m
+             WHERE m.tier = 'semantic'
+               AND m.deleted_at IS NULL
+               AND m.id NOT IN (SELECT message_id FROM mem_scene_members)
+             ORDER BY m.id ASC
+             LIMIT ?"
+        ))
         .bind(limit_i64)
         .fetch_all(&self.pool)
         .await?;

@@ -81,33 +81,43 @@ impl DbStore {
         kind: Option<&str>,
         limit: usize,
     ) -> Result<Vec<TrajectoryEntryRow>, MemoryError> {
-        let rows: Vec<TrajectoryEntryRow> = match kind {
-            Some(k) => {
-                query_as(sql!(
-                    "SELECT id, conversation_id, turn_index, kind, intent, outcome,
-                        tools_used, confidence, created_at, updated_at
-                 FROM trajectory_memory
-                 WHERE kind = ?
-                 ORDER BY confidence DESC, created_at DESC
-                 LIMIT ?"
-                ))
+        // `created_at`/`updated_at` are `TIMESTAMPTZ` on Postgres (`TEXT` on SQLite); project
+        // both through `Dialect::select_as_text`, aliased back to their original names so
+        // `#[derive(sqlx::FromRow)]` still binds them into the `String` fields below.
+        let created_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("created_at");
+        let updated_at_sel =
+            <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("updated_at");
+        let rows: Vec<TrajectoryEntryRow> = if let Some(k) = kind {
+            let raw = format!(
+                "SELECT id, conversation_id, turn_index, kind, intent, outcome,
+                    tools_used, confidence, {created_at_sel} AS created_at,
+                    {updated_at_sel} AS updated_at
+             FROM trajectory_memory
+             WHERE kind = ?
+             ORDER BY confidence DESC, trajectory_memory.created_at DESC
+             LIMIT ?"
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            query_as(sqlx::AssertSqlSafe(query_sql))
                 .bind(k)
                 .bind(i64::try_from(limit).unwrap_or(i64::MAX))
                 .fetch_all(self.pool())
                 .await?
-            }
-            None => {
-                query_as(sql!(
-                    "SELECT id, conversation_id, turn_index, kind, intent, outcome,
-                        tools_used, confidence, created_at, updated_at
-                 FROM trajectory_memory
-                 ORDER BY confidence DESC, created_at DESC
-                 LIMIT ?"
-                ))
+        } else {
+            let raw = format!(
+                "SELECT id, conversation_id, turn_index, kind, intent, outcome,
+                    tools_used, confidence, {created_at_sel} AS created_at,
+                    {updated_at_sel} AS updated_at
+             FROM trajectory_memory
+             ORDER BY confidence DESC, trajectory_memory.created_at DESC
+             LIMIT ?"
+            );
+            let query_sql = zeph_db::rewrite_placeholders(&raw);
+            query_as(sqlx::AssertSqlSafe(query_sql))
                 .bind(i64::try_from(limit).unwrap_or(i64::MAX))
                 .fetch_all(self.pool())
                 .await?
-            }
         };
 
         Ok(rows)
