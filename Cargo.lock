@@ -10243,6 +10243,7 @@ dependencies = [
 name = "zeph"
 version = "0.21.4"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
  "async-trait",
  "axum 0.8.9",
@@ -10256,6 +10257,7 @@ dependencies = [
  "futures",
  "glob",
  "insta",
+ "metrics",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

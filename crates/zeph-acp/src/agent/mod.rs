@@ -299,6 +299,10 @@ pub struct AcpContext {
     /// Shared diagnostics cache — written by the LSP notification handler in `ZephAcpAgent`
     /// and read by the agent loop context builder to inject diagnostics into the system prompt.
     pub diagnostics_cache: Arc<RwLock<DiagnosticsCache>>,
+    /// Handle for proactively notifying the client outside of the prompt-drain path.
+    ///
+    /// See [`SessionStatusNotifier`] for why this exists alongside `LoopbackChannel::send_status`.
+    pub status_notifier: SessionStatusNotifier,
     /// Elicitation bridge for sending form requests to the IDE.
     ///
     /// `None` when the IDE did not advertise elicitation capability during `initialize()`,
@@ -353,12 +357,89 @@ pub type AgentSpawner = Arc<
 pub type SendAgentSpawner = AgentSpawner;
 
 /// Sender half for delivering session notifications to the per-session drainer.
-pub(crate) type NotifySender =
-    mpsc::Sender<(acp::schema::v1::SessionNotification, oneshot::Sender<()>)>;
+///
+/// `pub` (not `pub(crate)`) solely so [`SessionStatusNotifier::new`] can appear in the public
+/// API: it lets integration tests outside this crate construct a real notifier bound to a
+/// plain `mpsc::channel`, without a full `AcpContext`/ACP connection.
+pub type NotifySender = mpsc::Sender<(acp::schema::v1::SessionNotification, oneshot::Sender<()>)>;
 
 /// Receiver half paired with [`NotifySender`].
 pub(crate) type NotifyReceiver =
     mpsc::Receiver<(acp::schema::v1::SessionNotification, oneshot::Sender<()>)>;
+
+/// Fire-and-forget handle for pushing a client-visible status update outside of the normal
+/// prompt-drain path.
+///
+/// Most agent output reaches the client through [`LoopbackChannel`] and is only flushed to
+/// the IDE as part of a `session/prompt` response (see `helpers::loopback_event_to_updates`
+/// and `drain_agent_events`). Some failures are discovered before any prompt is ever sent —
+/// e.g. session hydration in `spawn_acp_agent` (`zeph` binary crate) hitting
+/// `SessionError::AlreadyLocked` — so a client that never prompts, or whose first prompt is
+/// cancelled before the drain, would otherwise never learn persistence degraded (#5519).
+/// `SessionStatusNotifier` reuses the same per-session notification channel that
+/// `ZephAcpAgentState::send_notification_nowait` already drives for other proactive updates
+/// (e.g. `available_commands_update`), so it delivers immediately via the session's notify
+/// drainer instead of waiting on the next prompt.
+#[derive(Clone)]
+pub struct SessionStatusNotifier {
+    notify_tx: NotifySender,
+    session_id: acp::schema::v1::SessionId,
+}
+
+impl SessionStatusNotifier {
+    /// Builds a notifier bound to a session's notification channel.
+    ///
+    /// `notify_tx` is normally a `SessionEntry`'s own notify sender (see `build_acp_context`),
+    /// so pushes from this notifier are drained by the same task that delivers this session's
+    /// `session/update` notifications to the client. `pub` (not `pub(crate)`) so integration
+    /// tests outside this crate can bind a notifier to a plain `mpsc::channel` and assert on
+    /// the receiving end directly, without constructing a full `AcpContext`/ACP connection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use agent_client_protocol::schema::v1::SessionId;
+    /// use tokio::sync::mpsc;
+    /// use zeph_acp::SessionStatusNotifier;
+    ///
+    /// let (tx, mut rx) = mpsc::channel(4);
+    /// let notifier = SessionStatusNotifier::new(tx, SessionId::new("session-1".to_owned()));
+    /// notifier.notify_status_nowait("degraded");
+    /// assert!(rx.try_recv().is_ok());
+    /// ```
+    #[must_use]
+    pub fn new(notify_tx: NotifySender, session_id: acp::schema::v1::SessionId) -> Self {
+        Self {
+            notify_tx,
+            session_id,
+        }
+    }
+
+    /// Push a status message to the client immediately, without waiting for an ack.
+    ///
+    /// Mirrors the `AgentThoughtChunk` shape `loopback_event_to_updates` already produces for
+    /// `LoopbackEvent::Status`, so proactive and prompt-drained status messages render
+    /// identically on the client. Errors (channel full or closed) are logged and swallowed —
+    /// same tolerance as `ZephAcpAgentState::send_notification_nowait`.
+    pub fn notify_status_nowait(&self, text: impl Into<String>) {
+        let text = text.into();
+        if text.is_empty() {
+            return;
+        }
+        let update = acp::schema::v1::SessionUpdate::AgentThoughtChunk(
+            acp::schema::v1::ContentChunk::new(text.into()),
+        );
+        let notification =
+            acp::schema::v1::SessionNotification::new(self.session_id.clone(), update);
+        let (ack_tx, _) = oneshot::channel();
+        if let Err(e) = self.notify_tx.try_send((notification, ack_tx)) {
+            tracing::warn!(
+                error = %e,
+                "proactive session status notification dropped: channel full or closed"
+            );
+        }
+    }
+}
 
 /// Return value of [`ZephAcpAgentState::drain_agent_events`].
 ///
@@ -784,6 +865,7 @@ impl ZephAcpAgentState {
         self.reaper_cancel.cancel();
     }
 
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub(crate) async fn build_acp_context(
         &self,
         session_id: &acp::schema::v1::SessionId,
@@ -791,6 +873,7 @@ impl ZephAcpAgentState {
         cancel_signal: Arc<tokio::sync::Notify>,
         provider_override: Arc<RwLock<Option<AnyProvider>>>,
         cwd: PathBuf,
+        notify_tx: NotifySender,
         #[cfg(feature = "unstable-elicitation")] elicitation_tx: Option<
             elicitation::ElicitationSender,
         >,
@@ -859,6 +942,7 @@ impl ZephAcpAgentState {
             parent_tool_use_id: None,
             lsp_provider,
             diagnostics_cache: Arc::clone(&self.diagnostics_cache),
+            status_notifier: SessionStatusNotifier::new(notify_tx, session_id.clone()),
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge: elicitation_tx.map(|tx| elicitation::ElicitationBridge {
                 tx,
@@ -1341,6 +1425,11 @@ impl ZephAcpAgentState {
         let cancel_signal = Arc::clone(&handle.cancel_signal);
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
+        // Bounded: prevents a misbehaving IDE from buffering notifications without limit.
+        // 256 slots cover any realistic burst between drainer loop iterations. Created here
+        // (not inside `make_session_entry`) so `notify_tx` can also seed `build_acp_context`'s
+        // `SessionStatusNotifier`.
+        let (notify_tx, notify_rx) = mpsc::channel(256);
 
         let session_cwd = args.cwd.clone();
 
@@ -1368,6 +1457,7 @@ impl ZephAcpAgentState {
                 cancel_signal,
                 provider_override_for_ctx,
                 session_cwd.clone(),
+                notify_tx.clone(),
                 #[cfg(feature = "unstable-elicitation")]
                 elicitation_tx,
             )
@@ -1391,6 +1481,8 @@ impl ZephAcpAgentState {
                 auto_approve_level: "suggest".to_owned(),
                 temperature_preset: self.model_config.default_temperature_preset,
             },
+            notify_tx,
+            notify_rx,
         );
         #[cfg(feature = "unstable-elicitation")]
         {
@@ -1672,6 +1764,7 @@ impl ZephAcpAgentState {
         let cancel_signal = Arc::clone(&handle.cancel_signal);
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
+        let (notify_tx, notify_rx) = mpsc::channel(256);
         let acp_ctx = self
             .build_acp_context(
                 &args.session_id,
@@ -1679,6 +1772,7 @@ impl ZephAcpAgentState {
                 cancel_signal,
                 provider_override_for_ctx,
                 session_cwd.clone(),
+                notify_tx.clone(),
                 #[cfg(feature = "unstable-elicitation")]
                 None,
             )
@@ -1701,6 +1795,8 @@ impl ZephAcpAgentState {
                 auto_approve_level: "suggest".to_owned(),
                 temperature_preset: self.model_config.default_temperature_preset,
             },
+            notify_tx,
+            notify_rx,
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -1925,6 +2021,7 @@ impl ZephAcpAgentState {
         let cancel_signal = Arc::clone(&handle.cancel_signal);
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
+        let (notify_tx, notify_rx) = mpsc::channel(256);
         let acp_ctx = self
             .build_acp_context(
                 &new_id,
@@ -1932,6 +2029,7 @@ impl ZephAcpAgentState {
                 cancel_signal,
                 provider_override_for_ctx,
                 args.cwd.clone(),
+                notify_tx.clone(),
                 #[cfg(feature = "unstable-elicitation")]
                 None,
             )
@@ -1950,6 +2048,8 @@ impl ZephAcpAgentState {
                 auto_approve_level: inherited_auto_approve.clone(),
                 temperature_preset: inherited_preset,
             },
+            notify_tx,
+            notify_rx,
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -2051,6 +2151,7 @@ impl ZephAcpAgentState {
         let cancel_signal = Arc::clone(&handle.cancel_signal);
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
+        let (notify_tx, notify_rx) = mpsc::channel(256);
         let acp_ctx = self
             .build_acp_context(
                 &args.session_id,
@@ -2058,6 +2159,7 @@ impl ZephAcpAgentState {
                 cancel_signal,
                 provider_override_for_ctx,
                 args.cwd.clone(),
+                notify_tx.clone(),
                 #[cfg(feature = "unstable-elicitation")]
                 None,
             )
@@ -2076,6 +2178,8 @@ impl ZephAcpAgentState {
                 auto_approve_level: inherited_auto_approve,
                 temperature_preset: inherited_preset,
             },
+            notify_tx,
+            notify_rx,
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
@@ -2979,6 +3083,11 @@ impl ZephAcpAgentState {
     }
 
     /// Build a fresh `SessionEntry` from a `LoopbackHandle`, seeded with `config` (#5373).
+    ///
+    /// `notify_tx`/`notify_rx` are created by the caller (not internally) so `notify_tx` can
+    /// also be handed to `build_acp_context` for [`SessionStatusNotifier`] before the entry
+    /// exists — both must share the same channel.
+    #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     fn make_session_entry(
         handle: LoopbackHandle,
         initial_model: String,
@@ -2986,10 +3095,9 @@ impl ZephAcpAgentState {
         shell_executor: Option<AcpShellExecutor>,
         provider_override: Arc<RwLock<Option<AnyProvider>>>,
         config: SessionConfigSeed,
+        notify_tx: NotifySender,
+        notify_rx: NotifyReceiver,
     ) -> SessionEntry {
-        // Bounded: prevents a misbehaving IDE from buffering notifications without limit.
-        // 256 slots cover any realistic burst between drainer loop iterations.
-        let (notify_tx, notify_rx) = mpsc::channel(256);
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3505,6 +3613,7 @@ mod notify_timeout_tests {
 
         let (_, handle) = LoopbackChannel::pair(4);
         let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let (notify_tx, notify_rx) = mpsc::channel(256);
         let entry = ZephAcpAgent::make_session_entry(
             handle,
             "test-model".to_owned(),
@@ -3516,6 +3625,8 @@ mod notify_timeout_tests {
                 auto_approve_level: "suggest".to_owned(),
                 temperature_preset: zeph_config::AcpTemperaturePreset::default(),
             },
+            notify_tx,
+            notify_rx,
         );
         // Insert without starting the drainer — no ack will ever be sent.
         agent.sessions.lock().insert(session_id.clone(), entry);
@@ -3529,6 +3640,47 @@ mod notify_timeout_tests {
             result.is_err(),
             "send_notification must fail when ack does not arrive within the timeout"
         );
+    }
+}
+
+/// Regression tests for #5519: `SessionStatusNotifier` pushes status updates immediately,
+/// without waiting for a prompt-drain.
+#[cfg(test)]
+mod session_status_notifier_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn notify_status_nowait_delivers_agent_thought_chunk_immediately() {
+        let (notify_tx, mut notify_rx) = mpsc::channel(4);
+        let session_id = acp::schema::v1::SessionId::new("notifier-test".to_owned());
+        let notifier = SessionStatusNotifier::new(notify_tx, session_id.clone());
+
+        notifier.notify_status_nowait("degraded");
+
+        let (notification, _ack) = notify_rx.try_recv().expect(
+            "notify_status_nowait must push onto the channel synchronously, without a drainer",
+        );
+        assert_eq!(notification.session_id, session_id);
+        match notification.update {
+            acp::schema::v1::SessionUpdate::AgentThoughtChunk(chunk) => match chunk.content {
+                acp::schema::v1::ContentBlock::Text(t) => assert_eq!(t.text, "degraded"),
+                other => panic!("expected ContentBlock::Text, got {other:?}"),
+            },
+            other => panic!("expected AgentThoughtChunk, got {other:?}"),
+        }
+    }
+
+    /// Matches `loopback_event_to_updates`'s handling of `LoopbackEvent::Status("")`: empty
+    /// text is a no-op, not an empty chunk.
+    #[tokio::test]
+    async fn notify_status_nowait_skips_empty_text() {
+        let (notify_tx, mut notify_rx) = mpsc::channel(4);
+        let session_id = acp::schema::v1::SessionId::new("notifier-empty-test".to_owned());
+        let notifier = SessionStatusNotifier::new(notify_tx, session_id);
+
+        notifier.notify_status_nowait("");
+
+        assert!(notify_rx.try_recv().is_err(), "empty text must not be sent");
     }
 }
 
@@ -3559,6 +3711,7 @@ mod inherited_session_config_tests {
         let session_id = acp::schema::v1::SessionId::new("source-session".to_owned());
         let (_, handle) = LoopbackChannel::pair(4);
         let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let (notify_tx, notify_rx) = mpsc::channel(256);
         let entry = ZephAcpAgent::make_session_entry(
             handle,
             "claude:opus".to_owned(),
@@ -3570,6 +3723,8 @@ mod inherited_session_config_tests {
                 auto_approve_level: "auto-edit".to_owned(),
                 temperature_preset: zeph_config::AcpTemperaturePreset::Creative,
             },
+            notify_tx,
+            notify_rx,
         );
         agent.sessions.lock().insert(session_id.clone(), entry);
 

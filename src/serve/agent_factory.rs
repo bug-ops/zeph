@@ -206,6 +206,19 @@ async fn hydrate_session_sink(
                 tokio::time::sleep(REACTIVATION_LOCK_RETRY_DELAY).await;
             }
             Err(e) => {
+                // #5518: distinguish "retry budget exhausted against a still-live lock" from any
+                // other hydration failure — only the former is the silent degrade this counter
+                // exists to surface (an operator has no other way to notice it happening at
+                // scale short of grepping the warn log below).
+                if matches!(
+                    e,
+                    zeph_agent_persistence::PersistenceError::Session(
+                        zeph_session::SessionError::AlreadyLocked(_)
+                    )
+                ) {
+                    metrics::counter!("serve.session.reactivation_lock_exhausted_total")
+                        .increment(1);
+                }
                 tracing::warn!(error = %e, "serve-sessions: session persistence disabled for this session");
                 return (None, Vec::new());
             }

@@ -82,7 +82,9 @@ pub mod permission;
 pub mod terminal;
 pub mod transport;
 
-pub use agent::{AcpContext, AgentSpawner, ProviderFactory, SessionContext, run_agent};
+pub use agent::{
+    AcpContext, AgentSpawner, ProviderFactory, SessionContext, SessionStatusNotifier, run_agent,
+};
 pub use client::{
     AcpClientError, RunOutcome, SubagentConfig, SubagentHandle, run_session, spawn_subagent,
 };

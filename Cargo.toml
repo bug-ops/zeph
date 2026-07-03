@@ -302,6 +302,7 @@ dialoguer.workspace = true
 dirs.workspace = true
 futures.workspace = true
 glob.workspace = true
+metrics.workspace = true
 opentelemetry = { workspace = true, optional = true }
 # NOTE: grpc-tonic pulls tonic ^0.14 which coexists with qdrant-client's tonic 0.12.
 # Binary bloat is acceptable until qdrant-client upgrades (tracked in #2347).
@@ -362,6 +363,7 @@ zeph-worktree.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+agent-client-protocol.workspace = true
 bytes.workspace = true
 insta.workspace = true
 qdrant-client = { workspace = true, features = ["serde"] }

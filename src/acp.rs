@@ -815,6 +815,65 @@ async fn build_acp_deps(
     Ok((deps, keepalive))
 }
 
+/// Text shown to the client when session persistence is disabled due to a held write lock.
+///
+/// Deliberately omits the lock path: it is an absolute filesystem path (leaks the server's
+/// home-directory prefix/OS username) and this session may be reached over an unauthenticated,
+/// non-loopback ACP HTTP transport (security review finding, #5487).
+const SESSION_LOCK_DEGRADED_MESSAGE: &str =
+    "Session persistence unavailable: another process already holds this session's write lock.";
+
+/// Notify the client that session persistence degraded to no-persistence because another
+/// process already holds this session's write lock (`SessionError::AlreadyLocked`).
+///
+/// Prefers `status_notifier` (present for real ACP sessions): it pushes the message
+/// immediately through the session's notification drainer, so the client learns about the
+/// degradation at session-creation time rather than only as a side effect of its next prompt
+/// (#5519). Falls back to `channel.send_status` when no notifier is available (e.g.
+/// `acp_ctx` is `None`, as for non-ACP callers of `spawn_acp_agent`) — that path is still
+/// only flushed to the client on the session's next prompt-response drain.
+async fn notify_lock_degraded(
+    status_notifier: Option<&zeph_acp::SessionStatusNotifier>,
+    channel: &mut zeph_core::channel::LoopbackChannel,
+) {
+    if let Some(notifier) = status_notifier {
+        notifier.notify_status_nowait(SESSION_LOCK_DEGRADED_MESSAGE);
+    } else {
+        let _ = channel.send_status(SESSION_LOCK_DEGRADED_MESSAGE).await;
+    }
+}
+
+/// Open a session's durable JSONL event log, degrading (and notifying the client) instead of
+/// failing the session when another process already holds the session's write lock.
+///
+/// Extracted from `spawn_acp_agent`'s no-`conversation_id` hydration branch — the only
+/// `AlreadyLocked` trigger that doesn't require a full `SharedAgentDeps`/`Agent` to reach — so
+/// `notify_lock_degraded`'s real trigger path (genuine file-lock contention, not a mocked
+/// error) is covered by a lightweight integration test (#5519 review S2).
+async fn open_session_log_or_notify_locked(
+    session_path: &std::path::Path,
+    status_notifier: Option<&zeph_acp::SessionStatusNotifier>,
+    channel: &mut zeph_core::channel::LoopbackChannel,
+) -> Option<std::sync::Arc<zeph_session::SessionEventLog>> {
+    match zeph_session::SessionEventLog::open_exclusive(session_path).await {
+        Ok(log) => Some(std::sync::Arc::new(log)),
+        Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => {
+            tracing::error!(
+                lock_path,
+                "failed to open session event log for ACP session: another process \
+                 already holds this session's write lock; session persistence disabled \
+                 for this session"
+            );
+            notify_lock_degraded(status_notifier, channel).await;
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open session event log for ACP session; session persistence disabled for this session");
+            None
+        }
+    }
+}
+
 /// Spawn an `Agent` from shared deps and per-session context, then run its loop.
 ///
 /// Called once per ACP session. Each invocation creates independent per-session state:
@@ -888,6 +947,13 @@ async fn spawn_acp_agent(
 
     let hooks_config = d.hooks_config.clone();
     let tool_filter_config = d.tool_filter_config.clone();
+
+    // Cloned before `acp_ctx` is destructured into individual per-session executors below
+    // (the tool-executor setup consumes `ctx` by value), so it survives to the session
+    // hydration block further down and can proactively push a client-visible notification if
+    // hydration hits `AlreadyLocked` — reaching the client without waiting for this session's
+    // next `session/prompt` drain (#5519).
+    let status_notifier = acp_ctx.as_ref().map(|ctx| ctx.status_notifier.clone());
 
     // Per-session receivers: each session gets its own mpsc::Receiver forwarded from the
     // shared broadcast senders. The CancellationToken is derived from the AcpContext cancel
@@ -1001,9 +1067,9 @@ async fn spawn_acp_agent(
     // exists so `SessionStore::update_seq` has something to update.
     //
     // Computed here, before `channel` is consumed by `Agent::new_with_registry_arc` below, so an
-    // `AlreadyLocked` failure can be surfaced to the client via `channel.send_status` (delivered
-    // to the IDE as an `AgentThoughtChunk` on this session's next prompt-response drain, per
-    // `loopback_event_to_updates`) instead of only being visible in logs (#5487 fix 3).
+    // `AlreadyLocked` failure can be surfaced to the client (`notify_lock_degraded` above, via
+    // `status_notifier` — pushed immediately, see #5519) instead of only being visible in logs
+    // (#5487 fix 3).
     let mut acp_session_sink = None;
     let mut preloaded_messages: Vec<zeph_llm::provider::Message> = Vec::new();
     if session_persistence_config.enabled {
@@ -1057,16 +1123,7 @@ async fn spawn_acp_agent(
                         "session hydration failed: another process already holds this session's \
                          write lock; session persistence disabled for this session"
                     );
-                    // Do not interpolate `lock_path` into the client-facing message: it is an
-                    // absolute filesystem path (leaks the server's home-directory prefix/OS
-                    // username) and this session may be reached over an unauthenticated,
-                    // non-loopback ACP HTTP transport (security review finding).
-                    let _ = channel
-                        .send_status(
-                            "Session persistence unavailable: another process already holds \
-                             this session's write lock.",
-                        )
-                        .await;
+                    notify_lock_degraded(status_notifier.as_ref(), &mut channel).await;
                     None
                 }
                 Err(e) => {
@@ -1075,32 +1132,8 @@ async fn spawn_acp_agent(
                 }
             }
         } else {
-            match zeph_session::SessionEventLog::open_exclusive(&session_path).await {
-                Ok(log) => Some(Arc::new(log)),
-                Err(zeph_session::SessionError::AlreadyLocked(lock_path)) => {
-                    tracing::error!(
-                        lock_path,
-                        "failed to open session event log for ACP session: another process \
-                         already holds this session's write lock; session persistence disabled \
-                         for this session"
-                    );
-                    // Do not interpolate `lock_path` into the client-facing message: it is an
-                    // absolute filesystem path (leaks the server's home-directory prefix/OS
-                    // username) and this session may be reached over an unauthenticated,
-                    // non-loopback ACP HTTP transport (security review finding).
-                    let _ = channel
-                        .send_status(
-                            "Session persistence unavailable: another process already holds \
-                             this session's write lock.",
-                        )
-                        .await;
-                    None
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to open session event log for ACP session; session persistence disabled for this session");
-                    None
-                }
-            }
+            open_session_log_or_notify_locked(&session_path, status_notifier.as_ref(), &mut channel)
+                .await
         };
 
         if let Some(log) = log {
@@ -2316,6 +2349,80 @@ mod tests {
             if next.is_none() {
                 break;
             }
+        }
+    }
+
+    /// Regression test for #5519 review S2: `notify_lock_degraded`'s fallback branch (no
+    /// `SessionStatusNotifier` — e.g. `spawn_acp_agent` invoked without an `AcpContext`) must
+    /// still reach the caller, via `channel.send_status`.
+    #[tokio::test]
+    async fn notify_lock_degraded_falls_back_to_channel_send_status_without_notifier() {
+        let (mut channel, mut handle) = zeph_core::channel::LoopbackChannel::pair(8);
+
+        notify_lock_degraded(None, &mut channel).await;
+
+        let event = handle
+            .output_rx
+            .recv()
+            .await
+            .expect("channel must receive a status event");
+        match event {
+            zeph_core::LoopbackEvent::Status(text) => {
+                assert_eq!(text, SESSION_LOCK_DEGRADED_MESSAGE);
+            }
+            other => panic!("expected LoopbackEvent::Status, got {other:?}"),
+        }
+    }
+
+    /// Regression test for #5519 review S2: drives the real trigger path — genuine file-lock
+    /// contention (not a mocked error) through `open_session_log_or_notify_locked`, the same
+    /// helper `spawn_acp_agent`'s no-`conversation_id` hydration branch calls — and asserts the
+    /// client is notified via `SessionStatusNotifier` synchronously, i.e. without any
+    /// `session/prompt` drain (`try_recv`, not `recv().await` behind a drain loop).
+    #[tokio::test]
+    async fn already_locked_session_log_notifies_client_proactively_without_prompt() {
+        let tmp = TempDir::new().unwrap();
+        let session_path = tmp.path().join("already-locked-session");
+        // Hold the write lock ourselves first — the exact contention a second concurrent
+        // `spawn_acp_agent` invocation for the same session would hit.
+        let _held_lock = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .expect("first open_exclusive must succeed and hold the lock");
+
+        let (mut channel, _handle) = zeph_core::channel::LoopbackChannel::pair(8);
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel(8);
+        let session_id =
+            agent_client_protocol::schema::v1::SessionId::new("already-locked-test".to_owned());
+        let status_notifier = Some(zeph_acp::SessionStatusNotifier::new(
+            notify_tx,
+            session_id.clone(),
+        ));
+
+        let log = open_session_log_or_notify_locked(
+            &session_path,
+            status_notifier.as_ref(),
+            &mut channel,
+        )
+        .await;
+        assert!(
+            log.is_none(),
+            "AlreadyLocked must degrade to no persistence, not fail session creation"
+        );
+
+        let (notification, _ack) = notify_rx.try_recv().expect(
+            "client must be notified proactively — synchronously, with no prompt drain needed",
+        );
+        assert_eq!(notification.session_id, session_id);
+        match notification.update {
+            agent_client_protocol::schema::v1::SessionUpdate::AgentThoughtChunk(chunk) => {
+                match chunk.content {
+                    agent_client_protocol::schema::v1::ContentBlock::Text(t) => {
+                        assert_eq!(t.text, SESSION_LOCK_DEGRADED_MESSAGE);
+                    }
+                    other => panic!("expected ContentBlock::Text, got {other:?}"),
+                }
+            }
+            other => panic!("expected AgentThoughtChunk, got {other:?}"),
         }
     }
 }
