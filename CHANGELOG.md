@@ -563,6 +563,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(memory)`: clarify that `[memory.admission] admission_strategy = "rl"` is not silently a
+  no-op (#5543) — `src/bootstrap/mod.rs::build_admission_control` already emits a startup
+  `tracing::warn!` when this variant is selected (added by #2485 for #2416, predating this issue),
+  so the fallback to heuristic scoring was already operator-visible; no new runtime warning was
+  needed. Tightened that existing warning to also flag that the RL training write path
+  (`record_admission_training`/`save_rl_weights`/`load_rl_weights`/`cleanup_old_training_data` in
+  `zeph_memory::store::admission_training`) has no production caller, so even once a learned-model
+  scorer is wired, there is currently no training data collected to train it on. Expanded the
+  `AdmissionStrategy::Rl` variant's doc comment in `zeph-config` to state this plainly. The `Rl`
+  enum variant, `rl_min_samples` / `rl_retrain_interval_secs` config fields, and the
+  `admission_training_data` / `admission_rl_weights` storage tables are unchanged and remain
+  scaffolding for a future RL wiring effort.
 - `fix(memory)`: three more Postgres-dialect defects in `zeph-memory`, same class as #5508/#5524
   (SQLite-only SQL surfacing incorrectly under Postgres, live-verified via Docker testcontainers).
   `datetime('now')` (SQLite-only, no Postgres equivalent) was embedded as a literal in production

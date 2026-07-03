@@ -912,7 +912,9 @@ impl AppBuilder {
         if self.config.memory.admission.admission_strategy == zeph_config::AdmissionStrategy::Rl {
             tracing::warn!(
                 "admission_strategy = \"rl\" is configured but the RL model is not yet wired \
-                 into the admission path — falling back to heuristic. See #2416."
+                 into the admission path — falling back to heuristic. The training write path \
+                 (record_admission_training/save_rl_weights) also has no production caller yet, \
+                 so no training data is being collected. See #2416/#5543."
             );
         }
 

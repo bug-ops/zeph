@@ -531,7 +531,19 @@ pub enum AdmissionStrategy {
     #[default]
     Heuristic,
     /// Learned model: logistic regression trained on recall feedback.
-    /// Falls back to `Heuristic` when training data is below `rl_min_samples`.
+    ///
+    /// **Not yet wired to a runtime scorer** (#2416/#5543): no admission code path scores
+    /// with a learned model today, so selecting this variant falls back to
+    /// [`AdmissionStrategy::Heuristic`] scoring. `src/bootstrap/mod.rs`'s
+    /// `build_admission_control` emits a `tracing::warn!` at startup when this variant is
+    /// selected, so the fallback is operator-visible rather than silent.
+    ///
+    /// The training write path this strategy would need — `record_admission_training`,
+    /// `save_rl_weights`, `load_rl_weights`, and `cleanup_old_training_data` in
+    /// `zeph_memory::store::admission_training` — has no production caller, so even once a
+    /// scorer is wired, there is no training data to train it on yet. The `rl_min_samples` /
+    /// `rl_retrain_interval_secs` fields and the `admission_training_data` /
+    /// `admission_rl_weights` storage tables remain as scaffolding for that future work.
     Rl,
 }
 
