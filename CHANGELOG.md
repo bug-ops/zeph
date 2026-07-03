@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `test(tui)`: `detect_unicode_capable()` (`crates/zeph-tui/src/theme/color_mode.rs`) had no
+  dedicated unit tests — only a doc-example, flagged as a coverage gap across 4+ consecutive
+  CI cycles. Added 6 tests to the existing `mod tests` block covering `TERM=dumb` precedence
+  over a UTF-8 `LANG`, the `LANG` and `LC_ALL` UTF-8-detection branches, case-insensitive
+  `utf-8` matching, and the default-to-Unicode-capable fallback for both fully-unset and
+  non-UTF-8 environments. Follows the sibling `auto_with_no_color_env_resolves_to_never`
+  test's established `#[serial_test::serial]` + `unsafe { std::env::set_var/remove_var }`
+  isolation pattern, via a shared `clear_unicode_env()` helper that clears all three relevant
+  vars before each test sets only what it needs — results no longer depend on the host
+  shell's actual `TERM`/`LANG`/`LC_ALL`. Closes #5480.
 - `fix(memory)`: `knowledge ingest`'s hub-degree kill-criterion (spec-067 §7) reported a
   24.3%-of-edges hub on the first live subagent-transcript extraction — the generic
   language name `Python` collapsed 26 near-duplicate "hello-world" transcripts onto a

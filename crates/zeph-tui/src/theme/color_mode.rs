@@ -437,4 +437,113 @@ mod tests {
         unsafe { std::env::remove_var("NO_COLOR") };
         assert_eq!(result, EffectiveColorMode::Never);
     }
+
+    /// Clear the three env vars `detect_unicode_capable` reads, so each test starts from a
+    /// known-empty baseline instead of depending on whatever the host shell happens to export.
+    ///
+    /// SAFETY: caller runs under `#[serial_test::serial]`, so no other test observes env state
+    /// concurrently.
+    #[allow(unsafe_code)]
+    unsafe fn clear_unicode_env() {
+        unsafe {
+            std::env::remove_var("TERM");
+            std::env::remove_var("LANG");
+            std::env::remove_var("LC_ALL");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(unsafe_code)]
+    fn unicode_capable_term_dumb_returns_false_even_with_utf8_lang() {
+        // TERM=dumb short-circuits before LANG/LC_ALL are consulted (detection order #1).
+        // SAFETY: single-threaded via #[serial].
+        unsafe {
+            clear_unicode_env();
+            std::env::set_var("TERM", "dumb");
+            std::env::set_var("LANG", "en_US.UTF-8");
+        }
+        let result = detect_unicode_capable();
+        unsafe { clear_unicode_env() };
+        assert!(!result, "TERM=dumb must return false regardless of LANG");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(unsafe_code)]
+    fn unicode_capable_lang_utf8_returns_true() {
+        // SAFETY: single-threaded via #[serial].
+        unsafe {
+            clear_unicode_env();
+            std::env::set_var("TERM", "xterm-256color");
+            std::env::set_var("LANG", "en_US.UTF-8");
+        }
+        let result = detect_unicode_capable();
+        unsafe { clear_unicode_env() };
+        assert!(result, "LANG containing UTF-8 must return true");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(unsafe_code)]
+    fn unicode_capable_lc_all_utf8_returns_true() {
+        // Exercises the LC_ALL branch specifically (checked before LANG in the detection loop).
+        // SAFETY: single-threaded via #[serial].
+        unsafe {
+            clear_unicode_env();
+            std::env::set_var("TERM", "xterm-256color");
+            std::env::set_var("LC_ALL", "C.UTF-8");
+        }
+        let result = detect_unicode_capable();
+        unsafe { clear_unicode_env() };
+        assert!(result, "LC_ALL containing UTF-8 must return true");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(unsafe_code)]
+    fn unicode_capable_lowercase_utf8_is_still_detected() {
+        // Detection uppercases before matching, so lowercase "utf-8" must also count.
+        // SAFETY: single-threaded via #[serial].
+        unsafe {
+            clear_unicode_env();
+            std::env::set_var("TERM", "xterm-256color");
+            std::env::set_var("LANG", "en_US.utf-8");
+        }
+        let result = detect_unicode_capable();
+        unsafe { clear_unicode_env() };
+        assert!(result, "lowercase utf-8 in LANG must still be detected");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(unsafe_code)]
+    fn unicode_capable_unset_env_defaults_to_true() {
+        // No TERM/LANG/LC_ALL at all — default is Unicode-capable (opt-in to ASCII, not opt-out).
+        // SAFETY: single-threaded via #[serial].
+        unsafe { clear_unicode_env() };
+        let result = detect_unicode_capable();
+        unsafe { clear_unicode_env() };
+        assert!(result, "unset environment must default to Unicode-capable");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(unsafe_code)]
+    fn unicode_capable_non_utf8_lang_without_dumb_defaults_to_true() {
+        // Ambiguous case: TERM set but not "dumb", LANG/LC_ALL present but not UTF-8 — falls
+        // through to the same opt-in-to-ASCII default as the fully-unset case.
+        // SAFETY: single-threaded via #[serial].
+        unsafe {
+            clear_unicode_env();
+            std::env::set_var("TERM", "xterm");
+            std::env::set_var("LANG", "C");
+        }
+        let result = detect_unicode_capable();
+        unsafe { clear_unicode_env() };
+        assert!(
+            result,
+            "non-UTF-8 LANG without TERM=dumb must default to true"
+        );
+    }
 }
