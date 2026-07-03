@@ -91,7 +91,7 @@ pub async fn graph_recall_beam(
             break;
         }
 
-        // Collect entity IDs from edges to resolve names.
+        // Collect entity IDs from edges and resolve their names in a single batched query.
         let new_entity_ids: Vec<i64> = edges
             .iter()
             .flat_map(|e| [e.source_entity_id, e.target_entity_id])
@@ -100,10 +100,8 @@ pub async fn graph_recall_beam(
             .into_iter()
             .collect();
 
-        for id in new_entity_ids {
-            if let Ok(Some(entity)) = store.find_entity_by_id(id).await {
-                entity_name_map.insert(id, entity.canonical_name.clone());
-            }
+        if !new_entity_ids.is_empty() {
+            entity_name_map.extend(store.resolve_entity_names(&new_entity_ids).await?);
         }
 
         // Score each neighbour by edge confidence (proxy for traversal quality).
@@ -306,5 +304,74 @@ mod tests {
         .await
         .unwrap();
         assert!(!result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn beam_resolves_names_for_converging_edges_in_same_hop() {
+        // A -> B, A -> C at hop 1; B -> D and C -> D at hop 2, so D is referenced by two
+        // edges within the same hop. The batched name resolution must still produce a
+        // single correct name for D (no double-fetch, no wrong/missing data).
+        let store = setup_store().await;
+        let a = store
+            .upsert_entity("Alice", "alice", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        let b = store
+            .upsert_entity("Bob", "bob", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        let c = store
+            .upsert_entity("Carol", "carol", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        let d = store
+            .upsert_entity("Dave", "dave", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        store
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(a, c, "knows", "Alice knows Carol", 0.8, None, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(b, d, "knows", "Bob knows Dave", 0.9, None, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(c, d, "knows", "Carol knows Dave", 0.9, None, None)
+            .await
+            .unwrap();
+
+        let provider = mock_provider();
+        let result = graph_recall_beam(
+            &store,
+            None,
+            &provider,
+            "Alice",
+            10,
+            2,
+            2,
+            &[],
+            0.0,
+            false,
+            0.0,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        let dave_facts: Vec<_> = result.iter().filter(|f| f.target_name == "dave").collect();
+        assert_eq!(dave_facts.len(), 2, "both edges into Dave must resolve");
+        for fact in &dave_facts {
+            assert!(!fact.entity_name.is_empty());
+            assert_eq!(fact.target_name, "dave");
+        }
     }
 }

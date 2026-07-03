@@ -790,6 +790,73 @@ async fn find_entity_by_id_not_found() {
 }
 
 #[tokio::test]
+async fn resolve_entity_names_matches_sequential_find_by_id() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("Alice", "alice", EntityType::Person, None, None)
+        .await
+        .unwrap()
+        .0;
+    let b = gs
+        .upsert_entity("Bob", "bob", EntityType::Person, None, None)
+        .await
+        .unwrap()
+        .0;
+    let c = gs
+        .upsert_entity("Carol", "carol", EntityType::Person, None, None)
+        .await
+        .unwrap()
+        .0;
+
+    let batched = gs.resolve_entity_names(&[a, b, c]).await.unwrap();
+
+    let mut expected = HashMap::new();
+    for id in [a, b, c] {
+        let entity = gs.find_entity_by_id(id).await.unwrap().unwrap();
+        expected.insert(id, entity.canonical_name);
+    }
+    assert_eq!(batched, expected);
+}
+
+#[tokio::test]
+async fn resolve_entity_names_dedupes_repeated_ids() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("Alice", "alice", EntityType::Person, None, None)
+        .await
+        .unwrap()
+        .0;
+
+    // Same id referenced multiple times (as source and target of different edges) must
+    // resolve to a single, correct entry rather than erroring or duplicating rows.
+    let result = gs.resolve_entity_names(&[a, a, a]).await.unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.get(&a).map(String::as_str), Some("alice"));
+}
+
+#[tokio::test]
+async fn resolve_entity_names_omits_unresolvable_ids() {
+    let gs = setup().await;
+    let a = gs
+        .upsert_entity("Alice", "alice", EntityType::Person, None, None)
+        .await
+        .unwrap()
+        .0;
+
+    let result = gs.resolve_entity_names(&[a, 999_999]).await.unwrap();
+    assert_eq!(result.len(), 1);
+    assert!(result.contains_key(&a));
+    assert!(!result.contains_key(&999_999));
+}
+
+#[tokio::test]
+async fn resolve_entity_names_empty_input_is_noop() {
+    let gs = setup().await;
+    let result = gs.resolve_entity_names(&[]).await.unwrap();
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
 async fn set_entity_qdrant_point_id_updates() {
     let gs = setup().await;
     let id = gs

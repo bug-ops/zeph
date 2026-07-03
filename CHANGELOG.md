@@ -27,6 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is not the code path this command uses; #5533/#5568 fixed the message-count logic of that
   dormant path only, not the live `/compact` command, which this change addresses separately.
   Closes #5572.
+- `perf(memory)`: `graph_recall_beam` resolved neighbour entity names via a sequential
+  per-id `find_entity_by_id` query on every hop of the beam search, an N+1 pattern on
+  the hot graph-recall path. Added `GraphStore::resolve_entity_names`, a single batched
+  `WHERE id IN (...)` query (chunked for the `SQLite` bind limit), and call it once per
+  hop instead. Traversal/pruning semantics of the beam are unchanged. Closes #5545.
 - `fix(tools)`: `TrustGateExecutor`'s `Supervised`-mode confirmation check no longer
   blanket-skips every tool without an explicit policy rule. The prior condition treated
   "no rule configured" as license to bypass confirmation, which silently let

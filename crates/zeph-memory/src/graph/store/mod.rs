@@ -172,6 +172,42 @@ impl GraphStore {
         row.map(entity_from_row).transpose()
     }
 
+    /// Resolve entity IDs to their canonical names in a single batched query.
+    ///
+    /// Ids with no matching row are silently omitted from the result map. Requests are
+    /// chunked at 490 ids to stay under the `SQLite` bind-parameter limit, mirroring the
+    /// chunking used by [`Self::entity_ids_in`] and [`Self::qdrant_point_ids_for_entities`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.resolve_entity_names", skip_all, fields(count = ids.len()))]
+    pub async fn resolve_entity_names(
+        &self,
+        ids: &[i64],
+    ) -> Result<HashMap<i64, String>, MemoryError> {
+        const MAX_BATCH: usize = 490;
+        let mut result: HashMap<i64, String> = HashMap::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(result);
+        }
+        for chunk in ids.chunks(MAX_BATCH) {
+            let placeholders = placeholder_list(1, chunk.len());
+            let sql = format!(
+                "SELECT id, canonical_name FROM graph_entities WHERE id IN ({placeholders})"
+            );
+            let mut q = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(sql));
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            let rows: Vec<(i64, String)> = q.fetch_all(&self.pool).await?;
+            for (id, name) in rows {
+                result.insert(id, name);
+            }
+        }
+        Ok(result)
+    }
+
     /// Update the `qdrant_point_id` for an entity.
     ///
     /// # Errors
