@@ -5091,10 +5091,13 @@ mod tests {
             }
         }
 
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .expect("in-memory SQLite");
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .expect("connect + migrate in-memory sqlite pool");
         let store = ShadowEventStore::new(pool);
         let config = zeph_config::ShadowSentinelConfig {
             enabled: true,
@@ -5159,10 +5162,13 @@ mod tests {
             }
         }
 
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .expect("in-memory SQLite");
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .expect("connect + migrate in-memory sqlite pool");
         let store = ShadowEventStore::new(pool);
         let config = zeph_config::ShadowSentinelConfig {
             enabled: false,
@@ -5479,10 +5485,13 @@ mod tests {
     }
 
     async fn make_runner_test_session_store() -> zeph_session::SessionStore {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .expect("in-memory SQLite");
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .expect("connect + migrate in-memory sqlite pool");
         zeph_session::SessionStore::new(pool)
     }
 

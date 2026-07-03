@@ -1848,6 +1848,26 @@ mod tests {
         ))
     }
 
+    async fn memory_pool() -> zeph_db::DbPool {
+        zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap()
+    }
+
+    async fn file_pool(path: &Path) -> zeph_db::DbPool {
+        zeph_db::DbConfig {
+            url: path.display().to_string(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap()
+    }
+
     fn make_agent() -> Agent<CliChannel> {
         let config = Config::load(Path::new("/nonexistent")).unwrap();
         let registry = SkillRegistry::load(&[] as &[std::path::PathBuf]);
@@ -1937,9 +1957,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_search_code_executor_exposes_search_code_tool() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = memory_pool().await;
         let config = Config::load(Path::new("/nonexistent")).unwrap();
         assert!(config.index.search_enabled, "expected default to be on");
         let executor =
@@ -1956,9 +1974,7 @@ mod tests {
     /// tool definition survives the merge.
     #[tokio::test]
     async fn search_code_executor_reachable_through_daemon_composite_chain() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = memory_pool().await;
         let config = Config::load(Path::new("/nonexistent")).unwrap();
         let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
             std::sync::Arc::new(NoopExec);
@@ -1988,8 +2004,7 @@ mod tests {
     #[tokio::test]
     async fn apply_response_cache_disabled_returns_agent_unchanged() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = file_pool(tmp.path()).await;
         let agent = make_agent();
         let cancel = tokio_util::sync::CancellationToken::new();
         let (result, handle) =
@@ -2004,8 +2019,7 @@ mod tests {
     #[tokio::test]
     async fn apply_response_cache_enabled_attaches_cache() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = file_pool(tmp.path()).await;
         let agent = make_agent();
         let cancel = tokio_util::sync::CancellationToken::new();
         let (result, handle) =
@@ -2018,8 +2032,7 @@ mod tests {
     #[tokio::test]
     async fn apply_response_cache_cleanup_spawns_without_panic() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = file_pool(tmp.path()).await;
         let agent = make_agent();
         let cancel = tokio_util::sync::CancellationToken::new();
         let child = cancel.child_token();
@@ -2046,8 +2059,7 @@ mod tests {
             ..Config::default()
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = file_pool(tmp.path()).await;
 
         let (watcher, progress_rx) = apply_code_indexer(
             &full_config,
@@ -2074,8 +2086,7 @@ mod tests {
             ..Config::default()
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = file_pool(tmp.path()).await;
         let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
 
         let (watcher, _progress_rx) = apply_code_indexer(
@@ -2102,8 +2113,7 @@ mod tests {
             ..Config::default()
         };
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = file_pool(tmp.path()).await;
 
         let (watcher, _) = apply_code_indexer(
             &full_config,
@@ -2131,8 +2141,7 @@ mod tests {
             ..Config::default()
         };
         let tmp_db = tempfile::NamedTempFile::new().unwrap();
-        let db_url = format!("sqlite:{}", tmp_db.path().display());
-        let pool = zeph_db::sqlx::SqlitePool::connect(&db_url).await.unwrap();
+        let pool = file_pool(tmp_db.path()).await;
         let qdrant = QdrantOps::new("http://127.0.0.1:1", None).unwrap();
 
         let (watcher, _) = apply_code_indexer(
@@ -2161,9 +2170,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_code_rag_retriever_disabled_is_noop() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = memory_pool().await;
         let agent = make_agent();
         let config = IndexConfig {
             enabled: false,
@@ -2178,9 +2185,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_code_rag_retriever_no_qdrant_is_noop() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = memory_pool().await;
         let agent = make_agent();
         let config = IndexConfig {
             enabled: true,
@@ -2196,9 +2201,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_code_rag_retriever_mcp_enabled_is_noop() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = memory_pool().await;
         let agent = make_agent();
         let config = IndexConfig {
             enabled: true,

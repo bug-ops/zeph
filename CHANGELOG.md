@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(db)`: fix 25 `E0308` compile errors across `zeph-core`, `zeph-tools`, and the `zeph`
+  binary under `cargo check --workspace --all-targets --features postgres`. Test helpers
+  hardcoded `SqlitePool`/`SqlitePoolOptions` construction where the surrounding code expects
+  the feature-resolved `zeph_db::DbPool` alias, which resolves to `Pool<Postgres>` once the
+  `postgres` feature is compiled in. Replaced every hardcoded constructor with
+  `zeph_db::DbConfig::connect()`, which resolves to the correct backend for the active
+  feature set (and runs migrations, letting several tests drop hand-rolled `CREATE TABLE`
+  DDL that had drifted out of sync with the real schema). Closes #5602.
+- `ci`: widen the `build-postgres` job to also run
+  `cargo check --workspace --all-targets --features postgres`, exercising the exact command
+  that surfaced #5602 so this defect class is caught in CI going forward. Closes #5601.
 - `fix(tui)`: the TUI command palette's `daemon:connect`, `daemon:disconnect`, and
   `daemon:status` entries no longer collapse into one indistinguishable "not yet
   implemented" toast. `daemon:status` now reports genuine connection state (connected to

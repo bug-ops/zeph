@@ -153,20 +153,19 @@ mod tests {
     use std::sync::Arc;
 
     use super::{CompressionRule, CompressionRuleStore};
+    use zeph_db::DbPool;
 
-    async fn make_store() -> (CompressionRuleStore, sqlx::SqlitePool) {
-        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::query(
-            "CREATE TABLE compression_rules (\
-             id TEXT PRIMARY KEY, tool_glob TEXT, pattern TEXT NOT NULL, \
-             replacement_template TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0, \
-             source TEXT NOT NULL DEFAULT 'operator', created_at TEXT NOT NULL, \
-             UNIQUE(tool_glob, pattern))",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let store = CompressionRuleStore::new(Arc::new(pool.clone()));
+    async fn make_store() -> (CompressionRuleStore, Arc<DbPool>) {
+        let pool = Arc::new(
+            zeph_db::DbConfig {
+                url: ":memory:".to_owned(),
+                ..Default::default()
+            }
+            .connect()
+            .await
+            .unwrap(),
+        );
+        let store = CompressionRuleStore::new(Arc::clone(&pool));
         (store, pool)
     }
 

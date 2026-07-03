@@ -540,10 +540,18 @@ mod tests {
 
     use super::*;
 
+    async fn test_pool() -> zeph_db::DbPool {
+        zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .unwrap()
+    }
+
     async fn make_executor() -> (SchedulerExecutor, mpsc::Receiver<SchedulerMessage>) {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = test_pool().await;
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         let store = Arc::new(store);
@@ -652,9 +660,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_existing_task() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = test_pool().await;
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store
@@ -693,9 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_name_returns_updated_message() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = test_pool().await;
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store
@@ -730,9 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_tasks_with_jobs() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = test_pool().await;
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store
@@ -1024,9 +1026,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_fenced_cancel_task_dispatches() {
-        let pool = zeph_db::sqlx::SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = test_pool().await;
         let store = JobStore::new(pool);
         store.init().await.unwrap();
         store

@@ -1072,10 +1072,7 @@ mod tests {
                 Box::pin(async { ProbeVerdict::Allow })
             }
         }
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .expect("in-memory SQLite pool");
+        let pool = test_pool().await;
         let store = ShadowEventStore::new(pool);
         ShadowSentinel::new(store, Box::new(NoopProbe), config, "test-session")
     }

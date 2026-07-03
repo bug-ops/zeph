@@ -1981,23 +1981,13 @@ mod tests {
     // ── ingest_one skip gate (FR-012) ─────────────────────────────────────────
 
     async fn in_memory_ledger() -> IngestLedger {
-        let pool = sqlx::SqlitePool::connect(":memory:")
-            .await
-            .expect("in-memory sqlite");
-        sqlx::query(
-            "CREATE TABLE knowledge_ingest_ledger (\
-             source_uri TEXT NOT NULL, \
-             content_hash TEXT NOT NULL, \
-             import_batch_id TEXT NOT NULL, \
-             ingested_at TEXT NOT NULL DEFAULT (datetime('now')), \
-             entities INTEGER NOT NULL DEFAULT 0, \
-             edges INTEGER NOT NULL DEFAULT 0, \
-             PRIMARY KEY (source_uri, content_hash)\
-             )",
-        )
-        .execute(&pool)
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
         .await
-        .expect("create table");
+        .expect("connect + migrate in-memory sqlite pool");
         IngestLedger::new(pool)
     }
 

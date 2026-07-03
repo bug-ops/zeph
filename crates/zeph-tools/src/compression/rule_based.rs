@@ -270,15 +270,11 @@ mod tests {
     use crate::compression::{CompressionRuleStore, OutputCompressor, store::CompressionRule};
 
     async fn make_store_with_rules(rules: &[(&str, &str)]) -> Arc<CompressionRuleStore> {
-        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::query(
-            "CREATE TABLE compression_rules (\
-             id TEXT PRIMARY KEY, tool_glob TEXT, pattern TEXT NOT NULL, \
-             replacement_template TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0, \
-             source TEXT NOT NULL DEFAULT 'operator', created_at TEXT NOT NULL, \
-             UNIQUE(tool_glob, pattern))",
-        )
-        .execute(&pool)
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
         .await
         .unwrap();
 
