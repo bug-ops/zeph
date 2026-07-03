@@ -1556,6 +1556,41 @@ where
     )
 }
 
+/// MCP tool-id set consumed by [`zeph_tools::TrustGateExecutor`] to recognize genuinely
+/// MCP-sourced tools. Populated after MCP servers connect via [`register_mcp_tool_ids`].
+pub(crate) type McpToolIdsHandle = Arc<RwLock<std::collections::HashSet<String>>>;
+
+/// Wraps a fully-composed tool-executor tree in the single outermost `TrustGateExecutor`
+/// gate shared by every agent entry point (CLI, ACP, daemon).
+///
+/// `inner` must already contain the ENTIRE tool-executor composition for the run — base
+/// chain, MCP, search, skill loader/invoke, memory, overflow. Wrapping only a sub-tree (as
+/// ACP and daemon used to do before #5611) lets tools composed outside the wrap bypass
+/// Quarantine/Blocked enforcement entirely, since `TrustGateExecutor::check_trust` only runs
+/// for calls that dispatch through the gate itself.
+///
+/// Returns the gated executor plus the MCP tool-id handle the caller must populate (via
+/// [`register_mcp_tool_ids`]) once the MCP tool list is known.
+pub(crate) fn apply_common_tool_gating(
+    inner: zeph_tools::DynExecutor,
+    permission_policy: &zeph_tools::PermissionPolicy,
+) -> (zeph_tools::DynExecutor, McpToolIdsHandle) {
+    let gated = zeph_tools::TrustGateExecutor::new(inner, permission_policy.clone());
+    let handle = gated.mcp_tool_ids_handle();
+    (zeph_tools::DynExecutor(Arc::new(gated)), handle)
+}
+
+/// Populates a `TrustGateExecutor` MCP tool-id handle from the connected MCP tool list, so
+/// Quarantine denies ALL MCP-sourced tools — not just those matching `QUARANTINE_DENIED` by
+/// name.
+pub(crate) fn register_mcp_tool_ids(handle: &McpToolIdsHandle, mcp_tools: &[zeph_mcp::McpTool]) {
+    let ids: std::collections::HashSet<String> = mcp_tools
+        .iter()
+        .map(zeph_mcp::McpTool::sanitized_id)
+        .collect();
+    *handle.write() = ids;
+}
+
 fn resolve_search_lsp_server_id(config: &Config) -> Option<String> {
     config
         .mcp
@@ -2377,5 +2412,139 @@ mod tests {
             rx.borrow().secret_masking_enabled,
             "Some(registry) must attach secret masking and flip the metrics flag"
         );
+    }
+
+    // --- apply_common_tool_gating / register_mcp_tool_ids (#5611) ---
+
+    /// Mock executor that only handles calls matching its own `tool_id`, mirroring
+    /// `CompositeExecutor`'s first-match-wins dispatch (`Ok(None)` = "not mine, try next").
+    #[derive(Debug)]
+    struct TaggedMock(String);
+
+    impl ToolExecutor for TaggedMock {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            call: &zeph_tools::ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            if call.tool_id != self.0 {
+                return Ok(None);
+            }
+            Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "ok".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+    }
+
+    fn make_tool_call(tool_id: &str) -> zeph_tools::ToolCall {
+        zeph_tools::ToolCall {
+            tool_id: tool_id.into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        }
+    }
+
+    fn make_test_mcp_tool(server_id: &str, name: &str) -> zeph_mcp::McpTool {
+        zeph_mcp::McpTool {
+            server_id: server_id.to_owned(),
+            name: name.to_owned(),
+            description: String::new(),
+            input_schema: serde_json::Value::Null,
+            output_schema: None,
+            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
+        }
+    }
+
+    /// Regression test for #5611: the gate must wrap the ENTIRE composed tree — including
+    /// tools that used to be composed outside it in ACP/daemon (memory, MCP) — not just the
+    /// base chain. Mirrors the production shape built by `spawn_acp_agent`/`run_daemon`:
+    /// a "memory_save"-like tool and an MCP-sourced tool sit alongside a readonly tool in one
+    /// `CompositeExecutor` tree, gated by a single outermost `apply_common_tool_gating` call.
+    #[tokio::test]
+    async fn quarantine_blocks_memory_and_mcp_tools_reached_through_composed_tree() {
+        let mcp_tool = make_test_mcp_tool("fs", "write_file");
+        let mcp_tool_id = mcp_tool.sanitized_id();
+
+        let inner: Arc<dyn zeph_tools::ErasedToolExecutor> =
+            Arc::new(zeph_tools::CompositeExecutor::new(
+                TaggedMock("memory_save".to_owned()),
+                zeph_tools::CompositeExecutor::new(
+                    TaggedMock(mcp_tool_id.clone()),
+                    TaggedMock("read".to_owned()),
+                ),
+            ));
+        let (gated, mcp_handle) = apply_common_tool_gating(
+            zeph_tools::DynExecutor(inner),
+            &zeph_tools::PermissionPolicy::default(),
+        );
+        register_mcp_tool_ids(&mcp_handle, std::slice::from_ref(&mcp_tool));
+        gated.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
+
+        let memory_result = gated
+            .execute_tool_call(&make_tool_call("memory_save"))
+            .await;
+        assert!(
+            matches!(memory_result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "memory_save must be denied under Quarantine even when composed outside the \
+             former gate boundary, got {memory_result:?}"
+        );
+
+        let mcp_result = gated.execute_tool_call(&make_tool_call(&mcp_tool_id)).await;
+        assert!(
+            matches!(mcp_result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "MCP-sourced tool must be denied under Quarantine once its id is registered, \
+             got {mcp_result:?}"
+        );
+
+        let read_result = gated.execute_tool_call(&make_tool_call("read")).await;
+        assert!(
+            read_result.is_ok(),
+            "readonly native tool must remain reachable under Quarantine, got {read_result:?}"
+        );
+    }
+
+    /// Companion to the above: under `Trusted`, none of the gate's Quarantine-specific
+    /// denials apply, so all three tools in the same composed tree must dispatch normally.
+    #[tokio::test]
+    async fn trusted_allows_memory_and_mcp_tools_through_composed_tree() {
+        let mcp_tool = make_test_mcp_tool("fs", "write_file");
+        let mcp_tool_id = mcp_tool.sanitized_id();
+
+        let inner: Arc<dyn zeph_tools::ErasedToolExecutor> =
+            Arc::new(zeph_tools::CompositeExecutor::new(
+                TaggedMock("memory_save".to_owned()),
+                zeph_tools::CompositeExecutor::new(
+                    TaggedMock(mcp_tool_id.clone()),
+                    TaggedMock("read".to_owned()),
+                ),
+            ));
+        let policy =
+            zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
+        let (gated, mcp_handle) = apply_common_tool_gating(zeph_tools::DynExecutor(inner), &policy);
+        register_mcp_tool_ids(&mcp_handle, std::slice::from_ref(&mcp_tool));
+        gated.set_effective_trust(zeph_common::SkillTrustLevel::Trusted);
+
+        for tool_id in ["memory_save", mcp_tool_id.as_str(), "read"] {
+            let result = gated.execute_tool_call(&make_tool_call(tool_id)).await;
+            assert!(
+                result.is_ok(),
+                "{tool_id} must dispatch normally under Trusted/Full autonomy, got {result:?}"
+            );
+        }
     }
 }

@@ -2366,9 +2366,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
         std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
     let (tool_executor, mcp_ids_handle) = {
-        let trust_gated =
-            zeph_tools::TrustGateExecutor::new(inner_executor, permission_policy.clone());
-        let handle = trust_gated.mcp_tool_ids_handle();
+        // #5610: shared TrustGateExecutor wrap, also used by ACP (`src/acp.rs`) and the
+        // daemon (`src/daemon.rs`) so all three entry points gate the full executor tree
+        // through one code path.
+        let (trust_gated, handle) =
+            crate::agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
 
         // Layer 1 (innermost of the policy stack): adversarial policy gate (LLM-based).
         let adversarial_gated: zeph_tools::DynExecutor = if config.tools.adversarial_policy.enabled
@@ -2466,7 +2468,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             }
             zeph_tools::DynExecutor(std::sync::Arc::new(gate))
         } else {
-            zeph_tools::DynExecutor(std::sync::Arc::new(trust_gated))
+            trust_gated
         };
 
         // Layer 2 (outermost): declarative policy gate.
@@ -2635,13 +2637,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let mcp_outcomes = tool_setup.mcp_outcomes;
     // Register MCP tool IDs so TrustGateExecutor can block ALL MCP tools for
     // Quarantined skills — not just those matching QUARANTINE_DENIED suffixes.
-    {
-        let ids: std::collections::HashSet<String> = mcp_tools
-            .iter()
-            .map(zeph_mcp::McpTool::sanitized_id)
-            .collect();
-        *mcp_ids_handle.write() = ids;
-    }
+    crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
     let mcp_manager = tool_setup.mcp_manager;
     let mcp_shared_tools = tool_setup.mcp_shared_tools;
     let mcp_tool_rx = tool_setup.mcp_tool_rx;

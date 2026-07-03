@@ -374,19 +374,7 @@ impl SqliteStore {
         .await?;
         let id = row.0;
 
-        zeph_db::query(sql!(
-            "UPDATE skill_versions SET is_active = FALSE WHERE skill_name = ? AND is_active = TRUE"
-        ))
-        .bind(skill_name)
-        .execute(&mut *tx)
-        .await?;
-
-        zeph_db::query(sql!(
-            "UPDATE skill_versions SET is_active = TRUE WHERE id = ?"
-        ))
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+        switch_active_skill_version(&mut tx, skill_name, id).await?;
 
         tx.commit().await?;
         Ok(id)
@@ -453,19 +441,7 @@ impl SqliteStore {
     ) -> Result<(), MemoryError> {
         let mut tx = begin_write(&self.pool).await?;
 
-        zeph_db::query(sql!(
-            "UPDATE skill_versions SET is_active = FALSE WHERE skill_name = ? AND is_active = TRUE"
-        ))
-        .bind(skill_name)
-        .execute(&mut *tx)
-        .await?;
-
-        zeph_db::query(sql!(
-            "UPDATE skill_versions SET is_active = TRUE WHERE id = ?"
-        ))
-        .bind(version_id)
-        .execute(&mut *tx)
-        .await?;
+        switch_active_skill_version(&mut tx, skill_name, version_id).await?;
 
         tx.commit().await?;
         Ok(())
@@ -551,19 +527,7 @@ impl SqliteStore {
             .await?;
             let id = row.0;
 
-            zeph_db::query(sql!(
-                "UPDATE skill_versions SET is_active = FALSE WHERE skill_name = ? AND is_active = TRUE"
-            ))
-            .bind(skill_name)
-            .execute(&mut *tx)
-            .await?;
-
-            zeph_db::query(sql!(
-                "UPDATE skill_versions SET is_active = TRUE WHERE id = ?"
-            ))
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+            switch_active_skill_version(&mut tx, skill_name, id).await?;
         }
 
         tx.commit().await?;
@@ -1332,6 +1296,34 @@ impl SqliteStore {
         .await?;
         Ok(())
     }
+}
+
+/// Flip the active skill version within an open write transaction: clear the current
+/// active row for `skill_name`, then mark `version_id` active.
+///
+/// Both statements run on the caller's `tx` so the swap is atomic with the caller's
+/// surrounding work (insert / existence check). Shared by
+/// [`SqliteStore::save_and_activate_skill_version`], [`SqliteStore::activate_skill_version`],
+/// and [`SqliteStore::ensure_skill_version_exists`].
+async fn switch_active_skill_version(
+    tx: &mut zeph_db::DbTransaction<'_>,
+    skill_name: &str,
+    version_id: i64,
+) -> Result<(), MemoryError> {
+    zeph_db::query(sql!(
+        "UPDATE skill_versions SET is_active = FALSE WHERE skill_name = ? AND is_active = TRUE"
+    ))
+    .bind(skill_name)
+    .execute(&mut **tx)
+    .await?;
+
+    zeph_db::query(sql!(
+        "UPDATE skill_versions SET is_active = TRUE WHERE id = ?"
+    ))
+    .bind(version_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

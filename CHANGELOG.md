@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(tools,acp)`: ACP (`zeph --acp`) and the daemon (`zeph serve`) gated only the base
+  tool chain (file/shell/scrape/cwd/diagnostics) behind `TrustGateExecutor`; `memory_save`,
+  MCP-sourced tools, `load_skill`/`invoke_skill`, and `search_code` were composed outside
+  that gate and never passed through trust enforcement at all. A `Quarantined` skill could
+  therefore still persist attacker-controlled content via `memory_save` or invoke any
+  MCP-sourced tool, even though the CLI (`src/runner.rs`) already blocked both. Fixed by
+  wrapping the FULLY composed executor tree — base chain, MCP, search, skill loader,
+  memory, overflow — in a single outermost `TrustGateExecutor`, matching the CLI. Extracted
+  the wrap into a shared `agent_setup::apply_common_tool_gating` helper (plus
+  `register_mcp_tool_ids`) so the CLI, ACP, and daemon entry points all gate through one
+  code path instead of three independent, divergence-prone inline constructions (partial
+  slice of #5610 — the shared helper covers trust-gate/permission-policy wiring only;
+  provider-pool wiring stays triplicated and is left for a future focused pass under the
+  same issue). **User-visible behavior change**: `memory_save`, `overflow`, and
+  `search_code` in ACP/daemon now also fall under the `Supervised`-mode `Ask` confirmation
+  default for tools with no explicit policy rule — previously they bypassed confirmation
+  entirely because no gate stood in front of them at all. This is intentional and brings
+  ACP/daemon in line with the CLI's existing, already-shipped behavior. Closes #5611.
+  Refs #5610.
 - `fix(serve)`: `zeph serve`'s session reactivation retry-exhaustion fallback
   (`hydrate_session_sink`, `src/serve/agent_factory.rs`) now increments
   `metrics::counter!("serve.session.reactivation_lock_exhausted_total")` when the bounded
@@ -45,6 +64,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is not the code path this command uses; #5533/#5568 fixed the message-count logic of that
   dormant path only, not the live `/compact` command, which this change addresses separately.
   Closes #5572.
+- `perf(memory)`: `graph_recall_beam` resolved neighbour entity names via a sequential
+  per-id `find_entity_by_id` query on every hop of the beam search, an N+1 pattern on
+  the hot graph-recall path. Added `GraphStore::resolve_entity_names`, a single batched
+  `WHERE id IN (...)` query (chunked for the `SQLite` bind limit), and call it once per
+  hop instead. Traversal/pruning semantics of the beam are unchanged. Closes #5545.
 - `fix(tools)`: `TrustGateExecutor`'s `Supervised`-mode confirmation check no longer
   blanket-skips every tool without an explicit policy rule. The prior condition treated
   "no rule configured" as license to bypass confirmation, which silently let
@@ -688,6 +712,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `refactor(memory)`: `store/skills.rs`'s deactivate-old/activate-new skill-version-switch
+  SQL pair was copy-pasted across `save_and_activate_skill_version`, `activate_skill_version`,
+  and `ensure_skill_version_exists`. Extracted into a shared `switch_active_skill_version`
+  transaction helper. Closes #5496.
+- `refactor(memory)`: `semantic/recall.rs`'s `MemoryRoute` dispatch match was duplicated
+  between `recall_routed` and `recall_routed_async`, and had already drifted — the async
+  path was missing the Episodic arm's debug trace. Extracted into a shared `recall_by_route`
+  helper and unified the trace onto both paths. Closes #5495.
 - `refactor(orchestration)`: `dag::propagate_failure`'s trailing wildcard match arm on
   `FailureStrategy` no longer silently falls back to `Abort`-equivalent behavior with no signal.
   The wildcard arm is required for compilation because `FailureStrategy` is `#[non_exhaustive]`

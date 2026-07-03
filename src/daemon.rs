@@ -491,28 +491,16 @@ pub(crate) async fn run_daemon(
         zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
     let shell_policy_handle = shell_executor.policy_handle();
     let diagnostics_executor = agent_setup::build_diagnostics_executor(config);
+    // #5611: base chain stays ungated here; it is composed with mcp/search/skill_loader/
+    // memory/overflow below, then the FULLY composed tree is wrapped in one outermost
+    // TrustGateExecutor via `apply_common_tool_gating`, matching runner.rs. Gating only this
+    // sub-tree (as before #5611) let tools composed outside it bypass Quarantine/Blocked.
     let base_executor = agent_setup::build_base_executor_chain(
         file_executor,
         shell_executor,
         scrape_executor,
         diagnostics_executor,
     );
-    // #5575: gate the base chain (file/shell/scrape/cwd/diagnostics) behind the same
-    // TrustGateExecutor the CLI path uses (src/runner.rs), so Supervised-mode
-    // confirmation for unconfigured, non-MCP/non-readonly tools (e.g. `diagnostics`)
-    // is enforced here too — previously this chain had no trust gate at all.
-    let base_executor =
-        zeph_tools::TrustGateExecutor::new(base_executor, permission_policy.clone());
-    // Register MCP tool IDs so TrustGateExecutor can recognize genuinely MCP-sourced
-    // tools for the Supervised-mode skip (see is_mcp_tool in trust_gate.rs) and block
-    // ALL MCP tools for Quarantined skills, mirroring runner.rs.
-    {
-        let ids: std::collections::HashSet<String> = mcp_tools
-            .iter()
-            .map(zeph_mcp::McpTool::sanitized_id)
-            .collect();
-        *base_executor.mcp_tool_ids_handle().write() = ids;
-    }
     let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
         std::sync::Arc::clone(&memory),
         conversation_id,
@@ -547,7 +535,7 @@ pub(crate) async fn run_daemon(
             base
         }
     };
-    let tool_executor =
+    let inner_executor =
         zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
             skill_loader_executor,
             zeph_tools::CompositeExecutor::new(
@@ -558,6 +546,13 @@ pub(crate) async fn run_daemon(
                 ),
             ),
         )));
+    // #5611: gate the FULLY composed tree (base chain + mcp + search + skill loader +
+    // memory + overflow) behind one outermost TrustGateExecutor, matching runner.rs and
+    // ACP (`src/acp.rs`). Previously only the base chain was gated here, so a Quarantined
+    // skill could still reach `memory_save` and any MCP-sourced tool.
+    let (tool_executor, mcp_ids_handle) =
+        agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
+    agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
 
     let mcp_embed_provider = {
         let discovery = &config.mcp.tool_discovery;
@@ -1104,6 +1099,132 @@ mod tests {
                 Err(zeph_tools::ToolError::ConfirmationRequired { .. })
             ),
             "expected ConfirmationRequired for diagnostics under Supervised autonomy, got {result:?}"
+        );
+    }
+
+    /// Mock executor that only handles calls matching its own `tool_id`, mirroring
+    /// `CompositeExecutor`'s first-match-wins dispatch (`Ok(None)` = "not mine, try next").
+    #[derive(Debug)]
+    struct DaemonTaggedMock(&'static str);
+
+    impl zeph_tools::executor::ToolExecutor for DaemonTaggedMock {
+        async fn execute(
+            &self,
+            _response: &str,
+        ) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            call: &zeph_tools::ToolCall,
+        ) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+            if call.tool_id != self.0 {
+                return Ok(None);
+            }
+            Ok(Some(zeph_tools::ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "ok".into(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+            }))
+        }
+    }
+
+    fn daemon_test_call(tool_id: &str) -> zeph_tools::ToolCall {
+        zeph_tools::ToolCall {
+            tool_id: tool_id.into(),
+            params: serde_json::Map::new(),
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        }
+    }
+
+    /// Regression test for #5611: `run_daemon` composes `skill_loader -> memory -> overflow
+    /// -> (base_chain -> mcp)` into one tree and gates the WHOLE thing via
+    /// `agent_setup::apply_common_tool_gating`. Before the fix, only the base chain carried
+    /// a `TrustGateExecutor`, so tools composed outside it (memory, mcp, skill loader) never
+    /// reached `check_trust` at all. This mirrors that exact nesting order with lightweight
+    /// mocks standing in for the real `MemoryToolExecutor`/`McpToolExecutor` (which need a
+    /// live `SemanticMemory`/`McpManager`) and asserts Quarantine now reaches all of them.
+    #[tokio::test]
+    async fn quarantine_blocks_memory_and_mcp_in_daemon_composite_chain() {
+        use zeph_tools::executor::ToolExecutor;
+
+        let mcp_tool = zeph_mcp::McpTool {
+            server_id: "mcp".to_owned(),
+            name: "write_file".to_owned(),
+            description: String::new(),
+            input_schema: serde_json::Value::Null,
+            output_schema: None,
+            security_meta: zeph_mcp::tool::ToolSecurityMeta::default(),
+        };
+        let mcp_tool_id = mcp_tool.sanitized_id();
+        assert_eq!(mcp_tool_id, "mcp_write_file");
+
+        // base tier: a readonly native tool ("read") alongside the mock MCP-sourced tool,
+        // mirroring `CompositeExecutor::new(base_executor, mcp_executor)` in `run_daemon`.
+        let base_tool = zeph_tools::CompositeExecutor::new(
+            DaemonTaggedMock("read"),
+            DaemonTaggedMock("mcp_write_file"),
+        );
+        let inner_executor =
+            zeph_tools::DynExecutor(std::sync::Arc::new(zeph_tools::CompositeExecutor::new(
+                DaemonTaggedMock("load_skill"),
+                zeph_tools::CompositeExecutor::new(
+                    DaemonTaggedMock("memory_save"),
+                    zeph_tools::CompositeExecutor::new(
+                        DaemonTaggedMock("overflow_flush"),
+                        base_tool,
+                    ),
+                ),
+            )));
+        let (gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+            inner_executor,
+            &zeph_tools::PermissionPolicy::default(),
+        );
+        agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
+        gated.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
+
+        let memory_result = gated
+            .execute_tool_call(&daemon_test_call("memory_save"))
+            .await;
+        assert!(
+            matches!(memory_result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "memory_save must be denied under Quarantine, got {memory_result:?}"
+        );
+
+        let mcp_result = gated
+            .execute_tool_call(&daemon_test_call(&mcp_tool_id))
+            .await;
+        assert!(
+            matches!(mcp_result, Err(zeph_tools::ToolError::Blocked { .. })),
+            "MCP-sourced tool must be denied under Quarantine, got {mcp_result:?}"
+        );
+
+        let skill_load_result = gated
+            .execute_tool_call(&daemon_test_call("load_skill"))
+            .await;
+        assert!(
+            matches!(
+                skill_load_result,
+                Err(zeph_tools::ToolError::Blocked { .. })
+            ),
+            "load_skill must be denied under Quarantine, got {skill_load_result:?}"
+        );
+
+        let read_result = gated.execute_tool_call(&daemon_test_call("read")).await;
+        assert!(
+            read_result.is_ok(),
+            "readonly native tool must remain reachable under Quarantine, got {read_result:?}"
         );
     }
 
