@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider, Message, Role};
@@ -130,10 +131,15 @@ pub struct SkillGenerator {
     eval_weights: EvaluationWeights,
     /// Minimum composite score required to accept a generated skill.
     eval_threshold: f32,
+    /// Timeout in milliseconds applied to each LLM call made by [`Self::generate`].
+    generation_timeout_ms: u64,
 }
 
 impl SkillGenerator {
     /// Create a new generator that writes approved skills to `output_dir`.
+    ///
+    /// Each LLM call made by [`Self::generate`] defaults to a 60s timeout;
+    /// override with [`Self::with_generation_timeout_ms`].
     #[must_use]
     pub fn new(provider: AnyProvider, output_dir: PathBuf) -> Self {
         Self {
@@ -142,6 +148,7 @@ impl SkillGenerator {
             evaluator: None,
             eval_weights: EvaluationWeights::default(),
             eval_threshold: 0.60,
+            generation_timeout_ms: 60_000,
         }
     }
 
@@ -163,6 +170,13 @@ impl SkillGenerator {
         self
     }
 
+    /// Override the per-call LLM timeout used by [`Self::generate`] (default 60s).
+    #[must_use]
+    pub fn with_generation_timeout_ms(mut self, ms: u64) -> Self {
+        self.generation_timeout_ms = ms;
+        self
+    }
+
     /// Generate a SKILL.md candidate from a natural language description.
     ///
     /// Does NOT write to disk. Call `approve_and_save` after user confirmation.
@@ -171,6 +185,7 @@ impl SkillGenerator {
     ///
     /// Returns `SkillError::Invalid` if the LLM output cannot be parsed or fails validation.
     /// Returns `SkillError::Other` on LLM communication failures.
+    /// Returns `SkillError::Timeout` if either LLM call exceeds `generation_timeout_ms`.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "skill.generate", skip_all, fields(input_len = %request.description.len()))
@@ -185,11 +200,13 @@ impl SkillGenerator {
             Message::from_legacy(Role::User, &user_prompt),
         ];
 
-        let raw = self
-            .provider
-            .chat(&messages)
-            .await
-            .map_err(|e| SkillError::Other(format!("LLM generation failed: {e}")))?;
+        let raw = tokio::time::timeout(
+            Duration::from_millis(self.generation_timeout_ms),
+            self.provider.chat(&messages),
+        )
+        .await
+        .map_err(|_| SkillError::Timeout(self.generation_timeout_ms))?
+        .map_err(|e| SkillError::Other(format!("LLM generation failed: {e}")))?;
 
         let content = extract_skill_md(&raw);
 
@@ -209,11 +226,13 @@ impl SkillGenerator {
                     Message::from_legacy(Role::System, SYSTEM_PROMPT),
                     Message::from_legacy(Role::User, &correction),
                 ];
-                let raw2 = self
-                    .provider
-                    .chat(&retry_messages)
-                    .await
-                    .map_err(|e| SkillError::Other(format!("LLM retry failed: {e}")))?;
+                let raw2 = tokio::time::timeout(
+                    Duration::from_millis(self.generation_timeout_ms),
+                    self.provider.chat(&retry_messages),
+                )
+                .await
+                .map_err(|_| SkillError::Timeout(self.generation_timeout_ms))?
+                .map_err(|e| SkillError::Other(format!("LLM retry failed: {e}")))?;
                 let content2 = extract_skill_md(&raw2);
                 parse_and_validate(&content2)
             }
@@ -668,5 +687,65 @@ mod tests {
     fn validate_generated_name_rejects_too_long() {
         let name = "a".repeat(65);
         assert!(validate_generated_name(&name).is_err());
+    }
+
+    fn timeout_test_request() -> SkillGenerationRequest {
+        SkillGenerationRequest {
+            description: "fetch weather data".into(),
+            category: None,
+            allowed_tools: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_returns_timeout_when_initial_chat_hangs() {
+        let dir = tempfile::tempdir().unwrap();
+        let slow_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_delay(500),
+        );
+        let generator = SkillGenerator::new(slow_provider, dir.path().to_path_buf())
+            .with_generation_timeout_ms(20);
+
+        // Safety net: if the internal timeout regresses to an unbounded await, fail fast
+        // instead of hanging the whole test suite.
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            generator.generate(timeout_test_request()),
+        )
+        .await
+        .expect("generate() must return within the outer safety-net timeout");
+
+        match result {
+            Err(err) => assert_matches!(err, SkillError::Timeout(20)),
+            Ok(_) => panic!("expected SkillError::Timeout, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_returns_timeout_when_retry_chat_hangs() {
+        let dir = tempfile::tempdir().unwrap();
+        // First call returns fast but fails validation (missing `name`), forcing the
+        // retry-after-parse-failure branch; the retry call then hangs past the timeout.
+        let invalid_first_response =
+            "---\ndescription: A skill without a name.\n---\n\n## Usage\n\nDo stuff.\n".to_string();
+        let provider = zeph_llm::mock::MockProvider::with_responses(vec![invalid_first_response])
+            .with_per_call_delays(vec![0, 500]);
+        let generator = SkillGenerator::new(
+            zeph_llm::any::AnyProvider::Mock(provider),
+            dir.path().to_path_buf(),
+        )
+        .with_generation_timeout_ms(20);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            generator.generate(timeout_test_request()),
+        )
+        .await
+        .expect("generate() must return within the outer safety-net timeout");
+
+        match result {
+            Err(err) => assert_matches!(err, SkillError::Timeout(20)),
+            Ok(_) => panic!("expected SkillError::Timeout, got Ok"),
+        }
     }
 }

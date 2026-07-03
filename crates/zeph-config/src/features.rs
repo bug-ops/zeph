@@ -338,8 +338,11 @@ pub struct SkillsConfig {
     /// Provider name for `/skill create` NL generation. Empty = primary provider.
     #[serde(default)]
     pub generation_provider: ProviderName,
-    /// Timeout in milliseconds for `/skill create` LLM generation (covers all internal retries).
-    /// Default: `60000` (60 s).
+    /// Timeout in milliseconds for `/skill create` LLM generation. For `/skill create` this is
+    /// enforced as a single end-to-end budget covering the initial call and its retry. The
+    /// background promotion path (`GeneratorSkillWriter`) reuses the same value as a per-call
+    /// budget instead (via `SkillGenerator::with_generation_timeout_ms`), so a generate-with-retry
+    /// there may take up to 2x this value. Default: `60000` (60 s).
     #[serde(default = "default_generation_timeout_ms")]
     pub generation_timeout_ms: u64,
     /// Directory where generated skills are written. Defaults to first entry in `paths`.

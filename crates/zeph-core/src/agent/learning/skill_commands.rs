@@ -87,7 +87,8 @@ impl<C: Channel> Agent<C> {
 
         let generation_provider =
             self.resolve_background_provider(&self.services.skill.generation_provider_name.clone());
-        let generator = zeph_skills::SkillGenerator::new(generation_provider, output_dir.clone());
+        let generator = zeph_skills::SkillGenerator::new(generation_provider, output_dir.clone())
+            .with_generation_timeout_ms(self.services.skill.generation_timeout_ms);
         let generator = if let Some(ref eval) = self.services.skill.skill_evaluator {
             generator.with_evaluator(
                 std::sync::Arc::clone(eval),

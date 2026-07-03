@@ -1733,7 +1733,8 @@ pub(crate) fn apply_proactive_explorer<C: zeph_core::channel::Channel>(
         }
     };
 
-    let generator = zeph_skills::SkillGenerator::new(provider, output_dir.clone());
+    let generator = zeph_skills::SkillGenerator::new(provider, output_dir.clone())
+        .with_generation_timeout_ms(exp_cfg.timeout_ms);
     let explorer = zeph_skills::proactive::ProactiveExplorer::new(
         generator,
         evaluator,

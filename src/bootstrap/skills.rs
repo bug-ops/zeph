@@ -178,6 +178,8 @@ struct GeneratorSkillWriter {
     eval_weights: zeph_skills::evaluator::EvaluationWeights,
     /// Evaluation threshold forwarded to `with_evaluator`.
     eval_threshold: f32,
+    /// Per-call LLM timeout forwarded to `with_generation_timeout_ms`.
+    generation_timeout_ms: u64,
 }
 
 impl zeph_memory::compression::promotion::SkillWriter for GeneratorSkillWriter {
@@ -188,7 +190,8 @@ impl zeph_memory::compression::promotion::SkillWriter for GeneratorSkillWriter {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
         Box::pin(async move {
             let generator =
-                zeph_skills::SkillGenerator::new(self.provider.clone(), self.output_dir.clone());
+                zeph_skills::SkillGenerator::new(self.provider.clone(), self.output_dir.clone())
+                    .with_generation_timeout_ms(self.generation_timeout_ms);
             let generator = if let Some(ref eval) = self.evaluator {
                 generator.with_evaluator(Arc::clone(eval), self.eval_weights, self.eval_threshold)
             } else {
@@ -267,5 +270,6 @@ pub fn build_skill_writer(
         evaluator,
         eval_weights,
         eval_threshold,
+        generation_timeout_ms: config.skills.generation_timeout_ms,
     }))
 }

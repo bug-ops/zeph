@@ -582,6 +582,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `fix(skills)`: `SkillGenerator::generate` awaited both of its `provider.chat()` calls (initial
+  generation and the single retry on parse failure) with no timeout, unlike every other external
+  LLM call in the crate (e.g. `SkillMiner::embed_candidate`). The background skill-promotion path
+  (`compression_spectrum.promotion_scan` -> `PromotionEngine::promote` ->
+  `GeneratorSkillWriter::write_skill` -> `generate`) had no caller-side timeout wrap either, so an
+  unresponsive LLM provider could hang that named background task forever and, since candidates in
+  a promotion sweep are processed sequentially, block every other candidate behind it. `generate`
+  now wraps both calls in `tokio::time::timeout` against a new `generation_timeout_ms` field
+  (default 60s, matching `SkillsConfig::generation_timeout_ms`), returning the existing
+  `SkillError::Timeout` on expiry; a new `SkillGenerator::with_generation_timeout_ms` builder
+  overrides it, and `GeneratorSkillWriter` now threads `config.skills.generation_timeout_ms`
+  through to the generator it constructs. The `/skill create` command
+  (`skill_commands.rs`) and the proactive-exploration generator (`agent_setup.rs`) now thread
+  their own governing config values (`skills.generation_timeout_ms` and
+  `skills.proactive_exploration.timeout_ms` respectively) into the same builder, so the new
+  60s internal default no longer silently truncates a user-configured timeout greater than 60s
+  on either of those two pre-existing call paths. Closes #5534.
 - `fix(memory)`: `SemanticMemory::spawn_graph_extraction` stored the in-flight background
   graph-extraction task's `CancellationToken` in a single-slot `Mutex<Option<CancellationToken>>`,
   so calling it again before the previous extraction finished silently overwrote the earlier
