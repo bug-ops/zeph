@@ -308,6 +308,93 @@ async fn spawn_graph_extraction_with_provider_override_does_not_panic() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
 
+#[tokio::test]
+async fn cancel_graph_extraction_cancels_every_tracked_token() {
+    // Regression test for #5564: a single-slot `graph_cancel` would silently drop
+    // the token for any extraction spawned before the most recent one, leaving it
+    // unreachable to `cancel_graph_extraction`.
+    let memory = graph_memory().await;
+    let cfg = GraphExtractionConfig {
+        max_entities: 5,
+        max_edges: 5,
+        extraction_timeout_secs: 0,
+        ..Default::default()
+    };
+
+    let first_token = CancellationToken::new();
+    let second_token = CancellationToken::new();
+
+    memory.spawn_graph_extraction(
+        "first extraction".to_owned(),
+        vec![],
+        cfg.clone(),
+        None,
+        None,
+        first_token.clone(),
+    );
+    memory.spawn_graph_extraction(
+        "second extraction".to_owned(),
+        vec![],
+        cfg,
+        None,
+        None,
+        second_token.clone(),
+    );
+
+    memory.cancel_graph_extraction();
+
+    assert!(
+        first_token.is_cancelled(),
+        "token from the earlier spawn must still be cancellable"
+    );
+    assert!(
+        second_token.is_cancelled(),
+        "token from the most recent spawn must be cancelled"
+    );
+}
+
+#[tokio::test]
+async fn spawn_graph_extraction_prunes_finished_tokens_on_next_spawn() {
+    // Regression test for #5564: tokens for tasks that already ran to completion
+    // must not accumulate in `graph_cancel` forever.
+    let memory = graph_memory().await;
+    let cfg = GraphExtractionConfig {
+        max_entities: 5,
+        max_edges: 5,
+        extraction_timeout_secs: 0,
+        ..Default::default()
+    };
+
+    let handle = memory.spawn_graph_extraction(
+        "will finish".to_owned(),
+        vec![],
+        cfg.clone(),
+        None,
+        None,
+        CancellationToken::new(),
+    );
+    handle.await.expect("extraction task must not panic");
+
+    memory.spawn_graph_extraction(
+        "next extraction".to_owned(),
+        vec![],
+        cfg,
+        None,
+        None,
+        CancellationToken::new(),
+    );
+
+    let tracked = memory
+        .graph_cancel
+        .lock()
+        .expect("graph_cancel mutex poisoned")
+        .len();
+    assert_eq!(
+        tracked, 1,
+        "finished extraction's token must be pruned, leaving only the live one"
+    );
+}
+
 // ── NoteLinkingConfig tests ────────────────────────────────────────────────
 
 #[test]
@@ -398,7 +485,7 @@ async fn memory_with_in_memory_vector_store() -> (
         query_sensitive_cost: false,
         five_signal: None,
         embed_timeout: std::time::Duration::from_secs(5),
-        graph_cancel: std::sync::Mutex::new(None),
+        graph_cancel: std::sync::Mutex::new(Vec::new()),
     };
 
     (memory, embedding_store)

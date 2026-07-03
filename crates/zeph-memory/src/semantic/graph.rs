@@ -747,10 +747,14 @@ impl SemanticMemory {
                 "graph extraction using override provider (quality_gate bypassed)"
             );
         }
-        *self
-            .graph_cancel
-            .lock()
-            .expect("graph_cancel mutex poisoned") = Some(cancel.clone());
+        {
+            let mut tokens = self
+                .graph_cancel
+                .lock()
+                .expect("graph_cancel mutex poisoned");
+            tokens.retain(|t| !t.is_cancelled());
+            tokens.push(cancel.clone());
+        }
 
         let ctx = GraphExtractionTaskCtx {
             pool: self.sqlite.pool().clone(),
@@ -772,14 +776,16 @@ impl SemanticMemory {
         tokio::spawn(extraction_fut) // EXEMPT: JoinHandle returned to caller; awaited inside BackgroundSupervisor task in zeph-core
     }
 
-    /// Signal cooperative cancellation to the current background graph-extraction task.
+    /// Signal cooperative cancellation to every in-flight background graph-extraction task.
     ///
-    /// Fires the [`CancellationToken`] stored by the most recent [`spawn_graph_extraction`]
-    /// call. The task checks the token at community-refresh boundaries, so it exits cleanly
-    /// rather than being hard-aborted. This should be called before the supervisor calls
-    /// `abort()` on the underlying `JoinHandle` to give the task a chance to flush state.
+    /// Fires every [`CancellationToken`] tracked since the last drain — i.e. one per
+    /// [`spawn_graph_extraction`] call whose task has not yet completed or already been
+    /// cancelled. Each task checks its token at community-refresh boundaries, so it exits
+    /// cleanly rather than being hard-aborted. This should be called before the supervisor
+    /// calls `abort()` on the underlying `JoinHandle`s to give the tasks a chance to flush
+    /// state.
     ///
-    /// No-op if no extraction has been spawned or the previous token has already fired.
+    /// No-op if no extraction has been spawned or all tracked tokens have already fired.
     ///
     /// # Panics
     ///
@@ -788,12 +794,13 @@ impl SemanticMemory {
     ///
     /// [`spawn_graph_extraction`]: SemanticMemory::spawn_graph_extraction
     pub fn cancel_graph_extraction(&self) {
-        if let Some(token) = self
-            .graph_cancel
-            .lock()
-            .expect("graph_cancel mutex poisoned")
-            .as_ref()
-        {
+        let tokens = std::mem::take(
+            &mut *self
+                .graph_cancel
+                .lock()
+                .expect("graph_cancel mutex poisoned"),
+        );
+        for token in tokens {
             token.cancel();
         }
     }
@@ -868,6 +875,7 @@ async fn run_graph_extraction_task(
     )
     .await;
 
+    let cancel = ctx.cancel.clone();
     maybe_refresh_communities(
         extraction_ok,
         ctx.pool,
@@ -877,6 +885,11 @@ async fn run_graph_extraction_task(
         ctx.cancel,
     )
     .await;
+
+    // Mark this task's token as fired now that it has run to completion, so
+    // `spawn_graph_extraction` can prune its slot from `graph_cancel` on the next
+    // call instead of tracking it for the rest of the process lifetime.
+    cancel.cancel();
 }
 
 /// Run A-MEM note linking after successful extraction when enabled.
