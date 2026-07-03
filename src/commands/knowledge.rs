@@ -1168,6 +1168,10 @@ async fn run_graph_ingest(
     Ok(())
 }
 
+/// Hub-degree kill-criterion threshold from spec-067 §7: the top entity by edge-degree
+/// must not exceed this percentage of total edges before the graph sink can ship.
+const HUB_DEGREE_THRESHOLD_PCT: f64 = 15.0;
+
 /// Print the summary of a graph-sink ingest run.
 fn print_graph_ingest_report(report: &zeph_memory::graph::ingest::IngestReport) {
     println!();
@@ -1194,7 +1198,7 @@ fn print_graph_ingest_report(report: &zeph_memory::graph::ingest::IngestReport) 
         let total_edges: usize = report.hub_degree.iter().map(|h| h.degree).sum();
         println!();
         println!(
-            "  Hub-degree (top-{}) — spec-067 §7 threshold ≤ 15% of total edges:",
+            "  Hub-degree (top-{}) — spec-067 §7 threshold ≤ {HUB_DEGREE_THRESHOLD_PCT}% of total edges:",
             report.hub_degree.len()
         );
         println!("  {:<50} {:>7}  {:>7}", "Entity", "Degree", "% edges");
@@ -1206,7 +1210,11 @@ fn print_graph_ingest_report(report: &zeph_memory::graph::ingest::IngestReport) 
             } else {
                 0.0
             };
-            let flag = if pct > 15.0 { " ⚠ HUB" } else { "" };
+            let flag = if pct > HUB_DEGREE_THRESHOLD_PCT {
+                " ⚠ HUB"
+            } else {
+                ""
+            };
             println!(
                 "  {:<50} {:>7}  {:>6.1}%{}",
                 truncate_uri(&h.entity, 50),
@@ -1218,10 +1226,10 @@ fn print_graph_ingest_report(report: &zeph_memory::graph::ingest::IngestReport) 
         if total_edges > 0 {
             #[allow(clippy::cast_precision_loss)]
             let top_pct = (report.hub_degree[0].degree as f64 / total_edges as f64) * 100.0;
-            let health = if top_pct <= 15.0 {
+            let health = if top_pct <= HUB_DEGREE_THRESHOLD_PCT {
                 "PASS"
             } else {
-                "WARN — top entity exceeds 15% hub-degree threshold"
+                "WARN — top entity exceeds hub-degree threshold"
             };
             println!("  {}", "-".repeat(68));
             println!("  Top entity: {top_pct:.1}% of edges — {health}");
@@ -2834,5 +2842,69 @@ collection = "zeph_test_reasoning_guard_unused_documents"
             result.is_ok(),
             "reasoning disabled (or non-Qdrant backend) must always no-op: {result:?}"
         );
+    }
+
+    // ── hub-degree kill-criterion (spec-067 §7, #5467) ────────────────────────
+
+    #[test]
+    fn hub_degree_threshold_pct_is_15_percent() {
+        // Regression pin: the constant was extracted from two duplicated `15.0` literals
+        // (per-row HUB flag and the overall PASS/WARN verdict). Both call sites must keep
+        // reading the same value, so pin it here rather than let a future edit silently
+        // change only one of the two use sites again.
+        assert!((HUB_DEGREE_THRESHOLD_PCT - 15.0).abs() < f64::EPSILON);
+    }
+
+    fn hub_report(
+        entries: &[(&str, usize)],
+        dry_run: bool,
+    ) -> zeph_memory::graph::ingest::IngestReport {
+        zeph_memory::graph::ingest::IngestReport {
+            dry_run,
+            hub_degree: entries
+                .iter()
+                .map(|&(entity, degree)| zeph_memory::graph::ingest::HubDegree {
+                    entity: entity.to_owned(),
+                    degree,
+                })
+                .collect(),
+            ..zeph_memory::graph::ingest::IngestReport::default()
+        }
+    }
+
+    // These are smoke tests: `print_graph_ingest_report` only prints to stdout (no
+    // return value to assert on), so they exist to exercise the threshold arithmetic
+    // and branching (division guard, cast, PASS/WARN comparison) without panicking
+    // across the boundary conditions the fix touched. They do not assert on the
+    // printed text.
+
+    #[test]
+    fn print_graph_ingest_report_empty_hub_degree_does_not_panic() {
+        print_graph_ingest_report(&hub_report(&[], true));
+    }
+
+    #[test]
+    fn print_graph_ingest_report_zero_total_edges_does_not_panic() {
+        // A hub_degree entry with degree 0 makes total_edges (the sum) 0, exercising the
+        // division-by-zero guard (`if total_edges > 0 { .. } else { 0.0 }`).
+        print_graph_ingest_report(&hub_report(&[("Solo", 0)], true));
+    }
+
+    #[test]
+    fn print_graph_ingest_report_exactly_at_threshold_does_not_panic() {
+        // 15 of 100 edges == exactly HUB_DEGREE_THRESHOLD_PCT: boundary is `<=`/`>`, must be PASS.
+        print_graph_ingest_report(&hub_report(&[("AtThreshold", 15), ("Rest", 85)], true));
+    }
+
+    #[test]
+    fn print_graph_ingest_report_above_threshold_does_not_panic() {
+        print_graph_ingest_report(&hub_report(&[("OverThreshold", 30), ("Rest", 70)], true));
+    }
+
+    #[test]
+    fn print_graph_ingest_report_non_dry_run_skips_hub_section() {
+        // Outside dry-run, the hub-degree block must not execute even if hub_degree is
+        // (unexpectedly) non-empty.
+        print_graph_ingest_report(&hub_report(&[("Ignored", 999)], false));
     }
 }

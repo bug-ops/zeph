@@ -67,38 +67,7 @@ use zeph_llm::provider::LlmProvider;
 
 use zeph_core::config::Config;
 
-/// Adapter that bridges `PolicyLlmClient` to `AnyProvider::chat`.
-///
-/// Defined in `runner.rs` to keep `zeph-tools` decoupled from `zeph-llm`.
-struct AdversarialPolicyLlmAdapter {
-    provider: LlmAnyProvider,
-}
-impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
-    fn chat<'a>(
-        &'a self,
-        messages: &'a [zeph_tools::PolicyMessage],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            let llm_messages: Vec<zeph_llm::provider::Message> = messages
-                .iter()
-                .map(|m| {
-                    zeph_llm::provider::Message::from_legacy(
-                        match m.role {
-                            zeph_tools::PolicyRole::System => zeph_llm::provider::Role::System,
-                            _ => zeph_llm::provider::Role::User,
-                        },
-                        m.content.clone(),
-                    )
-                })
-                .collect();
-
-            let result: Result<String, zeph_llm::LlmError> =
-                self.provider.chat(&llm_messages).await;
-            result.map_err(|e| e.to_string())
-        })
-    }
-}
+use crate::agent_setup::AdversarialPolicyLlmAdapter;
 
 /// Adapts `ShadowSentinel` (from `zeph-core`) to the `ProbeGate` trait (from `zeph-tools`).
 ///
